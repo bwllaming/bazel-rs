@@ -323,31 +323,44 @@ const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &["SKIP_CONSTRAINTS_OVERRIDE", "DIRECT_CO
 /// converted once at rule-class creation (Type.convert, no sort), and
 /// analysis-time select resolution resolves already-converted branch values
 /// (SelectorList.resolve), so neither sorts.
-pub(crate) fn order_independent_sorted(spec: &AttrSpec, mut value: AttrValue) -> AttrValue {
+pub(crate) fn order_independent_sorted(
+    spec: &AttrSpec,
+    mut value: AttrValue,
+) -> anyhow::Result<AttrValue> {
     if !spec
         .declaration
         .flags
         .iter()
         .any(|flag| flag == "ORDER_INDEPENDENT")
     {
-        return value;
+        return Ok(value);
     }
     match &mut value {
         AttrValue::Strings(values) | AttrValue::Outputs(values) => values.sort(),
         AttrValue::Ints(values) => values.sort(),
         AttrValue::Labels(values) => {
+            // The values are canonical-form strings this module produced
+            // (AttrKind::parse -> label_value -> Label::to_string); a value
+            // that no longer parses is an internal error, never a silently
+            // unsorted list.
             let mut keyed = values
                 .iter()
-                .map(|label| (crate::label::Label::parse_canonical(label), label.clone()))
-                .collect::<Vec<_>>();
-            if keyed.iter().all(|(label, _)| label.is_ok()) {
-                keyed.sort_by(|a, b| a.0.cmp(&b.0));
-                *values = keyed.into_iter().map(|(_, label)| label).collect();
-            }
+                .map(|label| {
+                    Ok((
+                        crate::label::Label::parse_canonical(label)
+                            .map_err(|error| {
+                                anyhow!("internal error: ORDER_INDEPENDENT label {label:?} does not parse canonically: {error}")
+                            })?,
+                        label.clone(),
+                    ))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            keyed.sort_by(|a, b| a.0.cmp(&b.0));
+            *values = keyed.into_iter().map(|(_, label)| label).collect();
         }
         _ => {}
     }
-    value
+    Ok(value)
 }
 
 /// An element of a `select()`-valued BUILD attribute (BuildType.SelectorList).
@@ -1514,10 +1527,13 @@ mod values {
                                     configurable.insert(key.to_owned(), parts);
                                 }
                                 crate::configured_attributes::Simplified::Plain(value) => {
-                                    attrs.insert(
-                                        key.to_owned(),
-                                        order_independent_sorted(spec, value),
-                                    );
+                                    let value =
+                                        order_independent_sorted(spec, value).map_err(|e| {
+                                            starlark::Error::new_other(anyhow!(
+                                                "{target_text}: {e}"
+                                            ))
+                                        })?;
+                                    attrs.insert(key.to_owned(), value);
                                 }
                                 // Like an omitted value: default and mandatory checks apply.
                                 crate::configured_attributes::Simplified::Unset => {}
@@ -1561,7 +1577,10 @@ mod values {
                         .map_err(|e| {
                             starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
                         })?;
-                        attrs.insert(key.to_owned(), order_independent_sorted(spec, parsed));
+                        let parsed = order_independent_sorted(spec, parsed).map_err(|e| {
+                            starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
+                        })?;
+                        attrs.insert(key.to_owned(), parsed);
                     }
                 }
             }

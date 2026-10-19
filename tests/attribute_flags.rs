@@ -194,3 +194,47 @@ bad(name = 'x')
         errors(&output)
     );
 }
+
+/// DIRECT_COMPILE_TIME_INPUT's only reader is --compile_one_dependency
+/// (CompileOneDependencyTransformer.java:263), which the native profile
+/// rejects explicitly (options are never silently ignored); until it is
+/// modelled the flag is inert at loading and analysis.
+#[test]
+fn compile_one_dependency_fails_explicitly() {
+    let ws = Workspace::new(
+        r#"
+def _impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(output = out, content = "")
+    return [DefaultInfo(files = depset([out]))]
+r = rule(implementation = _impl, attrs = {
+    "deps": attr.label_list(allow_files = True, flags = ["DIRECT_COMPILE_TIME_INPUT"]),
+})
+"#,
+        r#"load(":defs.bzl", "r")
+
+filegroup(name = "fg", srcs = ["a.h"])
+
+r(name = "x", deps = ["a.h"])
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .args([
+            "--ignore_all_rc_files",
+            "build",
+            "--compile_one_dependency",
+            "//:a.h",
+        ])
+        .current_dir(&ws.0)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", errors(&output));
+    assert_eq!(
+        errors(&output).trim(),
+        "bazel-rs: unsupported option \"--compile_one_dependency\"; options are never silently ignored",
+        "{}",
+        errors(&output)
+    );
+    // The flag itself stays inert: the same target builds without it.
+    assert!(ws.build("//:x").status.success());
+}

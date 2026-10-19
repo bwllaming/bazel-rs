@@ -54,6 +54,16 @@ leaks the full SDK `src` through the execroot symlink (an undeclared-input
 read) and builds 7 more packages; that is genuine-strategy behavior, not a
 native divergence, and is recorded in the receipt's `stdlib` note.
 
+The native profile has no unsandboxed leak path: `--spawn_strategy` (and
+`--strategy`) are rejected explicitly — options are never silently ignored —
+and every process action runs in a private staging execroot containing only
+its declared inputs (`stage_inputs`, docs/HARDLINK_STAGING.md), whatever its
+"not sandboxed" progress line means (no linux-sandbox wrapper; the staging
+discipline is unchanged). Measured on this tree with
+`artifacts/n57-followup-check.py`: the cgo fixture build produces a
+**350-archive** stdlib set under the native (unsandboxed) execution —
+identical to the captured `stdlib` scenario and to sandboxed genuine.
+
 ## Attribute flags (the cc rules' load path)
 
 rules_cc 0.2.17's Starlark rules declare label lists with
@@ -64,8 +74,14 @@ sort (labels by `Label.compareTo`: repository, package, name —
 `BuildType.convertFromBuildLangType`, packages/BuildType.java:245-253),
 applied to explicit BUILD values and simplified unconditional selects;
 defaults and analysis-resolved select branches are never sorted
-(`tests/attribute_flags.rs`). `DIRECT_COMPILE_TIME_INPUT` is accepted and
-inert (only `--compile_one_dependency` reads it).
+(`tests/attribute_flags.rs`; a label value that fails canonical parsing is
+an internal error, never a silently unsorted list). The repository/package
+cross-ordering (`//a:x` < `//a-b:x` < `//a/b:x` < `@other//:x`), the
+select and default cases are checked against genuine 9.3 by
+`artifacts/n57-followup-check.py` (EXACT_PRINT, recorded in the receipt's
+`post_capture_changes`). `DIRECT_COMPILE_TIME_INPUT` is accepted and
+inert (only `--compile_one_dependency` reads it, and that option is
+rejected explicitly — `tests/attribute_flags.rs`).
 
 ## Explicit boundaries (fail with the named gap)
 

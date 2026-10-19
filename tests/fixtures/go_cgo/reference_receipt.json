@@ -38,6 +38,11 @@
   "passed": true,
   "tail": "//cgo:cgo_test                                                           PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n//cgo:cgo_test\t/tmp/opencode/n57cap2296626/ncache/actions/67ec7aa31e4248c38f0915d54f56e36029af74befb1493974370732ed5a27e0a/outputs/bazel-out/k8-fastbuild/bin/cgo/cgo_test_/cgo_test\nbazel-rs: 0 actions executed, 18 cache hits (experimental local execution; not sandboxed)\n"
  },
+ "post_capture_changes": {
+  "compile_one_dependency": "--compile_one_dependency (DIRECT_COMPILE_TIME_INPUT's only reader) fails explicitly: unsupported option; pinned by tests/attribute_flags.rs",
+  "n57_review_follow_up_check": "artifacts/n57-followup-check.py (post-commit review, same tree semantics): ONE genuine-vs-native ORDER_INDEPENDENT row over repositories and packages (labels //a:x, //a-b:x, //a/b:x, @other//:x in scrambled BUILD order; plus an unconditional select, a resolved select and a rule default) \u2014 verdict EXACT_PRINT, all four print lines equal to genuine (sorted: @@//a:x < @@//a-b:x < @@//a/b:x < @@other+//:x, i.e. repository name then package path then name; the resolved select keeps branch order; the default is not sorted); genuine Bazel 9.3 ran in a scratch with a private --output_user_root, removed after. The same script builds the cgo fixture natively and counts the stdlib archives of the unsandboxed native execution: 350 \u2014 identical to the captured stdlib scenario; the native profile has no spawn-strategy switch (--spawn_strategy is rejected explicitly) and always stages only declared action inputs, so the 357-package local-strategy leak of genuine Bazel cannot occur natively.",
+  "order_independent_sort_internal_error": "label values that fail canonical parse in order_independent_sorted now fail with an internal error instead of silently staying unsorted"
+ },
  "runs": {
   "run1_and_allowed_rerun": "every scenario verdict, output hash, stdlib set and print line identical; only the scratch PID inside native_test_run.tail and the timing/binary-sha fields differ"
  },
