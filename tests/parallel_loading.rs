@@ -509,3 +509,138 @@ fn failing_bzl_prints_survive_via_marker_on_sibling_hits() {
         }
     }
 }
+
+/// P2 follow-up 2, fix 1: a cached FAILURE hit replays the failing
+/// module's dependencies' prints too — `F` loads the printing `D` and
+/// then fails at evaluation; both `p1` and `p2` load `F`. Whichever
+/// worker evaluates D and F first, the first package in order replays
+/// D's lines, F's partial lines and the error, byte-identical to the
+/// sequential DFS (jitter shuffles who evaluates).
+#[test]
+fn cached_failure_replays_dependency_prints_in_postorder() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/d.bzl", "print('D top-level')\nv = 1\n");
+    ws.file(
+        "rules/f.bzl",
+        "load(':d.bzl', 'v')\nprint('F partial')\nfail('F boom')\n",
+    );
+    for package in ["p1", "p2", "p3"] {
+        ws.file(&format!("{package}/BUILD"), "load('//rules:f.bzl', 'x')\n");
+    }
+    let mut reference = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(!run.status.success(), "threads={threads}");
+        let stderr = stderr(&run);
+        assert_eq!(stderr.matches("D top-level").count(), 1, "{stderr}");
+        assert_eq!(stderr.matches("F partial").count(), 1, "{stderr}");
+        assert!(stderr.contains("F boom"), "{stderr}");
+        match &reference {
+            None => reference = Some((run.stdout.clone(), stderr)),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&stderr, error, "threads={threads}: stderr");
+            }
+        }
+    }
+}
+
+/// P2 follow-up 2, fix 2: a module aborted mid-evaluation by the
+/// no-demand sentinel suppresses its partial prints — the inline re-run
+/// emits the module's FULL lines. The module prints, parses a label of
+/// an unfetched repository (the mid-evaluation demand), prints again.
+#[test]
+fn sentinel_aborted_module_prints_fully_on_the_inline_rerun() {
+    let ws = Workspace::new();
+    // The local file registry from the mid-pattern fixture: the ext
+    // repository materializes on first demand.
+    ws.file("registry/bazel_registry.json", "{\"mirrors\": []}\n");
+    ws.file(
+        "registry/modules/ext/1.0/MODULE.bazel",
+        "module(name='ext', version='1.0')\n",
+    );
+    ws.file(
+        "registry/modules/ext/1.0/source.json",
+        &format!(
+            "{{\"type\": \"local_path\", \"path\": {}}}\n",
+            json_string(&ws.0.join("ext_src"))
+        ),
+    );
+    ws.file("ext_src/MODULE.bazel", "module(name='ext')\n");
+    ws.file("ext_src/BUILD", "");
+    ws.file(
+        "MODULE.bazel",
+        "module(name='main')\nbazel_dep(name = 'ext', version = '1.0')\n",
+    );
+    ws.file("rules/BUILD", "");
+    ws.file(
+        "rules/m.bzl",
+        "print('M before the demand')\nl = Label('@ext//:x')\nprint('M after the demand')\ndef _impl(ctx):\n    return DefaultInfo()\nmy_rule = rule(implementation = _impl)\n",
+    );
+    for name in ["a", "z"] {
+        ws.file(
+            &format!("{name}/BUILD"),
+            "load('//rules:m.bzl', 'my_rule')\nmy_rule(name = 'r')\n",
+        );
+    }
+    let registry = format!("--registry=file://{}", ws.0.join("registry").display());
+    // Cold with workers: the mid-evaluation demand hits the guard, the
+    // partial line is suppressed, the inline re-run prints both.
+    let cold = ws.run(&[
+        "build",
+        &registry,
+        "--lockfile_mode=off",
+        "--loading_phase_threads=8",
+        "//...",
+    ]);
+    assert!(cold.status.success(), "cold: {}", stderr(&cold));
+    let cold_stderr = stderr(&cold);
+    assert_eq!(cold_stderr.matches("M before the demand").count(), 1);
+    assert_eq!(cold_stderr.matches("M after the demand").count(), 1);
+    // Warm A/B across thread counts (and jitter) stays byte-identical.
+    let mut reference = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &registry,
+                "--lockfile_mode=off",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
+        match &reference {
+            None => reference = Some((run.stdout.clone(), run.stderr.clone())),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&run.stderr, error, "threads={threads}: stderr");
+            }
+        }
+    }
+    let (_, error) = reference.unwrap();
+    let error = String::from_utf8_lossy(&error);
+    assert_eq!(error.matches("M before the demand").count(), 1);
+    assert_eq!(error.matches("M after the demand").count(), 1);
+}

@@ -283,3 +283,31 @@ packages themselves).
   invocation-persistent `.bzl` cache. Bazel's resident server amortizes
   exactly this; bazel-rs as a per-invocation client cannot without one
   of the two.
+
+## P2 follow-up 2 (review round 3)
+
+- **Cached failures replay their dependencies' prints.** `CachedFailure`
+  now stores the module's `loads` (evaluation failures happen after the
+  loads ran). A failure hit schedules those loads and a deferred
+  `FailCached` item, so the dependencies' hit markers precede the
+  failing module's marker in postorder — the first loading package
+  replays D's lines, F's partial lines and the error, byte-identical to
+  the sequential DFS, whichever worker evaluated them (stress row:
+  `cached_failure_replays_dependency_prints_in_postorder`). The
+  Finish-time recheck failure keeps its single marker: that traversal's
+  own DFS already visited the loads.
+- **Sentinel aborts suppress partial prints.** A module aborted
+  mid-evaluation by the no-demand sentinel no longer pushes its partial
+  lines to the unit sink — the early emit would mark the module emitted
+  and suppress the inline re-run's full lines ("a" kept, "b" lost).
+  Stress row: `sentinel_aborted_module_prints_fully_on_the_inline_rerun`
+  (module prints, parses a label of an unfetched repository, prints
+  again; cold parallel run emits both lines exactly once via the inline
+  re-run).
+- A/B rerun with the final binary: fixture suite (10 rows incl. all
+  three failure shapes under jitter) green; `~/code` warm query stdout
+  md5-identical at threads 1/8/32 and under jitter with stderr identical
+  modulo PERF lines; warm build 384/384 cache hits at every thread
+  count, stdout identical, full 384-action dump identical after
+  `trees/<run-hash>` normalization. Full cargo test (102 suites), 881
+  python validators, fmt/clippy clean.

@@ -548,13 +548,18 @@ struct CachedBzl {
     prints: Vec<String>,
 }
 
-/// The failure of loading one `.bzl` label: its error plus the top-level
-/// `print()` lines its partial evaluation produced, emitted once with the
-/// module's first load while the error itself replays for every loading
-/// package.
+/// The failure of loading one `.bzl` label: its error, the top-level
+/// `print()` lines its partial evaluation produced (emitted once, with
+/// the module's first load, while the error itself replays for every
+/// loading package), and — for evaluation failures, which happen after
+/// the module's own loads ran — those loads. A later loading package's
+/// failure hit replays the dependencies' prints (via their hit markers)
+/// before the failing module's own, exactly like the sequential DFS that
+/// evaluated them (P2 follow-up 2).
 struct CachedFailure {
     error: String,
     prints: Vec<String>,
+    loads: Vec<Label>,
 }
 
 /// A BUILD-phase `.bzl` label's value for the invocation: the evaluated
@@ -774,6 +779,9 @@ enum Work {
     Finish(Label, PathBuf, Box<AstModule>, Vec<Label>),
     /// A module of the invocation's cache, after its loads were visited.
     Reuse(Label, Arc<CachedBzl>),
+    /// A cached failure, after its stored loads were visited: emit the
+    /// module's hit marker, then fail with the stored error.
+    FailCached(Label, Arc<CachedFailure>),
 }
 
 impl<'a> Loader<'a> {
@@ -814,15 +822,18 @@ impl<'a> Loader<'a> {
         };
         let cached = match cached {
             Ok(cached) => cached,
-            // A cached failure replays for every loading package — with a
-            // hit marker first (P2 follow-up): the failing module's own
-            // partial prints replay with this unit even though its load
-            // stops here.
+            // A cached failure replays for every loading package (P2
+            // follow-up 2): the module's stored loads are visited first —
+            // their hit markers replay the dependencies' prints — then the
+            // deferred fail item pushes the module's own marker and fails,
+            // exactly the postorder the sequential DFS produced.
             Err(failure) => {
-                if let Some(sink) = self.prints {
-                    sink.push_cached(label);
-                }
-                return Err(failure.error.clone());
+                let loads = failure.loads.clone();
+                active.push(label.clone());
+                self.load_graph.insert(label.clone(), loads.clone());
+                work.push(Work::FailCached(label.clone(), failure));
+                work.extend(loads.into_iter().rev().map(Work::Enter));
+                return Ok(true);
             }
         };
         active.push(label.clone());
@@ -861,7 +872,7 @@ impl<'a> Loader<'a> {
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
                         let (path, ast, dependencies) = self
                             .enter_module(&label)
-                            .or_else(|error| self.failed(&label, error, Vec::new()))?;
+                            .or_else(|error| self.failed(&label, error, Vec::new(), Vec::new()))?;
                         self.load_graph.insert(label.clone(), dependencies.clone());
                         active.push(label.clone());
                         work.extend(
@@ -874,6 +885,14 @@ impl<'a> Loader<'a> {
                             .chain(dependencies.into_iter().rev().map(Work::Enter)),
                         );
                     }
+                }
+                Work::FailCached(label, failure) => {
+                    if let Some(sink) = self.prints {
+                        sink.push_cached(&label);
+                    }
+                    let finished = active.pop();
+                    debug_assert_eq!(finished.as_ref(), Some(&label));
+                    return Err(failure.error.clone());
                 }
                 Work::Reuse(label, cached) => {
                     self.functions.extend(cached.functions.iter().cloned());
@@ -914,6 +933,10 @@ impl<'a> Loader<'a> {
                                 continue;
                             }
                             Some(Err(failure)) => {
+                                // This traversal's DFS already visited the
+                                // module's loads (their markers are in the
+                                // sink); only the module's own marker is
+                                // missing before the stored error.
                                 if let Some(sink) = self.prints {
                                     sink.push_cached(&label);
                                 }
@@ -922,9 +945,13 @@ impl<'a> Loader<'a> {
                             None => {}
                         }
                     }
-                    let (frozen, visibility, prints) = self
-                        .finish_module(&label, &path, *ast)
-                        .or_else(|(error, prints)| self.failed(&label, error, prints))?;
+                    let (frozen, visibility, prints) = match self.finish_module(&label, &path, *ast)
+                    {
+                        Ok(finished) => finished,
+                        Err((error, prints)) => {
+                            self.failed(&label, error, prints, loads.clone())?
+                        }
+                    };
                     if self.shared {
                         self.repositories.build_bzl_cache().insert(
                             label.clone(),
@@ -953,7 +980,13 @@ impl<'a> Loader<'a> {
     /// nothing itself (the failing load is replayed when it is visited).
     /// The evaluation's buffered print lines (empty unless it evaluated)
     /// are stored with the failure so the coordinator can emit them once.
-    fn failed<T>(&self, label: &Label, error: String, prints: Vec<String>) -> Result<T, String> {
+    fn failed<T>(
+        &self,
+        label: &Label,
+        error: String,
+        prints: Vec<String>,
+        loads: Vec<Label>,
+    ) -> Result<T, String> {
         // The no-demand sentinel is never published (P2: a worker's abort
         // is environmental, not a stored BzlLoadValue error; the
         // coordinator's inline retry must evaluate the module for real).
@@ -963,6 +996,7 @@ impl<'a> Loader<'a> {
                 Err(CachedFailure {
                     error: error.clone(),
                     prints,
+                    loads,
                 }),
             )?;
         }
@@ -1102,14 +1136,35 @@ impl<'a> Loader<'a> {
                 .map(|frozen| (frozen, visibility))
         });
         // The module's lines join the unit's buffered output whether it
-        // succeeded or failed, in evaluation order.
+        // succeeded or failed, in evaluation order — EXCEPT a no-demand
+        // sentinel abort (P2 follow-up 2): those partial lines are
+        // dropped, or the early emit would mark the module emitted and
+        // suppress the inline re-run's full lines (a module printing "a",
+        // demanding a repository, then printing "b" would lose "b").
         let prints = buffered.take();
-        if let Some(sink) = self.prints {
-            for line in &prints {
-                sink.push_module(label, line.clone());
+        let mut evaluated_prints = Vec::new();
+        let evaluated = match evaluated {
+            Ok(finished) => {
+                if let Some(sink) = self.prints {
+                    for line in &prints {
+                        sink.push_module(label, line.clone());
+                    }
+                }
+                evaluated_prints = prints.clone();
+                Ok(finished)
             }
-        }
-        let (frozen, visibility) = evaluated.map_err(|error| (error, prints.clone()))?;
+            Err(error) => {
+                if let Some(sink) = self.prints
+                    && !crate::repository_demand::is_needs_repository(&error)
+                {
+                    for line in &prints {
+                        sink.push_module(label, line.clone());
+                    }
+                }
+                Err((error, prints))
+            }
+        };
+        let (frozen, visibility) = evaluated?;
         for name in function_names {
             let (function, _) = frozen.get_any_visibility(&name).map_err(|e| {
                 (
@@ -1119,7 +1174,7 @@ impl<'a> Loader<'a> {
             })?;
             self.functions.push(function);
         }
-        Ok((frozen, visibility, prints))
+        Ok((frozen, visibility, evaluated_prints))
     }
 
     fn check_load_visibilities(
