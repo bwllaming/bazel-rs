@@ -1,0 +1,125 @@
+{
+ "fixture": "N60 capture fixture (artifacts/cc_compile-probe.py)",
+ "genuine": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64 sha256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "native_binary_sha256": "d637a33c370fa682d90aa22951336c71a344e72642462803ae8353d2cef4fc10",
+ "rows": {
+  "action_comparison": {
+   "CppCompile": {
+    "genuine_registered": 1,
+    "genuine_executed": 1,
+    "native_dumped": 1,
+    "executed_arguments_equal": true,
+    "executed_environment_equal": true,
+    "params_rewrite": {
+     "genuine": [],
+     "native": []
+    },
+    "genuine_inputs": [
+     "cdep/prebuilt.c",
+     "cdep/prebuilt.h",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh"
+    ],
+    "native_inputs": [
+     "cdep/prebuilt.c",
+     "cdep/prebuilt.h",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh"
+    ],
+    "aquery_arguments_pre_split": false
+   },
+   "CppArchive": {
+    "genuine_registered": 1,
+    "genuine_executed": 1,
+    "native_dumped": 1,
+    "executed_arguments_equal": true,
+    "executed_environment_equal": true,
+    "params_rewrite": {
+     "genuine": [
+      "@bazel-out/k8-fastbuild/bin/cdep/libbuilt.a-0.params"
+     ],
+     "native": [
+      "@bazel-out/k8-fastbuild/bin/cdep/libbuilt.a-0.params"
+     ]
+    },
+    "genuine_inputs": [
+     "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh"
+    ],
+    "native_inputs": [
+     "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh"
+    ],
+    "aquery_arguments_pre_split": true
+   },
+   "CppLink": {
+    "genuine_registered": 1,
+    "genuine_executed": 1,
+    "native_dumped": 1,
+    "executed_arguments_equal": true,
+    "executed_environment_equal": true,
+    "params_rewrite": {
+     "genuine": [
+      "@bazel-out/k8-fastbuild/bin/cdep/libbuilt.so-0.params"
+     ],
+     "native": [
+      "@bazel-out/k8-fastbuild/bin/cdep/libbuilt.so-0.params"
+     ]
+    },
+    "genuine_inputs": [
+     "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh",
+     "external/rules_cc+/cc/private/toolchain/build_interface_so",
+     "external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh"
+    ],
+    "native_inputs": [
+     "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o",
+     "external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths",
+     "external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh",
+     "external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh",
+     "external/rules_cc+/cc/private/toolchain/build_interface_so",
+     "external/rules_cc+/cc/private/toolchain/link_dynamic_library.sh"
+    ],
+    "aquery_arguments_pre_split": true
+   },
+   "SolibSymlink": {
+    "genuine_registered": 2,
+    "genuine_executed": 0,
+    "native_dumped": 0,
+    "note": "registered in genuine aquery, executed by neither build; the native dump covers the planned actions only"
+   }
+  },
+  "params_contents_note": "the @...-0.params files live in the execution roots only; the byte-identical libbuilt.a/libbuilt.so of the paired receipt cover their contents",
+  "genuine_c_shared_two_output_bases": {
+   "artifacts": [
+    {
+     "output_base": "ourA",
+     "sha256": "287d7747ed6acde32e2aa7654b3ddd51366437f7161864db6c1137de6432be5b",
+     "build_id": "498919aff001d8366249403a2544fba2d833084f"
+    },
+    {
+     "output_base": "ourB",
+     "sha256": "7488f62d43364fa479e29270d771513e14dcac1ef031998cc8661249c32d4068",
+     "build_id": "498919aff001d8366249403a2544fba2d833084f"
+    }
+   ],
+   "genuine_varies_across_output_bases": true,
+   "build_ids_equal": true,
+   "note": "the go external linker passes the output path as -soname, so .dynstr embeds the absolute execroot path of the executing sandbox; genuine produces different bytes across output bases while the GNU build id (which does not cover that string) stays fixed"
+  }
+ }
+}

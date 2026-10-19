@@ -21,9 +21,12 @@ noted):
   spawn: argv = the feature configuration's tool path plus
   `getPerFeatureExpansions` over the action config and enabled features
   (CcToolchainFeatures.java:941-975; the `unfiltered_compile_flags` feature is
-  exempt from the CoptsFilter, CompileCommandLine.java:66-155), environment =
-  the configuration's action environment plus `PWD=/proc/self/cwd` plus the
-  feature env sets (CppCompileAction.getEffectiveEnvironment :1010-1027),
+  exempt from the CoptsFilter, and the filter inverts and FULLY matches —
+  `!noCoptsPattern.matcher(flag).matches()`, CcCommon.java:122-130),
+  environment = the configuration's action environment (fixed and the
+  inherited `--action_env` names) then `PWD=/proc/self/cwd` put over it, then
+  the feature env sets over that (CppCompileAction.getEffectiveEnvironment
+  :1010-1021),
   inputs = the mandatory inputs of `buildMandatoryInputs` (additional inputs
   and their depset form, builtin include files + build info headers, the
   compilation context's `headers`/`_non_code_inputs`/`_direct_module_maps`/
@@ -37,10 +40,19 @@ noted):
 - **`get_link_args`** (:407-440) — an `Args` value expanding to the
   LinkCommandLine's parameter command line (the flags without the tool; the
   spawn's `executable` is the tool): `getParamCommandLine`
-  (LinkCommandLine.java:92-130) including the `linker_param_file` filter.
-  rules_cc's `actions.run(arguments = [link_args], executable = tool_path)`
-  then produces the genuine CppArchive (`ar rcsD`, `ZERO_AR_DATE=1`) and
-  CppLink (`gcc -shared …`) commands byte-for-byte.
+  (LinkCommandLine.java:92-130) including the `linker_param_file` filter, and
+  `getParamFileInfo` (:132-150): a flag containing
+  `LINKER_PARAM_FILE_PLACEHOLDER` (rules_cc sets the `linker_param_file`
+  build variable to that string; the toolchain's legacy `linker_param_file`
+  feature emits `@%{linker_param_file}`) installs an always-on
+  [`ParamFileInfo`] on the Args — flag format `@%s`, the
+  `parameter_file_type` quoting (GCC_QUOTED as the native Shell writer,
+  UNQUOTED as the multiline one; WINDOWS fails explicitly). The executed
+  argvs are then `ar @…libbuilt.a-0.params` / `gcc @…libbuilt.so-0.params`
+  exactly like genuine (CommandLines.java:113-141's `<output>-N.params`
+  naming and the always split; genuine `aquery` prints the pre-split form,
+  its execution log confirms the rewrite —
+  tests/fixtures/cc_compile/evidence.json).
 - **Artifact names** — `get_artifact_name_for_category` /
   `get_artifact_name_extension_for_category` (:345-374) over
   `ArtifactNamePatternMapper` (CcToolchainFeatures.java:765-812): the
@@ -63,6 +75,9 @@ noted):
   HeaderInfo now carries the module artifacts and header lists; the list
   getters are immutable copies; `create_header_info_with_deps` propagates the
   fields with a new identity.
+- **Linkstamp mnemonic** — `actionNameToMnemonic` maps the
+  `linkstamp-compile` action name (CppActionNames.java:26) to
+  `CppLinkstampCompile`.
 - **Small semantics helpers** — `rule_class`, `aspect_class`,
   `check_toplevel`, `intern_seq`, `is_tree_artifact` (tree artifacts),
   `compute_output_name_prefix_dir` ("" outside objc purposes),
@@ -71,7 +86,10 @@ noted):
   artifacts). The dependency `Target` surface gained the default-provider
   fields `data_runfiles`/`default_runfiles`/`files_to_run`
   (AbstractConfiguredTarget.getValue :58-59), which rules_go's cgo context
-  reads on `cc_import` targets.
+  reads on `cc_import` targets; `dir(target)` follows `getFieldNames`
+  (:183-193): `data_runfiles`, `default_runfiles`, `files`, `files_to_run`,
+  `label` and `output_groups` (readable) when the target declares an
+  OutputGroupInfo.
 
 ## What is verified
 
@@ -90,8 +108,13 @@ when the cgo header include path is missing.
 The go c-shared `libcgo_shared.so` is **EXPLAINED**, not exact: the go
 external linker passes the output path as `-soname`, so `.dynstr` embeds the
 absolute execroot path of the executing sandbox; its length shifts every
-later section offset (and the build id), and genuine Bazel 9.3.0 itself
-produces different bytes across output roots. The capture records that the
+later section offset. Genuine Bazel 9.3.0 itself produces different bytes
+across output bases while the GNU build id stays fixed (it does not cover
+that string) — two genuine runs under different `--output_user_root`s are
+recorded in `tests/fixtures/cc_compile/evidence.json`, which also compares
+the executed action surface (argv including the `@…-0.params` rewrite,
+environment, inputs) of CppCompile/CppArchive/CppLink against the native
+`--native-action-dump` diagnostic: equal. The capture records that the
 string sets are identical modulo that prefix and the section tables are
 identical modulo the shift.
 

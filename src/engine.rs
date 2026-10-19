@@ -920,6 +920,52 @@ enum SettingTarget {
 /// instance encapsulates the target's attributes).
 type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 
+/// One JSON object per planned action (`--native-action-dump`).
+fn dump_actions(nodes: &[scheduler::PlannedAction], path: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    for node in nodes {
+        let action = &node.action;
+        let environment = crate::action::resolved_environment(action);
+        let inputs: Vec<String> = action
+            .inputs
+            .iter()
+            .map(|(_, destination)| destination.to_string_lossy().into_owned())
+            .chain(node.dependencies.iter().map(destination))
+            .collect();
+        let mut requirements: Vec<&str> =
+            action.execution_info.iter().map(String::as_str).collect();
+        requirements.extend(action.extra.execution_info.keys().map(String::as_str));
+        requirements.sort_unstable();
+        requirements.dedup();
+        let object = serde_json::json!({
+            "id": action.id,
+            "mnemonic": action.extra.mnemonic,
+            "arguments": crate::action::arguments(action),
+            "environment": environment
+                .iter()
+                .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
+                .collect::<Vec<_>>(),
+            "inherited_environment": action.extra.inherited_environment.iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            "inputs": inputs,
+            "outputs": action.outputs.iter().map(|output| output.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            "execution_requirements": requirements,
+        });
+        writeln!(file, "{object}")?;
+    }
+    Ok(())
+}
+
+/// A generated dependency's destination exec path.
+fn destination(dependency: &Dependency) -> String {
+    dependency.destination.to_string_lossy().into_owned()
+}
+
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -6365,10 +6411,31 @@ impl Engine {
         cache: &Path,
         jobs: usize,
     ) -> Result<BuildSummary, String> {
+        self.build_with_options(labels, cache, jobs, None)
+    }
+
+    /// `build_with_jobs` plus the native-only `--native-action-dump=<file>`
+    /// diagnostic: after planning, every action of the build is appended to
+    /// the file as one JSON object (id, mnemonic, argv, environment, inputs,
+    /// outputs, execution requirements) before execution (a native
+    /// introspection facility; Bazel has no equivalent option — aquery is
+    /// the genuine surface, docs/CC_ACTIONS.md).
+    pub fn build_with_options(
+        &mut self,
+        labels: &[Label],
+        cache: &Path,
+        jobs: usize,
+        action_dump: Option<&Path>,
+    ) -> Result<BuildSummary, String> {
         if jobs == 0 {
             return Err("jobs must be greater than zero".into());
         }
         let (nodes, requested, aspect_reports, target_results) = self.plan_build(labels)?;
+        if let Some(path) = action_dump
+            && let Err(error) = dump_actions(&nodes, path)
+        {
+            return Err(format!("--native-action-dump: {error}"));
+        }
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         let mut summary = BuildSummary::default();
         for result in results.values() {

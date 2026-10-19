@@ -120,6 +120,7 @@ fn run() -> Result<(), String> {
     let mut query_options = bazel_rs::engine::query::QueryOptions::default();
     let mut lockfile_mode = bazel_rs::lockfile::LockfileMode::default();
     let mut lockfile_target = bazel_rs::registry_session::LockfileTarget::Workspace;
+    let mut action_dump: Option<PathBuf> = None;
     let mut allowed_yanked_flags = Vec::new();
     let mut raw_registries = Vec::new();
     let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
@@ -191,6 +192,7 @@ fn run() -> Result<(), String> {
         }
         lockfile_mode = native.lockfile_mode;
         lockfile_target = native.lockfile_target;
+        action_dump = native.action_dump;
         allowed_yanked_flags = native.allowed_yanked_flags;
         raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
@@ -501,7 +503,7 @@ fn run() -> Result<(), String> {
             test: &test_options,
         });
     }
-    let result = engine.build_with_jobs(&labels, &cache, jobs);
+    let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
     // Analysis warnings precede the result, also when the build fails.
     for warning in engine.take_warnings() {
         warn(&warning);
@@ -1405,6 +1407,9 @@ struct NativeOptions {
     lockfile_mode: bazel_rs::lockfile::LockfileMode,
     /// Native-only --native-lockfile.
     lockfile_target: bazel_rs::registry_session::LockfileTarget,
+    /// Native-only --native-action-dump (build/test): append one JSON object
+    /// per planned action to the file (docs/CC_ACTIONS.md).
+    action_dump: Option<PathBuf>,
     /// --allow_yanked_versions values in order.
     allowed_yanked_flags: Vec<String>,
     /// --registry values as given (lockfile keys use Bazel's spelling).
@@ -1464,6 +1469,7 @@ impl NativeOptions {
             query: bazel_rs::engine::query::QueryOptions::default(),
             lockfile_mode: bazel_rs::lockfile::LockfileMode::default(),
             lockfile_target: bazel_rs::registry_session::LockfileTarget::Workspace,
+            action_dump: None,
             allowed_yanked_flags: Vec::new(),
             raw_registries: Vec::new(),
         }
@@ -1560,6 +1566,9 @@ impl NativeOptions {
             used
         } else if let Some(value) = arg.strip_prefix("--native-lockfile=") {
             self.lockfile_target = bazel_rs::registry_session::LockfileTarget::parse(value)?;
+            false
+        } else if let Some(value) = arg.strip_prefix("--native-action-dump=") {
+            self.action_dump = Some(PathBuf::from(value));
             false
         } else if arg == "--allow_yanked_versions" {
             self.allowed_yanked_flags.push(

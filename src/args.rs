@@ -66,6 +66,23 @@ pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()
     args.push(Group::Strings(values))
 }
 
+/// Install a parameter-file description on an Args value (the equivalent of
+/// Args built over a `CommandLineAndParamFileInfo`, e.g. cc_internal
+/// get_link_args's always-on linker param file: LinkCommandLine.java:132-150
+/// sets useAlways(true) with the flag format from the placeholder).
+pub(crate) fn set_param_file_info(
+    args: &Args,
+    info: crate::command_line::ParamFileInfo,
+) -> anyhow::Result<()> {
+    args.check_active()?;
+    // set_param_file_format's (file type, flag_per_line) state; the native
+    // Args never writes flag-per-line linker param files.
+    args.param.borrow_mut().format = Some((info.file_type, false));
+    args.param.borrow_mut().flag_format = Some(info.flag_format);
+    args.param.borrow_mut().always = info.always;
+    Ok(())
+}
+
 impl Args {
     fn from_value(value: Value<'_>) -> anyhow::Result<&Self> {
         value

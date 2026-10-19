@@ -1,0 +1,31 @@
+load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
+
+cc_import(
+    name = "prebuilt",
+    hdrs = ["prebuilt.h"],
+    static_library = "libprebuilt.a",
+    alwayslink = True,
+    visibility = ["//visibility:public"],
+)
+
+cc_import(
+    name = "prebuilt_shared",
+    hdrs = ["prebuilt.h"],
+    shared_library = "libprebuilt.so",
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "built",
+    hdrs = ["prebuilt.h"],
+    srcs = ["prebuilt.c"],
+    visibility = ["//visibility:public"],
+)
+
+# The cpp_modules feature is off on the host toolchain, so this exercises
+# rules_cc's own gate before any native boundary.
+cc_library(
+    name = "modules_unsupported",
+    srcs = ["prebuilt.c"],
+    module_interfaces = ["prebuilt.c"],
+)

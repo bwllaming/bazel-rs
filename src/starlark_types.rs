@@ -1938,12 +1938,36 @@ impl<'v> StarlarkValue<'v> for TargetValue {
             "data_runfiles" => heap.alloc(self.0.runfiles.data_runfiles()),
             "default_runfiles" => heap.alloc(self.0.runfiles.default_runfiles()),
             "files_to_run" => heap.alloc(self.0.runfiles.files_to_run(&self.0.files).observed()),
+            // getFieldNames (:183-193) lists output_groups only when the
+            // target declares an OutputGroupInfo; the field reads it.
+            "output_groups" => self
+                .0
+                .providers
+                .get(crate::output_group_info::PROVIDER_ID)
+                .map(|provider| heap.access_owned_frozen_value(provider))?,
             _ => return None,
         })
     }
 
     fn dir_attr(&self) -> Vec<String> {
-        vec!["files".to_owned(), "label".to_owned()]
+        // getFieldNames (:183-193): data_runfiles, default_runfiles, label,
+        // files, files_to_run, plus output_groups when an OutputGroupInfo is
+        // declared (Starlark's dir() sorts the names).
+        let mut fields = vec![
+            "data_runfiles".to_owned(),
+            "default_runfiles".to_owned(),
+            "files".to_owned(),
+            "files_to_run".to_owned(),
+            "label".to_owned(),
+        ];
+        if self
+            .0
+            .providers
+            .contains_key(crate::output_group_info::PROVIDER_ID)
+        {
+            fields.push("output_groups".to_owned());
+        }
+        fields
     }
 
     fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {

@@ -280,7 +280,7 @@ fn compile_action_name(action_name: Option<&str>, source: &File) -> String {
 fn compile_mnemonic(action_name: &str) -> &'static str {
     match action_name {
         "objc-compile" | "objc++-compile" => "ObjcCompile",
-        "cc-compile-dotd" | "cc-compile-dotd-assemble" => "CppLinkstampCompile",
+        "linkstamp-compile" => "CppLinkstampCompile",
         "c++-header-analysis" => "CppHeaderAnalysis",
         "c++-module-deps-scanning" => "CppDepsScanning",
         _ => "CppCompile",
@@ -567,27 +567,65 @@ pub(crate) fn call<'v>(
             if !crate::cc_variables::is_variables(variables) {
                 return Err(type_error(method, "build_variables", variables, "Variables"));
             }
-            let _parameter_file_type = bound[3].expect("required");
+            let parameter_file_type_value = bound[3].expect("required");
+            let parameter_file_type = parameter_file_type_value
+                .unpack_str()
+                .ok_or_else(|| {
+                    type_error(method, "parameter_file_type", parameter_file_type_value, "string")
+                })?
+                .to_owned();
             let data = Arc::clone(&configuration.data);
             let active = context.active.clone();
             let _ = context;
             data.require_action_config(&action).map_err(failure)?;
-            let mut flags = data.command_line(&action, variables, eval)?;
+            let expanded = data.command_line(&action, variables, eval)?;
+            // getParamFileInfo (LinkCommandLine.java:132-150): a flag
+            // containing the placeholder turns the whole command line into an
+            // always-on parameter file whose reference argument is the flag
+            // with the placeholder replaced by %s (% doubled first).
+            let param_info = expanded
+                .iter()
+                .find(|flag| flag.contains("LINKER_PARAM_FILE_PLACEHOLDER"))
+                .map(|flag| {
+                    let flag_format = flag
+                        .replace('%', "%%")
+                        .replace("LINKER_PARAM_FILE_PLACEHOLDER", "%s");
+                    // Bazel's ParameterFileType of finalize_link_action's
+                    // _can_split_command_line: GCC_QUOTED
+                    // (gcc_quoting_for_param_files), WINDOWS, else UNQUOTED.
+                    // Windows quoting is a Windows-toolchain path (unsupported
+                    // platform); GCC quoting is the native Shell writer.
+                    let file_type = match parameter_file_type.as_str() {
+                        "GCC_QUOTED" => crate::command_line::ParamFileType::Shell,
+                        "UNQUOTED" => crate::command_line::ParamFileType::Unquoted,
+                        other => {
+                            return Err(failure(format!(
+                                "cc_internal.get_link_args with parameter file type '{other}' is not implemented in the native profile (Windows toolchains)"
+                            )));
+                        }
+                    };
+                    Ok::<_, starlark::Error>(crate::command_line::ParamFileInfo {
+                        flag_format,
+                        always: true,
+                        file_type,
+                        flags_only: false,
+                    })
+                })
+                .transpose()?;
+            // getParamCommandLine (:92-130): filter the flags containing the
+            // linker_param_file variable's value (the placeholder) out of the
+            // parameter command line.
+            let mut flags = expanded;
             if let Some(param_file) = crate::cc_variables::linker_param_file(variables, eval)? {
                 flags.retain(|flag| !flag.contains(&param_file));
-            }
-            if flags
-                .iter()
-                .any(|flag| flag.contains("LINKER_PARAM_FILE_PLACEHOLDER"))
-            {
-                return Err(failure(
-                    "cc_internal.get_link_args with a LINKER_PARAM_FILE_PLACEHOLDER toolchain is not implemented in the native profile".to_owned(),
-                ));
             }
             let args_value = crate::args::alloc_args(heap, active);
             let args = args_value
                 .downcast_ref::<crate::args::Args>()
                 .expect("fresh Args");
+            if let Some(info) = &param_info {
+                crate::args::set_param_file_info(args, info.clone())?;
+            }
             crate::args::add_strings(args, flags).map_err(|error| {
                 failure(format!("cc_internal.{method}: {error}"))
             })?;
@@ -1049,10 +1087,13 @@ fn create_cc_compile_action<'v>(
     let mut arguments = vec![tool];
     for (owner, flags) in data.per_feature_expansions(&action_name, variables, eval)? {
         for flag in flags {
+            // CcCommon.CoptsFilter.passesFilter (CcCommon.java:122-130): a
+            // flag survives unless the nocopts regex FULLY matches it; the
+            // unfiltered_compile_flags feature is exempt.
             if owner == "unfiltered_compile_flags"
                 || copts_filter
                     .as_ref()
-                    .is_none_or(|filter| filter.is_match(&flag).unwrap_or(false))
+                    .is_none_or(|filter| passes_filter(filter, &flag))
             {
                 arguments.push(flag);
             }
@@ -1064,12 +1105,12 @@ fn create_cc_compile_action<'v>(
     let _ = (&label_owner, &active_owner);
 
     // CppCompileAction.getEffectiveEnvironment (:1010-1027): the
-    // configuration's action environment, PWD (unless requires-darwin), then
-    // the feature variables.
-    let mut environment = action_env.for_spawn(true, BTreeMap::new()).fixed;
-    environment
-        .entry("PWD".to_owned())
-        .or_insert_with(|| "/proc/self/cwd".to_owned());
+    // configuration's action environment (fixed and inherited names), then
+    // PWD put (overriding, unless requires-darwin), then the feature
+    // variables putAll (which may override PWD again).
+    let action_environment = action_env.for_spawn(true, BTreeMap::new());
+    let mut environment = action_environment.fixed;
+    environment.insert("PWD".to_owned(), "/proc/self/cwd".to_owned());
     for (key, value) in environment_feature {
         environment.insert(key, value);
     }
@@ -1093,6 +1134,9 @@ fn create_cc_compile_action<'v>(
             extra: crate::action::ActionExtra {
                 execution_info,
                 mnemonic: mnemonic.to_owned(),
+                // The configuration's inherited --action_env names
+                // (ActionEnvironment.getInheritedEnv).
+                inherited_environment: action_environment.inherited,
                 ..Default::default()
             },
             shell_pad: false,
@@ -1105,9 +1149,42 @@ fn create_cc_compile_action<'v>(
     Ok(())
 }
 
+/// CcCommon.CoptsFilter.passesFilter (CcCommon.java:122-130): the flag passes
+/// unless the nocopts regex fully matches it (Pattern.matcher.matches, not
+/// find).
+fn passes_filter(filter: &fancy_regex::Regex, flag: &str) -> bool {
+    let anchored = format!("^(?:{})$", filter.as_str());
+    match fancy_regex::Regex::new(&anchored) {
+        Ok(full) => !full.is_match(flag).unwrap_or(false),
+        // Unanchorable patterns fall back to a find (Bazel compiles Java
+        // regexes; the native profile cannot represent a full match of a
+        // pattern that fancy-regex cannot re-anchor, so it filters less).
+        Err(_) => !filter.is_match(flag).unwrap_or(false),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copts_filter_passes_only_non_full_matches() {
+        // CcCommon.CoptsFilter.passesFilter: full-match, inverted
+        // (Pattern.matcher.matches, not find).
+        let filter = fancy_regex::Regex::new("-Wno-unused").unwrap();
+        assert!(passes_filter(&filter, "-Wall"));
+        assert!(!passes_filter(&filter, "-Wno-unused"));
+        // A substring hit that is not a full match passes.
+        assert!(passes_filter(&filter, "-Wno-unused=extra"));
+        assert!(passes_filter(&filter, "x-Wno-unused"));
+        // A prefix pattern covers every flag it starts with.
+        let prefix = fancy_regex::Regex::new("-Wno.*").unwrap();
+        assert!(!passes_filter(&prefix, "-Wno-unused=extra"));
+        // The empty regex fully matches only the empty flag.
+        let empty = fancy_regex::Regex::new("").unwrap();
+        assert!(!passes_filter(&empty, ""));
+        assert!(passes_filter(&empty, "-Wall"));
+    }
 
     #[test]
     fn path_escaping_matches_actions_escaped_path() {
@@ -1248,7 +1325,8 @@ mod tests {
         assert_eq!(compile_mnemonic("c-compile"), "CppCompile");
         assert_eq!(compile_mnemonic("c++-compile"), "CppCompile");
         assert_eq!(compile_mnemonic("objc-compile"), "ObjcCompile");
-        assert_eq!(compile_mnemonic("cc-compile-dotd"), "CppLinkstampCompile");
+        assert_eq!(compile_mnemonic("cc-compile-dotd"), "CppCompile");
+        assert_eq!(compile_mnemonic("linkstamp-compile"), "CppLinkstampCompile");
         assert_eq!(compile_mnemonic("c++-header-analysis"), "CppHeaderAnalysis");
         assert_eq!(
             compile_mnemonic("c++-module-deps-scanning"),

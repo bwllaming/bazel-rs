@@ -255,9 +255,11 @@ zig configs) in target and exec configurations; compile/link remain unsupported.
 [rules_go cgo](docs/CGO.md) runs every `go_library`'s `cgo_context_data_impl`
 path against the host `@local_config_cc` toolchain: cgo libraries, their
 binaries (external link), tests and the cgo standard library build
-byte-identical to genuine Bazel; `c-archive`/`c-shared` binaries (aspect
-propagation) and `cc_import`/`cc_library` cdeps (`cc_common.compile`) fail
-explicitly.
+byte-identical to genuine Bazel; since N60 genuine `cc_import`/`cc_library`
+compile and link through rules_cc's Starlark ([docs/CC_ACTIONS.md](docs/CC_ACTIONS.md))
+and the `c-archive`/`c-shared` go binaries build end to end (the c-shared
+`.so` embeds its execroot path as the linker soname, so even genuine builds
+differ across output roots).
 [Scoped subrules](docs/SUBRULES.md) execute declared zero-attribute helpers with
 real actions and guarded contexts; private dependency attributes remain unsupported.
 [String methods](docs/STRING_METHODS.md) follow Bazel's UTF-8 byte-string case,

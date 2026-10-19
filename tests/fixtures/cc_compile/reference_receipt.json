@@ -26,7 +26,7 @@
   "prebuilt": "gcc/ar-built libprebuilt.a and libprebuilt.so (-O0 -g0, ar rcD, -Wl,-build-id=none -Wl,-soname=libprebuilt.so)"
  },
  "genuine": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64 sha256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
- "native_binary_sha256": "5fa800a98013157895d8e112892eeeddf034e014946f724f041c4860efa25c14",
+ "native_binary_sha256": "d637a33c370fa682d90aa22951336c71a344e72642462803ae8353d2cef4fc10",
  "scenarios": [
   {
    "name": "cc_targets",
@@ -143,8 +143,8 @@
     "cgo/cgo_shared_/libcgo_shared.so": {
      "verdict": "EXPLAINED",
      "raw_equal": false,
-     "genuine_sha256": "22e2b899595b9edd5127cfc552268cd3af056ae036d73d0f49fbe294ea6cc050",
-     "native_sha256": "fecf1babd7e5b7b1d8f3888c0492996028a3b13fe15455ce2fad0b3bfb3cd7d7",
+     "genuine_sha256": "774e5ef590ed81adbb24a300a0b68ba6d53f747cc36f20d0f152bd4be7e28185",
+     "native_sha256": "ce429b24a972dd426b570e517001298b8b0b82266bb4a2a4c992a39e02f1eab0",
      "string_sets_equal_modulo_execroot_path": true,
      "section_tables_equal": true,
      "genuine_build_id": "498919aff001d8366249403a2544fba2d833084f",
@@ -175,11 +175,11 @@
   "the compile argv is the feature configuration expansion (per_feature_expansions over the enabled features, the unfiltered_compile_flags feature unfiltered, CoptsFilter None); the environment is the configuration action environment (strict PATH), PWD=/proc/self/cwd and the feature env sets; the mnemonic is CppCompile",
   "cc_import analyzes and registers its _solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep solib symlink (SolibSymlink, a real symlink transform) exactly like the genuine aquery; neither build executes it (not in any requested output group), matching genuine",
   "the go c-archive target builds end to end through N58 _go_cc_aspect + new_cc_import + rules_cc link: cgo_archive.a, cgo_archive_.a and .x byte-identical; likewise the cdeps go binary cdepcmd and its with_cdep.a/.x",
-  "the go c-shared .so embeds its own absolute sandbox execroot path as the linker soname; genuine Bazel 9.3.0 itself produces different bytes across output roots, so the .so is compared with each side's execroot prefix normalized (EXACT_D2)",
+  "the go c-shared .so embeds its own absolute sandbox execroot path as the linker soname; genuine Bazel 9.3.0 itself produces different bytes across output bases (proven by a two-output-base genuine run in tests/fixtures/cc_compile/evidence.json, where the GNU build id stays fixed because it does not cover the .dynstr path), so the row is EXPLAINED: string sets identical modulo the prefix, section tables identical modulo the shift",
   "a cgo library whose cdeps header needs -iquote fails with the identical gcc error text in both builds (the fixture carries the cppopt so the positive path builds)",
   "HeaderInfo now carries its module artifacts and header lists (create_header_info, create_header_info_with_deps); every cc_internal member of the N57 gap list is implemented except the explicitly failing ones: modules (create_cc_compile_action_template, module_files, module maps), LTO backends, shareable link artifacts, absolute_symlink (FDO) and expand_and_tokenize (objc)",
   "dependencies expose the default-provider fields data_runfiles/default_runfiles/files_to_run (AbstractConfiguredTarget.getValue), which the cc_import branch of rules_go's cgo context reads"
  ],
  "worktree": "bazel-parity-cccompile @ parity-cc-compile (N60)",
- "seconds": 395.1
+ "seconds": 394.2
 }
