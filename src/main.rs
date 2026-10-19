@@ -56,6 +56,7 @@ Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
 
 fn run() -> Result<(), String> {
+    bazel_rs::perf_mark("main.start");
     let mut argv = std::env::args_os();
     let path_to_binary = argv
         .next()
@@ -430,7 +431,9 @@ fn run() -> Result<(), String> {
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
     if command == "query" {
+        bazel_rs::perf_mark("select.start");
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
+        bazel_rs::perf_mark("select.end");
         // Pattern warnings precede the query's own events.
         for warning in engine.take_warnings() {
             warn(&warning);
@@ -471,6 +474,7 @@ fn run() -> Result<(), String> {
             lockfile_gate: &lockfile_gate,
         });
     }
+    bazel_rs::perf_mark("select.start");
     let labels = if command == "run" {
         // The first residue argument is the target; the rest are its
         // arguments (RunCommand.java:251-252).
@@ -478,6 +482,7 @@ fn run() -> Result<(), String> {
     } else {
         engine.select_for_build(&rest, &relative_directory)
     };
+    bazel_rs::perf_mark("select.end");
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
         warn(&warning);

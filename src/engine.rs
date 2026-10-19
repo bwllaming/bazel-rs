@@ -6431,12 +6431,15 @@ impl Engine {
             return Err("jobs must be greater than zero".into());
         }
         let (nodes, requested, aspect_reports, target_results) = self.plan_build(labels)?;
+        crate::perf_mark("plan.end");
         if let Some(path) = action_dump
             && let Err(error) = dump_actions(&nodes, path)
         {
             return Err(format!("--native-action-dump: {error}"));
         }
+        dump_action_graph(&nodes);
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
         for result in results.values() {
             if result.cache_hit {
@@ -6921,7 +6924,10 @@ impl Engine {
         self.run_trees = true;
         let (nodes, requested, _, _) = planned?;
         let plans = std::mem::take(&mut self.run_plans);
+        crate::perf_mark("plan.end");
+        dump_action_graph(&nodes);
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
         for result in results.values() {
             if result.cache_hit {
@@ -9075,6 +9081,7 @@ impl Engine {
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
+        crate::perf_mark("plan.start");
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -9184,6 +9191,7 @@ impl Engine {
                 }
             }
         }
+        crate::perf_mark("plan.phase1_analysis_done");
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
         let forwarded: BTreeMap<ConfiguredTargetKey, Label> = configured
@@ -9263,6 +9271,9 @@ impl Engine {
                 top_level_aspects.insert(label.clone(), planned);
             }
         }
+        // The top-level aspects above also run rule implementations
+        // (N58); implementations and action planning end here.
+        crate::perf_mark("plan.phase2_actions_done");
         let ActionPlanning {
             dry,
             runfiles_info,
@@ -10092,6 +10103,65 @@ fn native_bool(rule: &Rule, name: &str) -> bool {
             Some(crate::custom_rule::AttrValue::Bool(true))
         )
     })
+}
+
+/// Hidden action-graph dump (`BAZEL_RS_DUMP_ACTIONS=1`, review §5): every
+/// planned action's full identity — id, argv/program/write, inputs
+/// (sources and generated destinations), outputs, environment and
+/// execution info — in plan order, on stderr. The A/B gate for the
+/// parallel phases compares this dump byte for byte between thread
+/// counts; it contains no pointer identity.
+fn dump_action_graph(nodes: &[scheduler::PlannedAction]) {
+    if std::env::var_os("BAZEL_RS_DUMP_ACTIONS").is_none() {
+        return;
+    }
+    for node in nodes {
+        let action = &node.action;
+        eprintln!("ACTION {}", action.id);
+        if let Some(write) = &action.write {
+            eprintln!(
+                "  write {} bytes executable={}",
+                write.content.len(),
+                write.executable
+            );
+        } else if let Some(program) = &action.program {
+            eprintln!("  program {program}");
+        }
+        if !action.arguments.is_empty() {
+            eprintln!("  arguments {}", action.arguments.join("\u{1}"));
+        }
+        if !action.command.is_empty() {
+            eprintln!("  command {}", action.command);
+        }
+        for (source, destination) in &action.inputs {
+            eprintln!("  input {} -> {}", source.display(), destination.display());
+        }
+        for dependency in &node.dependencies {
+            eprintln!(
+                "  generated {}[{}] -> {}",
+                dependency.action_id,
+                dependency.output_index,
+                dependency.destination.display()
+            );
+        }
+        for output in &action.outputs {
+            eprintln!("  output {}", output.display());
+        }
+        for (key, value) in &action.environment {
+            eprintln!("  env {key}={value}");
+        }
+        if !action.execution_info.is_empty() {
+            eprintln!(
+                "  execution-info {}",
+                action
+                    .execution_info
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        }
+    }
 }
 
 fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {

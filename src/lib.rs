@@ -120,3 +120,29 @@ mod toolchain_info;
 pub mod toolchains;
 pub mod visibility;
 pub mod workspace;
+
+/// Phase timestamps for the parallel-analysis baseline and gate
+/// (`BAZEL_RS_TIMING=1`): elapsed wall time and VmRSS at each mark, on
+/// stderr, prefixed `PERF`. Loading and the two planning phases are marked
+/// so their share of analysis wall time is measurable end to end
+/// (docs/artifacts PARALLEL_ANALYSIS.md).
+pub fn perf_mark(name: &str) {
+    use std::sync::OnceLock;
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    if std::env::var_os("BAZEL_RS_TIMING").is_some() {
+        let rss = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .map(|l| l.split_whitespace().nth(1).unwrap_or("").to_owned())
+            })
+            .unwrap_or_default();
+        eprintln!(
+            "PERF {:>9.3}s rss={}kB {name}",
+            start.elapsed().as_secs_f64(),
+            rss
+        );
+    }
+}
