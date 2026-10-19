@@ -23,10 +23,14 @@
 //!   --sandbox_writable_path entries with resolved symlinks);
 //! - reads stay allowed everywhere, like a read-only bind of the whole
 //!   filesystem; only --sandbox_block_path subtrees lose read access;
-//! - TCP bind and connect are denied by default (the Landlock counterpart of
-//!   the network namespace linux-sandbox creates unless the spawn requires
-//!   network, ExecutionRequirements.REQUIRES_NETWORK), approximated to TCP
-//!   because Landlock (ABI 4) has no UDP or raw-socket rules;
+//! - the network stays allowed by default, exactly like Bazel
+//!   (--sandbox_default_allow_network, default true): TCP bind and connect
+//!   are denied only when the spawn must be denied the network — the
+//!   `block-network` tag, or --nosandbox_default_allow_network without a
+//!   `requires-network` tag (Spawns.requiresNetwork; the Landlock
+//!   counterpart of the network namespace linux-sandbox creates only then) —
+//!   approximated to TCP because Landlock (ABI 4) has no UDP or raw-socket
+//!   rules;
 //! - denials surface as EACCES ("Permission denied"), not the EROFS a
 //!   read-only remount produces — the observable difference from genuine
 //!   linux-sandbox, documented in the receipt.

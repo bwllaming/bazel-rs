@@ -8,14 +8,18 @@
 //! TCP restriction. Paired capture:
 //! tests/fixtures/sandbox/reference_receipt.json.
 //!
-//! The fixtures' outside-sandbox targets live under $HOME: /tmp is writable
-//! in the sandbox by design (LinuxSandboxedSpawnRunner.getWritableDirs keeps
-//! /tmp writable), so a workspace under /tmp cannot demonstrate a denial.
+//! The fixtures' outside-sandbox targets live under a base outside every
+//! sandbox-writable root, chosen independently of HOME: /tmp is writable in
+//! the sandbox by design (LinuxSandboxedSpawnRunner.getWritableDirs keeps
+//! /tmp writable), so a workspace under /tmp — and a HOME or TMPDIR under
+//! /tmp — cannot demonstrate a denial (see `outside_base`).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 const DEFS: &str = r##"def _t(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".sh")
@@ -30,23 +34,142 @@ sh_like_test = rule(implementation = _t, test = True, attrs = _ATTRS)
 /// sandboxed action failure unless --sandbox_debug is on.
 const SUGGESTION: &str = "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging";
 
-struct Workspace(tempfile::TempDir);
+/// A coder-owned directory outside every sandbox-writable path: the only
+/// writes a sandboxed action can attempt and fail. The base is INDEPENDENT
+/// of HOME — the gate supervisor runs with HOME and TMPDIR under /tmp,
+/// which the sandbox keeps writable by design (Bazel-parity /tmp), so a
+/// $HOME-based marker would land inside the writable set and every denial
+/// test would see the write succeed. Instead the first of the candidates
+/// below that lies outside the production writable roots — computed from
+/// this environment exactly like crate::sandbox::wrap: /tmp, /dev,
+/// /dev/shm, TMPDIR, TEST_TMPDIR (the action execroot and its fresh TMPDIR
+/// live under the engine cache dir inside the workspace's /tmp tempdir, so
+/// the /tmp root covers them) — and is writable becomes the base.
+fn outside_base() -> PathBuf {
+    let mut writable = vec![
+        PathBuf::from("/tmp"),
+        PathBuf::from("/dev"),
+        PathBuf::from("/dev/shm"),
+    ];
+    for name in ["TMPDIR", "TEST_TMPDIR"] {
+        if let Ok(value) = std::env::var(name)
+            && !value.is_empty()
+        {
+            let path = PathBuf::from(&value);
+            writable.push(fs::canonicalize(&path).unwrap_or(path));
+        }
+    }
+    let outside = |path: &Path| {
+        writable
+            .iter()
+            .all(|root| !path.starts_with(root) && !root.starts_with(path))
+    };
+    for candidate in ["/var/tmp", "/home/coder", "/root", "/home"] {
+        let Ok(resolved) = fs::canonicalize(PathBuf::from(candidate)) else {
+            continue;
+        };
+        if !outside(&resolved) {
+            continue;
+        }
+        // Writable in principle: the per-process directory creation below is
+        // the real probe.
+        let dir = resolved.join(format!("n59-sandbox-{}", std::process::id()));
+        if fs::create_dir_all(&dir).is_ok() {
+            return dir;
+        }
+    }
+    panic!(
+        "no outside-sandbox base found: every candidate of /var/tmp, /home/coder, /root, \
+         /home is missing, unwritable, or inside the sandbox-writable roots {:?} \
+         (TMPDIR={:?}, HOME={:?}); the sandbox denial tests cannot run here",
+        writable,
+        std::env::var("TMPDIR").ok(),
+        std::env::var("HOME").ok()
+    );
+}
+
+/// The outside-sandbox base this process's tests share
+/// (`<root>/n59-sandbox-<pid>`) plus this test's marker path inside it.
+/// Nothing removed them originally — the i17 review found three leftover
+/// `n59-sandbox-*` directories. Every [`Workspace`] owns one share; a share's
+/// drop removes the test's marker (a denied write never created it), and the
+/// drop of the process's last share removes the base itself, so the
+/// directories live exactly as long as the test binary's sandbox tests.
+/// Tests run in one process per crate but on parallel threads, so a static
+/// ref count behind a mutex keeps share creation and the last-drop removal
+/// exclusive: a test joining while the previous last test drops can never
+/// have the base removed around its own marker.
+struct OutsideBase {
+    /// The per-process base directory, removed by the last dropped share.
+    dir: PathBuf,
+    /// This test's marker (`<dir>/<test name>`), removed by every share's
+    /// drop.
+    marker: PathBuf,
+}
+
+static OUTSIDE_BASE_LOCK: Mutex<()> = Mutex::new(());
+static OUTSIDE_BASE_USERS: AtomicUsize = AtomicUsize::new(0);
+
+impl OutsideBase {
+    fn share() -> Self {
+        let _locked = OUTSIDE_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = outside_base();
+        let share = Self {
+            marker: dir.join(thread_test_name()),
+            dir,
+        };
+        OUTSIDE_BASE_USERS.fetch_add(1, Ordering::SeqCst);
+        fs::create_dir_all(&share.dir).unwrap();
+        share
+    }
+}
+
+impl Drop for OutsideBase {
+    fn drop(&mut self) {
+        let _locked = OUTSIDE_BASE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = fs::remove_file(&self.marker);
+        if OUTSIDE_BASE_USERS.fetch_sub(1, Ordering::SeqCst) == 1 {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+/// The running test's name (`tests::foo` -> `tests-foo`), the per-test marker
+/// component under the shared base.
+fn thread_test_name() -> String {
+    std::thread::current()
+        .name()
+        .unwrap_or("test")
+        .replace("::", "-")
+}
+
+struct Workspace {
+    temp: tempfile::TempDir,
+    /// Removes this test's outside-sandbox marker on drop, and the shared
+    /// per-process base when this is the last test using it.
+    outside: OutsideBase,
+}
 
 impl Workspace {
     fn new() -> Self {
-        let ws = Self(
-            tempfile::Builder::new()
+        let ws = Self {
+            temp: tempfile::Builder::new()
                 .prefix("sandbox-cli-")
                 .tempdir_in("/tmp/opencode")
                 .unwrap(),
-        );
+            outside: OutsideBase::share(),
+        };
         ws.file("MODULE.bazel", "module(name = 'sandbox_fixture')\n");
         ws.file("defs.bzl", DEFS);
         ws
     }
 
     fn path(&self) -> &Path {
-        self.0.path()
+        self.temp.path()
     }
 
     fn file(&self, name: &str, text: &str) {
@@ -55,71 +178,10 @@ impl Workspace {
         fs::write(path, text).unwrap();
     }
 
-    /// A coder-owned directory outside every sandbox-writable path: the only
-    /// writes a sandboxed action can attempt and fail. The base is
-    /// INDEPENDENT of HOME — the gate supervisor runs with HOME and TMPDIR
-    /// under /tmp, which the sandbox keeps writable by design (Bazel-parity
-    /// /tmp), so a $HOME-based marker would land inside the writable set and
-    /// every denial test would see the write succeed. Instead the first of
-    /// the candidates below that lies outside the production writable roots
-    /// — computed from this environment exactly like crate::sandbox::wrap:
-    /// /tmp, /dev, /dev/shm, TMPDIR, TEST_TMPDIR (the action execroot and
-    /// its fresh TMPDIR live under the engine cache dir inside the
-    /// workspace's /tmp tempdir, so the /tmp root covers them) — and is
-    /// writable becomes the base.
-    fn outside_base() -> PathBuf {
-        let mut writable = vec![
-            PathBuf::from("/tmp"),
-            PathBuf::from("/dev"),
-            PathBuf::from("/dev/shm"),
-        ];
-        for name in ["TMPDIR", "TEST_TMPDIR"] {
-            if let Ok(value) = std::env::var(name)
-                && !value.is_empty()
-            {
-                let path = PathBuf::from(&value);
-                writable.push(fs::canonicalize(&path).unwrap_or(path));
-            }
-        }
-        let outside = |path: &Path| {
-            writable
-                .iter()
-                .all(|root| !path.starts_with(root) && !root.starts_with(path))
-        };
-        for candidate in ["/var/tmp", "/home/coder", "/root", "/home"] {
-            let Ok(resolved) = fs::canonicalize(PathBuf::from(candidate)) else {
-                continue;
-            };
-            if !outside(&resolved) {
-                continue;
-            }
-            // Writable in principle: the per-process directory creation
-            // below is the real probe.
-            let dir = resolved.join(format!("n59-sandbox-{}", std::process::id()));
-            if fs::create_dir_all(&dir).is_ok() {
-                return dir;
-            }
-        }
-        panic!(
-            "no outside-sandbox base found: every candidate of /var/tmp, /home/coder, /root, \
-             /home is missing, unwritable, or inside the sandbox-writable roots {:?} \
-             (TMPDIR={:?}, HOME={:?}); the sandbox denial tests cannot run here",
-            writable,
-            std::env::var("TMPDIR").ok(),
-            std::env::var("HOME").ok()
-        );
-    }
-
     /// The outside-sandbox target of the running test (each test's own name:
     /// the tests run in parallel and must not observe each other's markers).
-    fn outside(&self) -> PathBuf {
-        let test = std::thread::current()
-            .name()
-            .unwrap_or("test")
-            .replace("::", "-");
-        let dir = Self::outside_base();
-        fs::create_dir_all(&dir).unwrap();
-        dir.join(test)
+    fn outside(&self) -> &Path {
+        &self.outside.marker
     }
 
     /// The genrule BUILD fixture: `ok` copies an input, `leak` writes to
@@ -175,7 +237,7 @@ genrule(name = 'tmpwrite', outs = ['tmpwrite.txt'], cmd = 'echo t > /tmp/n59-tmp
 fn default_strategy_is_sandboxed_and_builds() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:ok"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     let text = Workspace::text(&output);
@@ -189,8 +251,9 @@ fn default_strategy_is_sandboxed_and_builds() {
 fn outside_write_fails_sandboxed_with_bazels_suggestion() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:leak"]);
+    assert!(!output.status.success());
     assert!(!output.status.success());
     let text = Workspace::text(&output);
     assert!(
@@ -208,7 +271,7 @@ fn outside_write_fails_sandboxed_with_bazels_suggestion() {
 fn outside_write_passes_under_standalone() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &["build", "--spawn_strategy=standalone", "//pkg:leak"],
@@ -227,7 +290,7 @@ fn linux_sandbox_is_the_sandboxed_identifier_alias() {
     // the same strategy.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &["build", "--spawn_strategy=linux-sandbox", "//pkg:leak"],
@@ -243,7 +306,7 @@ fn local_is_the_standalone_identifier_alias() {
     // same strategy.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "--spawn_strategy=local", "//pkg:leak"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     assert!(marker.exists());
@@ -255,7 +318,7 @@ fn strategy_by_mnemonic_overrides_spawn_strategy() {
     // the mnemonic beats --spawn_strategy.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &[
@@ -275,7 +338,7 @@ fn genrule_strategy_selects_genrules() {
     // only (deprecated in favor of --strategy=Genrule=).
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &["build", "--genrule_strategy=standalone", "//pkg:leak"],
@@ -290,7 +353,7 @@ fn action_keys_do_not_change_with_the_strategy() {
     // cache under either strategy.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let sandboxed = ws.run("cache", &["build", "//pkg:ok"]);
     assert!(
         sandboxed.status.success(),
@@ -324,7 +387,7 @@ fn network_is_allowed_by_default_and_blocked_by_tag_or_flag() {
     // -> allow, else the flag).
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:net"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     let net = find_output(ws.path(), "cache", "net.txt");
@@ -370,7 +433,7 @@ fn tmp_stays_writable_like_the_linux_sandbox() {
     // LinuxSandboxedSpawnRunner.getWritableDirs:391-398 keeps /tmp writable.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:tmpwrite"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     assert!(fs::read_to_string("/tmp/n59-tmpwrite-marker").is_ok_and(|text| text.trim() == "t"));
@@ -381,7 +444,7 @@ fn tmp_stays_writable_like_the_linux_sandbox() {
 fn sandbox_writable_path_grants_writes() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.leak_rule(&marker);
+    ws.leak_rule(marker);
     let denied = ws.run("cache", &["build", "//pkg:leak"]);
     assert!(
         !denied.status.success() && !marker.exists(),
@@ -405,7 +468,7 @@ fn sandbox_writable_path_grants_writes() {
 fn sandbox_block_path_removes_reads() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &[
@@ -426,7 +489,7 @@ fn sandbox_block_path_removes_reads() {
 fn sandbox_debug_retains_the_sandbox_build_root() {
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "--sandbox_debug", "//pkg:leak"]);
     assert!(!output.status.success());
     let text = Workspace::text(&output);
@@ -459,7 +522,7 @@ fn unknown_strategy_is_rejected_once_at_startup() {
     // engine's registered set; genuine's is host-dependent).
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "--spawn_strategy=bogus", "//pkg:ok"]);
     assert_eq!(output.status.code(), Some(2));
     let text = Workspace::text(&output);
@@ -498,7 +561,7 @@ fn processwrapper_sandbox_is_a_non_isolating_sandbox() {
     // write passes, and the summary still counts sandboxed executions.
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &[
@@ -522,7 +585,7 @@ fn worker_is_registered_but_never_usable() {
     // is no usable strategy at all (SpawnStrategyResolver.java:77-96).
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run("cache", &["build", "//pkg:ok"]);
     assert!(output.status.success(), "{}", Workspace::text(&output));
     let output = ws.run(
@@ -550,7 +613,7 @@ fn repeated_strategy_flags_last_value_wins() {
     // multimap put).
     let ws = Workspace::new();
     let marker = ws.outside();
-    ws.build_fixture(&marker);
+    ws.build_fixture(marker);
     let output = ws.run(
         "cache",
         &[

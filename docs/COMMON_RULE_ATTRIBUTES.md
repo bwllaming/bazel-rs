@@ -241,9 +241,11 @@ fail analysis: the testonly check below uses the effective value.
   targets of a symbolic macro the generator name/location come from the macro
   call and the function is the macro's exported name
   (`TargetDefinitionContext.java:543-595`); this branch is ported from source
-  and not covered by the genuine capture.* Metadata without native analysis effect: `tags` (execution-requirement tags
-  such as `no-cache`/`no-remote`/`no-sandbox` are not applied to actions:
-  native actions always run locally, unsandboxed and cached — the genrule
+  and not covered by the genuine capture.* Metadata without native analysis effect: `tags` (split
+  since N59: `no-sandbox`/`nosandbox`/`local`, `requires-network` and
+  `block-network` reach the spawn's execution requirements like Bazel —
+  docs/SANDBOX.md — while `no-cache`/`no-remote` are not applied to actions:
+  native actions are always cached — the genrule
   divergence of docs/NATIVE_BUILD_RULES.md), `features` (no `ctx.features`
   is exposed), `exec_properties` (validated and combined per exec group,
   recorded per action, not applied by local execution; docs/EXEC_GROUPS.md).

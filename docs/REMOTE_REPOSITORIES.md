@@ -120,8 +120,11 @@ Repository storage lives below `--cache-dir/repositories` (by default,
 atomically rename completed trees. Subsequent accesses check the file list,
 contents and permissions; corrupt trees rebuild using reverified download blobs.
 Metadata remains fresh even on a warm archive cache. The cache and its ancestors
-must be trusted against hostile concurrent mutation; local actions are still
-unsandboxed. There is no promise of offline operation, crash-durable extracted
+must be trusted against hostile concurrent mutation; local actions run
+sandboxed by default (docs/SANDBOX.md), but that sandbox denies only
+out-of-sandbox writes — network is allowed by default, reads and metadata
+operations stay unrestricted — so it is containment, not a security boundary.
+There is no promise of offline operation, crash-durable extracted
 file contents, or compatibility with Bazel's on-disk cache format.
 
 Downloads default to enabled. `--repository_disable_download` gates module-context

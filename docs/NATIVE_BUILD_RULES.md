@@ -198,10 +198,14 @@ match the target platform (docs/PLATFORMS.md).
 * genrule pass-through: `local`, `deprecation`, `message`, `exec_properties`
   and every `tags` value (including execution-requirement tags such as
   `no-cache`, `no-remote`, `no-sandbox`, `requires-network`, `local`) are
-  accepted and have **no effect** on native execution. Native actions always
-  run locally and unsandboxed, so `local = True`/`no-sandbox` match, but every
-  native action is cached: a `no-cache` genrule is cached natively where Bazel
-  would not cache it. `output_to_bindir` has no effect because genfiles and bin
+  accepted. The sandbox- and network-related tags reach the spawn's
+  execution requirements like Bazel (N59: `local = True`/`no-sandbox` skip
+  the sandboxed strategy, `requires-network`/`block-network` steer the
+  network denial; docs/SANDBOX.md — native actions run through the strategy
+  selection, sandboxed by default), but the caching tags have **no effect**
+  on native execution — every native action is cached: a `no-cache` genrule
+  is cached natively where Bazel would not cache it. `output_to_bindir` has
+  no effect because genfiles and bin
   are one directory (`--incompatible_merge_genfiles_directory`).
 * `testonly` and `deprecation` (explicit or from `package()`/`repo()`
   defaults) drive Bazel's prerequisite checks for every analyzed consumer:

@@ -209,7 +209,10 @@ against the logged reference reproduces every recorded verdict (M36: EXACT).
 ## Not covered
 
 Coverage; `--run_under` for tests and labels; remote caching/execution of test
-actions (local-only, see above); sandboxed or worker test strategies (native tests are unsandboxed; runfiles are hardlinks where
+actions (local-only, see above); `--test_strategy` values beyond
+`standalone`/`local`/`exclusive` and worker test strategies (test actions
+themselves run through the spawn strategy selection and are sandboxed by
+default, docs/SANDBOX.md; runfiles are hardlinks where
 Bazel's sandbox shows symlinks); `--keep_going` with build failures; Bazel's
 convenience symlinks (`bazel-testlogs`) and relative log paths; the
 test.cache_status proto (native `status.json`); `test.err` splitting beyond

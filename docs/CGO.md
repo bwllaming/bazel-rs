@@ -54,14 +54,15 @@ leaks the full SDK `src` through the execroot symlink (an undeclared-input
 read) and builds 7 more packages; that is genuine-strategy behavior, not a
 native divergence, and is recorded in the receipt's `stdlib` note.
 
-The native profile has no unsandboxed leak path: `--spawn_strategy` (and
-`--strategy`) are rejected explicitly — options are never silently ignored —
-and every process action runs in a private staging execroot containing only
-its declared inputs (`stage_inputs`, docs/HARDLINK_STAGING.md), whatever its
-"not sandboxed" progress line means (no linux-sandbox wrapper; the staging
-discipline is unchanged). Measured on this tree with
+The native profile has no unsandboxed leak path either: process actions run
+sandboxed by default since N59 (the Landlock sandbox, docs/SANDBOX.md) and in
+a private staging execroot containing only their declared inputs
+(`stage_inputs`, docs/HARDLINK_STAGING.md) under every strategy —
+`--spawn_strategy=local` included, because the staging discipline (not a
+sandbox flag) is what hides undeclared inputs; genuine's execroot-symlink
+leak has no native counterpart. Measured on this tree with
 `artifacts/n57-followup-check.py`: the cgo fixture build produces a
-**350-archive** stdlib set under the native (unsandboxed) execution —
+**350-archive** stdlib set under the native execution —
 identical to the captured `stdlib` scenario and to sandboxed genuine.
 
 ## Attribute flags (the cc rules' load path)

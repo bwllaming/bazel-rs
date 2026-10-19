@@ -120,7 +120,10 @@ written into the execution root and published through this store.)
 * Published outputs share inodes with the store and with each other; editing
   one in place (after `chmod u+w`) edits all and is detected (digest
   mismatch) on next use. A process that forges size, mtime and mode after an
-  in-place write is not detected (there is no security sandbox).
+  in-place write is not detected (execution is sandboxed by default since
+  N59, but the Landlock sandbox leaves metadata operations unrestricted and
+  denies nothing for `standalone`/`no-sandbox` actions or a store below a
+  sandbox-writable root such as `/tmp`; docs/SANDBOX.md).
 * A background process that keeps writing an output after the action's
   process exits can change the published inode (previously the published copy
   was taken after exit).

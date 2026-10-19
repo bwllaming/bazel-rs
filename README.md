@@ -153,9 +153,23 @@ scope in [`docs/capabilities.json`](docs/capabilities.json).
 
 ### Execution and cache limitations
 
-**Trusted BUILD files and commands only. There is no security sandbox.** Shell
-actions can access the host and network. Working-directory isolation is not
-hermetic execution. Each process gets exactly its Bazel action environment
+**Trusted BUILD files and commands only. Actions execute sandboxed by default
+on Linux** — like Bazel 9.3's default `sandboxed` strategy
+([`docs/SANDBOX.md`](docs/SANDBOX.md)): a Landlock ruleset denies every
+write outside the sandbox's writable paths (the action execroot, `TMPDIR`,
+`/tmp`, `/dev/shm`, `--sandbox_writable_path` entries), so out-of-sandbox
+writes fail with `EACCES` ("Permission denied") followed by Bazel's
+`--sandbox_debug` suggestion. **The network stays allowed by default**
+(`--sandbox_default_allow_network`, default true, like Bazel; deny with
+`--nosandbox_default_allow_network` or the `block-network` tag, lift a denial
+with `requires-network`). The sandbox is a filesystem-write restriction, not a
+security boundary: there is no user/PID/mount namespace isolation (`/proc`
+shows host processes), reads stay allowed everywhere except
+`--sandbox_block_path` subtrees, and metadata operations (chmod, utime, ...)
+are unrestricted. Escape hatches: `--spawn_strategy=standalone` (or
+`processwrapper-sandbox`, which isolates nothing), the `no-sandbox`/`local`
+tags, and `--sandbox_writable_path=<path>`. Sandbox isolation is not hermetic
+execution. Each process gets exactly its Bazel action environment
 (strict `PATH`, `--action_env`/`--host_action_env`, keyed inherited values and a
 fresh `TMPDIR`; docs/ACTION_ENV.md) and nothing else from the caller, but
 undeclared host tools/files, time and network responses are not tracked. Cache
