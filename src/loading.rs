@@ -348,7 +348,23 @@ pub fn load_shared_definition_in(
     symbol: &str,
     globals: &Globals,
 ) -> Result<LoadedDefinition, String> {
-    if symbol.starts_with('_') {
+    load_shared_definition_any_in(repositories, label, symbol, globals, true)
+}
+
+/// [`load_shared_definition_in`] for identities whose private (underscore)
+/// top-level binding is legal at the reference site: an `attr(aspects=...)`
+/// list may name a private aspect of the same `.bzl` file
+/// (`_go_cc_aspect` of rules_go's binary.bzl), which Bazel resolves from
+/// the aspect value the rule class captured — never a load() — so the
+/// identity re-load here reads the binding at any visibility (N58 on N57).
+pub fn load_shared_definition_any_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+    public_only: bool,
+) -> Result<LoadedDefinition, String> {
+    if public_only && symbol.starts_with('_') {
         return Err(format!(
             "cannot load private symbol {symbol:?} from {label}"
         ));
@@ -371,9 +387,12 @@ pub fn load_shared_definition_in(
         .cache
         .get(label)
         .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))?;
-    let value = module
-        .get(symbol)
-        .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
+    let value = if public_only {
+        module.get(symbol)
+    } else {
+        module.get_any_visibility(symbol).map(|(value, _)| value)
+    }
+    .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
     Ok(LoadedDefinition {
         value,
         functions: loader.functions,

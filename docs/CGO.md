@@ -87,18 +87,23 @@ rejected explicitly — `tests/attribute_flags.rs`).
 
 - `go_binary(linkmode = "c-archive"/"c-shared")` routes through
   `go_non_executable_binary`, whose `deps`/`embed` attributes declare
-  `_go_cc_aspect` (`go/private/rules/binary.bzl:517-518`) — Starlark aspect
-  propagation on `attr.aspects` is not implemented: analysis fails with
-  `attribute 'embed' aspects=[...] (aspect propagation)`. This also gates
-  `new_cc_import` (`binary.bzl:79-102`), which wraps the c-archive in
-  `cc_common.create_linker_input` / `create_library_to_link` — the
-  frozen-list cc linking context itself is implemented and proven at the
-  toolchain level, but is unreachable through go rules until aspects land.
+  `_go_cc_aspect` (`go/private/rules/binary.bzl:517-518`). Since N58
+  (integration-17) `attr(aspects = ...)` propagation is analyzed — the
+  private same-file aspect loads, its application resolves the base rule's
+  edges including Starlark-transitioned prerequisites (`go_library`'s
+  `srcs` go config transition), and `new_cc_import`
+  (`binary.bzl:79-102`) runs: the c-archive path now stops inside the
+  rules_cc analysis-time C++ API at `cc_internal.create_header_info` with
+  header artifacts (`cc_info.bzl:338` `create_compilation_context`),
+  `cc_common.create_linker_input` / `create_library_to_link` themselves
+  being implemented and proven at the toolchain level.
 - `cc_import` / `cc_library` targets (a `go_library` `cdeps` closure):
   analysis runs `create_library_to_link` + `create_linker_input` +
   `create_linking_context` (rules_cc Starlark, frozen lists since N49b) and
   then stops at `cc_common.compile`, whose first native dependency
-  `cc_internal.actions2ctx_cheat` fails explicitly. The next increment
+  `cc_internal.actions2ctx_cheat` fails explicitly (`cc_import` through
+  the c-archive aspect reaches `create_header_info` first). The next
+  increment
   needs the `cc_internal` surface of `cc/private/compile/*.bzl` and
   `cc/private/link/*.bzl`: `actions2ctx_cheat`,
   `get_artifact_name_for_category`, `freeze`, `combine_cc_toolchain_variables`

@@ -1228,9 +1228,14 @@ impl Engine {
     /// The aspect definition of `identity`, loading its `.bzl` export on
     /// first use (LoadAspectsFunction/AspectFunction.loadAspectFromBzl).
     /// `None` resolves nothing (an unknown identity is the caller's error).
+    /// `allow_private` reads a private top-level binding: legal only for the
+    /// attr(aspects=...) identities a rule class captured from its own
+    /// `.bzl` (Bazel keeps the aspect value; it never re-resolves by load());
+    /// top-level `--aspects` stay public-only like a load().
     fn aspect_definition(
         &mut self,
         identity: &str,
+        allow_private: bool,
     ) -> Result<Option<std::sync::Arc<crate::aspects::AspectDefinition>>, String> {
         if let Some(definition) = self.aspects.get(identity) {
             return Ok(Some(definition));
@@ -1271,11 +1276,12 @@ impl Engine {
             .repositories
             .parse(extension, "", "")
             .map_err(|error| format!("Invalid aspect '{identity}': {error}"))?;
-        let loaded = crate::loading::load_shared_definition_in(
+        let loaded = crate::loading::load_shared_definition_any_in(
             self.repositories.clone(),
             &label,
             name,
             &crate::package::bzl_globals(),
+            !allow_private,
         )?;
         let Some(aspect) = crate::rule_declarations::Aspect::from_value(loaded.value.value())
         else {
@@ -2817,7 +2823,7 @@ impl Engine {
             let mut aspects = Vec::new();
             for identity in &spec.declaration.aspects {
                 let definition = self
-                    .aspect_definition(identity)?
+                    .aspect_definition(identity, true)?
                     .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
                 aspects.push(definition);
             }
@@ -7457,7 +7463,23 @@ impl Engine {
                     .get(&(base_key.clone(), group.clone()))
                     .copied()
                     .unwrap_or(base_key.config),
-                EdgeCfg::NoConfig | EdgeCfg::Starlark(_) => continue,
+                // The attribute's Starlark-transitioned configuration, like
+                // the base rule's own planning (N28c): a transitioned
+                // prerequisite is a dependency of the aspect application
+                // too (AspectFunction over TransitionedConfiguredTarget
+                // keys; rules_go's go_library srcs transition).
+                EdgeCfg::Starlark(attribute) => self
+                    .edge_configs
+                    .get(base_key)
+                    .and_then(|configs| configs.get(attribute))
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                            "internal error: no transitioned configuration for {} attribute {attribute}",
+                            base_key.label
+                        )
+                    })?,
+                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
             };
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
             let (view, _) = self.plan_aspect_dependency(
@@ -7477,6 +7499,7 @@ impl Engine {
                 EdgeCfg::Starlark(attribute) => {
                     analysis::transition_dependency_key(&dependency.to_string(), attribute)
                 }
+                EdgeCfg::NoConfig => analysis::metadata_dependency_key(&dependency.to_string()),
                 _ => match spec {
                     Some(spec) if analysis::implicit_attribute(&edge.attribute, spec) => {
                         analysis::attribute_dependency_key(
@@ -7910,7 +7933,7 @@ impl Engine {
                     let mut aspects = Vec::new();
                     for identity in &spec.declaration.aspects {
                         let definition = self
-                            .aspect_definition(identity)?
+                            .aspect_definition(identity, true)?
                             .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
                         aspects.push(definition);
                     }
@@ -9057,7 +9080,7 @@ impl Engine {
         // depends on the aspect's implicit attributes), validated from the
         // aspect's `.bzl` package.
         for identity in self.effective_aspects() {
-            let Some(definition) = self.aspect_definition(&identity)? else {
+            let Some(definition) = self.aspect_definition(&identity, false)? else {
                 return Err(format!("Aspect '{identity}' is unknown"));
             };
             if definition.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
@@ -9119,7 +9142,7 @@ impl Engine {
         let mut aspect_defs = Vec::new();
         for identity in self.effective_aspects() {
             let definition = self
-                .aspect_definition(&identity)?
+                .aspect_definition(&identity, false)?
                 .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
             aspect_defs.push(definition);
         }

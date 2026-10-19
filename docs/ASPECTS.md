@@ -29,7 +29,16 @@ aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the nati
 - `attr.label/list/dict(aspects = [a, b])` attaches the aspects to that
   attribute's dependencies (the attribute's list first, then the incoming
   aspect path — `computePropagatingAspects`, AspectResolutionHelpers.java:
-  86-92).
+  86-92). The aspect values a rule class captures may be private
+  (underscore) top-level bindings of the rule's own `.bzl` — rules_go's
+  `_go_cc_aspect` of `binary.bzl`, referenced same-file; Bazel keeps the
+  aspect value itself, so the identity re-load here reads the binding at
+  any visibility, while top-level `--aspects` stay public-only like a
+  `load()` (N58 on N57, integration-17).
+- An aspect application's dependencies include the base rule's
+  Starlark-transitioned prerequisites under their transition keys
+  (`go_library`'s `srcs` go config transition; AspectFunction over
+  `TransitionedConfiguredTarget` keys, N28c).
 - An aspect propagates from a target to the dependencies of the attributes
   named in its `attr_aspects` (`'*'` for all) — the propagation happens on
   the dependency's attributes (`collectPropagatingAspects`), recursively:
