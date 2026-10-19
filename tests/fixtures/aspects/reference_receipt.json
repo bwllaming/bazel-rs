@@ -4,15 +4,15 @@
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
  },
  "counts": {
-  "exact": 15,
+  "exact": 17,
   "divergent": 1,
   "native_unsupported": 1
  },
  "fixture": {
   "files": {
-   "BUILD.bazel": "50361c880a836ed8cb40e0ae28f1b53b2a1228513d423b69582d2b8bf70728a2",
+   "BUILD.bazel": "a8c7248ebcc9dd225438552da983b48b7d2ce6f5b51cd2c630e0dce855a7d1ac",
    "MODULE.bazel": "3e60ddbe674813136060e8191db8135ee7bfe5c4374d5371afdbcc95ab068223",
-   "defs.bzl": "34b780c93005ea2b78861e44805383f7736b427d9ac6f038f829b09c01b785b4"
+   "defs.bzl": "4e97a4b3c75d5caeb6449e4610ad3d39082ec333415e2b13c27fbae8543dc022"
   }
  },
  "phases": [
@@ -425,6 +425,51 @@
     "bin": {
      "leafval.validated": "ok"
     }
+   }
+  },
+  {
+   "id": "N14a",
+   "argv": [
+    "build",
+    "//:covconsumer"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "covconsumer.reads": "covbase"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "covconsumer.reads": "covbase"
+    }
+   },
+   "note": "InstrumentedFilesInfo on both the base target and the aspect: the aspect's wins, no duplicate-provider error (MergedConfiguredTarget.java:296-305)"
+  },
+  {
+   "id": "N14b",
+   "argv": [
+    "build",
+    "//:covtwo"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "/tmp/opencode/n58-capture/ws/BUILD.bazel:24:12: Provider InstrumentedFilesInfo provided twice",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "/tmp/opencode/n58-capture/ws/BUILD.bazel:24:12: Provider InstrumentedFilesInfo provided twice",
+    "reported": "",
+    "bin": {}
    }
   }
  ]

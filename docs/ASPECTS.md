@@ -55,20 +55,29 @@ aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the nati
 ## Providers: the aspect-configured target
 
 An application's returned providers merge with the base configured target's
-into the aspect-configured target consumers see (`MergedConfiguredTarget.of`):
+into the aspect-configured target consumers see (`MergedConfiguredTarget.of`).
+Aspect providers are found FIRST — the lookup checks them before the base
+target's (`rawGetStarlarkProvider`), and `ctx.attr.dep[Provider]` on an
+aspect-applied dependency resolves in that merged map. Only four providers
+are special-cased in the merge; every other provider an aspect returns that
+the base target or an earlier aspect also provides fails with
+`Provider DupInfo provided twice` (display name, at the consumer's rule
+location):
 
-- aspect providers are found FIRST — an aspect's provider shadows the base
-  target's of the same built-in kind, and any other provider returned by
-  both the base target (or an earlier aspect) and an aspect fails:
-  `Provider DupInfo provided twice` (display name, at the consumer's rule
-  location);
-- `OutputGroupInfo` merges per group (`mergeOutputGroupProviders`);
-- a `DefaultInfo` returned by an aspect must only set `files`
-  (else `Provider 'DefaultInfo' returned by an aspect not at top level must
-  only have the 'files' field set`); its files join the merged files to
-  build;
-- `ctx.attr.dep[Provider]` on the aspect-applied dependency resolves in the
-  merged map (aspect providers shadow).
+- `OutputGroupInfo`: merged per group — a group named twice unions its
+  files, no error (`mergeOutputGroupProviders`);
+- `DefaultInfo`: an aspect's must only set `files` (else `Provider
+  'DefaultInfo' returned by an aspect not at top level must only have the
+  'files' field set`); its files join the merged files to build;
+- `InstrumentedFilesInfo`: when it is on both the base target and an
+  aspect, the base's copy is IGNORED — the aspect's wins, without an error,
+  because a rule and a related aspect may legitimately share the
+  instrumentation implementation (`MergedConfiguredTarget.java:296-305`);
+  two aspects both returning it still fail `Provider
+  InstrumentedFilesInfo provided twice`;
+- (the internal `FileProvider`/`AnalysisFailureInfo`/
+  `RequiredConfigFragmentsProvider` merge internally and never fail the
+  merge; they are not Starlark-visible here.)
 
 ## The aspect context
 
@@ -121,6 +130,21 @@ aspect reads its required aspects' providers through `target[Provider]`.
   `_validation` outputs otherwise flow through N56's machinery unchanged
   (docs/VALIDATION_ACTIONS.md).
 
+## Identity of the aspect-applied `Target` values
+
+In Bazel, an aspect-applied dependency is a `MergedConfiguredTarget` — an
+ephemeral proxy created per consuming edge (`MergedConfiguredTarget.java:
+55-64`: "This is an ephemeral object created only for the analysis of a
+single configured target"), so two consumers (or two attributes of one
+rule) holding the same dep with the same aspects hold DIFFERENT instances
+with identical providers; plain base targets keep one `ConfiguredTarget`
+instance per `ConfiguredTargetKey` (N55). The native profile shares one
+`Target` value per aspect application key — the base `ConfiguredTargetKey`
+plus the aspect and its directly required aspects (`AspectKey`) — so
+equality across consumers is value-stable where Bazel's is per-edge; the
+base target's own `Target` value keeps its per-`ConfiguredTargetKey` N55
+identity unchanged, and depset snapshots taken from either agree.
+
 ## Native-only boundaries (explicit failures, documented)
 
 - function `attr_aspects`/`toolchains_aspects`, propagation predicates;
@@ -140,8 +164,8 @@ aspect reads its required aspects' providers through `target[Provider]`.
 - The dependency map is keyed per configured target (`(label, exec)`), so
   two attributes of one rule naming the same label share one dependency
   view: the union of their aspects applies (Bazel keeps per-edge views).
-- One shared `Target` value per aspect-configured target (N55 sharing);
-  Bazel's `MergedConfiguredTarget` is per-consumer ephemeral (identical
-  providers).
+- One shared `Target` value per aspect application key (see the identity
+  section); Bazel's `MergedConfiguredTarget` is per-consumer ephemeral
+  (identical providers), so cross-consumer `Target` equality differs.
 - `--aspect_filters` does not exist in Bazel 9.3 (probed in the reference
   tree); nothing to implement.

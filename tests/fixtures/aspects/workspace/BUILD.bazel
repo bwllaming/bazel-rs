@@ -1,4 +1,4 @@
-load(":defs.bzl", "app", "aspect_tool", "aggregate", "dup_base", "dup_consumer", "eater", "g", "has_rule", "lib", "plain_rule", "use", "val")
+load(":defs.bzl", "app", "aspect_tool", "aggregate", "covered_consumer", "covered_rule", "covered_two", "dup_base", "dup_consumer", "eater", "g", "has_rule", "lib", "plain_rule", "use", "val")
 
 lib(name = "a")
 lib(name = "b", deps = [":a"])
@@ -18,3 +18,7 @@ use(name = "use", dep1 = ":gg.gen1", dep2 = ":gg.gen1")
 aspect_tool(name = "aspect_tool")
 dup_base(name = "dupbase")
 dup_consumer(name = "dupconsumer", deps = [":dupbase"])
+
+covered_rule(name = "covbase")
+covered_consumer(name = "covconsumer", deps = [":covbase"])
+covered_two(name = "covtwo", deps = [":covbase"])

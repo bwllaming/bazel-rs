@@ -352,6 +352,26 @@ fn validation_aspect_path_promotes_validation_outputs() {
 }
 
 #[test]
+fn instrumented_files_info_of_an_aspect_wins_over_the_base_target() {
+    // N14 (MergedConfiguredTarget.java:296-305): when InstrumentedFilesInfo
+    // is on both the base target and an aspect, the base's copy is ignored
+    // — the aspect's wins, without a duplicate-provider error (a rule and a
+    // related aspect may share the instrumentation implementation). Two
+    // aspects both returning it still fail the merge. Genuine-verified:
+    // build //:covconsumer succeeds, //:covtwo fails
+    // `BUILD.bazel:5:12: Provider InstrumentedFilesInfo provided twice`.
+    let ws = Workspace::new();
+    let text = ok(&ws.build_with(&[], &["//:covconsumer"]));
+    assert!(!text.contains("provided twice"), "{text}");
+    assert_eq!(ws.outputs(), ["k8-fastbuild/bin/covconsumer.reads"]);
+    let ws = Workspace::new();
+    rejected(
+        &ws.build_with(&[], &["//:covtwo"]),
+        "Provider InstrumentedFilesInfo provided twice",
+    );
+}
+
+#[test]
 fn aspect_declaration_gaps_fail_explicitly() {
     // N11: aspect-declared features whose application is not modelled fail
     // loudly (never silently ignored).

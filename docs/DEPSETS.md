@@ -85,6 +85,19 @@ attributes, alias/exec distinct, source file across target- and
 exec-configured edges, rule-transition convergence, Target-holding freeze)
 is EXACT against genuine Bazel 9.3.0.
 
+An aspect-applied target element (N58, docs/ASPECTS.md) is NOT one of those
+per-`ConfiguredTargetKey` instances: Bazel hands each consuming edge its own
+ephemeral `MergedConfiguredTarget` proxy (`MergedConfiguredTarget.java:
+55-64`, created per consuming configured target, no key in the Skyframe
+graph), so two consumers holding the same dependency with the same aspects
+hold different (never `==`) Target objects with identical providers. The
+native profile instead shares ONE `Target` value per aspect application key
+— the base `ConfiguredTargetKey` plus the aspect and its directly required
+aspects (`AspectKey`, crate::aspects) — so cross-consumer equality is
+value-stable where Bazel's is per-edge; the base target's own value, and
+every depset snapshot holding it, keeps the per-`ConfiguredTargetKey` N55
+identity above.
+
 ## Frozen lists and dicts inside elements (N49b)
 
 A frozen list or dict is immutable (`Starlark.isImmutable`), so it may sit

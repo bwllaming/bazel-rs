@@ -203,6 +203,60 @@ use = rule(
     },
 )
 
+def _covered_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".cov")
+    ctx.actions.write(out, "cov")
+    return [
+        DefaultInfo(files = depset([out])),
+        coverage_common.instrumented_files_info(
+            ctx,
+            source_attributes = ["srcs"],
+            dependency_attributes = ["deps"],
+            extensions = ["go"],
+        ),
+    ]
+
+covered_rule = rule(implementation = _covered_impl, attrs = {"deps": attr.label_list()})
+
+def _covering_aspect_impl(target, ctx):
+    # A related aspect may legitimately share the instrumentation
+    # implementation with the base rule: its InstrumentedFilesInfo wins
+    # over the base target's, without a duplicate-provider error.
+    return [
+        coverage_common.instrumented_files_info(
+            ctx,
+            source_attributes = [],
+            dependency_attributes = ["deps"],
+            extensions = ["cc"],
+        ),
+    ]
+
+covering_aspect = aspect(implementation = _covering_aspect_impl, attr_aspects = ["deps"])
+
+def _covering_aspect_two_impl(target, ctx):
+    return [coverage_common.instrumented_files_info(ctx)]
+
+covering_aspect_two = aspect(implementation = _covering_aspect_two_impl)
+
+def _covered_consumer_impl(ctx):
+    # The merged aspect-configured dependency carries the aspect's
+    # InstrumentedFilesInfo (the base target's copy was dropped for it);
+    # the values are opaque without a coverage configuration, so the
+    # consumer only proves the merge succeeded.
+    out = ctx.actions.declare_file(ctx.label.name + ".reads")
+    ctx.actions.write(out, ",".join([dep.label.name for dep in ctx.attr.deps]))
+    return [DefaultInfo(files = depset([out]))]
+
+covered_consumer = rule(
+    implementation = _covered_consumer_impl,
+    attrs = {"deps": attr.label_list(aspects = [covering_aspect])},
+)
+
+covered_two = rule(
+    implementation = _covered_consumer_impl,
+    attrs = {"deps": attr.label_list(aspects = [covering_aspect, covering_aspect_two])},
+)
+
 def _dup_base_impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".b")
     ctx.actions.write(out, "b")

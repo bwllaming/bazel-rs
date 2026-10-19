@@ -324,6 +324,10 @@ pub(crate) fn merge_providers(
                 .unwrap_or_default(),
         );
     }
+    // Whether an aspect already contributed the merged target's
+    // InstrumentedFilesInfo (the base target's copy, if any, is
+    // overwritten by the first aspect's).
+    let mut instrumented_from_aspect = false;
     for (_, aspect_providers) in aspects {
         for (id, value) in aspect_providers {
             if id == crate::output_group_info::PROVIDER_ID {
@@ -361,9 +365,25 @@ pub(crate) fn merge_providers(
                 }
                 continue;
             }
+            if id == crate::instrumented_files::PROVIDER_ID {
+                if instrumented_from_aspect {
+                    // Two aspects both returned InstrumentedFilesInfo: the
+                    // ordinary duplicate error.
+                    return Err("Provider InstrumentedFilesInfo provided twice".to_owned());
+                }
+                // When InstrumentedFilesInfo is on both the base target
+                // and an aspect, the base's copy below is overwritten — the
+                // aspect's wins, without an error, because a rule and a
+                // related aspect may legitimately share the instrumentation
+                // implementation (MergedConfiguredTarget.java:296-305).
+                instrumented_from_aspect = true;
+                providers.insert(id.clone(), value.clone());
+                continue;
+            }
             if providers.contains_key(id) {
                 // `Provider <name> provided twice` (MergingException), with
-                // the provider's display name (its exported name).
+                // the provider's display name (its exported name); two
+                // aspects returning the same provider fail here too.
                 let name = id.rsplit('%').next().unwrap_or(id.as_str());
                 let name = name.strip_prefix("builtin:").unwrap_or(name);
                 return Err(format!("Provider {name} provided twice"));
