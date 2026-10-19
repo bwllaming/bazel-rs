@@ -15,6 +15,44 @@ thread_local! {
     static DEMAND_STACK: RefCell<Vec<(u64, String)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Marker of the no-demand guard's sentinel error (review §1.2): a thread
+/// in no-demand mode asking for an unfetched repository gets this error
+/// instead of fetching. Workers run in that mode; the coordinator re-runs
+/// the aborted unit inline at its commit slot, where fetching is allowed.
+pub const NEEDS_REPOSITORY: &str = "\u{1}needs-repository";
+
+/// Whether `error` is the no-demand sentinel ([`NEEDS_REPOSITORY`]).
+pub fn is_needs_repository(error: &str) -> bool {
+    error.contains(NEEDS_REPOSITORY)
+}
+
+thread_local! {
+    /// Depth of the no-demand guard on this thread (0: fetching allowed).
+    static NO_DEMAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread runs in no-demand mode (it must not fetch).
+pub fn no_demand_active() -> bool {
+    NO_DEMAND.with(std::cell::Cell::get) > 0
+}
+
+/// RAII scope in which repository demand never fetches: unfetched
+/// repositories fail with the [`NEEDS_REPOSITORY`] sentinel instead.
+/// Scopes nest; only the outermost matters.
+pub struct NoDemandGuard;
+
+/// Enter no-demand mode on this thread.
+pub fn no_demand() -> NoDemandGuard {
+    NO_DEMAND.with(|depth| depth.set(depth.get() + 1));
+    NoDemandGuard
+}
+
+impl Drop for NoDemandGuard {
+    fn drop(&mut self) {
+        NO_DEMAND.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 /// A single demand result, allowing callers to borrow the cached value.
 ///
 /// The evaluator never runs under a lock. Recursive demand fails with a cycle
@@ -57,6 +95,13 @@ impl<T> DemandSlot<T> {
     ) -> Result<&T, String> {
         if let Some(result) = self.ready.get() {
             return result.as_ref().map_err(Clone::clone);
+        }
+        if no_demand_active() {
+            // Workers never fetch (review §1.2): the sentinel aborts the
+            // unit; the coordinator re-runs it inline at its commit slot.
+            return Err(format!(
+                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
+            ));
         }
 
         let current_thread = thread::current().id();
@@ -477,5 +522,36 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<DemandSlot<String>>();
         assert_send_sync::<DemandSlot<&str>>();
+    }
+
+    /// The no-demand guard (review §1.2): a thread that must not fetch
+    /// gets the NeedsRepository sentinel instead of running the
+    /// initializer, without populating the slot; a ready value is served
+    /// as usual, and a later unguarded demand evaluates normally.
+    #[test]
+    fn no_demand_guard_returns_sentinel_without_populating() {
+        let slot = DemandSlot::new();
+        assert!(!no_demand_active());
+        let _outer = no_demand();
+        assert!(no_demand_active());
+        let error = slot
+            .get_or_try_init(7, "repository:x", || Ok(1))
+            .unwrap_err();
+        assert!(is_needs_repository(&error), "{error}");
+        assert!(error.contains("runtime 7:repository:x"));
+        // The sentinel did not populate the slot.
+        assert!(slot.ready().is_none());
+        drop(_outer);
+        assert!(!no_demand_active());
+        // With the guard gone, the same demand evaluates normally.
+        {
+            assert_eq!(slot.get_or_try_init(7, "repository:x", || Ok(2)), Ok(&2));
+        }
+        // A ready value is served under the guard.
+        {
+            let _guard = no_demand();
+            assert!(no_demand_active());
+            assert_eq!(slot.get_or_try_init(7, "repository:x", || Ok(3)), Ok(&2));
+        }
     }
 }

@@ -776,13 +776,9 @@ impl RepositorySet {
                     .map(|name| (name.clone(), OnceLock::new()))
                     .collect()
             });
-            return roots[repository]
-                .get_or_init(|| {
-                    crate::builtin_tools::materialize(&self.source_cache_path()?.join("builtins"))
-                })
-                .as_ref()
-                .map(PathBuf::as_path)
-                .map_err(Clone::clone);
+            return guarded_root_slot(&roots[repository], repository, || {
+                crate::builtin_tools::materialize(&self.source_cache_path()?.join("builtins"))
+            });
         }
         match &module.source {
             ModuleSource::Embedded(_) => Err("embedded module source requires the genuine built-in profile and canonical bazel_tools repository".to_owned()),
@@ -799,7 +795,7 @@ impl RepositorySet {
                         .map(|name| (name.clone(), OnceLock::new()))
                         .collect()
                 });
-                roots[repository].get_or_init(|| {
+                guarded_root_slot(&roots[repository], repository, || {
                     spec.validate(self.state.options.allow_remote)?;
                     if !tree.commit.eq_ignore_ascii_case(&spec.commit) {
                         return Err(format!("Git commit mismatch for repository @@{repository}"));
@@ -817,7 +813,7 @@ impl RepositorySet {
                         },
                     )?;
                     Ok(verified.root)
-                }).as_ref().map(PathBuf::as_path).map_err(Clone::clone)
+                })
             }
             ModuleSource::Registry {
                 registry,
@@ -834,25 +830,21 @@ impl RepositorySet {
                         .map(|name| (name.clone(), OnceLock::new()))
                         .collect()
                 });
-                roots[repository]
-                    .get_or_init(|| {
-                        registry_source_root(
-                            &self.state.options.registry_session,
-                            registry,
-                            name,
-                            version,
-                            module_file,
-                            self.source_cache_path()?,
-                            local_patches,
-                            self.repository_downloads_enabled(),
-                        )
-                        .map_err(|error| {
-                            format!("repository @@{repository} is not materialized: {error}")
-                        })
+                guarded_root_slot(&roots[repository], repository, || {
+                    registry_source_root(
+                        &self.state.options.registry_session,
+                        registry,
+                        name,
+                        version,
+                        module_file,
+                        self.source_cache_path()?,
+                        local_patches,
+                        self.repository_downloads_enabled(),
+                    )
+                    .map_err(|error| {
+                        format!("repository @@{repository} is not materialized: {error}")
                     })
-                    .as_ref()
-                    .map(PathBuf::as_path)
-                    .map_err(Clone::clone)
+                })
             }
         }
     }
@@ -2120,6 +2112,32 @@ impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
                 .unwrap_or_else(|| apparent.to_owned())
         }))
     }
+}
+
+/// A module repository's materialization slot, honoring the no-demand
+/// guard (crate::repository_demand): a thread that must not fetch sees the
+/// [`crate::repository_demand::NEEDS_REPOSITORY`] sentinel instead of
+/// running the initializer; a materialized repository is returned as
+/// usual. The coordinator re-runs the aborted unit inline at its commit
+/// slot, where fetching is allowed (review §1.2).
+fn guarded_root_slot<'a>(
+    slot: &'a std::sync::OnceLock<Result<PathBuf, String>>,
+    repository: &str,
+    init: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<&'a Path, String> {
+    if let Some(result) = slot.get() {
+        return result.as_ref().map(PathBuf::as_path).map_err(Clone::clone);
+    }
+    if crate::repository_demand::no_demand_active() {
+        return Err(format!(
+            "{}: repository @@{repository} is unfetched and this thread does not fetch",
+            crate::repository_demand::NEEDS_REPOSITORY
+        ));
+    }
+    slot.get_or_init(init)
+        .as_ref()
+        .map(PathBuf::as_path)
+        .map_err(Clone::clone)
 }
 
 #[cfg(test)]
@@ -3884,5 +3902,38 @@ mod tests {
         );
         let other = RepositorySet::new(root.clone()).with_source_cache(root.join("store"));
         assert_eq!(other.link_blocked_prefixes(), [root.join("store")]);
+    }
+
+    /// The no-demand guard on a module repository's materialization slot
+    /// (review §1.2): a materialized root is served under the guard; an
+    /// unfetched one fails with the sentinel instead of fetching, and a
+    /// later unguarded demand materializes it.
+    #[test]
+    fn guarded_root_slot_honors_the_no_demand_guard() {
+        use std::sync::OnceLock;
+        let materialized = OnceLock::new();
+        materialized.set(Ok(PathBuf::from("/ready"))).unwrap();
+        assert_eq!(
+            guarded_root_slot(&materialized, "ready", || Ok(PathBuf::from("/never"))),
+            Ok(Path::new("/ready"))
+        );
+        {
+            let _guard = crate::repository_demand::no_demand();
+            let error = guarded_root_slot(&OnceLock::new(), "fresh", || Ok(PathBuf::from("/x")))
+                .unwrap_err();
+            assert!(
+                crate::repository_demand::is_needs_repository(&error),
+                "{error}"
+            );
+            // A ready value still serves under the guard.
+            assert_eq!(
+                guarded_root_slot(&materialized, "ready", || Ok(PathBuf::from("/never"))),
+                Ok(Path::new("/ready"))
+            );
+        }
+        assert_eq!(
+            guarded_root_slot(&OnceLock::new(), "fresh", || Ok(PathBuf::from("/x"))).unwrap(),
+            Path::new("/x")
+        );
     }
 }

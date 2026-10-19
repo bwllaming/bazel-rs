@@ -2045,9 +2045,47 @@ pub fn evaluate(root: &Path, package: &str) -> Result<Package, String> {
     )
 }
 
+/// One package load unit's buffered stderr output: the BUILD file's own
+/// `print()` lines and its `.bzl` graph's top-level lines, in evaluation
+/// order (crate::loading::LoadPrints), plus the load's result. The
+/// coordinator (Engine::load_package) emits the lines at the unit's
+/// commit; a failed load emits them before its error propagates.
+pub(crate) struct LoadUnit {
+    pub(crate) result: Result<Package, String>,
+    pub(crate) prints: Vec<(Option<Label>, String)>,
+}
+
 pub fn evaluate_in(
     repositories: Arc<RepositorySet>,
     package: &PackageId,
+) -> Result<Package, String> {
+    let unit = evaluate_load_unit(repositories, package);
+    // The direct path keeps the historical behavior: every buffered line
+    // reaches stderr in order, immediately after the load.
+    for (_, line) in &unit.prints {
+        eprintln!("{line}");
+    }
+    unit.result
+}
+
+/// [`evaluate_in`] with the load's print output buffered into the unit
+/// instead of written to stderr (P1 loading commit order).
+pub(crate) fn evaluate_load_unit(
+    repositories: Arc<RepositorySet>,
+    package: &PackageId,
+) -> LoadUnit {
+    let prints = crate::loading::LoadPrints::default();
+    let result = evaluate_in_with_prints(repositories, package, &prints);
+    LoadUnit {
+        result,
+        prints: prints.take(),
+    }
+}
+
+fn evaluate_in_with_prints(
+    repositories: Arc<RepositorySet>,
+    package: &PackageId,
+    prints: &crate::loading::LoadPrints,
 ) -> Result<Package, String> {
     local_label("__package__", package, "package path").map_err(|e| e.to_string())?;
     let root = repositories.root(&package.repository)?;
@@ -2072,6 +2110,7 @@ pub fn evaluate_in(
         package,
         source,
         &ignored,
+        prints,
     )
 }
 
@@ -2113,6 +2152,7 @@ fn evaluate_at(
     package: &PackageId,
     source: String,
     ignored: &crate::ignored::IgnoredSubdirectories,
+    prints: &crate::loading::LoadPrints,
 ) -> Result<Package, String> {
     let dialect = Dialect {
         enable_def: false,
@@ -2144,8 +2184,13 @@ fn evaluate_at(
     crate::guarded_globals::check_universe(&ast)?;
     // Both global environments are immutable: built once per invocation.
     let (globals, bzl_globals) = repositories.build_phase_globals();
-    let loaded =
-        crate::loading::load_build_modules_in(repositories.clone(), package, &ast, &bzl_globals)?;
+    let loaded = crate::loading::load_build_modules_in(
+        repositories.clone(),
+        package,
+        &ast,
+        &bzl_globals,
+        prints,
+    )?;
     let modules = loaded
         .modules
         .iter()
@@ -2186,6 +2231,9 @@ fn evaluate_at(
         let mut evaluator = Evaluator::new(&module);
         evaluator.extra = Some(&declarations);
         evaluator.set_loader(&loader);
+        // The BUILD file's print() output is buffered with the load unit
+        // (P1 loading commit order), like its .bzl graph's.
+        evaluator.set_print_handler(prints);
         evaluator
             .set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
@@ -2535,7 +2583,8 @@ fn evaluate_source(
 ) -> Result<BTreeMap<Label, Rule>, String> {
     let repositories = Arc::new(RepositorySet::new(PathBuf::from(".")));
     let ignored = repositories.ignored_subdirectories("")?;
-    evaluate_at(
+    let prints = crate::loading::LoadPrints::default();
+    let evaluated = evaluate_at(
         repositories,
         filename,
         &PackageId {
@@ -2544,8 +2593,13 @@ fn evaluate_source(
         },
         source,
         &ignored,
-    )
-    .map(|package| {
+        &prints,
+    );
+    // Test helper: the buffered lines reach stderr in order, as before.
+    for (_, line) in prints.take() {
+        eprintln!("{line}");
+    }
+    evaluated.map(|package| {
         package
             .rules
             .into_iter()

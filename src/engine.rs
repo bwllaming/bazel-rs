@@ -903,6 +903,89 @@ type BuildPlan = (
 /// its configured target key (the configuration it was analyzed in).
 type Plan = Vec<(ConfiguredTargetKey, Rule)>;
 
+/// The owned, `Send` inputs of one custom rule's pure analysis (the
+/// compute boundary, review §1.7): the rule with its rule context
+/// prepared by the coordinator (toolchain/exec-group contexts, ctx
+/// surface, C++ fragment view, target platform), the resolved
+/// dependency targets, output naming, the fetched-only repository set
+/// and the loaded-function registry. Nothing in it borrows the
+/// engine; `Engine::compute_target` touches nothing else.
+struct ComputeSnapshot {
+    rule: Rule,
+    dependency_targets: BTreeMap<String, DependencyTarget>,
+    output_root: String,
+    action_owner: String,
+    action_env: Arc<crate::action_env::ActionEnvironment>,
+    runfiles: crate::runfiles_tree::RunfilesOptions,
+    loaded_functions: Arc<crate::analysis_runtime::LoadedFunctions>,
+    repositories: Arc<RepositorySet>,
+}
+
+/// The compute of one custom rule: the analysis result (or error) and
+/// the implementation's buffered `print()` lines, in order. The lines
+/// are emitted by the commit (review §1.8); a discarded attempt's
+/// lines are dropped with it.
+struct ComputeOutcome {
+    analyzed: Result<analysis::AnalysisResult, String>,
+    printed: Vec<String>,
+}
+
+/// One plan entry after prepare (the P1 split of plan_target): the
+/// coordinator-computed context of the target, with the kind deciding
+/// what compute and commit do.
+struct PreparedTarget {
+    key: ConfiguredTargetKey,
+    config: ConfigId,
+    output_root: String,
+    action_env: Arc<crate::action_env::ActionEnvironment>,
+    action_owner: String,
+    exec_config: ConfigId,
+    main_ignored: Arc<IgnoredSubdirectories>,
+    /// The transitive repository closure of the target's dependency
+    /// edges (Starlark rules refine it from their resolved
+    /// dependencies; the commit inserts it).
+    transitive: BTreeSet<String>,
+    kind: PreparedKind,
+}
+
+enum PreparedKind {
+    /// A package group: committed directly, no compute.
+    PackageGroup,
+    /// A native rule (genrule, filegroup, platforms, aliases): its
+    /// analysis stays coordinator-side (P3 dispatches custom rules
+    /// only; native runs inline).
+    Native,
+    /// A custom rule (boxed: the snapshot dominates the enum's size):
+    /// `snapshot` feeds the compute, `action_execution` the commit's
+    /// execution-platform table, and `available` carries the dependency
+    /// artifacts the prepare resolved (the commit's own-output and
+    /// DefaultInfo lookups see them). The plan's own rule (a parameter
+    /// of commit) serves the commit.
+    Custom(Box<CustomPrepared>),
+}
+
+struct CustomPrepared {
+    snapshot: ComputeSnapshot,
+    action_execution: Vec<crate::exec_groups::ActionExecution>,
+    available: BTreeMap<File, Artifact>,
+}
+
+/// A loaded package's BUILD-phase load graph, borrowed for the
+/// coordinator's print replay (direct loads in load-statement order, and
+/// every evaluated module's direct loads).
+type LoadGraphView<'a> = (&'a [Label], &'a HashMap<Label, Vec<Label>>);
+
+/// The compute-boundary types are `Send`: P1 has no threads, but the
+/// types must already admit P3's workers (review §1.7). Asserted by
+/// `compute_boundary_types_are_send` (tests) — the proof function is
+/// dead code outside them by design.
+#[allow(dead_code)]
+fn compute_boundary_is_send() {
+    fn send<T: Send>() {}
+    send::<ComputeSnapshot>();
+    send::<ComputeOutcome>();
+}
+
 /// StarlarkBuildSettingsDetailsValue: the details of each setting a
 /// transition references, keyed by the label as referenced.
 type TransitionDetails = BTreeMap<Label, crate::starlark_transitions::SettingDetail>;
@@ -1004,6 +1087,10 @@ impl PatternError {
 pub struct Engine {
     repositories: Arc<RepositorySet>,
     packages: BTreeMap<PackageId, Package>,
+    /// `.bzl` labels whose buffered top-level print lines the coordinator
+    /// already emitted (one emission per evaluated module, review §1.4);
+    /// lookups only, never iterated.
+    emitted_bzl_prints: HashSet<Label>,
     // N44 hash maps/sets (declared_inputs, source_targets, analyzed_sources)
     // answer lookups only and are never iterated: output order must not
     // depend on the per-process hash seed (tests/loading.rs
@@ -1152,6 +1239,7 @@ impl Engine {
         Self {
             repositories,
             packages: BTreeMap::new(),
+            emitted_bzl_prints: HashSet::new(),
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -1413,23 +1501,144 @@ impl Engine {
             return Err(message);
         }
         if !self.packages.contains_key(package) {
-            let rules = package::evaluate_in(self.repositories.clone(), package)?;
-            let ignored = self.ignored(&package.repository)?;
-            for rule in rules.values() {
-                for out in &rule.outs {
-                    self.validate_output_directory(package, out, &ignored)?;
-                    let output = rule.label.with_name(out)?;
-                    self.generated
-                        .insert(output, (rule.label.clone(), out.clone()));
+            let unit = self.load_package_attempt(package);
+            let (rules, prints) = match unit.result {
+                Ok(rules) => (rules, unit.prints),
+                Err(error) => {
+                    if crate::repository_demand::is_needs_repository(&error) {
+                        // The no-demand guard aborted the unit (workers
+                        // never fetch, review §1.2): its `.bzl` modules'
+                        // lines are emitted now — those modules are cached
+                        // and never evaluate again — while the BUILD
+                        // file's own lines are dropped with the aborted
+                        // evaluation. The unit re-runs inline at this
+                        // commit slot, where fetching is allowed, and
+                        // reproduces the sequential output: the fetch
+                        // output lands exactly where the sequential load
+                        // demanded the repository.
+                        let module_lines = unit
+                            .prints
+                            .into_iter()
+                            .filter(|(label, _)| label.is_some())
+                            .collect();
+                        self.emit_load_prints(module_lines, None);
+                        let retried = self.load_package_attempt(package);
+                        return match retried.result {
+                            Ok(rules) => {
+                                self.emit_load_prints(
+                                    retried.prints,
+                                    Some((&rules.direct_loads, &rules.load_graph)),
+                                );
+                                self.commit_loaded_package(package, rules)
+                            }
+                            Err(error) => {
+                                self.emit_load_prints(retried.prints, None);
+                                Err(error)
+                            }
+                        };
+                    }
+                    self.emit_load_prints(unit.prints, None);
+                    return Err(error);
                 }
-            }
-            // Every rule of a package shares its load graph's functions.
-            if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
-                self.loaded_functions.register(&custom.top_level_functions);
-            }
-            self.packages.insert(package.to_owned(), rules);
+            };
+            self.emit_load_prints(prints, Some((&rules.direct_loads, &rules.load_graph)));
+            return self.commit_loaded_package(package, rules);
         }
         Ok(())
+    }
+
+    /// One package load attempt (P1 loading commit order): the BUILD file
+    /// and its `.bzl` graph evaluate with print output buffered into the
+    /// returned unit; nothing is emitted here. The caller emits the
+    /// lines at the unit's commit slot. `BAZEL_RS_LOADING_NO_DEMAND`
+    /// (hidden test hook, review §5) runs the attempt under the
+    /// no-demand guard, exercising the inline fallback a P2 worker
+    /// exercises; a warm load demands nothing and is unaffected.
+    fn load_package_attempt(&mut self, package: &PackageId) -> package::LoadUnit {
+        let guard = std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND")
+            .is_some()
+            .then(crate::repository_demand::no_demand);
+        let unit = package::evaluate_load_unit(self.repositories.clone(), package);
+        drop(guard);
+        unit
+    }
+
+    /// Commit a loaded package (P2's commit order):
+    /// validate_output_directory -> generated inserts -> packages.insert.
+    fn commit_loaded_package(&mut self, package: &PackageId, rules: Package) -> Result<(), String> {
+        let ignored = self.ignored(&package.repository)?;
+        for rule in rules.values() {
+            for out in &rule.outs {
+                self.validate_output_directory(package, out, &ignored)?;
+                let output = rule.label.with_name(out)?;
+                self.generated
+                    .insert(output, (rule.label.clone(), out.clone()));
+            }
+        }
+        // Every rule of a package shares its load graph's functions.
+        if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
+            self.loaded_functions.register(&custom.top_level_functions);
+        }
+        self.packages.insert(package.to_owned(), rules);
+        Ok(())
+    }
+
+    /// Emit one load unit's buffered print lines (the coordinator's
+    /// replay, review §1.4). With the package's load graph (a successful
+    /// load): each not-yet-emitted `.bzl` module's cached lines, in the
+    /// package's load-DFS order — the order the sequential loader
+    /// evaluated them in — then the BUILD file's own lines. Without it
+    /// (a failed load): the buffered lines in evaluation order. The
+    /// emitted-.bzl set keeps every module's lines once per invocation;
+    /// one evaluation per label (the shared, single-flight BzlCache)
+    /// means a module's lines exist in exactly one unit.
+    fn emit_load_prints(
+        &mut self,
+        prints: Vec<(Option<Label>, String)>,
+        graph: Option<LoadGraphView<'_>>,
+    ) {
+        if let Some((direct_loads, load_graph)) = graph {
+            // Postorder, like the loader's explicit DFS (dependencies
+            // evaluate before their dependent); a diamond visits a label
+            // once, as its single evaluation did.
+            let mut visited = HashSet::new();
+            let mut order = Vec::new();
+            let mut stack = direct_loads
+                .iter()
+                .rev()
+                .map(|label| (label.clone(), false))
+                .collect::<Vec<_>>();
+            while let Some((label, leaving)) = stack.pop() {
+                if leaving {
+                    order.push(label);
+                    continue;
+                }
+                if !visited.insert(label.clone()) {
+                    continue;
+                }
+                stack.push((label.clone(), true));
+                if let Some(loads) = load_graph.get(&label) {
+                    stack.extend(loads.iter().rev().map(|load| (load.clone(), false)));
+                }
+            }
+            for label in order {
+                if self.emitted_bzl_prints.insert(label.clone()) {
+                    for line in self.repositories.build_bzl_cache().prints(&label) {
+                        eprintln!("{line}");
+                    }
+                }
+            }
+        }
+        for (label, line) in prints {
+            match label {
+                None => eprintln!("{line}"),
+                Some(label) => {
+                    if self.emitted_bzl_prints.insert(label) {
+                        eprintln!("{line}");
+                    }
+                }
+            }
+        }
     }
 
     fn validate_output_directory(
@@ -7882,16 +8091,37 @@ impl Engine {
         )
     }
 
-    fn plan_target(
+    /// The pure compute of one custom rule (P1: no threads yet; the types
+    /// enforce the boundary for P3's workers). Filesystem-free: it never
+    /// touches the engine, planning state or the coordinator's maps.
+    fn compute_target(snapshot: ComputeSnapshot) -> (ComputeSnapshot, ComputeOutcome) {
+        let outputs = analysis::ConfiguredOutputs {
+            output_root: &snapshot.output_root,
+            action_owner: &snapshot.action_owner,
+            action_env: snapshot.action_env.clone(),
+            runfiles: snapshot.runfiles,
+            loaded_functions: Some(&snapshot.loaded_functions),
+        };
+        let (analyzed, printed) = analysis::analyze_buffered(
+            &snapshot.rule,
+            &snapshot.dependency_targets,
+            snapshot.repositories.clone(),
+            &outputs,
+        );
+        (snapshot, ComputeOutcome { analyzed, printed })
+    }
+
+    /// Phase 1 of one plan entry (the P1 split of plan_target): compute
+    /// the coordinator-side context and the owned snapshot of the target's
+    /// analysis. Coordinator-only by construction (reads the engine and
+    /// planning state, never runs an implementation).
+    fn prepare_target(
         &mut self,
         state: &mut ActionPlanning,
         key: &ConfiguredTargetKey,
         rule: &Rule,
         configured: &mut ConfiguredNodes,
-    ) -> Result<(), String> {
-        if rule.custom.is_some() {
-            self.configured_rules.insert(key.clone(), rule.clone());
-        }
+    ) -> Result<PreparedTarget, String> {
         let top = self.configurations.top();
         let main_ignored = self.ignored("")?;
         let ActionPlanning {
@@ -7909,7 +8139,6 @@ impl Engine {
             native_output_groups,
             validation,
             repositories,
-            runfiles_nodes,
             target_identities,
             aspect_providers,
             aspect_provider_files,
@@ -7943,7 +8172,6 @@ impl Engine {
             };
             transitive.extend(self.dependency_repositories(repositories, label, edge_config));
         }
-        repositories.insert(key.clone(), Arc::new(transitive.clone()));
         let key = key.clone();
         let config = key.config;
         let output_root = self.configurations.output_root(config);
@@ -7959,22 +8187,17 @@ impl Engine {
             .unwrap_or(config);
         let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
         if matches!(rule.kind, RuleKind::PackageGroup(_)) {
-            let node = self.resolve_group(&rule.label, &mut Vec::new())?;
-            let info = starlark::environment::Module::with_temp_heap(|module| {
-                let value = package_specification::alloc_info(&module.heap(), node);
-                module.set("__info", value);
-                let frozen = module
-                    .freeze()
-                    .map_err(|error| format!("cannot freeze package group provider: {error:?}"))?;
-                frozen.get("__info").map_err(|error| error.to_string())
-            })?;
-            custom_providers.insert(
-                key.clone(),
-                BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
-            );
-            provider_files.insert(key.clone(), Vec::new());
-            dry.insert(key, Vec::new());
-            return Ok(());
+            return Ok(PreparedTarget {
+                key,
+                config,
+                output_root,
+                action_env,
+                action_owner,
+                exec_config,
+                main_ignored,
+                transitive,
+                kind: PreparedKind::PackageGroup,
+            });
         }
         if matches!(rule.kind, RuleKind::Custom) {
             let mut dependency_targets = BTreeMap::new();
@@ -8100,7 +8323,6 @@ impl Engine {
                     Some(*edge_config),
                 ));
             }
-            repositories.insert(key.clone(), Arc::new(transitive.clone()));
             for (label, edge_config, map_key) in dependency_labels {
                 let aspects = edge_aspects
                     .get(&label.to_string())
@@ -8162,15 +8384,6 @@ impl Engine {
                 };
                 dependency_targets.insert(map_key, view);
             }
-            // Prerequisite validation runs here, before the implementation,
-            // also for a target planned early (Self::plan_pending).
-            self.starlark_prerequisite_errors(
-                rule,
-                &key,
-                exec_config,
-                configured,
-                &dependency_targets,
-            )?;
             // ctx.target_platform_has_constraint: a toolchain-resolving
             // rule sees its target platform; a deferred default host
             // platform is resolved only when the implementation asks,
@@ -8356,235 +8569,452 @@ impl Engine {
             // runs the implementation once, after its target platform is
             // known.
             let loaded_functions = self.loaded_functions.clone();
-            let outputs = analysis::ConfiguredOutputs {
-                output_root: &output_root,
-                action_owner: &action_owner,
+            // The compute boundary (review §1.7): everything below runs
+            // from this owned snapshot, coordinator-free.
+            let snapshot = ComputeSnapshot {
+                rule: analyzed_rule,
+                dependency_targets,
+                output_root: output_root.clone(),
+                action_owner: action_owner.clone(),
                 action_env: action_env.clone(),
                 runfiles: self.runfiles_options,
-                loaded_functions: Some(&loaded_functions),
+                loaded_functions,
+                repositories: self.repositories.clone(),
             };
-            let (mut analyzed, mut printed) = analysis::analyze_buffered(
-                &analyzed_rule,
-                &dependency_targets,
-                self.repositories.clone(),
-                &outputs,
-            );
-            if analyzed
-                .as_ref()
-                .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
-            {
-                // The target's own configuration's target platform.
-                let platform = self.target_platform(config, configured, &mut Vec::new())?;
-                if let Some(custom) = analyzed_rule.custom.as_mut() {
-                    // A rule without toolchain resolution keeps its absent
-                    // platform (ctx.target_platform_has_constraint); the
-                    // configuration's platform serves `$(TARGET_CPU)`.
-                    if matches!(
-                        custom.target_platform,
-                        crate::platforms::TargetPlatform::Deferred
-                    ) {
-                        custom.target_platform =
-                            crate::platforms::TargetPlatform::Resolved(platform.clone());
-                    }
-                    let mut surface = (*custom.surface).clone();
-                    surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
-                    custom.surface = Arc::new(surface);
-                }
-                (analyzed, printed) = analysis::analyze_buffered(
-                    &analyzed_rule,
-                    &dependency_targets,
-                    self.repositories.clone(),
-                    &outputs,
+            return Ok(PreparedTarget {
+                key,
+                config,
+                output_root,
+                action_env,
+                action_owner,
+                exec_config,
+                main_ignored,
+                transitive,
+                kind: PreparedKind::Custom(Box::new(CustomPrepared {
+                    snapshot,
+                    action_execution,
+                    available,
+                })),
+            });
+        }
+        Ok(PreparedTarget {
+            key,
+            config,
+            output_root,
+            action_env,
+            action_owner,
+            exec_config,
+            main_ignored,
+            transitive,
+            kind: PreparedKind::Native,
+        })
+    }
+
+    /// Phase 3 of one plan entry (the P1 split of plan_target): apply the
+    /// prepared target and its compute outcome to the planning state, in
+    /// the same order the sequential engine did (byte-identical output).
+    /// Coordinator-only: every state mutation and every stdout/stderr
+    /// write of a planned target happens here or in the phases below.
+    fn commit_target(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        rule: &Rule,
+        prepared: PreparedTarget,
+        computed: Option<ComputeOutcome>,
+    ) -> Result<(), String> {
+        if rule.custom.is_some() {
+            self.configured_rules
+                .insert(prepared.key.clone(), rule.clone());
+        }
+        let PreparedTarget {
+            key,
+            config,
+            output_root,
+            action_env,
+            action_owner,
+            exec_config,
+            main_ignored,
+            transitive,
+            kind,
+        } = prepared;
+        // The transitive repositories of the configured target (Starlark
+        // rules' refined closure; both sequential inserts collapse to
+        // this final value, and only later targets read it).
+        state
+            .repositories
+            .insert(key.clone(), Arc::new(transitive.clone()));
+        match kind {
+            PreparedKind::PackageGroup => {
+                let ActionPlanning {
+                    dry,
+                    custom_providers,
+                    provider_files,
+                    ..
+                } = state;
+                let node = self.resolve_group(&rule.label, &mut Vec::new())?;
+                let info = starlark::environment::Module::with_temp_heap(|module| {
+                    let value = package_specification::alloc_info(&module.heap(), node);
+                    module.set("__info", value);
+                    let frozen = module.freeze().map_err(|error| {
+                        format!("cannot freeze package group provider: {error:?}")
+                    })?;
+                    frozen.get("__info").map_err(|error| error.to_string())
+                })?;
+                custom_providers.insert(
+                    key.clone(),
+                    BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
                 );
+                provider_files.insert(key.clone(), Vec::new());
+                dry.insert(key, Vec::new());
+                return Ok(());
             }
-            for line in printed {
-                eprintln!("{line}");
-            }
-            let analyzed = analyzed?;
-            restricted_to_error(rule)?;
-            self.check_transition_allowlist(rule, &key, configured)?;
-            custom_providers.insert(key.clone(), analyzed.providers.clone());
-            provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
-            provider_files.insert(key.clone(), analyzed.provider_files.clone());
-            for file in &analyzed.declared {
-                let package_output =
-                    PathBuf::from(&output_root).join(rule.label.package_exec_path());
-                let short_name = Path::new(&file.path)
-                    .strip_prefix(&package_output)
-                    .map_err(|_| format!("output outside declaring package: {}", file.path))?;
-                rule.label.with_name(&short_name.to_string_lossy())?;
-                let ignored = self.ignored(&rule.label.repository)?;
-                self.validate_output_directory(
-                    &rule.label.package_id(),
-                    &short_name.to_string_lossy(),
-                    &ignored,
+            PreparedKind::Custom(custom) => {
+                let custom = *custom;
+                self.commit_custom_target(
+                    state,
+                    configured,
+                    key,
+                    config,
+                    output_root,
+                    action_owner,
+                    exec_config,
+                    main_ignored,
+                    transitive,
+                    rule,
+                    custom.snapshot,
+                    custom.action_execution,
+                    custom.available,
+                    computed.expect("custom target computed"),
                 )?;
+                return Ok(());
             }
-            // First index EVERY action's outputs, so registration order is not
-            // an execution order and forward generated dependencies are legal.
-            for registered in &analyzed.actions {
-                for (index, file) in registered.outputs.iter().enumerate() {
-                    let exec = PathBuf::from(&file.path);
-                    register_output(producers, &exec, &key.label.to_string())?;
-                    let artifact = Artifact {
-                        directory: file.is_directory,
-                        real: exec.clone(),
-                        exec: exec.clone(),
-                        producer: Some((registered.action.id.clone(), index)),
-                        owner: file.owner.clone(),
-                    };
-                    available.insert(file.clone(), artifact.clone());
-                    artifact_index.insert(file.clone(), artifact.clone());
-                    declared.insert((config, exec), artifact);
+            PreparedKind::Native => {}
+        }
+        self.commit_native_target(
+            state,
+            configured,
+            rule,
+            key,
+            config,
+            output_root,
+            action_env,
+            action_owner,
+            exec_config,
+            main_ignored,
+        )
+    }
+
+    /// The commit of one custom rule (the tail of the split plan_target):
+    /// prerequisite validation, the NEEDS_TARGET_PLATFORM retry (inline at
+    /// the commit slot, review §1.7), print emission (review §1.8), and
+    /// every planning-state insert of the analyzed target.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_custom_target(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        key: ConfiguredTargetKey,
+        config: ConfigId,
+        output_root: String,
+        action_owner: String,
+        exec_config: ConfigId,
+        main_ignored: Arc<IgnoredSubdirectories>,
+        transitive: BTreeSet<String>,
+        rule: &Rule,
+        snapshot: ComputeSnapshot,
+        action_execution: Vec<crate::exec_groups::ActionExecution>,
+        mut available: BTreeMap<File, Artifact>,
+        computed: ComputeOutcome,
+    ) -> Result<(), String> {
+        let ActionPlanning {
+            dry,
+            custom_providers,
+            provider_files,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            producers,
+            nodes,
+            source_inputs,
+            client_environment,
+            runfiles_nodes,
+            ..
+        } = state;
+        // Prerequisite validation runs here, before the implementation's
+        // result is applied, also for a target planned early
+        // (Self::plan_pending).
+        self.starlark_prerequisite_errors(
+            rule,
+            &key,
+            exec_config,
+            configured,
+            &snapshot.dependency_targets,
+        )?;
+        let mut snapshot = snapshot;
+        let mut outcome = computed;
+        if outcome
+            .analyzed
+            .as_ref()
+            .is_err_and(|error| error.contains(crate::platforms::NEEDS_TARGET_PLATFORM))
+        {
+            // The target's own configuration's target platform.
+            let platform = self.target_platform(config, configured, &mut Vec::new())?;
+            if let Some(custom) = snapshot.rule.custom.as_mut() {
+                // A rule without toolchain resolution keeps its absent
+                // platform (ctx.target_platform_has_constraint); the
+                // configuration's platform serves `$(TARGET_CPU)`.
+                if matches!(
+                    custom.target_platform,
+                    crate::platforms::TargetPlatform::Deferred
+                ) {
+                    custom.target_platform =
+                        crate::platforms::TargetPlatform::Resolved(platform.clone());
                 }
+                let mut surface = (*custom.surface).clone();
+                surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
+                custom.surface = Arc::new(surface);
             }
-            for file in analyzed
-                .provider_files
-                .iter()
-                .chain(&analyzed.runfiles.files())
-            {
-                if !available.contains_key(file) {
-                    return Err(format!(
-                        "{}: provider file has no declared artifact identity: {}",
-                        rule.label, file.path
-                    ));
-                }
-            }
-            runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
-            if let Some(nodes_of_target) = self.plan_runfiles_support(
-                &key,
-                rule,
-                &analyzed.runfiles,
-                &transitive,
-                &action_owner,
-                &main_ignored,
-                &available,
-                RunfilesPlanning {
-                    artifact_index,
-                    declared,
-                    producers,
-                    nodes,
-                    source_inputs,
-                },
-            )? {
-                runfiles_nodes.insert(key.clone(), nodes_of_target);
-            }
-            for mut registered in analyzed.actions {
-                let mut inputs = registered
-                    .inputs
-                    .iter()
-                    .map(|file| {
-                        available.get(file).cloned().ok_or_else(|| {
-                            format!(
-                                "{}: input has no declared artifact: {}",
-                                rule.label, file.path
-                            )
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                // N23f: the tools' runfiles trees, staged at their tree paths
-                // (SpawnInputExpander.addSingleRunfilesTreeToInputs,
-                // exec/SpawnInputExpander.java:87-135); empty files are
-                // empty parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER).
-                for tree in &registered.runfiles_trees {
-                    for (path, file) in &tree.mapping {
-                        let destination = Path::new(&tree.directory).join(path);
-                        match file {
-                            Some(file) => {
-                                let mut artifact = available
-                                    .get(file)
-                                    .or_else(|| artifact_index.get(file))
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        format!(
-                                            "{}: tool runfile has no declared artifact: {}",
-                                            rule.label, file.path
-                                        )
-                                    })?;
-                                artifact.exec = destination;
-                                inputs.push(artifact);
-                            }
-                            None => {
-                                if !registered
-                                    .action
-                                    .extra
-                                    .param_files
-                                    .iter()
-                                    .any(|(existing, _)| *existing == destination)
-                                {
-                                    registered
-                                        .action
-                                        .extra
-                                        .param_files
-                                        .push((destination, Vec::new()));
-                                }
-                            }
-                        }
-                    }
-                }
-                source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
-                // The action's exec group decides its execution platform and
-                // exec properties (RuleContext.getActionOwner(execGroup)).
-                let execution = action_execution
-                    .iter()
-                    .find(|execution| execution.exec_group == registered.exec_group);
-                if let Some(execution) = execution {
-                    self.action_executions
-                        .insert(registered.action.id.clone(), execution.clone());
-                }
-                let empties: Vec<(PathBuf, Vec<u8>)> = registered
-                    .action
-                    .extra
-                    .param_files
-                    .iter()
-                    .filter(|(path, content)| {
-                        content.is_empty()
-                            && registered
-                                .runfiles_trees
-                                .iter()
-                                .any(|tree| path.starts_with(&tree.directory))
-                    })
-                    .cloned()
-                    .collect();
-                let mut action = registered.action;
-                if action.write.is_none() && action.extra.transform.is_none() {
-                    action.execution_info = rule_execution_info(rule);
-                    action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
-                }
-                let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
-                // A deferred command line recomputes the parameter files;
-                // the runfiles empty files are kept.
-                planned.deferred = match (registered.deferred, empties.is_empty()) {
-                    (Some(deferred), false) => {
-                        let inner = deferred.0;
-                        Some(crate::scheduler::Deferred(Arc::new(
-                            move |listings: &crate::scheduler::TreeListings,
-                                  action: &mut Action| {
-                                inner(listings, action)?;
-                                action.extra.param_files.extend(empties.iter().cloned());
-                                Ok(())
-                            },
-                        )))
-                    }
-                    (deferred, _) => deferred,
+            let retry = Engine::compute_target(snapshot);
+            snapshot = retry.0;
+            outcome = retry.1;
+        }
+        let outcome = if outcome
+            .analyzed
+            .as_ref()
+            .is_err_and(|error| crate::repository_demand::is_needs_repository(error))
+        {
+            // The no-demand guard aborted the compute (review §1.2):
+            // re-run it inline at this commit slot, where repository
+            // demand may fetch. The aborted attempt's buffered lines are
+            // dropped with it; the re-run is the sequential evaluation
+            // and reproduces its output exactly.
+            Engine::compute_target(snapshot).1
+        } else {
+            drop(snapshot);
+            outcome
+        };
+        let ComputeOutcome { analyzed, printed } = outcome;
+        for line in printed {
+            eprintln!("{line}");
+        }
+        let analyzed = analyzed?;
+        restricted_to_error(rule)?;
+        self.check_transition_allowlist(rule, &key, configured)?;
+        custom_providers.insert(key.clone(), analyzed.providers.clone());
+        provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
+        provider_files.insert(key.clone(), analyzed.provider_files.clone());
+        for file in &analyzed.declared {
+            let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
+            let short_name = Path::new(&file.path)
+                .strip_prefix(&package_output)
+                .map_err(|_| format!("output outside declaring package: {}", file.path))?;
+            rule.label.with_name(&short_name.to_string_lossy())?;
+            let ignored = self.ignored(&rule.label.repository)?;
+            self.validate_output_directory(
+                &rule.label.package_id(),
+                &short_name.to_string_lossy(),
+                &ignored,
+            )?;
+        }
+        // First index EVERY action's outputs, so registration order is not
+        // an execution order and forward generated dependencies are legal.
+        for registered in &analyzed.actions {
+            for (index, file) in registered.outputs.iter().enumerate() {
+                let exec = PathBuf::from(&file.path);
+                register_output(producers, &exec, &key.label.to_string())?;
+                let artifact = Artifact {
+                    directory: file.is_directory,
+                    real: exec.clone(),
+                    exec: exec.clone(),
+                    producer: Some((registered.action.id.clone(), index)),
+                    owner: file.owner.clone(),
                 };
-                nodes.push(planned);
+                available.insert(file.clone(), artifact.clone());
+                artifact_index.insert(file.clone(), artifact.clone());
+                declared.insert((config, exec), artifact);
             }
-            let defaults = analyzed
-                .files
+        }
+        for file in analyzed
+            .provider_files
+            .iter()
+            .chain(&analyzed.runfiles.files())
+        {
+            if !available.contains_key(file) {
+                return Err(format!(
+                    "{}: provider file has no declared artifact identity: {}",
+                    rule.label, file.path
+                ));
+            }
+        }
+        runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
+        if let Some(nodes_of_target) = self.plan_runfiles_support(
+            &key,
+            rule,
+            &analyzed.runfiles,
+            &transitive,
+            &action_owner,
+            &main_ignored,
+            &available,
+            RunfilesPlanning {
+                artifact_index,
+                declared,
+                producers,
+                nodes,
+                source_inputs,
+            },
+        )? {
+            runfiles_nodes.insert(key.clone(), nodes_of_target);
+        }
+        for mut registered in analyzed.actions {
+            let mut inputs = registered
+                .inputs
                 .iter()
                 .map(|file| {
                     available.get(file).cloned().ok_or_else(|| {
                         format!(
-                            "{}: DefaultInfo file has no artifact: {}",
+                            "{}: input has no declared artifact: {}",
                             rule.label, file.path
                         )
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            dry.insert(key.clone(), defaults);
-            return Ok(());
+            // N23f: the tools' runfiles trees, staged at their tree paths
+            // (SpawnInputExpander.addSingleRunfilesTreeToInputs,
+            // exec/SpawnInputExpander.java:87-135); empty files are
+            // empty parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER).
+            for tree in &registered.runfiles_trees {
+                for (path, file) in &tree.mapping {
+                    let destination = Path::new(&tree.directory).join(path);
+                    match file {
+                        Some(file) => {
+                            let mut artifact = available
+                                .get(file)
+                                .or_else(|| artifact_index.get(file))
+                                .cloned()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "{}: tool runfile has no declared artifact: {}",
+                                        rule.label, file.path
+                                    )
+                                })?;
+                            artifact.exec = destination;
+                            inputs.push(artifact);
+                        }
+                        None => {
+                            if !registered
+                                .action
+                                .extra
+                                .param_files
+                                .iter()
+                                .any(|(existing, _)| *existing == destination)
+                            {
+                                registered
+                                    .action
+                                    .extra
+                                    .param_files
+                                    .push((destination, Vec::new()));
+                            }
+                        }
+                    }
+                }
+            }
+            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
+            // The action's exec group decides its execution platform and
+            // exec properties (RuleContext.getActionOwner(execGroup)).
+            let execution = action_execution
+                .iter()
+                .find(|execution| execution.exec_group == registered.exec_group);
+            if let Some(execution) = execution {
+                self.action_executions
+                    .insert(registered.action.id.clone(), execution.clone());
+            }
+            let empties: Vec<(PathBuf, Vec<u8>)> = registered
+                .action
+                .extra
+                .param_files
+                .iter()
+                .filter(|(path, content)| {
+                    content.is_empty()
+                        && registered
+                            .runfiles_trees
+                            .iter()
+                            .any(|tree| path.starts_with(&tree.directory))
+                })
+                .cloned()
+                .collect();
+            let mut action = registered.action;
+            if action.write.is_none() && action.extra.transform.is_none() {
+                action.execution_info = rule_execution_info(rule);
+                action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
+            }
+            let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
+            // A deferred command line recomputes the parameter files;
+            // the runfiles empty files are kept.
+            planned.deferred = match (registered.deferred, empties.is_empty()) {
+                (Some(deferred), false) => {
+                    let inner = deferred.0;
+                    Some(crate::scheduler::Deferred(Arc::new(
+                        move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
+                            inner(listings, action)?;
+                            action.extra.param_files.extend(empties.iter().cloned());
+                            Ok(())
+                        },
+                    )))
+                }
+                (deferred, _) => deferred,
+            };
+            nodes.push(planned);
         }
+        let defaults = analyzed
+            .files
+            .iter()
+            .map(|file| {
+                available.get(file).cloned().ok_or_else(|| {
+                    format!(
+                        "{}: DefaultInfo file has no artifact: {}",
+                        rule.label, file.path
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        dry.insert(key.clone(), defaults);
+        Ok(())
+    }
+
+    /// The commit of one native target (genrule, filegroup, platform
+    /// providers, aliases; the tail of the split plan_target): the
+    /// coordinator-side analysis of native rules, which P3 runs inline.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_native_target(
+        &mut self,
+        state: &mut ActionPlanning,
+        configured: &mut ConfiguredNodes,
+        rule: &Rule,
+        key: ConfiguredTargetKey,
+        config: ConfigId,
+        output_root: String,
+        action_env: Arc<crate::action_env::ActionEnvironment>,
+        action_owner: String,
+        exec_config: ConfigId,
+        main_ignored: Arc<IgnoredSubdirectories>,
+    ) -> Result<(), String> {
+        let ActionPlanning {
+            dry,
+            custom_providers,
+            provider_files,
+            runfiles_info,
+            artifact_index,
+            declared,
+            producers,
+            nodes,
+            source_inputs,
+            client_environment,
+            validation,
+            ..
+        } = state;
+        let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
         // RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups
         // (:175-176, 294-296, 360-430): the native-rule collection of this
         // target's attribute prerequisites' `_validation` groups (the
@@ -9036,7 +9466,45 @@ impl Engine {
         while let Some((key, rule)) = plan.get(state.done) {
             state.done += 1;
             self.flush_delegations(state);
-            self.plan_target(state, key, rule, configured)?;
+            // The P1 split of plan_target (review §3): prepare builds the
+            // coordinator context and the owned snapshot, compute runs the
+            // pure implementation analysis, commit applies the effects in
+            // the sequential order. Phase 1 remains fully sequential.
+            let prepared = self.prepare_target(state, key, rule, configured)?;
+            let PreparedTarget {
+                key,
+                config,
+                output_root,
+                action_env,
+                action_owner,
+                exec_config,
+                main_ignored,
+                transitive,
+                kind,
+            } = prepared;
+            let mut computed = None;
+            let kind = match kind {
+                PreparedKind::Custom(custom) => {
+                    let mut custom = *custom;
+                    let (snapshot, outcome) = Engine::compute_target(custom.snapshot);
+                    custom.snapshot = snapshot;
+                    computed = Some(outcome);
+                    PreparedKind::Custom(Box::new(custom))
+                }
+                other => other,
+            };
+            let prepared = PreparedTarget {
+                key,
+                config,
+                output_root,
+                action_env,
+                action_owner,
+                exec_config,
+                main_ignored,
+                transitive,
+                kind,
+            };
+            self.commit_target(state, configured, rule, prepared, computed)?;
         }
         self.flush_delegations(state);
         Ok(())
@@ -10687,6 +11155,13 @@ fn expand_genrule_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The compute-boundary types are `Send` (review §1.7): P1 has no
+    /// threads, but the snapshot must already admit P3's workers.
+    #[test]
+    fn compute_boundary_types_are_send() {
+        compute_boundary_is_send();
+    }
 
     #[test]
     fn recursive_package_order_lists_subpackages_first() {
