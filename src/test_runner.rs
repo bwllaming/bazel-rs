@@ -772,19 +772,20 @@ impl Runner<'_> {
         fs::rename(&staging, entry).map_err(|e| io("cannot publish", entry, e))
     }
 
-    /// The spawn strategy and network requirement for one test spawn (N59):
+    /// The spawn strategy and network policy for one test spawn (N59):
     /// TestRunner actions resolve like any other spawn
     /// (crate::sandbox::resolve with the TestRunner mnemonic,
     /// TestRunnerAction.java:112), the test rule's tags and execution
     /// requirements as execution info (TargetUtils.getExecutionInfo).
+    /// Returns whether the sandbox must deny network
+    /// (crate::sandbox::denies_network).
     fn strategy(&self, unit: &Unit<'_>) -> Result<(crate::sandbox::Strategy, bool), String> {
         let mut info: std::collections::BTreeSet<String> =
             unit.spec.info.tags.iter().cloned().collect();
-        let requires_network = info.contains("requires-network");
         info.extend(unit.spec.info.execution_info().into_keys());
         Ok((
             crate::sandbox::resolve("TestRunner", &info)?,
-            requires_network,
+            crate::sandbox::denies_network(&info),
         ))
     }
 
@@ -799,7 +800,7 @@ impl Runner<'_> {
         args: &[String],
         executable: &str,
         arg0: &str,
-        requires_network: bool,
+        deny_network: bool,
     ) -> Vec<String> {
         let environment: BTreeMap<String, std::ffi::OsString> = env
             .iter()
@@ -817,7 +818,7 @@ impl Runner<'_> {
             execroot,
             &tmp,
             &environment,
-            requires_network,
+            deny_network,
             &arguments,
             execroot.parent().unwrap_or(execroot),
             Some(arg0),
@@ -876,20 +877,17 @@ impl Runner<'_> {
         // test exit under the sandbox is an ordinary test failure, without
         // the action suggestion text (StandaloneTestStrategy reports the
         // spawn's own status).
-        let (strategy, requires_network) = self.strategy(unit)?;
+        let (strategy, deny_network) = self.strategy(unit)?;
         let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         let mut command = if sandboxed {
-            let mut command = std::process::Command::new(
-                std::env::current_exe()
-                    .map_err(|e| format!("cannot start the sandbox worker: {e}"))?,
-            );
+            let mut command = std::process::Command::new("/proc/self/exe");
             command.args(self.worker_args(
                 env,
                 execroot,
                 args,
                 SETUP_EXEC_PATH,
                 &args[0],
-                requires_network,
+                deny_network,
             ));
             {
                 use std::os::unix::process::CommandExt;
@@ -1028,10 +1026,7 @@ impl Runner<'_> {
                 exit_code.to_string(),
             ];
             let mut command = if sandboxed {
-                let mut command = std::process::Command::new(
-                    std::env::current_exe()
-                        .map_err(|e| format!("cannot start the sandbox worker: {e}"))?,
-                );
+                let mut command = std::process::Command::new("/proc/self/exe");
                 let mut arguments = vec![XML_EXEC_PATH.to_owned()];
                 arguments.extend(xml_arguments.iter().cloned());
                 command.args(self.worker_args(
@@ -1040,7 +1035,7 @@ impl Runner<'_> {
                     &arguments,
                     XML_EXEC_PATH,
                     XML_EXEC_PATH,
-                    requires_network,
+                    deny_network,
                 ));
                 command
             } else {

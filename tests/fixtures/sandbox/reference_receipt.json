@@ -53,7 +53,7 @@
      "stderr": "unshare: write failed /proc/self/uid_map: Operation not permitted"
     }
    },
-   "comparison": "DEVIATION",
+   "comparison": "DEVIATION_HOST",
    "note": "mount/pid namespaces are seccomp-denied here (uid_map write EPERM / mount EPERM), so the native sandbox is Landlock-based; genuine 9.3.0 faces the same filter"
   },
   {
@@ -90,12 +90,12 @@
    "native": {
     "exit": 1,
     "stderr": [
-     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "/bin/bash: line 1: /home/coder/n59-capture-ya87qaux/native/home/leak-marker: Permission denied",
      "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
     ],
     "marker": false
    },
-   "comparison": "DEVIATION",
+   "comparison": "DEVIATION_HOST",
    "note": "genuine: STRATEGY_NOT_FOUND (linux-sandbox unsupported under the container's seccomp filter, so `sandboxed` resolves to processwrapper-sandbox there); native: the Landlock sandbox accepts the alias and denies the out-of-sandbox write"
   },
   {
@@ -111,12 +111,12 @@
    "native": {
     "exit": 1,
     "stderr": [
-     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "/bin/bash: line 1: /home/coder/n59-capture-ya87qaux/native/home/leak-marker: Permission denied",
      "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
     ],
     "marker": false
    },
-   "comparison": "DEVIATION",
+   "comparison": "DEVIATION_HOST",
    "note": "genuine processwrapper-sandbox does not isolate writes (marker created); the native Landlock sandbox fails the action (EACCES + Bazel's --sandbox_debug suggestion). On hosts where linux-sandbox can run, genuine fails with the same suggestion line and EROFS errno text"
   },
   {
@@ -152,12 +152,12 @@
    "native": {
     "exit": 1,
     "stderr": [
-     "/bin/bash: line 1: /home/coder/n59-capture-hou_hwm0/native/home/leak-marker: Permission denied",
+     "/bin/bash: line 1: /home/coder/n59-capture-ya87qaux/native/home/leak-marker: Permission denied",
      "Use --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging"
     ],
     "marker": false
    },
-   "comparison": "DEVIATION",
+   "comparison": "DEVIATION_HOST",
    "note": "Bazel 9.3 picks the highest-priority usable strategy once (SpawnStrategyResolver.resolveOne) and does not retry with the next strategy on failure; genuine's processwrapper-sandbox succeeds (no isolation), the native Landlock sandbox fails once -- neither engine escalates"
   },
   {
@@ -177,10 +177,54 @@
      "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
     ],
     "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "comparison": "EXACT",
+   "note": "both engines allow network access by default (--sandbox_default_allow_network, SandboxOptions.java:283-292; LinuxSandboxedSpawnRunner.java:302-313)"
+  },
+  {
+   "id": "network-default-deny",
+   "scenario": "the same connect with --nosandbox_default_allow_network",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+    ],
+    "marker": false,
     "output": "/bin/bash: connect: Permission denied\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Permission denied\n"
    },
-   "comparison": "DEVIATION",
-   "note": "genuine processwrapper leaves the network reachable (Connection refused); the native sandbox denies TCP (Permission denied), the counterpart of the network namespace linux-sandbox would create"
+   "comparison": "DEVIATION_HOST",
+   "note": "genuine processwrapper-sandbox does not restrict the network at all (degraded host: linux-sandbox cannot run, so its network namespace is never created); the native sandbox denies TCP (Permission denied), matching genuine linux-sandbox on a host where it can run"
+  },
+  {
+   "id": "network-block-tag",
+   "scenario": "the same connect with the block-network tag",
+   "genuine": {
+    "exit": 0,
+    "stderr": [
+     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox."
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
+   },
+   "native": {
+    "exit": 0,
+    "stderr": [
+     "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+    ],
+    "marker": false,
+    "output": "/bin/bash: connect: Permission denied\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Permission denied\n"
+   },
+   "comparison": "DEVIATION_HOST",
+   "note": "the block-network tag denies TCP natively (Spawns.requiresNetwork -> no network); genuine processwrapper-sandbox cannot honor it on this degraded host"
   },
   {
    "id": "network-requires-tag",
@@ -202,7 +246,7 @@
     "output": "/bin/bash: connect: Connection refused\n/bin/bash: line 1: /dev/tcp/127.0.0.1/9: Connection refused\n"
    },
    "comparison": "EXACT",
-   "note": "the tag lifts the restriction in both engines (both reach the network stack)"
+   "note": "the tag keeps the network reachable in both engines, overriding --nosandbox_default_allow_network"
   },
   {
    "id": "output-bytes",
@@ -235,8 +279,14 @@
     ],
     "marker": false
    },
-   "comparison": "DEVIATION",
+   "comparison": "DEVIATION_HOST",
    "note": "genuine processwrapper-sandbox lets the write through (test passes); the native sandboxed test fails like a sandboxed build action"
   }
- ]
+ ],
+ "legend": {
+  "EXACT": "same outcome and text class on both engines",
+  "EXACT_MESSAGE": "same failure-escalation behavior class",
+  "DEVIATION": "a native bug or gap (none in this run)",
+  "DEVIATION_HOST": "genuine-degraded-host: genuine Bazel cannot isolate on this host (linux-sandbox unregistrable under the container's seccomp filter; its sandboxed alias resolves to processwrapper, which isolates nothing), so the native Landlock sandbox is the stricter side, matching genuine linux-sandbox where it can run"
+ }
 }

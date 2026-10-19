@@ -38,6 +38,14 @@ fn du_kib(path: &Path) -> u64 {
 }
 
 fn run(cache: &Path, graph: Vec<PlannedAction>, jobs: usize) -> (f64, u64, usize) {
+    // This harness executes actions in-process, where the sandbox worker (a
+    // hidden subcommand of the CLI binary) cannot run, so it pins the
+    // standalone strategy: it measures staging, not sandboxing (the sandboxed
+    // cost is a CLI-level measurement; docs/SANDBOX.md).
+    bazel_rs::sandbox::install(bazel_rs::sandbox::SpawnOptions {
+        spawn_strategy: vec!["standalone".to_owned()],
+        ..Default::default()
+    });
     let peak = Arc::new(AtomicU64::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let sampler = {

@@ -1,0 +1,20 @@
+{
+ "task": "N59 sandboxed local execution",
+ "run": 1,
+ "status": "invalid-fixture",
+ "why_invalid": "the capture workspaces lived under /tmp/opencode (sandbox-writable inside the native sandbox, whose /tmp grant is Bazel-parity), and genuine and native output bases were shared across rows, so cache hits masked which strategy executed; the test fixture also wrote the genrule's leak marker instead of its own",
+ "counts": {"DEVIATION": 6, "EXACT": 3, "EXACT_MESSAGE": 1},
+ "row_ids": [
+  "environment",
+  "default-build",
+  "linux-sandbox-identifier",
+  "outside-write-default",
+  "outside-write-standalone",
+  "strategy-list-no-escalation",
+  "network-default",
+  "network-requires-tag",
+  "output-bytes",
+  "test-under-sandbox"
+ ],
+ "note": "full receipt overwritten by run 2; this record documents the run and why it was repeated"
+}

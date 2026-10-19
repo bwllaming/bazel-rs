@@ -1,34 +1,53 @@
 # Sandboxed local execution (N59)
 
 Bazel 9.3 executes Linux actions under the `sandboxed` strategy by default:
-`SandboxModule.java:353-356` registers it as the default spawn strategy
-whenever a sandbox implementation is supported, and on Linux the
-implementation is the `linux-sandbox` tool (`SandboxModule.java:326`,
-`src/main/tools/linux-sandbox.cc`). This engine implements the same
-semantics: `sandboxed` is the default, `--spawn_strategy` and
-`--strategy=<mnemonic>=` select strategies per spawn, and test actions run
-sandboxed like any action (test actions stay local-only, the N23g note).
+the platform default strategy list is [worker,] sandboxed, local
+(`BazelStrategyModule.java:67-80`; `SandboxModule.java:353-356` registers
+`sandboxed` as the default spawn strategy whenever a sandbox implementation
+is supported), and on Linux the implementation is the `linux-sandbox` tool
+(`SandboxModule.java:326`, `src/main/tools/linux-sandbox.cc`). This engine
+implements the same semantics: `sandboxed` is the default, `--spawn_strategy`
+and `--strategy=<mnemonic>=` select strategies per spawn, and test actions
+run sandboxed like any action (test actions stay local-only, the N23g note).
 
 ## Strategy plumbing
 
 - `--spawn_strategy=a,b,...`: comma-separated list, highest priority first;
-  repeated flags append (`CommaSeparatedNonEmptyOptionListConverter`,
-  `ExecutionOptions.java:63-75`). Registered identifiers are
-  `standalone`/`local` (`StandaloneModule.java:98`) and
-  `sandboxed`/`linux-sandbox` (`SandboxModule.java:326`).
+  a repeated flag replaces the list (CommaSeparatedNonEmptyOptionListConverter;
+  the option is not allowMultiple, `ExecutionOptions.java:63-75`).
+  Registered identifiers are `standalone`/`local` (`StandaloneModule.java:98`),
+  `sandboxed`/`linux-sandbox` (`SandboxModule.java:326`),
+  `processwrapper-sandbox` (SandboxModule.java:285-299: a sandbox strategy
+  that isolates nothing — the strategy genuine Bazel resolves to on hosts
+  without usable namespaces, like this one; an explicit escape hatch here)
+  and `worker` (BazelStrategyModule.java:75: registered but never usable —
+  persistent workers are not modelled — so resolution always skips it).
+  Unknown identifiers are rejected once at startup with Bazel's
+  STRATEGY_NOT_FOUND text and exit code 2 (SpawnStrategyRegistry.toStrategy:
+  718-727).
 - `--strategy=<mnemonic>=<list>` overrides the default list for that mnemonic
-  (`SpawnStrategyRegistry.getStrategies:142-143`); `--genrule_strategy`
-  is the deprecated Genrule-only spelling (`ExecutionOptions.java:77-87`).
+  (`SpawnStrategyRegistry.getStrategies:142-143`); a repeated flag for the
+  same mnemonic replaces its entry (the multimap put of
+  BazelStrategyModule.java:84-89 into SpawnStrategyRegistry.java:359-361);
+  `--genrule_strategy` is the deprecated Genrule-only spelling and also
+  replaces on repeat (`ExecutionOptions.java:77-87`).
   Mnemonics: `Genrule` for genrules (`GenRuleAction.java:35`), `TestRunner`
   for test spawns (`TestRunnerAction.java:112`), the Starlark `mnemonic`
   parameter or `Action` for `ctx.actions` spawns
   (`StarlarkActionFactory.java:811`).
 - For each action the engine picks the highest-priority strategy that can
-  execute it (`SpawnStrategyResolver.resolveOne`). Spawns tagged `no-sandbox`
-  or `nosandbox` skip the sandboxed strategy (`Spawns.mayBeSandboxed`,
-  `Spawns.java:63-67`); a kernel without Landlock support skips it the same
-  way. When no requested strategy can execute the spawn the build fails with
-  Bazel's message (`SpawnStrategyResolver.java:77-96`).
+  execute it (`SpawnStrategyResolver.resolveOne`). Spawns tagged `no-sandbox`,
+  `nosandbox` or `local` skip the sandboxed strategies
+  (`Spawns.mayBeSandboxed`, `Spawns.java:63-67` — the `local` tag arrives
+  from a genrule's `local = 1` and from rule tags through
+  `TargetUtils.getExecutionInfo`); the tag set is merged with the spawn's
+  `execution_requirements` map exactly like `remote_policy`
+  (crate::action::remote_policy). A kernel without Landlock support skips
+  `sandboxed` the same way. When no requested strategy can execute the spawn
+  the build fails with Bazel's message (`SpawnStrategyResolver.java:77-96`).
+- The platform default list is Bazel's own — [worker,] sandboxed, local
+  (`BazelStrategyModule.java:67-80`): `worker` never executes here, so the
+  default that runs is `sandboxed`, then `standalone`.
 - **Failure semantics (no escalation-on-failure):** an action that fails
   under the sandboxed strategy fails the build; Bazel 9.3 does not retry it
   with the next strategy. The strategy list is a *preference order over
@@ -96,15 +115,19 @@ where linux-sandbox applies its namespace setup:
   subtree and, along the blocked path, each sibling (the same total walk
   `MakeFilesystemMostlyReadOnly` does over `/proc/self/mounts`). Execution
   stays unhandled: binaries outside blocked subtrees keep running.
-- TCP bind and connect are denied by default (`AccessNet::BindTcp |
-  ConnectTcp`, Landlock ABI 4) — the counterpart of the network namespace
-  linux-sandbox creates unless the spawn requires network
-  (`LinuxSandboxedSpawnRunner.prepareSpawn:302-313`,
-  `ExecutionRequirements.REQUIRES_NETWORK = "requires-network"`), which the
-  `requires-network` tag and `--sandbox_writable_path`-style tags feed from
-  rule tags. With the tag the ruleset handles no network accesses (TCP
-  reaches the stack; UDP and raw sockets are outside Landlock ABI 4 and
-  remain reachable — a documented approximation of a network namespace).
+- **Network is allowed by default**, exactly like Bazel
+  (`--sandbox_default_allow_network`, default true — SandboxOptions.java:
+  283-292): no network access is handled unless the spawn must be denied one
+  (LinuxSandboxedSpawnRunner.java:302-313 creates the network namespace only
+  when the spawn does not require network; Spawns.requiresNetwork:78-88).
+  The TCP denial (`AccessNet::BindTcp | ConnectTcp`, Landlock ABI 4) applies
+  when the spawn tags `block-network`, or when
+  `--nosandbox_default_allow_network` is set and the spawn does not tag
+  `requires-network` (which overrides the flag to allow). Approximation of a
+  network namespace: only TCP bind/connect are covered — UDP, raw sockets
+  and abstract UNIX sockets stay reachable — and, unlike a namespace with
+  the loopback device up, the denial also blocks 127.0.0.1 (loopback
+  included, like NETNS without NETNS_WITH_LOOPBACK).
 - A sandbox setup failure (missing writable path, Landlock unavailable) is
   an infrastructure failure of the strategy, not the action's: the worker
   reports it through a setup-error file and the action error reads
@@ -117,11 +140,29 @@ where linux-sandbox applies its namespace setup:
   linux-sandbox (where it can run) would show "Read-only file system". The
   paired receipt records the difference and why.
 
+- Every handled access is a Landlock **HardRequirement** and the worker
+  probes the enforcement status after `restrict_self`: a ruleset that is not
+  fully enforced (older kernel, unexpected LSM state) is a sandbox setup
+  failure — never a silently weaker sandbox. Setup failures are
+  environmental errors of the strategy and the CLI exits **36** for them
+  (Bazel's EnvironmentalExecException class; the createFileSystem ->
+  "Could not copy inputs into sandbox" role).
+
 Deviations from genuine namespaces (all forced by this host's seccomp
 filter, none by choice): no user/mount/PID/IPC/UTS namespaces; `/proc` shows
 host processes (no pid-namespace isolation); no fresh `/proc`/`/sys` mounts;
 no fake hostname (`sandbox_fake_hostname` unimplemented); the tmpfs mounts
-of `--sandbox_tmpfs_path` are writable grants, not empty filesystems.
+of `--sandbox_tmpfs_path` are writable grants, not empty filesystems. Two
+further, deliberate loosenings: `/tmp` is the **shared host /tmp** (Bazel's
+linux-sandbox mounts a private, empty hermetic /tmp per sandbox when no
+explicit /tmp mount exists — LinuxSandboxedSpawnRunner.useHermeticTmp:218-296
+with known-path remounts — so cross-action /tmp side channels exist here
+that Bazel's sandbox prevents; a workspace under ~/code that needs the host
+/tmp visible uses Bazel's own answer, `--sandbox_add_mount_pair`, which is
+not modelled); and **metadata operations stay allowed** — chmod, chown,
+utime and xattr (setattr-class operations) are outside Landlock's ABI-4
+access rights, so an action can, for example, chmod a readable file it
+cannot write. Writes, creates, removes, renames and truncations are denied.
 
 ## --sandbox_debug
 
@@ -148,6 +189,7 @@ Use --sandbox_debug to see verbose messages from the sandbox and retain the sand
 | `--sandbox_writable_path=<path>` | keep an existing path writable (with its symlink target) |
 | `--sandbox_block_path=<path>` | make the path's subtree unreadable |
 | `--sandbox_tmpfs_path=<path>` | keep the path writable (no empty tmpfs is mounted) |
+| `--[no]sandbox_default_allow_network` | default true: sandboxed actions reach the network; `--nosandbox_...` denies TCP unless the spawn tags `requires-network` |
 
 Paired receipt: `tests/fixtures/sandbox/reference_receipt.json` (genuine
 Bazel 9.3.0 vs this engine on the same fixtures: default strategy choice,

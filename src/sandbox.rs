@@ -58,9 +58,25 @@ pub const WORKER_ARG: &str = "__sandbox-worker";
 
 /// The strategies this engine registers, in the identifier spellings Bazel
 /// 9.3 registers them: "standalone" and "local" (StandaloneModule.java:98),
-/// "sandboxed" and "linux-sandbox" (SandboxModule.java:326).
+/// "sandboxed" and "linux-sandbox" (SandboxModule.java:326),
+/// "processwrapper-sandbox" (SandboxModule.java:290-299 — a sandbox that
+/// isolates nothing; the strategy genuine Bazel resolves to on hosts where
+/// namespaces are unavailable, like this one) and "worker"
+/// (BazelStrategyModule.java:75 — registered, never usable here: persistent
+/// workers are not modelled, so resolution skips it).
 const IDENTIFIER_STANDALONE: &str = "standalone";
 const IDENTIFIER_SANDBOXED: &str = "sandboxed";
+
+/// Every registered identifier, in the order Bazel's
+/// SpawnStrategyRegistry.toStrategy error lists them.
+const REGISTERED: &[&str] = &[
+    "standalone",
+    "local",
+    "sandboxed",
+    "linux-sandbox",
+    "processwrapper-sandbox",
+    "worker",
+];
 
 /// How many actions executed under each strategy, for the build summary.
 static EXECUTED_SANDBOXED: AtomicU64 = AtomicU64::new(0);
@@ -70,7 +86,17 @@ static EXECUTED_STANDALONE: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Strategy {
     Standalone,
+    /// The Landlock sandbox (this engine's `sandboxed`/`linux-sandbox`).
     Sandboxed,
+    /// `processwrapper-sandbox`: a sandbox strategy that isolates nothing —
+    /// the spawn runs in its private execroot exactly like standalone, but
+    /// counts as sandboxed (SandboxModule.java:285-299). Escape hatch
+    /// matching genuine Bazel on hosts without namespaces.
+    ProcessWrapper,
+    /// `worker`: registered but never usable (no persistent workers);
+    /// resolution always skips it, like SpawnStrategyRegistry filtering on
+    /// canExec.
+    Worker,
 }
 
 impl Strategy {
@@ -79,21 +105,41 @@ impl Strategy {
         match self {
             Strategy::Standalone => IDENTIFIER_STANDALONE,
             Strategy::Sandboxed => IDENTIFIER_SANDBOXED,
+            Strategy::ProcessWrapper => "processwrapper-sandbox",
+            Strategy::Worker => "worker",
+        }
+    }
+
+    /// Whether this strategy runs the spawn inside a sandbox of any strength
+    /// (the build summary's "sandboxed" note).
+    fn is_sandbox(self) -> bool {
+        matches!(self, Strategy::Sandboxed | Strategy::ProcessWrapper)
+    }
+
+    /// Whether the strategy can execute a sandboxable spawn
+    /// (AbstractSpawnStrategy.canExec).
+    fn usable(self) -> bool {
+        match self {
+            Strategy::Standalone | Strategy::Sandboxed | Strategy::ProcessWrapper => true,
+            Strategy::Worker => false,
         }
     }
 }
 
 /// The spawn and sandbox options: ExecutionOptions's spawnStrategy and
 /// strategy entries and the SandboxOptions subset this engine models.
-#[derive(Default)]
 pub struct SpawnOptions {
     /// `--spawn_strategy`: comma-separated, highest priority first
-    /// (CommaSeparatedNonEmptyOptionListConverter; repeated flags append).
+    /// (CommaSeparatedNonEmptyOptionListConverter). Not allowMultiple: a
+    /// repeated flag replaces the list (ExecutionOptions.java:63-75).
     pub spawn_strategy: Vec<String>,
-    /// `--strategy=<mnemonic>=<list>` in flag order.
+    /// `--strategy=<mnemonic>=<list>` in flag order; the last entry for a
+    /// mnemonic wins (a multimap put,
+    /// SpawnStrategyRegistry.java:359-361 with BazelStrategyModule.java:84-89).
     pub strategy: Vec<(String, Vec<String>)>,
     /// `--genrule_strategy`: the Genrule-only override Bazel 9.3 deprecates in
-    /// favor of `--strategy=Genrule=` (ExecutionOptions.java:77-87).
+    /// favor of `--strategy=Genrule=` (ExecutionOptions.java:77-87). A
+    /// repeated flag replaces the list.
     pub genrule_strategy: Vec<String>,
     /// `--sandbox_writable_path` (SandboxOptions.java:161-170).
     pub sandbox_writable_path: Vec<PathBuf>,
@@ -103,6 +149,26 @@ pub struct SpawnOptions {
     pub sandbox_tmpfs_path: Vec<PathBuf>,
     /// `--sandbox_debug` (SandboxOptions.java:87-97).
     pub sandbox_debug: bool,
+    /// `--sandbox_default_allow_network`, default true (SandboxOptions.java:
+    /// 283-292): sandboxed actions reach the network unless the spawn tags
+    /// `block-network` or the flag is off (and the spawn does not tag
+    /// `requires-network`).
+    pub sandbox_default_allow_network: bool,
+}
+
+impl Default for SpawnOptions {
+    fn default() -> Self {
+        Self {
+            spawn_strategy: Vec::new(),
+            strategy: Vec::new(),
+            genrule_strategy: Vec::new(),
+            sandbox_writable_path: Vec::new(),
+            sandbox_block_path: Vec::new(),
+            sandbox_tmpfs_path: Vec::new(),
+            sandbox_debug: false,
+            sandbox_default_allow_network: true,
+        }
+    }
 }
 
 static OPTIONS: OnceLock<SpawnOptions> = OnceLock::new();
@@ -122,8 +188,31 @@ pub fn debug() -> bool {
     options().sandbox_debug
 }
 
-/// The Landlock ABI the ruleset requests; BestEffort compatibility downgrades
-/// what the running kernel lacks (TRUNCATE is ABI 3, TCP rules ABI 4).
+/// Rejects unknown strategy identifiers once at startup with Bazel's
+/// SpawnStrategyRegistry.toStrategy text (:718-727): the whole registered
+/// set follows "Valid values are: [...]".
+pub fn validate(options: &SpawnOptions) -> Result<(), String> {
+    for identifier in options
+        .spawn_strategy
+        .iter()
+        .chain(options.genrule_strategy.iter())
+        .chain(options.strategy.iter().flat_map(|(_, list)| list))
+    {
+        if !REGISTERED.contains(&identifier.as_str()) {
+            return Err(format!(
+                "'{identifier}' was requested for --spawn_strategy but no strategy with that \
+                 identifier was registered. Valid values are: [{}]",
+                REGISTERED.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The Landlock ABI the ruleset requests; every handled access is a
+/// HardRequirement, so a kernel lacking any of them (TRUNCATE is ABI 3, TCP
+/// rules ABI 4) fails the setup loudly instead of silently enforcing
+/// nothing.
 const ABI: landlock::ABI = landlock::ABI::V3;
 
 /// Whether this kernel's Landlock can carry the sandbox: a ruleset handling
@@ -141,6 +230,7 @@ pub fn supported() -> bool {
     }
     *SUPPORTED.get_or_init(|| {
         Ruleset::default()
+            .set_compatibility(landlock::CompatLevel::HardRequirement)
             .handle_access(AccessFs::from_write(ABI))
             .and_then(|ruleset| ruleset.create().map(|_| ()))
             .is_ok()
@@ -149,20 +239,26 @@ pub fn supported() -> bool {
 
 /// The strategies requested for `mnemonic`, in priority order
 /// (SpawnStrategyRegistry.getStrategies:129-146 — the per-mnemonic `--strategy`
-/// list beats `--spawn_strategy`; `--strategy_regexp` is not modelled). An
-/// empty request selects the engine's platform default: `sandboxed`, then
-/// `standalone` (SandboxModule.java:353-356 registers `sandboxed` as the
-/// default spawn strategy whenever a sandbox implementation is supported).
+/// list beats `--spawn_strategy`, its last entry for the mnemonic winning
+/// (BazelStrategyModule.java:84-89 puts into the multimap);
+/// `--strategy_regexp` is not modelled). An empty request selects the
+/// engine's platform default: `sandboxed`, then `standalone`
+/// (BazelStrategyModule.java:67-80: [worker,] sandboxed, local; `worker` is
+/// never usable here so only `sandboxed` and `standalone` execute).
 fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
     let options = options();
-    let requested: &[String] =
-        if let Some((_, list)) = options.strategy.iter().find(|(name, _)| name == mnemonic) {
-            list
-        } else if mnemonic == "Genrule" && !options.genrule_strategy.is_empty() {
-            &options.genrule_strategy
-        } else {
-            &options.spawn_strategy
-        };
+    let requested: &[String] = if let Some((_, list)) = options
+        .strategy
+        .iter()
+        .rev()
+        .find(|(name, _)| name == mnemonic)
+    {
+        list
+    } else if mnemonic == "Genrule" && !options.genrule_strategy.is_empty() {
+        &options.genrule_strategy
+    } else {
+        &options.spawn_strategy
+    };
     let identifiers: Vec<&str> = if requested.is_empty() {
         vec![IDENTIFIER_SANDBOXED, IDENTIFIER_STANDALONE]
     } else {
@@ -177,10 +273,12 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
         .map(|identifier| match *identifier {
             IDENTIFIER_STANDALONE | "local" => Ok(Strategy::Standalone),
             IDENTIFIER_SANDBOXED | "linux-sandbox" => Ok(Strategy::Sandboxed),
+            "processwrapper-sandbox" => Ok(Strategy::ProcessWrapper),
+            "worker" => Ok(Strategy::Worker),
             other => Err(format!(
                 "'{other}' was requested for --spawn_strategy but no strategy with that \
-                 identifier was registered. Valid values are: standalone, local, sandboxed, \
-                 linux-sandbox"
+                 identifier was registered. Valid values are: [{}]",
+                REGISTERED.join(", ")
             )),
         })
         .collect()
@@ -188,19 +286,28 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
 
 /// Resolves the strategy for one action: the highest-priority strategy that
 /// can execute it (SpawnStrategyResolver.resolveOne plus
-/// AbstractSpawnStrategy.canExec / Spawns.mayBeSandboxed: actions tagged
-/// `no-sandbox` or `nosandbox` cannot run sandboxed and fall through to the
-/// next strategy of the list). Fails with Bazel's message when no requested
-/// strategy can execute the spawn (SpawnStrategyResolver.java:77-96).
+/// AbstractSpawnStrategy.canExec / Spawns.mayBeSandboxed, Spawns.java:63-67:
+/// actions tagged `no-sandbox`, `nosandbox` or `local` cannot run sandboxed
+/// and fall through to the next strategy of the list; `worker` is registered
+/// but never usable here). `execution_info` merges the rule tags
+/// (Action.execution_info) with the spawn's execution_requirements map
+/// (ActionExtra.execution_info), like remote_policy's merge
+/// (crate::action::remote_policy). Fails with Bazel's message when no
+/// requested strategy can execute the spawn (SpawnStrategyResolver.java:
+/// 77-96).
 pub fn resolve(mnemonic: &str, execution_info: &BTreeSet<String>) -> Result<Strategy, String> {
     let list = strategies(mnemonic)?;
-    let sandboxable =
-        !execution_info.contains("no-sandbox") && !execution_info.contains("nosandbox");
+    let sandboxable = !execution_info.contains("no-sandbox")
+        && !execution_info.contains("nosandbox")
+        && !execution_info.contains("local");
     for strategy in &list {
+        if !strategy.usable() {
+            continue;
+        }
         match strategy {
-            Strategy::Standalone => return Ok(*strategy),
+            Strategy::Standalone | Strategy::ProcessWrapper => return Ok(*strategy),
             Strategy::Sandboxed if sandboxable && supported() => return Ok(*strategy),
-            Strategy::Sandboxed => continue,
+            Strategy::Sandboxed | Strategy::Worker => continue,
         }
     }
     Err(format!(
@@ -215,16 +322,29 @@ pub fn resolve(mnemonic: &str, execution_info: &BTreeSet<String>) -> Result<Stra
     ))
 }
 
+/// Whether the sandbox must deny network access to the spawn
+/// (LinuxSandboxedSpawnRunner.java:302-303: the network namespace is created
+/// when the spawn does not require network; Spawns.requiresNetwork, :78-88:
+/// `block-network` -> false, `requires-network` -> true, else the
+/// --sandbox_default_allow_network flag, default true; the java_debug
+/// override of SandboxHelpers.shouldAllowNetwork is not modelled).
+pub fn denies_network(execution_info: &BTreeSet<String>) -> bool {
+    if execution_info.contains("block-network") {
+        return true;
+    }
+    if execution_info.contains("requires-network") {
+        return false;
+    }
+    !options().sandbox_default_allow_network
+}
+
 /// Records that one action ran under `strategy` (the build summary names the
 /// execution mode; Bazel has no such line).
 pub fn count(strategy: Strategy) {
-    match strategy {
-        Strategy::Standalone => {
-            EXECUTED_STANDALONE.fetch_add(1, Ordering::Relaxed);
-        }
-        Strategy::Sandboxed => {
-            EXECUTED_SANDBOXED.fetch_add(1, Ordering::Relaxed);
-        }
+    if strategy.is_sandbox() {
+        EXECUTED_SANDBOXED.fetch_add(1, Ordering::Relaxed);
+    } else {
+        EXECUTED_STANDALONE.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -245,11 +365,13 @@ struct WorkerConfig {
     writable: Vec<PathBuf>,
     /// --sandbox_block_path entries.
     blocked: Vec<PathBuf>,
-    /// Whether the spawn requires network (ExecutionRequirements.
-    /// REQUIRES_NETWORK): the ruleset then handles no network accesses, the
-    /// counterpart of not creating a network namespace
-    /// (LinuxSandboxedSpawnRunner.prepareSpawn:302-313).
-    allow_network: bool,
+    /// Whether the sandbox must deny network access to the spawn
+    /// (crate::denies_network: the Landlock counterpart of creating the
+    /// network namespace, LinuxSandboxedSpawnRunner.java:302-303 — created
+    /// only when the spawn does not require network; by default Bazel allows
+    /// network access in sandboxes, --sandbox_default_allow_network default
+    /// true, SandboxOptions.java:283-292).
+    deny_network: bool,
     /// Where the worker's setup log goes when --sandbox_debug is on
     /// (linux-sandbox's -d debug_path).
     debug_path: Option<PathBuf>,
@@ -276,8 +398,8 @@ impl WorkerConfig {
             argv.push("--block".into());
             argv.push(display(path));
         }
-        if self.allow_network {
-            argv.push("--allow-network".into());
+        if self.deny_network {
+            argv.push("--deny-network".into());
         }
         if let Some(path) = &self.debug_path {
             argv.push("--debug".into());
@@ -321,7 +443,7 @@ pub fn wrap(
     execroot: &Path,
     tmp: &Path,
     environment: &BTreeMap<String, std::ffi::OsString>,
-    requires_network: bool,
+    deny_network: bool,
     arguments: &[String],
     debug_root: &Path,
     arg0: Option<&str>,
@@ -379,7 +501,7 @@ pub fn wrap(
             .iter()
             .map(|path| absolute(path))
             .collect(),
-        allow_network: requires_network,
+        deny_network,
         debug_path: options
             .sandbox_debug
             .then(|| debug_root.join("sandbox-debug.log")),
@@ -420,7 +542,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
     let mut config = WorkerConfig {
         writable: Vec::new(),
         blocked: Vec::new(),
-        allow_network: false,
+        deny_network: false,
         debug_path: None,
         setup_error: PathBuf::new(),
         arg0: None,
@@ -437,7 +559,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
                 index += 1;
                 config.blocked.push(path(&args.get(index))?);
             }
-            "--allow-network" => config.allow_network = true,
+            "--deny-network" => config.deny_network = true,
             "--debug" => {
                 index += 1;
                 config.debug_path = Some(path(&args.get(index))?);
@@ -474,8 +596,8 @@ fn worker(args: &[String]) -> Result<i32, String> {
         }
     };
     debug(&format!(
-        "linux-sandbox (landlock) worker: writable={:?} blocked={:?} allow_network={}",
-        config.writable, config.blocked, config.allow_network
+        "linux-sandbox (landlock) worker: writable={:?} blocked={:?} deny_network={}",
+        config.writable, config.blocked, config.deny_network
     ));
     restrict(&config, &debug)?;
     // The action's exit status is the worker's: crate::spawn_lock::exec
@@ -508,18 +630,32 @@ fn ruleset_error(error: RulesetError) -> String {
 /// connect (unless the spawn requires network). Reads are handled only when
 /// paths are blocked, denied on the blocked subtrees; otherwise reads are not
 /// handled at all, so everything stays readable like Bazel's read-only mounts.
+/// The marker of a sandbox setup failure in action errors: an environmental
+/// failure of the strategy (Bazel's EnvironmentalExecException class), which
+/// the CLI reports with exit code 36. `crate::main` routes on it.
+pub const SETUP_FAILURE_MARKER: &str = "could not set up the sandbox";
+
+/// Whether an action error is a sandbox setup failure (exit code 36).
+pub fn is_setup_failure(error: &str) -> bool {
+    error.contains(SETUP_FAILURE_MARKER)
+}
+
 fn restrict(config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {
-    let ruleset = Ruleset::default().set_compatibility(landlock::CompatLevel::BestEffort);
+    // Every handled access is a HardRequirement: a kernel lacking any of
+    // them (the write set includes ABI 3's TRUNCATE; the network rules are
+    // ABI 4) fails the setup loudly — the sandbox never degrades into a
+    // silently unenforced ruleset.
+    let ruleset = Ruleset::default().set_compatibility(landlock::CompatLevel::HardRequirement);
     let ruleset = ruleset
         .handle_access(AccessFs::from_write(ABI))
         .map_err(ruleset_error)?;
-    let ruleset = if config.allow_network {
-        ruleset
-    } else {
+    let ruleset = if config.deny_network {
         ruleset
             .handle_access(AccessNet::BindTcp)
             .and_then(|ruleset| ruleset.handle_access(AccessNet::ConnectTcp))
             .map_err(ruleset_error)?
+    } else {
+        ruleset
     };
     let ruleset = if config.blocked.is_empty() {
         ruleset
@@ -548,17 +684,31 @@ fn restrict(config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {
         // outside the blocked subtrees keep running.
         for granted in read_grants(&config.blocked)? {
             debug(&format!("readable: {}", granted.display()));
-            let (next, _) = add_path_rule(
-                created,
-                &granted,
-                AccessFs::ReadFile | AccessFs::ReadDir,
-                "readable",
-            )?;
+            // LANDLOCK_ACCESS_FS_READ_DIR is directory-only: a file sibling
+            // grants only the read-file right.
+            let access: BitFlags<AccessFs> =
+                if fs::symlink_metadata(&granted).is_ok_and(|metadata| metadata.is_dir()) {
+                    AccessFs::ReadFile | AccessFs::ReadDir
+                } else {
+                    AccessFs::ReadFile.into()
+                };
+            let (next, _) = add_path_rule(created, &granted, access, "readable")?;
             created = next;
         }
     }
-    created.restrict_self().map_err(ruleset_error)?;
-    debug("landlock: restricted");
+    let status = created.restrict_self().map_err(ruleset_error)?;
+    // The enforcement probe: with the HardRequirement compat level a
+    // partially or entirely unenforced filesystem ruleset must never pass
+    // silently — treat it as a setup error (RestrictionStatus.ruleset,
+    // landlock::RulesetStatus).
+    if status.ruleset != landlock::RulesetStatus::FullyEnforced {
+        return Err(format!(
+            "the sandbox was not enforced on this kernel ({:?}); refusing to run the action \
+             unsandboxed",
+            status.ruleset
+        ));
+    }
+    debug("landlock: restricted and fully enforced");
     Ok(())
 }
 
@@ -684,7 +834,7 @@ mod tests {
         let config = WorkerConfig {
             writable: vec![PathBuf::from("/w")],
             blocked: vec![PathBuf::from("/b")],
-            allow_network: true,
+            deny_network: true,
             debug_path: Some(PathBuf::from("/d")),
             setup_error: PathBuf::from("/e"),
             arg0: None,
@@ -698,7 +848,7 @@ mod tests {
                 "/w",
                 "--block",
                 "/b",
-                "--allow-network",
+                "--deny-network",
                 "--debug",
                 "/d",
                 "--setup-error",
@@ -712,7 +862,7 @@ mod tests {
         let mut parsed = WorkerConfig {
             writable: Vec::new(),
             blocked: Vec::new(),
-            allow_network: false,
+            deny_network: false,
             debug_path: None,
             setup_error: PathBuf::new(),
             arg0: None,
@@ -729,7 +879,7 @@ mod tests {
                     index += 1;
                     parsed.blocked.push(PathBuf::from(&argv[index]));
                 }
-                "--allow-network" => parsed.allow_network = true,
+                "--deny-network" => parsed.deny_network = true,
                 "--debug" => {
                     index += 1;
                     parsed.debug_path = Some(PathBuf::from(&argv[index]));
@@ -748,7 +898,7 @@ mod tests {
         }
         assert_eq!(parsed.writable, config.writable);
         assert_eq!(parsed.blocked, config.blocked);
-        assert!(parsed.allow_network);
+        assert!(parsed.deny_network);
         assert_eq!(parsed.debug_path, config.debug_path);
         assert_eq!(parsed.setup_error, config.setup_error);
         assert_eq!(arguments, strings(&["/bin/true", "x"]).as_slice());

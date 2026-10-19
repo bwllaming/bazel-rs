@@ -2598,26 +2598,32 @@ pub fn execute_with_remote(
         // execute this spawn (SpawnStrategyResolver.resolveOne), resolved per
         // action from its mnemonic. The strategy never changes the action key:
         // a cache entry produced sandboxed satisfies a standalone request and
-        // vice versa, like Bazel's action cache.
-        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &action.execution_info)
+        // vice versa, like Bazel's action cache. The execution info merges
+        // the rule tags with the spawn's execution_requirements map, exactly
+        // like remote_policy (crate::action::remote_policy).
+        let execution_info = {
+            let mut merged = action.execution_info.clone();
+            merged.extend(action.extra.execution_info.keys().cloned());
+            merged
+        };
+        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &execution_info)
             .map_err(|error| format!("action '{}': {error}", action.id))?;
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         let environment = resolved_environment(action);
         let mut command = if sandboxed {
-            // The executor starts its own binary as the sandbox worker (the
-            // role linux-sandbox fills as the spawn's argv[0],
-            // SandboxedSpawnStrategy.exec -> LinuxSandboxCommandLineBuilder.
-            //buildForCommand) with the action's cwd and environment; the
-            // worker applies the sandbox and execs the action. The wrapped
-            // argv carries the action's own arguments after --.
-            let executable = std::env::current_exe()
-                .map_err(|e| format!("cannot start the sandbox worker for '{}': {e}", action.id))?;
-            let mut command = Command::new(&executable);
+            // The executor starts its own binary (/proc/self/exe) as the
+            // sandbox worker (the role linux-sandbox fills as the spawn's
+            // argv[0], SandboxedSpawnStrategy.exec ->
+            // LinuxSandboxCommandLineBuilder.buildForCommand) with the
+            // action's cwd and environment; the worker applies the sandbox
+            // and execs the action. The wrapped argv carries the action's own
+            // arguments after --.
+            let mut command = Command::new("/proc/self/exe");
             command.args(crate::sandbox::wrap(
                 &execroot,
                 &tmp,
                 &environment,
-                action.execution_info.contains("requires-network"),
+                crate::sandbox::denies_network(&execution_info),
                 &argv,
                 &work.0,
                 None,

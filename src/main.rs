@@ -249,7 +249,13 @@ fn run() -> Result<(), String> {
     // Credential helpers and the remote cache (N41) for every command.
     let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options)?;
     // The spawn strategy and sandbox options (N59) for every executing
-    // command.
+    // command. Unknown strategy identifiers are rejected once here, at
+    // startup, with Bazel's STRATEGY_NOT_FOUND text and exit code 2
+    // (SpawnStrategyRegistry.toStrategy:718-727).
+    if let Err(error) = bazel_rs::sandbox::validate(&spawn_options) {
+        eprintln!("ERROR: {error}");
+        std::process::exit(2);
+    }
     bazel_rs::sandbox::install(spawn_options);
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
@@ -1590,29 +1596,28 @@ impl NativeOptions {
             false
         } else if builds(command) && arg == "--spawn_strategy" {
             // CommaSeparatedNonEmptyOptionListConverter (ExecutionOptions.
-            // java:63-75): repeated flags append, highest priority first.
-            self.spawn.spawn_strategy.extend(strategy_list(
-                next.ok_or("--spawn_strategy requires a value")?,
-            )?);
+            // java:63-75): highest priority first; the option is not
+            // allowMultiple, so a repeated flag replaces the list.
+            self.spawn.spawn_strategy =
+                strategy_list(next.ok_or("--spawn_strategy requires a value")?)?;
             true
         } else if let Some(value) = arg
             .strip_prefix("--spawn_strategy=")
             .filter(|_| builds(command))
         {
-            self.spawn.spawn_strategy.extend(strategy_list(value)?);
+            self.spawn.spawn_strategy = strategy_list(value)?;
             false
         } else if builds(command) && arg == "--genrule_strategy" {
             // ExecutionOptions.java:77-87: Genrule-only, deprecated in favor
-            // of --strategy=Genrule=.
-            self.spawn.genrule_strategy.extend(strategy_list(
-                next.ok_or("--genrule_strategy requires a value")?,
-            )?);
+            // of --strategy=Genrule=; a repeated flag replaces the list.
+            self.spawn.genrule_strategy =
+                strategy_list(next.ok_or("--genrule_strategy requires a value")?)?;
             true
         } else if let Some(value) = arg
             .strip_prefix("--genrule_strategy=")
             .filter(|_| builds(command))
         {
-            self.spawn.genrule_strategy.extend(strategy_list(value)?);
+            self.spawn.genrule_strategy = strategy_list(value)?;
             false
         } else if builds(command)
             && arg == "--strategy"
@@ -1630,6 +1635,20 @@ impl NativeOptions {
         {
             // SandboxOptions.java:87-97.
             self.spawn.sandbox_debug = value?;
+            false
+        } else if builds(command)
+            && let Some(value) =
+                bazel_rs::configuration::boolean_option(arg, "sandbox_default_allow_network")
+                    .or_else(|| {
+                        bazel_rs::configuration::boolean_option(
+                            arg,
+                            "experimental_sandbox_default_allow_network",
+                        )
+                    })
+        {
+            // SandboxOptions.java:283-292: network access is allowed in
+            // sandboxes by default (the old name is accepted like Bazel's).
+            self.spawn.sandbox_default_allow_network = value?;
             false
         } else if builds(command)
             && matches!(
@@ -1770,9 +1789,10 @@ impl NativeOptions {
     }
 
     /// One `--strategy=<mnemonic>=<strategies>` (ExecutionOptions.java:89-93,
-    /// StringToStringListConverter: `name=value1[,value2]*`, repeated flags
-    /// accumulate; the last entry for a mnemonic wins, like Bazel's multimap
-    /// overwrite — SpawnStrategyRegistry.java:142-143 reads one list).
+    /// StringToStringListConverter: `name=value1[,value2]*`; a repeated flag
+    /// for the same mnemonic replaces it — a multimap put,
+    /// BazelStrategyModule.java:84-89 into SpawnStrategyRegistry.java:
+    /// 359-361, which keeps one list per mnemonic).
     fn parse_strategy(&mut self, value: &str) -> Result<(), String> {
         let Some((name, list)) = value.split_once('=') else {
             return Err(format!(
@@ -2196,7 +2216,14 @@ fn main() {
     if let Err(error) = run() {
         let error = located(&error);
         eprintln!("bazel-rs: {error}");
-        std::process::exit(1);
+        // A sandbox setup failure is an environmental failure of the
+        // strategy (Bazel's EnvironmentalExecException class): exit code 36.
+        let code = if bazel_rs::sandbox::is_setup_failure(&error) {
+            36
+        } else {
+            1
+        };
+        std::process::exit(code);
     }
 }
 

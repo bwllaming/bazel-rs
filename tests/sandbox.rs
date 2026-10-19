@@ -85,6 +85,7 @@ impl Workspace {
 genrule(name = 'leak', outs = ['leak.txt'], cmd = 'echo leaked > {marker} && touch $@')
 genrule(name = 'net', outs = ['net.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
 genrule(name = 'net2', tags = ['requires-network'], outs = ['net2.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
+genrule(name = 'net3', tags = ['block-network'], outs = ['net3.txt'], cmd = '(echo > /dev/tcp/127.0.0.1/9) 2> $@ || true')
 genrule(name = 'blocked', outs = ['blocked.txt'], cmd = 'cat /etc/hostname > $@ 2>&1 || true')
 genrule(name = 'tmpwrite', outs = ['tmpwrite.txt'], cmd = 'echo t > /tmp/n59-tmpwrite-marker && echo done > $@')
 "#
@@ -264,7 +265,13 @@ fn action_keys_do_not_change_with_the_strategy() {
 }
 
 #[test]
-fn network_is_denied_by_default_and_required_by_tag() {
+fn network_is_allowed_by_default_and_blocked_by_tag_or_flag() {
+    // Bazel allows network access in sandboxes by default
+    // (--sandbox_default_allow_network, SandboxOptions.java:283-292); the
+    // namespace — here the TCP denial — is created only when the spawn does
+    // not require network (LinuxSandboxedSpawnRunner.java:302-303,
+    // Spawns.requiresNetwork:78-88: block-network -> deny, requires-network
+    // -> allow, else the flag).
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(&marker);
@@ -272,15 +279,39 @@ fn network_is_denied_by_default_and_required_by_tag() {
     assert!(output.status.success(), "{}", Workspace::text(&output));
     let net = find_output(ws.path(), "cache", "net.txt");
     assert!(
-        net.contains("Permission denied"),
-        "TCP connect is denied by the sandbox: {net}"
+        net.contains("Connection refused") && !net.contains("Permission denied"),
+        "the default sandbox leaves the network reachable: {net}"
     );
-    let output = ws.run("cache2", &["build", "//pkg:net2"]);
+    // --nosandbox_default_allow_network flips the default to denied.
+    let output = ws.run(
+        "cache2",
+        &["build", "--nosandbox_default_allow_network", "//pkg:net"],
+    );
     assert!(output.status.success(), "{}", Workspace::text(&output));
-    let net2 = find_output(ws.path(), "cache2", "net2.txt");
+    let net = find_output(ws.path(), "cache2", "net.txt");
+    assert!(
+        net.contains("Permission denied"),
+        "--nosandbox_default_allow_network denies TCP: {net}"
+    );
+    // The requires-network tag overrides the flag: the spawn must reach the
+    // stack.
+    let output = ws.run(
+        "cache3",
+        &["build", "--nosandbox_default_allow_network", "//pkg:net2"],
+    );
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    let net2 = find_output(ws.path(), "cache3", "net2.txt");
     assert!(
         net2.contains("Connection refused") && !net2.contains("Permission denied"),
-        "the requires-network tag lifts the restriction (the connection reaches the stack): {net2}"
+        "requires-network overrides --nosandbox_default_allow_network: {net2}"
+    );
+    // The block-network tag denies even under the default allow.
+    let output = ws.run("cache4", &["build", "//pkg:net3"]);
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    let net3 = find_output(ws.path(), "cache4", "net3.txt");
+    assert!(
+        net3.contains("Permission denied"),
+        "the block-network tag denies TCP: {net3}"
     );
 }
 
@@ -371,21 +402,151 @@ fn sandbox_debug_retains_the_sandbox_build_root() {
 }
 
 #[test]
-fn unknown_strategy_fails_with_bazels_error() {
-    // SpawnStrategyRegistry.toStrategy:718-727: '...' was requested for ...
-    // but no strategy with that identifier was registered.
+fn unknown_strategy_is_rejected_once_at_startup() {
+    // SpawnStrategyRegistry.toStrategy:718-727, at startup with exit code 2:
+    // the whole registered set follows "Valid values are: [...]".
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(&marker);
     let output = ws.run("cache", &["build", "--spawn_strategy=bogus", "//pkg:ok"]);
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(2));
     let text = Workspace::text(&output);
     assert!(
         text.contains(
-            "'bogus' was requested for --spawn_strategy but no strategy with that identifier \
-             was registered. Valid values are: standalone, local, sandboxed, linux-sandbox"
+            "ERROR: 'bogus' was requested for --spawn_strategy but no strategy with that \
+             identifier was registered. Valid values are: [standalone, local, sandboxed, \
+             linux-sandbox, processwrapper-sandbox, worker]"
         ),
         "{text}"
+    );
+}
+
+#[test]
+fn processwrapper_sandbox_is_a_non_isolating_sandbox() {
+    // SandboxModule.java:285-299: processwrapper-sandbox is a sandbox
+    // strategy that isolates nothing — the strategy genuine Bazel resolves
+    // to on hosts without namespaces. An escape hatch: the out-of-sandbox
+    // write passes, and the summary still counts sandboxed executions.
+    let ws = Workspace::new();
+    let marker = ws.outside();
+    ws.build_fixture(&marker);
+    let output = ws.run(
+        "cache",
+        &[
+            "build",
+            "--spawn_strategy=processwrapper-sandbox",
+            "//pkg:leak",
+        ],
+    );
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    assert!(marker.exists());
+    assert!(
+        Workspace::text(&output).contains("(experimental local execution; sandboxed)"),
+        "a processwrapper-sandbox execution counts as sandboxed"
+    );
+}
+
+#[test]
+fn worker_is_registered_but_never_usable() {
+    // BazelStrategyModule.java:75 registers "worker" in the default list;
+    // persistent workers are not modelled, so resolution skips it. Alone it
+    // is no usable strategy at all (SpawnStrategyResolver.java:77-96).
+    let ws = Workspace::new();
+    let marker = ws.outside();
+    ws.build_fixture(&marker);
+    let output = ws.run("cache", &["build", "//pkg:ok"]);
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    let output = ws.run(
+        "cache2",
+        &["build", "--spawn_strategy=worker,standalone", "//pkg:leak"],
+    );
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    assert!(marker.exists(), "worker is skipped; standalone executes");
+    let output = ws.run("cache3", &["build", "--spawn_strategy=worker", "//pkg:ok"]);
+    assert!(!output.status.success());
+    assert!(
+        Workspace::text(&output).contains(
+            "Genrule spawn cannot be executed with any of the available strategies: worker."
+        ),
+        "{}",
+        Workspace::text(&output)
+    );
+}
+
+#[test]
+fn repeated_strategy_flags_last_value_wins() {
+    // --spawn_strategy is not allowMultiple (ExecutionOptions.java:63-75):
+    // a repeated flag replaces the list; a repeated --strategy=<mnemonic>=
+    // replaces the mnemonic's entry (BazelStrategyModule.java:84-89's
+    // multimap put).
+    let ws = Workspace::new();
+    let marker = ws.outside();
+    ws.build_fixture(&marker);
+    let output = ws.run(
+        "cache",
+        &[
+            "build",
+            "--spawn_strategy=standalone",
+            "--spawn_strategy=sandboxed",
+            "//pkg:leak",
+        ],
+    );
+    assert!(
+        !output.status.success() && !marker.exists(),
+        "the last --spawn_strategy value (sandboxed) executes: {}",
+        Workspace::text(&output)
+    );
+    let output = ws.run(
+        "cache2",
+        &[
+            "build",
+            "--strategy=Genrule=standalone",
+            "--strategy=Genrule=sandboxed",
+            "//pkg:leak",
+        ],
+    );
+    assert!(
+        !output.status.success() && !marker.exists(),
+        "the last --strategy=Genrule= entry (sandboxed) executes: {}",
+        Workspace::text(&output)
+    );
+    let output = ws.run(
+        "cache3",
+        &[
+            "build",
+            "--strategy=Genrule=sandboxed",
+            "--strategy=Genrule=standalone",
+            "//pkg:leak",
+        ],
+    );
+    assert!(
+        output.status.success() && marker.exists(),
+        "the last --strategy=Genrule= entry (standalone) executes: {}",
+        Workspace::text(&output)
+    );
+}
+
+#[test]
+fn local_tag_runs_unsandboxed() {
+    // Spawns.mayBeSandboxed (Spawns.java:63-67) also excludes the `local`
+    // execution requirement; a genrule with local = 1 tags local
+    // (GenRuleBase -> rule_execution_info).
+    let ws = Workspace::new();
+    let marker = ws.outside();
+    ws.file("pkg/in.txt", "content\n");
+    ws.file(
+        "pkg/BUILD.bazel",
+        &format!(
+            "genrule(name = 'leak', local = 1, outs = ['leak.txt'], cmd = 'echo leaked > {} && touch $@')",
+            marker.display()
+        ),
+    );
+    let output = ws.run("cache", &["build", "//pkg:leak"]);
+    assert!(output.status.success(), "{}", Workspace::text(&output));
+    assert!(marker.exists());
+    assert!(
+        Workspace::text(&output).contains("(experimental local execution; not sandboxed)"),
+        "the summary reports the standalone execution"
     );
 }
 
