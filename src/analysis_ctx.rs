@@ -3,8 +3,10 @@
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::environment::{Methods, MethodsBuilder};
+use starlark::eval::Arguments;
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
+use starlark::values::none::NoneType;
 use starlark::values::{
     Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Trace, Value,
     ValueLike, starlark_value,
@@ -27,7 +29,7 @@ pub use crate::platforms::NEEDS_TARGET_PLATFORM;
 mod values {
     use super::*;
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
-    pub(super) struct RuleCtx<'v> {
+    pub(crate) struct RuleCtx<'v> {
         pub backing: Value<'v>,
         #[allocative(skip)]
         #[trace(static)]
@@ -53,7 +55,7 @@ mod values {
         pub surface: Arc<RuleSurface>,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
-    pub(super) struct SettingCtx<'v> {
+    pub(crate) struct SettingCtx<'v> {
         pub ctx: RuleCtx<'v>,
         /// The configured value (command line or `build_setting_default`).
         #[allocative(skip)]
@@ -61,7 +63,7 @@ mod values {
         pub value: SettingValue,
     }
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
-    pub(super) struct SubruleCtx<'v> {
+    pub(crate) struct SubruleCtx<'v> {
         /// The subrule's exported name (StarlarkSubrule.getName).
         #[allocative(skip)]
         #[trace(static)]
@@ -77,8 +79,115 @@ mod values {
         #[trace(static)]
         pub toolchains: crate::subrule::SubruleToolchains,
     }
+    /// An aspect's `ctx` (StarlarkRuleContext with an AspectDescriptor,
+    /// StarlarkRuleContext.java:188-330): `ctx.attr` is the aspect's own
+    /// attributes, `ctx.rule` the base target's attributes (with the
+    /// aspect-applied dependencies along `attr_aspects`).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
+    pub(crate) struct AspectCtx<'v> {
+        /// The wrapped rule context: the base target's surface and scope
+        /// (a SettingCtx wraps its RuleCtx the same way).
+        pub ctx: RuleCtx<'v>,
+    }
+    /// `ctx.rule` of an aspect context: StarlarkAttributesCollection — the
+    /// base target's attributes (StarlarkAttributesCollectionApi).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
+    pub(crate) struct RuleAttributes<'v> {
+        pub attr: Value<'v>,
+        pub executable: Value<'v>,
+        pub file: Value<'v>,
+        pub files: Value<'v>,
+        /// Rule.getRuleClassName, e.g. `lib`.
+        #[trace(static)]
+        pub kind: String,
+    }
+
+    #[starlark_value(type = "StarlarkAttributesCollection")]
+    impl<'v> StarlarkValue<'v> for RuleAttributes<'v> {
+        fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+            match name {
+                "attr" => Some(self.attr),
+                "executable" => Some(self.executable),
+                "file" => Some(self.file),
+                "files" => Some(self.files),
+                "kind" => Some(heap.alloc(self.kind.as_str())),
+                _ => None,
+            }
+        }
+        fn has_attr(&self, name: &str, _heap: Heap<'v>) -> bool {
+            matches!(name, "attr" | "executable" | "file" | "files" | "kind")
+        }
+        fn dir_attr(&self) -> Vec<String> {
+            ["attr", "executable", "file", "files", "kind"]
+                .map(str::to_owned)
+                .to_vec()
+        }
+        fn unknown_attribute_message(&self, name: &str) -> Option<String> {
+            Some(crate::ctx_surface::no_field_message(
+                "ctx.rule",
+                name,
+                &["attr", "executable", "file", "files", "kind"].map(str::to_owned),
+            ))
+        }
+    }
+
+    /// `ctx.super` in an aspect (StarlarkRuleContext.callParent, :617-620).
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
+    pub(crate) struct AspectSuperMethod;
+
+    impl fmt::Display for AspectSuperMethod {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<built-in method super of ctx value>")
+        }
+    }
+
+    #[starlark_value(type = "builtin_function_or_method")]
+    impl<'v> StarlarkValue<'v> for AspectSuperMethod {
+        fn invoke(
+            &self,
+            _me: Value<'v>,
+            _args: &Arguments<'v, '_>,
+            _eval: &mut Evaluator<'v, '_, '_>,
+        ) -> starlark::Result<Value<'v>> {
+            Err(starlark::Error::new_other(anyhow!(
+                "Can't use 'super' call in an aspect."
+            )))
+        }
+    }
+
+    #[starlark_value(type = "ctx")]
+    impl<'v> StarlarkValue<'v> for AspectCtx<'v> {
+        fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+            // StarlarkRuleContext.callParent in an aspect (:617-620).
+            (name == "super").then(|| heap.alloc(AspectSuperMethod))
+        }
+        fn dir_attr(&self) -> Vec<String> {
+            vec!["super".to_owned()]
+        }
+        fn get_methods() -> Option<&'static Methods> {
+            Some(ASPECT_METHODS.methods())
+        }
+        fn unknown_attribute_message(&self, name: &str) -> Option<String> {
+            Some(unknown_ctx_member(name))
+        }
+    }
+
+    pub(super) fn field<'v>(
+        this: Value<'v>,
+        name: &str,
+        heap: Heap<'v>,
+    ) -> anyhow::Result<Value<'v>> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        ctx.backing
+            .get_attr_error(name, heap)
+            .map_err(|error| anyhow!(error.to_string()))
+    }
+
+    starlark::starlark_simple_value!(AspectSuperMethod);
 }
-use values::{RuleCtx, SettingCtx, SubruleCtx};
+use values::field;
+pub(crate) use values::{AspectCtx, RuleAttributes, RuleCtx, SettingCtx, SubruleCtx};
 
 /// StarlarkRuleContext.repr (analysis/starlark/StarlarkRuleContext.java:590-597)
 /// for a rule (not aspect) context; `label` is the canonical form
@@ -133,6 +242,7 @@ impl fmt::Display for SubruleCtx<'_> {
 starlark::methods_static!(RULE_METHODS = all_rule_properties);
 starlark::methods_static!(SETTING_METHODS = all_setting_properties);
 starlark::methods_static!(SUBRULE_METHODS = subrule_properties);
+starlark::methods_static!(ASPECT_METHODS = all_aspect_properties);
 
 /// The StarlarkRuleContextApi members (dir order, 36 in Bazel 9.3).
 const CTX_MEMBERS: [&str; 36] = [
@@ -216,12 +326,36 @@ impl<'v> StarlarkValue<'v> for SubruleCtx<'v> {
     }
 }
 
-fn field<'v>(this: Value<'v>, name: &str, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-    let ctx = rule_ctx(this)?;
-    ctx.scope.check_current()?;
-    ctx.backing
-        .get_attr_error(name, heap)
-        .map_err(|error| anyhow!(error.to_string()))
+/// StarlarkRuleContext.repr for an aspect context (:591-594).
+pub(crate) fn aspect_context_repr(label: &str) -> String {
+    format!("<aspect context for {label}>")
+}
+
+impl AspectCtx<'_> {
+    fn label(&self) -> String {
+        starlark::values::structs::StructRef::from_value(self.ctx.backing)
+            .and_then(|fields| {
+                fields
+                    .iter()
+                    .find(|(name, _)| name.as_str() == "label")
+                    .map(|(_, value)| canonical_label(value))
+            })
+            .unwrap_or_default()
+    }
+}
+
+impl fmt::Display for AspectCtx<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&aspect_context_repr(&self.label()))
+    }
+}
+
+impl fmt::Display for RuleAttributes<'_> {
+    /// StarlarkAttributesCollection has no custom repr in Bazel 9.3; the
+    /// default Java object form is not Starlark-visible. Print the kind.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<rule attributes for {}>", self.kind)
+    }
 }
 
 #[starlark_module]
@@ -355,6 +489,9 @@ fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
     if let Some(ctx) = this.downcast_ref::<RuleCtx>() {
         return Ok(ctx);
     }
+    if let Some(ctx) = this.downcast_ref::<AspectCtx>() {
+        return Ok(&ctx.ctx);
+    }
     Ok(&this
         .downcast_ref::<SettingCtx>()
         .ok_or_else(|| anyhow!("expected ctx"))?
@@ -364,13 +501,26 @@ fn rule_ctx<'v>(this: Value<'v>) -> anyhow::Result<&'v RuleCtx<'v>> {
 fn all_setting_properties(builder: &mut MethodsBuilder) {
     rule_properties(builder);
     crate::analysis_ctx_surface::surface_properties(builder);
+    crate::analysis_ctx_surface::rule_aspect_gates(builder);
     setting_properties(builder);
 }
 
 fn all_rule_properties(builder: &mut MethodsBuilder) {
     rule_properties(builder);
     crate::analysis_ctx_surface::surface_properties(builder);
+    crate::analysis_ctx_surface::rule_aspect_gates(builder);
     crate::analysis_ctx_surface::non_setting_properties(builder);
+}
+
+/// The aspect context's members: the attribute getters of the aspect's own
+/// attributes (no `outputs` — an aspect context has none,
+/// StarlarkRuleContext.java:271/803-806), the shared configuration surface
+/// and the aspect-only `ctx.rule`/`ctx.aspect_ids`.
+fn all_aspect_properties(builder: &mut MethodsBuilder) {
+    aspect_properties(builder);
+    crate::analysis_ctx_surface::surface_properties(builder);
+    crate::analysis_ctx_surface::non_setting_properties(builder);
+    aspect_only_properties(builder);
 }
 
 /// The rule surface of a rule context value (ObjcConfiguration's `ctx` argument).
@@ -500,6 +650,118 @@ pub(crate) fn alloc_subrule<'v>(
         scope,
         toolchains,
     })
+}
+
+/// The aspect context value over `backing` (the base target's surface and
+/// scope in `platform`/`surface`, StarlarkRuleContext.java:191-199).
+pub(crate) fn alloc_aspect<'v>(
+    heap: Heap<'v>,
+    backing: Value<'v>,
+    scope: ScopeHandle,
+    platform: TargetPlatform,
+    toolchains: Option<Arc<ToolchainContextData>>,
+    exec_groups: Option<Arc<crate::exec_groups::ExecGroupsData>>,
+    surface: Arc<RuleSurface>,
+) -> Value<'v> {
+    heap.alloc_complex_no_freeze(AspectCtx {
+        ctx: RuleCtx {
+            backing,
+            scope,
+            platform,
+            toolchains,
+            exec_groups,
+            surface,
+        },
+    })
+}
+
+/// The attribute getters an aspect context shares with a rule context,
+/// minus `outputs` (an aspect context has none) and with the aspect's own
+/// (empty) `executable` struct (StarlarkRuleContext.java:275-285).
+#[starlark_module]
+fn aspect_properties(builder: &mut MethodsBuilder) {
+    #[starlark(attribute)]
+    fn attr<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "attr", heap)
+    }
+    #[starlark(attribute)]
+    fn files<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "files", heap)
+    }
+    #[starlark(attribute)]
+    fn file<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "file", heap)
+    }
+    #[starlark(attribute)]
+    fn label<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "label", heap)
+    }
+    #[starlark(attribute)]
+    fn actions<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "actions", heap)
+    }
+    /// StarlarkRuleContext.getExecutable (:692-697): the aspect's own
+    /// attributes are never executable, so the struct is empty.
+    #[starlark(attribute)]
+    fn executable<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        rule_ctx(this)?.scope.check_current()?;
+        Ok(crate::ctx_surface::empty_struct(heap))
+    }
+    #[starlark(attribute)]
+    fn toolchains<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        Ok(crate::toolchain_info::alloc_context(
+            heap,
+            ctx.toolchains.clone(),
+        ))
+    }
+    fn target_platform_has_constraint<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] constraint_value: Value<'v>,
+    ) -> anyhow::Result<bool> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        let Some(value) = crate::platform_providers::constraint_value(constraint_value) else {
+            bail!(
+                "in call to target_platform_has_constraint(), parameter 'constraintValue' got value of type '{}', want 'ConstraintValueInfo'",
+                constraint_value.get_type()
+            );
+        };
+        match &ctx.platform {
+            TargetPlatform::Absent => Ok(false),
+            TargetPlatform::Deferred => bail!("{NEEDS_TARGET_PLATFORM}"),
+            TargetPlatform::Resolved(platform) => Ok(platform
+                .constraints
+                .get(&value.setting)
+                .is_some_and(|found| found == *value)),
+        }
+    }
+}
+
+/// The aspect-only members: `ctx.rule` (the base target's attributes, with
+/// the aspect-applied dependencies), `ctx.aspect_ids` and `ctx.outputs`
+/// (which an aspect context does not have).
+#[starlark_module]
+fn aspect_only_properties(builder: &mut MethodsBuilder) {
+    /// StarlarkRuleContext.rule (:809-816): the base target's attributes.
+    #[starlark(attribute)]
+    fn rule<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "$rule", heap)
+    }
+    /// StarlarkRuleContext.aspectIds (:818-829): the applied aspects'
+    /// descriptions in application order.
+    #[starlark(attribute)]
+    fn aspect_ids<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        field(this, "$aspect_ids", heap)
+    }
+    /// StarlarkRuleContext.getOutputs (:802-807): an aspect context has no
+    /// outputs object.
+    #[starlark(attribute)]
+    fn outputs<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
+        rule_ctx(this)?.scope.check_current()?;
+        bail!("'outputs' is not defined")
+    }
 }
 
 #[cfg(test)]

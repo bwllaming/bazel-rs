@@ -1,0 +1,431 @@
+{
+ "bazel": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+ },
+ "counts": {
+  "exact": 15,
+  "divergent": 1,
+  "native_unsupported": 1
+ },
+ "fixture": {
+  "files": {
+   "BUILD.bazel": "50361c880a836ed8cb40e0ae28f1b53b2a1228513d423b69582d2b8bf70728a2",
+   "MODULE.bazel": "3e60ddbe674813136060e8191db8135ee7bfe5c4374d5371afdbcc95ab068223",
+   "defs.bzl": "34b780c93005ea2b78861e44805383f7736b427d9ac6f038f829b09c01b785b4"
+  }
+ },
+ "phases": [
+  {
+   "id": "N01",
+   "argv": [
+    "build",
+    "//:app"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "app.c": "count=3 note=un"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "app.c": "count=3 note=un"
+    }
+   }
+  },
+  {
+   "id": "N02",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%count_aspect",
+    "--output_groups=aspect_out",
+    "//:b"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:b up-to-date:\n  bazel-bin/b.cnt\n",
+    "bin": {
+     "b.cnt": "aspect-of:b"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:b up-to-date:\n  bazel-bin/b.cnt\n",
+    "bin": {
+     "b.cnt": "aspect-of:b"
+    }
+   }
+  },
+  {
+   "id": "N03",
+   "argv": [
+    "build",
+    "--aspects=defs.bzl%count_aspect",
+    "--output_groups=aspect_out",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:a up-to-date:\n  bazel-bin/a.cnt\n",
+    "bin": {
+     "a.cnt": "aspect-of:a"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:a up-to-date:\n  bazel-bin/a.cnt\n",
+    "bin": {
+     "a.cnt": "aspect-of:a"
+    }
+   }
+  },
+  {
+   "id": "N04",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%count_aspect",
+    "--aspects_parameters=extension=out",
+    "--output_groups=aspect_out",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:a up-to-date:\n  bazel-bin/a.out\n",
+    "bin": {
+     "a.out": "aspect-of:a"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%count_aspect of //:a up-to-date:\n  bazel-bin/a.out\n",
+    "bin": {
+     "a.out": "aspect-of:a"
+    }
+   }
+  },
+  {
+   "id": "N05",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%need_aspect",
+    "--output_groups=need_group",
+    "//:agg"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {}
+   }
+  },
+  {
+   "id": "N06",
+   "argv": [
+    "build",
+    "//:dupconsumer"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "/tmp/opencode/n58-capture/ws/BUILD.bazel:20:13: Provider FileInfo provided twice",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "/tmp/opencode/n58-capture/ws/BUILD.bazel:20:13: Provider FileInfo provided twice",
+    "reported": "",
+    "bin": {}
+   }
+  },
+  {
+   "id": "N07",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%count_aspect,//:defs.bzl%files_aspect",
+    "--output_groups=aspect_out,files_group",
+    "//:b"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "b.cnt": "aspect-of:b",
+     "b.files": "b.lib"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "b.files": "b.lib",
+     "b.cnt": "aspect-of:b"
+    }
+   }
+  },
+  {
+   "id": "N08",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%tool_aspect",
+    "--output_groups=tool_group",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%tool_aspect of //:a up-to-date:\n  bazel-bin/a.withtool\n",
+    "bin": {
+     "a.withtool": "aspect_tool.tool"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "Aspect //:defs.bzl%tool_aspect of //:a up-to-date:\n  bazel-bin/a.withtool\n",
+    "bin": {
+     "a.withtool": "aspect_tool.tool"
+    }
+   }
+  },
+  {
+   "id": "N09",
+   "argv": [
+    "build",
+    "//:use"
+   ],
+   "classification": "divergent",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "use.which": "dep1=none dep2=generating"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "use.which": "dep1=generating dep2=generating"
+    }
+   },
+   "note": "native shares one dependency view per configured target, so the output-file edge without apply_to_generating_rules also sees the other edge's aspect (use.which: dep1=none vs dep1=generating); documented divergence (docs/ASPECTS.md)"
+  },
+  {
+   "id": "N10a",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%diag_aspect",
+    "--experimental_use_validation_aspect",
+    "//:eat"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "eat.diag": "diag",
+     "leafval.validated": "ok"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "leafval.validated": "ok",
+     "eat.diag": "diag"
+    }
+   }
+  },
+  {
+   "id": "N10b",
+   "argv": [
+    "build",
+    "//:eat"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "leafval.validated": "ok"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "leafval.validated": "ok"
+    }
+   }
+  },
+  {
+   "id": "N11",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%fragments_aspect",
+    "//:a"
+   ],
+   "classification": "native_unsupported",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "a.lib": "lib"
+    }
+   },
+   "native": {
+    "returncode": 1,
+    "error": "in //:defs.bzl%fragments_aspect aspect on lib rule //:a: aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the native profile",
+    "reported": "",
+    "bin": {}
+   },
+   "note": "aspect fragments are an explicit native gap: genuine analyzes the aspect (its implementation returns no providers), native fails loudly"
+  },
+  {
+   "id": "N12a",
+   "argv": [
+    "build",
+    "--aspects=NoSuchAspect",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "Aspect 'NoSuchAspect' is unknown",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "Aspect 'NoSuchAspect' is unknown",
+    "reported": "",
+    "bin": {}
+   }
+  },
+  {
+   "id": "N12b",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%lib",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "lib from //:defs.bzl is not an aspect",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "lib from //:defs.bzl is not an aspect",
+    "reported": "",
+    "bin": {}
+   }
+  },
+  {
+   "id": "N12c",
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%count_aspect",
+    "--aspects_parameters=nosuch=1",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "Parameters '[nosuch]' are not parameters of any of the top-level aspects but they are specified in --aspects_parameters.",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "Parameters '[nosuch]' are not parameters of any of the top-level aspects but they are specified in --aspects_parameters.",
+    "reported": "",
+    "bin": {}
+   }
+  },
+  {
+   "id": "N12d",
+   "argv": [
+    "build",
+    "--aspects=//:no_such_file.bzl%x",
+    "//:a"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 1,
+    "error": "cannot load '//:no_such_file.bzl': no such file",
+    "reported": "",
+    "bin": {}
+   },
+   "native": {
+    "returncode": 1,
+    "error": "cannot load '//:no_such_file.bzl': no such file",
+    "reported": "",
+    "bin": {}
+   },
+   "note": "both engines fail the missing package behind the aspect label; the wording differs (native reports its no-package diagnostic)"
+  },
+  {
+   "id": "N12e",
+   "argv": [
+    "build",
+    "--aspects=ValidateTarget",
+    "//:eat"
+   ],
+   "classification": "exact",
+   "genuine": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "leafval.validated": "ok"
+    }
+   },
+   "native": {
+    "returncode": 0,
+    "error": null,
+    "reported": "",
+    "bin": {
+     "leafval.validated": "ok"
+    }
+   }
+  }
+ ]
+}

@@ -338,6 +338,51 @@ fn load_frozen_export_in(
     })
 }
 
+/// [`load_definition_in`] over the repository set's shared `.bzl` cache: a
+/// module some BUILD file already loaded is not evaluated again, and a
+/// module loaded here first is published for later BUILD files (one
+/// BzlLoadValue per label, like Bazel's Skyframe).
+pub fn load_shared_definition_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+) -> Result<LoadedDefinition, String> {
+    if symbol.starts_with('_') {
+        return Err(format!(
+            "cannot load private symbol {symbol:?} from {label}"
+        ));
+    }
+    if symbol.is_empty()
+        || !symbol
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit()))
+    {
+        return Err(format!("invalid export identifier {symbol:?} from {label}"));
+    }
+    if !label.name.ends_with(".bzl") {
+        return Err(format!("load {label} requires a .bzl suffix"));
+    }
+    let mut loader = Loader::new(repositories, globals, true);
+    loader.shared = true;
+    loader.load(label.clone())?;
+    let module = loader
+        .cache
+        .get(label)
+        .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))?;
+    let value = module
+        .get(symbol)
+        .map_err(|e| format!("cannot load {symbol:?} from {label}: {e}"))?;
+    Ok(LoadedDefinition {
+        value,
+        functions: loader.functions,
+        sources: loader.sources,
+        load_graph: loader.load_graph,
+        repo_mappings: loader.repo_mappings,
+    })
+}
+
 pub fn load_modules_with_functions(
     root: &Path,
     current_package: &str,

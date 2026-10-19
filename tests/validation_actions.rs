@@ -253,15 +253,29 @@ fn private_transitive_group_and_absent_validationprovider() {
 }
 
 #[test]
-fn aspects_and_skip_validations_remain_explicit_boundaries() {
-    // A16/A15: --aspects is never silently ignored; a skip_validations
-    // attribute is a declared feature the native analysis does not model
-    // (genuine Bazel gates it behind its own allowlist).
+fn aspect_validation_outputs_run_with_the_target() {
+    // A16 (N58): --aspects applies the aspect to the top-level target; its
+    // `_validation` outputs run with the target (the merged OutputGroupInfo
+    // answers the `_validation` request) and are never reported (receipt
+    // A16-aspect-validation, genuine bin plain.aspect_validated + plain.out,
+    // reported plain.out only).
     let ws = Workspace::new();
-    rejected(
-        &ws.build_with(&["--aspects=//:aspects.bzl%val_aspect"], &["//:plain"]),
-        "unsupported option \"--aspects=//:aspects.bzl%val_aspect\"",
+    let text = ok(&ws.build_with(&["--aspects=//:aspects.bzl%val_aspect"], &["//:plain"]));
+    assert!(!text.contains("aspect_validated"), "{text}");
+    assert_eq!(
+        ws.outputs(),
+        [
+            "k8-fastbuild/bin/plain.aspect_validated",
+            "k8-fastbuild/bin/plain.out",
+        ]
     );
+}
+
+#[test]
+fn skip_validations_remains_an_explicit_boundary() {
+    // A15: a skip_validations attribute is a declared feature the native
+    // analysis does not model (genuine Bazel gates it behind its own
+    // allowlist).
     let ws = Workspace::new();
     rejected(
         &ws.build_with(&[], &["//:skipped"]),

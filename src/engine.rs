@@ -83,6 +83,12 @@ type ResolvedInputs = (Vec<Artifact>, Locations);
 /// configuration of a rule, alias or output-file edge.
 type TargetIdentityKey = (Label, Option<ConfigId>);
 
+/// The one shared `Target` value of each aspect-configured target (N58):
+/// keyed by the base configured target's label, its configuration and the
+/// applied aspects' identities.
+type AspectTargetIdentities =
+    BTreeMap<(Label, Option<ConfigId>, Vec<String>), std::sync::Arc<crate::starlark_types::Target>>;
+
 #[derive(Clone)]
 enum Target {
     Rule(Arc<Rule>),
@@ -108,7 +114,10 @@ struct ActionPlanning {
     /// identity even when a custom provider forwards a non-default file.
     artifact_index: BTreeMap<File, Artifact>,
     declared: Declared,
-    producers: BTreeMap<PathBuf, ConfiguredTargetKey>,
+    /// Output path -> the owning action-lookup key's display: a
+    /// configured target key's label, or `label%aspect` of an aspect
+    /// application (AspectKey as ActionLookupKey).
+    producers: BTreeMap<PathBuf, String>,
     nodes: Vec<PlannedAction>,
     /// Every source input of every action, before execroot planting drops
     /// main-repository inputs under ignored top-level entries.
@@ -138,6 +147,21 @@ struct ActionPlanning {
     /// The runfiles support nodes of each configured target with runfiles
     /// support (N23f, Engine::plan_runfiles_support).
     runfiles_nodes: BTreeMap<ConfiguredTargetKey, RunfilesNodes>,
+    /// The providers each aspect application returned (N58), keyed per
+    /// aspect like Bazel's AspectKey (crate::aspects).
+    aspect_providers: BTreeMap<
+        crate::aspects::AspectApplicationKey,
+        BTreeMap<String, starlark::values::OwnedFrozenValue>,
+    >,
+    /// Provider payload files of aspect applications.
+    aspect_provider_files: BTreeMap<crate::aspects::AspectApplicationKey, Vec<File>>,
+    /// The one shared `Target` value of each aspect-configured target (N58,
+    /// N55): the base configured target with a set of aspects merged in
+    /// (MergedConfiguredTarget), one per (label, configuration, aspects).
+    aspect_target_identities: BTreeMap<
+        (Label, Option<ConfigId>, Vec<String>),
+        std::sync::Arc<crate::starlark_types::Target>,
+    >,
     /// The one shared `Target` value of each dependency edge's configured
     /// target (N55): allocated once and referenced by every consumer's
     /// `ctx.attr`, every provider that stores it and every depset snapshot
@@ -156,6 +180,84 @@ struct ActionPlanning {
     /// and an exec-configured rule edge are their own keys, hence their
     /// own instances.
     target_identities: BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
+}
+
+/// The mutable planning fields an aspect application needs (N58): the same
+/// maps [`Engine::plan_dependency_view`] takes individually, grouped so the
+/// aspect planner can recurse (an aspect application plans its own
+/// dependencies through the shared machinery).
+struct PlanState<'a> {
+    pub dry: &'a mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    pub custom_providers:
+        &'a mut BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
+    pub provider_files: &'a mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    pub provider_keys: &'a mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
+    pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+    pub artifact_index: &'a mut BTreeMap<File, Artifact>,
+    pub declared: &'a mut Declared,
+    pub native_output_groups:
+        &'a mut BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
+    pub validation: &'a mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    pub target_identities:
+        &'a mut BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
+    pub repositories: &'a mut BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+    pub aspect_providers: &'a mut BTreeMap<
+        crate::aspects::AspectApplicationKey,
+        BTreeMap<String, starlark::values::OwnedFrozenValue>,
+    >,
+    pub aspect_provider_files: &'a mut BTreeMap<crate::aspects::AspectApplicationKey, Vec<File>>,
+    pub aspect_target_identities: &'a mut AspectTargetIdentities,
+    pub nodes: &'a mut Vec<PlannedAction>,
+    pub producers: &'a mut BTreeMap<PathBuf, String>,
+    pub source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
+    pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+}
+
+impl ActionPlanning {
+    /// Reborrow every planning field (the caller's bindings stay usable).
+    fn plan_state(&mut self) -> PlanState<'_> {
+        let ActionPlanning {
+            dry,
+            custom_providers,
+            provider_files,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            producers,
+            nodes,
+            source_inputs,
+            client_environment,
+            native_output_groups,
+            validation,
+            repositories,
+            aspect_providers,
+            aspect_provider_files,
+            target_identities,
+            aspect_target_identities,
+            ..
+        } = self;
+        PlanState {
+            dry,
+            custom_providers,
+            provider_files,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            native_output_groups,
+            validation,
+            target_identities,
+            repositories,
+            aspect_providers,
+            aspect_provider_files,
+            aspect_target_identities,
+            nodes,
+            producers,
+            source_inputs,
+            client_environment,
+        }
+    }
 }
 
 /// What `bazel run` executes after the build (Engine::build_for_run).
@@ -780,7 +882,22 @@ fn attribute_edges(rule: &Rule) -> Vec<Edge> {
 }
 
 /// The planned actions of a build and the requested targets' artifacts.
-type BuildPlan = (Vec<PlannedAction>, Vec<(ConfiguredTargetKey, Artifact)>);
+/// The provider map one aspect application returned (AspectValue's
+/// ConfiguredAspect.getProviders).
+type AspectProviders = BTreeMap<String, starlark::values::OwnedFrozenValue>;
+
+/// The applications of one dependency's aspect collection, in application
+/// order: each application's key and providers.
+type AspectApplications = Vec<(crate::aspects::AspectApplicationKey, AspectProviders)>;
+
+type BuildPlan = (
+    Vec<PlannedAction>,
+    Vec<(ConfiguredTargetKey, Artifact)>,
+    Vec<(String, Label, Vec<Artifact>)>,
+    // Labels whose own artifacts print a target result (the --show_result
+    // budget; BuildResultPrinter.outputTargetsAndAspects).
+    usize,
+);
 
 /// The analyzed rules of a build in analysis (postorder) order, each with
 /// its configured target key (the configuration it was analyzed in).
@@ -806,6 +923,12 @@ type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
+    /// Labels whose own (non-aspect) artifacts print a target result — the
+    /// `--show_result` budget half for targets (N58).
+    pub non_empty_targets: usize,
+    /// `Aspect NAME of LABEL up-to-date:` reports with their artifacts
+    /// (BuildResultPrinter.outputAspects, :312-332), in aspect order.
+    pub aspects: Vec<(String, Label, Vec<PathBuf>)>,
     pub executed: usize,
     pub cache_hits: usize,
     /// Actions whose outputs came from the remote cache (crate::remote_cache).
@@ -946,6 +1069,20 @@ pub struct Engine {
     /// (`--output_groups`/`--run_validations`, N56,
     /// crate::output_group_info::determine_output_groups).
     output_selection: OutputSelection,
+    /// Every aspect definition the invocation can reach (N58,
+    /// crate::aspects): exported by loaded `.bzl` modules, or the native
+    /// ValidateTarget. Keyed by identity (`//pkg:def.bzl%name`).
+    aspects: crate::aspects::AspectRegistry,
+    /// The aspects requested by `--aspects`, as identities, with
+    /// `--experimental_use_validation_aspect`'s ValidateTarget appended
+    /// (BuildRequest.getAspects, BuildRequest.java:421-427).
+    requested_aspects: Vec<String>,
+    /// `--aspects_parameters` values (AspectParameters).
+    aspect_parameters: BTreeMap<String, String>,
+    /// The select()-configured rules action planning saw, by configured
+    /// target key (aspect applications read the base target's configured
+    /// attribute values for `ctx.rule`, N58).
+    configured_rules: BTreeMap<ConfiguredTargetKey, Rule>,
     /// Whether the building command runs tests (BuildRequest.shouldRunTests
     /// keeps the `default` group for failure reporting).
     tests_requested: bool,
@@ -1003,12 +1140,23 @@ impl Engine {
             source_directories: BTreeMap::new(),
             runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
             output_selection: OutputSelection::default(),
+            aspects: crate::aspects::AspectRegistry::default(),
+            requested_aspects: Vec::new(),
+            aspect_parameters: BTreeMap::new(),
+            configured_rules: BTreeMap::new(),
             tests_requested: false,
             run_requests: BTreeSet::new(),
             run_trees: true,
             run_plans: BTreeMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// A label-typed command-line option, converted with the main
+    /// repository mapping (CoreOptionConverters.convertOptionsLabel,
+    /// options/CoreOptionConverters.java:351-357).
+    pub fn parse_option_label(&self, text: &str) -> Result<Label, String> {
+        self.repositories.parse(text, "", "")
     }
 
     /// The runfiles options of later builds (`--build_runfile_links`, ...).
@@ -1032,13 +1180,150 @@ impl Engine {
 
     /// The effective top-level output groups of a build
     /// (OutputGroupInfo.determineOutputGroups over `--output_groups`,
-    /// `--run_validations` and the command).
+    /// `--run_validations`, `--experimental_use_validation_aspect` and the
+    /// command).
     fn selected_output_groups(&self) -> BTreeSet<String> {
         crate::output_group_info::determine_output_groups(
             &self.output_selection.groups,
             self.output_selection.run_validations,
+            self.output_selection.use_validation_aspect,
             self.tests_requested,
         )
+    }
+
+    /// The top-level aspects of builds (BuildRequest.getAspects,
+    /// BuildRequest.java:421-427): the `--aspects` list, plus the native
+    /// ValidateTarget when validation actions run through the aspect
+    /// (`--experimental_use_validation_aspect`, ValidationMode.ASPECT) and
+    /// it was not already requested.
+    pub fn set_requested_aspects(
+        &mut self,
+        aspects: Vec<String>,
+        parameters: BTreeMap<String, String>,
+    ) {
+        self.requested_aspects = aspects;
+        self.aspect_parameters = parameters;
+    }
+
+    /// `--experimental_use_validation_aspect` (ValidationMode.ASPECT).
+    pub fn set_use_validation_aspect(&mut self, enabled: bool) {
+        self.output_selection.use_validation_aspect = enabled;
+    }
+
+    /// The effective top-level aspect identities, ValidateTarget appended
+    /// when the validation aspect mode is on.
+    fn effective_aspects(&self) -> Vec<String> {
+        let mut aspects = self.requested_aspects.clone();
+        if self.output_selection.run_validations
+            && self.output_selection.use_validation_aspect
+            && !aspects
+                .iter()
+                .any(|aspect| aspect == crate::aspects::VALIDATION_ASPECT_IDENTITY)
+        {
+            aspects.push(crate::aspects::VALIDATION_ASPECT_IDENTITY.to_owned());
+        }
+        aspects
+    }
+
+    /// The aspect definition of `identity`, loading its `.bzl` export on
+    /// first use (LoadAspectsFunction/AspectFunction.loadAspectFromBzl).
+    /// `None` resolves nothing (an unknown identity is the caller's error).
+    fn aspect_definition(
+        &mut self,
+        identity: &str,
+    ) -> Result<Option<std::sync::Arc<crate::aspects::AspectDefinition>>, String> {
+        if let Some(definition) = self.aspects.get(identity) {
+            return Ok(Some(definition));
+        }
+        // The native ValidateTarget (rules/core/ValidateTarget.java): a
+        // non-recursive aspect that promotes `_validation` outputs to
+        // `_validation_top_level`. Its application is computed natively;
+        // the implementation slot stays an unused marker.
+        if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+            let declaration = crate::rule_declarations::AspectDeclaration {
+                attr_aspects: Some(Vec::new()),
+                ..Default::default()
+            };
+            self.aspects.insert(crate::aspects::AspectDefinition {
+                identity: identity.to_owned(),
+                definition_label: crate::label::Label::parse_canonical("//:validate.bzl")
+                    .expect("static label parses"),
+                exported_name: identity.to_owned(),
+                declaration,
+                value: starlark::environment::Module::with_temp_heap(|module| {
+                    module.set("__impl", starlark::values::Value::new_none());
+                    module
+                        .freeze()
+                        .expect("None freezes")
+                        .get("__impl")
+                        .expect("__impl was set")
+                }),
+                parameters: BTreeMap::new(),
+            });
+            return Ok(self.aspects.get(identity));
+        }
+        // StarlarkAspectClass: `{extension label}%{exported name}`, split at
+        // the LAST '%' of the identity.
+        let Some((extension, name)) = identity.rsplit_once('%') else {
+            return Ok(None);
+        };
+        let label = self
+            .repositories
+            .parse(extension, "", "")
+            .map_err(|error| format!("Invalid aspect '{identity}': {error}"))?;
+        let loaded = crate::loading::load_shared_definition_in(
+            self.repositories.clone(),
+            &label,
+            name,
+            &crate::package::bzl_globals(),
+        )?;
+        let Some(aspect) = crate::rule_declarations::Aspect::from_value(loaded.value.value())
+        else {
+            return Err(format!("{name} from {label} is not an aspect"));
+        };
+        // AspectParameters (--aspects_parameters): the aspect's parameter
+        // attributes (public, of a scalar or string-list type), typed by
+        // their attribute (AspectParameters.java: boolean, int, string,
+        // string list).
+        let mut parameters = BTreeMap::new();
+        for (parameter, raw) in &self.aspect_parameters {
+            let Some((_, spec)) = aspect.declaration.attrs.iter().find(|(attr, spec)| {
+                attr == parameter && crate::aspects::is_parameter_attribute(attr, spec)
+            }) else {
+                continue;
+            };
+            let value = match spec.kind {
+                crate::custom_rule::AttrKind::Bool => match raw.as_str() {
+                    "true" | "True" | "1" => crate::custom_rule::AttrValue::Bool(true),
+                    "false" | "False" | "0" => crate::custom_rule::AttrValue::Bool(false),
+                    _ => {
+                        return Err(format!(
+                            "invalid value for aspect parameter {parameter}: {raw}"
+                        ));
+                    }
+                },
+                crate::custom_rule::AttrKind::Int => {
+                    crate::custom_rule::AttrValue::Int(raw.parse().map_err(|_| {
+                        format!("invalid value for aspect parameter {parameter}: {raw}")
+                    })?)
+                }
+                crate::custom_rule::AttrKind::StringList => crate::custom_rule::AttrValue::Strings(
+                    raw.split(',').map(str::to_owned).collect::<Vec<_>>(),
+                ),
+                _ => crate::custom_rule::AttrValue::String(raw.clone()),
+            };
+            parameters.insert(parameter.clone(), value);
+        }
+        let definition = crate::aspects::AspectDefinition {
+            identity: identity.to_owned(),
+            definition_label: label,
+            exported_name: name.to_owned(),
+            declaration: aspect.declaration.clone(),
+            value: loaded.value,
+            parameters,
+        };
+        self.aspects.insert(definition);
+        Ok(self.aspects.get(identity))
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
@@ -2488,7 +2773,244 @@ impl Engine {
                 feature_flag,
             },
         );
+        self.analyze_aspect_edges(&rule, &key, config, active, configured, plan)?;
         plan.push((key, rule));
+        Ok(())
+    }
+
+    /// The aspects attached to a rule's attribute edges need their own
+    /// dependency analysis (N58): every aspect application reachable from
+    /// the rule's attributes — the aspects' own attribute dependencies and
+    /// the applications propagated along each dependency's `attr_aspects`
+    /// edges — is analyzed here, before the rule's planning
+    /// (AspectFunction's AspectValue dependencies,
+    /// skyframe/AspectFunction.java:682-703).
+    fn analyze_aspect_edges(
+        &mut self,
+        rule: &Rule,
+        key: &ConfiguredTargetKey,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
+        if !rule.custom.as_ref().is_some_and(|custom| {
+            custom
+                .schema
+                .values()
+                .any(|spec| !spec.declaration.aspects.is_empty())
+        }) {
+            return Ok(());
+        }
+        let mut seen: BTreeSet<(ConfiguredTargetKey, Vec<String>)> = BTreeSet::new();
+        for edge in self.rule_edges(rule) {
+            let Some(spec) = rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute))
+            else {
+                continue;
+            };
+            if spec.declaration.aspects.is_empty() {
+                continue;
+            }
+            let mut aspects = Vec::new();
+            for identity in &spec.declaration.aspects {
+                let definition = self
+                    .aspect_definition(identity)?
+                    .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+                aspects.push(definition);
+            }
+            let exec_config = self.exec_configurations.get(key).copied().unwrap_or(config);
+            let edge_config = match &edge.cfg {
+                EdgeCfg::Target => config,
+                EdgeCfg::Exec(None) => exec_config,
+                EdgeCfg::Exec(Some(group)) => self
+                    .group_exec_configurations
+                    .get(&(key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(config),
+                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
+                EdgeCfg::Starlark(_) => continue,
+            };
+            let dependency = self.resolve_rule_src(rule, &edge.label)?;
+            self.analyze_aspect_applications(
+                &dependency,
+                edge_config,
+                aspects,
+                active,
+                configured,
+                plan,
+                &mut seen,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Analyze every aspect application of `aspects` on `label`'s configured
+    /// target (and, recursively, the applications they propagate along the
+    /// target's `attr_aspects` edges): the aspect collection of the edge,
+    /// each applied aspect's own attribute dependencies, then the
+    /// propagated applications (DependencyResolver over the aspect path).
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_aspect_applications(
+        &mut self,
+        label: &Label,
+        config: ConfigId,
+        aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+        seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
+    ) -> Result<(), String> {
+        let key = ConfiguredTargetKey::new(label.clone(), config);
+        let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
+        // Aspects do not apply to source files or package groups
+        // (AspectFunction.java:327-334); an output file applies its
+        // generating rule when the aspect asks for it
+        // (apply_to_generating_rules, AspectDefinition.java).
+        let mut base_label = key.label.clone();
+        let mut target = self.target(&base_label)?;
+        if let Target::Output(generating, _) = &target {
+            let applies = aspects.iter().any(|aspect| {
+                aspect.declaration.apply_to_generating_rules
+                    || aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
+            });
+            if !applies {
+                return Ok(());
+            }
+            base_label = generating.label.clone();
+            target = self.target(&base_label)?;
+        }
+        let Target::Rule(base_rule) = target else {
+            return Ok(());
+        };
+        if matches!(base_rule.kind, RuleKind::PackageGroup(_)) {
+            return Ok(());
+        }
+        // Alias edges resolve to the actual target's aspect application
+        // (createAspectsKeys, ToplevelStarlarkAspectFunction.java:140-157).
+        while let Some(actual) = configured
+            .get(&ConfiguredTargetKey::new(base_label.clone(), config))
+            .and_then(|node| node.actual.clone())
+        {
+            base_label = actual;
+        }
+        let base_key = ConfiguredTargetKey::new(base_label.clone(), config);
+        let base_rule = match self.target(&base_label)? {
+            Target::Rule(rule) => rule,
+            _ => return Ok(()),
+        };
+        let collection = crate::aspects::aspect_collection(aspects, &base_rule)?;
+        if collection.is_empty() {
+            return Ok(());
+        }
+        let memo = (base_key.clone(), collection.identities());
+        if !seen.insert(memo) {
+            return Ok(());
+        }
+        let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
+            .used
+            .iter()
+            .map(|(aspect, _)| aspect.clone())
+            .collect();
+        for (aspect, _) in &collection.used {
+            if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                continue;
+            }
+            // The aspect's own attribute dependencies, validated from the
+            // aspect's `.bzl` package (CommonPrerequisiteValidator).
+            let authority = crate::label::PackageId {
+                repository: aspect.definition_label.repository.clone(),
+                package: aspect.definition_label.package.clone(),
+            };
+            for (_, spec) in &aspect.declaration.attrs {
+                let labels = match &spec.default {
+                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                    _ => Vec::new(),
+                };
+                for text in labels {
+                    // Aspect attribute labels resolve relative to the
+                    // aspect's `.bzl` package (LabelConverter.
+                    // forBzlEvaluatingThread at aspect() declaration).
+                    let dependency = self.repositories.parse(
+                        &text,
+                        &aspect.definition_label.repository,
+                        &aspect.definition_label.package,
+                    )?;
+                    self.analyze(&dependency, config, active, configured, plan)
+                        .map_err(|error| {
+                            format!(
+                                "in {} aspect on {} rule {}: {error}",
+                                aspect.identity,
+                                base_rule.rule_class_name(),
+                                crate::rule_declarations::canonical_form(&base_label)
+                            )
+                        })?;
+                    let dep_rule = match self.target(&dependency)? {
+                        Target::Rule(dep_rule) => dep_rule,
+                        Target::Output(generating, _) => generating,
+                        _ => continue,
+                    };
+                    if let Err(error) = self.visible(&dep_rule.visibility, &authority, None) {
+                        return Err(format!(
+                            "in {} aspect on {} rule {}: {}",
+                            aspect.identity,
+                            base_rule.rule_class_name(),
+                            crate::rule_declarations::canonical_form(&base_label),
+                            error
+                        ));
+                    }
+                }
+            }
+        }
+        // The applications propagated along the base target's edges: each
+        // aspect of the collection that propagates along the attribute name
+        // applies to the edge's dependency (computePropagatingAspects).
+        for edge in self.rule_edges(&base_rule) {
+            let attribute_aspects = base_rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute))
+                .map(|spec| spec.declaration.aspects.clone())
+                .unwrap_or_default();
+            let propagating = crate::aspects::propagating_aspects(
+                &self.aspects,
+                &attribute_aspects,
+                &incoming,
+                &edge.attribute,
+            );
+            if propagating.is_empty() {
+                continue;
+            }
+            let exec_config = self
+                .exec_configurations
+                .get(&base_key)
+                .copied()
+                .unwrap_or(config);
+            let edge_config = match &edge.cfg {
+                EdgeCfg::Target => config,
+                EdgeCfg::Exec(None) => exec_config,
+                EdgeCfg::Exec(Some(group)) => self
+                    .group_exec_configurations
+                    .get(&(base_key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(config),
+                EdgeCfg::NoConfig => continue,
+                EdgeCfg::Starlark(_) => continue,
+            };
+            let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
+            self.analyze_aspect_applications(
+                &dependency,
+                edge_config,
+                propagating,
+                active,
+                configured,
+                plan,
+                seen,
+            )?;
+        }
         Ok(())
     }
 
@@ -5840,7 +6362,7 @@ impl Engine {
         if jobs == 0 {
             return Err("jobs must be greater than zero".into());
         }
-        let (nodes, requested) = self.plan_build(labels)?;
+        let (nodes, requested, aspect_reports, target_results) = self.plan_build(labels)?;
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         let mut summary = BuildSummary::default();
         for result in results.values() {
@@ -5858,6 +6380,25 @@ impl Engine {
             }
             summary.outputs.push((key.label, artifact.real));
         }
+        summary.non_empty_targets = target_results;
+        summary.aspects = aspect_reports
+            .into_iter()
+            .map(|(aspect, label, artifacts)| {
+                (
+                    aspect,
+                    label,
+                    artifacts
+                        .into_iter()
+                        .map(|mut artifact| {
+                            if let Some((id, index)) = &artifact.producer {
+                                artifact.real = results[id].outputs[*index].clone();
+                            }
+                            artifact.real
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
         Ok(summary)
     }
 
@@ -6305,7 +6846,7 @@ impl Engine {
         let planned = self.plan_build(build);
         self.run_requests.clear();
         self.run_trees = true;
-        let (nodes, requested) = planned?;
+        let (nodes, requested, _, _) = planned?;
         let plans = std::mem::take(&mut self.run_plans);
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         let mut summary = BuildSummary::default();
@@ -6380,6 +6921,871 @@ impl Engine {
 
     /// Phase 2 of one planned target (in plan order): runs Starlark
     /// implementations and plans actions (ActionPlanning).
+    //
+    /// The dependency view of one edge (N58: shared with aspect
+    /// applications): the resolved target's artifacts, providers (with the
+    /// framework OutputGroupInfo), provider files, runfiles and the one
+    /// shared `Target` value (N55) — everything a consumer's `ctx.attr`
+    /// entry holds (DependencyResolver + ConfiguredTargetAndData).
+    #[allow(clippy::too_many_arguments)]
+    fn plan_dependency_view(
+        &mut self,
+        configured: &mut ConfiguredNodes,
+        dry: &mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        custom_providers: &mut BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+        provider_files: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
+        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+        artifact_index: &mut BTreeMap<File, Artifact>,
+        declared: &mut Declared,
+        native_output_groups: &mut BTreeMap<
+            ConfiguredTargetKey,
+            starlark::values::OwnedFrozenValue,
+        >,
+        validation: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        target_identities: &mut BTreeMap<
+            TargetIdentityKey,
+            std::sync::Arc<crate::starlark_types::Target>,
+        >,
+        _repositories: &mut BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+        available: &mut BTreeMap<File, Artifact>,
+        label: &Label,
+        edge_config: ConfigId,
+    ) -> Result<DependencyTarget, String> {
+        let artifacts = self.artifacts(label, edge_config, dry, declared)?;
+        let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
+        for artifact in artifacts {
+            artifact_index.insert(artifact.file(), artifact.clone());
+            available.insert(artifact.file(), artifact);
+        }
+        let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
+        let forwarded = self.forwarded_actual(configured, &dependency);
+        let actual = forwarded.clone().unwrap_or_else(|| label.clone());
+        let target = self.target(&actual)?;
+        // The alias chain's end, in the same configuration
+        // (Self::alias_chain), under the configuration a rule
+        // transition analyzed it in when it delegated
+        // (Self::delegated_config): two edges whose pre-transition
+        // configurations converge see the actual's one analysis.
+        let actual_key = ConfiguredTargetKey::new(
+            actual.clone(),
+            self.delegated_config(
+                &ConfiguredTargetKey::new(actual.clone(), edge_config),
+                edge_config,
+            ),
+        );
+        let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
+        // The dependency's `_validation` files: a native rule's
+        // propagated group, an output-file target's generating rule's
+        // group (OutputFileConfiguredTarget.java:109-118, the
+        // configuration follows the generating rule's transition,
+        // Self::artifacts); a Starlark rule carries them in its
+        // providers already. They are provider payload files of the
+        // dependency: legal action inputs of the consumer
+        // (crate::analysis_runtime::Context::known_file).
+        let validation = match &target {
+            Target::Output(generating, _) => {
+                let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
+                self.planned_validation(custom_providers, validation, &owner)
+            }
+            _ if is_rule => self.planned_validation(custom_providers, validation, &actual_key),
+            _ => Vec::new(),
+        };
+        let mut target_provider_files =
+            provider_files.get(&dependency).cloned().unwrap_or_default();
+        // The validation files not already among the dependency's
+        // provider files (a Starlark rule lists them; a native rule
+        // or output-file target does not) join them here.
+        for file in &validation {
+            if !target_provider_files.contains(file) {
+                target_provider_files.push(file.clone());
+            }
+        }
+        for file in &target_provider_files {
+            let artifact = artifact_index.get(file).ok_or_else(|| {
+                format!(
+                    "provider file has no declared artifact identity: {}",
+                    file.path
+                )
+            })?;
+            available.insert(file.clone(), artifact.clone());
+        }
+        let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
+        for file in runfiles.files() {
+            let artifact = artifact_index.get(&file).ok_or_else(|| {
+                format!(
+                    "runfiles file has no declared artifact identity: {}",
+                    file.path
+                )
+            })?;
+            available.insert(file, artifact.clone());
+        }
+        // N23f: the FilesToRunProvider manifests are generated files.
+        for file in runfiles.manifests() {
+            if let Some(artifact) = artifact_index.get(&file) {
+                available.insert(file, artifact.clone());
+            }
+        }
+        let mut providers = custom_providers
+            .get(&dependency)
+            .cloned()
+            .unwrap_or_default();
+        // Every rule target has an OutputGroupInfo
+        // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
+        // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
+        // the `_validation` group propagated from its prerequisites,
+        // built once per configured target.
+        if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
+            let value = match native_output_groups.get(&actual_key) {
+                Some(value) => value.clone(),
+                None => {
+                    let value = crate::output_group_info::freeze(
+                        runfiles.default_runfiles().all_artifacts(),
+                        validation.clone(),
+                    )?;
+                    native_output_groups.insert(actual_key.clone(), value.clone());
+                    value
+                }
+            };
+            providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
+        }
+        // An output-file target's OutputGroupInfo is that single
+        // `_validation` group, present only when non-empty.
+        if matches!(&target, Target::Output(..)) && !validation.is_empty() {
+            providers.insert(
+                crate::output_group_info::PROVIDER_ID.to_owned(),
+                crate::output_group_info::freeze_validation(validation.clone())?,
+            );
+        }
+        // InstrumentedFilesInfo.EMPTY (coverage disabled): filegroup
+        // and genrule add it (Filegroup.java:63-108,
+        // GenRuleBase.java:234-239); an output file answers with its
+        // generating rule's or EMPTY (OutputFileConfiguredTarget.java:100-107).
+        // In a coverage configuration RuleConfiguredTargetBuilder also
+        // adds InstrumentedFilesCollector.forwardAll to every rule
+        // without InstrumentedFilesInfo or ToolchainInfo
+        // (RuleConfiguredTargetBuilder.java:179-186); every such
+        // collected value is unmodelled: present, members explicit.
+        let coverage = self
+            .configurations
+            .get(edge_config)
+            .native
+            .collect_code_coverage;
+        let instrumented = match &target {
+            Target::Rule(rule) if coverage => {
+                is_rule && !providers.contains_key(crate::toolchain_info::PROVIDER_ID)
+            }
+            Target::Rule(rule) => {
+                matches!(rule.kind, RuleKind::Filegroup | RuleKind::Genrule)
+            }
+            Target::Output(..) => true,
+            Target::Source(_) => false,
+        };
+        if instrumented && !providers.contains_key(crate::instrumented_files::PROVIDER_ID) {
+            let info = if coverage {
+                crate::instrumented_files::coverage_gap_frozen(&actual.to_string())?
+            } else {
+                crate::instrumented_files::empty_frozen()?
+            };
+            providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
+        }
+        // The one shared Target value of this configured target
+        // (N55), keyed as Bazel keys the configured target: a rule
+        // or alias edge by the POST-DELEGATION configuration (a
+        // rule transition delegates to the transitioned key,
+        // TargetAndConfigurationProducer.java:244-251, so edges
+        // whose pre-transition configurations converge share one
+        // instance), a source file or package group by the label
+        // with NO configuration (isConfigurable() false,
+        // InputFile.java:88-90, PackageGroup.java:166-168: one
+        // null-configuration configured target serves every
+        // consumer), an output file by the generating rule's
+        // (post-transition) configuration. An alias edge (its own
+        // AliasConfiguredTarget) and an exec-configured rule edge
+        // stay their own instances.
+        let identity = match target_identities.entry({
+            let identity_config = if forwarded.is_some() {
+                // The alias edge itself keeps the edge's
+                // configuration (its own AliasConfiguredTarget).
+                Some(self.delegated_config(&dependency, edge_config))
+            } else {
+                match &target {
+                    Target::Source(_) => None,
+                    Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_)) => None,
+                    Target::Output(rule, _) => Some(self.delegated_config(
+                        &ConfiguredTargetKey::new(rule.label.clone(), edge_config),
+                        edge_config,
+                    )),
+                    _ => Some(self.delegated_config(&dependency, edge_config)),
+                }
+            };
+            (label.clone(), identity_config)
+        }) {
+            std::collections::btree_map::Entry::Occupied(shared) => shared.get().clone(),
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                let provider_keys = provider_keys.get(&actual_key).cloned().unwrap_or_default();
+                vacant
+                    .insert(std::sync::Arc::new(analysis::dependency_target_data(
+                        &label.to_string(),
+                        &actual.to_string(),
+                        &files,
+                        matches!(target, Target::Source(_)),
+                        is_rule,
+                        matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+                        matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+                        &providers,
+                        &provider_keys,
+                        &runfiles,
+                    )))
+                    .clone()
+            }
+        };
+        Ok(DependencyTarget {
+            label: actual.to_string(),
+            files,
+            is_source: matches!(target, Target::Source(_)),
+            is_rule,
+            is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+            is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+            providers,
+            provider_files: target_provider_files,
+            provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
+            runfiles,
+            rule_class: match &target {
+                Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                    Some(rule.rule_class_name().to_owned())
+                }
+                _ => None,
+            },
+            identity,
+        })
+    }
+
+    /// Plan every aspect application of `collection` on the configured
+    /// target of `label`/`edge_config` (N58) and return the
+    /// aspect-configured target's dependency view: the base configured
+    /// target with each aspect's providers merged in
+    /// (MergedConfiguredTarget.of — aspect providers shadow the base
+    /// target's, OutputGroupInfo merges per group).
+    ///
+    /// Each application runs its aspect's implementation `f(target, ctx)`
+    /// once, its actions registered under the application's own action
+    /// owner (`label%aspect`, never the base target's), its aspect-applied
+    /// dependencies planned recursively (AspectFunction's dependency
+    /// resolution over the aspect path).
+    fn plan_aspect_collection(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        available: &mut BTreeMap<File, Artifact>,
+        label: &Label,
+        edge_config: ConfigId,
+        collection: &crate::aspects::AspectCollection,
+    ) -> Result<(DependencyTarget, AspectApplications), String> {
+        // The base view through the shared dependency machinery.
+        let mut base = {
+            let PlanState {
+                dry,
+                custom_providers,
+                provider_files,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                repositories,
+                ..
+            } = state;
+            self.plan_dependency_view(
+                configured,
+                dry,
+                custom_providers,
+                provider_files,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                repositories,
+                available,
+                label,
+                edge_config,
+            )?
+        };
+        // The application target: the alias chain's end in the edge's
+        // configuration, with a rule transition's delegation applied
+        // (AspectKeyCreator over ConfiguredTargetKey); an output-file edge
+        // applies its aspects to the generating rule when they ask for it
+        // (apply_to_generating_rules).
+        let requested = ConfiguredTargetKey::new(label.clone(), edge_config);
+        let mut base_label = self
+            .forwarded_actual(configured, &requested)
+            .unwrap_or_else(|| label.clone());
+        while let Some(actual) = configured
+            .get(&ConfiguredTargetKey::new(base_label.clone(), edge_config))
+            .and_then(|node| node.actual.clone())
+        {
+            base_label = actual;
+        }
+        if let Target::Output(generating, _) = self.target(&base_label)? {
+            let applies = collection.used.iter().any(|(aspect, _)| {
+                aspect.declaration.apply_to_generating_rules
+                    || aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
+            });
+            if applies {
+                base_label = generating.label.clone();
+            }
+        }
+        let base_key = ConfiguredTargetKey::new(
+            base_label.clone(),
+            self.delegated_config(&requested, edge_config),
+        );
+        // AspectCollection.createAspectKeys: each aspect over the base
+        // target, in application order.
+        let mut applications: Vec<(
+            crate::aspects::AspectApplicationKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        )> = Vec::new();
+        for (aspect, bases) in &collection.used {
+            let key = crate::aspects::AspectApplicationKey {
+                base: base_key.clone(),
+                aspect: aspect.identity.clone(),
+                bases: bases.clone(),
+            };
+            if state.aspect_providers.contains_key(&key) {
+                applications.push((
+                    key.clone(),
+                    state
+                        .aspect_providers
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_default(),
+                ));
+                continue;
+            }
+            let providers = self.plan_aspect_application(
+                state, configured, available, &base_key, &base, aspect, bases, collection,
+            )?;
+            state
+                .aspect_providers
+                .insert(key.clone(), providers.clone());
+            applications.push((key, providers));
+        }
+        base = crate::aspects::merged_dependency(&base, &applications)?;
+        // The merged files of every aspect (DefaultInfo.files) are action
+        // inputs of the consumer: known artifacts.
+        for file in &base.provider_files {
+            if let Some(artifact) = state.artifact_index.get(file) {
+                available.insert(file.clone(), artifact.clone());
+            }
+        }
+        // One shared Target value per aspect-configured target (N55's
+        // sharing applied to the merged configured target): its providers
+        // are the merged set, not the base target's.
+        let identity = state
+            .aspect_target_identities
+            .entry((
+                base_label.clone(),
+                Some(base_key.config),
+                collection.identities(),
+            ))
+            .or_insert_with(|| {
+                std::sync::Arc::new(analysis::dependency_target_data(
+                    &label.to_string(),
+                    &base.label,
+                    &base.files,
+                    base.is_source,
+                    base.is_rule,
+                    base.is_package_group,
+                    base.is_filegroup,
+                    &base.providers,
+                    &base.provider_keys,
+                    &base.runfiles,
+                ))
+            })
+            .clone();
+        base.identity = identity;
+        Ok((base, applications))
+    }
+
+    /// Plan one aspect application (one AspectValue): the aspect's
+    /// implementation over its `target` parameter and its dependencies (the
+    /// aspect's own attributes plus the base rule's edges, aspect-applied
+    /// where the aspect propagates), returning the aspect's providers.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_aspect_application(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        available: &mut BTreeMap<File, Artifact>,
+        base_key: &ConfiguredTargetKey,
+        base: &DependencyTarget,
+        aspect: &std::sync::Arc<crate::aspects::AspectDefinition>,
+        bases: &[String],
+        collection: &crate::aspects::AspectCollection,
+    ) -> Result<AspectProviders, String> {
+        let top = self.configurations.top();
+        let key = crate::aspects::AspectApplicationKey {
+            base: base_key.clone(),
+            aspect: aspect.identity.clone(),
+            bases: bases.to_vec(),
+        };
+        let fallback;
+        let base_rule: &Rule = match self.configured_rules.get(base_key) {
+            Some(rule) => rule,
+            None => match self.target(&base_key.label)? {
+                Target::Rule(rule) => {
+                    fallback = rule;
+                    &fallback
+                }
+                _ => {
+                    return Err(format!(
+                        "internal error: aspect {} applied to non-rule {}",
+                        aspect.identity, base_key.label
+                    ));
+                }
+            },
+        };
+        let base_rule = base_rule.clone();
+        // The `target` parameter: the base configured target merged with the
+        // directly required aspects' providers (AspectFunction.java:341-346),
+        // also what the native ValidateTarget reads its `_validation`
+        // outputs from.
+        let mut base_aspect_maps = Vec::new();
+        for base_aspect in bases {
+            let base_aspect_key = crate::aspects::AspectApplicationKey {
+                base: base_key.clone(),
+                aspect: base_aspect.clone(),
+                bases: Vec::new(),
+            };
+            let providers = state
+                .aspect_providers
+                .get(&base_aspect_key)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: aspect {base_aspect} of {} was not planned before {}",
+                        base_key.label, aspect.identity
+                    )
+                })?;
+            base_aspect_maps.push((base_aspect_key, providers));
+        }
+        let merged_target = crate::aspects::merged_dependency(base, &base_aspect_maps)?;
+        // The native ValidateTarget (rules/core/ValidateTarget.java:60-77):
+        // promotes the (merged) base target's `_validation` outputs to
+        // `_validation_top_level`; not applicable when there are none.
+        if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+            let validations = merged_target
+                .providers
+                .get(crate::output_group_info::PROVIDER_ID)
+                .map(|value| crate::output_group_info::validation_files(value.value()))
+                .unwrap_or_default();
+            if validations.is_empty() {
+                // ConfiguredAspect.NonApplicableAspect: no providers.
+                return Ok(BTreeMap::new());
+            }
+            let info = crate::output_group_info::freeze_validation_top_level(validations)?;
+            return Ok(BTreeMap::from([(
+                crate::output_group_info::PROVIDER_ID.to_owned(),
+                info,
+            )]));
+        }
+        // The application's dependencies: the aspect's own attributes and
+        // the base rule's edges (aspect-applied where they propagate).
+        let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
+        for (name, spec) in &aspect.declaration.attrs {
+            let labels = match &spec.default {
+                crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+                crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                _ => Vec::new(),
+            };
+            for text in labels {
+                let dependency = self.repositories.parse(
+                    &text,
+                    &aspect.definition_label.repository,
+                    &aspect.definition_label.package,
+                )?;
+                let (view, _) = self.plan_aspect_dependency(
+                    state,
+                    configured,
+                    available,
+                    &dependency,
+                    base_key.config,
+                    Vec::new(),
+                )?;
+                dependencies.insert(
+                    analysis::attribute_dependency_key(&dependency.to_string(), name, spec),
+                    view,
+                );
+            }
+        }
+        let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
+            .used
+            .iter()
+            .map(|(used, _)| used.clone())
+            .collect();
+        let exec_config = self
+            .exec_configurations
+            .get(base_key)
+            .copied()
+            .unwrap_or(base_key.config);
+        for edge in self.rule_edges(&base_rule) {
+            let attribute_aspects = base_rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute))
+                .map(|spec| spec.declaration.aspects.clone())
+                .unwrap_or_default();
+            let propagating = crate::aspects::propagating_aspects(
+                &self.aspects,
+                &attribute_aspects,
+                &incoming,
+                &edge.attribute,
+            );
+            let edge_config = match &edge.cfg {
+                EdgeCfg::Target => base_key.config,
+                EdgeCfg::Exec(None) => exec_config,
+                EdgeCfg::Exec(Some(group)) => self
+                    .group_exec_configurations
+                    .get(&(base_key.clone(), group.clone()))
+                    .copied()
+                    .unwrap_or(base_key.config),
+                EdgeCfg::NoConfig | EdgeCfg::Starlark(_) => continue,
+            };
+            let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
+            let (view, _) = self.plan_aspect_dependency(
+                state,
+                configured,
+                available,
+                &dependency,
+                edge_config,
+                propagating,
+            )?;
+            let spec = base_rule
+                .custom
+                .as_ref()
+                .and_then(|custom| custom.schema.get(&edge.attribute));
+            let map_key = match &edge.cfg {
+                EdgeCfg::Exec(_) => analysis::dependency_key(&dependency.to_string(), true),
+                EdgeCfg::Starlark(attribute) => {
+                    analysis::transition_dependency_key(&dependency.to_string(), attribute)
+                }
+                _ => match spec {
+                    Some(spec) if analysis::implicit_attribute(&edge.attribute, spec) => {
+                        analysis::attribute_dependency_key(
+                            &dependency.to_string(),
+                            &edge.attribute,
+                            spec,
+                        )
+                    }
+                    _ => analysis::dependency_key(&dependency.to_string(), false),
+                },
+            };
+            dependencies.insert(map_key, view);
+        }
+        // Run the implementation.
+        let output_root = self.configurations.output_root(base_key.config);
+        let action_env = Arc::new(
+            self.configurations
+                .get(base_key.config)
+                .native
+                .action_environment(),
+        );
+        let action_owner = key.action_owner(top);
+        let loaded_functions = self.loaded_functions.clone();
+        let outputs = analysis::ConfiguredOutputs {
+            output_root: &output_root,
+            action_owner: &action_owner,
+            action_env,
+            runfiles: self.runfiles_options,
+            loaded_functions: Some(&loaded_functions),
+        };
+        let application = analysis::AspectApplication {
+            aspect: aspect.clone(),
+            aspect_ids: collection.descriptions(),
+            target: merged_target,
+            rule: base_rule.clone(),
+            dependencies: dependencies.clone(),
+            repositories: self.repositories.clone(),
+        };
+        let (analyzed, printed) = analysis::analyze_aspect_buffered(&application, &outputs);
+        for line in printed {
+            eprintln!("{line}");
+        }
+        let analyzed = analyzed?;
+        // Register the application's declared outputs and actions under the
+        // application's own owner, so they never collide with the base
+        // target's or another aspect's (AspectKey as ActionLookupKey).
+        let PlanState {
+            artifact_index,
+            declared,
+            producers,
+            nodes,
+            source_inputs,
+            client_environment,
+            aspect_provider_files,
+            ..
+        } = state;
+        let main_ignored = self.ignored("")?;
+        for registered in &analyzed.actions {
+            for (index, file) in registered.outputs.iter().enumerate() {
+                let exec = PathBuf::from(&file.path);
+                register_output(producers, &exec, &action_owner)?;
+                let artifact = Artifact {
+                    directory: file.is_directory,
+                    real: exec.clone(),
+                    exec: exec.clone(),
+                    producer: Some((registered.action.id.clone(), index)),
+                    owner: file.owner.clone(),
+                };
+                available.insert(file.clone(), artifact.clone());
+                artifact_index.insert(file.clone(), artifact.clone());
+                declared.insert((base_key.config, exec), artifact);
+            }
+        }
+        for file in &analyzed.provider_files {
+            if !available.contains_key(file) {
+                return Err(format!(
+                    "aspect {}: provider file has no declared artifact identity: {}",
+                    aspect.identity, file.path
+                ));
+            }
+        }
+        for registered in analyzed.actions {
+            let inputs = registered
+                .inputs
+                .iter()
+                .map(|file| {
+                    available.get(file).cloned().ok_or_else(|| {
+                        format!(
+                            "aspect {}: input has no declared artifact: {}",
+                            aspect.identity, file.path
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
+            let mut action = registered.action;
+            action.execution_info = rule_execution_info(&base_rule);
+            action.remote_unsupported =
+                self.remote_platform_gate(&base_rule, base_key.config, None);
+            let planned = plan_action(action, inputs, &main_ignored, client_environment)?;
+            nodes.push(planned);
+        }
+        aspect_provider_files.insert(key, analyzed.provider_files.clone());
+        Ok(analyzed.providers)
+    }
+
+    /// One dependency of an aspect application: the plain configured target
+    /// view, or the aspect-applied view when `aspects` propagate to it.
+    fn plan_aspect_dependency(
+        &mut self,
+        state: &mut PlanState<'_>,
+        configured: &mut ConfiguredNodes,
+        available: &mut BTreeMap<File, Artifact>,
+        label: &Label,
+        edge_config: ConfigId,
+        mut aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+    ) -> Result<(DependencyTarget, AspectApplications), String> {
+        if aspects.is_empty() {
+            let PlanState {
+                dry,
+                custom_providers,
+                provider_files,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                repositories,
+                ..
+            } = state;
+            return Ok((
+                self.plan_dependency_view(
+                    configured,
+                    dry,
+                    custom_providers,
+                    provider_files,
+                    provider_keys,
+                    runfiles_info,
+                    artifact_index,
+                    declared,
+                    native_output_groups,
+                    validation,
+                    target_identities,
+                    repositories,
+                    available,
+                    label,
+                    edge_config,
+                )?,
+                Vec::new(),
+            ));
+        }
+        // The target the aspects apply to: through aliases and to the
+        // generating rule of an output file when the aspect asks for it
+        // (apply_to_generating_rules).
+        let requested = ConfiguredTargetKey::new(label.clone(), edge_config);
+        let mut base_label = self
+            .forwarded_actual(configured, &requested)
+            .unwrap_or_else(|| label.clone());
+        while let Some(actual) = configured
+            .get(&ConfiguredTargetKey::new(base_label.clone(), edge_config))
+            .and_then(|node| node.actual.clone())
+        {
+            base_label = actual;
+        }
+        let target = self.target(&base_label)?;
+        let (_resolved_label, target) = match target {
+            Target::Output(generating, _) => {
+                // AspectFunction.java:327-341: an aspect applies to an
+                // output-file target only through its generating rule, and
+                // only when it asks for that (apply_to_generating_rules; the
+                // native ValidateTarget applies to files).
+                aspects.retain(|aspect| {
+                    aspect.declaration.apply_to_generating_rules
+                        || aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
+                });
+                let applies = !aspects.is_empty();
+                if !applies {
+                    aspects.clear();
+                    let PlanState {
+                        dry,
+                        custom_providers,
+                        provider_files,
+                        provider_keys,
+                        runfiles_info,
+                        artifact_index,
+                        declared,
+                        native_output_groups,
+                        validation,
+                        target_identities,
+                        repositories,
+                        ..
+                    } = state;
+                    return Ok((
+                        self.plan_dependency_view(
+                            configured,
+                            dry,
+                            custom_providers,
+                            provider_files,
+                            provider_keys,
+                            runfiles_info,
+                            artifact_index,
+                            declared,
+                            native_output_groups,
+                            validation,
+                            target_identities,
+                            repositories,
+                            available,
+                            label,
+                            edge_config,
+                        )?,
+                        Vec::new(),
+                    ));
+                }
+                (generating.label.clone(), self.target(&generating.label)?)
+            }
+            _ => (base_label, target),
+        };
+        let Target::Rule(rule) = target else {
+            let PlanState {
+                dry,
+                custom_providers,
+                provider_files,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                repositories,
+                ..
+            } = state;
+            return Ok((
+                self.plan_dependency_view(
+                    configured,
+                    dry,
+                    custom_providers,
+                    provider_files,
+                    provider_keys,
+                    runfiles_info,
+                    artifact_index,
+                    declared,
+                    native_output_groups,
+                    validation,
+                    target_identities,
+                    repositories,
+                    available,
+                    label,
+                    edge_config,
+                )?,
+                Vec::new(),
+            ));
+        };
+        if matches!(rule.kind, RuleKind::PackageGroup(_)) {
+            aspects.clear();
+        }
+        let collection = if aspects.is_empty() {
+            crate::aspects::AspectCollection::default()
+        } else {
+            crate::aspects::aspect_collection(aspects.to_vec(), &rule)?
+        };
+        if collection.is_empty() {
+            let PlanState {
+                dry,
+                custom_providers,
+                provider_files,
+                provider_keys,
+                runfiles_info,
+                artifact_index,
+                declared,
+                native_output_groups,
+                validation,
+                target_identities,
+                repositories,
+                ..
+            } = state;
+            return Ok((
+                self.plan_dependency_view(
+                    configured,
+                    dry,
+                    custom_providers,
+                    provider_files,
+                    provider_keys,
+                    runfiles_info,
+                    artifact_index,
+                    declared,
+                    native_output_groups,
+                    validation,
+                    target_identities,
+                    repositories,
+                    available,
+                    label,
+                    edge_config,
+                )?,
+                Vec::new(),
+            ));
+        }
+        self.plan_aspect_collection(
+            state,
+            configured,
+            available,
+            label,
+            edge_config,
+            &collection,
+        )
+    }
+
     fn plan_target(
         &mut self,
         state: &mut ActionPlanning,
@@ -6387,6 +7793,9 @@ impl Engine {
         rule: &Rule,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
+        if rule.custom.is_some() {
+            self.configured_rules.insert(key.clone(), rule.clone());
+        }
         let top = self.configurations.top();
         let main_ignored = self.ignored("")?;
         let ActionPlanning {
@@ -6406,6 +7815,9 @@ impl Engine {
             repositories,
             runfiles_nodes,
             target_identities,
+            aspect_providers,
+            aspect_provider_files,
+            aspect_target_identities,
             ..
         } = state;
         // The transitive repositories of this configured target: its own and
@@ -6479,8 +7891,40 @@ impl Engine {
             // key in the implementation's dependency map
             // (analysis::dependency_key).
             let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
+            // N58: attribute aspects of the rule's edges, by resolved label
+            // (attr(aspects = [...]) propagation; an aspect list resolves to
+            // its definitions once).
+            let mut edge_aspects: BTreeMap<
+                String,
+                Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
+            > = BTreeMap::new();
             for edge in self.rule_edges(rule) {
                 let label = self.resolve_rule_src(rule, &edge.label)?;
+                if let Some(spec) = rule
+                    .custom
+                    .as_ref()
+                    .and_then(|custom| custom.schema.get(&edge.attribute))
+                    && !spec.declaration.aspects.is_empty()
+                    && matches!(edge.cfg, EdgeCfg::Target | EdgeCfg::Exec(_))
+                {
+                    let mut aspects = Vec::new();
+                    for identity in &spec.declaration.aspects {
+                        let definition = self
+                            .aspect_definition(identity)?
+                            .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+                        aspects.push(definition);
+                    }
+                    let entry = edge_aspects.entry(label.to_string()).or_default();
+                    for aspect in aspects {
+                        if !entry.iter().any(
+                            |known: &std::sync::Arc<crate::aspects::AspectDefinition>| {
+                                known.identity == aspect.identity
+                            },
+                        ) {
+                            entry.push(aspect);
+                        }
+                    }
+                }
                 let (edge_config, map_key) = match &edge.cfg {
                     EdgeCfg::Target => {
                         (config, analysis::dependency_key(&label.to_string(), false))
@@ -6562,228 +8006,65 @@ impl Engine {
             }
             repositories.insert(key.clone(), Arc::new(transitive.clone()));
             for (label, edge_config, map_key) in dependency_labels {
-                let artifacts = self.artifacts(&label, edge_config, dry, declared)?;
-                let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
-                for artifact in artifacts {
-                    artifact_index.insert(artifact.file(), artifact.clone());
-                    available.insert(artifact.file(), artifact);
-                }
-                let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
-                let forwarded = self.forwarded_actual(configured, &dependency);
-                let actual = forwarded.clone().unwrap_or_else(|| label.clone());
-                let target = self.target(&actual)?;
-                // The alias chain's end, in the same configuration
-                // (Self::alias_chain), under the configuration a rule
-                // transition analyzed it in when it delegated
-                // (Self::delegated_config): two edges whose pre-transition
-                // configurations converge see the actual's one analysis.
-                let actual_key = ConfiguredTargetKey::new(
-                    actual.clone(),
-                    self.delegated_config(
-                        &ConfiguredTargetKey::new(actual.clone(), edge_config),
-                        edge_config,
-                    ),
-                );
-                let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
-                // The dependency's `_validation` files: a native rule's
-                // propagated group, an output-file target's generating rule's
-                // group (OutputFileConfiguredTarget.java:109-118, the
-                // configuration follows the generating rule's transition,
-                // Self::artifacts); a Starlark rule carries them in its
-                // providers already. They are provider payload files of the
-                // dependency: legal action inputs of the consumer
-                // (crate::analysis_runtime::Context::known_file).
-                let validation = match &target {
-                    Target::Output(generating, _) => {
-                        let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
-                        self.planned_validation(custom_providers, validation, &owner)
-                    }
-                    _ if is_rule => {
-                        self.planned_validation(custom_providers, validation, &actual_key)
-                    }
-                    _ => Vec::new(),
-                };
-                let mut target_provider_files =
-                    provider_files.get(&dependency).cloned().unwrap_or_default();
-                // The validation files not already among the dependency's
-                // provider files (a Starlark rule lists them; a native rule
-                // or output-file target does not) join them here.
-                for file in &validation {
-                    if !target_provider_files.contains(file) {
-                        target_provider_files.push(file.clone());
-                    }
-                }
-                for file in &target_provider_files {
-                    let artifact = artifact_index.get(file).ok_or_else(|| {
-                        format!(
-                            "provider file has no declared artifact identity: {}",
-                            file.path
-                        )
-                    })?;
-                    available.insert(file.clone(), artifact.clone());
-                }
-                let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
-                for file in runfiles.files() {
-                    let artifact = artifact_index.get(&file).ok_or_else(|| {
-                        format!(
-                            "runfiles file has no declared artifact identity: {}",
-                            file.path
-                        )
-                    })?;
-                    available.insert(file, artifact.clone());
-                }
-                // N23f: the FilesToRunProvider manifests are generated files.
-                for file in runfiles.manifests() {
-                    if let Some(artifact) = artifact_index.get(&file) {
-                        available.insert(file, artifact.clone());
-                    }
-                }
-                let mut providers = custom_providers
-                    .get(&dependency)
+                let aspects = edge_aspects
+                    .get(&label.to_string())
                     .cloned()
                     .unwrap_or_default();
-                // Every rule target has an OutputGroupInfo
-                // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
-                // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
-                // the `_validation` group propagated from its prerequisites,
-                // built once per configured target.
-                if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
-                    let value = match native_output_groups.get(&actual_key) {
-                        Some(value) => value.clone(),
-                        None => {
-                            let value = crate::output_group_info::freeze(
-                                runfiles.default_runfiles().all_artifacts(),
-                                validation.clone(),
-                            )?;
-                            native_output_groups.insert(actual_key.clone(), value.clone());
-                            value
-                        }
+                let view = if aspects.is_empty() {
+                    self.plan_dependency_view(
+                        configured,
+                        dry,
+                        custom_providers,
+                        provider_files,
+                        provider_keys,
+                        runfiles_info,
+                        artifact_index,
+                        declared,
+                        native_output_groups,
+                        validation,
+                        target_identities,
+                        repositories,
+                        &mut available,
+                        &label,
+                        edge_config,
+                    )?
+                } else {
+                    // MergedConfiguredTarget.of's MergingException is
+                    // reported at the consumer's location
+                    // (MergedConfiguredTarget.java:210-213).
+                    let location = rule.location.clone();
+                    let mut planning = PlanState {
+                        dry: &mut *dry,
+                        custom_providers: &mut *custom_providers,
+                        provider_files: &mut *provider_files,
+                        provider_keys: &mut *provider_keys,
+                        runfiles_info: &mut *runfiles_info,
+                        artifact_index: &mut *artifact_index,
+                        declared: &mut *declared,
+                        native_output_groups: &mut *native_output_groups,
+                        validation: &mut *validation,
+                        target_identities: &mut *target_identities,
+                        repositories: &mut *repositories,
+                        aspect_providers: &mut *aspect_providers,
+                        aspect_provider_files: &mut *aspect_provider_files,
+                        aspect_target_identities: &mut *aspect_target_identities,
+                        nodes: &mut *nodes,
+                        producers: &mut *producers,
+                        source_inputs: &mut *source_inputs,
+                        client_environment: &mut *client_environment,
                     };
-                    providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
-                }
-                // An output-file target's OutputGroupInfo is that single
-                // `_validation` group, present only when non-empty.
-                if matches!(&target, Target::Output(..)) && !validation.is_empty() {
-                    providers.insert(
-                        crate::output_group_info::PROVIDER_ID.to_owned(),
-                        crate::output_group_info::freeze_validation(validation.clone())?,
-                    );
-                }
-                // InstrumentedFilesInfo.EMPTY (coverage disabled): filegroup
-                // and genrule add it (Filegroup.java:63-108,
-                // GenRuleBase.java:234-239); an output file answers with its
-                // generating rule's or EMPTY (OutputFileConfiguredTarget.java:100-107).
-                // In a coverage configuration RuleConfiguredTargetBuilder also
-                // adds InstrumentedFilesCollector.forwardAll to every rule
-                // without InstrumentedFilesInfo or ToolchainInfo
-                // (RuleConfiguredTargetBuilder.java:179-186); every such
-                // collected value is unmodelled: present, members explicit.
-                let coverage = self
-                    .configurations
-                    .get(edge_config)
-                    .native
-                    .collect_code_coverage;
-                let instrumented = match &target {
-                    Target::Rule(rule) if coverage => {
-                        is_rule && !providers.contains_key(crate::toolchain_info::PROVIDER_ID)
-                    }
-                    Target::Rule(rule) => {
-                        matches!(rule.kind, RuleKind::Filegroup | RuleKind::Genrule)
-                    }
-                    Target::Output(..) => true,
-                    Target::Source(_) => false,
+                    self.plan_aspect_dependency(
+                        &mut planning,
+                        configured,
+                        &mut available,
+                        &label,
+                        edge_config,
+                        aspects,
+                    )
+                    .map_err(|error| located(location.as_deref(), error))?
+                    .0
                 };
-                if instrumented && !providers.contains_key(crate::instrumented_files::PROVIDER_ID) {
-                    let info = if coverage {
-                        crate::instrumented_files::coverage_gap_frozen(&actual.to_string())?
-                    } else {
-                        crate::instrumented_files::empty_frozen()?
-                    };
-                    providers.insert(crate::instrumented_files::PROVIDER_ID.to_owned(), info);
-                }
-                // The one shared Target value of this configured target
-                // (N55), keyed as Bazel keys the configured target: a rule
-                // or alias edge by the POST-DELEGATION configuration (a
-                // rule transition delegates to the transitioned key,
-                // TargetAndConfigurationProducer.java:244-251, so edges
-                // whose pre-transition configurations converge share one
-                // instance), a source file or package group by the label
-                // with NO configuration (isConfigurable() false,
-                // InputFile.java:88-90, PackageGroup.java:166-168: one
-                // null-configuration configured target serves every
-                // consumer), an output file by the generating rule's
-                // (post-transition) configuration. An alias edge (its own
-                // AliasConfiguredTarget) and an exec-configured rule edge
-                // stay their own instances.
-                let identity = match target_identities.entry({
-                    let identity_config = if forwarded.is_some() {
-                        // The alias edge itself keeps the edge's
-                        // configuration (its own AliasConfiguredTarget).
-                        Some(self.delegated_config(&dependency, edge_config))
-                    } else {
-                        match &target {
-                            Target::Source(_) => None,
-                            Target::Rule(rule)
-                                if matches!(rule.kind, RuleKind::PackageGroup(_)) =>
-                            {
-                                None
-                            }
-                            Target::Output(rule, _) => Some(self.delegated_config(
-                                &ConfiguredTargetKey::new(rule.label.clone(), edge_config),
-                                edge_config,
-                            )),
-                            _ => Some(self.delegated_config(&dependency, edge_config)),
-                        }
-                    };
-                    (label.clone(), identity_config)
-                }) {
-                    std::collections::btree_map::Entry::Occupied(shared) => shared.get().clone(),
-                    std::collections::btree_map::Entry::Vacant(vacant) => {
-                        let provider_keys =
-                            provider_keys.get(&actual_key).cloned().unwrap_or_default();
-                        vacant
-                            .insert(std::sync::Arc::new(analysis::dependency_target_data(
-                                &label.to_string(),
-                                &actual.to_string(),
-                                &files,
-                                matches!(target, Target::Source(_)),
-                                is_rule,
-                                matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-                                matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-                                &providers,
-                                &provider_keys,
-                                &runfiles,
-                            )))
-                            .clone()
-                    }
-                };
-                dependency_targets.insert(
-                    map_key,
-                    DependencyTarget {
-                        label: actual.to_string(),
-                        files,
-                        is_source: matches!(target, Target::Source(_)),
-                        is_rule,
-                        is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-                        is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-                        providers,
-                        provider_files: target_provider_files,
-                        // The alias chain's end, in the same configuration
-                        // (Self::alias_chain).
-                        provider_keys: provider_keys
-                            .get(&actual_key)
-                            .cloned()
-                            .unwrap_or_default(),
-                        runfiles,
-                        rule_class: match &target {
-                            Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
-                                Some(rule.rule_class_name().to_owned())
-                            }
-                            _ => None,
-                        },
-                        identity,
-                    },
-                );
+                dependency_targets.insert(map_key, view);
             }
             // Prerequisite validation runs here, before the implementation,
             // also for a target planned early (Self::plan_pending).
@@ -7048,7 +8329,7 @@ impl Engine {
             for registered in &analyzed.actions {
                 for (index, file) in registered.outputs.iter().enumerate() {
                     let exec = PathBuf::from(&file.path);
-                    register_output(producers, &exec, &key)?;
+                    register_output(producers, &exec, &key.label.to_string())?;
                     let artifact = Artifact {
                         directory: file.is_directory,
                         real: exec.clone(),
@@ -7454,7 +8735,7 @@ impl Engine {
                 })?;
             restricted_to_error(rule)?;
             for output in &outputs {
-                register_output(producers, output, &key)?;
+                register_output(producers, output, &key.label.to_string())?;
             }
             // GenRuleBase.java:141-147, 170-175, 212-216: bash sources the
             // `$genrule_setup` script (set -euo pipefail), which is an input;
@@ -7726,6 +9007,7 @@ impl Engine {
         self.toolchain_implementations.clear();
         self.edge_configs.clear();
         self.rule_delegations.clear();
+        self.configured_rules.clear();
         self.action_planning = Some(ActionPlanning::default());
         // BuildConfigurationKeyProducer resolves an explicit --platforms
         // entry when the top-level configuration is created, before analysis
@@ -7770,6 +9052,46 @@ impl Engine {
                 None => error,
             })?;
         }
+        // N58: the top-level aspects' own attribute dependencies are
+        // analyzed like any dependency (AspectFunction's AspectValue
+        // depends on the aspect's implicit attributes), validated from the
+        // aspect's `.bzl` package.
+        for identity in self.effective_aspects() {
+            let Some(definition) = self.aspect_definition(&identity)? else {
+                return Err(format!("Aspect '{identity}' is unknown"));
+            };
+            if definition.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                continue;
+            }
+            let authority = crate::label::PackageId {
+                repository: definition.definition_label.repository.clone(),
+                package: definition.definition_label.package.clone(),
+            };
+            for (_, spec) in &definition.declaration.attrs {
+                let labels = match &spec.default {
+                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                    _ => Vec::new(),
+                };
+                for text in labels {
+                    let dependency = self.repositories.parse(
+                        &text,
+                        &definition.definition_label.repository,
+                        &definition.definition_label.package,
+                    )?;
+                    self.analyze(
+                        &dependency,
+                        top,
+                        &mut Vec::new(),
+                        &mut configured,
+                        &mut plan,
+                    )?;
+                    if let Target::Rule(dep_rule) = self.target(&dependency)? {
+                        self.visible(&dep_rule.visibility, &authority, None)?;
+                    }
+                }
+            }
+        }
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).
         let forwarded: BTreeMap<ConfiguredTargetKey, Label> = configured
@@ -7789,6 +9111,66 @@ impl Engine {
         // early (a Starlark flag_values key, Self::plan_pending) are kept.
         let mut state = self.action_planning.take().unwrap_or_default();
         self.plan_targets(&mut state, &plan, &mut configured)?;
+        // N58: the top-level aspects of `--aspects` (and the appended
+        // ValidateTarget of `--experimental_use_validation_aspect`) applied
+        // to each requested target (ToplevelStarlarkAspectFunction): the
+        // applications are planned here, before the action graph is taken
+        // apart, and their merged views answer the output-group request.
+        let mut aspect_defs = Vec::new();
+        for identity in self.effective_aspects() {
+            let definition = self
+                .aspect_definition(&identity)?
+                .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+            aspect_defs.push(definition);
+        }
+        // AspectsList.validateTopLevelAspectsParameters: every
+        // --aspects_parameters key must be a parameter of some top-level
+        // aspect (AspectsList.java:117-121).
+        if !self.aspect_parameters.is_empty() {
+            let mut known = BTreeSet::new();
+            for aspect in &aspect_defs {
+                if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                    continue;
+                }
+                for (name, spec) in &aspect.declaration.attrs {
+                    if crate::aspects::is_parameter_attribute(name, spec) {
+                        known.insert(name.clone());
+                    }
+                }
+            }
+            let unknown = self
+                .aspect_parameters
+                .keys()
+                .filter(|key| !known.contains(*key))
+                .cloned()
+                .collect::<Vec<_>>();
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "Parameters '[{}]' are not parameters of any of the top-level aspects but they are specified in --aspects_parameters.",
+                    unknown.join(", ")
+                ));
+            }
+        }
+        let mut top_level_aspects: BTreeMap<Label, (DependencyTarget, AspectApplications)> =
+            BTreeMap::new();
+        if !aspect_defs.is_empty() {
+            for label in labels {
+                if !matches!(self.target(label)?, Target::Rule(_) | Target::Output(..)) {
+                    continue;
+                }
+                let mut available = BTreeMap::new();
+                let mut planning = state.plan_state();
+                let planned = self.plan_aspect_dependency(
+                    &mut planning,
+                    &mut configured,
+                    &mut available,
+                    label,
+                    top,
+                    aspect_defs.clone(),
+                )?;
+                top_level_aspects.insert(label.clone(), planned);
+            }
+        }
         let ActionPlanning {
             dry,
             runfiles_info,
@@ -7836,11 +9218,40 @@ impl Engine {
             }
             Ok(())
         };
+        // N58 reporting: `Aspect NAME of LABEL up-to-date:` with each
+        // aspect's own artifacts in the requested (reportable) groups
+        // (BuildResultPrinter.outputAspects); validation aspects are built
+        // but never reported (partitionAspectKeys).
+        let mut aspect_reports: Vec<(String, Label, Vec<Artifact>)> = Vec::new();
+        // Labels whose own (non-aspect) artifacts print a target result —
+        // the `--show_result` budget counts these and the aspects with
+        // artifacts (BuildResultPrinter.outputTargetsAndAspects).
+        let mut target_result_labels: BTreeSet<Label> = BTreeSet::new();
         for label in labels {
             let key = self.configurations.top_key(label.clone());
+            let merged = top_level_aspects.get(label);
+            let merged_view = merged.map(|(view, _)| view);
             if selected.contains(crate::output_group_info::DEFAULT) {
-                for artifact in self.artifacts(label, top, &dry, &declared)? {
-                    requested.push((key.clone(), artifact));
+                match merged_view {
+                    // The merged files to build: the base target's plus every
+                    // aspect's DefaultInfo.files (FileProvider merge).
+                    Some(view) if !view.files.is_empty() => {
+                        for file in &view.files {
+                            let artifact = artifact_index.get(file).cloned().ok_or_else(|| {
+                                format!(
+                                    "{label}: aspect output has no declared artifact identity: {}",
+                                    file.path
+                                )
+                            })?;
+                            requested.push((key.clone(), artifact));
+                        }
+                    }
+                    _ => {
+                        for artifact in self.artifacts(label, top, &dry, &declared)? {
+                            requested.push((key.clone(), artifact));
+                            target_result_labels.insert(label.clone());
+                        }
+                    }
                 }
             }
             let group_key = self.output_group_key(label, top)?;
@@ -7853,9 +9264,74 @@ impl Engine {
                 ) {
                     continue;
                 }
-                let files =
+                // A merged aspect-configured target answers through its
+                // merged OutputGroupInfo (mergeOutputGroupProviders).
+                let base_files =
                     self.planned_output_group(&custom_providers, &validation, &group_key, group);
+                let files = match merged_view.and_then(|view| {
+                    view.providers
+                        .get(crate::output_group_info::PROVIDER_ID)
+                        .and_then(|value| crate::output_group_info::groups(value.value()))
+                        .and_then(|groups| {
+                            groups
+                                .iter()
+                                .find(|(name, _)| name == group)
+                                .map(|(_, depset)| crate::output_group_info::depset_files(depset))
+                        })
+                }) {
+                    // The base target's own group answers for the target
+                    // result line even when an aspect added to it.
+                    Some(files) if base_files.is_empty() => files,
+                    _ => base_files.clone(),
+                };
+                if !base_files.is_empty() {
+                    target_result_labels.insert(label.clone());
+                }
                 group_artifacts(&key, label, group, files, &mut requested, &mut unreported)?;
+            }
+            // Per-aspect reports: each aspect's own artifacts in the
+            // requested (reportable) groups, plus its DefaultInfo.files for
+            // the default group (TopLevelArtifactHelper.getAllArtifactsToBuild
+            // over the aspect value).
+            if let Some((_, applications)) = merged {
+                for (application, providers) in applications {
+                    if application.aspect == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                        continue;
+                    }
+                    let mut artifacts = Vec::new();
+                    if selected.contains(crate::output_group_info::DEFAULT)
+                        && let Some(value) =
+                            providers.get(crate::providers::DEFAULT_INFO_PROVIDER_ID)
+                        && let Some(files) = crate::starlark_types::default_files(value.value())
+                            .map_err(|e| e.to_string())?
+                    {
+                        for file in files {
+                            if let Some(artifact) = artifact_index.get(&file) {
+                                artifacts.push(artifact.clone());
+                            }
+                        }
+                    }
+                    if let Some(groups) = providers
+                        .get(crate::output_group_info::PROVIDER_ID)
+                        .and_then(|value| crate::output_group_info::groups(value.value()))
+                    {
+                        for (name, depset) in groups {
+                            if !selected.contains(name) || !reports(name) {
+                                continue;
+                            }
+                            for file in crate::output_group_info::depset_files(depset) {
+                                let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                                    format!(
+                                        "{label}: aspect output group '{name}' file has no declared artifact identity: {}",
+                                        file.path
+                                    )
+                                })?;
+                                artifacts.push(artifact);
+                            }
+                        }
+                    }
+                    aspect_reports.push((application.aspect.clone(), label.clone(), artifacts));
+                }
             }
         }
         // OutputGroupInfo.HIDDEN_TOP_LEVEL (RuleConfiguredTargetBuilder.java:156-171):
@@ -8140,7 +9616,7 @@ impl Engine {
         if !errors.is_empty() {
             return Err(errors.join("\n"));
         }
-        Ok((nodes, requested))
+        Ok((nodes, requested, aspect_reports, target_result_labels.len()))
     }
 }
 
@@ -8450,18 +9926,18 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
 /// Output paths are global across configurations (Bazel's action
 /// conflicts); a conflict names the owning labels.
 fn register_output(
-    producers: &mut BTreeMap<PathBuf, ConfiguredTargetKey>,
+    producers: &mut BTreeMap<PathBuf, String>,
     output: &Path,
-    owner: &ConfiguredTargetKey,
+    owner: &str,
 ) -> Result<(), String> {
     for ancestor in output.ancestors() {
         if let Some(previous) = producers.get(ancestor) {
             return Err(format!(
                 "overlapping output paths: {} from {} conflicts with {} from {}",
                 ancestor.display(),
-                previous.label,
+                previous,
                 output.display(),
-                owner.label
+                owner
             ));
         }
     }
@@ -8471,12 +9947,12 @@ fn register_output(
         return Err(format!(
             "overlapping output paths: {} from {} conflicts with {} from {}",
             output.display(),
-            owner.label,
+            owner,
             previous_path.display(),
-            previous.label
+            previous
         ));
     }
-    producers.insert(output.to_path_buf(), owner.clone());
+    producers.insert(output.to_path_buf(), owner.to_owned());
     Ok(())
 }
 
@@ -8554,7 +10030,7 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
 struct RunfilesPlanning<'a> {
     artifact_index: &'a mut BTreeMap<File, Artifact>,
     declared: &'a mut Declared,
-    producers: &'a mut BTreeMap<PathBuf, ConfiguredTargetKey>,
+    producers: &'a mut BTreeMap<PathBuf, String>,
     nodes: &'a mut Vec<PlannedAction>,
     source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
 }
@@ -8568,7 +10044,7 @@ impl RunfilesPlanning<'_> {
         file: &File,
     ) -> Result<Artifact, String> {
         let exec = PathBuf::from(&file.path);
-        register_output(self.producers, &exec, key)?;
+        register_output(self.producers, &exec, &key.label.to_string())?;
         let artifact = Artifact {
             directory: false,
             real: exec.clone(),
@@ -10374,7 +11850,7 @@ m = macro(implementation=emit)
             "",
         );
         let labels = engine.select_for_build(&["//:top".into()], "").unwrap();
-        let (nodes, requested) = engine.plan_build(&labels).unwrap();
+        let (nodes, requested, _, _) = engine.plan_build(&labels).unwrap();
         let top = engine.configurations.top();
         let key = |name: &str, config| ConfiguredTargetKey::new(test_label(name), config);
         let exec = engine.exec_configurations[&key("//:top", top)];

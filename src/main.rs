@@ -116,6 +116,9 @@ fn run() -> Result<(), String> {
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
     let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
+    let mut aspects = Vec::new();
+    let mut aspects_parameters = Vec::new();
+    let mut show_result = 1usize;
     let mut run_options = bazel_rs::run_command::RunOptions::default();
     let mut test_options = bazel_rs::test_command::TestOptions::default();
     let mut deferred = None;
@@ -189,7 +192,10 @@ fn run() -> Result<(), String> {
         credential_options = native.credentials;
         remote_options = native.remote;
         runfiles_options = native.runfiles;
-        output_selection = native.output;
+        output_selection = native.output.clone();
+        aspects = native.aspects;
+        aspects_parameters = native.aspects_parameters;
+        show_result = native.show_result;
         run_options = native.run;
         test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
@@ -352,6 +358,14 @@ fn run() -> Result<(), String> {
     // keeps the `default` group for failure reporting (shouldRunTests).
     engine.set_output_selection(output_selection);
     engine.set_tests_requested(command == "test");
+    // N58: the top-level aspects of builds (`--aspects`, with
+    // `--aspects_parameters`); the labels resolve against the main
+    // repository mapping inside the engine (BuildView.
+    // createTopLevelAspectKeys).
+    if !aspects.is_empty() || !aspects_parameters.is_empty() {
+        let resolved = resolve_aspects(&engine, &aspects)?;
+        engine.set_requested_aspects(resolved, aspects_parameters.into_iter().collect());
+    }
     if builds(&command) {
         // Label-typed options convert with the main repository mapping
         // (CoreOptionConverters.convertOptionsLabel, :351-357).
@@ -475,7 +489,8 @@ fn run() -> Result<(), String> {
         eprintln!("ERROR: {error}");
     }
     let summary = result?;
-    for (label, output) in summary.outputs {
+    let non_empty_targets = summary.non_empty_targets;
+    for (label, output) in &summary.outputs {
         // The path's raw bytes: a lone-byte target name names the byte
         // itself (bazel_bytes::internal_path), not U+FFFD.
         use std::io::Write as _;
@@ -486,6 +501,29 @@ fn run() -> Result<(), String> {
             .and_then(|()| stdout.write_all(output.as_os_str().as_bytes()))
             .and_then(|()| stdout.write_all(b"\n"))
             .map_err(|error| error.to_string())?;
+    }
+    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
+    // `--show_result` budget (default 1) counts every non-empty target and
+    // aspect result; exceeding it aborts the whole result printing.
+    {
+        let non_empty_aspects = summary
+            .aspects
+            .iter()
+            .filter(|(_, _, artifacts)| !artifacts.is_empty())
+            .count();
+        if non_empty_targets + non_empty_aspects <= show_result {
+            for (aspect, label, artifacts) in &summary.aspects {
+                // outputAspects (:312-332): an aspect line is printed only
+                // when the aspect has artifacts in a requested, reportable
+                // output group.
+                if !artifacts.is_empty() {
+                    eprintln!("Aspect {aspect} of {label} up-to-date:");
+                    for path in artifacts {
+                        eprintln!("  {}", path.display());
+                    }
+                }
+            }
+        }
     }
     if remote_enabled {
         eprintln!(
@@ -626,6 +664,37 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     let (summary, target) = result?;
     for (label, output) in &summary.outputs {
         eprintln!("{label}\t{}", output.display());
+    }
+    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
+    // `--show_result` budget (default 1) counts every non-empty target and
+    // aspect result; exceeding it aborts the whole result printing.
+    {
+        let non_empty_targets = summary
+            .outputs
+            .iter()
+            .map(|(label, _)| label)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let non_empty_aspects = summary
+            .aspects
+            .iter()
+            .filter(|(_, _, artifacts)| !artifacts.is_empty())
+            .count();
+        // The --show_result budget (not threaded here; aspects are a
+        // build-request feature, and the default budget is 1).
+        if non_empty_targets + non_empty_aspects <= 1 {
+            for (aspect, label, artifacts) in &summary.aspects {
+                // outputAspects (:312-332): an aspect line is printed only
+                // when the aspect has artifacts in a requested, reportable
+                // output group.
+                if !artifacts.is_empty() {
+                    eprintln!("Aspect {aspect} of {label} up-to-date:");
+                    for path in artifacts {
+                        eprintln!("  {}", path.display());
+                    }
+                }
+            }
+        }
     }
     if remote_enabled {
         eprintln!(
@@ -879,6 +948,37 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     // and the summary.
     for (label, output) in &summary.outputs {
         eprintln!("{label}\t{}", output.display());
+    }
+    // BuildResultPrinter.outputTargetsAndAspects (:118-160): the
+    // `--show_result` budget (default 1) counts every non-empty target and
+    // aspect result; exceeding it aborts the whole result printing.
+    {
+        let non_empty_targets = summary
+            .outputs
+            .iter()
+            .map(|(label, _)| label)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let non_empty_aspects = summary
+            .aspects
+            .iter()
+            .filter(|(_, _, artifacts)| !artifacts.is_empty())
+            .count();
+        // The --show_result budget (not threaded here; aspects are a
+        // build-request feature, and the default budget is 1).
+        if non_empty_targets + non_empty_aspects <= 1 {
+            for (aspect, label, artifacts) in &summary.aspects {
+                // outputAspects (:312-332): an aspect line is printed only
+                // when the aspect has artifacts in a requested, reportable
+                // output group.
+                if !artifacts.is_empty() {
+                    eprintln!("Aspect {aspect} of {label} up-to-date:");
+                    for path in artifacts {
+                        eprintln!("  {}", path.display());
+                    }
+                }
+            }
+        }
     }
     if remote_enabled {
         eprintln!(
@@ -1265,6 +1365,14 @@ struct NativeOptions {
     /// The requested top-level output groups of build/run/test (N56,
     /// `--output_groups`/`--run_validations`).
     output: bazel_rs::output_group_info::OutputSelection,
+    /// `--aspects` (N58): top-level aspect labels `{bzl-file-label}%{name}`
+    /// or native aspect names, in order.
+    aspects: Vec<String>,
+    /// `--aspects_parameters` (key=value, in order).
+    aspects_parameters: Vec<(String, String)>,
+    /// `--show_result` (BuildRequestOptions.maxResultTargets): how many
+    /// non-empty target/aspect results print.
+    show_result: usize,
     /// RunCommand.RunOptions (N23f, crate::run_command).
     run: bazel_rs::run_command::RunOptions,
     test: bazel_rs::test_command::TestOptions,
@@ -1285,6 +1393,9 @@ impl NativeOptions {
             remote: Default::default(),
             runfiles: bazel_rs::runfiles_tree::RunfilesOptions::default(),
             output: bazel_rs::output_group_info::OutputSelection::default(),
+            aspects: Vec::new(),
+            aspects_parameters: Vec::new(),
+            show_result: 1,
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
             configuration: if command == "query" {
@@ -1442,15 +1553,62 @@ impl NativeOptions {
                 bazel_rs::configuration::boolean_option(arg, "experimental_use_validation_aspect")
         {
             // The ASPECT ValidationMode of OutputGroupInfo.determineOutputGroups
-            // (OutputGroupInfo.java:162-169, 246-250): validation outputs are
-            // promoted by the ValidateTarget aspect, which the native profile
-            // does not model (aspects are unsupported).
-            if value? {
-                return Err(format!(
-                    "unsupported option --experimental_use_validation_aspect{}; validation actions run through the _validation output group only (the ValidateTarget aspect is not modelled)",
-                    unit.option.origin_suffix()
-                ));
-            }
+            // (OutputGroupInfo.java:246-250): validation outputs are promoted
+            // by the ValidateTarget aspect (N58, rules/core/ValidateTarget.java).
+            self.output.use_validation_aspect = value?;
+            false
+        } else if builds(command) && arg == "--show_result" {
+            let value = next.ok_or("--show_result requires a value")?;
+            self.show_result = value.parse().map_err(|_| {
+                format!("While parsing option --show_result={value}: not an integer")
+            })?;
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--show_result=")
+            .filter(|_| builds(command))
+        {
+            self.show_result = value.parse().map_err(|_| {
+                format!("While parsing option --show_result={value}: not an integer")
+            })?;
+            false
+        } else if builds(command) && arg == "--aspects" {
+            // BuildRequestOptions.aspects (CommaSeparatedOptionListConverter,
+            // allowMultiple); the label%name parsing happens with the
+            // repository mapping, in the engine.
+            let value = next.ok_or("--aspects requires a value")?;
+            self.aspects.extend(
+                value
+                    .split(',')
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_owned),
+            );
+            true
+        } else if builds(command) && arg == "--aspects_parameters" {
+            // BuildRequestOptions.aspectsParameters (AssignmentConverter).
+            let value = next.ok_or("--aspects_parameters requires a value")?;
+            let (key, assigned) = value.split_once('=').ok_or_else(|| {
+                format!("While parsing option --aspects_parameters={value}: expected key=value")
+            })?;
+            self.aspects_parameters
+                .push((key.to_owned(), assigned.to_owned()));
+            true
+        } else if let Some(value) = arg.strip_prefix("--aspects=").filter(|_| builds(command)) {
+            self.aspects.extend(
+                value
+                    .split(',')
+                    .filter(|token| !token.is_empty())
+                    .map(str::to_owned),
+            );
+            false
+        } else if let Some(value) = arg
+            .strip_prefix("--aspects_parameters=")
+            .filter(|_| builds(command))
+        {
+            let (key, assigned) = value.split_once('=').ok_or_else(|| {
+                format!("While parsing option --aspects_parameters={value}: expected key=value")
+            })?;
+            self.aspects_parameters
+                .push((key.to_owned(), assigned.to_owned()));
             false
         } else if builds(command) && arg == "--output_groups" {
             // CommaSeparatedOptionListConverter with allowMultiple: repeated
@@ -1553,6 +1711,50 @@ impl NativeOptions {
         }
         Ok(None)
     }
+}
+
+/// `--aspects` label parsing (BuildView.createTopLevelAspectKeys,
+/// BuildView.java:549-615): `{bzl-file-label}%{name}`, with the legacy
+/// relative spelling converted to an absolute label; a native aspect name
+/// (ValidateTarget) stays as its class name.
+fn resolve_aspects(
+    engine: &bazel_rs::engine::Engine,
+    aspects: &[String],
+) -> Result<Vec<String>, String> {
+    let mut resolved = Vec::new();
+    for aspect in aspects {
+        let Some(delimiter) = aspect.find('%') else {
+            // A native aspect class name; only the validation aspect exists
+            // natively (BuildRequest.getAspects appends ValidateTarget).
+            if aspect == "ValidateTarget" {
+                resolved.push(aspect.clone());
+            } else {
+                return Err(format!("Aspect '{aspect}' is unknown"));
+            }
+            continue;
+        };
+        let mut bzl = aspect[..delimiter].to_owned();
+        if !bzl.starts_with("//") && !bzl.starts_with('@') {
+            // "Legacy" behavior of the '--aspects' parameter: a relative
+            // `foo/bar.bzl%a` becomes `//foo:bar.bzl%a` (BuildView.java:566-583).
+            if let Some(stripped) = bzl.strip_prefix('/') {
+                bzl = stripped.to_owned();
+            }
+            bzl = match bzl.rfind('/') {
+                Some(slash) => format!("//{}:{}", &bzl[..slash], &bzl[slash + 1..]),
+                None => format!("//:{bzl}"),
+            };
+            if !bzl.ends_with(".bzl") {
+                bzl.push_str(".bzl");
+            }
+        }
+        let name = &aspect[delimiter + 1..];
+        let label = engine
+            .parse_option_label(&bzl)
+            .map_err(|error| format!("Invalid aspect '{aspect}': {error}"))?;
+        resolved.push(format!("{label}%{name}"));
+    }
+    Ok(resolved)
 }
 
 /// An option argument this profile does not model: Bazel's `Unrecognized

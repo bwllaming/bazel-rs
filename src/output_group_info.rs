@@ -76,7 +76,7 @@ pub(crate) fn files(value: Value<'_>) -> Option<Vec<File>> {
     Some(files)
 }
 
-fn depset_files(depset: &Depset) -> Vec<File> {
+pub(crate) fn depset_files(depset: &Depset) -> Vec<File> {
     depset
         .flatten()
         .into_iter()
@@ -241,6 +241,69 @@ pub(crate) fn freeze_validation(
     })
 }
 
+/// MergedConfiguredTarget.mergeOutputGroupProviders
+/// (configuredtargets/MergedConfiguredTarget.java:234-284): the base
+/// target's and every aspect's OutputGroupInfo merge per group, a group
+/// named twice unions its files (a duplicate group with no new name is not
+/// an error). Returns the merged groups, sorted by name
+/// (createInternal's ImmutableSortedMap), or `None` when no set has any
+/// group.
+pub(crate) fn merge_group_sets(sets: &[Vec<(String, Depset)>]) -> Option<Vec<(String, Depset)>> {
+    let mut merged: Vec<(String, Depset)> = Vec::new();
+    for set in sets {
+        for (name, depset) in set {
+            add_group(&mut merged, name, depset.clone());
+        }
+    }
+    if merged.is_empty() {
+        return None;
+    }
+    merged.sort_by(|a, b| a.0.cmp(&b.0));
+    Some(merged)
+}
+
+/// A frozen OutputGroupInfo of exactly `groups` (the merged view of an
+/// aspect-configured target's provider map).
+pub(crate) fn frozen_of_groups(
+    groups: Vec<(String, Depset)>,
+) -> starlark::values::OwnedFrozenValue {
+    starlark::environment::Module::with_temp_heap(|module| {
+        let info = OutputGroupInfo {
+            id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            groups,
+        };
+        module.set("__info", module.heap().alloc(info));
+        module
+            .freeze()
+            .expect("an owned OutputGroupInfo freezes")
+            .get("__info")
+            .expect("__info was set")
+    })
+}
+
+/// The frozen OutputGroupInfo the native ValidateTarget aspect returns
+/// (rules/core/ValidateTarget.java:69-76): a single `_validation_top_level`
+/// group with the promoted validation outputs.
+pub(crate) fn freeze_validation_top_level(
+    validation: Vec<File>,
+) -> Result<starlark::values::OwnedFrozenValue, String> {
+    starlark::environment::Module::with_temp_heap(|module| {
+        let info = OutputGroupInfo {
+            id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
+            groups: vec![(
+                VALIDATION_TOP_LEVEL.to_owned(),
+                Depset::from_files(validation),
+            )],
+        };
+        module.set("__info", module.heap().alloc(info));
+        module
+            .freeze()
+            .map_err(|error| format!("cannot freeze OutputGroupInfo: {error:?}"))?
+            .get("__info")
+            .map_err(|error| error.to_string())
+    })
+}
+
 /// The Files of an instance's `_validation` group (empty when the instance
 /// has none).
 pub(crate) fn validation_files(value: Value<'_>) -> Vec<File> {
@@ -264,6 +327,9 @@ pub(crate) fn validation_files(value: Value<'_>) -> Vec<File> {
 pub struct OutputSelection {
     pub groups: Vec<String>,
     pub run_validations: bool,
+    /// `--experimental_use_validation_aspect` (ValidationMode.ASPECT,
+    /// BuildRequest.validationMode, BuildRequest.java:452-457).
+    pub use_validation_aspect: bool,
 }
 
 impl Default for OutputSelection {
@@ -271,6 +337,7 @@ impl Default for OutputSelection {
         Self {
             groups: Vec::new(),
             run_validations: true,
+            use_validation_aspect: false,
         }
     }
 }
@@ -291,13 +358,14 @@ impl OutputSelection {
 /// OutputGroupInfo.determineOutputGroups (:207-243) with
 /// DEFAULT_GROUPS (:146-147): the `--output_groups` tokens (each optionally
 /// `+`/`-` prefixed; an unprefixed token overrides the default set), the
-/// `_validation` group added whenever validation actions run (`--run_validations`,
+/// validation group added whenever validation actions run (`--run_validations`,
 /// the only way to disable it; `-_validation` subtracts nothing), and the
 /// `default` group kept for a command that runs tests (BuildRequest.
 /// getTopLevelArtifactContext's shouldRunTests).
 pub(crate) fn determine_output_groups(
     output_groups: &[String],
     run_validations: bool,
+    use_validation_aspect: bool,
     should_run_tests: bool,
 ) -> std::collections::BTreeSet<String> {
     let mut current = std::collections::BTreeSet::new();
@@ -322,17 +390,31 @@ pub(crate) fn determine_output_groups(
         }
     }
     // Add the validation output group regardless of the additions and
-    // subtractions above (the OUTPUT_GROUP ValidationMode of --run_validations;
-    // the ASPECT mode of --experimental_use_validation_aspect is rejected by
-    // the command line).
-    if run_validations {
-        current.insert(VALIDATION.to_owned());
+    // subtractions above (determineOutputGroups's switch, :246-250):
+    // OUTPUT_GROUP adds `_validation` (--run_validations without
+    // --experimental_use_validation_aspect), ASPECT adds
+    // `_validation_top_level` (the ValidateTarget aspect promotes the
+    // outputs, rules/core/ValidateTarget.java:45-48), OFF neither
+    // (--run_validations=false).
+    match (run_validations, use_validation_aspect) {
+        (false, _) => {}
+        (true, false) => {
+            current.insert(VALIDATION.to_owned());
+        }
+        (true, true) => {
+            current.insert(VALIDATION_TOP_LEVEL.to_owned());
+        }
     }
     if should_run_tests {
         current.insert(DEFAULT.to_owned());
     }
     current
 }
+
+/// OutputGroupInfo.VALIDATION_TOP_LEVEL (:126-128): the group the
+/// ValidateTarget aspect promotes `_validation` outputs to, requested by
+/// the ASPECT ValidationMode of `--experimental_use_validation_aspect`.
+pub(crate) const VALIDATION_TOP_LEVEL: &str = "_validation_top_level";
 
 impl OutputGroupInfo {
     fn get(&self, name: &str) -> Option<&Depset> {

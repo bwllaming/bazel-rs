@@ -233,12 +233,9 @@ impl AttrDeclaration {
                 self.cfg.describe()
             ));
         }
-        if !self.aspects.is_empty() {
-            features.push(format!(
-                "attribute '{name}' aspects=[{}] (aspect propagation)",
-                self.aspects.join(", ")
-            ));
-        }
+        // `aspects` are analyzed (N58, docs/ASPECTS.md): they propagate to
+        // the attribute's dependencies and merge their providers into the
+        // aspect-configured targets consumers see.
         if self.late_bound && !self.late_bound_resolvable() {
             let field = self
                 .configuration_field

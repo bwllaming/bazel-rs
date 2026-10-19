@@ -326,7 +326,7 @@ fn starlark_transition(spec: &AttrSpec) -> bool {
 /// The consuming rule of a prerequisite in RuleContext messages: its rule
 /// class and canonical label.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Consumer<'a> {
+pub struct Consumer<'a> {
     pub rule_class: &'a str,
     pub label: &'a str,
 }
@@ -1549,6 +1549,434 @@ pub fn analyze_in(
         eprintln!("{line}");
     }
     result
+}
+
+/// One aspect application at analysis: everything
+/// [`analyze_aspect_buffered`] needs (AspectFunction's AspectValue inputs,
+/// skyframe/AspectFunction.java:292-542).
+pub(crate) struct AspectApplication {
+    /// The applied aspect.
+    pub aspect: std::sync::Arc<crate::aspects::AspectDefinition>,
+    /// The applied aspects' descriptions in application order
+    /// (`ctx.aspect_ids`).
+    pub aspect_ids: Vec<String>,
+    /// The `target` parameter: the base configured target merged with the
+    /// directly required aspects' providers (MergedConfiguredTarget.of,
+    /// AspectFunction.java:341-346).
+    pub target: DependencyTarget,
+    /// The base rule, select-resolved, with its configured attribute values
+    /// (`ctx.rule`).
+    pub rule: Rule,
+    /// The application's dependencies: the aspect's own attributes and the
+    /// base rule's attribute edges (aspect-applied where they propagate),
+    /// keyed with the rule-context dependency keys of
+    /// [`crate::analysis::dependency_key`] and friends.
+    pub dependencies: BTreeMap<String, DependencyTarget>,
+    pub repositories: Arc<RepositorySet>,
+}
+
+/// The analysis of one aspect application: runs the aspect's implementation
+/// `f(target, ctx)` (StarlarkAspectFactory.create, StarlarkAspectFactory.java:
+/// 62-66) and returns its providers and actions. Unlike a rule, the aspect's
+/// OutputGroupInfo is exactly what it returned (no HIDDEN_TOP_LEVEL merge)
+/// and a returned DefaultInfo is kept as a provider (its files join the
+/// merged files to build at the consumer, MergedConfiguredTarget).
+pub(crate) fn analyze_aspect_buffered(
+    application: &AspectApplication,
+    target: &ConfiguredOutputs<'_>,
+) -> (Result<AnalysisResult, String>, Vec<String>) {
+    let prints = BufferedPrints::default();
+    let result = analyze_aspect_inner(application, target, &prints).map_err(|error| {
+        match error.downcast_ref::<crate::rule_errors::ReportedErrors>() {
+            Some(reported) => reported.0.clone(),
+            None => {
+                let rule_class = application
+                    .rule
+                    .custom
+                    .as_ref()
+                    .map(|custom| custom.declaration.rule_class.as_str())
+                    .unwrap_or("native");
+                format!(
+                    "in {} aspect on {} rule {}: {error:#}",
+                    application.aspect.identity,
+                    rule_class,
+                    crate::rule_declarations::canonical_form(&application.rule.label),
+                )
+            }
+        }
+    });
+    (result, prints.0.into_inner())
+}
+
+fn analyze_aspect_inner(
+    application: &AspectApplication,
+    target: &ConfiguredOutputs<'_>,
+    prints: &BufferedPrints,
+) -> anyhow::Result<AnalysisResult> {
+    let aspect = &application.aspect;
+    let rule = &application.rule;
+    // Declared aspect features whose application the native profile does not
+    // model fail explicitly (docs/ASPECTS.md).
+    let declaration = &aspect.declaration;
+    let has_subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
+        .is_some_and(|value| !value.subrules.is_empty());
+    if declaration.attr_aspects.is_none()
+        || declaration
+            .toolchains_aspects
+            .as_ref()
+            .is_some_and(|aspects| !aspects.is_empty())
+        || !declaration.toolchains.is_empty()
+        || !declaration.fragments.is_empty()
+        || !declaration.host_fragments.is_empty()
+        || !declaration.exec_compatible_with.is_empty()
+        || !declaration.exec_groups.is_empty()
+        || has_subrules
+    {
+        let mut gaps = Vec::new();
+        if declaration.attr_aspects.is_none() {
+            gaps.push(
+                "a function attr_aspects/toolchains_aspects or a propagation predicate".to_owned(),
+            );
+        }
+        if declaration
+            .toolchains_aspects
+            .as_ref()
+            .is_some_and(|aspects| !aspects.is_empty())
+        {
+            gaps.push("toolchains_aspects".to_owned());
+        }
+        if !declaration.toolchains.is_empty() {
+            gaps.push("toolchains".to_owned());
+        }
+        if !declaration.fragments.is_empty() || !declaration.host_fragments.is_empty() {
+            gaps.push("fragments".to_owned());
+        }
+        if !declaration.exec_compatible_with.is_empty() {
+            gaps.push("exec_compatible_with".to_owned());
+        }
+        if !declaration.exec_groups.is_empty() {
+            gaps.push("exec_groups".to_owned());
+        }
+        if has_subrules {
+            gaps.push("subrules".to_owned());
+        }
+        bail!(
+            "aspect {} declares {}: not analyzed by the native profile",
+            aspect.identity,
+            gaps.join(", ")
+        );
+    }
+    let invocation = rule
+        .custom
+        .as_ref()
+        .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
+    let mut aspect_surface = rule_surface(
+        rule,
+        invocation,
+        &application.repositories,
+        &application.dependencies,
+    );
+    aspect_surface.locations = location_map(
+        rule,
+        invocation,
+        &application.dependencies,
+        target.output_root,
+    )?;
+    let aspect_surface = Arc::new(aspect_surface);
+    let active = Arc::new(AtomicBool::new(true));
+    let context = Context {
+        action_env: target.action_env.clone(),
+        label: rule.label.clone(),
+        output_root: target.output_root.to_owned(),
+        action_owner: target.action_owner.to_owned(),
+        dependency_files: application
+            .dependencies
+            .values()
+            .flat_map(|dep| {
+                dep.files
+                    .iter()
+                    .chain(&dep.provider_files)
+                    .cloned()
+                    .chain(dep.runfiles.files())
+            })
+            .collect(),
+        declared: RefCell::new(Vec::new()),
+        actions: RefCell::new(Vec::new()),
+        active,
+        top_level_functions: invocation.top_level_functions.clone(),
+        loaded_functions: target.loaded_functions.cloned(),
+        repositories: application.repositories.clone(),
+        scope: crate::analysis_runtime::ScopeState::new(rule.label.to_string(), BTreeSet::new()),
+        subrule: crate::subrule::RuleEnvironment::new(None, false, invocation.cpp),
+        exec_groups: crate::exec_groups::ActionExecGroups {
+            groups: None,
+            use_auto_exec_groups: false,
+            subrule: None,
+        },
+        runfiles: crate::runfiles::ContextRunfiles {
+            default_executable: None,
+            ..Default::default()
+        },
+    };
+    Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let ctx = make_aspect_ctx(application, &context, module.heap(), aspect_surface.clone())?;
+        let mut eval = Evaluator::new(&module);
+        eval.set_max_callstack_size(128)
+            .map_err(|error| anyhow!(error.to_string()))?;
+        eval.extra = Some(&context);
+        eval.set_print_handler(prints);
+        let target_value = alloc_dependency(module.heap(), &application.target);
+        // The implementation function of the exported aspect value, kept
+        // alive by the definition's owner (StarlarkAspectFactory).
+        let aspect_value = module.heap().access_owned_frozen_value(&aspect.value);
+        let implementation = crate::rule_declarations::Aspect::from_value(aspect_value)
+            .ok_or_else(|| anyhow!("aspect {} is not an aspect value", aspect.identity))?
+            .implementation;
+        let returned = eval.eval_function(implementation, &[target_value, ctx], &[]);
+        context.scope.finish();
+        context.active.store(false, Ordering::Release);
+        let reported = aspect_surface.take_errors();
+        if !reported.is_empty() {
+            let mut message =
+                crate::rule_errors::located_events(rule.location.as_deref(), reported);
+            if let Err(error) = &returned {
+                message.push('\n');
+                message.push_str(&error.to_string());
+            }
+            return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+                message,
+            )));
+        }
+        let returned = returned.map_err(|error| anyhow!(error.to_string()))?;
+        check_return_shape(returned)?;
+        let custom = crate::providers::returned_custom_providers(returned)?;
+        let provider_keys = crate::providers::returned_provider_key_names(returned)?;
+        let mut slots = Vec::new();
+        let mut provider_files = BTreeSet::new();
+        for (identity, provider) in custom {
+            provider_files.extend(crate::providers::provider_files(provider)?);
+            let slot = format!("$provider:{}", slots.len());
+            module.set(&slot, provider);
+            slots.push((identity, slot));
+        }
+        drop(eval);
+        let frozen = module
+            .freeze_named(FrozenHeapName::User(Box::new(format!(
+                "aspect:{}%{}",
+                rule.label, aspect.exported_name
+            ))))
+            .map_err(|error| anyhow!("cannot freeze aspect providers: {error:?}"))?;
+        let providers = slots
+            .into_iter()
+            .map(|(identity, slot)| {
+                frozen
+                    .get(&slot)
+                    .map(|value| (identity, value))
+                    .map_err(|error| anyhow!(error.to_string()))
+            })
+            .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        Ok(AnalysisResult {
+            files: Vec::new(),
+            declared: context.declared.borrow().clone(),
+            actions: context.actions.borrow().clone(),
+            providers,
+            provider_files: provider_files.into_iter().collect(),
+            provider_keys,
+            runfiles: crate::runfiles::TargetRunfiles::default(),
+        })
+    })
+}
+
+/// The aspect context: `ctx.attr`/`ctx.files`/`ctx.file` of the aspect's own
+/// attributes (their defaults, or the `--aspects_parameters` values),
+/// `ctx.label` of the base target, `ctx.actions`, and `ctx.rule` over the
+/// base rule's attributes with the application's (aspect-applied)
+/// dependencies (StarlarkRuleContext.java:188-330).
+fn make_aspect_ctx<'v>(
+    application: &AspectApplication,
+    context: &Context,
+    heap: Heap<'v>,
+    surface: Arc<crate::ctx_surface::RuleSurface>,
+) -> anyhow::Result<Value<'v>> {
+    let aspect = &application.aspect;
+    let rule = &application.rule;
+    let invocation = rule
+        .custom
+        .as_ref()
+        .ok_or_else(|| anyhow!("{} is not a custom rule", rule.label))?;
+    let shown_label = crate::rule_declarations::canonical_form(&rule.label);
+    let consumer = Consumer {
+        rule_class: &aspect.exported_name,
+        label: &shown_label,
+    };
+    // The aspect's own attributes: implicit label attributes resolved from
+    // the application's dependencies, parameters from their values
+    // (AspectParameters). Frozen like a rule's (immutable in Bazel).
+    const NAMES: [&str; 4] = ["attr", "files", "file", "$aspect_ids"];
+    let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
+        attrs.insert(
+            "name".to_owned(),
+            module.heap().alloc(rule.label.name.as_str()),
+        );
+        let mut files: BTreeMap<String, Value> = BTreeMap::new();
+        let mut single_files: BTreeMap<String, Value> = BTreeMap::new();
+        let mut parameter_errors = Vec::new();
+        for (name, spec) in &aspect.declaration.attrs {
+            let value = aspect.parameters.get(name).unwrap_or(&spec.default);
+            match value {
+                AttrValue::Label(label) => {
+                    if let Some(label) = label {
+                        let prefix = crate::rule_errors::RuleEvents {
+                            rule_class: &aspect.exported_name,
+                            label: &shown_label,
+                        }
+                        .attribute_message(name, "");
+                        let target = match dependency(
+                            label,
+                            name,
+                            spec,
+                            &application.dependencies,
+                            &prefix,
+                            consumer,
+                        ) {
+                            Ok(target) => target,
+                            Err(error) => {
+                                parameter_errors.push(format!("{prefix}{error}"));
+                                continue;
+                            }
+                        };
+                        attrs.insert(name.clone(), alloc_dependency(module.heap(), target));
+                        let list: Vec<Value> = target
+                            .files
+                            .iter()
+                            .map(|file| alloc_file(module.heap(), file.clone()))
+                            .collect();
+                        files.insert(name.clone(), module.heap().alloc(list));
+                        if spec.allow_single_file {
+                            single_files.insert(
+                                name.clone(),
+                                target
+                                    .files
+                                    .first()
+                                    .map(|file| alloc_file(module.heap(), file.clone()))
+                                    .unwrap_or_else(Value::new_none),
+                            );
+                        }
+                    } else {
+                        attrs.insert(name.clone(), Value::new_none());
+                        files.insert(name.clone(), module.heap().alloc(Vec::<Value>::new()));
+                        if spec.allow_single_file {
+                            single_files.insert(name.clone(), Value::new_none());
+                        }
+                    }
+                }
+                AttrValue::String(value) => {
+                    attrs.insert(name.clone(), module.heap().alloc(value.as_str()));
+                }
+                AttrValue::Strings(values) => {
+                    attrs.insert(name.clone(), module.heap().alloc(values.clone()));
+                }
+                AttrValue::Int(value) => {
+                    attrs.insert(name.clone(), module.heap().alloc(*value));
+                }
+                AttrValue::Bool(value) => {
+                    attrs.insert(name.clone(), module.heap().alloc(*value));
+                }
+                _ => bail!(
+                    "aspect attribute '{}' has an unsupported parameter type",
+                    name
+                ),
+            }
+        }
+        if !parameter_errors.is_empty() {
+            return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+                parameter_errors.join("\n"),
+            )));
+        }
+        module.set(
+            "attr",
+            module.heap().alloc(starlark::values::structs::AllocStruct(
+                attrs.into_iter().collect::<Vec<_>>(),
+            )),
+        );
+        module.set(
+            "files",
+            module.heap().alloc(starlark::values::structs::AllocStruct(
+                files.into_iter().collect::<Vec<_>>(),
+            )),
+        );
+        module.set(
+            "file",
+            module.heap().alloc(starlark::values::structs::AllocStruct(
+                single_files.into_iter().collect::<Vec<_>>(),
+            )),
+        );
+        module.set(
+            "$aspect_ids",
+            module.heap().alloc(application.aspect_ids.clone()),
+        );
+        let frozen = module
+            .freeze_named(FrozenHeapName::User(Box::new(
+                "aspect context attributes".to_owned(),
+            )))
+            .map_err(|error| anyhow!("cannot freeze aspect context attributes: {error:?}"))?;
+        NAMES
+            .map(|name| frozen.get(name).map_err(|error| anyhow!(error.to_string())))
+            .into_iter()
+            .collect::<anyhow::Result<Vec<_>>>()
+    })?;
+    let owned = <[OwnedFrozenValue; 4]>::try_from(owned)
+        .map_err(|_| anyhow!("internal error: aspect context attribute structs"))?;
+    let [attr, files, file, aspect_ids] = owned.map(|value| heap.access_owned_frozen_value(&value));
+    // ctx.rule: the base rule's attribute structs over the application's
+    // dependencies (allocated beside the ctx; StarlarkAttributesCollection
+    // is not frozen separately in Bazel either).
+    let [
+        base_attr,
+        base_files,
+        base_file,
+        _outputs,
+        base_executable,
+        _lifted,
+    ] = ctx_attribute_structs(rule, invocation, context, &application.dependencies, heap)?;
+    let rule_attributes = heap.alloc_complex_no_freeze(crate::analysis_ctx::RuleAttributes {
+        attr: base_attr,
+        executable: base_executable,
+        file: base_file,
+        files: base_files,
+        kind: invocation.declaration.rule_class.clone(),
+    });
+    let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
+        .get_attr_error("label", heap)
+        .map_err(|error| anyhow!(error.to_string()))?;
+    let backing = heap.alloc(starlark::values::structs::AllocStruct([
+        ("attr", attr),
+        ("files", files),
+        ("file", file),
+        ("label", label),
+        (
+            "actions",
+            crate::analysis_runtime::alloc_actions_for(
+                heap,
+                context.scope.root(),
+                crate::analysis_ctx::aspect_context_repr(&shown_label),
+            ),
+        ),
+        ("$rule", rule_attributes),
+        ("$aspect_ids", aspect_ids),
+        ("$collect_data", heap.alloc(Vec::<Value>::new())),
+        ("$collect_default", heap.alloc(Vec::<Value>::new())),
+    ]));
+    Ok(crate::analysis_ctx::alloc_aspect(
+        heap,
+        backing,
+        context.scope.root(),
+        invocation.target_platform.clone(),
+        None,
+        None,
+        surface,
+    ))
 }
 
 /// Where the analysis of a configured target declares its outputs and how

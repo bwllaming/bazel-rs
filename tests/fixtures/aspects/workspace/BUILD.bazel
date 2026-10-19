@@ -1,0 +1,20 @@
+load(":defs.bzl", "app", "aspect_tool", "aggregate", "dup_base", "dup_consumer", "eater", "g", "has_rule", "lib", "plain_rule", "use", "val")
+
+lib(name = "a")
+lib(name = "b", deps = [":a"])
+lib(name = "c", deps = [":b"])
+app(name = "app", deps = [":c"])
+
+has_rule(name = "has")
+plain_rule(name = "plain", deps = [":has"])
+aggregate(name = "agg", deps = [":has", ":plain"])
+
+val(name = "leafval")
+eater(name = "eat", deps = [":leafval"])
+
+g(name = "gg")
+use(name = "use", dep1 = ":gg.gen1", dep2 = ":gg.gen1")
+
+aspect_tool(name = "aspect_tool")
+dup_base(name = "dupbase")
+dup_consumer(name = "dupconsumer", deps = [":dupbase"])

@@ -312,19 +312,7 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
             "Pass an executable or tools argument to ctx.actions.run or ctx.actions.run_shell instead of calling ctx.resolve_tools.\nUse --noincompatible_disallow_ctx_resolve_tools to temporarily disable this check."
         )
     }
-    /// StarlarkRuleContext.rule (:809-816).
-    #[starlark(attribute)]
-    fn rule<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        current_surface(this)?;
-        bail!("'rule' is only available in aspect implementations")
-    }
-    /// StarlarkRuleContext.aspectIds (:818-829).
-    #[starlark(attribute)]
-    fn aspect_ids<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
-        current_surface(this)?;
-        bail!("'aspect_ids' is only available in aspect implementations")
-    }
-    /// StarlarkRuleContext.getSplitAttr (:683-689): the attributes with split
+    /// StarlarkRuleContext.splitAttr (:683-689): the attributes with split
     /// transitions; Starlark transitions on attributes are not modelled here.
     #[starlark(attribute)]
     fn split_attr<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
@@ -341,6 +329,26 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
     fn created_actions<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
         current_surface(this)?;
         Ok(NoneType)
+    }
+}
+
+/// The rule-context-only members of the shared N23c surface: `ctx.rule` and
+/// `ctx.aspect_ids` are aspect-only (StarlarkRuleContext.java:809-829); a
+/// rule (or build-setting) context fails with Bazel's texts. An aspect
+/// context binds its own pair in crate::analysis_ctx.
+#[starlark_module]
+pub(crate) fn rule_aspect_gates(builder: &mut MethodsBuilder) {
+    /// StarlarkRuleContext.rule (:809-816).
+    #[starlark(attribute)]
+    fn rule<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
+        current_surface(this)?;
+        bail!("'rule' is only available in aspect implementations")
+    }
+    /// StarlarkRuleContext.aspectIds (:818-829).
+    #[starlark(attribute)]
+    fn aspect_ids<'v>(this: Value<'v>) -> anyhow::Result<NoneType> {
+        current_surface(this)?;
+        bail!("'aspect_ids' is only available in aspect implementations")
     }
 }
 

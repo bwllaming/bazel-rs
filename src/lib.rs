@@ -13,6 +13,7 @@ mod analysis_runtime;
 mod apple_xcode;
 pub mod archive;
 pub mod args;
+pub mod aspects;
 mod attribute_values;
 pub mod bazel_bytes;
 mod bazel_label;
