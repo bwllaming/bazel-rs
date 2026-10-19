@@ -40,7 +40,8 @@
  },
  "post_capture_changes": {
   "compile_one_dependency": "--compile_one_dependency (DIRECT_COMPILE_TIME_INPUT's only reader) fails explicitly: unsupported option; pinned by tests/attribute_flags.rs",
-  "n57_review_follow_up_check": "artifacts/n57-followup-check.py (post-commit review, same tree semantics): ONE genuine-vs-native ORDER_INDEPENDENT row over repositories and packages (labels //a:x, //a-b:x, //a/b:x, @other//:x in scrambled BUILD order; plus an unconditional select, a resolved select and a rule default) \u2014 verdict EXACT_PRINT, all four print lines equal to genuine (sorted: @@//a:x < @@//a-b:x < @@//a/b:x < @@other+//:x, i.e. repository name then package path then name; the resolved select keeps branch order; the default is not sorted); genuine Bazel 9.3 ran in a scratch with a private --output_user_root, removed after. The same script builds the cgo fixture natively and counts the stdlib archives of the unsandboxed native execution: 350 \u2014 identical to the captured stdlib scenario; the native profile has no spawn-strategy switch (--spawn_strategy is rejected explicitly) and always stages only declared action inputs, so the 357-package local-strategy leak of genuine Bazel cannot occur natively.",
+  "i17_n58_aspect_merge": "integration-17 (N58 aspects over N57): attr(aspects=) propagation is analyzed, so the c-archive path passes _go_cc_aspect and new_cc_import and now stops inside the rules_cc analysis-time C++ API at cc_internal.create_header_info with header artifacts (cc_info.bzl:338 create_compilation_context); the aspect-propagation stop recorded at capture time is superseded. Re-verified by artifacts/i17-cgo-replay.py under the N59 sandbox default: every byte-identity scenario still EXACT (library/binary/test/pure, stdlib runtime/cgo.a + 350-package set), cc_import/cc_library gaps unchanged.",
+  "n57_review_follow_up_check": "artifacts/n57-followup-check.py (post-commit review, same tree semantics): ONE genuine-vs-native ORDER_INDEPENDENT row over repositories and packages (labels //a:x, //a-b:x, //a/b:x, @other//:x in scrambled BUILD order; plus an unconditional select, a resolved select and a rule default) — verdict EXACT_PRINT, all four print lines equal to genuine (sorted: @@//a:x < @@//a-b:x < @@//a/b:x < @@other+//:x, i.e. repository name then package path then name; the resolved select keeps branch order; the default is not sorted); genuine Bazel 9.3 ran in a scratch with a private --output_user_root, removed after. The same script builds the cgo fixture natively and counts the stdlib archives of the unsandboxed native execution: 350 — identical to the captured stdlib scenario; the native profile has no spawn-strategy switch (--spawn_strategy is rejected explicitly) and always stages only declared action inputs, so the 357-package local-strategy leak of genuine Bazel cannot occur natively.",
   "order_independent_sort_internal_error": "label values that fail canonical parse in order_independent_sorted now fail with an internal error instead of silently staying unsorted"
  },
  "runs": {
@@ -73,11 +74,13 @@
   },
   "c_archive": {
    "args": [],
-   "expected_native_gap": "aspect propagation",
+   "expected_native_gap": "cc_internal.create_header_info with header artifacts",
    "label": "EXPECTED_NATIVE_GAP",
    "native_exit": 1,
    "native_gap_message": [
-    "bazel-rs: analysis of //cgo:cgo_archive: declared rule features accepted at load time but not analyzed by the native profile: attribute 'deps' aspects=[@@rules_go+//go/private/rules:binary.bzl%_go_cc_aspect] (aspect propagation)"
+    "bazel-rs: error: cc_internal.create_header_info with header artifacts is not implemented in the native profile (analysis-time C++ API)",
+    "   --> @@rules_cc+//cc/private:cc_info.bzl:338:19",
+    "(via go_non_executable_binary's _go_cc_aspect -> new_cc_import -> create_compilation_context)"
    ],
    "reference_exit": 0,
    "target": "//cgo:cgo_archive"
