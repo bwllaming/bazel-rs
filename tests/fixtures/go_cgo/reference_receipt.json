@@ -1,0 +1,360 @@
+{
+ "fixture": {
+  "go_sdk": "go_sdk.host() over /home/coder/install/go (go1.26.2) minus 5 dropped files",
+  "kind": "rules_go 0.63.0 cgo on rules_cc 0.2.17 @local_config_cc host toolchain",
+  "modules": {
+   "apple_support": "local_path_override",
+   "bazel_features": "local_path_override",
+   "bazel_skylib": "local_path_override",
+   "gazelle": "local_path_override",
+   "package_metadata": "local_path_override",
+   "platforms": "local_path_override",
+   "protobuf": "local_path_override",
+   "rules_cc": "local_path_override",
+   "rules_go": "local_path_override",
+   "rules_java": "local_path_override",
+   "rules_license": "local_path_override",
+   "rules_proto": "local_path_override",
+   "rules_python": "local_path_override",
+   "rules_shell": "local_path_override"
+  },
+  "stubs": [
+   "buildozer",
+   "zlib"
+  ]
+ },
+ "genuine": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64 sha256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "key_findings": [
+  "every go_library runs cgo_context_data_impl on the optional @@bazel_tools//tools/cpp:toolchain_type (CGO_TOOLCHAINS); with rules_cc 0.2.17 the whole CgoContextInfo (env, ccopts, ld paths/options) is Starlark + the five native cc_common getters, and matches genuine value-for-value",
+  "the cgo stdlib package set is strategy-dependent in genuine Bazel itself: --spawn_strategy=local leaks the full SDK src through the execroot symlink (357 archives incl. 7 STDLIB_SRCS_EXCLUDE packages); sandboxed genuine (default) and the native profile both build the filtered 350 with identical bytes",
+  "the go cc linking path (external link via cgo_tools.ld_executable_options, extldflags_from_cc_toolchain) produces byte-identical binaries and tests without any CcInfo construction",
+  "boundary 1 (aspects): go_binary linkmode c-archive/c-shared -> go_non_executable_binary declares _go_cc_aspect on deps/embed (binary.bzl:517-518); attr.aspects propagation is unimplemented and also gates new_cc_import (create_linker_input/create_library_to_link, binary.bzl:79-102)",
+  "boundary 2 (cc compile): cc_import/cc_library (go_library cdeps closure) analyze create_library_to_link/create_linker_input/create_linking_context (frozen lists) and stop at cc_common.compile -> cc_internal.actions2ctx_cheat; the rules_cc compile/link Starlark needs cc_internal natives: actions2ctx_cheat, get_artifact_name_for_category, freeze, combine_cc_toolchain_variables (done), cc_toolchain_variables (done), create_cc_compile_action, is_tree_artifact, dynamic_library_symlink/2/_soname, wrap_link_actions, declare_other_output_file, create_header_info, compute_output_name_prefix_dir, solib_symlink_action, per_file_copts, intern_seq, rule_class",
+  "ORDER_INDEPENDENT attr flag is load-time canonicalization (BuildType.java:245-253): natural sort of converted list values (Label.compareTo), explicit values and simplified unconditional selects only; DIRECT_COMPILE_TIME_INPUT is inert (--compile_one_dependency only)"
+ ],
+ "native_binary_sha256": "bddd4d77127c2740699622a1146908af5e5bb541f7ce3efac97518a4ce2cc513",
+ "native_test_run": {
+  "exit": 0,
+  "passed": true,
+  "tail": "//cgo:cgo_test                                                           PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n//cgo:cgo_test\t/tmp/opencode/n57cap2296626/ncache/actions/67ec7aa31e4248c38f0915d54f56e36029af74befb1493974370732ed5a27e0a/outputs/bazel-out/k8-fastbuild/bin/cgo/cgo_test_/cgo_test\nbazel-rs: 0 actions executed, 18 cache hits (experimental local execution; not sandboxed)\n"
+ },
+ "runs": {
+  "run1_and_allowed_rerun": "every scenario verdict, output hash, stdlib set and print line identical; only the scratch PID inside native_test_run.tail and the timing/binary-sha fields differ"
+ },
+ "scenarios": {
+  "binary": {
+   "args": [],
+   "label": "EXACT_D1",
+   "native_action_line": 5,
+   "native_exit": 0,
+   "native_seconds": 39.2,
+   "reference_exit": 0,
+   "reference_seconds": 27.7,
+   "reference_total_actions": 15,
+   "rows": {
+    "//cmd:cgocmd": {
+     "native_paths": [
+      "bazel-out/k8-fastbuild/bin/cmd/cgocmd_/cgocmd"
+     ],
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/cmd/cgocmd_/cgocmd"
+     ],
+     "verdict": "EXACT_D1"
+    }
+   },
+   "targets": [
+    "//cmd:cgocmd"
+   ]
+  },
+  "c_archive": {
+   "args": [],
+   "expected_native_gap": "aspect propagation",
+   "label": "EXPECTED_NATIVE_GAP",
+   "native_exit": 1,
+   "native_gap_message": [
+    "bazel-rs: analysis of //cgo:cgo_archive: declared rule features accepted at load time but not analyzed by the native profile: attribute 'deps' aspects=[@@rules_go+//go/private/rules:binary.bzl%_go_cc_aspect] (aspect propagation)"
+   ],
+   "reference_exit": 0,
+   "target": "//cgo:cgo_archive"
+  },
+  "cc_import": {
+   "args": [],
+   "expected_native_gap": "cc_internal.actions2ctx_cheat is not implemented in the native profile",
+   "label": "EXPECTED_NATIVE_GAP",
+   "native_exit": 1,
+   "native_gap_message": [
+    "error: cc_internal.actions2ctx_cheat is not implemented in the native profile (analysis-time C++ API)"
+   ],
+   "reference_exit": 0,
+   "target": "//cdep:prebuilt"
+  },
+  "cc_library": {
+   "args": [],
+   "expected_native_gap": "cc_internal.actions2ctx_cheat is not implemented in the native profile",
+   "label": "EXPECTED_NATIVE_GAP",
+   "native_exit": 1,
+   "native_gap_message": [
+    "error: cc_internal.actions2ctx_cheat is not implemented in the native profile (analysis-time C++ API)"
+   ],
+   "reference_exit": 0,
+   "target": "//cdep:built"
+  },
+  "context_probe": {
+   "label": "EXACT_PRINT",
+   "native_exit": 0,
+   "native_prints": [
+    [
+     "PROBE cgo_available:",
+     "True"
+    ],
+    [
+     "PROBE env:",
+     "{\"GOARCH\": \"amd64\", \"GOOS\": \"linux\", \"GOEXPERIMENT\": \"\", \"GOROOT\": \"external/rules_go++go_sdk+main___host_0\", \"GOROOT_FINAL\": \"GOROOT\", \"CGO_ENABLED\": \"1\", \"GOPATH\": \"\", \"GOTOOLCHAIN\": \"local\", \"GODEBUG\": \"winsymlink=0\", \"ZERO_AR_DATE\": \"1\", \"PATH\": \"/usr/bin:/bin\"}"
+    ],
+    [
+     "PROBE c_compiler_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE c_compile_options:",
+     "[\"-U_FORTIFY_SOURCE\", \"-fstack-protector\", \"-Wunused-but-set-parameter\", \"-Wno-free-nonheap-object\", \"-fno-omit-frame-pointer\", \"-fno-canonical-system-headers\", \"-Wno-builtin-macro-redefined\", \"-D__DATE__=\\\"redacted\\\"\", \"-D__TIMESTAMP__=\\\"redacted\\\"\", \"-D__TIME__=\\\"redacted\\\"\"]"
+    ],
+    [
+     "PROBE cxx_compile_options:",
+     "[\"-U_FORTIFY_SOURCE\", \"-fstack-protector\", \"-Wunused-but-set-parameter\", \"-Wno-free-nonheap-object\", \"-fno-omit-frame-pointer\", \"-std=c++17\", \"-fno-canonical-system-headers\", \"-Wno-builtin-macro-redefined\", \"-D__DATE__=\\\"redacted\\\"\", \"-D__TIMESTAMP__=\\\"redacted\\\"\", \"-D__TIME__=\\\"redacted\\\"\"]"
+    ],
+    [
+     "PROBE ld_executable_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE ld_executable_options:",
+     "[\"-fuse-ld=gold\", \"-B/usr/bin\", \"-Wl,-no-as-needed\", \"-Wl,-z,relro\", \"-pass-exit-codes\", \"-Wl,--push-state,-as-needed\", \"-lstdc++\", \"-Wl,--pop-state\", \"-Wl,--push-state,-as-needed\", \"-lm\", \"-Wl,--pop-state\"]"
+    ],
+    [
+     "PROBE ld_static_lib_path:",
+     "/usr/bin/ar"
+    ],
+    [
+     "PROBE ld_dynamic_lib_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE ld_dynamic_lib_options:",
+     "[\"-shared\", \"-fuse-ld=gold\", \"-B/usr/bin\", \"-Wl,-no-as-needed\", \"-Wl,-z,relro\", \"-pass-exit-codes\", \"-Wl,--push-state,-as-needed\", \"-lstdc++\", \"-Wl,--pop-state\", \"-Wl,--push-state,-as-needed\", \"-lm\", \"-Wl,--pop-state\"]"
+    ],
+    [
+     "PROBE ar_path:",
+     "/usr/bin/ar"
+    ],
+    [
+     "PROBE cc_compiler:",
+     "gcc"
+    ],
+    [
+     "PROBE target_gnu_system_name:",
+     "local"
+    ],
+    [
+     "PROBE cc_files:",
+     "[\"external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths\", \"external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh\", \"external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh\", \"external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh\"]"
+    ],
+    [
+     "PROBE static_runtime_lib:",
+     "[]"
+    ],
+    [
+     "PROBE pure:",
+     "False  CGO_ENABLED: 1"
+    ]
+   ],
+   "reference_exit": 0,
+   "reference_prints": [
+    [
+     "PROBE cgo_available:",
+     "True"
+    ],
+    [
+     "PROBE env:",
+     "{\"GOARCH\": \"amd64\", \"GOOS\": \"linux\", \"GOEXPERIMENT\": \"\", \"GOROOT\": \"external/rules_go++go_sdk+main___host_0\", \"GOROOT_FINAL\": \"GOROOT\", \"CGO_ENABLED\": \"1\", \"GOPATH\": \"\", \"GOTOOLCHAIN\": \"local\", \"GODEBUG\": \"winsymlink=0\", \"ZERO_AR_DATE\": \"1\", \"PATH\": \"/usr/bin:/bin\"}"
+    ],
+    [
+     "PROBE c_compiler_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE c_compile_options:",
+     "[\"-U_FORTIFY_SOURCE\", \"-fstack-protector\", \"-Wunused-but-set-parameter\", \"-Wno-free-nonheap-object\", \"-fno-omit-frame-pointer\", \"-fno-canonical-system-headers\", \"-Wno-builtin-macro-redefined\", \"-D__DATE__=\\\"redacted\\\"\", \"-D__TIMESTAMP__=\\\"redacted\\\"\", \"-D__TIME__=\\\"redacted\\\"\"]"
+    ],
+    [
+     "PROBE cxx_compile_options:",
+     "[\"-U_FORTIFY_SOURCE\", \"-fstack-protector\", \"-Wunused-but-set-parameter\", \"-Wno-free-nonheap-object\", \"-fno-omit-frame-pointer\", \"-std=c++17\", \"-fno-canonical-system-headers\", \"-Wno-builtin-macro-redefined\", \"-D__DATE__=\\\"redacted\\\"\", \"-D__TIMESTAMP__=\\\"redacted\\\"\", \"-D__TIME__=\\\"redacted\\\"\"]"
+    ],
+    [
+     "PROBE ld_executable_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE ld_executable_options:",
+     "[\"-fuse-ld=gold\", \"-B/usr/bin\", \"-Wl,-no-as-needed\", \"-Wl,-z,relro\", \"-pass-exit-codes\", \"-Wl,--push-state,-as-needed\", \"-lstdc++\", \"-Wl,--pop-state\", \"-Wl,--push-state,-as-needed\", \"-lm\", \"-Wl,--pop-state\"]"
+    ],
+    [
+     "PROBE ld_static_lib_path:",
+     "/usr/bin/ar"
+    ],
+    [
+     "PROBE ld_dynamic_lib_path:",
+     "/usr/bin/gcc"
+    ],
+    [
+     "PROBE ld_dynamic_lib_options:",
+     "[\"-shared\", \"-fuse-ld=gold\", \"-B/usr/bin\", \"-Wl,-no-as-needed\", \"-Wl,-z,relro\", \"-pass-exit-codes\", \"-Wl,--push-state,-as-needed\", \"-lstdc++\", \"-Wl,--pop-state\", \"-Wl,--push-state,-as-needed\", \"-lm\", \"-Wl,--pop-state\"]"
+    ],
+    [
+     "PROBE ar_path:",
+     "/usr/bin/ar"
+    ],
+    [
+     "PROBE cc_compiler:",
+     "gcc"
+    ],
+    [
+     "PROBE target_gnu_system_name:",
+     "local"
+    ],
+    [
+     "PROBE cc_files:",
+     "[\"external/rules_cc++cc_configure_extension+local_config_cc/builtin_include_directory_paths\", \"external/rules_cc++cc_configure_extension+local_config_cc/cc_wrapper.sh\", \"external/rules_cc++cc_configure_extension+local_config_cc/deps_scanner_wrapper.sh\", \"external/rules_cc++cc_configure_extension+local_config_cc/validate_static_library.sh\"]"
+    ],
+    [
+     "PROBE static_runtime_lib:",
+     "[]"
+    ],
+    [
+     "PROBE pure:",
+     "False  CGO_ENABLED: 1"
+    ]
+   ],
+   "target": "//probe:go_context_probe"
+  },
+  "flag_probe": {
+   "label": "EXACT_PRINT",
+   "native_exit": 0,
+   "native_prints": [
+    [
+     "FLAG sorted:",
+     "[Label(\"//probe:a.h\"), Label(\"//probe:a/b.h\"), Label(\"//probe:b.h\"), Label(\"//probe:sub/x.h\"), Label(\"//probe:z.h\")]"
+    ],
+    [
+     "FLAG plain:",
+     "[Label(\"//probe:z.h\"), Label(\"//probe:a/b.h\"), Label(\"//probe:a.h\"), Label(\"//probe:sub/x.h\"), Label(\"//probe:b.h\")]"
+    ]
+   ],
+   "reference_exit": 0,
+   "reference_prints": [
+    [
+     "FLAG sorted:",
+     "[Label(\"//probe:a.h\"), Label(\"//probe:a/b.h\"), Label(\"//probe:b.h\"), Label(\"//probe:sub/x.h\"), Label(\"//probe:z.h\")]"
+    ],
+    [
+     "FLAG plain:",
+     "[Label(\"//probe:z.h\"), Label(\"//probe:a/b.h\"), Label(\"//probe:a.h\"), Label(\"//probe:sub/x.h\"), Label(\"//probe:b.h\")]"
+    ]
+   ],
+   "target": "//probe:flag_probe"
+  },
+  "library": {
+   "args": [],
+   "label": "EXACT_D1",
+   "native_action_line": 8,
+   "native_exit": 0,
+   "native_seconds": 65.1,
+   "reference_exit": 0,
+   "reference_seconds": 27.9,
+   "reference_total_actions": 9,
+   "rows": {
+    "//cgo:cgo": {
+     "native_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo.x"
+     ],
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo.x"
+     ],
+     "verdict": "EXACT_D1"
+    }
+   },
+   "targets": [
+    "//cgo:cgo"
+   ]
+  },
+  "pure": {
+   "args": [
+    "--@io_bazel_rules_go//go/config:pure=1"
+   ],
+   "label": "EXACT_D1",
+   "native_action_line": 8,
+   "native_exit": 0,
+   "native_seconds": 62.4,
+   "reference_exit": 0,
+   "reference_seconds": 26.9,
+   "reference_total_actions": 9,
+   "rows": {
+    "//cgo:cgo": {
+     "native_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo.x"
+     ],
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo.x"
+     ],
+     "verdict": "EXACT_D1"
+    }
+   },
+   "targets": [
+    "//cgo:cgo"
+   ]
+  },
+  "stdlib": {
+   "label": "EXACT_D1",
+   "note": "genuine sandboxed (declared inputs only): STDLIB_SRCS_EXCLUDE applies; --spawn_strategy=local leaks the full SDK src through the execroot and builds 7 more packages",
+   "package_set": {
+    "native_count": 350,
+    "reference_count": 350,
+    "sets_equal": true
+   },
+   "runtime_cgo_a": {
+    "native_sha256": "095fcc787f9f3680c12e0a1bfd406a0d815daae05f296e94424f52e860694ccf",
+    "reference": "095fcc787f9f3680c12e0a1bfd406a0d815daae05f296e94424f52e860694ccf",
+    "reference_sha256": "095fcc787f9f3680c12e0a1bfd406a0d815daae05f296e94424f52e860694ccf"
+   }
+  },
+  "test": {
+   "args": [],
+   "label": "EXACT_D1",
+   "native_action_line": 11,
+   "native_exit": 0,
+   "native_seconds": 40.6,
+   "reference_exit": 0,
+   "reference_seconds": 27.6,
+   "reference_total_actions": 20,
+   "rows": {
+    "//cgo:cgo_test": {
+     "native_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo_test_/cgo_test"
+     ],
+     "reference_paths": [
+      "bazel-out/k8-fastbuild/bin/cgo/cgo_test_/cgo_test"
+     ],
+     "verdict": "EXACT_D1"
+    }
+   },
+   "targets": [
+    "//cgo:cgo_test"
+   ]
+  }
+ },
+ "worktree": {
+  "base_commit": "78028d75037ea9d93322a6dbbaad682b60aeaa45",
+  "src_diff_plus_untracked_sha256": "0d7116dfc56d3e5d38153b659d6256b44aa9102c9395c31fa421ea09a2f355c9",
+  "untracked_src": []
+ }
+}

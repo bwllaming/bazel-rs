@@ -71,6 +71,18 @@ promotion receipts continuing the chain are
 `artifacts/n51-n54-promotion.json` (integration-15: everything through the
 lockfile fail-closed write gate).
 
+N57 (integration-16 + rules_go cgo, [CGO.md](CGO.md)) exercises the cgo path
+that every `go_library` declares but no earlier fixture enabled: with genuine
+rules_go 0.63.0 + rules_cc 0.2.17 and the host `@local_config_cc` toolchain,
+`go_library(cgo = True)`, the cgo `go_binary` external link and `go_test`
+build byte-identical to genuine Bazel 9.3 (paired capture
+`tests/fixtures/go_cgo/reference_receipt.json`), including the cgo standard
+library; `attr.label_list(flags = [...])` ORDER_INDEPENDENT canonicalization
+implements rules_cc's attribute shape; `c-archive`/`c-shared` binaries stop
+at Starlark aspect propagation (`attr.aspects`) and `cc_import`/`cc_library`
+cdeps stop at `cc_common.compile` (`cc_internal` natives), both as explicit
+failures.
+
 That progression is history. The current demonstrated `~/code` application
 boundaries are: build/test of `~/code` targets succeeds with
 `--experimental-builtin-modules` (gazelle_bin, str, str_test, aws_script;

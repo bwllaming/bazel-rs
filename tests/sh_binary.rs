@@ -352,12 +352,11 @@ fn label_keyed_string_dict_and_allow_rules_errors_use_bazel_texts() {
     ] {
         rejected(&f.run("build", &[target]), message);
     }
-    // Only SKIP_CONSTRAINTS_OVERRIDE is a modelled no-op; other flags stay an
+    // SKIP_CONSTRAINTS_OVERRIDE and DIRECT_COMPILE_TIME_INPUT are modelled
+    // no-ops (only --compile_one_dependency reads the latter), so the target
+    // analyzes; ORDER_INDEPENDENT canonicalizes (N57) and other flags stay an
     // explicit gap.
-    rejected(
-        &f.run("build", &["//flags:x"]),
-        "not analyzed by the native profile: attribute 'deps' flags=[DIRECT_COMPILE_TIME_INPUT]",
-    );
+    ok(&f.run("build", &["//flags:x"]));
 }
 
 #[test]

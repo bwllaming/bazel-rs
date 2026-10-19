@@ -249,10 +249,14 @@ impl AttrDeclaration {
         // Extension-list allow_files/allow_single_file and allow_rules are
         // validated at analysis (AllowedFileTypes, crate::engine
         // starlark_prerequisite_errors, crate::analysis::prerequisite_errors).
+        // ORDER_INDEPENDENT is implemented: the BUILD-language conversion
+        // sorts list values (order_independent_sorted).
         let flags = self
             .flags
             .iter()
-            .filter(|flag| !NO_OP_ATTRIBUTE_FLAGS.contains(&flag.as_str()))
+            .filter(|flag| {
+                !NO_OP_ATTRIBUTE_FLAGS.contains(&flag.as_str()) && *flag != "ORDER_INDEPENDENT"
+            })
             .map(String::as_str)
             .collect::<Vec<_>>();
         if !flags.is_empty() {
@@ -304,7 +308,47 @@ pub(crate) const ATTRIBUTE_FLAGS: &[&str] = &[
 /// Native analysis performs no environment check at all, and every input that
 /// could make that check fail (non-empty `compatible_with`/`restricted_to`,
 /// environment rules) is an explicit gap, so skipping it is a no-op.
-const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &["SKIP_CONSTRAINTS_OVERRIDE"];
+/// DIRECT_COMPILE_TIME_INPUT is only read by CompileOneDependencyTransformer
+/// (--compile_one_dependency, pkgcache/CompileOneDependencyTransformer.java),
+/// which the native profile does not implement.
+const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &["SKIP_CONSTRAINTS_OVERRIDE", "DIRECT_COMPILE_TIME_INPUT"];
+
+/// BuildType.convertFromBuildLangType (packages/BuildType.java:245-253): an
+/// ORDER_INDEPENDENT attribute's converted List value is canonicalized with
+/// a natural-order sort. Labels order by Label.compareTo
+/// (cmdline/Label.java:677-685): repository name, package path, target name
+/// — a component order, not the canonical-string order. Only values that go
+/// through the BUILD-language conversion are sorted: explicit call and
+/// initializer values and simplified unconditional selects. Defaults are
+/// converted once at rule-class creation (Type.convert, no sort), and
+/// analysis-time select resolution resolves already-converted branch values
+/// (SelectorList.resolve), so neither sorts.
+pub(crate) fn order_independent_sorted(spec: &AttrSpec, mut value: AttrValue) -> AttrValue {
+    if !spec
+        .declaration
+        .flags
+        .iter()
+        .any(|flag| flag == "ORDER_INDEPENDENT")
+    {
+        return value;
+    }
+    match &mut value {
+        AttrValue::Strings(values) | AttrValue::Outputs(values) => values.sort(),
+        AttrValue::Ints(values) => values.sort(),
+        AttrValue::Labels(values) => {
+            let mut keyed = values
+                .iter()
+                .map(|label| (crate::label::Label::parse_canonical(label), label.clone()))
+                .collect::<Vec<_>>();
+            if keyed.iter().all(|(label, _)| label.is_ok()) {
+                keyed.sort_by(|a, b| a.0.cmp(&b.0));
+                *values = keyed.into_iter().map(|(_, label)| label).collect();
+            }
+        }
+        _ => {}
+    }
+    value
+}
 
 /// An element of a `select()`-valued BUILD attribute (BuildType.SelectorList).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -1470,7 +1514,10 @@ mod values {
                                     configurable.insert(key.to_owned(), parts);
                                 }
                                 crate::configured_attributes::Simplified::Plain(value) => {
-                                    attrs.insert(key.to_owned(), value);
+                                    attrs.insert(
+                                        key.to_owned(),
+                                        order_independent_sorted(spec, value),
+                                    );
                                 }
                                 // Like an omitted value: default and mandatory checks apply.
                                 crate::configured_attributes::Simplified::Unset => {}
@@ -1514,7 +1561,7 @@ mod values {
                         .map_err(|e| {
                             starlark::Error::new_other(anyhow!("attribute {key:?}: {e}"))
                         })?;
-                        attrs.insert(key.to_owned(), parsed);
+                        attrs.insert(key.to_owned(), order_independent_sorted(spec, parsed));
                     }
                 }
             }
