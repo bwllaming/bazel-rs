@@ -2682,6 +2682,7 @@ pub fn execute_with_remote(
             && let Ok(error) = fs::read_to_string(work.0.join("sandbox-setup-error"))
             && !error.is_empty()
         {
+            crate::sandbox::note_setup_failure();
             let message = format!(
                 "action '{}' failed: could not set up the sandbox: {}",
                 action.id,

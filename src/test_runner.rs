@@ -950,6 +950,7 @@ impl Runner<'_> {
             && let Ok(error) = fs::read_to_string(work.join("sandbox-setup-error"))
             && !error.is_empty()
         {
+            crate::sandbox::note_setup_failure();
             return Ok(Err(format!(
                 "{test_name}: could not set up the sandbox: {}",
                 error.trim_end()

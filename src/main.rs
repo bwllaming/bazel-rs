@@ -2218,7 +2218,9 @@ fn main() {
         eprintln!("bazel-rs: {error}");
         // A sandbox setup failure is an environmental failure of the
         // strategy (Bazel's EnvironmentalExecException class): exit code 36.
-        let code = if bazel_rs::sandbox::is_setup_failure(&error) {
+        // The typed flag, never the error text: an action's own output could
+        // contain the phrase.
+        let code = if bazel_rs::sandbox::setup_failure_occurred() {
             36
         } else {
             1

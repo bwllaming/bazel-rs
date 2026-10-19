@@ -403,8 +403,10 @@ fn sandbox_debug_retains_the_sandbox_build_root() {
 
 #[test]
 fn unknown_strategy_is_rejected_once_at_startup() {
-    // SpawnStrategyRegistry.toStrategy:718-727, at startup with exit code 2:
-    // the whole registered set follows "Valid values are: [...]".
+    // SpawnStrategyRegistry.toStrategy:717-727 with the request names built
+    // at :546-551 ("explicit default strategies") and :494 ("mnemonic M"),
+    // exit code 2. The trailing valid-values list is approximate (the
+    // engine's registered set; genuine's is host-dependent).
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(&marker);
@@ -413,11 +415,28 @@ fn unknown_strategy_is_rejected_once_at_startup() {
     let text = Workspace::text(&output);
     assert!(
         text.contains(
-            "ERROR: 'bogus' was requested for --spawn_strategy but no strategy with that \
-             identifier was registered. Valid values are: [standalone, local, sandboxed, \
-             linux-sandbox, processwrapper-sandbox, worker]"
+            "ERROR: 'bogus' was requested for explicit default strategies but no strategy \
+             with that identifier was registered. Valid values are: [standalone, local, \
+             sandboxed, linux-sandbox, processwrapper-sandbox, worker]"
         ),
         "{text}"
+    );
+    // The mnemonic spellings: --strategy=M= and --genrule_strategy.
+    let output = ws.run("cache2", &["build", "--strategy=Foo=bogus", "//pkg:ok"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        Workspace::text(&output)
+            .contains("ERROR: 'bogus' was requested for mnemonic Foo but no strategy with"),
+        "{}",
+        Workspace::text(&output)
+    );
+    let output = ws.run("cache3", &["build", "--genrule_strategy=bogus", "//pkg:ok"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        Workspace::text(&output)
+            .contains("ERROR: 'bogus' was requested for mnemonic Genrule but no strategy"),
+        "{}",
+        Workspace::text(&output)
     );
 }
 

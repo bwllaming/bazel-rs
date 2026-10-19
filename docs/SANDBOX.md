@@ -24,7 +24,12 @@ run sandboxed like any action (test actions stay local-only, the N23g note).
   persistent workers are not modelled — so resolution always skips it).
   Unknown identifiers are rejected once at startup with Bazel's
   STRATEGY_NOT_FOUND text and exit code 2 (SpawnStrategyRegistry.toStrategy:
-  718-727).
+  717-727): the request name is "explicit default strategies" for
+  `--spawn_strategy` (built at :546-551) and "mnemonic M" for
+  `--strategy=M=` / `--genrule_strategy` (:494); the trailing
+  "Valid values are: [...]" is approximate — genuine lists the strategies
+  its modules registered on the host, in an order the registry does not
+  define, while this engine lists its fixed registered set.
 - `--strategy=<mnemonic>=<list>` overrides the default list for that mnemonic
   (`SpawnStrategyRegistry.getStrategies:142-143`); a repeated flag for the
   same mnemonic replaces its entry (the multimap put of
@@ -163,6 +168,28 @@ not modelled); and **metadata operations stay allowed** — chmod, chown,
 utime and xattr (setattr-class operations) are outside Landlock's ABI-4
 access rights, so an action can, for example, chmod a readable file it
 cannot write. Writes, creates, removes, renames and truncations are denied.
+
+## Practical notes and known limits
+
+- **Tool caches under $HOME fail sandboxed** — go, pip, npm, cargo and zig
+  without configured cache directories write `~/.cache`-style paths, which
+  the sandbox denies with EACCES ("Permission denied"), exactly like a
+  genuine linux-sandbox (whose read-only remount denies the same writes).
+  Point the tool's cache at TMPDIR or /tmp (both sandbox-writable), grant
+  the path with `--sandbox_writable_path=<dir>`, or tag the action
+  `no-sandbox` (Bazel's own answers are `--sandbox_writable_path` and the
+  tag).
+- **A `--cache-dir` under /tmp is writable by sandboxed actions** (the /tmp
+  grant is Bazel-parity). Cross-linking docs/HARDLINK_STAGING.md: staged
+  inputs are hardlinks into the content-addressed store, and Landlock does
+  not restrict metadata operations — an action can chmod a staged input
+  (read-only hardlink) and then write the shared store blob through it.
+  This is the existing hardlink-staging limit (HARDLINK_STAGING.md):
+  consumption re-verifies digests and detects the tampering unless size,
+  mtime and mode are all forged. Genuine linux-sandbox's read-only remount
+  prevents the write at the inode level; with the Landlock sandbox it is a
+  documented known limit of this host's design (no mount namespaces
+  available).
 
 ## --sandbox_debug
 

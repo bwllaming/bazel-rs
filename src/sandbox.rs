@@ -42,7 +42,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use landlock::{
     AccessFs, AccessNet, BitFlags, Compatible, PathBeneath, PathFd, PathFdError, Ruleset,
@@ -189,21 +189,33 @@ pub fn debug() -> bool {
 }
 
 /// Rejects unknown strategy identifiers once at startup with Bazel's
-/// SpawnStrategyRegistry.toStrategy text (:718-727): the whole registered
-/// set follows "Valid values are: [...]".
+/// SpawnStrategyRegistry.toStrategy text (:717-727): the request name is
+/// "explicit default strategies" for --spawn_strategy (built at :546-551)
+/// and "mnemonic M" for --strategy=M= / --genrule_strategy (the Genrule
+/// mnemonic filter of BazelStrategyModule.java:84, built at :494). The
+/// trailing "Valid values are: [...]" is approximate: genuine's set is the
+/// strategies its modules registered on the host (an order the registry
+/// does not define); this engine's fixed set follows.
 pub fn validate(options: &SpawnOptions) -> Result<(), String> {
-    for identifier in options
-        .spawn_strategy
-        .iter()
-        .chain(options.genrule_strategy.iter())
-        .chain(options.strategy.iter().flat_map(|(_, list)| list))
-    {
-        if !REGISTERED.contains(&identifier.as_str()) {
+    let check = |identifier: &str, request: &str| -> Result<(), String> {
+        if !REGISTERED.contains(&identifier) {
             return Err(format!(
-                "'{identifier}' was requested for --spawn_strategy but no strategy with that \
+                "'{identifier}' was requested for {request} but no strategy with that \
                  identifier was registered. Valid values are: [{}]",
                 REGISTERED.join(", ")
             ));
+        }
+        Ok(())
+    };
+    for identifier in &options.spawn_strategy {
+        check(identifier, "explicit default strategies")?;
+    }
+    for identifier in &options.genrule_strategy {
+        check(identifier, "mnemonic Genrule")?;
+    }
+    for (mnemonic, list) in &options.strategy {
+        for identifier in list {
+            check(identifier, &format!("mnemonic {mnemonic}"))?;
         }
     }
     Ok(())
@@ -630,14 +642,21 @@ fn ruleset_error(error: RulesetError) -> String {
 /// connect (unless the spawn requires network). Reads are handled only when
 /// paths are blocked, denied on the blocked subtrees; otherwise reads are not
 /// handled at all, so everything stays readable like Bazel's read-only mounts.
-/// The marker of a sandbox setup failure in action errors: an environmental
-/// failure of the strategy (Bazel's EnvironmentalExecException class), which
-/// the CLI reports with exit code 36. `crate::main` routes on it.
-pub const SETUP_FAILURE_MARKER: &str = "could not set up the sandbox";
+/// The typed signal that a sandbox setup failure occurred: the CLI's exit
+/// code 36 comes from this flag, never from matching the error text (an
+/// action's own stdout/stderr could contain the phrase). Set exactly where
+/// the executor reads the worker's setup-error report.
+static SETUP_FAILURE: AtomicBool = AtomicBool::new(false);
 
-/// Whether an action error is a sandbox setup failure (exit code 36).
-pub fn is_setup_failure(error: &str) -> bool {
-    error.contains(SETUP_FAILURE_MARKER)
+/// Records a sandbox setup failure (an environmental failure of the
+/// strategy, Bazel's EnvironmentalExecException class -> exit code 36).
+pub fn note_setup_failure() {
+    SETUP_FAILURE.store(true, Ordering::Relaxed);
+}
+
+/// Whether any sandbox setup failure occurred during this invocation.
+pub fn setup_failure_occurred() -> bool {
+    SETUP_FAILURE.load(Ordering::Relaxed)
 }
 
 fn restrict(config: &WorkerConfig, debug: &dyn Fn(&str)) -> Result<(), String> {

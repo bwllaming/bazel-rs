@@ -99,6 +99,40 @@
    "note": "genuine: STRATEGY_NOT_FOUND (linux-sandbox unsupported under the container's seccomp filter, so `sandboxed` resolves to processwrapper-sandbox there); native: the Landlock sandbox accepts the alias and denies the out-of-sandbox write"
   },
   {
+   "id": "unknown-identifier",
+   "scenario": "unknown strategy identifiers rejected at startup, exit 2, one run per flag spelling (genuine run in a scratch workspace with a private --output_user_root, removed after)",
+   "genuine": {
+    "spawn_strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]"
+    },
+    "strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for mnemonic Foo but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]"
+    },
+    "genrule_strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for mnemonic Genrule but no strategy with that identifier was registered. Valid values are: [dynamic_worker, processwrapper-sandbox, standalone, dynamic, remote, worker, sandboxed, local]"
+    }
+   },
+   "native": {
+    "spawn_strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for explicit default strategies but no strategy with that identifier was registered. Valid values are: [standalone, local, sandboxed, linux-sandbox, processwrapper-sandbox, worker]"
+    },
+    "strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for mnemonic Foo but no strategy with that identifier was registered. Valid values are: [standalone, local, sandboxed, linux-sandbox, processwrapper-sandbox, worker]"
+    },
+    "genrule_strategy": {
+     "exit": 2,
+     "stderr": "ERROR: 'bogus' was requested for mnemonic Genrule but no strategy with that identifier was registered. Valid values are: [standalone, local, sandboxed, linux-sandbox, processwrapper-sandbox, worker]"
+    }
+   },
+   "comparison": "EXACT_MESSAGE",
+   "note": "the request names match SpawnStrategyRegistry :546-551 (explicit default strategies) and :494 (mnemonic M) exactly in all three spellings; the Valid values list is the approximate part: genuine lists the strategies its modules registered on this host (an order the registry does not define), native lists its own fixed registered set (docs/SANDBOX.md)"
+  },
+  {
    "id": "outside-write-default",
    "scenario": "genrule writing outside the sandbox (scratch $HOME) under the default strategy",
    "genuine": {
@@ -288,5 +322,8 @@
   "EXACT_MESSAGE": "same failure-escalation behavior class",
   "DEVIATION": "a native bug or gap (none in this run)",
   "DEVIATION_HOST": "genuine-degraded-host: genuine Bazel cannot isolate on this host (linux-sandbox unregistrable under the container's seccomp filter; its sandboxed alias resolves to processwrapper, which isolates nothing), so the native Landlock sandbox is the stricter side, matching genuine linux-sandbox where it can run"
- }
+ },
+ "post_capture_changes": [
+  "run 3 receipt (all rows above) captured by artifacts/sandbox-capture.py unchanged; this row added afterwards by one targeted genuine-vs-native probe of the unknown-identifier texts (genuine 9.3.0 in a scratch workspace with a private --output_user_root, removed after; native via the CLI), pinning the identifier-error texts of the follow-up"
+ ]
 }
