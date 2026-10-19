@@ -113,3 +113,95 @@ not cover, so parallel loading — P2 — attacks both large spans.)
   cached and never evaluate again) while its BUILD lines are dropped with
   the aborted evaluation; the inline re-run reproduces the sequential
   output, fetch output included.
+
+## P2 — parallel package loading (`--loading_phase_threads`)
+
+Both loaders' pattern expansion (`Engine::expand_pattern` — the engine's
+`select_filtered` and the query environment's `resolve_pattern`) loads a
+`//dir/...` pattern's packages on a scoped pool of
+`--loading_phase_threads` workers (LoadingPhaseThreadsOption.java:
+"auto" — the default — expands to the available processors; positive
+integers accepted for `build`/`run`/`test` and `query`). Workers get
+16 MiB stacks (§1.6), run in no-demand mode (an unfetched repository
+aborts the unit with the sentinel; the coordinator re-runs it inline at
+its commit slot — verified end to end by the cold-and-warm local-registry
+stress test), and evaluate with their own Starlark
+Module/heap/Evaluator, buffered prints and fresh thread-locals. The
+coordinator commits in pattern order
+(`validate_output_directory -> generated inserts -> packages.insert`,
+print replay included, `.bzl` load-DFS order), so the first error in
+that order wins and later results are discarded; threads=1 is exactly
+the P1 sequential path.
+
+The single-flight `.bzl` lock is now held per cache miss (§1.3 read
+literally): around each module's evaluation and publication in
+`Work::Finish`, with a re-check under the lock — a load that finds the
+label published by a concurrent traversal reuses it (one identity, one
+print record). Parsing needs no guard (it creates no identity). A
+worker's sentinel failure is never published to the shared cache (the
+inline retry must evaluate the module for real).
+
+`BAZEL_RS_LOADING_JITTER=<millis>` (hidden test hook, §5) injects
+reproducible per-package worker sleeps. Unconditional-dependency
+prefetch (review §3 P2 optional item) is not implemented — noted below.
+
+### Determinism evidence (§5)
+
+- Fixture A/B (tests/parallel_loading.rs): 12-package workspace with a
+  shared printing `.bzl` graph — warm builds at threads 1/2/8/32 and
+  threads=8 + 40 ms jitter: stdout, stderr and exit byte-identical;
+  prints once per module in load-DFS order, implementation prints in
+  plan order. Two failing siblings: the first error in pattern order
+  wins with identical bytes at every thread count. A 110-frame Starlark
+  call chain (no recursion — this profile rejects it) on workers:
+  identical. Query output identical at 1/2/8/32.
+- `~/code` warm query (18,489 targets): threads 1 vs 8 vs 32 — stdout
+  byte-identical (1,269,639 B), stderr identical modulo `PERF` timing
+  lines, exit 0; threads=8 + 25 ms jitter: identical.
+- `~/code` warm build (60 targets, all cached): stdout byte-identical
+  at 1/8/32; the `BAZEL_RS_DUMP_ACTIONS` action-graph dump (384
+  actions: ids, argv, inputs, outputs, env, execution info) identical
+  after normalizing the per-run repository staging paths
+  (`cache/repositories/direct/trees/<run hash>`, a pre-existing
+  staging-path nondeterminism that only this debug dump ever exposed;
+  the exec paths, keys and outputs are identical). One transient
+  action-cache miss (383/384 hits, one action re-executed to the same
+  key) was observed once in a threads=1 run — not thread-correlated.
+- Full `cargo test --locked` (102 suites incl. the new
+  tests/parallel_loading.rs), 881 python validators, fmt/clippy clean.
+
+### Perf (`~/code`, warm, 64 cores; wall seconds)
+
+| workload | threads=1 | threads=8 | threads=32 |
+|---|---|---|---|
+| warm query (union pattern) | 134.8 | 139.9 | 133.0 |
+| — `//src/beyondwork.ai/...` (390 light pkgs) | 10.9 | 10.0 | 10.0 |
+| warm build (60 targets) | 242.3 | 240.2 | 249.5 |
+
+**The expected drop did not materialize — the loading wall is not
+package breadth.** A single `//src/ts` package loads in 61.2 s and a
+single `//src/python` package in 26.2 s: their cost is evaluating the
+shared `.bzl` graphs (rules_ts/nodejs, rules_python, rules_go), which
+the single-flight lock correctly serializes (one identity per label)
+and whose DFS evaluation is inherently sequential per graph. Parallel
+package loading wins only the per-package remainder (visible on the
+390-light-package slice: 10.9 → 10.0 s, and 22 ms → 8 ms on a synthetic
+12-package probe). The next meaningful lever for `~/code`-style
+workspaces is **parallel (or invocation-cached) `.bzl` graph
+evaluation** — Bazel amortizes this with its resident server — not
+broader package parallelism.
+
+### Residual risks / notes
+
+- Repository-graph resolution on a worker (lazy `resolve_graph` after
+  startup) is not under the no-demand guard; warm invocations resolve
+  before pattern expansion (startup + eager lockfile resolution), and
+  every guarded demand path (demand slots, module-repository
+  materialization slots) returns the sentinel. A cold, lazily-resolving
+  workspace could fetch from a worker through an unguarded `OnceLock`;
+  not observed on `~/code` (startup resolves eagerly).
+- Unconditional-dependency prefetch (review §3 P2, optional): skipped —
+  the measured bottleneck makes it low-value now; the no-demand guard
+  makes a future prefetch safe by construction.
+- One transient action-cache miss observed once (above); pre-existing
+  flake profile, not thread-correlated.

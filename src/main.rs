@@ -115,6 +115,7 @@ fn run() -> Result<(), String> {
         .map(usize::from)
         .unwrap_or(1)
         .min(32);
+    let mut loading_phase_threads: Option<usize> = None;
     let mut resolver_options = bazel_rs::module_graph::ResolverOptions::default();
     let mut repository_downloads_enabled = true;
     let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
@@ -197,6 +198,7 @@ fn run() -> Result<(), String> {
         allowed_yanked_flags = native.allowed_yanked_flags;
         raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
+        loading_phase_threads = native.loading_phase_threads;
         native.resolver.isolated_extension_usages = native.rc.isolated_extension_usages;
         resolver_options = native.resolver;
         repository_downloads_enabled = native.downloads;
@@ -377,6 +379,18 @@ fn run() -> Result<(), String> {
     };
     let mut engine = Engine::with_repositories(repositories.clone());
     engine.set_runfiles_options(runfiles_options);
+    // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
+    // parallel-analysis program): both loaders' pattern expansion uses it
+    // (Engine::expand_pattern; query resolves patterns through it too).
+    // "auto" (the default) keeps the engine's available-processors value.
+    engine.set_loading_phase_threads(match (command.as_str(), loading_phase_threads) {
+        ("query", explicit) => explicit.unwrap_or(query_options.loading_phase_threads),
+        (_, explicit) => explicit.unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1)
+        }),
+    });
     // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421):
     // the requested output groups; a command that runs the tests it builds
     // keeps the `default` group for failure reporting (shouldRunTests).
@@ -1347,6 +1361,27 @@ fn add_user_write(path: &Path) {
     }
 }
 
+/// `--loading_phase_threads` (LoadingPhaseThreadsOption.java): "auto" or
+/// a positive integer; "auto" keeps the engine default (the available
+/// processors, as Bazel's converter expands it).
+fn parse_loading_phase_threads(value: &str) -> Result<usize, String> {
+    if value == "auto" {
+        return Ok(std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1));
+    }
+    if !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && let Ok(threads) = value.parse::<usize>()
+        && threads > 0
+    {
+        return Ok(threads);
+    }
+    Err(format!(
+        "While parsing option --loading_phase_threads={value}: not a positive integer or 'auto'"
+    ))
+}
+
 fn parse_jobs(value: &str) -> Result<usize, String> {
     if !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -1401,6 +1436,10 @@ fn relative_directory(root: &Path, cwd: &Path) -> Result<String, String> {
 /// The native command options, parsed by the existing option handlers.
 struct NativeOptions {
     jobs: Option<usize>,
+    /// --loading_phase_threads (P2 of the parallel-analysis program,
+    /// docs/PARALLEL_ANALYSIS.md); None keeps the engine's default
+    /// (LoadingPhaseThreadsOption "auto": the available processors).
+    loading_phase_threads: Option<usize>,
     /// The N40 rc options outside the configuration (crate::rc_options).
     rc: bazel_rs::rc_options::RcOptions,
     resolver: bazel_rs::module_graph::ResolverOptions,
@@ -1447,6 +1486,7 @@ impl NativeOptions {
     fn new(command: &str) -> Self {
         Self {
             jobs: None,
+            loading_phase_threads: None,
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
@@ -1607,6 +1647,17 @@ impl NativeOptions {
             true
         } else if let Some(value) = arg.strip_prefix("--jobs=").filter(|_| builds(command)) {
             self.jobs = Some(parse_jobs(value)?);
+            false
+        } else if builds(command) && arg == "--loading_phase_threads" {
+            self.loading_phase_threads = Some(parse_loading_phase_threads(
+                next.ok_or("--loading_phase_threads requires a positive integer or 'auto'")?,
+            )?);
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--loading_phase_threads=")
+            .filter(|_| builds(command))
+        {
+            self.loading_phase_threads = Some(parse_loading_phase_threads(value)?);
             false
         } else if builds(command) && arg == "--spawn_strategy" {
             // CommaSeparatedNonEmptyOptionListConverter (ExecutionOptions.

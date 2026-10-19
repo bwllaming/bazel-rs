@@ -53,9 +53,10 @@ pub struct QueryOptions {
     pub query_file: String,
     pub output_file: String,
     pub graphless: Option<bool>,
-    /// Accepted for compatibility; package loading is sequential because
-    /// repository demand slots reject concurrent demand
-    /// (crate::repository_demand).
+    /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java): "auto"
+    /// (the default) or a positive integer. Both loaders' pattern
+    /// expansion parallelizes package loading with it (P2,
+    /// docs/PARALLEL_ANALYSIS.md).
     pub loading_phase_threads: usize,
 }
 
@@ -81,8 +82,7 @@ impl Default for QueryOptions {
             graphless: None,
             loading_phase_threads: std::thread::available_parallelism()
                 .map(usize::from)
-                .unwrap_or(1)
-                .min(16),
+                .unwrap_or(1),
         }
     }
 }

@@ -798,12 +798,6 @@ impl<'a> Loader<'a> {
         // Explicit DFS frames avoid exhausting the Rust stack on deep graphs.
         let mut work = vec![Work::Enter(label)];
         let mut active = Vec::new();
-        // Single-flight .bzl evaluation (review §1.3): acquired on the first
-        // cache miss of this traversal and held until it completes; a load
-        // that finds every module cached never takes it. The shared cache
-        // is re-checked after acquiring: the previous holder may have
-        // published the label while this traversal waited.
-        let mut single_flight: Option<BzlEvaluationGuard> = None;
         while let Some(next) = work.pop() {
             match next {
                 Work::Enter(label) => {
@@ -822,14 +816,10 @@ impl<'a> Loader<'a> {
                     // A cached module's loads are visited exactly as if it
                     // were evaluated here (same order, cycle and depth checks).
                     // A cached failure is replayed for every loading package.
+                    // A miss only reads and parses here: parsing creates no
+                    // identity, so it needs no single-flight guard (review
+                    // §1.3); the evaluation in Work::Finish takes it.
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
-                        if single_flight.is_none() {
-                            single_flight = Some(bzl_evaluation_lock());
-                        }
-                        // Re-check under the lock.
-                        if self.shared_cache_hit(&label, &mut work, &mut active)? {
-                            continue;
-                        }
                         let (path, ast, dependencies) = self
                             .enter_module(&label)
                             .or_else(|error| self.failed(&label, error, Vec::new()))?;
@@ -856,6 +846,29 @@ impl<'a> Loader<'a> {
                 }
                 Work::Finish(label, path, ast, loads) => {
                     let own_functions = self.functions.len();
+                    // Single-flight evaluation (review §1.3): the global
+                    // lock is held only while THIS miss evaluates (and
+                    // publishes); concurrent traversals of disjoint labels
+                    // proceed. Re-check the shared cache under the lock:
+                    // another traversal may have published this label —
+                    // or its failure — since our miss, and exactly one
+                    // evaluation must create its identity and prints.
+                    let _single_flight = bzl_evaluation_lock();
+                    if self.shared {
+                        match self.repositories.build_bzl_cache().get(&label)? {
+                            Some(Ok(cached)) => {
+                                self.functions.extend(cached.functions.iter().cloned());
+                                self.cache.insert(label.clone(), cached.module.clone());
+                                self.visibilities
+                                    .insert(label.clone(), cached.visibility.clone());
+                                let finished = active.pop();
+                                debug_assert_eq!(finished.as_ref(), Some(&label));
+                                continue;
+                            }
+                            Some(Err(failure)) => return Err(failure.error.clone()),
+                            None => {}
+                        }
+                    }
                     let (frozen, visibility, prints) = self
                         .finish_module(&label, &path, *ast)
                         .or_else(|(error, prints)| self.failed(&label, error, prints))?;
@@ -888,7 +901,10 @@ impl<'a> Loader<'a> {
     /// The evaluation's buffered print lines (empty unless it evaluated)
     /// are stored with the failure so the coordinator can emit them once.
     fn failed<T>(&self, label: &Label, error: String, prints: Vec<String>) -> Result<T, String> {
-        if self.shared {
+        // The no-demand sentinel is never published (P2: a worker's abort
+        // is environmental, not a stored BzlLoadValue error; the
+        // coordinator's inline retry must evaluate the module for real).
+        if self.shared && !crate::repository_demand::is_needs_repository(&error) {
             self.repositories.build_bzl_cache().insert(
                 label.clone(),
                 Err(CachedFailure {

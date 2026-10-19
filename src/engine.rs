@@ -970,6 +970,22 @@ struct CustomPrepared {
     available: BTreeMap<File, Artifact>,
 }
 
+/// The worker stack size for parallel package loading (review §1.6):
+/// Rust's 2 MiB default overflows where the 8 MiB main thread works
+/// (Starlark evaluation, depset flattening, JSON, provider walks); 16
+/// MiB is comfortable.
+const LOADING_WORKER_STACK: usize = 16 << 20;
+
+/// `splitmix64`: reproducible pseudo-random worker jitter (no rand
+/// dependency).
+fn splitmix64(mut state: u64) -> u64 {
+    state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
 /// A loaded package's BUILD-phase load graph, borrowed for the
 /// coordinator's print replay (direct loads in load-statement order, and
 /// every evaluated module's direct loads).
@@ -1087,6 +1103,11 @@ impl PatternError {
 pub struct Engine {
     repositories: Arc<RepositorySet>,
     packages: BTreeMap<PackageId, Package>,
+    /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java: "auto",
+    /// which expands to the number of available processors; §3 P2 of the
+    /// parallel-analysis review): the worker pool size for parallel
+    /// package loading. 1 keeps loading fully sequential.
+    loading_phase_threads: usize,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -1240,6 +1261,9 @@ impl Engine {
             repositories,
             packages: BTreeMap::new(),
             emitted_bzl_prints: HashSet::new(),
+            loading_phase_threads: std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1),
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -1467,6 +1491,13 @@ impl Engine {
     }
 
     /// Analyze builds in `configuration` (default: the default configuration).
+    /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java: "auto"
+    /// expands to the available processors; P2 of the parallel-analysis
+    /// review). Must be positive.
+    pub fn set_loading_phase_threads(&mut self, threads: usize) {
+        self.loading_phase_threads = threads.max(1);
+    }
+
     pub fn set_configuration(&mut self, configuration: Configuration) {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();
@@ -1502,47 +1533,153 @@ impl Engine {
         }
         if !self.packages.contains_key(package) {
             let unit = self.load_package_attempt(package);
-            let (rules, prints) = match unit.result {
-                Ok(rules) => (rules, unit.prints),
-                Err(error) => {
-                    if crate::repository_demand::is_needs_repository(&error) {
-                        // The no-demand guard aborted the unit (workers
-                        // never fetch, review §1.2): its `.bzl` modules'
-                        // lines are emitted now — those modules are cached
-                        // and never evaluate again — while the BUILD
-                        // file's own lines are dropped with the aborted
-                        // evaluation. The unit re-runs inline at this
-                        // commit slot, where fetching is allowed, and
-                        // reproduces the sequential output: the fetch
-                        // output lands exactly where the sequential load
-                        // demanded the repository.
-                        let module_lines = unit
-                            .prints
-                            .into_iter()
-                            .filter(|(label, _)| label.is_some())
-                            .collect();
-                        self.emit_load_prints(module_lines, None);
-                        let retried = self.load_package_attempt(package);
-                        return match retried.result {
-                            Ok(rules) => {
-                                self.emit_load_prints(
-                                    retried.prints,
-                                    Some((&rules.direct_loads, &rules.load_graph)),
-                                );
-                                self.commit_loaded_package(package, rules)
-                            }
-                            Err(error) => {
-                                self.emit_load_prints(retried.prints, None);
-                                Err(error)
-                            }
-                        };
-                    }
-                    self.emit_load_prints(unit.prints, None);
-                    return Err(error);
+            return self.commit_load_unit(package, unit);
+        }
+        Ok(())
+    }
+
+    /// Commit one finished load attempt at its commit slot (P2: the
+    /// commit of a worker's result, in pattern order): the unit's
+    /// buffered print lines are emitted — each not-yet-emitted `.bzl`
+    /// module's in the package's load-DFS order, then the BUILD file's —
+    /// and the package commits (validate_output_directory -> generated
+    /// inserts -> packages.insert). On the no-demand sentinel (a worker,
+    /// review §1.2) the `.bzl` lines are emitted now — those modules are
+    /// cached and never evaluate again — the BUILD lines are dropped
+    /// with the aborted evaluation, and the unit re-runs inline, where
+    /// fetching is allowed, reproducing the sequential output: the fetch
+    /// output lands exactly where the sequential load demanded the
+    /// repository.
+    fn commit_load_unit(
+        &mut self,
+        package: &PackageId,
+        unit: package::LoadUnit,
+    ) -> Result<(), String> {
+        let (rules, prints) = match unit.result {
+            Ok(rules) => (rules, unit.prints),
+            Err(error) => {
+                if crate::repository_demand::is_needs_repository(&error) {
+                    let module_lines = unit
+                        .prints
+                        .into_iter()
+                        .filter(|(label, _)| label.is_some())
+                        .collect();
+                    self.emit_load_prints(module_lines, None);
+                    let retried = self.load_package_attempt(package);
+                    return match retried.result {
+                        Ok(rules) => {
+                            self.emit_load_prints(
+                                retried.prints,
+                                Some((&rules.direct_loads, &rules.load_graph)),
+                            );
+                            self.commit_loaded_package(package, rules)
+                        }
+                        Err(error) => {
+                            self.emit_load_prints(retried.prints, None);
+                            Err(error)
+                        }
+                    };
                 }
-            };
-            self.emit_load_prints(prints, Some((&rules.direct_loads, &rules.load_graph)));
-            return self.commit_loaded_package(package, rules);
+                self.emit_load_prints(unit.prints, None);
+                return Err(error);
+            }
+        };
+        self.emit_load_prints(prints, Some((&rules.direct_loads, &rules.load_graph)));
+        self.commit_loaded_package(package, rules)
+    }
+
+    /// Load the packages of one `//dir/...` pattern expansion (P2,
+    /// review §3): with more than one package and thread, the loads run
+    /// on a scoped pool of `--loading_phase_threads` workers — 16 MiB
+    /// stacks (§1.6), each in no-demand mode with its own Starlark
+    /// Module/heap/Evaluator, buffered prints and fresh thread-locals —
+    /// and the coordinator commits in pattern (sequential) order, the
+    /// first error in that order winning and later results discarded.
+    /// A guard-aborted unit re-runs inline at its commit slot. With one
+    /// thread (or one package) this is exactly the sequential P1 path.
+    fn load_packages_parallel(&mut self, ids: &[PackageId]) -> Result<(), String> {
+        let pending: Vec<PackageId> = ids
+            .iter()
+            .filter(|id| !self.packages.contains_key(*id))
+            .cloned()
+            .collect();
+        if pending.len() <= 1 || self.loading_phase_threads <= 1 {
+            for id in &pending {
+                self.load_package(id)?;
+            }
+            return Ok(());
+        }
+        let workers = self.loading_phase_threads.min(pending.len());
+        let slots: Vec<std::sync::Mutex<Option<package::LoadUnit>>> = pending
+            .iter()
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let repositories = self.repositories.clone();
+        // Shared by reference: every worker closure captures these Copy
+        // references (the scope keeps them alive).
+        let pending = &pending;
+        let slots = &slots;
+        let next = &next;
+        let repositories = &repositories;
+        // Hidden test hook (review §5): reproducible per-package jitter
+        // shuffles worker completion order without changing results.
+        let jitter_millis: u64 = std::env::var("BAZEL_RS_LOADING_JITTER")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for worker in 0..workers {
+                let jitter_seed = worker as u64;
+                let spawn = std::thread::Builder::new()
+                    .stack_size(LOADING_WORKER_STACK)
+                    .spawn_scoped(scope, move || {
+                        let _ = jitter_seed;
+                        loop {
+                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            let Some(id) = pending.get(index) else {
+                                break;
+                            };
+                            if jitter_millis > 0 {
+                                let bound = jitter_millis + 1;
+                                let roll = splitmix64((index as u64) << 32 ^ worker as u64);
+                                std::thread::sleep(std::time::Duration::from_millis(roll % bound));
+                            }
+                            // Workers never fetch (review §1.2): asking for
+                            // an unfetched repository returns the sentinel;
+                            // the coordinator re-runs the unit inline at
+                            // its commit slot.
+                            let guard = crate::repository_demand::no_demand();
+                            let unit = package::evaluate_load_unit(repositories.clone(), id);
+                            drop(guard);
+                            *slots[index].lock().unwrap() = Some(unit);
+                        }
+                    });
+                match spawn {
+                    Ok(handle) => handles.push(handle),
+                    Err(error) => {
+                        return Err(format!("cannot spawn package-loading worker: {error}"));
+                    }
+                }
+            }
+            for handle in handles {
+                if handle.join().is_err() {
+                    return Err("parallel package loading worker panicked".to_owned());
+                }
+            }
+            Ok(())
+        })?;
+        // Commit in pattern order: the same sequence of commits — and of
+        // printed output — as the sequential engine, whatever order the
+        // workers finished in.
+        for (index, id) in pending.iter().enumerate() {
+            let unit = slots[index]
+                .lock()
+                .unwrap()
+                .take()
+                .expect("every dispatched package finished");
+            self.commit_load_unit(id, unit)?;
         }
         Ok(())
     }
@@ -2099,8 +2236,15 @@ impl Engine {
                     .to_path_buf();
                 let skip = self.repositories.link_policy(&context.repository).blocked;
                 let packages = if root.join(&context.package).is_dir() {
-                    workspace::discover_packages_skipping(&root, &context.package, &ignored, &skip)
-                        .map_err(Loading)?
+                    let discovered = workspace::discover_packages_skipping(
+                        &root,
+                        &context.package,
+                        &ignored,
+                        &skip,
+                    )
+                    .map_err(Loading)?;
+                    crate::perf_mark("select.discovered");
+                    discovered
                 } else {
                     Vec::new()
                 };
@@ -2111,12 +2255,19 @@ impl Engine {
                         context.package
                     )));
                 }
-                for package in packages {
-                    let id = PackageId {
+                let ids: Vec<PackageId> = packages
+                    .into_iter()
+                    .map(|package| PackageId {
                         repository: context.repository.clone(),
                         package,
-                    };
-                    self.load_package(&id).map_err(Loading)?;
+                    })
+                    .collect();
+                // P2: the pattern's package loads run on the
+                // loading-phase-threads pool; commits stay in pattern
+                // order (Engine::load_packages_parallel).
+                self.load_packages_parallel(&ids).map_err(Loading)?;
+                crate::perf_mark("select.loaded");
+                for id in ids {
                     found.extend(
                         self.package_targets(&id, *rules_only, filter_manual)
                             .map_err(Loading)?,
