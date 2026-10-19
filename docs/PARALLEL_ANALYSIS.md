@@ -205,3 +205,81 @@ broader package parallelism.
   makes a future prefetch safe by construction.
 - One transient action-cache miss observed once (above); pre-existing
   flake profile, not thread-correlated.
+
+## P2 follow-up (review round 2)
+
+Four fixes landed with this round:
+
+1. **Print replay on failed loads (blocker).** The loader now records a
+   marker for EVERY shared-cache hit — module successes AND failures,
+   including the failure hits that abort a load and the Finish-time
+   recheck hits — each in DFS position, meaning "replay that module's
+   stored prints once". The coordinator's replay is one event path
+   (`emit_load_prints`) for success, failure and inline-rerun commits
+   alike. Without this, a FAILED package lost the prints of `.bzl`
+   modules it had taken from the cache (reproduced: `//...` with a
+   failing `bad.bzl` at threads=8 lost `bad evaluates` when a sibling's
+   worker evaluated it first; fixed, marker pushed on failure hits).
+2. **Lazy resolution closed.** `load_packages_parallel` forces
+   `resolve_graph()` on the coordinator before spawning workers — a
+   worker can no longer fetch through an unguarded resolution path.
+3. **Prerequisite order restored.** `starlark_prerequisite_errors` runs
+   in PREPARE again (its pre-split position, before the compute), so a
+   speculative implementation can never fetch in a build that
+   sequentially stopped at the prerequisite error.
+4. **Commit interleaving.** Each package's `package_targets` runs right
+   after its commit — inside `load_packages_parallel`'s commit loop —
+   exactly like the sequential path, so warnings and first-error
+   positions cannot move.
+
+### trees/<run-hash> staging variance: pre-existing, and a real perf bug
+
+Two threads=1 runs of the same warm build produce different
+`cache/repositories/direct/trees/<64-hex>` paths for the same logical
+inputs (`seq-1` vs `seq-2` dumps; the A/B normalization scope is
+exactly `trees/[0-9a-f]{64}`): **the variance is per-run, not
+per-thread-count.** Cause: `repository_store::materialize` executes the
+repository rule into a private stage *before* computing the identity,
+and the identity (provenance + serialized runtime inputs + snapshot)
+varies per run for ~54 of the direct repositories — so **every warm
+build re-executes and re-publishes ~54 repository trees** (measured:
++54 tree dirs per warm 60-target build; the shared cache accumulated
+15,254 tree dirs / 46 GB over today's session). This also inflates every
+warm wall time recorded in these tables (the re-materialization runs
+inside loading/extension demand) and explains the input real-path churn
+in the action dump. Fixing the volatile provenance component (or
+skipping execution when a manifest exists for the same definition) is
+**N62 candidate #1** — it masquerades as `.bzl` load cost today.
+
+### PERF peak RSS by thread count (~/code, warm)
+
+| workload | t=1 | t=8 | t=32 |
+|---|---|---|---|
+| query (union pattern) | 1,229 MB | 1,240 MB | 1,242 MB |
+| build (60 targets) | 1,918 MB | 1,919 MB | 1,925 MB |
+
+Parallel loading adds <1.5% peak RSS (the in-flight `LoadUnit`s are the
+packages themselves).
+
+### N62 groundwork (not implemented; measured baselines only)
+
+- **Genuine Bazel 9.3.0, cold, `--batch --ignore_all_rc_files query
+  --lockfile_mode=off //src/ts:all`** (scratch private
+  `--output_user_root`, removed after): **20.2 s wall**, 8,341 targets
+  — against bazel-rs's 61.2 s to load the same package. That is the N62
+  gap (≈3×), measured cold including the JVM.
+- **Per-module self-time + BUILD-macro breakdown** of the 61.2 s
+  `//src/ts` package: not yet instrumented. The breakdown must separate
+  (a) direct-repository re-materialization (above — suspected to be a
+  large share), (b) `.bzl` module evaluation by label, (c) BUILD/macro
+  evaluation and globs. Add per-module timing in `Loader::finish_module`
+  under `BAZEL_RS_TIMING` when picked up.
+- **Reviewer's point on the global `.bzl` lock**: the single global
+  lock is a simplicity choice — it serializes evaluations of
+  *independent* modules. The real N62 lever is **per-label single-flight
+  with in-flight waiting** (a waiter for a label that is itself being
+  evaluated aborts to the inline path on a cycle), which lets disjoint
+  modules of one graph evaluate in parallel — *before* any
+  invocation-persistent `.bzl` cache. Bazel's resident server amortizes
+  exactly this; bazel-rs as a per-invocation client cannot without one
+  of the two.

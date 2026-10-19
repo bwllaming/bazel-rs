@@ -986,11 +986,6 @@ fn splitmix64(mut state: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A loaded package's BUILD-phase load graph, borrowed for the
-/// coordinator's print replay (direct loads in load-statement order, and
-/// every evaluated module's direct loads).
-type LoadGraphView<'a> = (&'a [Label], &'a HashMap<Label, Vec<Label>>);
-
 /// The compute-boundary types are `Send`: P1 has no threads, but the
 /// types must already admit P3's workers (review §1.7). Asserted by
 /// `compute_boundary_types_are_send` (tests) — the proof function is
@@ -1559,32 +1554,35 @@ impl Engine {
             Ok(rules) => (rules, unit.prints),
             Err(error) => {
                 if crate::repository_demand::is_needs_repository(&error) {
-                    let module_lines = unit
+                    // The no-demand sentinel: the module events (evaluated
+                    // lines and cache-hit markers) are emitted now — the
+                    // modules are cached and never evaluate again — while
+                    // the BUILD lines are dropped with the aborted
+                    // evaluation; the inline re-run reproduces the
+                    // sequential output, fetch output included.
+                    let module_events = unit
                         .prints
                         .into_iter()
-                        .filter(|(label, _)| label.is_some())
+                        .filter(|event| !matches!(event, crate::loading::LoadPrintEvent::Build(_)))
                         .collect();
-                    self.emit_load_prints(module_lines, None);
+                    self.emit_load_prints(module_events);
                     let retried = self.load_package_attempt(package);
                     return match retried.result {
                         Ok(rules) => {
-                            self.emit_load_prints(
-                                retried.prints,
-                                Some((&rules.direct_loads, &rules.load_graph)),
-                            );
+                            self.emit_load_prints(retried.prints);
                             self.commit_loaded_package(package, rules)
                         }
                         Err(error) => {
-                            self.emit_load_prints(retried.prints, None);
+                            self.emit_load_prints(retried.prints);
                             Err(error)
                         }
                     };
                 }
-                self.emit_load_prints(unit.prints, None);
+                self.emit_load_prints(unit.prints);
                 return Err(error);
             }
         };
-        self.emit_load_prints(prints, Some((&rules.direct_loads, &rules.load_graph)));
+        self.emit_load_prints(prints);
         self.commit_loaded_package(package, rules)
     }
 
@@ -1597,18 +1595,28 @@ impl Engine {
     /// first error in that order winning and later results discarded.
     /// A guard-aborted unit re-runs inline at its commit slot. With one
     /// thread (or one package) this is exactly the sequential P1 path.
-    fn load_packages_parallel(&mut self, ids: &[PackageId]) -> Result<(), String> {
+    fn load_packages_parallel(
+        &mut self,
+        ids: &[PackageId],
+        mut after_commit: impl FnMut(&mut Self, &PackageId) -> Result<(), String>,
+    ) -> Result<(), String> {
         let pending: Vec<PackageId> = ids
             .iter()
             .filter(|id| !self.packages.contains_key(*id))
             .cloned()
             .collect();
         if pending.len() <= 1 || self.loading_phase_threads <= 1 {
-            for id in &pending {
+            for id in ids {
                 self.load_package(id)?;
+                after_commit(self, id)?;
             }
             return Ok(());
         }
+        // Resolve the module graph on the coordinator before any worker
+        // starts (review follow-up): resolution is coordinator-only work,
+        // and a lazily-resolving worker could fetch outside the guard.
+        // Already resolved, this is a cheap OnceLock read.
+        self.repositories.resolve_graph()?;
         let workers = self.loading_phase_threads.min(pending.len());
         let slots: Vec<std::sync::Mutex<Option<package::LoadUnit>>> = pending
             .iter()
@@ -1672,14 +1680,23 @@ impl Engine {
         })?;
         // Commit in pattern order: the same sequence of commits — and of
         // printed output — as the sequential engine, whatever order the
-        // workers finished in.
-        for (index, id) in pending.iter().enumerate() {
-            let unit = slots[index]
-                .lock()
-                .unwrap()
-                .take()
-                .expect("every dispatched package finished");
-            self.commit_load_unit(id, unit)?;
+        // workers finished in. Each package's follow-up (its targets)
+        // runs right after its commit, interleaved exactly like the
+        // sequential path, so warnings and first errors cannot move.
+        // Packages already loaded before this call commit nothing but
+        // still run their follow-up, like the sequential path.
+        let mut dispatched = 0;
+        for id in ids {
+            if !self.packages.contains_key(id) {
+                let unit = slots[dispatched]
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("every dispatched package finished");
+                dispatched += 1;
+                self.commit_load_unit(id, unit)?;
+            }
+            after_commit(self, id)?;
         }
         Ok(())
     }
@@ -1720,58 +1737,40 @@ impl Engine {
         Ok(())
     }
 
-    /// Emit one load unit's buffered print lines (the coordinator's
-    /// replay, review §1.4). With the package's load graph (a successful
-    /// load): each not-yet-emitted `.bzl` module's cached lines, in the
-    /// package's load-DFS order — the order the sequential loader
-    /// evaluated them in — then the BUILD file's own lines. Without it
-    /// (a failed load): the buffered lines in evaluation order. The
-    /// emitted-.bzl set keeps every module's lines once per invocation;
-    /// one evaluation per label (the shared, single-flight BzlCache)
-    /// means a module's lines exist in exactly one unit.
-    fn emit_load_prints(
-        &mut self,
-        prints: Vec<(Option<Label>, String)>,
-        graph: Option<LoadGraphView<'_>>,
-    ) {
-        if let Some((direct_loads, load_graph)) = graph {
-            // Postorder, like the loader's explicit DFS (dependencies
-            // evaluate before their dependent); a diamond visits a label
-            // once, as its single evaluation did.
-            let mut visited = HashSet::new();
-            let mut order = Vec::new();
-            let mut stack = direct_loads
-                .iter()
-                .rev()
-                .map(|label| (label.clone(), false))
-                .collect::<Vec<_>>();
-            while let Some((label, leaving)) = stack.pop() {
-                if leaving {
-                    order.push(label);
-                    continue;
+    /// Emit one load unit's buffered print events (the coordinator's
+    /// replay, review §1.4 and the P2 follow-up): BUILD lines once; a
+    /// module's lines — its own block, or the ones stored with its cache
+    /// entry at a hit marker — only if that module's prints were not
+    /// emitted yet (the emitted-`.bzl` set). The event order is the
+    /// loader's DFS, so success and failure commits replay exactly the
+    /// sequential loader's output. A module's lines are contiguous in
+    /// the stream (one push per evaluation): the whole block prints or
+    /// the whole block is skipped.
+    fn emit_load_prints(&mut self, events: Vec<crate::loading::LoadPrintEvent>) {
+        use crate::loading::LoadPrintEvent;
+        let mut block: Option<(Label, bool)> = None;
+        for event in events {
+            match event {
+                LoadPrintEvent::Build(line) => {
+                    block = None;
+                    eprintln!("{line}");
                 }
-                if !visited.insert(label.clone()) {
-                    continue;
-                }
-                stack.push((label.clone(), true));
-                if let Some(loads) = load_graph.get(&label) {
-                    stack.extend(loads.iter().rev().map(|load| (load.clone(), false)));
-                }
-            }
-            for label in order {
-                if self.emitted_bzl_prints.insert(label.clone()) {
-                    for line in self.repositories.build_bzl_cache().prints(&label) {
+                LoadPrintEvent::Module { label, line } => {
+                    let emit = match &block {
+                        Some((current, emit)) if current == &label => *emit,
+                        _ => self.emitted_bzl_prints.insert(label.clone()),
+                    };
+                    if emit {
                         eprintln!("{line}");
                     }
+                    block = Some((label, emit));
                 }
-            }
-        }
-        for (label, line) in prints {
-            match label {
-                None => eprintln!("{line}"),
-                Some(label) => {
-                    if self.emitted_bzl_prints.insert(label) {
-                        eprintln!("{line}");
+                LoadPrintEvent::Cached(label) => {
+                    block = None;
+                    if self.emitted_bzl_prints.insert(label.clone()) {
+                        for line in self.repositories.build_bzl_cache().prints(&label) {
+                            eprintln!("{line}");
+                        }
                     }
                 }
             }
@@ -2263,16 +2262,16 @@ impl Engine {
                     })
                     .collect();
                 // P2: the pattern's package loads run on the
-                // loading-phase-threads pool; commits stay in pattern
-                // order (Engine::load_packages_parallel).
-                self.load_packages_parallel(&ids).map_err(Loading)?;
+                // loading-phase-threads pool; commits — each followed by
+                // that package's targets, interleaved exactly like the
+                // sequential path — stay in pattern order.
+                let rules_only = *rules_only;
+                self.load_packages_parallel(&ids, |engine, id| {
+                    found.extend(engine.package_targets(id, rules_only, filter_manual)?);
+                    Ok(())
+                })
+                .map_err(Loading)?;
                 crate::perf_mark("select.loaded");
-                for id in ids {
-                    found.extend(
-                        self.package_targets(&id, *rules_only, filter_manual)
-                            .map_err(Loading)?,
-                    );
-                }
             }
             Kind::TargetsInPackage {
                 suffix,
@@ -8535,6 +8534,17 @@ impl Engine {
                 };
                 dependency_targets.insert(map_key, view);
             }
+            // Prerequisite validation runs here, before the snapshot (and
+            // so before the compute, which may run on another thread in
+            // P3): a speculative implementation never fetches in a build
+            // that sequentially stopped at this error (review follow-up).
+            self.starlark_prerequisite_errors(
+                rule,
+                &key,
+                exec_config,
+                configured,
+                &dependency_targets,
+            )?;
             // ctx.target_platform_has_constraint: a toolchain-resolving
             // rule sees its target platform; a deferred default host
             // platform is resolved only when the implementation asks,
@@ -8829,7 +8839,6 @@ impl Engine {
                     config,
                     output_root,
                     action_owner,
-                    exec_config,
                     main_ignored,
                     transitive,
                     rule,
@@ -8869,7 +8878,6 @@ impl Engine {
         config: ConfigId,
         output_root: String,
         action_owner: String,
-        exec_config: ConfigId,
         main_ignored: Arc<IgnoredSubdirectories>,
         transitive: BTreeSet<String>,
         rule: &Rule,
@@ -8893,16 +8901,6 @@ impl Engine {
             runfiles_nodes,
             ..
         } = state;
-        // Prerequisite validation runs here, before the implementation's
-        // result is applied, also for a target planned early
-        // (Self::plan_pending).
-        self.starlark_prerequisite_errors(
-            rule,
-            &key,
-            exec_config,
-            configured,
-            &snapshot.dependency_targets,
-        )?;
         let mut snapshot = snapshot;
         let mut outcome = computed;
         if outcome

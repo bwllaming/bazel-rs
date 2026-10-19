@@ -2046,13 +2046,14 @@ pub fn evaluate(root: &Path, package: &str) -> Result<Package, String> {
 }
 
 /// One package load unit's buffered stderr output: the BUILD file's own
-/// `print()` lines and its `.bzl` graph's top-level lines, in evaluation
-/// order (crate::loading::LoadPrints), plus the load's result. The
-/// coordinator (Engine::load_package) emits the lines at the unit's
-/// commit; a failed load emits them before its error propagates.
+/// `print()` lines, its `.bzl` graph's top-level lines and its
+/// cache-hit markers, in DFS order (crate::loading), plus the load's
+/// result. The coordinator (Engine::load_package) emits the events at
+/// the unit's commit; a failed load emits them before its error
+/// propagates.
 pub(crate) struct LoadUnit {
     pub(crate) result: Result<Package, String>,
-    pub(crate) prints: Vec<(Option<Label>, String)>,
+    pub(crate) prints: Vec<crate::loading::LoadPrintEvent>,
 }
 
 pub fn evaluate_in(
@@ -2061,9 +2062,14 @@ pub fn evaluate_in(
 ) -> Result<Package, String> {
     let unit = evaluate_load_unit(repositories, package);
     // The direct path keeps the historical behavior: every buffered line
-    // reaches stderr in order, immediately after the load.
-    for (_, line) in &unit.prints {
-        eprintln!("{line}");
+    // reaches stderr in order, immediately after the load (cache-hit
+    // markers carry no lines of their own here).
+    for event in &unit.prints {
+        if let crate::loading::LoadPrintEvent::Build(line)
+        | crate::loading::LoadPrintEvent::Module { line, .. } = event
+        {
+            eprintln!("{line}");
+        }
     }
     unit.result
 }
@@ -2596,8 +2602,12 @@ fn evaluate_source(
         &prints,
     );
     // Test helper: the buffered lines reach stderr in order, as before.
-    for (_, line) in prints.take() {
-        eprintln!("{line}");
+    for event in prints.take() {
+        if let crate::loading::LoadPrintEvent::Build(line)
+        | crate::loading::LoadPrintEvent::Module { line, .. } = event
+        {
+            eprintln!("{line}");
+        }
     }
     evaluated.map(|package| {
         package

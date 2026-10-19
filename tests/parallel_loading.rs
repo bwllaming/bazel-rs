@@ -399,3 +399,113 @@ fn json_string(value: &Path) -> String {
     out.push('"');
     out
 }
+
+/// P2 follow-up fix 1: a FAILED load still replays the prints of `.bzl`
+/// modules it took from the shared cache — the marker the loader pushes
+/// at every cache hit, in DFS position. Package `a` loads the printing
+/// `lib.bzl` and then fails; later siblings load the same module. Under
+/// jitter the failing unit's module may well be a cache hit another
+/// worker evaluated; the output must stay byte-identical to the
+/// sequential run either way, with the module's prints exactly once.
+#[test]
+fn failed_load_replays_cache_hit_bzl_prints() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file(
+        "rules/lib.bzl",
+        "print('lib top-level')\ndef _impl(ctx):\n    return DefaultInfo()\nok_rule = rule(implementation = _impl)\n",
+    );
+    // a: loads lib.bzl, then its BUILD evaluation fails.
+    ws.file(
+        "a/BUILD",
+        "load('//rules:lib.bzl', 'ok_rule')\nok_rule(name = 'r')\nfail('a fails after the load')\n",
+    );
+    for index in 1..6 {
+        ws.file(
+            &format!("p{index:02}/BUILD"),
+            "load('//rules:lib.bzl', 'ok_rule')\nok_rule(name = 'r')\n",
+        );
+    }
+    let mut reference = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(!run.status.success(), "threads={threads}");
+        let stderr = stderr(&run);
+        // The module's prints survive the failed load, exactly once, and
+        // precede the package's own error.
+        assert_eq!(stderr.matches("lib top-level").count(), 1, "{stderr}");
+        assert!(stderr.contains("a fails after the load"), "{stderr}");
+        match &reference {
+            None => reference = Some((run.stdout.clone(), stderr)),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&stderr, error, "threads={threads}: stderr");
+            }
+        }
+    }
+}
+
+/// The failing-module variant: `bad.bzl` prints and then fails; the
+/// first loading package emits its partial prints with its error, and a
+/// cache-hit of the stored failure never re-prints them.
+#[test]
+fn failing_bzl_prints_survive_via_marker_on_sibling_hits() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/bad.bzl", "print('bad evaluates')\nfail('boom')\n");
+    // a loads a printing good module and the failing one; later siblings
+    // load the failing one too (a cache hit of the stored failure).
+    ws.file("rules/good.bzl", "print('good top-level')\nvalue = 1\n");
+    ws.file(
+        "a/BUILD",
+        "load('//rules:good.bzl', 'value')\nload('//rules:bad.bzl', 'x')\n",
+    );
+    for index in 1..4 {
+        ws.file(
+            &format!("p{index:02}/BUILD"),
+            "load('//rules:bad.bzl', 'x')\n",
+        );
+    }
+    let mut reference = None;
+    for (threads, jitter) in [(1u64, 0u64), (2, 0), (8, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(!run.status.success(), "threads={threads}");
+        let stderr = stderr(&run);
+        assert_eq!(stderr.matches("good top-level").count(), 1, "{stderr}");
+        assert_eq!(stderr.matches("bad evaluates").count(), 1, "{stderr}");
+        assert!(stderr.contains("fail: boom"), "{stderr}");
+        match &reference {
+            None => reference = Some((run.stdout.clone(), stderr)),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&stderr, error, "threads={threads}: stderr");
+            }
+        }
+    }
+}

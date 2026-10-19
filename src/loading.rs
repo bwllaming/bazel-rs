@@ -430,8 +430,10 @@ pub fn load_modules_with_functions_in(
     // completion, preserving the historical direct-stderr behavior.
     let prints = LoadPrints::default();
     let result = load_build_file_modules(repositories, package, ast, globals, false, &prints);
-    for (_, line) in prints.take() {
-        eprintln!("{line}");
+    for event in prints.take() {
+        if let LoadPrintEvent::Build(line) | LoadPrintEvent::Module { line, .. } = event {
+            eprintln!("{line}");
+        }
     }
     result
 }
@@ -619,24 +621,49 @@ impl BzlCache {
     }
 }
 
-/// Buffered stderr output of one package load unit (review §1.4/P1):
-/// BUILD-file `print()` lines unlabelled and `.bzl` top-level `print()`
-/// lines labelled with their module, in evaluation order. The coordinator
-/// emits the lines at the unit's commit; the labels let it emit each
-/// module's lines only once per invocation.
+/// Buffered stderr output of one package load unit (review §1.4 and the
+/// P2 follow-up): BUILD-file `print()` lines, `.bzl` top-level lines of
+/// the modules this unit evaluates, and — in DFS position — a marker for
+/// EVERY module served from the shared cache (its success or its
+/// failure), each meaning "replay that module's stored prints once".
+/// The markers keep a FAILED load's replay identical to the sequential
+/// loader's output: the first loading package emits a cache-hit
+/// module's prints even when the package itself fails later in its
+/// BUILD evaluation.
 #[derive(Default)]
-pub(crate) struct LoadPrints(RefCell<Vec<(Option<Label>, String)>>);
+pub(crate) struct LoadPrints(RefCell<Vec<LoadPrintEvent>>);
+
+/// One buffered output event of a [`LoadPrints`] sink.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoadPrintEvent {
+    /// A BUILD-file `print()` line.
+    Build(String),
+    /// A top-level `print()` line of a module this unit evaluated.
+    Module { label: Label, line: String },
+    /// A module served from the shared cache (success or failure):
+    /// replay its stored prints if not yet emitted.
+    Cached(Label),
+}
 
 impl LoadPrints {
     pub(crate) fn push_build(&self, line: String) {
-        self.0.borrow_mut().push((None, line));
+        self.0.borrow_mut().push(LoadPrintEvent::Build(line));
     }
 
     fn push_module(&self, label: &Label, line: String) {
-        self.0.borrow_mut().push((Some(label.clone()), line));
+        self.0.borrow_mut().push(LoadPrintEvent::Module {
+            label: label.clone(),
+            line,
+        });
     }
 
-    pub(crate) fn take(&self) -> Vec<(Option<Label>, String)> {
+    fn push_cached(&self, label: &Label) {
+        self.0
+            .borrow_mut()
+            .push(LoadPrintEvent::Cached(label.clone()));
+    }
+
+    pub(crate) fn take(&self) -> Vec<LoadPrintEvent> {
         std::mem::take(&mut *self.0.borrow_mut())
     }
 }
@@ -785,7 +812,19 @@ impl<'a> Loader<'a> {
         let Some(cached) = self.repositories.build_bzl_cache().get(label)? else {
             return Ok(false);
         };
-        let cached = cached.map_err(|failure| failure.error.clone())?;
+        let cached = match cached {
+            Ok(cached) => cached,
+            // A cached failure replays for every loading package — with a
+            // hit marker first (P2 follow-up): the failing module's own
+            // partial prints replay with this unit even though its load
+            // stops here.
+            Err(failure) => {
+                if let Some(sink) = self.prints {
+                    sink.push_cached(label);
+                }
+                return Err(failure.error.clone());
+            }
+        };
         active.push(label.clone());
         let loads = cached.loads.clone();
         self.load_graph.insert(label.clone(), loads.clone());
@@ -841,6 +880,12 @@ impl<'a> Loader<'a> {
                     self.cache.insert(label.clone(), cached.module.clone());
                     self.visibilities
                         .insert(label.clone(), cached.visibility.clone());
+                    // The hit marker, in DFS position: the coordinator
+                    // replays this module's stored prints once (P2
+                    // follow-up — also when this unit's load later fails).
+                    if let Some(sink) = self.prints {
+                        sink.push_cached(&label);
+                    }
                     let finished = active.pop();
                     debug_assert_eq!(finished.as_ref(), Some(&label));
                 }
@@ -861,11 +906,19 @@ impl<'a> Loader<'a> {
                                 self.cache.insert(label.clone(), cached.module.clone());
                                 self.visibilities
                                     .insert(label.clone(), cached.visibility.clone());
+                                if let Some(sink) = self.prints {
+                                    sink.push_cached(&label);
+                                }
                                 let finished = active.pop();
                                 debug_assert_eq!(finished.as_ref(), Some(&label));
                                 continue;
                             }
-                            Some(Err(failure)) => return Err(failure.error.clone()),
+                            Some(Err(failure)) => {
+                                if let Some(sink) = self.prints {
+                                    sink.push_cached(&label);
+                                }
+                                return Err(failure.error.clone());
+                            }
                             None => {}
                         }
                     }
@@ -2095,13 +2148,22 @@ scalar = 42
         let failure_error = |name: &str| failure(name).map(|failure| failure.error.clone());
         assert_eq!(failure_error("//:bad.bzl"), Some(failed));
         assert_eq!(failure_error("//:unparsable.bzl"), Some(unparsable));
-        // The buffered print lines of the failing evaluation: in the
-        // first loading unit's sink (never re-emitted by later loads) and
-        // in the cached failure itself.
+        // The buffered print events of the failing evaluation: the
+        // earlier-loaded chain (m255, m256) leaves cache-hit markers in
+        // DFS position and the failing module's own line last — the
+        // coordinator replays exactly this, also on failure (P2
+        // follow-up). The line is stored with the cached failure too.
         let failing_label = Label::parse_canonical("//:bad.bzl").unwrap();
         assert_eq!(
             failed_prints,
-            vec![(Some(failing_label.clone()), "bad evaluates".to_owned())]
+            vec![
+                LoadPrintEvent::Cached(Label::parse_canonical("//:m256.bzl").unwrap()),
+                LoadPrintEvent::Cached(Label::parse_canonical("//:m255.bzl").unwrap()),
+                LoadPrintEvent::Module {
+                    label: failing_label.clone(),
+                    line: "bad evaluates".to_owned(),
+                },
+            ]
         );
         for uncached in ["//:uses_bad.bzl", "//:a.bzl", "//:b.bzl", "//:m0.bzl"] {
             assert!(!cache.contains_key(&Label::parse_canonical(uncached).unwrap()));
@@ -2521,7 +2583,8 @@ lambda_mapper = lambda value: value
             .collect();
         let results: Vec<_> = loads.into_iter().map(|load| load.join().unwrap()).collect();
         // Exactly one evaluation served both threads the same frozen
-        // value; neither buffered prints (the loser was a cache hit).
+        // value; the loser's unit holds only a cache-hit marker for it
+        // (its prints replay from the entry, never duplicated).
         assert_eq!(SINGLE_FLIGHT_EVALUATIONS.load(Ordering::Relaxed), 1);
         let value = |module: &FrozenModule| module.get("value").unwrap();
         assert!(
@@ -2529,7 +2592,26 @@ lambda_mapper = lambda value: value
                 .value()
                 .ptr_eq(value(&results[1].0).value())
         );
-        assert!(results.iter().all(|(_, prints)| prints.is_empty()));
+        let shared = Label::parse_canonical("//:shared.bzl").unwrap();
+        let module_lines = results
+            .iter()
+            .flat_map(|(_, prints)| {
+                prints
+                    .iter()
+                    .filter(|event| matches!(event, LoadPrintEvent::Module { .. }))
+            })
+            .count();
+        let markers = results
+            .iter()
+            .flat_map(|(_, prints)| {
+                prints.iter().filter(
+                    |event| matches!(event, LoadPrintEvent::Cached(label) if *label == shared),
+                )
+            })
+            .count();
+        // No prints exist to buffer; the winner evaluated (no marker) and
+        // the loser's unit holds exactly one cache-hit marker.
+        assert_eq!((module_lines, markers), (0, 1));
         // Reentrancy: an outer holder acquires again without waiting.
         let outer = bzl_evaluation_lock();
         let inner = bzl_evaluation_lock();
