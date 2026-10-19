@@ -639,6 +639,11 @@ fn make_ctx<'v>(
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
+    let actions = crate::analysis_runtime::alloc_actions_for(
+        heap,
+        context.scope.root(),
+        crate::analysis_ctx::rule_context_repr(&rule.label.to_string()),
+    );
     let backing = heap.alloc(AllocStruct([
         ("attr", attr),
         ("files", files),
@@ -646,14 +651,7 @@ fn make_ctx<'v>(
         ("outputs", outputs),
         ("executable", executable),
         ("label", label),
-        (
-            "actions",
-            crate::analysis_runtime::alloc_actions_for(
-                heap,
-                context.scope.root(),
-                crate::analysis_ctx::rule_context_repr(&rule.label.to_string()),
-            ),
-        ),
+        ("actions", actions),
         ("$collect_data", heap.alloc(collect_data)),
         ("$collect_default", heap.alloc(collect_default)),
     ]));
@@ -665,15 +663,12 @@ fn make_ctx<'v>(
             Some(value) => value.clone(),
             None => setting_default(invocation)?,
         };
-        Ok(crate::build_setting_ctx::wrap(
-            heap,
-            backing,
-            value,
-            context.scope.root(),
-            surface,
-        ))
+        let ctx =
+            crate::build_setting_ctx::wrap(heap, backing, value, context.scope.root(), surface);
+        crate::analysis_runtime::set_rule_ctx(&actions, ctx);
+        Ok(ctx)
     } else {
-        Ok(crate::analysis_ctx::alloc_rule(
+        let ctx = crate::analysis_ctx::alloc_rule(
             heap,
             backing,
             context.scope.root(),
@@ -682,7 +677,11 @@ fn make_ctx<'v>(
             invocation.toolchains.clone(),
             invocation.exec_groups.clone(),
             surface,
-        ))
+        );
+        // The action factory returns this context value
+        // (cc_internal.actions2ctx_cheat).
+        crate::analysis_runtime::set_rule_ctx(&actions, ctx);
+        Ok(ctx)
     }
 }
 
@@ -1687,6 +1686,9 @@ fn analyze_aspect_inner(
     let context = Context {
         action_env: target.action_env.clone(),
         label: rule.label.clone(),
+        // The base rule's class (cc_internal.rule_class reads
+        // RuleContext.getRule().getRuleClass()).
+        rule_class: invocation.declaration.rule_class.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
         dependency_files: application
@@ -1950,25 +1952,23 @@ fn make_aspect_ctx<'v>(
     let label = alloc_target(heap, &rule.label.to_string(), Vec::new())
         .get_attr_error("label", heap)
         .map_err(|error| anyhow!(error.to_string()))?;
+    let actions = crate::analysis_runtime::alloc_actions_for(
+        heap,
+        context.scope.root(),
+        crate::analysis_ctx::aspect_context_repr(&shown_label),
+    );
     let backing = heap.alloc(starlark::values::structs::AllocStruct([
         ("attr", attr),
         ("files", files),
         ("file", file),
         ("label", label),
-        (
-            "actions",
-            crate::analysis_runtime::alloc_actions_for(
-                heap,
-                context.scope.root(),
-                crate::analysis_ctx::aspect_context_repr(&shown_label),
-            ),
-        ),
+        ("actions", actions),
         ("$rule", rule_attributes),
         ("$aspect_ids", aspect_ids),
         ("$collect_data", heap.alloc(Vec::<Value>::new())),
         ("$collect_default", heap.alloc(Vec::<Value>::new())),
     ]));
-    Ok(crate::analysis_ctx::alloc_aspect(
+    let ctx = crate::analysis_ctx::alloc_aspect(
         heap,
         backing,
         context.scope.root(),
@@ -1976,7 +1976,9 @@ fn make_aspect_ctx<'v>(
         None,
         None,
         surface,
-    ))
+    );
+    crate::analysis_runtime::set_rule_ctx(&actions, ctx);
+    Ok(ctx)
 }
 
 /// Where the analysis of a configured target declares its outputs and how
@@ -2121,6 +2123,7 @@ fn analyze_inner(
     let context = Context {
         action_env: target.action_env.clone(),
         label: rule.label.clone(),
+        rule_class: invocation.declaration.rule_class.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
         // Dependencies' runfiles artifacts are observable through
@@ -3096,6 +3099,7 @@ r = rule(implementation=impl, attrs={
     fn empty_context() -> Context {
         Context {
             label: Label::parse("//pkg:rule", "").unwrap(),
+            rule_class: "rule".into(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//pkg:rule".into(),

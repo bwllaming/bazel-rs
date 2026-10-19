@@ -303,6 +303,25 @@ pub(crate) fn is_variables(value: Value<'_>) -> bool {
     CcVariables::from_value(value).is_some()
 }
 
+/// LinkCommandLine.getParamCommandLine (LinkCommandLine.java:92-130): the
+/// `linker_param_file` variable's value when it is available, whose flags are
+/// filtered out of the parameter command line.
+pub(crate) fn linker_param_file<'v>(
+    variables: Value<'v>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Option<String>> {
+    let scope = Scope::Root(variables);
+    if !scope.is_available("linker_param_file", eval)? {
+        return Ok(None);
+    }
+    Ok(Some(
+        scope
+            .get("linker_param_file", eval)?
+            .string_value("linker_param_file")
+            .map_err(crate::language_modules::failure)?,
+    ))
+}
+
 /// `new MapVariables(parent, map)`: keys sorted (MapVariables.java:935-950).
 pub(crate) fn alloc_map<'v>(
     eval: &Evaluator<'v, '_, '_>,

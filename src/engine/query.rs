@@ -2666,7 +2666,7 @@ fn first_apparent(
 /// (java.util.regex.Pattern): `DESC near index I`, the pattern, and a caret
 /// line when the index is inside the pattern. Other errors keep the
 /// fancy-regex text.
-fn java_pattern_error(pattern: &str, error: &fancy_regex::Error) -> String {
+pub(crate) fn java_pattern_error(pattern: &str, error: &fancy_regex::Error) -> String {
     let length = pattern.chars().count();
     let (description, index) = match error {
         fancy_regex::Error::ParseError(_, fancy_regex::ParseError::UnclosedOpenParen) => {

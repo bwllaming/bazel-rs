@@ -24,6 +24,7 @@ pub mod build_settings;
 pub mod builtin_tools;
 mod bzl_visibility;
 pub mod bzlmod;
+mod cc_actions;
 mod cc_common;
 mod cc_features;
 mod cc_variables;

@@ -36,7 +36,7 @@ use starlark::values::{
     Heap, NoSerialize, ProvidesStaticType, StarlarkPagablePanic, StarlarkValue, Value,
     starlark_value,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -712,7 +712,12 @@ impl<'v> Parser<'v> {
     }
 
     /// `artifactNamePatternFromStarlark` (CcToolchainFeaturesLib.java:454-497).
-    fn artifact_name_pattern(&self, info: Value<'v>) -> starlark::Result<()> {
+    /// Returns the override `(category, prefix, extension)` when it differs
+    /// from the category default (ArtifactNamePatternMapper.Builder.addOverride).
+    fn artifact_name_pattern(
+        &self,
+        info: Value<'v>,
+    ) -> starlark::Result<Option<(String, String, String)>> {
         self.check_type(info, "artifact_name_pattern")?;
         let category = self.string_field(info, "category_name", true)?;
         let Some(category) = category.filter(|name| !name.is_empty()) else {
@@ -721,7 +726,7 @@ impl<'v> Parser<'v> {
                 "The 'category_name' field of artifact_name_pattern must be a nonempty string.",
             ));
         };
-        let Some((name, _, allowed)) = ARTIFACT_CATEGORIES
+        let Some((name, default_prefix, allowed)) = ARTIFACT_CATEGORIES
             .iter()
             .find(|(name, _, _)| *name == category)
         else {
@@ -742,8 +747,12 @@ impl<'v> Parser<'v> {
                 ),
             ));
         }
-        self.string_field(info, "prefix", true)?;
-        Ok(())
+        let prefix = self.string_field(info, "prefix", true)?.unwrap_or_default();
+        if prefix != *default_prefix || extension != allowed[0] {
+            Ok(Some((category, prefix, extension)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -832,6 +841,61 @@ pub(crate) struct ToolchainData {
     provides: Vec<(String, Vec<usize>)>,
     default_selectables: Vec<String>,
     tools_directory: String,
+    /// `artifactNamePatterns` overrides that differ from the category
+    /// defaults (ArtifactNamePatternMapper.Builder.addOverride,
+    /// CcToolchainFeatures.java:791-811), keyed by category name.
+    artifact_name_overrides: BTreeMap<String, (String, String)>,
+}
+
+impl ToolchainData {
+    /// `ArtifactNamePatternMapper.get` + `getArtifactNameForCategory`
+    /// (CcToolchainFeatures.java:1338-1346): prefix + basename + extension,
+    /// placed in the output name's parent directory.
+    pub(crate) fn artifact_name_for_category(
+        &self,
+        category: &str,
+        output_name: &str,
+    ) -> Result<String, String> {
+        let (prefix, extension) = self.artifact_name_pattern(category)?;
+        let (parent, base) = match output_name.rsplit_once('/') {
+            Some((parent, base)) => (parent, base),
+            None => ("", output_name),
+        };
+        Ok(if parent.is_empty() {
+            format!("{prefix}{base}{extension}")
+        } else {
+            format!("{parent}/{prefix}{base}{extension}")
+        })
+    }
+
+    /// `getArtifactNameExtensionForCategory` (CcToolchainFeatures.java:1349-1352).
+    pub(crate) fn artifact_name_extension_for_category(
+        &self,
+        category: &str,
+    ) -> Result<String, String> {
+        Ok(self.artifact_name_pattern(category)?.1)
+    }
+
+    fn artifact_name_pattern(&self, category: &str) -> Result<(String, String), String> {
+        // get_artifact_name_for_category goes through
+        // ArtifactCategory.valueOf (the uppercase enum constant names of
+        // rules_cc's artifact_category_names), the toolchain config's
+        // artifact_name_pattern through getCategoryName (lowercase); the
+        // mapper is keyed by the category either way.
+        if let Some((prefix, extension)) = self.artifact_name_overrides.get(category) {
+            return Ok((prefix.clone(), extension.clone()));
+        }
+        let (prefix, _, allowed) = ARTIFACT_CATEGORIES
+            .iter()
+            .find(|(name, _, _)| name.eq_ignore_ascii_case(category))
+            .map(|(_, prefix, allowed)| (*prefix, (), allowed))
+            .ok_or_else(|| {
+                format!(
+                    "No enum constant com.google.devtools.build.lib.rules.cpp.ArtifactCategory.{category}"
+                )
+            })?;
+        Ok(((*prefix).to_owned(), allowed[0].to_owned()))
+    }
 }
 
 /// `CcToolchainConfigInfo.getFeatures/getActionConfigs/getArtifactNamePatterns`
@@ -894,13 +958,16 @@ pub(crate) fn toolchain_from_config_info<'v>(
     }
 
     build_graph(features, action_configs, tools_directory, || {
+        let mut overrides = Vec::new();
         for pattern in required(
             "_artifact_name_patterns_DO_NOT_USE",
             "_artifact_name_patterns",
         )? {
-            parser.artifact_name_pattern(pattern)?;
+            if let Some(parsed) = parser.artifact_name_pattern(pattern)? {
+                overrides.push(parsed);
+            }
         }
-        Ok(())
+        Ok(overrides)
     })
 }
 
@@ -912,7 +979,7 @@ pub(crate) fn build_graph(
     features: Vec<Feature>,
     action_configs: Vec<ActionConfig>,
     tools_directory: &str,
-    artifact_name_patterns: impl FnOnce() -> starlark::Result<()>,
+    artifact_name_patterns: impl FnOnce() -> starlark::Result<Vec<(String, String, String)>>,
 ) -> starlark::Result<ToolchainData> {
     // checkForActionNameDups (CcToolchainFeatures.java:1207-1217).
     let mut action_names = HashSet::new();
@@ -938,7 +1005,10 @@ pub(crate) fn build_graph(
             )));
         }
     }
-    artifact_name_patterns()?;
+    let artifact_name_overrides = artifact_name_patterns()?
+        .into_iter()
+        .map(|(category, prefix, extension)| (category, (prefix, extension)))
+        .collect();
 
     let count = names.len();
     let resolve = |name: &str, reference: &str| -> starlark::Result<usize> {
@@ -1014,6 +1084,7 @@ pub(crate) fn build_graph(
         provides,
         default_selectables,
         tools_directory: normalize_unix_path(tools_directory),
+        artifact_name_overrides,
     })
 }
 
@@ -1125,6 +1196,51 @@ impl FeatureConfigurationData {
         self.enabled_actions.contains(action)
     }
 
+    /// CppCompileActionBuilder.buildAndVerify: the action must be configured.
+    pub(crate) fn require_action_config(&self, action: &str) -> Result<(), String> {
+        if self.action_is_configured(action) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Expected action_config for '{action}' to be configured"
+            ))
+        }
+    }
+
+    /// `getPerFeatureExpansions` (CcToolchainFeatures.java:941-975): one
+    /// `(owner, flags)` pair for the action config (when configured) and for
+    /// every enabled feature, in `getCommandLine` order.
+    pub(crate) fn per_feature_expansions<'v>(
+        &self,
+        action: &str,
+        variables: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Vec<(String, Vec<String>)>> {
+        let scope = Scope::Root(variables);
+        let mut pairs = Vec::new();
+        let toolchain = &self.toolchain;
+        if self.action_is_configured(action) {
+            let action_config = toolchain.action_config(action).map_err(failure)?;
+            // The action config's flag sets expand against its own name.
+            let mut command_line = Vec::new();
+            self.expand_flag_sets(
+                &action_config.flag_sets,
+                &action_config.action_name,
+                &scope,
+                eval,
+                &mut command_line,
+            )?;
+            pairs.push((action_config.action_name.clone(), command_line));
+        }
+        for index in &self.enabled_features {
+            let feature = &toolchain.features[*index];
+            let mut command_line = Vec::new();
+            self.expand_flag_sets(&feature.flag_sets, action, &scope, eval, &mut command_line)?;
+            pairs.push((feature.name.clone(), command_line));
+        }
+        Ok(pairs)
+    }
+
     fn expand_flag_sets<'v>(
         &self,
         flag_sets: &[FlagSet],
@@ -1147,7 +1263,7 @@ impl FeatureConfigurationData {
     }
 
     /// `getCommandLine` (CcToolchainFeatures.java:916-936).
-    fn command_line<'v>(
+    pub(crate) fn command_line<'v>(
         &self,
         action: &str,
         variables: Value<'v>,
@@ -1179,7 +1295,7 @@ impl FeatureConfigurationData {
     }
 
     /// `getEnvironmentVariables` (CcToolchainFeatures.java:976-984).
-    fn environment<'v>(
+    pub(crate) fn environment<'v>(
         &self,
         action: &str,
         variables: Value<'v>,
@@ -1216,7 +1332,7 @@ impl FeatureConfigurationData {
     }
 
     /// `getToolPathForAction` (CcToolchainFeatures.java:986-993).
-    fn tool_path(&self, action: &str) -> Result<String, String> {
+    pub(crate) fn tool_path(&self, action: &str) -> Result<String, String> {
         let tool = self
             .toolchain
             .action_config(action)?
@@ -1225,7 +1341,7 @@ impl FeatureConfigurationData {
     }
 
     /// `getToolRequirementsForAction` (CcToolchainFeatures.java:995-1002).
-    fn tool_requirements(&self, action: &str) -> Result<Vec<String>, String> {
+    pub(crate) fn tool_requirements(&self, action: &str) -> Result<Vec<String>, String> {
         Ok(self
             .toolchain
             .action_config(action)?
@@ -1320,6 +1436,14 @@ starlark_simple_value!(FeatureMethod);
 
 const FEATURES_METHODS: [&str; 2] = ["configure_features", "default_features_and_action_configs"];
 const CONFIGURATION_METHODS: [&str; 2] = ["is_enabled", "is_requested"];
+
+impl CcToolchainFeatures {
+    /// The toolchain's artifact-name mapper
+    /// (`cc_internal.get_artifact_name_for_category`).
+    pub(crate) fn data(&self) -> &ToolchainData {
+        &self.inner.data
+    }
+}
 
 impl fmt::Display for CcToolchainFeatures {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1787,4 +1911,5 @@ fn exec_os() -> &'static str {
 }
 
 #[cfg(test)]
-mod tests;
+#[cfg(test)]
+pub(crate) mod tests;

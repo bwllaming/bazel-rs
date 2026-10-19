@@ -733,7 +733,7 @@ use super::{ToolchainData, build_graph};
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-fn graph(implies: &[Vec<usize>], requires: &[Vec<Vec<usize>>]) -> Arc<ToolchainData> {
+pub(crate) fn graph(implies: &[Vec<usize>], requires: &[Vec<Vec<usize>>]) -> Arc<ToolchainData> {
     let name = |i: &usize| format!("f{i}");
     let features = implies
         .iter()
@@ -752,7 +752,7 @@ fn graph(implies: &[Vec<usize>], requires: &[Vec<Vec<usize>>]) -> Arc<ToolchainD
             provides: Vec::new(),
         })
         .collect();
-    Arc::new(build_graph(features, Vec::new(), "", || Ok(())).unwrap())
+    Arc::new(build_graph(features, Vec::new(), "", || Ok(Vec::new())).unwrap())
 }
 
 /// FeatureSelection.run, enableAllImpliedBy, disableUnsupportedActivatables,

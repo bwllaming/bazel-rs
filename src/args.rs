@@ -47,7 +47,7 @@ mod owned {
     use super::*;
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
-    pub(super) struct Args {
+    pub(crate) struct Args {
         #[allocative(skip)]
         #[trace(static)]
         pub(super) groups: RefCell<Vec<Group>>,
@@ -59,7 +59,12 @@ mod owned {
         pub(super) active: Arc<AtomicBool>,
     }
 }
-use owned::Args;
+pub(crate) use owned::Args;
+
+/// Append one literal string group to an Args value (Args.add of each string).
+pub(crate) fn add_strings(args: &Args, values: Vec<String>) -> anyhow::Result<()> {
+    args.push(Group::Strings(values))
+}
 
 impl Args {
     fn from_value(value: Value<'_>) -> anyhow::Result<&Self> {

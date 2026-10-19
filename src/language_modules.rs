@@ -102,6 +102,9 @@ pub(crate) enum Behavior {
     InstrumentedFilesInfo,
     /// C++ toolchain features, variables and tools (`crate::cc_features`).
     CcFeatures(crate::cc_features::Op),
+    /// The cc_internal analysis-time natives of the C++ compile/link surface
+    /// (`crate::cc_actions`, N60).
+    CcActions(&'static str),
     /// PyBuiltins.mergeRunfilesWithGeneratedInitsEmptyFilesSupplier
     /// (rules/python/PyBuiltins.java:223-250).
     PyMergeGeneratedInits,
@@ -260,6 +263,16 @@ impl Namespace {
                 method(Behavior::CreateHeaderInfoWithDeps)
             }
             (Namespace::CcInternal, "freeze") => method(Behavior::Freeze),
+            (Namespace::CcInternal, _) if crate::cc_actions::is_cc_actions_method(name) => {
+                // The name is one of CC_INTERNAL_METHODS.
+                method(Behavior::CcActions(
+                    CC_INTERNAL_METHODS
+                        .iter()
+                        .find(|candidate| **candidate == name)
+                        .copied()
+                        .expect("checked by is_cc_actions_method"),
+                ))
+            }
             (Namespace::CcInternal, _)
                 if crate::cc_features::Op::for_cc_internal(name).is_some() =>
             {
@@ -1070,6 +1083,7 @@ fn call<'v>(
             )))
         }
         Behavior::CcFeatures(op) => crate::cc_features::call(op, style, name, args, eval),
+        Behavior::CcActions(method) => crate::cc_actions::call(method, args, eval),
         Behavior::DottedVersion => {
             // The lambda's `version` binds by name too; the Java @Param
             // (AppleCommonApi.java:146-152) is positional-only.

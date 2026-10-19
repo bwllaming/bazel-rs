@@ -128,6 +128,8 @@ mod owned {
     #[derive(ProvidesStaticType)]
     pub(crate) struct Context {
         pub label: Label,
+        /// The analyzed rule's class (cc_internal.rule_class).
+        pub rule_class: String,
         /// The output root of the configured target's configuration
         /// (crate::config_registry::Configurations::output_root).
         pub output_root: String,
@@ -158,7 +160,7 @@ mod owned {
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
-    pub(super) struct Actions {
+    pub(super) struct Actions<'v> {
         #[allocative(skip)]
         #[trace(static)]
         pub scope: ScopeHandle,
@@ -169,6 +171,11 @@ mod owned {
         #[allocative(skip)]
         #[trace(static)]
         pub subrule: Option<Vec<Label>>,
+        /// The rule or aspect context value this factory belongs to, set once
+        /// that value exists (`cc_internal.actions2ctx_cheat`,
+        /// CcStarlarkInternal.java:486-494). `None` on a subrule factory and
+        /// until the context value is allocated.
+        pub rule_ctx: RefCell<Option<Value<'v>>>,
     }
 }
 use owned::Actions;
@@ -456,7 +463,7 @@ pub(crate) fn repository_context(eval: &Evaluator<'_, '_, '_>) -> Option<Arc<Rep
 
 /// StarlarkActionFactory.repr (analysis/starlark/StarlarkActionFactory.java:1284-1287):
 /// "actions for" immediately followed by the context's repr.
-impl fmt::Display for Actions {
+impl fmt::Display for Actions<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "actions for{}", self.context)
     }
@@ -481,6 +488,7 @@ pub(crate) fn alloc_actions_for<'v>(
         scope,
         context,
         subrule: None,
+        rule_ctx: RefCell::new(None),
     })
 }
 
@@ -495,7 +503,24 @@ pub(crate) fn alloc_subrule_actions<'v>(
         scope,
         context,
         subrule: Some(toolchains),
+        rule_ctx: RefCell::new(None),
     })
+}
+
+/// The rule or aspect context an action factory belongs to
+/// (`cc_internal.actions2ctx_cheat`).
+pub(crate) fn actions_rule_ctx<'v>(actions: Value<'v>) -> Option<Value<'v>> {
+    actions
+        .downcast_ref::<Actions<'v>>()
+        .and_then(|factory| *factory.rule_ctx.borrow())
+}
+
+/// Bind `ctx` as the owning context of an action factory
+/// (`Actions.rule_ctx`; actions2ctx_cheat).
+pub(crate) fn set_rule_ctx<'v>(actions: &Value<'v>, ctx: Value<'v>) {
+    if let Some(factory) = actions.downcast_ref::<Actions<'v>>() {
+        *factory.rule_ctx.borrow_mut() = Some(ctx);
+    }
 }
 
 /// The exec group arguments of `ctx.actions.run`/`run_shell`
@@ -609,7 +634,7 @@ fn all_action_methods(builder: &mut MethodsBuilder) {
 }
 
 #[starlark_value(type = "actions")]
-impl<'v> StarlarkValue<'v> for Actions {
+impl<'v> StarlarkValue<'v> for Actions<'v> {
     fn get_methods() -> Option<&'static Methods> {
         Some(ACTION_METHODS.methods())
     }
@@ -1614,6 +1639,7 @@ mod tests {
     fn write_context() -> Context {
         Context {
             label: Label::parse_canonical("//:target").unwrap(),
+            rule_class: "rule".into(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
@@ -1817,6 +1843,7 @@ r=rule(implementation=_rule,subrules=[S])
     fn action_receivers_check_type_owner_and_scope_before_mutation_or_expansion() {
         use starlark::environment::Module;
         let make_context = || Context {
+            rule_class: "rule".into(),
             label: Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),

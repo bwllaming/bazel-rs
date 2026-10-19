@@ -1345,6 +1345,7 @@ r = rule(implementation=impl, subrules=[S])
         let denied = frozen.get("T").unwrap();
         drop(frozen);
         let context = Context {
+            rule_class: "rule".into(),
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
@@ -1502,6 +1503,7 @@ S = subrule(implementation=callback)
         let owned = frozen.get("S").unwrap();
         drop(frozen);
         let context = Context {
+            rule_class: "rule".into(),
             label: crate::label::Label::parse_canonical("//:target").unwrap(),
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),

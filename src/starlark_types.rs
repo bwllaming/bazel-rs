@@ -1932,6 +1932,12 @@ impl<'v> StarlarkValue<'v> for TargetValue {
         Some(match name {
             "files" => alloc_depset(heap, self.0.files.clone()),
             "label" => heap.alloc(self.0.label.clone()),
+            // AbstractConfiguredTarget.getValue (:58-59, :89-92): the default
+            // provider's fields through the (possibly implicit empty)
+            // DefaultInfo (StarlarkRuleConfiguredTargetUtil.java:325-335).
+            "data_runfiles" => heap.alloc(self.0.runfiles.data_runfiles()),
+            "default_runfiles" => heap.alloc(self.0.runfiles.default_runfiles()),
+            "files_to_run" => heap.alloc(self.0.runfiles.files_to_run(&self.0.files).observed()),
             _ => return None,
         })
     }

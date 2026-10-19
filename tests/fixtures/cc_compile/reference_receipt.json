@@ -1,0 +1,185 @@
+{
+ "fixture": {
+  "kind": "rules_cc 0.2.17 cc_library/cc_import + rules_go 0.63.0 c-archive/c-shared/cdeps on the @local_config_cc host toolchain",
+  "modules": {
+   "rules_go": "local_path_override",
+   "gazelle": "local_path_override",
+   "rules_proto": "local_path_override",
+   "protobuf": "local_path_override",
+   "rules_shell": "local_path_override",
+   "bazel_skylib": "local_path_override",
+   "rules_cc": "local_path_override",
+   "bazel_features": "local_path_override",
+   "platforms": "local_path_override",
+   "package_metadata": "local_path_override",
+   "apple_support": "local_path_override",
+   "rules_license": "local_path_override",
+   "rules_java": "local_path_override",
+   "rules_python": "local_path_override",
+   "rules_kotlin": "local_path_override",
+   "rules_swift": "local_path_override"
+  },
+  "stubs": [
+   "buildozer",
+   "zlib"
+  ],
+  "prebuilt": "gcc/ar-built libprebuilt.a and libprebuilt.so (-O0 -g0, ar rcD, -Wl,-build-id=none -Wl,-soname=libprebuilt.so)"
+ },
+ "genuine": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64 sha256=d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "native_binary_sha256": "5fa800a98013157895d8e112892eeeddf034e014946f724f041c4860efa25c14",
+ "scenarios": [
+  {
+   "name": "cc_targets",
+   "targets": [
+    "//cdep:built",
+    "//cdep:prebuilt",
+    "//cdep:prebuilt_shared"
+   ],
+   "native_exit": 0,
+   "genuine_exit": 0,
+   "genuine_actions": "4 total actions (3 processwrapper-sandbox + 1 internal workspace status)",
+   "native_actions_line": "bazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)",
+   "genuine_action_graph": [
+    {
+     "mnemonic": "CppCompile",
+     "progress": "Compiling cdep/prebuilt.c"
+    },
+    {
+     "mnemonic": "CppArchive",
+     "progress": "Linking cdep/libbuilt.a"
+    },
+    {
+     "mnemonic": "CppLink",
+     "progress": "Linking cdep/libbuilt.so"
+    },
+    {
+     "mnemonic": "SolibSymlink",
+     "progress": "SolibSymlink _solib_k8/libcdep_Slibbuilt.so"
+    },
+    {
+     "mnemonic": "SolibSymlink",
+     "progress": "SolibSymlink _solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep/libprebuilt.so"
+    }
+   ],
+   "rows": {
+    "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.o": {
+     "verdict": "EXACT",
+     "sha256": "bfa06a7cfa006c5a43e287bb2a6e8156e38a5764500efef0a995f2ab361ee154"
+    },
+    "bazel-out/k8-fastbuild/bin/cdep/_objs/built/prebuilt.pic.d": {
+     "verdict": "EXACT",
+     "sha256": "ce83e3b5225688926f3ea0e8d271a0871008224a7c2dc185cf69f0ee72e3f939"
+    },
+    "bazel-out/k8-fastbuild/bin/cdep/libbuilt.a": {
+     "verdict": "EXACT",
+     "sha256": "5b114ad4fe09b9e996206b4b3ebe8270ace2ccb99cd1fcef75e87bca91293536"
+    },
+    "bazel-out/k8-fastbuild/bin/cdep/libbuilt.so": {
+     "verdict": "EXACT",
+     "sha256": "d15446757ee8351e0db6a4524ee5e34a9d7dbe873607d32a261c64e9df45af39"
+    },
+    "_solib_registered_not_executed": {
+     "verdict": "EXACT",
+     "genuine_materialized": [],
+     "native_materialized": []
+    }
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "name": "c_archive",
+   "targets": [
+    "//cgo:cgo_archive"
+   ],
+   "native_exit": 0,
+   "genuine_exit": 0,
+   "rows": {
+    "cgo/cgo_archive_/cgo_archive.a": {
+     "verdict": "EXACT",
+     "sha256": "0c8f1247943f9d676b855103dc33fd94650ea44d6d0dfacbda9245c627775e7e"
+    },
+    "cgo/cgo_archive_.a": {
+     "verdict": "EXACT",
+     "sha256": "e77c2d9a53cd78ac41b6ab57ed059cfd94d76a89b247cbf87eb14468344525ab"
+    },
+    "cgo/cgo_archive_.x": {
+     "verdict": "EXACT",
+     "sha256": "b74be5c15d86532f39aac5886f3f0ebcef4bdf5b41f5405e57880db900085142"
+    }
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "name": "cdeps_binary",
+   "targets": [
+    "//cmd:cdepcmd"
+   ],
+   "native_exit": 0,
+   "genuine_exit": 0,
+   "rows": {
+    "cmd/cdepcmd_/cdepcmd": {
+     "verdict": "EXACT",
+     "sha256": "e85e260c2611f0da2a5597300b8543dbf95b39bfc9847b67c8c9fc0b460d77c0"
+    },
+    "cgo/with_cdep.a": {
+     "verdict": "EXACT",
+     "sha256": "eb0def679cb0c8fc41f666f36ef502f3a77a90bbd4d359c7e88f825f7e7af6db"
+    },
+    "cgo/with_cdep.x": {
+     "verdict": "EXACT",
+     "sha256": "4bdf461575414bd7334dd3ead1c02171d44b2deb2c4fa4c6c01ac044938bb1ed"
+    }
+   },
+   "verdict": "EXACT"
+  },
+  {
+   "name": "c_shared",
+   "targets": [
+    "//cgo:cgo_shared"
+   ],
+   "native_exit": 0,
+   "genuine_exit": 0,
+   "rows": {
+    "cgo/cgo_shared_/libcgo_shared.so": {
+     "verdict": "EXPLAINED",
+     "raw_equal": false,
+     "genuine_sha256": "22e2b899595b9edd5127cfc552268cd3af056ae036d73d0f49fbe294ea6cc050",
+     "native_sha256": "fecf1babd7e5b7b1d8f3888c0492996028a3b13fe15455ce2fad0b3bfb3cd7d7",
+     "string_sets_equal_modulo_execroot_path": true,
+     "section_tables_equal": true,
+     "genuine_build_id": "498919aff001d8366249403a2544fba2d833084f",
+     "native_build_id": "498919aff001d8366249403a2544fba2d833084f",
+     "note": "the go external linker passes the output path as -soname, so .dynstr embeds the absolute execroot path of the executing sandbox; its length shifts every later section offset (and the build id), and genuine Bazel 9.3.0 itself produces different bytes across output roots; the string sets are identical modulo that prefix and the section tables are identical modulo the shift"
+    }
+   },
+   "verdict": "EXPLAINED"
+  },
+  {
+   "name": "error_parity",
+   "targets": [
+    "//cmd:cdepcmd (fixture without the -iquote cppopt)"
+   ],
+   "native_exit": 1,
+   "genuine_exit": 1,
+   "rows": {
+    "fatal_error_text": {
+     "verdict": "EXACT",
+     "text": "cgo/cdep.go:4:10: fatal error: prebuilt.h: No such file or directory"
+    }
+   },
+   "verdict": "EXACT"
+  }
+ ],
+ "key_findings": [
+  "genuine cc_library (rules_cc 0.2.17 Starlark compile+link over cc_internal) builds natively through cc_internal.create_cc_compile_action/get_link_args: the .pic.o, .pic.d, libbuilt.a (ar rcsD, ZERO_AR_DATE=1) and libbuilt.so are byte-identical to genuine",
+  "the compile argv is the feature configuration expansion (per_feature_expansions over the enabled features, the unfiltered_compile_flags feature unfiltered, CoptsFilter None); the environment is the configuration action environment (strict PATH), PWD=/proc/self/cwd and the feature env sets; the mnemonic is CppCompile",
+  "cc_import analyzes and registers its _solib_k8/_U_S_Scdep_Cprebuilt_Ushared___Ucdep solib symlink (SolibSymlink, a real symlink transform) exactly like the genuine aquery; neither build executes it (not in any requested output group), matching genuine",
+  "the go c-archive target builds end to end through N58 _go_cc_aspect + new_cc_import + rules_cc link: cgo_archive.a, cgo_archive_.a and .x byte-identical; likewise the cdeps go binary cdepcmd and its with_cdep.a/.x",
+  "the go c-shared .so embeds its own absolute sandbox execroot path as the linker soname; genuine Bazel 9.3.0 itself produces different bytes across output roots, so the .so is compared with each side's execroot prefix normalized (EXACT_D2)",
+  "a cgo library whose cdeps header needs -iquote fails with the identical gcc error text in both builds (the fixture carries the cppopt so the positive path builds)",
+  "HeaderInfo now carries its module artifacts and header lists (create_header_info, create_header_info_with_deps); every cc_internal member of the N57 gap list is implemented except the explicitly failing ones: modules (create_cc_compile_action_template, module_files, module maps), LTO backends, shareable link artifacts, absolute_symlink (FDO) and expand_and_tokenize (objc)",
+  "dependencies expose the default-provider fields data_runfiles/default_runfiles/files_to_run (AbstractConfiguredTarget.getValue), which the cc_import branch of rules_go's cgo context reads"
+ ],
+ "worktree": "bazel-parity-cccompile @ parity-cc-compile (N60)",
+ "seconds": 395.1
+}

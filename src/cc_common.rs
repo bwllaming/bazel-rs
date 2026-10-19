@@ -14,6 +14,7 @@ use crate::language_modules::{
     Behavior, BuiltinMethod, CcInternal, Domain, JavaFlag, bind, builtins_function, failure, param,
     sequence, sorted_struct, type_error,
 };
+use crate::starlark_types::File;
 use allocative::Allocative;
 use starlark::collections::StarlarkHasher;
 use starlark::environment::GlobalsBuilder;
@@ -135,10 +136,21 @@ mod owned {
     use super::*;
 
     /// CcCompilationContext.HeaderInfo: immutable, identity-compared,
-    /// unannotated (type is the Java simple class name).
+    /// unannotated (type is the Java simple class name). N60: carries the
+    /// module artifacts and header lists of HeaderInfo.create
+    /// (CcStarlarkInternal.java:1196-1222); the artifact-free form (all
+    /// defaults) keeps empty lists and None modules.
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub(crate) struct HeaderInfo {
         pub id: u64,
+        pub header_module: Option<File>,
+        pub pic_header_module: Option<File>,
+        pub separate_module: Option<File>,
+        pub separate_pic_module: Option<File>,
+        pub modular_public_headers: Vec<File>,
+        pub modular_private_headers: Vec<File>,
+        pub textual_headers: Vec<File>,
+        pub separate_module_headers: Vec<File>,
     }
 }
 pub(crate) use owned::HeaderInfo;
@@ -173,14 +185,34 @@ const HEADER_INFO_FIELDS: [(&str, bool); 8] = [
 
 #[starlark_value(type = "HeaderInfo")]
 impl<'v> StarlarkValue<'v> for HeaderInfo {
-    fn get_attr(&self, name: &str, _heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
-        let (_, list) = HEADER_INFO_FIELDS
-            .iter()
-            .find(|(field, _)| *field == name)?;
-        Some(if *list {
-            FrozenValue::new_empty_list().to_value()
-        } else {
-            Value::new_none()
+    fn get_attr(&self, name: &str, heap: starlark::values::Heap<'v>) -> Option<Value<'v>> {
+        let file = |file: &Option<File>| match file {
+            Some(file) => crate::starlark_types::alloc_file(heap, file.clone()),
+            None => Value::new_none(),
+        };
+        // The list getters are StarlarkList.immutableCopyOf: frozen lists.
+        let files = |files: &[File]| {
+            crate::depset_items::alloc_frozen_container(
+                heap,
+                &crate::starlark_types::Item::List(
+                    files
+                        .iter()
+                        .cloned()
+                        .map(crate::starlark_types::Item::File)
+                        .collect(),
+                ),
+            )
+        };
+        Some(match name {
+            "header_module" => file(&self.header_module),
+            "pic_header_module" => file(&self.pic_header_module),
+            "separate_module" => file(&self.separate_module),
+            "separate_pic_module" => file(&self.separate_pic_module),
+            "modular_public_headers" => files(&self.modular_public_headers),
+            "modular_private_headers" => files(&self.modular_private_headers),
+            "textual_headers" => files(&self.textual_headers),
+            "separate_module_headers" => files(&self.separate_module_headers),
+            _ => return None,
         })
     }
 
@@ -437,8 +469,104 @@ pub(crate) fn check_private_api_call<'v>(
     Ok(Value::new_none())
 }
 
-/// CcStarlarkInternal.createHeaderInfo. Only the artifact-free form (all
-/// defaults, as in rules_cc's `_EMPTY_COMPILATION_CONTEXT`) is supported.
+/// CcStarlarkInternal.createHeaderInfo (:1166-1222): a new HeaderInfo
+/// identity carrying the module artifacts and header lists
+/// (HeaderInfo.create with the thread's next identity token).
+pub(crate) fn create_header_info<'v>(
+    args: &Arguments<'v, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<Value<'v>> {
+    const F: &str = "create_header_info";
+    const SINGLE: [&str; 4] = [
+        "header_module",
+        "pic_header_module",
+        "separate_module",
+        "separate_pic_module",
+    ];
+    const LISTS: [&str; 4] = [
+        "modular_public_headers",
+        "modular_private_headers",
+        "textual_headers",
+        "separate_module_headers",
+    ];
+    let params: Vec<_> = [
+        "header_module",
+        "pic_header_module",
+        "modular_public_headers",
+        "modular_private_headers",
+        "textual_headers",
+        "separate_module_headers",
+        "separate_module",
+        "separate_pic_module",
+    ]
+    .into_iter()
+    .map(|name| param(name, false, true, false))
+    .collect();
+    let bound = bind(F, &params, args, eval.heap())?;
+    // nullIfNone + Sequence.cast over Artifact.DerivedArtifact: only
+    // generated files are accepted (Artifact.castArtifact).
+    let mut single: [Option<File>; 4] = std::array::from_fn(|_| None);
+    let mut lists: [Option<Vec<File>>; 4] = std::array::from_fn(|_| None);
+    let mut checked = |p: &crate::language_modules::Param,
+                       value: Option<Value<'v>>|
+     -> starlark::Result<()> {
+        let Some(value) = value.filter(|value| !value.is_none()) else {
+            return Ok(());
+        };
+        if let Some(index) = SINGLE.iter().position(|name| name == &p.name) {
+            let file = crate::starlark_types::unpack_file(value)
+                .map_err(|_| type_error(F, p.name, value, "File (generated artifact)"))?;
+            if file.is_source {
+                return Err(failure(format!(
+                    "in call to {F}(), parameter '{}' got a source artifact, want a generated one",
+                    p.name
+                )));
+            }
+            single[index] = Some(file);
+        } else if let Some(index) = LISTS.iter().position(|name| name == &p.name) {
+            let mut files = Vec::new();
+            for (position, element) in sequence(F, p.name, value)?.into_iter().enumerate() {
+                let file = crate::starlark_types::unpack_file(element).map_err(|_| {
+                    failure(format!(
+                        "at index {position} of {}, got element of type {}, want File",
+                        p.name,
+                        element.get_type()
+                    ))
+                })?;
+                files.push(file);
+            }
+            lists[index] = Some(files);
+        }
+        Ok(())
+    };
+    for (p, value) in params.iter().zip(&bound) {
+        checked(p, *value)?;
+    }
+    let [
+        header_module,
+        pic_header_module,
+        separate_module,
+        separate_pic_module,
+    ] = single;
+    let [
+        modular_public_headers,
+        modular_private_headers,
+        textual_headers,
+        separate_module_headers,
+    ] = lists;
+    Ok(eval.heap().alloc(HeaderInfo {
+        id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
+        header_module,
+        pic_header_module,
+        separate_module,
+        separate_pic_module,
+        modular_public_headers: modular_public_headers.unwrap_or_default(),
+        modular_private_headers: modular_private_headers.unwrap_or_default(),
+        textual_headers: textual_headers.unwrap_or_default(),
+        separate_module_headers: separate_module_headers.unwrap_or_default(),
+    }))
+}
+
 /// `cc_internal.freeze(value)` (CcStarlarkInternal.java:950-960): a dict
 /// becomes Dict.immutableCopyOf, any other Java `Iterable` (list, tuple,
 /// range, set) StarlarkList.immutableCopyOf, and everything else (e.g. a
@@ -485,61 +613,9 @@ pub(crate) fn freeze<'v>(
     Ok(value)
 }
 
-pub(crate) fn create_header_info<'v>(
-    args: &Arguments<'v, '_>,
-    eval: &mut Evaluator<'v, '_, '_>,
-) -> starlark::Result<Value<'v>> {
-    const F: &str = "create_header_info";
-    const SINGLE: [&str; 4] = [
-        "header_module",
-        "pic_header_module",
-        "separate_module",
-        "separate_pic_module",
-    ];
-    const LISTS: [&str; 4] = [
-        "modular_public_headers",
-        "modular_private_headers",
-        "textual_headers",
-        "separate_module_headers",
-    ];
-    let params: Vec<_> = [
-        "header_module",
-        "pic_header_module",
-        "modular_public_headers",
-        "modular_private_headers",
-        "textual_headers",
-        "separate_module_headers",
-        "separate_module",
-        "separate_pic_module",
-    ]
-    .into_iter()
-    .map(|name| param(name, false, true, false))
-    .collect();
-    let bound = bind(F, &params, args, eval.heap())?;
-    let mut with_artifacts = false;
-    for (p, value) in params.iter().zip(&bound) {
-        let Some(value) = value else { continue };
-        if SINGLE.contains(&p.name) {
-            with_artifacts |= !value.is_none();
-        } else if LISTS.contains(&p.name) {
-            with_artifacts |= !sequence(F, p.name, *value)?.is_empty();
-        }
-    }
-    if with_artifacts {
-        return Err(failure(format!(
-            "cc_internal.create_header_info with header artifacts {} (analysis-time C++ API)",
-            crate::language_modules::NOT_IMPLEMENTED
-        )));
-    }
-    Ok(eval.heap().alloc(HeaderInfo {
-        id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
-    }))
-}
-
 /// CcStarlarkInternal.createHeaderInfoWithDeps (CcStarlarkInternal.java:1224-1248):
 /// a new HeaderInfo identity with the header info's own fields plus `deps` and
-/// `merged_deps`. Every native HeaderInfo is artifact-free, so the result is
-/// too (the transitive header lists it would carry are all empty).
+/// `merged_deps` (N60: the fields are the values of the passed HeaderInfo).
 pub(crate) fn create_header_info_with_deps<'v>(
     args: &Arguments<'v, '_>,
     eval: &mut Evaluator<'v, '_, '_>,
@@ -552,9 +628,10 @@ pub(crate) fn create_header_info_with_deps<'v>(
     ];
     let bound = bind(F, &params, args, eval.heap())?;
     let header_info = bound[0].unwrap_or_else(Value::new_none);
-    if HeaderInfo::from_value(header_info).is_none() {
-        return Err(type_error(F, "header_info", header_info, "HeaderInfo"));
-    }
+    let header_info = match HeaderInfo::from_value(header_info) {
+        Some(info) => info.clone(),
+        None => return Err(type_error(F, "header_info", header_info, "HeaderInfo")),
+    };
     for (index, name) in [(1, "deps"), (2, "merged_deps")] {
         let Some(value) = bound[index] else { continue };
         // Sequence.cast(deps, HeaderInfo.class, "deps").
@@ -569,6 +646,14 @@ pub(crate) fn create_header_info_with_deps<'v>(
     }
     Ok(eval.heap().alloc(HeaderInfo {
         id: NEXT_HEADER_INFO.fetch_add(1, Ordering::Relaxed),
+        header_module: header_info.header_module.clone(),
+        pic_header_module: header_info.pic_header_module.clone(),
+        separate_module: header_info.separate_module.clone(),
+        separate_pic_module: header_info.separate_pic_module.clone(),
+        modular_public_headers: header_info.modular_public_headers.clone(),
+        modular_private_headers: header_info.modular_private_headers.clone(),
+        textual_headers: header_info.textual_headers.clone(),
+        separate_module_headers: header_info.separate_module_headers.clone(),
     }))
 }
 
@@ -797,8 +882,10 @@ _li = depset([struct(user_link_flags = _flags, opts = _opts, libraries = cc_inte
                 "cc_internal.freeze of a list containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile",
             ),
             (
+                // N60: the compile action factory needs the analysis context
+                // (crate::cc_actions); outside rule analysis it fails.
                 "cc_internal.create_cc_compile_action()",
-                "cc_internal.create_cc_compile_action is not implemented",
+                "cc_internal.create_cc_compile_action: ctx.actions and subrules are only available during rule analysis",
             ),
             (
                 "cc_internal.check_private_api(allowlist = [(\"rules_go\", \"\")], depth = 0)",
@@ -920,12 +1007,14 @@ explicit = cc_internal.create_header_info(header_module = None, modular_public_h
                 "trying to mutate a frozen list value",
             ),
             (
+                // Sequence.cast over Artifact: a string element fails like
+                // Bazel's cast (N60 carries the lists).
                 "cc_internal.create_header_info(textual_headers = ['a.h'])",
-                "cc_internal.create_header_info with header artifacts is not implemented in the native profile",
+                "at index 0 of textual_headers, got element of type string, want File",
             ),
             (
                 "cc_internal.create_header_info(header_module = 1)",
-                "not implemented",
+                "parameter 'header_module' got value of type 'int', want 'File (generated artifact)'",
             ),
             (
                 "cc_internal.create_header_info(1)",
