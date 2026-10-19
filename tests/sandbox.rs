@@ -55,10 +55,61 @@ impl Workspace {
         fs::write(path, text).unwrap();
     }
 
-    /// A coder-owned directory outside every sandbox-writable path (not under
-    /// /tmp, the action tree or TMPDIR): the only writes a sandboxed action
-    /// can attempt and fail, as on any developer host where $HOME is the
-    /// writable target.
+    /// A coder-owned directory outside every sandbox-writable path: the only
+    /// writes a sandboxed action can attempt and fail. The base is
+    /// INDEPENDENT of HOME — the gate supervisor runs with HOME and TMPDIR
+    /// under /tmp, which the sandbox keeps writable by design (Bazel-parity
+    /// /tmp), so a $HOME-based marker would land inside the writable set and
+    /// every denial test would see the write succeed. Instead the first of
+    /// the candidates below that lies outside the production writable roots
+    /// — computed from this environment exactly like crate::sandbox::wrap:
+    /// /tmp, /dev, /dev/shm, TMPDIR, TEST_TMPDIR (the action execroot and
+    /// its fresh TMPDIR live under the engine cache dir inside the
+    /// workspace's /tmp tempdir, so the /tmp root covers them) — and is
+    /// writable becomes the base.
+    fn outside_base() -> PathBuf {
+        let mut writable = vec![
+            PathBuf::from("/tmp"),
+            PathBuf::from("/dev"),
+            PathBuf::from("/dev/shm"),
+        ];
+        for name in ["TMPDIR", "TEST_TMPDIR"] {
+            if let Ok(value) = std::env::var(name)
+                && !value.is_empty()
+            {
+                let path = PathBuf::from(&value);
+                writable.push(fs::canonicalize(&path).unwrap_or(path));
+            }
+        }
+        let outside = |path: &Path| {
+            writable
+                .iter()
+                .all(|root| !path.starts_with(root) && !root.starts_with(path))
+        };
+        for candidate in ["/var/tmp", "/home/coder", "/root", "/home"] {
+            let Ok(resolved) = fs::canonicalize(PathBuf::from(candidate)) else {
+                continue;
+            };
+            if !outside(&resolved) {
+                continue;
+            }
+            // Writable in principle: the per-process directory creation
+            // below is the real probe.
+            let dir = resolved.join(format!("n59-sandbox-{}", std::process::id()));
+            if fs::create_dir_all(&dir).is_ok() {
+                return dir;
+            }
+        }
+        panic!(
+            "no outside-sandbox base found: every candidate of /var/tmp, /home/coder, /root, \
+             /home is missing, unwritable, or inside the sandbox-writable roots {:?} \
+             (TMPDIR={:?}, HOME={:?}); the sandbox denial tests cannot run here",
+            writable,
+            std::env::var("TMPDIR").ok(),
+            std::env::var("HOME").ok()
+        );
+    }
+
     /// The outside-sandbox target of the running test (each test's own name:
     /// the tests run in parallel and must not observe each other's markers).
     fn outside(&self) -> PathBuf {
@@ -66,8 +117,7 @@ impl Workspace {
             .name()
             .unwrap_or("test")
             .replace("::", "-");
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/coder".to_owned());
-        let dir = PathBuf::from(home).join(format!("n59-sandbox-{}", std::process::id()));
+        let dir = Self::outside_base();
         fs::create_dir_all(&dir).unwrap();
         dir.join(test)
     }
