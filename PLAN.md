@@ -442,6 +442,21 @@ control/limit checks and all eight adjacent suites pass. Final review approved
 the bounded profile; the unchanged application still requires genuine builtin
 module closure before further SDK/analysis compatibility can be established.
 
+## Repository publication reuse increment (N61)
+
+- [x] Hash each repository's specification BEFORE execution (rule identity,
+      attributes, mappings, sources, host markers, declared environment values)
+      and address a publication pointer per specification under
+      `repositories/direct/specs/`.
+- [x] Reuse verified publications on warm invocations without executing the
+      repository rule; keep the content-addressed tree identity formula
+      unchanged so existing identities stay stable.
+- [x] Refetch exactly like Bazel: changed attributes, declared environment
+      values, host markers, template contents, watched files/directories and
+      observed environment values re-execute and republish.
+- [x] Record watchable-input probes in manifests (names and digests only;
+      environment values are never persisted), revalidated on warm calls.
+
 - [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
       complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.

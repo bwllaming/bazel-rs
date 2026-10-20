@@ -1,9 +1,20 @@
 //! Verified content-addressed output for the direct file/template subset.
 //!
-//! Evaluation is never cached here: the callback runs before acquiring a
-//! publication lock, including on warm calls. The cache is user-owned, not a
-//! sandbox or a remote-cache protocol. Callbacks must finish all their writes
-//! before returning; callers must treat returned trees as immutable.
+//! A repository's identity is computed from its specification BEFORE any
+//! execution: `spec` (rule definition, attributes, mappings, environment
+//! declarations and declared-environment values, host markers) names a
+//! pointer under `direct/specs/`, and a warm invocation whose recorded
+//! watchable inputs (the `recorded` probe bytes validated through `validate`)
+//! and published tree still match reuses that publication without running the
+//! rule — like Bazel's per-output-base `external/<name>` directory, which is
+//! re-fetched only when its rule, environment or watched inputs change.
+//!
+//! The published tree keeps the content address it always had (a digest over
+//! `provenance`, the exact serialized runtime inputs and the output snapshot),
+//! so deterministic repositories keep their identities across re-executions.
+//! The cache is user-owned, not a sandbox or a remote-cache protocol. Callbacks
+//! must finish all their writes before returning; callers must treat returned
+//! trees as immutable.
 //!
 //! Files are hashed incrementally while snapshotting (constant memory). There
 //! are no file-size, total-size, entry-count or manifest-size caps; only the
@@ -20,6 +31,7 @@ use std::path::{Component, Path, PathBuf};
 const PROFILE: &str = "direct-file-template-v1";
 const DEPTH_LIMIT: usize = 64;
 const PATH_LIMIT: usize = 4096;
+const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v1";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,6 +40,15 @@ struct Manifest {
     profile: String,
     identity: String,
     files: BTreeMap<String, Entry>,
+    /// The specification digest that owns this publication (RepositoryFunction
+    /// keys the repo directory by rule and attributes). Absent in manifests
+    /// written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spec: Option<String>,
+    /// Opaque recorded watchable inputs (caller JSON) rechecked by `validate`
+    /// on warm calls before any reuse; never part of the identity digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recorded: Option<Vec<u8>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,24 +65,68 @@ struct Entry {
     symlink: Option<String>,
 }
 
-/// Execute into a private stage, then verify and publish its complete tree.
-/// `execute` returns exact serialized runtime input provenance, after validating
-/// its result. `provenance` identifies the definition, attributes and mappings.
-/// Neither byte string may contain the incidental stage pathname; the stage
-/// pathname itself is derived from `stage_key` (the repository's canonical
-/// name) so repository content that embeds its own working directory —
-/// `ctx.path(".")`, as gazelle's `go_env` does — addresses a path that is
-/// identical in every process and invocation, keeping the tree identity
-/// stable. Concurrent evaluations of the same key serialize on a stage lock
-/// in the cache, like module extension working directories.
-pub fn materialize<F>(
+/// What one execution observed, for the identity digest and the manifest.
+pub struct Executed {
+    /// Exact serialized runtime input provenance, after validating the result.
+    /// These bytes (never the incidental stage pathname) enter the identity.
+    pub inputs: Vec<u8>,
+    /// Opaque recorded watchable-input probes (caller JSON) persisted in the
+    /// manifest and rechecked by `validate` on later warm calls.
+    pub recorded: Vec<u8>,
+}
+
+/// Whether a call ran the repository rule or reused a publication.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Publication {
+    /// A valid publication for this specification was reused; the rule never
+    /// ran and nothing was staged (Bazel's warm `external/<name>` directory).
+    Reused,
+    /// The repository rule executed and the result was published or verified.
+    Executed,
+}
+
+/// The digest of a repository specification: a pure function of the bytes a
+/// caller serialized before any execution. Equal specifications reuse each
+/// other's publications; any change (attributes, environment, host markers)
+/// addresses a different pointer.
+pub fn spec_identity(spec: &[u8]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(SPEC_PROFILE);
+    digest.update([0]);
+    digest.update(spec);
+    format!("{:x}", digest.finalize()) // RepositoryFunction's key digest
+}
+
+fn framed(digest: &mut Sha256, bytes: &[u8]) {
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(bytes);
+}
+
+/// Execute into a private stage, then verify and publish its complete tree;
+/// or, when the specification already owns a valid publication whose recorded
+/// watchable inputs are unchanged, reuse it without executing. `execute`
+/// returns exact serialized runtime input provenance plus recorded probes
+/// after validating its result. `provenance` identifies the definition,
+/// attributes and mappings; it is kept byte-for-byte in the identity digest so
+/// existing content identities are unchanged. Neither byte string may contain
+/// the incidental stage pathname; the stage pathname itself is derived from
+/// `stage_key` (the repository's canonical name) so repository content that
+/// embeds its own working directory — `ctx.path(".")`, as gazelle's `go_env`
+/// does — addresses a path that is identical in every process and invocation,
+/// keeping the tree identity stable. Concurrent evaluations of the same key
+/// serialize on a stage lock in the cache, like module extension working
+/// directories.
+pub fn materialize<F, V>(
     cache: &Path,
     stage_key: &str,
+    spec: &[u8],
     provenance: &[u8],
+    validate: V,
     execute: F,
-) -> Result<PathBuf, String>
+) -> Result<(PathBuf, Publication), String>
 where
-    F: FnOnce(&Path) -> Result<Vec<u8>, String>,
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
 {
     ensure_directory(cache)?;
     let direct = cache.join("direct");
@@ -69,8 +134,31 @@ where
     let manifests = direct.join("manifests");
     let locks = direct.join("locks");
     let stages = direct.join("stages");
-    for path in [&trees, &manifests, &locks, &stages] {
+    let specs = direct.join("specs");
+    for path in [&trees, &manifests, &locks, &stages, &specs] {
         ensure_directory(path)?;
+    }
+    // The pointer is published by atomic rename; an unlocked reader sees
+    // either the old or the new publication, never a partial one.
+    let pointer = specs.join(spec_identity(spec));
+    if let Some(identity) = read_pointer(&pointer)? {
+        let destination = trees.join(&identity);
+        let manifest_path = manifests.join(format!("{identity}.json"));
+        if let Ok(bytes) = read_stable(&manifest_path)
+            && let Ok(existing) = serde_json::from_slice::<Manifest>(&bytes)
+            && existing.identity == identity
+            && existing.recorded.is_some()
+            && validate(
+                &destination,
+                existing.recorded.as_deref().unwrap_or_default(),
+            )
+            .unwrap_or(false)
+            && snapshot(&destination).is_ok_and(|actual| actual == existing.files)
+        {
+            return Ok((destination, Publication::Reused));
+        }
+        // A failing or absent validation falls through to execution, exactly
+        // like Bazel refetching when a watched dependency changed.
     }
     // 128 bits: two repositories sharing a slug would share a stage.
     let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
@@ -98,7 +186,7 @@ where
         .tempdir_in(&stages)
         .map_err(|e| format!("cannot stage direct repository: {e}"))?;
     // TempDir owns cleanup on callback errors and Rust unwinding as well.
-    let inputs = execute(stage.path())?;
+    let executed = execute(stage.path())?;
     required_directory(stage.path())?;
     ensure_boundary(stage.path())?;
     let files = snapshot(stage.path())?;
@@ -106,9 +194,12 @@ where
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
-    for bytes in [provenance, inputs.as_slice(), encoded_snapshot.as_slice()] {
-        digest.update((bytes.len() as u64).to_be_bytes());
-        digest.update(bytes);
+    for bytes in [
+        provenance,
+        executed.inputs.as_slice(),
+        encoded_snapshot.as_slice(),
+    ] {
+        framed(&mut digest, bytes);
     }
     let identity = format!("{:x}", digest.finalize());
     let manifest = Manifest {
@@ -116,11 +207,13 @@ where
         profile: PROFILE.into(),
         identity: identity.clone(),
         files,
+        spec: Some(spec_identity(spec)),
+        recorded: Some(executed.recorded),
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
 
     // Recheck parents after the callback, before touching persistent entries.
-    for path in [&trees, &manifests, &locks, &stages] {
+    for path in [&trees, &manifests, &locks, &stages, &specs] {
         ensure_directory(path)?;
     }
     let lock_path = locks.join(&identity);
@@ -136,45 +229,115 @@ where
     // The File releases the lock on every exit. Dependencies have already run.
     let destination = trees.join(&identity);
     let manifest_path = manifests.join(format!("{identity}.json"));
-    if read_stable(&manifest_path)
+    // Identical content from another specification (or this one) needs no
+    // republication: the tree and its inventory already match ours, AND the
+    // persisted manifest already carries this format's specification digest
+    // and recorded probes — a manifest written before those fields existed
+    // (an older binary's publication) must be upgraded once, or no later
+    // invocation could ever validate-and-reuse it through the pointer.
+    // Only the specification pointer below records this specification's claim.
+    if !(read_stable(&manifest_path)
         .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(|e| e.to_string()))
-        .is_ok_and(|existing| existing == manifest)
-        && snapshot(&destination).is_ok_and(|actual| actual == manifest.files)
+        .is_ok_and(|existing| {
+            existing.identity == identity
+                && existing.files == manifest.files
+                && existing.spec.is_some()
+                && existing.recorded.is_some()
+        })
+        && snapshot(&destination).is_ok_and(|actual| actual == manifest.files))
     {
-        return Ok(destination);
-    }
-
-    // Prepare metadata before replacing anything. Quarantine names are private
-    // to this publisher, and renaming a corrupt symlink never follows it.
-    let mut metadata_stage = tempfile::NamedTempFile::new_in(&manifests)
-        .map_err(|e| format!("cannot stage direct manifest: {e}"))?;
-    metadata_stage
-        .write_all(&encoded)
-        .and_then(|()| metadata_stage.as_file().sync_all())
-        .map_err(|e| e.to_string())?;
-    let trash = tempfile::Builder::new()
-        .prefix(".trash-")
-        .tempdir_in(&trees)
-        .map_err(|e| e.to_string())?;
-    quarantine(&destination, &trash.path().join("tree"))?;
-    quarantine(&manifest_path, &trash.path().join("manifest"))?;
-    fs::rename(stage.path(), &destination)
-        .map_err(|e| format!("cannot publish direct repository: {e}"))?;
-    // These are two atomic renames, not an atomic pair. A failure/crash leaves
-    // missing metadata, which forces repair on the next evaluated invocation.
-    metadata_stage
-        .persist(&manifest_path)
-        .map_err(|e| format!("cannot publish direct manifest: {e}"))?;
-    for path in [&trees, &manifests] {
-        File::open(path)
-            .and_then(|file| file.sync_all())
+        // Prepare metadata before replacing anything. Quarantine names are private
+        // to this publisher, and renaming a corrupt symlink never follows it.
+        let mut metadata_stage = tempfile::NamedTempFile::new_in(&manifests)
+            .map_err(|e| format!("cannot stage direct manifest: {e}"))?;
+        metadata_stage
+            .write_all(&encoded)
+            .and_then(|()| metadata_stage.as_file().sync_all())
             .map_err(|e| e.to_string())?;
+        let trash = tempfile::Builder::new()
+            .prefix(".trash-")
+            .tempdir_in(&trees)
+            .map_err(|e| e.to_string())?;
+        quarantine(&destination, &trash.path().join("tree"))?;
+        quarantine(&manifest_path, &trash.path().join("manifest"))?;
+        fs::rename(stage.path(), &destination)
+            .map_err(|e| format!("cannot publish direct repository: {e}"))?;
+        // These are two atomic renames, not an atomic pair. A failure/crash leaves
+        // missing metadata, which forces repair on the next evaluated invocation.
+        metadata_stage
+            .persist(&manifest_path)
+            .map_err(|e| format!("cannot publish direct manifest: {e}"))?;
+        for path in [&trees, &manifests] {
+            File::open(path)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        // TempDir removal does not follow symlinks inside our quarantine.
+        trash
+            .close()
+            .map_err(|e| format!("cannot remove direct quarantine: {e}"))?;
     }
-    // TempDir removal does not follow symlinks inside our quarantine.
-    trash
-        .close()
-        .map_err(|e| format!("cannot remove direct quarantine: {e}"))?;
-    Ok(destination)
+    // Publish the specification pointer after the tree it names. A crash
+    // between them leaves a stale pointer, which the warm path revalidates
+    // (manifest, recorded inputs, tree) before reuse, so it can only cost a
+    // re-execution, never a wrong reuse.
+    publish_pointer(&specs, &pointer, &identity)?;
+    // This call ran the repository rule even when the tree it produced
+    // already existed under the same content identity.
+    Ok((destination, Publication::Executed))
+}
+
+/// A pointer file's exact bytes for `identity` (kept canonical for equality).
+fn pointer_bytes(identity: &str) -> String {
+    format!("{{\"format\":1,\"identity\":\"{identity}\"}}\n")
+}
+
+/// Atomically install the specification pointer naming `identity`.
+fn publish_pointer(specs: &Path, pointer: &Path, identity: &str) -> Result<(), String> {
+    let mut stage = tempfile::NamedTempFile::new_in(specs)
+        .map_err(|e| format!("cannot stage direct specification: {e}"))?;
+    stage
+        .write_all(pointer_bytes(identity).as_bytes())
+        .and_then(|()| stage.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    stage
+        .persist(pointer)
+        .map_err(|e| format!("cannot publish direct specification: {e}"))?;
+    File::open(specs)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+/// Read a specification pointer, checking its shape like every other entry.
+fn read_pointer(path: &Path) -> Result<Option<String>, String> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pointer {
+        format: u32,
+        identity: String,
+    }
+    let Ok(bytes) = read_stable(path) else {
+        return Ok(None);
+    };
+    let pointer: Pointer = serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "cannot parse direct repository specification {}: {e}",
+            path.display()
+        )
+    })?;
+    if pointer.format != 1
+        || pointer.identity.len() != 64
+        || !pointer
+            .identity
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(format!(
+            "invalid direct repository specification pointer {}",
+            path.display()
+        ));
+    }
+    Ok(Some(pointer.identity))
 }
 
 fn optional_metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
@@ -479,6 +642,60 @@ mod tests {
         Ok(b"exact runtime inputs".to_vec())
     }
 
+    /// Publish with an unchanged-world validator (every warm call reuses).
+    fn publish(
+        cache: &Path,
+        provenance: &[u8],
+        run: impl FnOnce(&Path) -> Result<Vec<u8>, String>,
+    ) -> Result<(PathBuf, Publication), String> {
+        publish_keyed(cache, "test-key", provenance, run)
+    }
+
+    /// [`publish`] with an explicit stage key (the repository's name).
+    fn publish_keyed(
+        cache: &Path,
+        stage_key: &str,
+        provenance: &[u8],
+        run: impl FnOnce(&Path) -> Result<Vec<u8>, String>,
+    ) -> Result<(PathBuf, Publication), String> {
+        materialize(
+            cache,
+            stage_key,
+            b"spec",
+            provenance,
+            |_, _| Ok(true),
+            |stage| {
+                run(stage).map(|inputs| Executed {
+                    inputs,
+                    recorded: br#"{"version":1}"#.to_vec(),
+                })
+            },
+        )
+    }
+
+    /// Publish with an explicit specification and recorded-input verdict.
+    fn publish_spec(
+        cache: &Path,
+        spec: &[u8],
+        provenance: &[u8],
+        valid: bool,
+        run: impl FnOnce(&Path) -> Result<Vec<u8>, String>,
+    ) -> Result<(PathBuf, Publication), String> {
+        materialize(
+            cache,
+            "test-key",
+            spec,
+            provenance,
+            move |_, _| Ok(valid),
+            |stage| {
+                run(stage).map(|inputs| Executed {
+                    inputs,
+                    recorded: br#"{"version":1}"#.to_vec(),
+                })
+            },
+        )
+    }
+
     fn metadata_path(cache: &Path, tree: &Path) -> PathBuf {
         cache.join("direct/manifests").join(format!(
             "{}.json",
@@ -567,7 +784,7 @@ mod tests {
         let stale = cache.path().join("direct/stages").join(&slug);
         fs::create_dir_all(&stale).unwrap();
         fs::write(stale.join("leftover"), b"interrupted").unwrap();
-        let tree = materialize(cache.path(), "stale-key", b"", write).unwrap();
+        let (tree, _) = publish_keyed(cache.path(), "stale-key", b"", write).unwrap();
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         assert!(!tree.join("leftover").exists());
         no_stages(cache.path());
@@ -576,7 +793,8 @@ mod tests {
     #[test]
     fn binary_executable_empty_directories_and_boundary() {
         let cache = temp();
-        let tree = materialize(cache.path(), "test-key", b"definition", write).unwrap();
+        let (tree, status) = publish(cache.path(), b"definition", write).unwrap();
+        assert_eq!(status, Publication::Executed);
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         assert!(tree.join("empty").is_dir());
         assert_eq!(fs::read(tree.join("REPO.bazel")).unwrap(), b"");
@@ -591,6 +809,14 @@ mod tests {
             serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
         assert!(manifest.files["empty"].directory);
         assert!(manifest.files[""].directory);
+        assert_eq!(
+            manifest.spec.as_deref(),
+            Some(spec_identity(b"spec").as_str())
+        );
+        assert_eq!(
+            manifest.recorded.as_deref(),
+            Some(br#"{"version":1}"#.as_slice())
+        );
         assert_eq!(manifest.files, snapshot(&tree).unwrap());
         no_stages(cache.path());
     }
@@ -598,29 +824,90 @@ mod tests {
     #[test]
     fn provenance_and_runtime_inputs_are_framed_and_part_of_identity() {
         let cache = temp();
-        let a = materialize(cache.path(), "test-key", b"a", |_| Ok(b"bc".to_vec())).unwrap();
-        let b = materialize(cache.path(), "test-key", b"ab", |_| Ok(b"c".to_vec())).unwrap();
-        let c = materialize(cache.path(), "test-key", b"a", |_| Ok(b"bd".to_vec())).unwrap();
+        let (a, _) =
+            publish_spec(cache.path(), b"spec-a", b"a", true, |_| Ok(b"bc".to_vec())).unwrap();
+        let (b, _) =
+            publish_spec(cache.path(), b"spec-b", b"ab", true, |_| Ok(b"c".to_vec())).unwrap();
+        let (c, _) =
+            publish_spec(cache.path(), b"spec-a", b"a", false, |_| Ok(b"bd".to_vec())).unwrap();
         assert_ne!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
-    fn warm_calls_always_execute_and_capture_current_inputs() {
+    fn spec_identity_is_a_pure_function_of_the_specification() {
+        assert_eq!(spec_identity(b"same"), spec_identity(b"same"));
+        assert_ne!(spec_identity(b"same"), spec_identity(b"changed"));
+        let hex = spec_identity(b"");
+        assert_eq!(hex.len(), 64);
+        assert!(
+            hex.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        );
+    }
+
+    #[test]
+    fn warm_calls_reuse_publications_without_executing() {
         let cache = temp();
         let count = AtomicUsize::new(0);
-        let run = |input: &[u8]| {
-            materialize(cache.path(), "test-key", b"same", |stage| {
-                count.fetch_add(1, Ordering::SeqCst);
-                write(stage)?;
-                Ok(input.to_vec())
-            })
+        let run = |input: &[u8], warm_world_unchanged: bool| {
+            publish_spec(
+                cache.path(),
+                b"same",
+                b"provenance",
+                warm_world_unchanged,
+                |stage| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    write(stage)?;
+                    Ok(input.to_vec())
+                },
+            )
             .unwrap()
         };
-        let a = run(b"first");
-        assert_eq!(a, run(b"first"));
-        assert_ne!(a, run(b"changed"));
-        assert_eq!(count.load(Ordering::SeqCst), 3);
+        let (a, first) = run(b"first", true);
+        assert_eq!(first, Publication::Executed);
+        // Same specification and unchanged recorded inputs: the repository
+        // rule never runs again, exactly like Bazel's external/<name>.
+        let (again, status) = run(b"first", true);
+        assert_eq!(again, a);
+        assert_eq!(status, Publication::Reused);
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        // The recorded inputs changing (the validator notices the world
+        // changed) refetches: execution runs and both content identities
+        // coexist as separate trees.
+        let (changed, status) = run(b"changed", false);
+        assert_ne!(changed, a);
+        assert_eq!(status, Publication::Executed);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        // The publication for this specification now follows the inputs.
+        assert_eq!(run(b"changed", true).0, changed);
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        no_stages(cache.path());
+    }
+
+    #[test]
+    fn changed_specifications_address_separate_publications() {
+        let cache = temp();
+        let (a, first) =
+            publish_spec(cache.path(), b"spec-1", b"provenance-1", true, write).unwrap();
+        assert_eq!(first, Publication::Executed);
+        let (b, second) =
+            publish_spec(cache.path(), b"spec-2", b"provenance-2", true, write).unwrap();
+        assert_eq!(second, Publication::Executed);
+        assert_ne!(a, b);
+        assert_eq!(
+            fs::read_dir(cache.path().join("direct/trees"))
+                .unwrap()
+                .count(),
+            2
+        );
+        // Each specification keeps reusing its own publication.
+        let (again, status) = publish_spec(cache.path(), b"spec-1", b"provenance-1", true, |_| {
+            panic!("spec-1 must reuse")
+        })
+        .unwrap();
+        assert_eq!(again, a);
+        assert_eq!(status, Publication::Reused);
         no_stages(cache.path());
     }
 
@@ -628,20 +915,39 @@ mod tests {
     fn callback_error_and_panic_clean_private_stage_without_publication() {
         let cache = temp();
         assert!(
-            materialize(cache.path(), "test-key", b"", |stage| {
-                write(stage)?;
-                Err("callback failure".into())
-            })
+            materialize(
+                cache.path(),
+                "test-key",
+                b"spec",
+                b"",
+                |_, _| Ok(true),
+                |stage| {
+                    write(stage)?;
+                    Err("callback failure".into())
+                }
+            )
             .is_err()
         );
         let result = std::panic::catch_unwind(|| {
-            materialize(cache.path(), "test-key", b"", |stage| {
-                write(stage).unwrap();
-                panic!("callback panic");
-            })
+            materialize(
+                cache.path(),
+                "test-key",
+                b"spec",
+                b"",
+                |_, _| Ok(true),
+                |stage| {
+                    write(stage)
+                        .map(|_| Executed {
+                            inputs: Vec::new(),
+                            recorded: br#"{"version":1}"#.to_vec(),
+                        })
+                        .unwrap();
+                    panic!("callback panic");
+                },
+            )
         });
         assert!(result.is_err());
-        for name in ["trees", "manifests"] {
+        for name in ["trees", "manifests", "specs"] {
             assert_eq!(
                 fs::read_dir(cache.path().join("direct").join(name))
                     .unwrap()
@@ -668,18 +974,28 @@ mod tests {
     #[test]
     fn recognized_boundaries_are_preserved_build_is_not_a_boundary() {
         let cache = temp();
-        for boundary in [
+        for (index, boundary) in [
             "REPO.bazel",
             "MODULE.bazel",
             "WORKSPACE.bazel",
             "WORKSPACE",
             "BUILD",
             "BUILD.bazel",
-        ] {
-            let tree = materialize(cache.path(), "test-key", boundary.as_bytes(), |stage| {
-                fs::write(stage.join(boundary), b"original").unwrap();
-                Ok(vec![])
-            })
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Distinct specifications keep every publication independent.
+            let (tree, _) = publish_spec(
+                cache.path(),
+                format!("spec-{index}").as_bytes(),
+                boundary.as_bytes(),
+                true,
+                |stage| {
+                    fs::write(stage.join(boundary), b"original").unwrap();
+                    Ok(vec![])
+                },
+            )
             .unwrap();
             assert_eq!(fs::read(tree.join(boundary)).unwrap(), b"original");
             assert_eq!(
@@ -696,29 +1012,22 @@ mod tests {
     #[test]
     fn corruption_of_bytes_mode_and_empty_directory_is_repaired() {
         let cache = temp();
-        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let original = snapshot(&tree).unwrap();
         fs::write(tree.join("data"), b"bad").unwrap();
-        assert_eq!(
-            tree,
-            materialize(cache.path(), "test-key", b"", write).unwrap()
-        );
+        let (again, status) = publish(cache.path(), b"", write).unwrap();
+        assert_eq!(tree, again);
+        assert_eq!(status, Publication::Executed);
         assert_eq!(original, snapshot(&tree).unwrap());
         fs::remove_dir(tree.join("empty")).unwrap();
-        assert_eq!(
-            tree,
-            materialize(cache.path(), "test-key", b"", write).unwrap()
-        );
+        assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
         assert_eq!(original, snapshot(&tree).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
         }
-        assert_eq!(
-            tree,
-            materialize(cache.path(), "test-key", b"", write).unwrap()
-        );
+        assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
         assert_eq!(original, snapshot(&tree).unwrap());
         no_stages(cache.path());
     }
@@ -726,40 +1035,103 @@ mod tests {
     #[test]
     fn changed_output_has_a_different_content_address() {
         let cache = temp();
-        let first = materialize(cache.path(), "test-key", b"", |stage| {
+        // Different recorded inputs refetch a repository: the new publication
+        // has a different content address, and both trees coexist.
+        let (first, _) = publish_spec(cache.path(), b"spec", b"", true, |stage| {
             fs::write(stage.join("data"), b"first").unwrap();
-            Ok(vec![])
+            Ok(b"inputs-first".to_vec())
         })
         .unwrap();
-        let second = materialize(cache.path(), "test-key", b"", |stage| {
+        let (second, _) = publish_spec(cache.path(), b"spec", b"", false, |stage| {
             fs::write(stage.join("data"), b"second").unwrap();
-            Ok(vec![])
+            Ok(b"inputs-second".to_vec())
         })
         .unwrap();
         assert_ne!(first, second);
         assert_eq!(fs::read(first.join("data")).unwrap(), b"first");
+        assert_eq!(fs::read(second.join("data")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn legacy_manifests_are_upgraded_once_then_reused() {
+        // A manifest written before `spec`/`recorded` existed (an older
+        // binary's publication with identical content identity) is upgraded
+        // by exactly one execution; after that the warm path reuses the
+        // publication through the pointer without executing again.
+        let cache = temp();
+        let (tree, first) = publish(cache.path(), b"", write).unwrap();
+        assert_eq!(first, Publication::Executed);
+        let path = metadata_path(cache.path(), &tree);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("spec");
+        object.remove("recorded");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let executions = AtomicUsize::new(1);
+        let (upgraded, second) = publish(cache.path(), b"", |stage| {
+            executions.fetch_add(1, Ordering::SeqCst);
+            write(stage)
+        })
+        .unwrap();
+        assert_eq!(upgraded, tree);
+        assert_eq!(second, Publication::Executed);
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            manifest["spec"].as_str(),
+            Some(spec_identity(b"spec").as_str())
+        );
+        assert!(manifest.get("recorded").is_some());
+        let (again, third) = publish(cache.path(), b"", |_| {
+            panic!("upgraded publication must be reused")
+        })
+        .unwrap();
+        assert_eq!(again, tree);
+        assert_eq!(third, Publication::Reused);
+        no_stages(cache.path());
+    }
+
+    #[test]
+    fn nondeterministic_output_under_unchanged_inputs_pins_first_publication() {
+        // A rule that would write different bytes with unchanged recorded
+        // inputs never re-runs: the first publication is reused, like Bazel's
+        // fetch-once-per-output-base external/<name> directory.
+        let cache = temp();
+        let (first, _) = publish(cache.path(), b"", |stage| {
+            fs::write(stage.join("data"), b"first").unwrap();
+            Ok(vec![])
+        })
+        .unwrap();
+        let (again, status) = publish(cache.path(), b"", |stage| {
+            fs::write(stage.join("data"), b"second").unwrap();
+            Ok(vec![])
+        })
+        .unwrap();
+        assert_eq!(first, again);
+        assert_eq!(status, Publication::Reused);
+        assert_eq!(fs::read(first.join("data")).unwrap(), b"first");
+        no_stages(cache.path());
     }
 
     #[test]
     fn missing_stale_malformed_and_wrong_shape_manifests_are_repaired() {
         let cache = temp();
-        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
         let expected = fs::read(&path).unwrap();
         for bytes in [b"{".as_slice(), b"{}", b"null", b"{\"format\":999}"] {
             fs::write(&path, bytes).unwrap();
-            assert_eq!(
-                tree,
-                materialize(cache.path(), "test-key", b"", write).unwrap()
-            );
+            assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
             assert_eq!(fs::read(&path).unwrap(), expected);
         }
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        materialize(cache.path(), "test-key", b"", write).unwrap();
+        publish(cache.path(), b"", write).unwrap();
         assert_eq!(fs::read(&path).unwrap(), expected);
         fs::remove_file(&path).unwrap();
-        materialize(cache.path(), "test-key", b"", write).unwrap();
+        publish(cache.path(), b"", write).unwrap();
         assert_eq!(fs::read(&path).unwrap(), expected);
         no_stages(cache.path());
     }
@@ -776,13 +1148,19 @@ mod tests {
                     materialize(
                         &cache,
                         if index == 0 { "stage-a" } else { "stage-b" },
-                        b"same",
+                        b"spec",
+                        b"provenance",
+                        |_, _| Ok(true),
                         |stage| {
                             let inputs = write(stage)?;
                             barrier.wait();
-                            Ok(inputs)
+                            Ok(Executed {
+                                inputs,
+                                recorded: br#"{"version":1}"#.to_vec(),
+                            })
                         },
                     )
+                    .map(|(root, _)| root)
                     .unwrap()
                 })
             })
@@ -813,10 +1191,21 @@ mod tests {
                 let cache = cache.path().to_owned();
                 let count = count.clone();
                 std::thread::spawn(move || {
-                    materialize(&cache, "single-flight", b"same", |stage| {
-                        count.fetch_add(1, Ordering::SeqCst);
-                        write(stage)
-                    })
+                    materialize(
+                        &cache,
+                        "single-flight",
+                        b"spec",
+                        b"same",
+                        |_, _| Ok(true),
+                        |stage| {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            write(stage).map(|inputs| Executed {
+                                inputs,
+                                recorded: br#"{"version":1}"#.to_vec(),
+                            })
+                        },
+                    )
+                    .map(|(root, _)| root)
                     .unwrap()
                 })
             })
@@ -869,18 +1258,23 @@ mod tests {
         let outside = temp();
         fs::write(outside.path().join("precious"), b"keep").unwrap();
         let mut trees = Vec::new();
-        for directory in [false, true] {
+        for (index, directory) in [false, true].into_iter().enumerate() {
             let target = if directory {
                 outside.path().to_owned()
             } else {
                 outside.path().join("precious")
             };
-            let tree = materialize(cache.path(), "test-key", b"", |stage| {
-                symlink(&target, stage.join("link")).unwrap();
-                symlink("missing/dangling", stage.join("dangling")).unwrap();
-                Ok(vec![])
-            })
-            .unwrap();
+            let spec = format!("spec-{index}");
+            let run = |cache: &Path, spec: &str| {
+                publish_spec(cache, spec.as_bytes(), b"", true, |stage| {
+                    symlink(&target, stage.join("link")).unwrap();
+                    symlink("missing/dangling", stage.join("dangling")).unwrap();
+                    Ok(vec![])
+                })
+                .unwrap()
+                .0
+            };
+            let tree = run(cache.path(), &spec);
             // Published as links (never followed, copied, or rewritten).
             assert_eq!(fs::read_link(tree.join("link")).unwrap(), target);
             assert_eq!(
@@ -893,34 +1287,27 @@ mod tests {
             assert_eq!(manifest.files["link"].symlink.as_deref(), target.to_str());
             assert!(manifest.files["link"].sha256.len() == 64);
             // Warm reuse re-verifies the same link entries.
-            assert_eq!(
-                tree,
-                materialize(cache.path(), "test-key", b"", |stage| {
-                    symlink(&target, stage.join("link")).unwrap();
-                    symlink("missing/dangling", stage.join("dangling")).unwrap();
-                    Ok(vec![])
-                })
-                .unwrap()
-            );
+            assert_eq!(tree, run(cache.path(), &spec));
             trees.push(tree);
         }
         // Distinct link targets are distinct content identities.
         assert_ne!(trees[0], trees[1]);
-        let tree = materialize(cache.path(), "test-key", b"", |stage| {
+        let tree = publish_spec(cache.path(), b"spec-file", b"", true, |stage| {
             fs::write(stage.join("link"), b"file").unwrap();
             Ok(vec![])
         })
-        .unwrap();
+        .unwrap()
+        .0;
         assert!(!trees.contains(&tree));
         assert!(
-            materialize(cache.path(), "test-key", b"", |stage| {
+            publish_spec(cache.path(), b"spec-hardlink", b"", true, |stage| {
                 fs::hard_link(outside.path().join("precious"), stage.join("hardlink")).unwrap();
                 Ok(vec![])
             })
             .is_err()
         );
         assert!(
-            materialize(cache.path(), "test-key", b"", |stage| {
+            publish_spec(cache.path(), b"spec-socket", b"", true, |stage| {
                 let _socket = std::os::unix::net::UnixListener::bind(stage.join("socket")).unwrap();
                 Ok(vec![])
             })
@@ -937,16 +1324,13 @@ mod tests {
         let cache = temp();
         let outside = temp();
         fs::write(outside.path().join("precious"), b"keep").unwrap();
-        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
         fs::remove_dir_all(&tree).unwrap();
         fs::remove_file(&path).unwrap();
         symlink(outside.path(), &tree).unwrap();
         symlink(outside.path().join("precious"), &path).unwrap();
-        assert_eq!(
-            tree,
-            materialize(cache.path(), "test-key", b"", write).unwrap()
-        );
+        assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
         assert!(
             !fs::symlink_metadata(&tree)
                 .unwrap()
@@ -973,16 +1357,23 @@ mod tests {
             materialize(
                 &cache.path().join("link/child"),
                 "test-key",
+                b"spec",
                 b"",
+                |_, _| panic!("must not validate"),
                 |_| panic!("must not evaluate")
             )
             .is_err()
         );
         assert!(!outside.path().join("child").exists());
         assert!(
-            materialize(Path::new("relative"), "test-key", b"", |_| panic!(
-                "must not evaluate"
-            ))
+            materialize(
+                Path::new("relative"),
+                "test-key",
+                b"spec",
+                b"",
+                |_, _| panic!("must not validate"),
+                |_| panic!("must not evaluate")
+            )
             .is_err()
         );
     }
@@ -991,7 +1382,7 @@ mod tests {
     fn large_files_and_many_entries_publish_but_path_profile_holds() {
         // Above the former 16 MiB file / 64 MiB total / 10000-entry caps.
         let cache = temp();
-        let tree = materialize(cache.path(), "test-key", b"", |stage| {
+        let (tree, _) = publish(cache.path(), b"", |stage| {
             for i in 0..5 {
                 File::create(stage.join(i.to_string()))
                     .unwrap()
@@ -1011,7 +1402,7 @@ mod tests {
         );
         assert_eq!(fs::read_dir(tree.join("many")).unwrap().count(), 10_001);
         assert!(
-            materialize(cache.path(), "test-key", b"", |stage| {
+            publish_spec(cache.path(), b"deep-spec", b"", true, |stage| {
                 let mut path = stage.to_owned();
                 for _ in 0..=DEPTH_LIMIT {
                     path.push("d");
@@ -1032,7 +1423,7 @@ mod tests {
         let cache = temp();
         for name in [std::ffi::OsString::from_vec(vec![255]), "bad\\name".into()] {
             assert!(
-                materialize(cache.path(), "test-key", b"", |stage| {
+                publish(cache.path(), b"", |stage| {
                     fs::write(stage.join(name), b"").unwrap();
                     Ok(vec![])
                 })

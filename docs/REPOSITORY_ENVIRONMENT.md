@@ -17,8 +17,9 @@ value, absence or sanitized error. Clones and source-cache reconfiguration retai
 that owner; independent configured runtimes observe afresh. This is lazy first-
 observation behavior, not an atomic snapshot of the process environment at startup.
 
-Callbacks still execute on fresh native CLI invocations, including warm publication
-reuse. This does not implement Bazel's persistent-server callback suppression.
+A warm native CLI invocation reuses an unchanged publication without executing
+its callback (N61); declared and dynamic value changes refetch it. This does not
+implement Bazel's persistent-server callback suppression.
 Declared and dynamic inputs affect repository identity even when output bytes
 remain constant; unrelated observations from other callbacks must not do so.
 

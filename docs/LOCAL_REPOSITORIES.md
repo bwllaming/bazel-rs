@@ -13,18 +13,21 @@ keys unchanged. Declared and dynamic named environment inputs have a separate
 
 ## Native lifecycle bounds
 
-Demanded callbacks execute before publication-cache lookup. Within one runtime,
-repeated demand for the same repository uses its completed demand slot. Across
-native CLI invocations, callbacks execute again even if their unchanged output
-tree is reused. This behavior applies to both `local=False` and `local=True`.
+Within one runtime, repeated demand for the same repository uses its completed
+demand slot. Across native CLI invocations, a warm invocation computes the
+repository specification first (rule identity, attributes, mappings, host
+markers, declared environment values — `repository_store`, N61) and reuses the
+existing publication without executing the callback when its recorded inputs
+(templates, watched files/directories, observed environment) are unchanged;
+any changed recorded input or specification executes the callback again. This
+behavior applies to both `local=False` and `local=True`.
 Unused repositories remain lazy; failed callbacks do not publish partial trees.
 
-This is **not** full persistent-server or repository-cache parity. Bazel 9.3 can
-reuse unchanged nonlocal repository contents across server restarts; local rules
-are refetched after restart when fetching is enabled. Neither rule must rerun on
-every unchanged command in the same reference server. Native currently reruns
-both kinds across its serverless invocations. Output-tree publication reuse is
-not callback caching.
+This is **not** full persistent-server parity (Bazel 9.3 keeps one resident
+server per output base; native is a per-invocation client), but repository
+publications now behave like Bazel's `external/<name>` directories: fetched
+once, reused until a recorded input changes. Local rules follow the same
+discipline natively rather than always refetching on warm commands.
 
 The local flag grants no additional filesystem or network permissions. Existing
 path, symlink, template-input, ASCII and resource guards remain in force. General

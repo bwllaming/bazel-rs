@@ -177,6 +177,9 @@ pub(crate) struct Snapshot {
     retained: Mutex<Retained>,
     reader: Arc<dyn EnvironmentReader>,
     client: OnceLock<Result<Arc<ClientEnvironment>, EnvError>>,
+    /// Digest of the client environment (RepositoryFunction's implicit
+    /// ClientEnvironmentValue dependency): recomputed on warm revalidation.
+    client_digest: OnceLock<Result<String, EnvError>>,
 }
 impl fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -210,6 +213,7 @@ impl Snapshot {
             retained: Mutex::new(Retained::default()),
             reader,
             client: OnceLock::new(),
+            client_digest: OnceLock::new(),
         }
     }
 
@@ -235,6 +239,44 @@ impl Snapshot {
             Captured::Absent => None,
             Captured::Value(value) => Some(value.to_string()),
         })
+    }
+
+    /// Recompute the warm-revalidation digest for exactly `names` against the
+    /// current environment (RepositoryEnvironmentValue re-checks): the same
+    /// framing as [`Watch::inputs`] over a fresh observation set, so an
+    /// unchanged environment reproduces the recorded digest byte-for-byte.
+    pub(crate) fn watched_digest(&self, names: &[String]) -> Result<Option<String>, EnvError> {
+        if names.is_empty() {
+            return Ok(None);
+        }
+        let mut watch = Watch::default();
+        for name in names {
+            watch.observe(self, name)?;
+        }
+        Ok(watch.inputs()?.map(|watched| watched.sha256))
+    }
+
+    /// A value-covering digest of the complete client environment
+    /// (`repoEnv`): RepositoryFunction's implicit ClientEnvironmentValue
+    /// dependency, so a changed client environment refetches every repository.
+    /// Only the digest is ever persisted, never names or values.
+    pub(crate) fn client_digest(&self) -> Result<String, EnvError> {
+        self.client_digest
+            .get_or_init(|| {
+                let environment = self.client_environment()?;
+                let mut hash = Sha256::new();
+                hash.update(b"repository-client-environment-v1");
+                hash.update([0]);
+                hash.update((environment.len() as u64).to_be_bytes());
+                for (name, value) in environment.iter() {
+                    hash.update((name.len() as u64).to_be_bytes());
+                    hash.update(name);
+                    hash.update((value.len() as u64).to_be_bytes());
+                    hash.update(value);
+                }
+                Ok(format!("{:x}", hash.finalize()))
+            })
+            .clone()
     }
 
     fn observe(&self, name: &str) -> Result<Arc<Entry>, EnvError> {
@@ -392,7 +434,9 @@ impl ClientEnvironment {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct WatchedEnvironment {
     profile: &'static str,
-    sha256: String,
+    /// The digest this environment observation revalidates against; readable
+    /// by warm-publication checks (values themselves stay private).
+    pub sha256: String,
 }
 
 #[derive(Default)]
@@ -435,6 +479,13 @@ impl Watch {
         Ok(entry)
     }
 
+    /// The observed names, for warm-publication revalidation. Values stay out
+    /// (they are never serialized); a later invocation re-observes these names
+    /// and recomputes the digest.
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.entries.keys().map(|name| name.to_string()).collect()
+    }
+
     pub(crate) fn charge_return(&mut self, text: &str) -> Result<(), EnvError> {
         self.budget
             .transaction(|budget| budget.string(text))
@@ -445,27 +496,33 @@ impl Watch {
         if self.entries.is_empty() {
             return Ok(None);
         }
-        let mut hash = Sha256::new();
-        hash.update(PROFILE.as_bytes());
-        hash.update([0]);
-        hash.update((self.entries.len() as u64).to_be_bytes());
-        for (name, entry) in &self.entries {
-            hash.update((name.len() as u64).to_be_bytes());
-            hash.update(name.as_bytes());
-            match entry.captured()? {
-                Captured::Absent => hash.update([0]),
-                Captured::Value(value) => {
-                    hash.update([1]);
-                    hash.update((value.len() as u64).to_be_bytes());
-                    hash.update(value.as_bytes());
-                }
+        Ok(Some(digest_of(&self.entries)?))
+    }
+}
+
+/// The WatchedEnvironment digest over a name→value map: identical inputs give
+/// the identical serialized shape, so a revalidation can compare digests.
+fn digest_of(entries: &BTreeMap<Arc<str>, Arc<Entry>>) -> Result<WatchedEnvironment, EnvError> {
+    let mut hash = Sha256::new();
+    hash.update(PROFILE.as_bytes());
+    hash.update([0]);
+    hash.update((entries.len() as u64).to_be_bytes());
+    for (name, entry) in entries {
+        hash.update((name.len() as u64).to_be_bytes());
+        hash.update(name.as_bytes());
+        match entry.captured()? {
+            Captured::Absent => hash.update([0]),
+            Captured::Value(value) => {
+                hash.update([1]);
+                hash.update((value.len() as u64).to_be_bytes());
+                hash.update(value.as_bytes());
             }
         }
-        Ok(Some(WatchedEnvironment {
-            profile: PROFILE,
-            sha256: format!("{:x}", hash.finalize()),
-        }))
     }
+    Ok(WatchedEnvironment {
+        profile: PROFILE,
+        sha256: format!("{:x}", hash.finalize()),
+    })
 }
 
 #[cfg(test)]

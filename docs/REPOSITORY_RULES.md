@@ -211,18 +211,19 @@ the published location (relative symlinks into it are replanted, below).
 * Implementation return values follow RepositoryFetchFunction.java:681-695 under
   the default `--incompatible_require_repo_extension_metadata=false`: a
   `repo_metadata`, `None` or any other non-dict value is accepted, and a dict must
-  have string keys (`got dict<K, V> for 'return value', want dict<string,
+  have string keys (`got dict<K, V> for 'return value', want dict<
   unknown>`). In Bazel a reproducible result only allows storing the repository
-  in the repo contents cache; the native store re-executes every demanded
-  repository per invocation and has no repo contents cache, so reproducibility
-  has no native effect. A dict or `attrs_for_reproducibility` that changes
-  attributes prints Bazel's two lines (RepositoryResolvedEvent.java:33-136,
+  in the repo contents cache; the native store reuses one publication per
+  repository specification (below) and has no separate repo contents cache, so
+  reproducibility has no native effect. A dict or `attrs_for_reproducibility`
+  that changes attributes prints Bazel's two lines (RepositoryResolvedEvent.java:33-136,
   RepositoryFetchFunction.java:697-703): `DEBUG: Repo 'NAME' indicated that a
   canonical reproducible form can be obtained by modifying arguments k = REPR,
   ... [and dropping [a, b]]` (or `by dropping arguments [a, b]`), then `DEBUG:
   Repo NAME defined by rule RULE in @@//pkg:file.bzl`. Attributes are compared in
   declaration order against their defaults; `name` and `_private` attributes are
-  ignored. Bazel prints them once per fetch, native on every invocation.
+  ignored. Bazel prints them once per fetch, native on every execution (a warm
+  reuse never runs the callback, so nothing is printed).
 * `ctx.watch(path)` and `watch=`/`watch_template=`/`watch_archive=` use Bazel's
   `yes`/`no`/`auto` rules (SBEC:1656-1755): watching the repository directory
   fails with `attempted to watch path under working directory` for `yes` and is
@@ -285,9 +286,35 @@ argument-size caps (N32).
 
 Repositories that call `execute`, `which` or downloads record those facilities
 (never their outputs, which Bazel does not record either) in the execution inputs.
-Every native invocation re-executes every demanded repository before publication
-reuse, which is at least as conservative as Bazel's refetch of `local=True`
-rules: no cached publication is ever served for a callback that did not run.
+
+### Publication identity and warm reuse (N61)
+
+A repository's specification is computed BEFORE any execution and is a pure
+function of the rule definition identity, the complete serialized provenance
+(attributes, mappings, sources), the host name/architecture and the values of
+the declared `environ` names (RepositoryFunction's key: rule class, attributes,
+environment, host factors). Its digest addresses a pointer under
+`repositories/direct/specs/` in the cache, which names the published
+content-addressed tree.
+
+A warm invocation revalidates the previous publication for that specification —
+the manifest, the recorded watchable inputs (template bytes, watched
+file/directory states, observed environment names, exactly Bazel's
+RepoRecordedInput set) and the tree snapshot — and reuses it without running
+the repository rule, like Bazel reusing `external/<name>` until a dependency
+changes. Changed attributes, declared environment values, host markers,
+template contents, watched files or observed environment values refetch: the
+rule executes again and publishes (or re-deduplicates) a tree under the
+unchanged content-addressing formula, so deterministic repositories keep their
+identities across re-executions. Values of environment variables are never
+persisted; the manifest records names and digests only, matching Bazel's
+`ENV:` lockfile rows. A rule whose output is nondeterministic under unchanged
+recorded inputs is pinned to its first publication, exactly like a Bazel fetch
+into a warm output base. Every fetch also implicitly depends on the client
+environment (`repoEnv`, like Bazel's ClientEnvironmentValue): only its digest
+is recorded, and any changed value refetches. A publication written by an
+older binary (a manifest without the specification and recorded fields) is
+upgraded by exactly one re-execution; after that warm invocations reuse it.
 
 ### Writes
 
@@ -312,9 +339,9 @@ records the directory and a digest of its tree (SRC:568-609).
 ...StarlarkRepositoryContext>`.
 
 Other documented divergences: Bazel serves a cached repository across
-invocations unless a recorded input changed, while native re-runs every demanded
-repository in every invocation (unrecorded `os.environ` changes are therefore
-seen natively but not by Bazel); Starlark interpreter wording differs (`in call
+invocations unless a recorded input changed; since N61 native does the same
+(unrecorded `os.environ` mutations are invisible to both — the whole-dict
+enumeration is not an individually recorded input); Starlark interpreter wording differs (`in call
 to F(), parameter 'P' got value of type ...`, `has no field or method`, ...);
 `rename_files`, `strip_components`,
 single-file gz/xz/zst/bz2 and ar/7z formats and `delete()`

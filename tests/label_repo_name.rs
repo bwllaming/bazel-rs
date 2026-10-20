@@ -307,15 +307,15 @@ fn real_extension_tag_owner_defaults_participant_boundary_and_cold_warm_bytes() 
     );
     // The warm run takes the extension result from MODULE.bazel.lock, as
     // Bazel does (SingleExtensionEvalFunction.tryGettingValueFromLockFile).
-    // NATIVE_PROFILE: fresh CLI processes still run repository callbacks
-    // even when publication and consumer action identities are reused.
+    // NATIVE_PROFILE (N61): the warm run also reuses the repository's
+    // verified publication without re-running the rule, so its callback
+    // debug line prints exactly once per fetch, like Bazel's external/<name>.
     let count =
         |diagnostic: &str, marker: &str| diagnostic.lines().filter(|line| *line == marker).count();
     assert_eq!(count(&cold, "EXTENSION_CALLBACK"), 1, "{cold}");
     assert_eq!(count(&warm, "EXTENSION_CALLBACK"), 0, "{warm}");
-    for diagnostic in [&cold, &warm] {
-        assert_eq!(count(diagnostic, "REPO_CALLBACK"), 1, "{diagnostic}");
-    }
+    assert_eq!(count(&cold, "REPO_CALLBACK"), 1, "{cold}");
+    assert_eq!(count(&warm, "REPO_CALLBACK"), 0, "{warm}");
 }
 
 #[test]

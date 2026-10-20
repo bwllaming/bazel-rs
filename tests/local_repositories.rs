@@ -114,7 +114,10 @@ fn local_repository_cold_warm_callbacks_execute_once_per_demanded_repository() {
         let (first, stderr) = f.build(&["@made//:one", "@made//:two"]);
         assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), 1);
         let (second, stderr) = f.build(&["@made//:one", "@made//:two"]);
-        assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), 1);
+        // N61: the warm invocation reuses the verified publication (both local
+        // values, and configure=True metadata) without re-running the rule,
+        // like Bazel's fetch-once external/<name> directory.
+        assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), 0);
         assert_eq!(first, second);
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|(_, bytes)| bytes == b"9.3.0"));

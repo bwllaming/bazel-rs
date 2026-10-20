@@ -32,10 +32,10 @@ to false (CommonCommandOptions.java:624-651, CommandEnvironment.java:342-416). T
 map is fixed once per invocation and shared by every repository of that
 invocation. A snapshot failure (bounds:
 10,000 entries, 1 MiB per value, 16 MiB total) is cached and reported only when
-`environ`, `which` or `execute` needs it. Like Bazel, reading `environ` records no
-dependency; the native store re-executes every repository in every invocation, so
-a changed environment is still observed (Bazel may instead serve a cached
-repository until a recorded input changes). `module_ctx.getenv` and
+`environ`, `which` or `execute` needs it. Like Bazel, reading the `environ` dict
+records no dependency; `getenv` and declared `environ` names do (a changed value
+refetches, and declared values also re-key the pre-execution repository
+specification since N61). `module_ctx.getenv` and
 `module_extension(environ=[...])` record extension environment inputs exactly like
 `repository_ctx.getenv` and `repository_rule(environ=...)` (a value-free digest in
 the extension provenance; values are never persisted).

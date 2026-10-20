@@ -145,6 +145,27 @@ pub(crate) fn repository_inputs(
     .map_err(|error| format!("cannot serialize repository execution inputs: {error}"))
 }
 
+/// The host half of the repository fingerprint, computed before execution and
+/// framed into the repository specification: the same profile and host fields
+/// the executed-inputs digest carries, so an OS or architecture change re-keys
+/// a repository identically in both places (RepositoryFunction host factors).
+pub(crate) fn host_spec(host: &HostMetadata) -> Result<Vec<u8>, String> {
+    #[derive(serde::Serialize)]
+    struct HostOnly<'a> {
+        host_input_profile: &'static str,
+        host: (&'a str, &'a str),
+    }
+    let mut budget = HostBudget::default();
+    budget.node()?;
+    budget.string("repository-host-v1")?;
+    host.charge(&mut budget)?;
+    serde_json::to_vec(&HostOnly {
+        host_input_profile: "repository-host-v1",
+        host: (&host.name, &host.arch),
+    })
+    .map_err(|error| format!("cannot serialize repository host specification: {error}"))
+}
+
 const REPR: &str =
     "<unknown object com.google.devtools.build.lib.bazel.repository.starlark.StarlarkOS>";
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);

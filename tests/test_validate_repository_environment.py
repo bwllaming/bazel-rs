@@ -97,7 +97,9 @@ class PlanTests(unittest.TestCase):
         self.assertIn(b'value=CAPTURED+ctx.attr.text+', files['defs.bzl'])
         self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'reference', i) for i in range(5)],
                          [['A'], [], ['A'], [], ['A']])
-        self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'native', i) for i in range(5)], [['A']]*5)
+        # N61: warm and restored states reuse the attr-keyed publication.
+        self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'native', i) for i in range(5)],
+                         [['A'], [], ['A'], ['A'], []])
         outputs = [suite.expected_outputs('module-getenv', 'ordinary', env, source)['a.txt']
                    for _, env, source in suite.states('module-getenv', 'ordinary')]
         self.assertEqual(outputs, [b'prefix:alpha\n']*2+[b'prefix:beta\n']*2+[b'prefix:alpha\n'])
@@ -113,11 +115,20 @@ class PlanTests(unittest.TestCase):
             self.assertIn(b'"CONST"', dynamic)
 
     def test_engine_specific_callback_counts(self):
-        self.assertEqual([suite.expected_callbacks('watched', 'direct.snapshot', 'native', i) for i in range(7)], [['A']]*7)
+        # N61: warm, restored and source-warm states reuse the pointer-addressed
+        # publication; changed client environments and changed sources execute.
+        self.assertEqual([suite.expected_callbacks('watched', 'direct.snapshot', 'native', i) for i in range(7)],
+                         [['A'], [], ['A'], ['A'], [], ['A'], []])
         self.assertEqual([suite.expected_callbacks('watched', 'direct.snapshot', 'reference', i) for i in range(7)],
                          [['A'], [], ['A'], [], ['A'], ['A'], []])
         self.assertEqual(suite.expected_callbacks('isolation', 'ordinary', 'reference', 2), ['A'])
         self.assertEqual(suite.expected_callbacks('isolation', 'ordinary', 'native', 2), ['A', 'B'])
+        # Empty declared sets share one specification: the pointer follows the
+        # latest world, so restoring re-executes like Bazel's external/<name>.
+        self.assertEqual([suite.expected_callbacks('identity', 'direct.dynamic', 'native', i) for i in range(5)],
+                         [['A'], [], ['A'], ['A'], ['A']])
+        self.assertEqual([suite.expected_callbacks('defaults', 'direct', 'native', i) for i in range(5)],
+                         [['A'], [], ['A'], ['A'], ['A']])
 
     def test_missing_empty_present_and_defaults(self):
         values = suite.states('defaults', 'direct')
@@ -185,7 +196,10 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(suite.states('repo-env', 'direct.inline')[3][1][suite.A], 'beta')
         self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'reference', i) for i in range(6)],
                          [['A'], [], ['A'], [], ['A'], ['A']])
-        self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'native', i) for i in range(6)], [['A']]*6)
+        # N61: warm and restored overrides reuse; a changed override value or a
+        # dropped flag executes.
+        self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'native', i) for i in range(6)],
+                         [['A'], [], ['A'], ['A'], [], ['A']])
 
 
 class PrivacyTests(unittest.TestCase):
@@ -234,6 +248,31 @@ class PrivacyTests(unittest.TestCase):
             p.write_text(json.dumps(data))
             suite.native_metadata(cache)
             for bad in (dict(data, environ={suite.A: suite.SECRET}), dict(data, profile=suite.SECRET), dict(data, profile=suite.A)):
+                p.write_text(json.dumps(bad))
+                with self.assertRaises(ValueError):
+                    suite.native_metadata(cache)
+
+    def test_metadata_accepts_n61_spec_and_recorded_probes_but_no_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            p = cache / 'repositories/direct/manifests' / ('a'*64+'.json')
+            p.parent.mkdir(parents=True)
+            probes = dict(version=1, watched_env=dict(sha256='c'*64, names=[suite.A, '?']))
+            data = dict(format=1, profile='direct-file-template-v1', identity='a'*64, files={},
+                        spec='b'*64, recorded=list(json.dumps(probes).encode()))
+            p.write_text(json.dumps(data))
+            suite.native_metadata(cache)
+            # Values never persist, wherever they hide; unknown probe names and
+            # schema growth beyond the N61 digest/probe fields stay rejected.
+            for bad in (
+                dict(data, recorded=list(json.dumps(dict(version=1, watched_env=dict(sha256='c'*64, names=['alpha']))).encode())),
+                dict(data, recorded=list(json.dumps(dict(version=1, templates=[dict(source='input.tpl', sha256=suite.SECRET)])).encode())),
+                dict(data, recorded=[999]),
+                dict(data, recorded=[123, 34]),
+                dict(data, recorded=dict(version=1)),
+                dict(data, spec='not-a-digest'),
+                dict(data, environ={suite.A: 'alpha'}),
+            ):
                 p.write_text(json.dumps(bad))
                 with self.assertRaises(ValueError):
                     suite.native_metadata(cache)
@@ -402,7 +441,11 @@ class ReplayTests(unittest.TestCase):
             hit = payload in seen_payloads
             seen_payloads.add(payload)
             known.add(identity)
-            row = record('ENV_CALLBACK_A\n'+('0 actions executed, 1 cache hits' if hit else '1 actions executed, 0 cache hits'), 0)
+            # N61: only states whose world differs from the pointer-addressed
+            # publication execute the callback (expected_callbacks models it).
+            markers = ''.join('ENV_CALLBACK_'+name+'\n'
+                              for name in suite.expected_callbacks(item['name'], probe, engine, i))
+            row = record(markers+('0 actions executed, 1 cache hits' if hit else '1 actions executed, 0 cache hits'), 0)
             row.update(id=i, name=name+'.'+probe+'.native.'+str(i)+'.build', cwd=str(workspace), timeout_seconds=args.timeout,
                        argv=suite.command_argv(args, ref, engine, cache, root / 'registry', 'build',
                                                suite.extras(name, probe, 'build', i)),
@@ -424,7 +467,7 @@ class ReplayTests(unittest.TestCase):
             values = self.positive(Path(tmp))
             suite.validate_phase(*values)
             mutations = (
-                lambda p, r: r['runs'][1].update(stderr='0 actions executed, 1 cache hits'),
+                lambda p, r: r['runs'][2].update(stderr='0 actions executed, 1 cache hits'),
                 lambda p, r: r['runs'][1].update(stderr='ENV_CALLBACK_A\nENV_CALLBACK_A\n0 actions executed, 1 cache hits'),
                 lambda p, r: r['runs'][2].update(stderr='ENV_CALLBACK_A\n1 actions executed, 0 cache hits'),
                 lambda p, r: r['runs'][0]['controlled_environment'].update(UNPLANNED=''),
@@ -468,9 +511,14 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual((roots[0], roots[2]), (roots[1], roots[3]))
             self.assertNotEqual(roots[0], roots[2])
             self.assertEqual(roots[0], roots[4])
-            # Every native invocation re-runs the generated repository callback.
+            # A warm invocation reuses the publication: its callback must not
+            # run, and an executing state must run it exactly once.
             phase, report = copy.deepcopy(values[:2])
-            report['runs'][1]['stderr'] = '0 actions executed, 1 cache hits'
+            report['runs'][2]['stderr'] = '0 actions executed, 1 cache hits'
+            with self.assertRaisesRegex(ValueError, 'callback count'):
+                suite.validate_phase(phase, report, *values[2:])
+            phase, report = copy.deepcopy(values[:2])
+            report['runs'][1]['stderr'] = 'ENV_CALLBACK_A\n' + report['runs'][1]['stderr']
             with self.assertRaisesRegex(ValueError, 'callback count'):
                 suite.validate_phase(phase, report, *values[2:])
 
@@ -514,7 +562,9 @@ class ReplayTests(unittest.TestCase):
                 for i, counts in enumerate(expected):
                     phase, report = copy.deepcopy(values[:2])
                     executed, hits = counts[::-1]
-                    report['runs'][i]['stderr'] = 'ENV_CALLBACK_A\n%d actions executed, %d cache hits' % (executed, hits)
+                    markers = ''.join('ENV_CALLBACK_'+name+'\n'
+                                      for name in suite.expected_callbacks('watched', route+'.snapshot', 'native', i))
+                    report['runs'][i]['stderr'] = markers+'%d actions executed, %d cache hits' % (executed, hits)
                     with self.subTest(index=i), self.assertRaisesRegex(ValueError, 'action counts'):
                         suite.validate_phase(phase, report, *values[2:])
 

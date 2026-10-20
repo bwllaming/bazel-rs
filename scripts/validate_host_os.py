@@ -82,7 +82,7 @@ LIMITATIONS = [
     'Same-host outputs do not prove cross-host flag keying; required native-unit receipts are separate.',
     'Reference whole-object JSON is source-derived only and UNPROBED; whole-json is NATIVE_BOUNDARY.',
     'repository_ctx.os.environ is ONE cold state per route: Bazel records no dependency for it (StarlarkOS.java:49-54) and may serve a cached repository while native re-executes every invocation, so cross-invocation environment transitions are not differential; module_ctx.os.environ, module_ctx.getenv and module_extension(environ=...) are differential probes (extension, ctor).',
-    'K-to-L migration is NATIVE_VERSION_MIGRATION, never reference parity; every repository intentionally rekeys.',
+    'K-to-L migration is NATIVE_VERSION_MIGRATION, never reference parity; since N61 repository identities are pinned across native versions (a rekey would invalidate existing caches).',
     'A new repository ID with equal logical bytes may hit the consumer action cache.',
     'No ambient names/values, JVM property overrides, public host injection, SDK/application or full acceptance claim.',
     'BUILD probe checks only undefined global os at its bound compile-time source site; not full BUILD namespace parity.',
@@ -513,6 +513,20 @@ def check_cache(observations, name):
         raise ValueError('absent environment observation did not rekey')
 
 
+def native_reuses(name, index, engine='native'):
+    """N61: the publication-reuse steps of the multi-state native phases —
+    the specification pointer addresses a publication whose recorded world is
+    unchanged (warm; a source that stays changed; a restored declared value;
+    the second build of the K-to-L migration pair)."""
+    if engine == 'migration':
+        return index == 3
+    if name == 'cache':
+        return index in (1, 3)
+    if name == 'getenv-control':
+        return index in (1, 4)
+    return False
+
+
 def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
     name = item['name']
     value = fixture(name, probe)
@@ -551,6 +565,11 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
             controlled.success(row)
             if actual != 'reference':
                 expected_markers = (['HOST_EXT_CALLBACK'] if value['ordinary'] else [])+['HOST_REPO_CALLBACK']
+                # N61: a reuse step never runs the repository callback; the
+                # extension callback still prints (lockfile off, so module
+                # extensions re-evaluate every invocation).
+                if actual == 'native' and native_reuses(name, index, engine):
+                    expected_markers = [m for m in expected_markers if m == 'HOST_EXT_CALLBACK']
                 if markers(row) != expected_markers:
                     raise ValueError('native callback missing or wrong phase')
             if name == 'metadata' and value['ordinary'] and actual == 'reference' and command == 'build':
@@ -574,8 +593,11 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
         check_cache(outputs, name)
     if engine == 'migration':
         roots = [o['roots'] for o in outputs]
-        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] == roots[2]:
-            raise ValueError('missing one-time K-to-L identity migration')
+        # N61 pins repository identities across native versions: the K-to-L
+        # binary change must NOT rekey a repository (identity stability is the
+        # contract; a rekey here would invalidate every existing cache).
+        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] != roots[2]:
+            raise ValueError('K-to-L repository identity rekeyed or detached')
         inventories = []
         for obs in outputs:
             identity = Path(obs['roots']['data.txt']).name
@@ -592,14 +614,15 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
 def migration_counts(engine, index, seen):
     """Expected (executed, hits) for one build of a phase.
 
-    The K-to-L migration's first L build (index 2) rebuilds once: the native
-    action cache moved to native-action-v8 keys and manifests (N41 x N42; v5
-    on main before N23d/N36, v7 in integration-13), and a manifest of another
-    format, or another key, is a cache miss (docs/HARDLINK_STAGING.md,
-    "pre-v8 entries rebuild once"). Every other build keeps the old rule.
+    Before N61 the K-to-L migration's first L build (index 2) rebuilt once:
+    the native action cache moved to native-action-v8 keys and manifests
+    (N41 x N42; v5 on main before N23d/N36, v7 in integration-13), and a
+    manifest of another format, or another key, is a cache miss
+    (docs/HARDLINK_STAGING.md, "pre-v8 entries rebuild once"). N61 pins
+    repository identities across native versions and does not touch action
+    keys, so the first L build now hits the K action cache like any other
+    unchanged rebuild; every build follows the plain seen-bytes rule.
     """
-    if engine == 'migration' and index == 2:
-        return (1, 0)
     return (0, 1) if seen else (1, 0)
 
 def shutdown(ref, runner, report):
@@ -750,6 +773,10 @@ def validate_phase(phase, report, args, scratch, workspace, ref):
             continue
         controlled.success(row)
         callback_plan = (['HOST_EXT_CALLBACK'] if value['ordinary'] else [])+['HOST_REPO_CALLBACK']
+        # N61: a reuse step never runs the repository callback (the extension
+        # callback still prints with the lockfile off).
+        if actual == 'native' and native_reuses(name, index, engine):
+            callback_plan = [m for m in callback_plan if m == 'HOST_EXT_CALLBACK']
         if actual != 'reference' and markers(row) != callback_plan:
             raise ValueError('wrong native callback phase')
         if actual == 'reference' and (any(m not in callback_plan for m in markers(row))
@@ -806,9 +833,11 @@ def validate_phase(phase, report, args, scratch, workspace, ref):
                 if not valid_evidence(item) or item['path'] != path:
                     raise ValueError('invalid manifest evidence')
                 data = json.loads(base64.b64decode(item['bytes_base64']))
-                if (set(data) != {'format', 'profile', 'identity', 'files'} or data['format'] != 1
+                if (data['format'] != 1
                         or data['profile'] != 'direct-file-template-v1' or data['identity'] != Path(path).stem):
                     raise ValueError('legacy manifest schema/profile changed')
+                controlled.check_publication_schema(data, 'legacy manifest schema/profile changed')
+                controlled.check_publication_privacy(data, 'legacy manifest schema/profile changed')
             common.action_counts(row, migration_counts(engine, index, raw in seen_bytes))
             seen_bytes.add(raw)
         elif any(k in obs for k in ('metadata', 'publications')):
@@ -818,8 +847,11 @@ def validate_phase(phase, report, args, scratch, workspace, ref):
         check_cache(output_steps, name)
     if engine == 'migration':
         roots = [o['roots'] for o in output_steps]
-        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] == roots[2]:
-            raise ValueError('missing one-time K-to-L rekey')
+        # N61 pins repository identities across native versions: the K-to-L
+        # binary change must NOT rekey a repository (a rekey would invalidate
+        # every existing cache).
+        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] != roots[2]:
+            raise ValueError('K-to-L repository identity rekeyed or detached')
         inventories = [json.loads(base64.b64decode(o['metadata'][str(cache / 'repositories/direct/manifests' /
             (Path(o['roots']['data.txt']).name+'.json'))]['bytes_base64']))['files'] for o in output_steps]
         if any(v != inventories[0] for v in inventories):

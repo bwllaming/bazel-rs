@@ -46,7 +46,7 @@ impl Fixture {
         assert_eq!(result.status.code(), Some(1), "{error}");
         assert!(result.stdout.is_empty());
         assert!(error.contains(marker), "{error}");
-        for directory in ["trees", "manifests"] {
+        for directory in ["trees", "manifests", "specs"] {
             let path = self
                 .0
                 .path()
@@ -73,18 +73,21 @@ impl Fixture {
 fn existing_rules_active_extension_returns_empty_before_and_after_recording() {
     let f = Fixture::new();
     f.defs("before=one('made')\nempty=all_rules()\ncopy=dict(empty)\ncopy['writable']='yes'\nr(name='made',value=str(before)+'|'+type(empty)+'|'+str(len(empty))+'|'+copy['writable'])\nif one('made') != None or all_rules() != {} or one('../not-a-name') != None or one('') != None:\n    fail('incorrect repository lookup')");
-    for _ in 0..2 {
+    for (run, expected_executions) in [(0, 1), (1, 0)] {
         let output = f.run();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        // Bazel prints repository-rule debug output once per fetch: the cold
+        // run executes the callback, the warm run reuses the publication.
         assert_eq!(
             String::from_utf8_lossy(&output.stderr)
                 .matches("REPO_CALLBACK_EXECUTED")
                 .count(),
-            1
+            expected_executions,
+            "run {run}"
         );
         let line = String::from_utf8(output.stdout).unwrap();
         assert_eq!(

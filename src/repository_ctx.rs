@@ -60,9 +60,10 @@ pub struct ExecutionInputs {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FileInput>,
     /// Non-hermetic facilities that Bazel never records as inputs (execute,
-    /// which, downloads). Values are deliberately absent: the native store
-    /// re-executes every repository in every invocation (repository_store.rs),
-    /// so no cached publication is ever reused without re-running them.
+    /// which, downloads). Values are deliberately absent: a publication is
+    /// reused without re-running them when the specification and every
+    /// recorded input are unchanged (repository_store.rs, N61), like Bazel's
+    /// fetch-once `external/<name>` directories.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub host_facilities: BTreeSet<&'static str>,
     /// Module extensions only: the RepoRecordedInput.WithValue observations
@@ -687,6 +688,40 @@ fn file_state(host: &Path) -> anyhow::Result<String> {
     })
 }
 
+/// `file_state` for warm-publication revalidation (RepoRecordedInput states).
+pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
+    file_state(host).ok()
+}
+
+/// RepoRecordedInput.Dirents state (maybeWatchDirents, java:1740-1755): the
+/// digest of the sorted entry names, each NUL-terminated. `None` when the
+/// directory cannot be observed.
+pub(crate) fn recorded_dirents_state(host: &Path) -> Option<String> {
+    let mut names: Vec<Vec<u8>> = fs::read_dir(host)
+        .ok()?
+        .map(|entry| {
+            entry
+                .ok()
+                .map(|entry| entry.file_name().as_encoded_bytes().to_vec())
+        })
+        .collect::<Option<_>>()?;
+    names.sort_unstable();
+    let mut hash = Vec::new();
+    for name in names {
+        hash.extend_from_slice(&name);
+        hash.push(0);
+    }
+    Some(format!("dirents:{}", sha256(&hash)))
+}
+
+/// StarlarkRepositoryContext.watch_tree's recorded state (SRC:568-609): the
+/// recursive tree digest. `None` when the tree cannot be observed.
+pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
+    tree_digest(host)
+        .ok()
+        .map(|digest| format!("dirtree:{digest}"))
+}
+
 fn file_sha256(path: &Path) -> anyhow::Result<String> {
     let (digest, _) = Algorithm::Sha256
         .hash_file(path)
@@ -972,10 +1007,16 @@ impl Context {
 
     /// The recorded inputs and environment observations after the callback.
     pub(crate) fn finish(self) -> anyhow::Result<ExecutionInputs> {
+        Ok(self.finish_with_names()?.0)
+    }
+
+    /// `finish` plus the observed environment names, for warm revalidation.
+    pub(crate) fn finish_with_names(self) -> anyhow::Result<(ExecutionInputs, Vec<String>)> {
+        let names = self.environment.borrow().names();
         let watched_env = self.environment.borrow().inputs()?;
         let mut inputs = std::mem::take(&mut self.state.borrow_mut().inputs);
         inputs.watched_env = watched_env;
-        Ok(inputs)
+        Ok((inputs, names))
     }
 
     /// identifyingStringForLogging: `repository @@NAME` or
@@ -3558,6 +3599,19 @@ fn rule_definition_information(definition: &RuleDefinition, canonical_name: &str
     format!("Repo {canonical_name} defined by rule {rule} in {bzl}")
 }
 
+/// What executing a repository rule produced for the store: the recorded
+/// runtime inputs (serialized by the caller into the identity digest) and the
+/// observed environment names for warm-publication revalidation.
+#[derive(Debug)]
+pub struct ExecutedRepository {
+    pub inputs: ExecutionInputs,
+    pub watch_names: Vec<String>,
+    /// Digest of the client environment observed by the execution (every
+    /// repository fetch implicitly depends on it, like Bazel's
+    /// ClientEnvironmentValue); never part of the content identity.
+    pub client_environment: Option<String>,
+}
+
 /// Execute only into the caller's precreated private stage. Failures may leave
 /// partial files there; callers must not publish them. Frozen owners remain live
 /// throughout evaluation, including transitive/private helper functions.
@@ -3570,8 +3624,8 @@ pub fn execute(
     original_name: &str,
     definition_label: &Label,
     stage: &Path,
-) -> Result<ExecutionInputs, String> {
-    let run = || -> anyhow::Result<ExecutionInputs> {
+) -> Result<ExecutedRepository, String> {
+    let run = || -> anyhow::Result<ExecutedRepository> {
         ensure!(
             canonical_name.is_ascii() && original_name.is_ascii(),
             "repository names must be ASCII"
@@ -3635,8 +3689,8 @@ pub fn execute(
             // other value (None, ints, ...) means NONREPRODUCIBLE under the
             // default --incompatible_require_repo_extension_metadata=false
             // (RepositoryOptions.java:346-347). Reproducibility only selects
-            // Bazel's repo contents cache; the native store re-executes every
-            // demanded repository per invocation, so it has no effect here.
+            // Bazel's repo contents cache; the native store keys publications
+            // by specification, so it has no effect here.
             let reproducibility = if let Some(metadata) = RepoMetadata::from_value(returned) {
                 Some(metadata.attrs.to_value())
             } else if DictRef::from_value(returned).is_some() {
@@ -3647,8 +3701,9 @@ pub fn execute(
             } else {
                 None
             };
-            // RepositoryFetchFunction.java:697-703: Event.debug lines. Native
-            // re-executes per invocation, so they repeat on every invocation.
+            // RepositoryFetchFunction.java:697-703: Event.debug lines, printed
+            // per execution (a warm publication reuse never runs this code,
+            // matching Bazel's once-per-fetch behavior).
             if let Some(result) = reproducibility
                 && let Some(message) =
                     resolved_event(definition, attr_value, result, canonical_name, heap)?
@@ -3662,7 +3717,13 @@ pub fn execute(
             Ok(())
         })?;
         replant_symlinks(&context.stage)?;
-        context.finish()
+        let client_environment = context.repositories.environment().client_digest().ok();
+        let (inputs, watch_names) = context.finish_with_names()?;
+        Ok(ExecutedRepository {
+            inputs,
+            watch_names,
+            client_environment,
+        })
     };
     run().map_err(|error| {
         format!(
@@ -3747,6 +3808,7 @@ mod tests {
                 &Label::parse_canonical("//:defs.bzl").unwrap(),
                 self.stage.path(),
             )
+            .map(|executed| executed.inputs)
         }
 
         fn run(&self, body: &str) -> Result<ExecutionInputs, String> {

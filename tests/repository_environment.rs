@@ -131,7 +131,12 @@ impl Fixture {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["files", "format", "identity", "profile"]);
+        // N61: every publication additionally carries the pre-execution
+        // specification digest and the recorded watch probes.
+        assert_eq!(
+            keys,
+            ["files", "format", "identity", "profile", "recorded", "spec"]
+        );
         assert_eq!(manifest["format"], 1);
         assert_eq!(manifest["profile"], "direct-file-template-v1");
         assert_eq!(manifest["identity"], id);
@@ -320,11 +325,16 @@ fn lifecycle(route: Route) {
     assert!(first.stderr.contains("1 actions executed, 0 cache hits"));
     f.manifest(first.path(f.made_label()));
     let warm = f.build(&targets, &[(A, "alpha")]);
-    warm.callbacks(1);
+    // N61: identical specification (declared value alpha) and unchanged
+    // client environment reuse the verified publication without executing.
+    warm.callbacks(0);
     assert_eq!(warm.paths, first.paths);
     assert_eq!(warm.bytes, first.bytes);
     assert!(warm.stderr.contains("0 actions executed, 1 cache hits"));
     let unrelated = f.build(&targets, &[(A, "alpha"), (UNUSED, "unrelated")]);
+    // The client environment changed (every fetch implicitly depends on it,
+    // like Bazel's ClientEnvironmentValue): the repository refetches and
+    // republishes the same content identity.
     unrelated.callbacks(1);
     assert_eq!(unrelated.paths, first.paths);
     assert_eq!(unrelated.bytes, first.bytes);
@@ -342,7 +352,9 @@ fn lifecycle(route: Route) {
     changed.assert_bytes(b"beta");
     assert!(changed.stderr.contains("1 actions executed, 0 cache hits"));
     let restored = f.build(&targets, &[(A, "alpha")]);
-    restored.callbacks(1);
+    // Restoring the declared value restores the first publication, which the
+    // specification pointer still owns: pure reuse, no execution (N61).
+    restored.callbacks(0);
     assert_eq!(restored.paths, first.paths);
     assert_eq!(restored.bytes, first.bytes);
     f.no_stages();

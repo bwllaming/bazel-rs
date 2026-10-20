@@ -639,10 +639,27 @@ if __name__ == '__main__':
 
 
 class MigrationCountsTest(unittest.TestCase):
-    def test_first_new_build_rebuilds_once_after_manifest_v8(self):
+    def test_n61_pins_repository_and_action_identity_across_native_versions(self):
         import validate_host_os as h
-        self.assertEqual(h.migration_counts('migration', 2, True), (1, 0))
+        # N61: no action-key or repository-identity migration between K and L,
+        # so every K-to-L build follows the plain seen-bytes cache rule (the
+        # pre-N61 one-time v8 rebuild no longer applies).
+        self.assertEqual(h.migration_counts('migration', 2, True), (0, 1))
         self.assertEqual(h.migration_counts('migration', 3, True), (0, 1))
         self.assertEqual(h.migration_counts('migration', 1, True), (0, 1))
         self.assertEqual(h.migration_counts('migration', 0, False), (1, 0))
+        self.assertEqual(h.migration_counts('migration', 0, True), (0, 1))
         self.assertEqual(h.migration_counts('native', 2, True), (0, 1))
+
+
+class NativeReuseStepsTest(unittest.TestCase):
+    def test_warm_and_restored_states_reuse_the_publication(self):
+        import validate_host_os as h
+        # cache: warm, source-warm; getenv-control: warm, restored value;
+        # migration: the second K-to-L build. Everything else executes.
+        self.assertEqual([h.native_reuses('cache', i) for i in range(5)], [False, True, False, True, False])
+        self.assertEqual([h.native_reuses('getenv-control', i) for i in range(6)],
+                         [False, True, False, False, True, False])
+        self.assertEqual([h.native_reuses('migration', i, 'migration') for i in range(4)],
+                         [False, False, False, True])
+        self.assertFalse(h.native_reuses('metadata', 0))

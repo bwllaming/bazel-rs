@@ -429,9 +429,10 @@ def check_inventory(obs, cache):
     item, tree = manifests[path], inventory[str(root)]
     data = json.loads(decoded(item))
     if (not artifacts.valid_evidence(item) or item['path'] != path
-            or set(data) != {'format', 'profile', 'identity', 'files'}
             or data['format'] != 1 or data['profile'] != 'direct-file-template-v1' or data['identity'] != ids[0]):
         raise ValueError('wrong native publication manifest')
+    controlled.check_publication_schema(data, 'wrong native publication manifest')
+    controlled.check_publication_privacy(data, 'wrong native publication manifest')
     expected = {'REPO.bazel': b'', 'generated.bzl': b'VALUE = Label("//:data.txt")\n',
         'BUILD.bazel': b'exports_files(["data.txt", "generated.bzl"], visibility=["//visibility:public"])\n'}
     if set(tree['files']) != {*expected, 'data.txt'}:

@@ -27,6 +27,66 @@ from validate_direct_repositories import DirectReference, REFERENCE_SHA256
 A, B, UNUSED = 'BAZEL_RS_ENV_A', 'BAZEL_RS_ENV_B', 'BAZEL_RS_ENV_UNUSED'
 KEYS = frozenset((A, B, UNUSED, '?'))
 SECRET = 'SYNTHETIC_SECRET_42'
+# The odd-names fixture declares exactly these (plus '?'): recorded watch-probe
+# names are compared against the union of every fixture's declared names.
+ODD_NAMES = frozenset(('', '=', 'A=B', A+'\0TAIL'))
+WATCHED_NAMES = KEYS | ODD_NAMES
+# Environment VALUES never persist (Bazel's MODULE.bazel.lock discipline).
+# Since N61 a publication manifest additionally carries the pre-execution
+# specification digest (`spec`, one hex digest) and the recorded watch probes
+# (`recorded`: input digests plus Bazel-lockfile-style environment NAMES).
+VALUES = ('alpha', 'bee', 'unused', 'question', SECRET)
+MANIFEST_CORE = frozenset(('format', 'profile', 'identity', 'files'))
+MANIFEST_RECORDED = frozenset(('spec', 'recorded'))
+
+
+def _strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def check_publication_schema(data, message):
+    """Legacy four-field manifests stay valid; only N61's digest/probe fields
+    may join them (nothing an environment value could hide in)."""
+    if MANIFEST_CORE - set(data) or set(data) - MANIFEST_CORE - MANIFEST_RECORDED:
+        raise ValueError(message)
+    if 'spec' in data and not re.fullmatch('[0-9a-f]{64}', str(data['spec'])):
+        raise ValueError(message)
+    recorded = data.get('recorded')
+    if recorded is not None and (not isinstance(recorded, list)
+            or not all(isinstance(b, int) and 0 <= b < 256 for b in recorded)):
+        raise ValueError(message)
+
+
+def check_publication_privacy(data, message):
+    """Environment names may persist only as recorded watch probes; values and
+    every other name mention must stay absent (digests are opaque hex)."""
+    probes = None
+    if data.get('recorded') is not None:
+        try:
+            probes = json.loads(bytes(data['recorded']))
+        except ValueError:
+            raise ValueError(message)
+    watched = probes.get('watched_env') if isinstance(probes, dict) else None
+    watched = watched if isinstance(watched, dict) else {}
+    if not set(watched.get('names', ())) <= WATCHED_NAMES:
+        raise ValueError(message)
+    redacted = {k: v for k, v in data.items() if k != 'recorded'}
+    if isinstance(probes, dict):
+        redacted['recorded'] = {k: (dict(v, names=[]) if k == 'watched_env' and isinstance(v, dict) else v)
+                                for k, v in probes.items()}
+    for text in _strings(redacted):
+        if re.fullmatch('[0-9a-f]{64}', text):
+            continue
+        if any(value in text for value in VALUES) or any(name in text for name in (A, B, UNUSED)):
+            raise ValueError(message)
 REGISTRY = ROOT / 'tests/fixtures/builtin_modules/registry'
 SOURCES = list(dict.fromkeys([ROOT / 'scripts/validate_repository_environment.py',
     ROOT / 'tests/test_validate_repository_environment.py', *common.SOURCES,
@@ -376,15 +436,43 @@ def expected_outputs(name, probe, values, source, override=None):
     return result
 
 
+def native_restore_reuses(name, probe):
+    """N61: a warm invocation reuses the publication its specification pointer
+    addresses. Fixtures whose specification keys the changing value (declared
+    environ names, a declared-name list, or an extension-computed attribute)
+    keep one publication per value, so a restored state reuses its own; with
+    an empty declared set every state shares one specification and the
+    pointer follows the latest world, so restoring re-executes exactly like
+    Bazel's single external/<name> directory (which holds the last fetch)."""
+    variant = probe.partition('.')[2]
+    if name in ('defaults', 'privacy'):
+        return False
+    if name == 'identity':
+        return variant != 'dynamic'
+    if name == 'odd':
+        return variant == 'declared'
+    return True
+
+
 def expected_callbacks(name, probe, engine, index):
     value = fixture(name, probe)
     if value['diagnostic']:
         return ['A']*value['callbacks']
-    if engine == 'native':
-        return ['A', 'B'] if value['repos'] == 2 else ['A']
     if index == 0:
         return ['A', 'B'] if value['repos'] == 2 else ['A']
     label = states(name, probe)[index][0]
+    if engine == 'native':
+        # N61: publications are keyed by the pre-execution specification and
+        # revalidated against the recorded inputs, so a state equal to the
+        # pointer-addressed publication's world reuses it without executing.
+        # Two engine-specific differences vs the reference model: a changed
+        # client environment refetches (whole-repoEnv digest probe), and a
+        # restored earlier value reuses that value's own publication whenever
+        # the specification keys it.
+        if label in ('warm', 'source-warm') or (label == 'restore'
+                                                and native_restore_reuses(name, probe)):
+            return []
+        return ['A', 'B'] if value['repos'] == 2 else ['A']
     return [] if label in ('warm', 'unrelated', 'source-warm') else ['A']
 
 
@@ -432,10 +520,8 @@ def native_metadata(cache):
     for entry in result.values():
         raw = base64.b64decode(entry['bytes_base64'])
         data = json.loads(raw)
-        if set(data) != {'format', 'profile', 'identity', 'files'}:
-            raise ValueError('manifest schema grew environment metadata')
-        if any(x.encode() in raw for x in (A, B, UNUSED, SECRET)):
-            raise ValueError('environment leaked into publication manifest')
+        check_publication_schema(data, 'manifest schema grew environment metadata')
+        check_publication_privacy(data, 'environment leaked into publication manifest')
     return result
 
 
@@ -592,8 +678,12 @@ def validate_phase(phase, report, args, workspace, ref, item):
                     raise ValueError('invalid manifest evidence')
                 raw = base64.b64decode(e['bytes_base64'])
                 data = json.loads(raw)
-                if (set(data) != {'format', 'profile', 'identity', 'files'} or data['identity'] != Path(p).stem
-                        or any(x.encode() in raw for x in (A, B, UNUSED, SECRET))):
+                if data['identity'] != Path(p).stem:
+                    raise ValueError('manifest environment identity mismatch')
+                try:
+                    check_publication_schema(data, 'manifest environment disclosure/schema mismatch')
+                    check_publication_privacy(data, 'manifest environment disclosure/schema mismatch')
+                except ValueError:
                     raise ValueError('manifest environment disclosure/schema mismatch')
             if name == 'privacy' and not obs.get('privacy_scan'):
                 raise ValueError('missing full persistent-cache privacy scan')

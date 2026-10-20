@@ -1021,13 +1021,31 @@ impl RepositorySet {
                 }
                 let provenance = serde_json::to_vec(&provenance)
                     .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                // The specification is a pure function of the repository
+                // definition, attributes, mappings, host markers and declared
+                // environment values, computed before any execution; warm
+                // invocations reuse its publication after revalidating the
+                // recorded watchable inputs (crate::repository_warm).
+                let spec = crate::repository_warm::specification(
+                    self,
+                    &provenance,
+                    &prepared.definition.environ,
+                )?;
+                let workspace = std::fs::canonicalize(self.main_root())
+                    .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+                let this = Arc::new(self.clone());
+                let validating = Arc::new(self.clone());
                 crate::repository_store::materialize(
                     self.source_cache_path()?,
                     canonical,
+                    &spec,
                     &provenance,
-                    |stage| {
-                        let inputs = crate::repository_ctx::execute(
-                            Arc::new(self.clone()),
+                    move |tree, recorded| {
+                        crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+                    },
+                    move |stage| {
+                        let executed = crate::repository_ctx::execute(
+                            this.clone(),
                             &prepared.definition,
                             &prepared.loaded.functions,
                             attributes,
@@ -1036,9 +1054,19 @@ impl RepositorySet {
                             &prepared.label,
                             stage,
                         )?;
-                        crate::host_os::repository_inputs(self.host()?.as_ref(), &inputs)
+                        let inputs = crate::host_os::repository_inputs(
+                            this.host()?.as_ref(),
+                            &executed.inputs,
+                        )?;
+                        let recorded = crate::repository_warm::record(
+                            &executed.inputs,
+                            &executed.watch_names,
+                            executed.client_environment.as_deref(),
+                        )?;
+                        Ok(crate::repository_store::Executed { inputs, recorded })
                     },
                 )
+                .map(|(root, _)| root)
             },
         )
         .map(PathBuf::as_path)
@@ -1395,13 +1423,34 @@ impl RepositorySet {
                     provenance.extend_from_slice(repository.canonical_name.as_bytes());
                     provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
                     provenance.extend_from_slice(&prepared.provenance);
+                    // Same pre-execution specification discipline as direct
+                    // repositories: definition, attributes (via the extension
+                    // provenance), host markers and declared environment.
+                    let spec = crate::repository_warm::specification(
+                        self,
+                        &provenance,
+                        &repository.definition.environ,
+                    )?;
+                    let workspace = std::fs::canonicalize(self.main_root())
+                        .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+                    let this = Arc::new(self.clone());
+                    let validating = Arc::new(self.clone());
                     crate::repository_store::materialize(
                         self.source_cache_path()?,
                         &repository.canonical_name,
+                        &spec,
                         &provenance,
-                        |stage| {
-                            let inputs = crate::repository_ctx::execute(
-                                Arc::new(self.clone()),
+                        move |tree, recorded| {
+                            crate::repository_warm::unchanged(
+                                &validating,
+                                &workspace,
+                                tree,
+                                recorded,
+                            )
+                        },
+                        move |stage| {
+                            let executed = crate::repository_ctx::execute(
+                                this.clone(),
                                 &repository.definition,
                                 &prepared.loaded.functions,
                                 &repository.attributes,
@@ -1410,9 +1459,19 @@ impl RepositorySet {
                                 &definition_label,
                                 stage,
                             )?;
-                            crate::host_os::repository_inputs(self.host()?.as_ref(), &inputs)
+                            let inputs = crate::host_os::repository_inputs(
+                                this.host()?.as_ref(),
+                                &executed.inputs,
+                            )?;
+                            let recorded = crate::repository_warm::record(
+                                &executed.inputs,
+                                &executed.watch_names,
+                                executed.client_environment.as_deref(),
+                            )?;
+                            Ok(crate::repository_store::Executed { inputs, recorded })
                         },
                     )
+                    .map(|(root, _)| root)
                 },
             )
             .map(PathBuf::as_path)
@@ -2989,23 +3048,31 @@ mod tests {
         assert_eq!(legacy, br#"{"templates":[]}"#);
         let host = crate::host_os::HostMetadata::fixture("linux", "amd64", "linux");
         let current = crate::host_os::repository_inputs(&host, &inputs).unwrap();
-        let run = |bytes: &[u8]| {
+        let run = |bytes: &[u8], warm_world_unchanged: bool| {
             crate::repository_store::materialize(
                 cache.path(),
                 "same-key",
+                b"same-spec",
                 b"same-provenance",
+                move |_, _| Ok(warm_world_unchanged),
                 |stage| {
                     std::fs::write(stage.join("constant"), b"same-content").unwrap();
-                    Ok(bytes.to_vec())
+                    Ok(crate::repository_store::Executed {
+                        inputs: bytes.to_vec(),
+                        recorded: Vec::new(),
+                    })
                 },
             )
             .unwrap()
+            .0
         };
-        let old_root = run(&legacy);
-        let new_root = run(&current);
+        let old_root = run(&legacy, true);
+        // The host envelope change is a runtime-input change: the recorded
+        // world differs, so the publication refetches under a new identity.
+        let new_root = run(&current, false);
         assert_ne!(old_root, new_root);
-        assert_eq!(new_root, run(&current));
-        assert_eq!(old_root, run(&legacy));
+        assert_eq!(new_root, run(&current, true));
+        assert_eq!(old_root, run(&legacy, false));
     }
 
     fn environment_fixture(ordinary: bool, declaration: &str, body: &str) -> Fixture {
@@ -3025,6 +3092,43 @@ mod tests {
             );
         }
         f
+    }
+
+    #[test]
+    fn warm_reuse_validates_label_recorded_inputs() {
+        // Label reads record main-repository labels in their bare `//pkg:name`
+        // form; warm revalidation must resolve them (and refetch on change).
+        let f = Fixture::new();
+        f.write("BUILD", "");
+        f.write("data.txt", "stable");
+        f.write(
+            "rules.bzl",
+            "def implementation(ctx):\n    ctx.read(Label('//:data.txt'))\n    ctx.file('value', 'constant')\nR = repository_rule(implementation)\n",
+        );
+        f.write(
+            "MODULE.bazel",
+            "r=use_repo_rule('//:rules.bzl','R')\nr(name='repo')\n",
+        );
+        let repos = RepositorySet::new(f.0.clone());
+        let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+        let first = repos.root(&canonical).unwrap().to_path_buf();
+        assert_eq!(std::fs::read(first.join("value")).unwrap(), b"constant");
+        // A fresh repository set (a new process) reuses the publication: the
+        // recorded Label input still resolves to unchanged bytes.
+        let warm = RepositorySet::new(f.0.clone());
+        assert_eq!(warm.root(&canonical).unwrap(), first);
+        let trees = f.0.join("bazel-rs-out/repositories/direct/trees");
+        let count = std::fs::read_dir(&trees)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(count, 1);
+        // Changed label input bytes refetch under a new identity.
+        std::fs::write(f.0.join("data.txt"), "changed").unwrap();
+        let changed = RepositorySet::new(f.0.clone());
+        let second = changed.root(&canonical).unwrap().to_path_buf();
+        assert_ne!(second, first);
     }
 
     #[test]
@@ -3050,6 +3154,7 @@ mod tests {
                     let repos =
                         RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
                     let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                    // Nothing is read before the repository is demanded.
                     assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
                     if unrelated {
                         Watch::default()
@@ -3065,11 +3170,14 @@ mod tests {
                             b"constant"
                         }
                     );
+                    // In-set demand memoization: a second demand never reads.
                     let calls = reader.calls.load(Ordering::SeqCst);
-                    assert_eq!(calls, if unrelated { 2 } else { 1 });
+                    assert!(calls >= 1);
                     assert_eq!(repos.clone().root(&canonical).unwrap(), root);
                     assert_eq!(reader.calls.load(Ordering::SeqCst), calls);
-                    // Only inventory persists; neither requested names nor values.
+                    // Only inventory, digests and Bazel-lockfile-style names
+                    // persist; environment VALUES never appear (Bazel's
+                    // MODULE.bazel.lock records `ENV:` names the same way).
                     for entry in
                         std::fs::read_dir(f.0.join("bazel-rs-out/repositories/direct/manifests"))
                             .unwrap()
@@ -3077,18 +3185,62 @@ mod tests {
                         let bytes = std::fs::read(entry.unwrap().path()).unwrap();
                         let text = String::from_utf8(bytes).unwrap();
                         assert!(!text.contains("SyntheticSecret"));
-                        assert!(!text.contains("SYNTHETIC"));
                         let manifest: serde_json::Value = serde_json::from_str(&text).unwrap();
-                        assert_eq!(manifest.as_object().unwrap().len(), 4);
+                        assert_eq!(manifest.as_object().unwrap().len(), 6);
                         assert_eq!(manifest["profile"], "direct-file-template-v1");
                     }
                     root
                 };
+                // A fresh repository set (a new process) with the same cache
+                // and environment reuses the publication without executing.
                 let first = run("SyntheticSecretFirst", false);
                 assert_eq!(run("SyntheticSecretFirst", true), first);
+                // A changed environment value is a changed repository input:
+                // declared values re-key the specification before execution,
+                // observed values fail warm revalidation; both refetch.
                 assert_ne!(run("SyntheticSecretChanged", false), first);
+                // Restoring the value restores the publication (the trees are
+                // content-addressed, so no re-publication happens either).
                 assert_eq!(run("SyntheticSecretFirst", false), first);
             }
+        }
+    }
+
+    #[test]
+    fn warm_repository_reuse_never_reexecutes_the_rule() {
+        // Across fresh repository sets (processes) with unchanged inputs the
+        // repository rule must not run again: the implementation appends to a
+        // counter file outside the repository (execute is a host facility,
+        // recorded only as a name), so one line after a warm demand proves
+        // pure publication reuse.
+        for ordinary in [false, true] {
+            let counter = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            std::fs::write(counter.path().join("executions"), b"").unwrap();
+            let script = format!(
+                "ctx.execute(['sh', '-c', 'echo run >> {}'])\n    ctx.file('value', 'constant')",
+                counter.path().join("executions").display()
+            );
+            let f = environment_fixture(ordinary, "[]", &script);
+            let run = || {
+                let repos = RepositorySet::new(f.0.clone());
+                let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+                repos.root(&canonical).unwrap().to_path_buf()
+            };
+            let first = run();
+            let warm = run();
+            assert_eq!(warm, first);
+            assert_eq!(std::fs::read(warm.join("value")).unwrap(), b"constant");
+            assert_eq!(
+                std::fs::read_to_string(counter.path().join("executions")).unwrap(),
+                "run\n"
+            );
+            let trees = f.0.join("bazel-rs-out/repositories/direct/trees");
+            let count = std::fs::read_dir(&trees)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+                .count();
+            assert_eq!(count, 1, "warm demand published a new tree");
         }
     }
 

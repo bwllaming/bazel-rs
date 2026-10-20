@@ -149,7 +149,10 @@ impl Fixture {
             .map(String::as_str)
             .collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["files", "format", "identity", "profile"]);
+        assert_eq!(
+            keys,
+            ["files", "format", "identity", "profile", "recorded", "spec"]
+        );
         assert_eq!(manifest["format"], 1);
         assert_eq!(manifest["profile"], "direct-file-template-v1");
         assert_eq!(manifest["identity"], id);
@@ -464,7 +467,9 @@ fn repository_environ_is_the_client_environment_and_never_a_recorded_dependency(
     };
     let alpha = f.build(&[(A, "alpha")]);
     alpha.assert_bytes(format!("[\"alpha\",{}]\n", keys(true)).as_bytes());
-    // No dependency is recorded, yet every invocation re-executes the rule.
+    // No dependency is recorded in the identity inputs, but every fetch
+    // implicitly depends on the client environment (N61's ClientEnvironment
+    // digest probe): a changed value refetches, like Bazel.
     let beta = f.build(&[(A, "beta")]);
     beta.assert_bytes(format!("[\"beta\",{}]\n", keys(true)).as_bytes());
     assert_ne!(f.identity(&alpha), f.identity(&beta));
