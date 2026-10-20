@@ -534,13 +534,16 @@ impl std::io::Write for HashingWriter<'_> {
     }
 }
 
+/// Bazel/Linux filename profile (see repository_store::safe_relative):
+/// `# % ? : \\` are ordinary filename bytes; only empty/`.`/`..`
+/// components, NUL, 4096 bytes total and 255 bytes per component reject.
 fn relative_path(path: &str) -> Result<PathBuf, String> {
     if path.is_empty()
-        || path.contains(['\\', '\0', ':', '?', '#', '%'])
-        || path.chars().any(char::is_control)
+        || path.len() > 4096
+        || path.contains('\0')
         || path
             .split('/')
-            .any(|c| c.is_empty() || c == "." || c == "..")
+            .any(|c| c.is_empty() || c == "." || c == ".." || c.len() > 255)
         || Path::new(path)
             .components()
             .any(|c| !matches!(c, Component::Normal(_)))

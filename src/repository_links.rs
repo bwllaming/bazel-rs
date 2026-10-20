@@ -8,18 +8,19 @@
 //! the normalized path returned by `target_path`.
 //!
 //! Names are UTF-8, normal relative slash-separated paths. Spaces and hidden
-//! names are allowed; backslashes, colons, question marks, hashes, percent signs,
-//! and control characters are deliberately excluded. Targets additionally allow
+//! names are allowed, as are `#`, `%`, `?`, `:` and `\\` (ordinary Linux
+//! filename bytes; Bazel imposes no such exclusion). Targets additionally allow
 //! `.` and `..`, but not absolute paths or empty components (including trailing
 //! slashes). Directory links, external links, dangling links, and cycles are not
-//! supported. Limits are 4096 bytes per name/target, 64 components of path depth,
-//! 256 raw target components, and 40 symlink hops. Native platforms may impose a
-//! lower symlink-hop limit; validation does not override that platform limit.
+//! supported. Limits are 4096 bytes per name/target (PATH_MAX), 255 bytes per
+//! component (NAME_MAX), 256 raw target components, and 40 symlink hops; there
+//! is no component-count (depth) cap. Native platforms may impose a lower
+//! symlink-hop limit; validation does not override that platform limit.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_PATH_BYTES: usize = 4096;
-const MAX_PATH_DEPTH: usize = 64;
+const MAX_NAME_BYTES: usize = 255;
 const MAX_TARGET_COMPONENTS: usize = 256;
 const MAX_LINK_STEPS: usize = 40;
 
@@ -30,28 +31,22 @@ fn check_characters(value: &str, kind: &str) -> Result<(), String> {
     if value.len() > MAX_PATH_BYTES {
         return Err(format!("{kind} exceeds {MAX_PATH_BYTES} bytes"));
     }
-    if value
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '\\' | ':' | '?' | '#' | '%'))
-    {
-        return Err(format!("{kind} contains a forbidden character: {value:?}"));
+    if value.contains('\0') {
+        return Err(format!("{kind} contains NUL: {value:?}"));
     }
     Ok(())
 }
 
 fn check_name(path: &str) -> Result<(), String> {
     check_characters(path, "entry path")?;
-    let mut depth = 0;
     for component in path.split('/') {
-        if component.is_empty() || component == "." || component == ".." {
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || component.len() > MAX_NAME_BYTES
+        {
             return Err(format!(
                 "entry path is not a normal relative path: {path:?}"
-            ));
-        }
-        depth += 1;
-        if depth > MAX_PATH_DEPTH {
-            return Err(format!(
-                "entry path exceeds depth {MAX_PATH_DEPTH}: {path:?}"
             ));
         }
     }
@@ -95,11 +90,6 @@ pub fn target_path(link_path: &str, raw_target: &str) -> Result<String, String> 
                 }
             }
             normal => components.push(normal),
-        }
-        if components.len() > MAX_PATH_DEPTH {
-            return Err(format!(
-                "symlink target exceeds depth {MAX_PATH_DEPTH}: {raw_target:?}"
-            ));
         }
         // Also bound intermediate paths, not just the final normalized result.
         let bytes = components.iter().map(|part| part.len()).sum::<usize>()
@@ -292,25 +282,15 @@ mod tests {
 
     #[test]
     fn unsafe_targets_are_rejected() {
+        // Only structural escapes reject: empty/absolute components and
+        // root escape. Controls, drive letters, backslashes, `?#%` are
+        // ordinary Linux filename bytes in a target.
         for target in [
             "",
             "/file",
             "//file",
             "../file",
             "x/../../file",
-            "C:/file",
-            "C:file",
-            "\\file",
-            "a\\b",
-            "f\0ile",
-            "f\nile",
-            "f\rile",
-            "f\tile",
-            "f\u{7f}ile",
-            "f\u{85}ile",
-            "file?query",
-            "file#fragment",
-            "%2e%2e/file",
             "file/",
             "a//file",
         ] {
@@ -321,8 +301,7 @@ mod tests {
     #[test]
     fn all_entry_names_must_be_safe_normal_relative_paths() {
         for name in [
-            "", "/file", "file/", "a//b", ".", "..", "./file", "a/../b", "a/./b", "C:file", "a\\b",
-            "a?b", "a#b", "a%b", "a\0b", "a\nb",
+            "", "/file", "file/", "a//b", ".", "..", "./file", "a/../b", "a/./b", "a\0b",
         ] {
             assert!(
                 validate(&files(&[name]), &BTreeMap::new()).is_err(),
@@ -460,10 +439,26 @@ mod tests {
 
     #[test]
     fn path_and_target_byte_bounds() {
+        // Entry names: NAME_MAX per component caps the reachable total
+        // below PATH_MAX (16x255 + 15 separators = 4095); a 4096-byte
+        // target string (no per-component cap on raw targets) still fits.
+        let component = "a".repeat(MAX_NAME_BYTES);
+        let maximum_entry = vec![component.as_str(); 16].join("/");
+        assert_eq!(maximum_entry.len(), MAX_PATH_BYTES - 1);
+        assert_eq!(target_path("link", &maximum_entry).unwrap(), maximum_entry);
+        validate(&files(&[&maximum_entry]), &BTreeMap::new()).unwrap();
         let maximum = "a".repeat(MAX_PATH_BYTES);
         let too_long = "a".repeat(MAX_PATH_BYTES + 1);
         assert_eq!(target_path("link", &maximum).unwrap(), maximum);
-        validate(&files(&[&maximum]), &BTreeMap::new()).unwrap();
+        assert!(validate(&files(&[&maximum]), &BTreeMap::new()).is_err());
+        // A single component over NAME_MAX rejects even under PATH_MAX.
+        assert!(
+            validate(
+                &files(&["a".repeat(MAX_NAME_BYTES + 1).as_str()]),
+                &BTreeMap::new()
+            )
+            .is_err()
+        );
         assert!(target_path("link", &too_long).is_err());
         assert!(target_path(&too_long, "file").is_err());
         assert!(validate(&files(&[&too_long]), &BTreeMap::new()).is_err());
@@ -478,16 +473,21 @@ mod tests {
     }
 
     #[test]
-    fn path_depth_and_intermediate_depth_bounds() {
-        let maximum = vec!["a"; MAX_PATH_DEPTH].join("/");
-        let too_deep = format!("{maximum}/a");
-        assert_eq!(target_path("link", &maximum).unwrap(), maximum);
-        validate(&files(&[&maximum]), &BTreeMap::new()).unwrap();
-        assert!(target_path("link", &too_deep).is_err());
-        assert!(target_path(&too_deep, "file").is_err());
-        assert!(validate(&files(&[&too_deep]), &BTreeMap::new()).is_err());
-        assert!(target_path("link", &format!("{too_deep}/../file")).is_err());
-        assert!(target_path(&maximum, "dir/file").is_err());
+    fn path_depth_is_bounded_only_by_total_bytes() {
+        // No component-count cap (Bazel/Linux): 64- and 65-component paths
+        // both validate; only the 4096-byte total bounds depth.
+        let deep64 = vec!["a"; 64].join("/");
+        let deep65 = format!("{deep64}/a");
+        assert_eq!(target_path("link", &deep64).unwrap(), deep64);
+        validate(&files(&[&deep64]), &BTreeMap::new()).unwrap();
+        assert_eq!(target_path("link", &deep65).unwrap(), deep65);
+        validate(&files(&[&deep65]), &BTreeMap::new()).unwrap();
+        // Bazel-legal filename bytes in names and targets.
+        validate(
+            &files(&["a?b", "a%b", "C:file", "a\\b"]),
+            &links(&[("a#b", "a%b")]),
+        )
+        .unwrap();
     }
 
     #[test]

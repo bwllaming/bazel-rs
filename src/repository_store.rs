@@ -18,7 +18,8 @@
 //!
 //! Files are hashed incrementally while snapshotting (constant memory). There
 //! are no file-size, total-size, entry-count or manifest-size caps; only the
-//! store's path profile (UTF-8, 4096-byte names, depth 64) is enforced.
+//! store's Linux path profile (UTF-8, 4096-byte names, 255-byte components,
+//! no component-count cap) is enforced.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -29,8 +30,8 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 const PROFILE: &str = "direct-file-template-v1";
-const DEPTH_LIMIT: usize = 64;
 const PATH_LIMIT: usize = 4096;
+const NAME_LIMIT: usize = 255;
 const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v1";
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,19 +524,29 @@ fn mode(metadata: &fs::Metadata) -> Result<u32, String> {
     }
 }
 
+/// Linux filename profile of a direct-repository relative path, mirroring
+/// Bazel 9.3: repository trees are traversed entry-by-entry (`os.DirEntry` /
+/// unix_jni.cc `readdir`), and `PathFragment.checkBaseName` forbids only
+/// separators and `.`/`..` in a name. `#`, `%`, `?`, `:` and `\\` are
+/// ordinary Linux filename bytes, not path structure (Bazel's own JSON
+/// conformance asset is `n_structure_trailing_#.json`), so they are accepted.
+/// The only limits are the kernel limits Bazel itself runs under: PATH_MAX
+/// (4096 bytes total) and NAME_MAX (255 bytes per component). There is no
+/// component-count (depth) cap: the total-length cap already bounds it, and
+/// Bazel on Linux accepts deeper trees. NUL can never occur in a filename.
 fn safe_relative(name: &str) -> Result<(), String> {
     if name.len() > PATH_LIMIT
-        || name.split('/').count() > DEPTH_LIMIT
-        || name.contains(['\\', '\0', ':', '?', '#', '%'])
-        || name.chars().any(char::is_control)
+        || name.contains('\0')
         || name
             .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+            .any(|part| part.is_empty() || part == "." || part == ".." || part.len() > NAME_LIMIT)
         || Path::new(name)
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
     {
-        return Err("invalid direct repository path or path/depth limit exceeded".into());
+        return Err(format!(
+            "invalid direct repository path {name:?} or path limit exceeded              (maximum {PATH_LIMIT} bytes total, {NAME_LIMIT} bytes per component)"
+        ));
     }
     Ok(())
 }
@@ -1479,18 +1490,21 @@ mod tests {
             17 * 1024 * 1024
         );
         assert_eq!(fs::read_dir(tree.join("many")).unwrap().count(), 10_001);
-        assert!(
-            publish_spec(cache.path(), b"deep-spec", b"", true, |stage| {
-                let mut path = stage.to_owned();
-                for _ in 0..=DEPTH_LIMIT {
-                    path.push("d");
-                    fs::create_dir(&path).unwrap();
-                }
-                Ok(vec![])
-            })
-            .is_err()
-        );
+        // Depth is bounded only by the 4096-byte total (PATH_MAX): a
+        // 65-component tree publishes, like Bazel on Linux.
+        let (deep, _) = publish_spec(cache.path(), b"deep-spec", b"", true, |stage| {
+            let mut path = stage.to_owned();
+            for _ in 0..65 {
+                path.push("d");
+                fs::create_dir(&path).unwrap();
+            }
+            Ok(vec![])
+        })
+        .unwrap();
+        assert!(deep.join(vec!["d"; 65].join("/")).is_dir());
         assert!(safe_relative(&"a".repeat(PATH_LIMIT + 1)).is_err());
+        assert!(safe_relative(&"a".repeat(NAME_LIMIT + 1)).is_err());
+        assert!(safe_relative(&vec!["d"; 65].join("/")).is_ok());
         no_stages(cache.path());
     }
 
@@ -1499,15 +1513,13 @@ mod tests {
     fn non_utf8_and_invalid_paths_are_rejected() {
         use std::os::unix::ffi::OsStringExt;
         let cache = temp();
-        for name in [std::ffi::OsString::from_vec(vec![255]), "bad\\name".into()] {
-            assert!(
-                publish(cache.path(), b"", |stage| {
-                    fs::write(stage.join(name), b"").unwrap();
-                    Ok(vec![])
-                })
-                .is_err()
-            );
-        }
+        assert!(
+            publish(cache.path(), b"", |stage| {
+                fs::write(stage.join(std::ffi::OsString::from_vec(vec![255])), b"").unwrap();
+                Ok(vec![])
+            })
+            .is_err()
+        );
         no_stages(cache.path());
     }
 }

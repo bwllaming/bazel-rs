@@ -565,10 +565,6 @@ fn label_components(path: &str) -> anyhow::Result<()> {
         !path.is_empty() && path.len() <= 4096,
         "repository path must contain 1..4096 bytes"
     );
-    ensure!(
-        path.split('/').count() <= 64,
-        "repository path exceeds depth 64"
-    );
     for component in path.split('/') {
         ensure!(
             !matches!(component, "" | "." | ".."),
@@ -1141,18 +1137,17 @@ impl Context {
             // The working directory is scratch, never published to the store.
             return Ok(relative.to_owned());
         }
+        // Bazel checkInOutputDirectory checks containment only; the store
+        // adds the Linux kernel limits (PATH_MAX 4096 total, NAME_MAX 255
+        // per component, no component-count cap). `# % ? : \\` are
+        // ordinary Linux filename bytes and are accepted.
         ensure!(
             relative.len() <= 4096,
             "repository path must contain 1..4096 bytes"
         );
         ensure!(
-            relative.split('/').count() <= 64,
-            "repository path exceeds depth 64"
-        );
-        ensure!(
-            !relative.contains(['\\', ':', '?', '#', '%'])
-                && !relative.chars().any(char::is_control),
-            "unsupported repository output path {relative:?}: the native store profile forbids control characters, '\\\\', ':', '?', '#', and '%'"
+            relative.split('/').all(|part| part.len() <= 255),
+            "repository output path {relative:?} exceeds 255 bytes in a component"
         );
         Ok(relative.to_owned())
     }
@@ -3406,7 +3401,8 @@ fn replant_symlinks(stage: &Path) -> anyhow::Result<()> {
         depth: usize,
         count: &mut usize,
     ) -> anyhow::Result<()> {
-        ensure!(depth <= 64, "repository tree exceeds depth 64");
+        // No depth cap: total path length is bounded by the store profile.
+        let _ = depth;
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             *count += 1;
@@ -4140,6 +4136,13 @@ mod tests {
         assert_eq!(fixture.bytes("escape"), b"1");
         assert_eq!(fixture.bytes("x/y"), b"2");
         assert_eq!(fixture.bytes("m/n"), b"3");
+        // Bazel-legal Linux filename bytes publish like any other name.
+        fixture.ok(
+            "ctx.file('back\\\\slash', '4')\nctx.file('colon:name', '5')\nctx.file('x#y%z?w', '6')",
+        );
+        assert_eq!(fixture.bytes("back\\slash"), b"4");
+        assert_eq!(fixture.bytes("colon:name"), b"5");
+        assert_eq!(fixture.bytes("x#y%z?w"), b"6");
         for (path, expected) in [
             (
                 "../escape",
@@ -4149,10 +4152,7 @@ mod tests {
                 "/absolute-n21",
                 "Cannot write outside of the repository directory for path /absolute-n21",
             ),
-            ("back\\\\slash", "native store profile"),
-            ("a\\nb", "native store profile"),
-            ("nul\\000path", "native store profile"),
-            ("colon:name", "native store profile"),
+            ("nul\\000path", "unexpected NUL"),
             ("", "is the repository directory"),
             (".", "is the repository directory"),
         ] {
@@ -4170,7 +4170,10 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
-        assert_eq!(names, ["escape", "m", "x"]);
+        assert_eq!(
+            names,
+            ["back\\slash", "colon:name", "escape", "m", "x", "x#y%z?w"]
+        );
     }
 
     #[cfg(unix)]
@@ -4515,9 +4518,10 @@ R = repository_rule(implementation = _impl)
     }
 
     #[test]
-    fn rejects_overdeep_long_paths_but_not_many_operations() {
+    fn rejects_long_paths_but_not_deep_or_many_operations() {
         let fixture = Fixture::new();
-        fixture.error("ctx.file('/'.join(['a'] * 65))", "depth 64");
+        // No component-count cap: depth is bounded only by 4096 total bytes.
+        fixture.run("ctx.file('/'.join(['a'] * 65))").unwrap();
         fixture.error("ctx.file('a' * 4097)", "4096");
         fixture
             .run("for i in range(10001):\n    ctx.file('empty')")

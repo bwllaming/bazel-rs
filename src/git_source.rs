@@ -5,8 +5,8 @@
 //! itself must be trusted against concurrent hostile filesystem replacement.
 //! Process isolation is not a sandbox against vulnerabilities in Git itself.
 //! Native relative file symlinks preserve literal UTF-8 targets, within the
-//! repository_links profile (4096-byte paths/targets, depth 64, 256 raw target
-//! components, 40 hops). Directory, external and dangling links are unsupported.
+//! repository_links profile (4096-byte paths/targets, 255-byte components,
+//! 256 raw target components, 40 hops). Directory, external and dangling links are unsupported.
 use crate::git_process::GitRunner;
 use crate::patch_inputs::LocalPatchPlan;
 use crate::repository_links;
@@ -22,9 +22,10 @@ use std::time::Duration;
 // v2 trusted checkout link strings, which Git can truncate at an embedded NUL.
 // Do not reuse those trees/manifests even if their filesystem snapshots match.
 const POLICY: &str = "native-git-source-v3";
-// Path profile of the content-addressed store (repository_links), not I/O caps.
-const MAX_DEPTH: usize = 64;
+// Path profile of the content-addressed store (repository_links), not I/O caps:
+// PATH_MAX total, NAME_MAX per component, no component-count cap (Bazel/Linux).
 const MAX_PATH_BYTES: usize = 4096;
+const MAX_NAME_BYTES: usize = 255;
 /// Per Git command, like Bazel's git_repository, whose `ctx.execute` calls
 /// use the default 600-second timeout (git_worker.bzl; repository_ctx.execute
 /// `timeout` default). There are no tree size, entry-count or listing caps.
@@ -414,21 +415,27 @@ fn committed_links(
     Ok(links)
 }
 
+/// Bazel/Linux filename profile (see repository_store::safe_relative):
+/// `# % ? : \\` are ordinary filename bytes; only empty/`.`/`..` (and
+/// `.git`) components, NUL, PATH_MAX (4096) total and NAME_MAX (255) per
+/// component are rejected. No component-count cap.
 fn safe_relative(text: &str) -> Result<(), String> {
     if text.is_empty()
         || text.len() > MAX_PATH_BYTES
-        || text.contains(['\\', ':', '?', '#', '%'])
-        || text.chars().any(char::is_control)
-        || text
-            .split('/')
-            .any(|p| p.is_empty() || p == "." || p == ".." || p.eq_ignore_ascii_case(".git"))
+        || text.contains('\0')
+        || text.split('/').any(|p| {
+            p.is_empty()
+                || p == "."
+                || p == ".."
+                || p.eq_ignore_ascii_case(".git")
+                || p.len() > MAX_NAME_BYTES
+        })
         || Path::new(text)
             .components()
             .any(|p| !matches!(p, Component::Normal(_)))
-        || text.split('/').count() > MAX_DEPTH
     {
         return Err(format!(
-            "unsafe Git relative path or strip_prefix {text:?} (maximum 4096 bytes and depth 64)"
+            "unsafe Git relative path or strip_prefix {text:?} (maximum 4096 bytes total, 255 bytes per component)"
         ));
     }
     Ok(())
@@ -1031,8 +1038,7 @@ mod tests {
             cases.push(spec);
         }
         for prefix in [
-            "../x", "/x", "a//b", "a/./b", "a/../b", "a/", "a\\b", "a:b", ".git", "a/.GiT/b",
-            "a\0b",
+            "../x", "/x", "a//b", "a/./b", "a/../b", "a/", ".git", "a/.GiT/b", "a\0b",
         ] {
             let mut spec = good.clone();
             spec.strip_prefix = prefix.into();
@@ -1365,8 +1371,8 @@ mod tests {
     #[cfg(unix)]
     fn rejects_malformed_committed_link_blobs_before_callback_or_publication() {
         for (bytes, message) in [
-            (b"data\0../outside".to_vec(), "forbidden character"),
-            (b"data\0".to_vec(), "forbidden character"),
+            (b"data\0../outside".to_vec(), "contains NUL"),
+            (b"data\0".to_vec(), "contains NUL"),
             (b"data\xff".to_vec(), "non-UTF-8"),
             (vec![b'a'; 4097], "4096 bytes"),
         ] {
@@ -1473,7 +1479,7 @@ mod tests {
             |_, _| -> Result<(), String> { panic!("v2 truncated target reached callback") },
         )
         .unwrap_err();
-        assert!(error.contains("forbidden character"), "{error}");
+        assert!(error.contains("contains NUL"), "{error}");
         assert!(root.is_dir());
         assert_eq!(fs::read_dir(root.parent().unwrap()).unwrap().count(), 1);
         assert_eq!(fs::read_dir(manifests).unwrap().count(), 1);
@@ -2047,7 +2053,6 @@ mod tests {
             ("100644", "blob", "a/.GiT/config"),
             ("100644", "blob", "/abs"),
             ("100644", "blob", "a//b"),
-            ("100644", "blob", "a\\b"),
         ] {
             assert!(parse_listing(format!("{mode} {kind} {sha}\t{path}\0").as_bytes()).is_err());
         }
@@ -2064,7 +2069,8 @@ mod tests {
             .collect();
         assert!(many.len() > 1024 * 1024);
         assert_eq!(parse_listing(many.as_bytes()).unwrap().len(), 100_001);
-        assert!(safe_relative(&vec!["x"; 65].join("/")).is_err());
+        assert!(safe_relative(&vec!["x"; 65].join("/")).is_ok());
+        assert!(safe_relative("dir/x#y%z?:w\\v").is_ok());
         assert!(verify_commit(format!("{}\n", "b".repeat(40)).as_bytes(), &sha).is_err());
         assert_eq!(COMMAND_TIMEOUT, Duration::from_secs(600));
     }

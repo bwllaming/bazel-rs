@@ -105,7 +105,7 @@ fn validate_manifest(manifest: &Manifest) -> Result<(), String> {
     for entry in &manifest.files {
         let name = entry.path.as_str();
         if name.is_empty()
-            || name.contains(['\\', '\0', ':'])
+            || name.contains('\0')
             || name.split('/').any(|part| matches!(part, "" | "." | ".."))
             || previous.is_some_and(|previous| previous >= name)
             || !valid_hash(&entry.sha256)
