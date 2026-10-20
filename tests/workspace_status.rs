@@ -4,11 +4,13 @@
 //! and N63: the workspace status action producing them — the files an
 //! action sees (Bazel's built-in keys, the format and the trailing space of
 //! an empty BUILD_EMBED_LABEL), a --workspace_status_command script's keys
-//! (stable/volatile split, built-in overrides), script failures
-//! (infrastructure failure with Bazel's text, exit statuses included), the
-//! ./x PathFragment normalization (127), and the constant-metadata rebuild
-//! semantics (a volatile change never rebuilds a consumer; a stable change
-//! does) — docs/WORKSPACE_STATUS.md.
+//! (stable/volatile split, built-in overrides), script failures (an
+//! ordinary action failure, catastrophe=false, with Bazel's text, exit
+//! statuses and signals included), the ./x PathFragment normalization
+//! (127), the action running on EVERY executing build even without a
+//! consumer (BLOCKER 1), and the constant-metadata rebuild semantics (a
+//! volatile change never rebuilds a consumer; a stable change does) —
+//! docs/WORKSPACE_STATUS.md.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -171,7 +173,102 @@ fn status_files_an_action_sees() {
 }
 
 #[test]
-fn a_failing_script_is_an_infrastructure_error_with_bazel_text() {
+fn a_failing_script_fails_even_without_a_status_consumer() {
+    // BLOCKER 1 (N63 follow-up): Bazel adds the status artifacts to
+    // artifactsToBuild unconditionally (BuildView.createResult
+    // :647-650,675), so a failing script fails a build whose targets
+    // never consume the status. //ws:ws only describes the File values.
+    let ws = fixture();
+    let flag = format!(
+        "--workspace_status_command={}",
+        script(ws.path(), "exit 7\n")
+    );
+    let output = build(ws.path(), "//ws:ws", &[&flag], "cache", None);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to determine workspace status: Process exited with status 7"),
+        "{stderr}"
+    );
+    // Exactly one failure line: Bazel has ONE workspace status action.
+    assert_eq!(
+        stderr
+            .matches("Failed to determine workspace status")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    // A signal death reads `Process terminated by signal N`
+    // (TerminationStatus.toString).
+    let flag = format!(
+        "--workspace_status_command={}",
+        script(ws.path(), "kill -TERM $$\n")
+    );
+    let output = build(ws.path(), "//ws:ws", &[&flag], "cache2", None);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Genuine (verified on the capture machine) reports signal 15 here;
+    // the native's /bin/sh -c <path> may instead surface the inner
+    // shell's 128+15 exit — both are Bazel's two TerminationStatus forms.
+    assert!(
+        stderr.contains("Failed to determine workspace status: Process terminated by signal 15")
+            || stderr
+                .contains("Failed to determine workspace status: Process exited with status 143"),
+        "{stderr}"
+    );
+    // --nobuild: no execution phase, so the status action does not run
+    // and the failing script cannot fail the (analysis-only) build.
+    let output = build(ws.path(), "//ws:ws", &[&flag, "--nobuild"], "cache3", None);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // --embed_label with a newline is rejected by its converter.
+    let output = build(
+        ws.path(),
+        "//ws:ws",
+        &["--embed_label=a\nb"],
+        "cache4",
+        None,
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Value must not contain multiple lines"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // query does not inherit build options: the flag is unrecognized
+    // there (QueryCommand has no inheritsOptionsFrom).
+    let mut command = Command::new("timeout");
+    let queried = command
+        .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=cache5",
+            "query",
+            "--workspace_status_command=/bin/true",
+            "//ws:ws",
+        ])
+        .current_dir(ws.path())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", ws.path())
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(!queried.status.success());
+    // The native's unrecognized-option form names the flag (genuine:
+    // `Unrecognized option: --workspace_status_command`).
+    assert!(
+        String::from_utf8_lossy(&queried.stderr).contains("--workspace_status_command"),
+        "{}",
+        String::from_utf8_lossy(&queried.stderr)
+    );
+}
+
+#[test]
+fn a_failing_script_is_an_action_failure_with_bazel_text() {
     let ws = fixture();
     let flag = format!(
         "--workspace_status_command={}",
@@ -216,8 +313,11 @@ fn volatile_changes_never_rebuild_a_consumer_stable_changes_do() {
         Some("1792511811"),
     );
     assert!(first.status.success());
+    // The summary counts only the consumer: the two status nodes execute
+    // (or hit) every build but are reported like Bazel's internal process,
+    // outside the action tally.
     assert!(
-        summary(&first).starts_with("bazel-rs: 3 actions executed"),
+        summary(&first).starts_with("bazel-rs: 1 actions executed"),
         "{}",
         summary(&first)
     );
@@ -230,7 +330,7 @@ fn volatile_changes_never_rebuild_a_consumer_stable_changes_do() {
         Some("1792511811"),
     );
     assert!(
-        summary(&warm).starts_with("bazel-rs: 0 actions executed, 3 cache hits"),
+        summary(&warm).starts_with("bazel-rs: 0 actions executed, 1 cache hits"),
         "{}",
         summary(&warm)
     );
@@ -245,7 +345,7 @@ fn volatile_changes_never_rebuild_a_consumer_stable_changes_do() {
         Some("1792519999"),
     );
     assert!(
-        summary(&volatile).starts_with("bazel-rs: 1 actions executed, 2 cache hits"),
+        summary(&volatile).starts_with("bazel-rs: 0 actions executed, 1 cache hits"),
         "{}",
         summary(&volatile)
     );
@@ -262,10 +362,10 @@ fn volatile_changes_never_rebuild_a_consumer_stable_changes_do() {
         "cache",
         Some("1792511811"),
     );
-    // The stable write and the consumer re-execute; the volatile write is
-    // still cached at this timestamp.
+    // The stable change rebuilds the consumer (the status nodes
+    // themselves are outside the tally).
     assert!(
-        summary(&stable).starts_with("bazel-rs: 2 actions executed, 1 cache hits"),
+        summary(&stable).starts_with("bazel-rs: 1 actions executed, 0 cache hits"),
         "{}",
         summary(&stable)
     );

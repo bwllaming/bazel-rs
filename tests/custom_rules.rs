@@ -135,7 +135,33 @@ multi=rule(implementation=_impl,attrs={"out":attr.output(mandatory=True)})
     let unused = ws.run(&["build", ":multi"]);
     assert!(outputs(&unused).is_empty());
     assert!(errors(&unused).contains("0 actions executed"));
-    assert!(!ws.0.join("bazel-rs-out").exists());
+    // The workspace status actions run on every executing build (N63
+    // follow-up) and materialize bazel-out/{stable,volatile}-status.txt
+    // even when no target action does; the cache directory therefore
+    // exists, holding only the two status outputs.
+    let status_only = ws.0.join("bazel-rs-out/actions");
+    let mut materialized: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&status_only).unwrap().flatten() {
+        let mut stack = vec![entry.path().join("outputs")];
+        while let Some(dir) = stack.pop() {
+            for child in fs::read_dir(&dir).unwrap().flatten() {
+                if child.file_type().unwrap().is_dir() {
+                    stack.push(child.path());
+                } else {
+                    materialized.push(
+                        child
+                            .path()
+                            .file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+    }
+    materialized.sort();
+    assert_eq!(materialized, ["stable-status.txt", "volatile-status.txt"]);
     let selected = ws.run(&["build", "--jobs=4", ":selected.txt"]);
     assert_eq!(fs::read(outputs(&selected).remove(0)).unwrap(), b"staged");
     assert!(errors(&selected).contains("2 actions executed"));

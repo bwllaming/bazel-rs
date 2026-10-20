@@ -129,7 +129,7 @@ identical modulo the shift.
 - **FDO**: `absolute_symlink` (absolute-path FDO profiles); FDO/propeller
   profiles remain N25d's explicit toolchain-analysis gaps.
 - **libc_top** (N25d5) remains unsupported.
-- **cc_library `linkstamp`** (N63's recorded remaining boundary): rules_cc's
+- **cc_library `linkstamp`** — not yet modelled (Short): rules_cc's
   `LinkstampInfo` fields are `wrap_with_check_private_api` closures
   (`create_linkstamp.bzl:41-44`); a local closure cannot cross analyses in
   the native depset representation, so a linkstamp-carrying dependency fails

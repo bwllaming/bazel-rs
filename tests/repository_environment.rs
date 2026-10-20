@@ -740,7 +740,31 @@ fn callback_failure_after_getenv_and_file_write_rolls_back_only_private_stage() 
         assert!(!errors(&output).contains(SECRET));
         assert_eq!(inventory(&f.store()), before);
         assert_eq!(fs::read(first.path(f.made_label())).unwrap(), b"constant");
-        assert!(!f.0.path().join("cache/actions").exists());
+        // No target action of the failed build materialized; the only
+        // tolerated cache entries are the workspace status actions of
+        // the executing build (N63 follow-up).
+        if let Ok(entries) = fs::read_dir(f.0.path().join("cache/actions")) {
+            for entry in entries.flatten() {
+                let mut stack = vec![entry.path().join("outputs")];
+                while let Some(dir) = stack.pop() {
+                    for child in fs::read_dir(&dir).unwrap().flatten() {
+                        if child.file_type().unwrap().is_dir() {
+                            stack.push(child.path());
+                        } else {
+                            let name = child.file_name();
+                            let name = name.to_string_lossy();
+                            assert!(
+                                matches!(
+                                    name.as_ref(),
+                                    "stable-status.txt" | "volatile-status.txt"
+                                ),
+                                "unexpected materialized output: {name}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
         f.no_stages();
         f.definition("", "'constant'", DECLARED);
         assert_eq!(f.generated(&[(A, "alpha")]).paths, first.paths);

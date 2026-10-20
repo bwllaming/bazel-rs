@@ -340,13 +340,59 @@ fn stamped_build_info_translates_the_workspace_status() {
         "{stable}"
     );
 
-    // A failing script is an infrastructure failure with Bazel's text.
+    // A failing script is an ordinary action failure (catastrophe=false,
+    // exit 1) with Bazel's text.
     let output = ws.build(&["--workspace_status_command=true; exit 9", "//bi:stamped"]);
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
     assert!(
         text.contains("Failed to determine workspace status: Process exited with status 9"),
         "{text}"
+    );
+
+    // BLOCKER 2 (N63 follow-up): a changed SOURCE_DATE_EPOCH alone must
+    // NOT rewrite volatile_file.h — the volatile TranslateBuildInfo key
+    // (GUID + isVolatile + callback digest + template digest) excludes
+    // the substitutions, and its status input is constant metadata. The
+    // published bytes (with the first build's timestamp) survive. Same
+    // workspace, same cache: rebuild with a different epoch.
+    let before = volatile.clone();
+    let rebuilt = {
+        let registry = format!(
+            "--registry=file://{}",
+            manifest()
+                .join("tests/fixtures/builtin_modules/registry")
+                .display()
+        );
+        Command::new("/usr/bin/timeout")
+            .args(["--kill-after=5s", "600s"])
+            .arg(env!("CARGO_BIN_EXE_bazel-rs"))
+            .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])
+            .args(["--experimental-builtin-modules", registry.as_str()])
+            .arg(&flag)
+            .arg("//bi:stamped")
+            .current_dir(ws.0.path())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", ws.0.path().join("home"))
+            .env("TMPDIR", ws.0.path().join("tmp"))
+            .env("LC_ALL", "C")
+            .env("SOURCE_DATE_EPOCH", "1800000000")
+            .output()
+            .unwrap()
+    };
+    let rebuilt_out = outputs(&rebuilt);
+    let after = fs::read_to_string(
+        rebuilt_out
+            .iter()
+            .find(|(_, path)| path.ends_with("volatile_file.h"))
+            .map(|(_, path)| path)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        before, after,
+        "volatile_file.h must not change with only the epoch"
     );
 
     // N53: the genrule `toolchains` attribute expands the cc_toolchain_alias

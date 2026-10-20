@@ -168,11 +168,13 @@ struct ActionPlanning {
         std::sync::Arc<crate::starlark_types::Target>,
     >,
     /// The workspace status of this build (N63): the computed
-    /// BazelWorkspaceStatusAction outputs and the planned system nodes'
-    /// artifacts. `None` until the first action that consumes a status file
-    /// or an actions.transform_{version,info}_file registration needs it —
-    /// like Bazel, a build whose targets never touch the workspace status
-    /// never runs `--workspace_status_command`.
+    /// BazelWorkspaceStatusAction outputs and the planned system node's
+    /// artifacts. Computed exactly once per executing invocation
+    /// (std::sync::OnceLock in Engine::workspace_status_once) and planned
+    /// once per build that executes — Bazel adds both status artifacts to
+    /// artifactsToBuild unconditionally (BuildView.createResult
+    /// :647-650,675), so the status action runs on every build/test/run
+    /// that reaches execution, whether or not any target consumes it.
     workspace_status: Option<WorkspaceStatusPlan>,
     /// The one shared `Target` value of each dependency edge's configured
     /// target (N55): allocated once and referenced by every consumer's
@@ -276,8 +278,9 @@ impl ActionPlanning {
 }
 
 /// The per-build workspace status plan (N63): the computed status and the
-/// two system write nodes' artifacts (the BazelWorkspaceStatusAction's
-/// stable and volatile outputs).
+/// system write node's artifacts (the one BazelWorkspaceStatusAction's
+/// stable and volatile outputs — Bazel has ONE action with both outputs,
+/// BazelWorkspaceStatusModule.java:87-98).
 struct WorkspaceStatusPlan {
     computed: crate::workspace_status::ComputedWorkspaceStatus,
     stable: Artifact,
@@ -1270,6 +1273,15 @@ pub struct Engine {
     /// `--workspace_status_command`/`--embed_label` of later builds
     /// (WorkspaceStatusAction.Options; N63).
     workspace_status: crate::workspace_status::WorkspaceStatusOptions,
+    /// The one computed workspace status of this invocation (N63
+    /// follow-up): computed exactly once, behind a OnceLock so parallel
+    /// planning (N62) can never run the status script twice.
+    workspace_status_once: std::sync::OnceLock<crate::workspace_status::ComputedWorkspaceStatus>,
+    /// Whether this invocation executes (--nobuild stops before the
+    /// execution phase, BuildRequestOptions.performExecutionPhase
+    /// :154-160; the workspace status action is an execution-phase
+    /// artifact, so it is not planned under --nobuild).
+    execute_build: bool,
 }
 
 impl Engine {
@@ -1329,6 +1341,8 @@ impl Engine {
             run_plans: BTreeMap::new(),
             errors: Vec::new(),
             workspace_status: crate::workspace_status::WorkspaceStatusOptions::default(),
+            workspace_status_once: std::sync::OnceLock::new(),
+            execute_build: true,
         }
     }
 
@@ -1352,6 +1366,36 @@ impl Engine {
         options: crate::workspace_status::WorkspaceStatusOptions,
     ) {
         self.workspace_status = options;
+    }
+
+    /// Whether later builds execute their actions (`--nobuild` stops
+    /// before the execution phase: BuildRequestOptions
+    /// .performExecutionPhase :154-160, ExecutionTool.executeBuild
+    /// :364-366). Under --nobuild the workspace status action is not
+    /// planned: it is an execution-phase artifact (BuildView adds it to
+    /// artifactsToBuild only on the execution path).
+    pub fn set_execute_build(&mut self, execute: bool) {
+        self.execute_build = execute;
+    }
+
+    /// The one workspace status computation of this invocation (N63
+    /// follow-up): OnceLock-guarded so it runs exactly once even when
+    /// parallel planning (N62) reaches it from several threads.
+    fn workspace_status_computed(
+        &self,
+        client_env: &BTreeMap<String, std::ffi::OsString>,
+    ) -> &crate::workspace_status::ComputedWorkspaceStatus {
+        self.workspace_status_once.get_or_init(|| {
+            match crate::workspace_status::compute(
+                &self.workspace_status,
+                self.repositories.main_root(),
+                client_env,
+                crate::workspace_status::current_time_millis(client_env),
+            ) {
+                Ok(status) => crate::workspace_status::ComputedWorkspaceStatus::Ok(status),
+                Err(error) => crate::workspace_status::ComputedWorkspaceStatus::Failed(error),
+            }
+        })
     }
 
     /// The requested top-level output groups of later builds
@@ -6838,7 +6882,14 @@ impl Engine {
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
-        for result in results.values() {
+        // The workspace status nodes (BazelWorkspaceStatusAction#*) execute
+        // like any action but are not counted: Bazel reports the status
+        // action as an internal process (`INFO: 1 process: 1 internal`),
+        // outside the build's action tally.
+        for (id, result) in &results {
+            if id.starts_with("BazelWorkspaceStatusAction#") {
+                continue;
+            }
             if result.cache_hit {
                 summary.cache_hits += 1;
             } else if result.remote_hit {
@@ -7326,7 +7377,11 @@ impl Engine {
         let results = scheduler::execute_graph(cache, nodes, jobs)?;
         crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
-        for result in results.values() {
+        // Workspace status nodes are not counted (see build_with_options).
+        for (id, result) in &results {
+            if id.starts_with("BazelWorkspaceStatusAction#") {
+                continue;
+            }
             if result.cache_hit {
                 summary.cache_hits += 1;
             } else {
@@ -9971,6 +10026,28 @@ impl Engine {
         // The top-level aspects above also run rule implementations
         // (N58); implementations and action planning end here.
         crate::perf_mark("plan.phase2_actions_done");
+        // N63 follow-up (BLOCKER 1): Bazel adds the workspace status
+        // artifacts to artifactsToBuild UNCONDITIONALLY on every build
+        // that executes (BuildView.createResult :647-650,675), so plan
+        // the status node(s) once per executing invocation even when no
+        // target consumed them (a failing script then fails a build whose
+        // targets never touch the status). Skipped under --nobuild (no
+        // execution phase). The artifacts are pushed onto `hidden` below
+        // so the reachability prune keeps the node(s) without reporting
+        // them as build outputs.
+        let mut status_artifacts: Vec<Artifact> = Vec::new();
+        if self.execute_build {
+            let state_ref = state.plan_state();
+            let mut available: BTreeMap<File, Artifact> = BTreeMap::new();
+            self.ensure_workspace_status(
+                state_ref.workspace_status,
+                state_ref.nodes,
+                state_ref.producers,
+                state_ref.client_environment,
+                &mut available,
+            )?;
+            status_artifacts = available.into_values().collect();
+        }
         let ActionPlanning {
             dry,
             runfiles_info,
@@ -10141,6 +10218,19 @@ impl Engine {
         // (determineOutputGroups), so the runfiles artifacts are not built.
         let runfiles_requested = selected.contains(crate::output_group_info::HIDDEN_TOP_LEVEL);
         let mut hidden = unreported;
+        // The workspace status artifacts of this executing build (above):
+        // built but never reported (BuildView adds them to
+        // artifactsToBuild, not to the reported outputs). Only artifacts
+        // with a producer participate in reachability; under --nobuild
+        // this list is empty.
+        if let Some(first) = labels.first() {
+            let key = self.configurations.top_key(first.clone());
+            for artifact in status_artifacts {
+                if artifact.producer.is_some() {
+                    hidden.push((key.clone(), artifact));
+                }
+            }
+        }
         let mut seen: std::collections::HashSet<(ConfiguredTargetKey, File)> = requested
             .iter()
             .chain(&hidden)
@@ -11115,11 +11205,10 @@ impl Engine {
         }))
     }
 
-    /// Whether any registered action of a target needs the workspace status:
-    /// an action input of a status file (ctx.info_file/ctx.version_file) or
-    /// an actions.transform_{version,info}_file registration. Like Bazel,
-    /// the BazelWorkspaceStatusAction (and so --workspace_status_command)
-    /// only runs when some action consumes its outputs.
+    /// Whether any registered action of a target needs the workspace status
+    /// artifacts in `available`: an action input of a status file
+    /// (ctx.info_file/ctx.version_file) or an
+    /// actions.transform_{version,info}_file registration.
     fn workspace_status_needed(registered: &[crate::analysis_runtime::RegisteredAction]) -> bool {
         registered.iter().any(|action| {
             action
@@ -11130,17 +11219,28 @@ impl Engine {
         })
     }
 
-    /// Plan the BazelWorkspaceStatusAction (N63) on first need and expose
-    /// its two artifacts to `available`: one system write node per status
-    /// file (Bazel has one action with both outputs;
-    /// BazelWorkspaceStatusAction.execute :174-225). The stable node's
-    /// content key makes it a cache hit while the stable status is
-    /// unchanged (maybeUpdateContent preserves the file on no change);
-    /// the volatile node re-executes every build (executeUnconditionally)
-    /// but its artifact is constant metadata, so consumers never re-key on
-    /// the changing timestamp. A failed status script plans two failing
-    /// nodes so the failure surfaces at execution with Bazel's text
-    /// (`Failed to determine workspace status: ...`, :205-209).
+    /// Plan the ONE BazelWorkspaceStatusAction of this build (N63
+    /// follow-up) and expose its two artifacts to `available`. Bazel has
+    /// one action with both outputs (BazelWorkspaceStatusModule.java
+    /// :87-98, outputs ImmutableSet.of(stableStatus, volatileStatus)) and
+    /// adds both artifacts to artifactsToBuild unconditionally on every
+    /// executing build (BuildView.createResult :647-650,675;
+    /// WorkspaceStatusAction.executeUnconditionally/isVolatile
+    /// :186-194), so this runs once per build/test/run invocation that
+    /// executes — regardless of consumers — and never under --nobuild
+    /// (no execution phase) or on `query` (no BuildView at all). The
+    /// computation itself is OnceLock-guarded (computed exactly once per
+    /// invocation, also under N62 parallel planning).
+    ///
+    /// The native executor has no two-output write transform, so the one
+    /// logical action is two write nodes sharing the computed status: the
+    /// stable node (content-keyed: a cache hit while the stable status is
+    /// unchanged, maybeUpdateContent :205-209) and the volatile node
+    /// (content-keyed on the volatile bytes but constant metadata, so
+    /// consumers never re-key on the changing timestamp). A failed status
+    /// computation plans ONE failing node (volatile-status.txt) — Bazel's
+    /// one action fails once — so the build reports a single
+    /// `Failed to determine workspace status: ...` line.
     fn ensure_workspace_status(
         &self,
         plan: &mut Option<WorkspaceStatusPlan>,
@@ -11149,66 +11249,61 @@ impl Engine {
         client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
         available: &mut BTreeMap<File, Artifact>,
     ) -> Result<(), String> {
-        if plan.is_none() {
-            let client_env = client_environment.get_or_init(crate::action_env::client_environment);
-            let computed = match crate::workspace_status::compute(
-                &self.workspace_status,
-                self.repositories.main_root(),
-                client_env,
-                crate::workspace_status::current_time_millis(client_env),
-            ) {
-                Ok(status) => crate::workspace_status::ComputedWorkspaceStatus::Ok(status),
-                Err(error) => crate::workspace_status::ComputedWorkspaceStatus::Failed(error),
-            };
-            let owner = "@bazel_tools//tools:internal_platform";
-            let mut status = Vec::new();
-            for (suffix, name, constant) in [
-                ("stable", "stable-status.txt", false),
-                ("volatile", "volatile-status.txt", true),
-            ] {
-                // The build-data-root execution path of the status files
-                // (SkyframeExecutor.java:1474-1496: bazel-out/stable-status.txt
-                // and bazel-out/volatile-status.txt).
-                let file = format!("bazel-out/{name}");
-                let id = format!("BazelWorkspaceStatusAction#{suffix}");
-                let path = PathBuf::from(&file);
-                register_output(producers, &path, owner)?;
-                let (write, transform) = match &computed {
-                    crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => (
-                        Some(crate::action::WriteAction {
-                            content: if suffix == "stable" {
-                                status.stable_bytes.clone()
-                            } else {
-                                status.volatile_bytes.clone()
-                            },
-                            executable: false,
-                        }),
-                        None,
-                    ),
-                    crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => (
-                        None,
-                        Some(crate::action::Transform::Unsupported {
-                            message: format!(
-                                "BazelWorkspaceStatusAction {name} failed: Failed to determine workspace status: {}",
-                                error.0
-                            ),
-                        }),
-                    ),
-                };
-                status.push(Artifact {
-                    real: path.clone(),
-                    exec: path,
-                    producer: Some((id.clone(), 0)),
+        if !self.execute_build {
+            // --nobuild: no execution phase, no status action. Consumers
+            // of the status files still resolve their artifacts below
+            // (ctx.info_file is an analysis-time File value).
+            if plan.is_none() {
+                let client_env =
+                    client_environment.get_or_init(crate::action_env::client_environment);
+                let computed = self.workspace_status_computed(client_env).clone_status();
+                let bare = |name: &str, constant: bool| Artifact {
+                    real: PathBuf::from(format!("bazel-out/{name}")),
+                    exec: PathBuf::from(format!("bazel-out/{name}")),
+                    producer: None,
                     owner: String::new(),
                     directory: false,
                     constant_metadata: constant,
+                };
+                *plan = Some(WorkspaceStatusPlan {
+                    computed,
+                    stable: bare("stable-status.txt", false),
+                    volatile: bare("volatile-status.txt", true),
                 });
-                nodes.push(PlannedAction {
+            }
+            let planned = plan.as_ref().expect("just planned");
+            available.insert(
+                crate::analysis_runtime::workspace_status_file("stable-status.txt"),
+                planned.stable.clone(),
+            );
+            available.insert(
+                crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
+                planned.volatile.clone(),
+            );
+            return Ok(());
+        }
+        if plan.is_none() {
+            let client_env = client_environment.get_or_init(crate::action_env::client_environment);
+            let computed = self.workspace_status_computed(client_env);
+            let owner = "@bazel_tools//tools:internal_platform";
+            // The build-data-root execution paths of the status files
+            // (SkyframeExecutor.java:1474-1496: bazel-out/stable-status.txt
+            // and bazel-out/volatile-status.txt).
+            let stable_path = PathBuf::from("bazel-out/stable-status.txt");
+            let volatile_path = PathBuf::from("bazel-out/volatile-status.txt");
+            register_output(producers, &stable_path, owner)?;
+            register_output(producers, &volatile_path, owner)?;
+            let node = |id: &str,
+                        output: PathBuf,
+                        write: Option<crate::action::WriteAction>,
+                        transform: Option<crate::action::Transform>|
+             -> PlannedAction {
+                PlannedAction {
                     action: Action {
-                        id,
+                        id: id.to_owned(),
                         command: String::new(),
                         inputs: Vec::new(),
-                        outputs: vec![PathBuf::from(&file)],
+                        outputs: vec![output],
                         write,
                         program: None,
                         arguments: Vec::new(),
@@ -11223,12 +11318,88 @@ impl Engine {
                     },
                     dependencies: Vec::new(),
                     deferred: None,
-                });
-            }
+                }
+            };
+            let (stable, volatile) = match computed {
+                crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => {
+                    nodes.push(node(
+                        "BazelWorkspaceStatusAction#stable",
+                        stable_path.clone(),
+                        Some(crate::action::WriteAction {
+                            content: status.stable_bytes.clone(),
+                            executable: false,
+                        }),
+                        None,
+                    ));
+                    nodes.push(node(
+                        "BazelWorkspaceStatusAction#volatile",
+                        volatile_path.clone(),
+                        Some(crate::action::WriteAction {
+                            content: status.volatile_bytes.clone(),
+                            executable: false,
+                        }),
+                        None,
+                    ));
+                    (
+                        Artifact {
+                            real: stable_path.clone(),
+                            exec: stable_path,
+                            producer: Some(("BazelWorkspaceStatusAction#stable".to_owned(), 0)),
+                            owner: String::new(),
+                            directory: false,
+                            constant_metadata: false,
+                        },
+                        Artifact {
+                            real: volatile_path.clone(),
+                            exec: volatile_path,
+                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            owner: String::new(),
+                            directory: false,
+                            constant_metadata: true,
+                        },
+                    )
+                }
+                crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => {
+                    // ONE failing node for Bazel's ONE action: the failure
+                    // surfaces once at execution with Bazel's text.
+                    nodes.push(node(
+                        "BazelWorkspaceStatusAction#volatile",
+                        volatile_path.clone(),
+                        None,
+                        Some(crate::action::Transform::Unsupported {
+                            message: format!(
+                                "BazelWorkspaceStatusAction volatile-status.txt failed: Failed to determine workspace status: {}",
+                                error.0
+                            ),
+                        }),
+                    ));
+                    (
+                        Artifact {
+                            real: stable_path.clone(),
+                            exec: stable_path,
+                            // The failing node has one output; consumers
+                            // of either file depend on it at index 0 and
+                            // fail with it (the node never produces).
+                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            owner: String::new(),
+                            directory: false,
+                            constant_metadata: false,
+                        },
+                        Artifact {
+                            real: volatile_path.clone(),
+                            exec: volatile_path,
+                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            owner: String::new(),
+                            directory: false,
+                            constant_metadata: true,
+                        },
+                    )
+                }
+            };
             *plan = Some(WorkspaceStatusPlan {
-                computed,
-                stable: status[0].clone(),
-                volatile: status[1].clone(),
+                computed: computed.clone_status(),
+                stable,
+                volatile,
             });
         }
         let planned = plan.as_ref().expect("just planned");
@@ -11245,14 +11416,21 @@ impl Engine {
 
     /// Resolve one actions.transform_{version,info}_file registration
     /// (N63): evaluate the Starlark translation callback against the
-    /// build's workspace status and rewrite the action into a template
-    /// expansion (BuildInfoFileWriteAction.execute :121-176 parses the
-    /// status file, calls the callback and expands the template; the
-    /// native computes the same substitutions during planning, so
-    /// execution is the ordinary Template transform). A volatile output is
-    /// constant metadata (getConstantMetadataArtifact): its changing bytes
-    /// never re-key consumers, and the substitution changes re-execute the
-    /// transform itself like executeUnconditionally.
+    /// build's workspace status and rewrite the action into a
+    /// TemplateKeyed expansion (BuildInfoFileWriteAction.execute
+    /// :121-176 parses the status file, calls the callback and expands
+    /// the template; the native computes the same substitutions during
+    /// planning). The key is Bazel's computeKey (:189-197) — GUID,
+    /// isVolatile, the callback's bzl digest — plus the template input's
+    /// digest, EXCLUDING the substitutions: for the volatile variant the
+    /// status input is constant metadata
+    /// (StarlarkActionFactory.transformBuildInfoFile :510-519), so a
+    /// changed timestamp produces new substitutions under the SAME key
+    /// and the cached volatile_file.h is not rewritten (the volatile
+    /// output is itself constant metadata, so consumers do not re-key
+    /// either). The stable variant keys its status input regularly: a
+    /// changed stable key re-keys and re-executes it, like Bazel's
+    /// regular derived artifact.
     fn resolve_build_info(
         &self,
         plan: &Option<WorkspaceStatusPlan>,
@@ -11326,10 +11504,37 @@ impl Engine {
             .get(1)
             .map(|file| PathBuf::from(&file.path))
             .ok_or_else(|| "build info action has no template input".to_owned())?;
-        registered.action.extra.transform = Some(crate::action::Transform::Template {
+        // The keyed part of the callback result: for the volatile variant,
+        // every substitution except the timestamp one(s) — BUILD_TIMESTAMP
+        // (and the FORMATTED_DATE-derived values of the Java callback)
+        // change every build and must not re-key the action (BLOCKER 2);
+        // the SCM keys are what actually distinguish volatile outputs.
+        // Stable: the whole result (also keyed regularly via the status
+        // input; identical either way).
+        let keyed_substitutions: Vec<(Vec<u8>, Vec<u8>)> = if build_info.volatile {
+            substitutions
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.as_slice(),
+                        b"{BUILD_TIMESTAMP}"
+                            | b"{build.time}"
+                            | b"{build.timestamp}"
+                            | b"{build.timestamp.as.int}"
+                    )
+                })
+                .cloned()
+                .collect()
+        } else {
+            substitutions.clone()
+        };
+        registered.action.extra.transform = Some(crate::action::Transform::TemplateKeyed {
             template,
             substitutions,
+            keyed_substitutions,
             executable: false,
+            volatile: build_info.volatile,
+            callback_digest: build_info.callback_digest.clone(),
         });
         Ok(())
     }
@@ -12979,6 +13184,16 @@ m = macro(implementation=emit)
                 (
                     "//:top#0".to_owned(),
                     "bazel-out/k8-fastbuild/bin/top.txt".to_owned()
+                ),
+                // The workspace status nodes of every executing build
+                // (N63 follow-up, BLOCKER 1).
+                (
+                    "BazelWorkspaceStatusAction#stable".to_owned(),
+                    "bazel-out/stable-status.txt".to_owned()
+                ),
+                (
+                    "BazelWorkspaceStatusAction#volatile".to_owned(),
+                    "bazel-out/volatile-status.txt".to_owned()
                 ),
             ])
         );

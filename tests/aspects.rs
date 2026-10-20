@@ -57,7 +57,10 @@ impl Workspace {
             .unwrap()
     }
 
-    /// The bazel-bin-relative names this workspace materialized.
+    /// The bazel-bin-relative names this workspace materialized. The
+    /// workspace status files (bazel-out/{stable,volatile}-status.txt,
+    /// materialized by every executing build since the N63 follow-up)
+    /// are not target outputs and are excluded.
     fn outputs(&self) -> Vec<String> {
         let mut names = Vec::new();
         let actions = self.path().join("cache/actions");
@@ -67,6 +70,7 @@ impl Workspace {
         for entry in entries.flatten() {
             collect(&entry.path().join("outputs"), &mut names);
         }
+        names.retain(|name| !matches!(name.as_str(), "stable-status.txt" | "volatile-status.txt"));
         names.sort();
         names
     }

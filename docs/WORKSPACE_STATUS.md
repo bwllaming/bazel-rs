@@ -13,10 +13,20 @@ declared native gap), written by `artifacts/workspace_status-capture.py`.
 ## The action
 
 * `--workspace_status_command=<path>` (also an rc option) is a **build-command
-  option** (`BazelWorkspaceStatusModule.getCommandOptions:323-328` accepts it
-  for `build`; the native accepts it for `build`/`run`/`test`, the commands
-  that execute builds). `--embed_label=<label>` is its companion option. The
-  flag value is a `PathFragment` (`OptionsUtils.PathFragmentConverter`), so
+  option**: `BazelWorkspaceStatusModule.getCommandOptions:323-328` returns
+  `WorkspaceStatusAction.Options` for `build` only, and every command that
+  **inherits build options** accepts it — `BlazeCommandUtils.getOptions
+  :90-96` recurses `inheritsOptionsFrom` (RunCommand `:114` and TestCommand
+  `:69` inherit BuildCommand; CoverageCommand `:108` inherits TestCommand;
+  AqueryCommand/CqueryCommand inherit too), and rc `build` lines apply to
+  those commands the same way. `query` does **not** inherit build options
+  (QueryCommand lists its own options with no `inheritsOptionsFrom`) and
+  rejects the flag as unrecognized. The native accepts it for
+  `build`/`run`/`test` (its `builds()` set) and rejects it for `query`.
+  `--embed_label=<label>` is its companion option; its converter rejects a
+  value containing a newline: `Value must not contain multiple lines`
+  (`WorkspaceStatusAction.OneLineStringConverter:216-233`). The flag value
+  is a `PathFragment` (`OptionsUtils.PathFragmentConverter`), so
   `./status.sh` normalizes to `status.sh` before anything runs — a relative
   script is found through `PATH` from the **workspace directory**, not `./`
   (genuine exits 127 for `./status.sh`; the native reproduces that, receipt
@@ -27,12 +37,34 @@ declared native gap), written by `artifacts/workspace_status-capture.py`.
   stdout is parsed, its stderr passes through to the build's stderr
   (`:113-119`). It is **not sandboxed** and not keyed — matching Bazel, which
   runs it outside any action sandbox as a plain shell command.
-* A non-zero exit fails the build as an infrastructure failure with Bazel's
-  text: `Failed to determine workspace status: Process exited with status N`
-  (`createExecutionException` + `BadExitStatusException`, `:122-128`,
-  `:205-209`; genuine's framing `ERROR: <builtin>: BazelWorkspaceStatusAction
-  stable-status.txt failed: ...`, the native `action
-  'BazelWorkspaceStatusAction#stable': ...` — receipt row `ws/script_failed`).
+* A failing script fails the build as an **ordinary action failure —
+  NOT an infrastructure/catastrophe failure**: `createExecutionException`
+  builds an `ActionExecutionException` with `catastrophe=false`
+  (`BazelWorkspaceStatusAction:122-128` via `WorkspaceStatusAction
+  .createExecutionException:205-213`, detailed code
+  `WorkspaceStatus.NON_ZERO_EXIT`, exit code 1), with Bazel's text:
+  `Failed to determine workspace status: Process exited with status N`,
+  or `Process terminated by signal N` when the shell died by a signal
+  (`TerminationStatus.toString:230-238`). Genuine's framing is
+  `ERROR: <builtin>: BazelWorkspaceStatusAction stable-status.txt failed:
+  ...`; the native's executor framing is `action
+  'BazelWorkspaceStatusAction#volatile': ...` with the same message text,
+  reported **once** (Bazel has one action; receipt rows `ws/script_failed`,
+  `ws/no_consumer_fails`).
+* The status action runs on **every build that executes**, consumer or
+  not: Bazel adds both status artifacts to `artifactsToBuild`
+  unconditionally (`BuildView.createResult:647-650,675`) and the action
+  `executeUnconditionally`+`isVolatile` (`WorkspaceStatusAction:186-194`),
+  so a failing script fails even a build whose targets never touch the
+  status (receipt row `ws/no_consumer_fails`). It does **not** run under
+  `--nobuild` (no execution phase: `BuildRequestOptions
+  .performExecutionPhase:154-160`, `ExecutionTool.executeBuild:364-366`
+  — analysis only) nor on `query` (no BuildView; QueryCommand never
+  evaluates `WorkspaceStatusValue.BUILD_INFO_KEY`). The native plans the
+  status node(s) once per executing `build`/`test`/`run` invocation
+  (skipped under `--nobuild`) and computes the status exactly once per
+  invocation behind a `OnceLock`, so N62 parallel planning cannot run
+  the script twice.
 * With no `--workspace_status_command` (the default `""`), no script runs;
   the files still exist with the built-in keys (`getCommand` returns null,
   `:310-311`).
@@ -72,12 +104,30 @@ the volatile build-info outputs are constant metadata too,
 `StarlarkActionFactory.transformBuildInfoFile:514-519`). The stable file is
 only rewritten when its content changes (`FileSystemUtils.maybeUpdateContent`,
 `:205-209`), and it is a regular artifact: a changed stable key rebuilds
-consumers. The native models this with two system write nodes
-(`BazelWorkspaceStatusAction#stable`/`#volatile`, planned on first need — a
-build whose targets never touch the status never runs the script, like
-Bazel) and a `constant_metadata` input list excluded from action keys
-(`crate::action::prepare`); `tests/workspace_status.rs` and the receipt's
+consumers. The native models Bazel's ONE action (both outputs,
+`BazelWorkspaceStatusModule:87-98`) with two system write nodes
+(`BazelWorkspaceStatusAction#stable`/`#volatile`) sharing the one computed
+status, planned once per executing invocation (above), and a
+`constant_metadata` input list excluded from action keys
+(`crate::action::prepare`); a failed computation plans ONE failing node so
+the failure line appears once. `tests/workspace_status.rs` and the receipt's
 `native_only/warm_rebuild` row pin the rebuild behavior.
+
+The volatile `TranslateBuildInfo` action must NOT re-run when only the
+timestamp changes: its key is Bazel's `computeKey:189-197` (GUID
+`7e4657a6-…`, isVolatile, the callback's bzl digest) plus the template
+input's digest, **excluding the substitutions**, with the volatile status
+input constant-metadata (`StarlarkActionFactory:510-519`); the stable
+variant's status input remains a regular keyed input (a changed stable key
+re-keys it — equivalent). The native keys the resolved action
+(`Transform::TemplateKeyed`) by exactly those components plus the
+non-timestamp part of the callback result (the volatile SCM keys) and
+publishes the cached output on a hit. **Documented divergence:** genuine
+re-executes the volatile translate every build, so its `volatile_file.h`
+always carries the current timestamp; the native keeps the first-produced
+bytes under a changed `SOURCE_DATE_EPOCH` (first-timestamp-wins) — the
+receipt's extended `native_only/warm_rebuild` row pins this
+(`volatile_header_unchanged`).
 
 ## ctx.info_file / ctx.version_file
 
@@ -102,10 +152,11 @@ translates the status files through
 `non_volatile_file.h` substitutes `{BUILD_EMBED_LABEL}`/`{BUILD_HOST}`/
 `{BUILD_USER}` (defaults `""`/`hostname`/`username`). The native keeps the
 translation callback (a frozen top-level function) like Bazel keeps its
-`StarlarkFunction` (`BuildInfoFileWriteAction.computeKey:185-191` keys GUID +
-isVolatile + the callback's bzl digest — never the status content), evaluates
-it during planning against the build's status and executes the action as an
-ordinary template expansion (`docs/ACTIONS_PARAMS.md`). The stamping
+`StarlarkFunction` (`BuildInfoFileWriteAction.computeKey:189-197` keys GUID +
+isVolatile + the callback's bzl digest — never the status content or the
+substitutions), evaluates it during planning against the build's status and
+executes the action as a keyed template expansion (`Transform::TemplateKeyed`,
+`docs/ACTIONS_PARAMS.md`). The stamping
 semantics of `cc_binary` (`stamp` 0/1/-1, `cc_helper_internal.bzl`'s
 `is_stamping_enabled`/`should_stamp`, `--stamp` via
 `ctx.configuration.stamp_binaries()`): with `stamp = 0` (the default) links
@@ -118,12 +169,12 @@ genuine** (receipt row `cc/primary`: `//bin:tool`, both stamped headers).
 
 ## Explicit gaps kept
 
-* **cc_library `linkstamp`**: rules_cc's `LinkstampInfo` provider fields are
-  `wrap_with_check_private_api` closures (`create_linkstamp.bzl:41-44`); a
-  local closure cannot cross analyses in the native depset representation, so
-  a `cc_binary` with a linkstamp-carrying dependency fails explicitly
-  (receipt row `cc/linkstamp` — genuine builds and embeds the stamps, the
-  native declares the boundary).
+* **cc_library `linkstamp`** — not yet modelled (Short): rules_cc's
+  `LinkstampInfo` provider fields are `wrap_with_check_private_api` closures
+  (`create_linkstamp.bzl:41-44`); a local closure cannot cross analyses in
+  the native depset representation, so a `cc_binary` with a
+  linkstamp-carrying dependency fails explicitly (receipt row
+  `cc/linkstamp` — genuine builds and embeds the stamps).
 * The `BuildInfoEvent` (Bazel's build event of the combined status map) is
   not posted: the native has no build-event stream.
 * Genuine reports the failing action as

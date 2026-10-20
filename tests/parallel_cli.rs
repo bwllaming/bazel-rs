@@ -69,6 +69,33 @@ genrule(name='join',srcs=[':pair','middle',':a'],outs=['joined'],cmd='cat $(loca
 filegroup(name='final',srcs=[':join',':pair',':a','middle'])
 "#;
 
+/// Every materialized output under the default cache is a workspace
+/// status file: the status actions run on every executing build (N63
+/// follow-up) even when no target action does.
+fn only_status_outputs(ws: &Workspace) {
+    for entry in fs::read_dir(ws.0.join("bazel-rs-out/actions"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let mut stack = vec![entry.path().join("outputs")];
+        while let Some(dir) = stack.pop() {
+            for child in fs::read_dir(&dir).unwrap().flatten() {
+                if child.file_type().unwrap().is_dir() {
+                    stack.push(child.path());
+                } else {
+                    let name = child.file_name();
+                    let name = name.to_string_lossy();
+                    assert!(
+                        matches!(name.as_ref(), "stable-status.txt" | "volatile-status.txt"),
+                        "unexpected output {name}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn parallel_diamond_preserves_output_indices_filegroups_and_make_input_order() {
     let ws = Workspace::new("");
@@ -166,7 +193,7 @@ fn jobs_requires_a_positive_integer_and_is_only_a_build_option() {
         assert!(result.stdout.is_empty());
     }
     assert!(ws.run(&["build", "--jobs=1000", ":ok"]).status.success());
-    assert!(!ws.0.join("bazel-rs-out").exists());
+    only_status_outputs(&ws);
 }
 
 #[test]
@@ -228,7 +255,7 @@ fn exported_source_visibility_scopes_and_top_level_access() {
         contents(&direct),
         [("//owner:data".into(), "exported".into())]
     );
-    assert!(!ws.0.join("bazel-rs-out").exists());
+    only_status_outputs(&ws);
 }
 
 #[test]

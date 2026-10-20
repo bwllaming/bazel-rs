@@ -130,6 +130,7 @@ fn run() -> Result<(), String> {
     let mut spawn_options = bazel_rs::sandbox::SpawnOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
     let mut workspace_status = bazel_rs::workspace_status::WorkspaceStatusOptions::default();
+    let mut no_build = false;
     let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
     let mut aspects = Vec::new();
     let mut aspects_parameters = Vec::new();
@@ -211,6 +212,7 @@ fn run() -> Result<(), String> {
         spawn_options = native.spawn;
         runfiles_options = native.runfiles;
         workspace_status = native.workspace_status;
+        no_build = native.no_build;
         output_selection = native.output.clone();
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
@@ -379,9 +381,13 @@ fn run() -> Result<(), String> {
         session: _lockfile_writer.0.clone(),
         repositories: repositories.clone(),
     };
+    // --embed_label is validated by its converter before anything runs
+    // (WorkspaceStatusAction.OneLineStringConverter :216-233).
+    bazel_rs::workspace_status::validate_embed_label(&workspace_status.embed_label)?;
     let mut engine = Engine::with_repositories(repositories.clone());
     engine.set_runfiles_options(runfiles_options);
     engine.set_workspace_status(workspace_status);
+    engine.set_execute_build(!no_build);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
@@ -1486,6 +1492,10 @@ struct NativeOptions {
     /// --workspace_status_command/--embed_label (WorkspaceStatusAction
     /// .Options; N63, crate::workspace_status).
     workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions,
+    /// `--nobuild` (BuildRequestOptions.performExecutionPhase :154-160):
+    /// stop before the execution phase; the workspace status action (an
+    /// execution-phase artifact) is not planned.
+    no_build: bool,
 }
 
 impl NativeOptions {
@@ -1511,6 +1521,7 @@ impl NativeOptions {
             test: bazel_rs::test_command::TestOptions::default(),
             spawn: bazel_rs::sandbox::SpawnOptions::default(),
             workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions::default(),
+            no_build: false,
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -1603,23 +1614,51 @@ impl NativeOptions {
                 .push(bazel_rs::module_cli::registry_path(value)?);
             self.raw_registries.push(value.to_owned());
             true
-        } else if arg == "--workspace_status_command" {
-            // WorkspaceStatusAction.Options (:80-97): a build-command option
-            // (BazelWorkspaceStatusModule.getCommandOptions :323-328), the
-            // shell command string of the workspace status action (N63).
+        } else if builds(command) && arg == "--workspace_status_command" {
+            // WorkspaceStatusAction.Options (:70-97) is a module command
+            // option of `build` only (BazelWorkspaceStatusModule
+            // .getCommandOptions :323-328); every command that inherits
+            // build options accepts it (BlazeCommandUtils.getOptions
+            // :90-96 recursing inheritsOptionsFrom: RunCommand and
+            // TestCommand inherit BuildCommand, CoverageCommand inherits
+            // TestCommand), and rc `build` lines apply to those commands
+            // the same way. `query` does NOT inherit build options
+            // (QueryCommand lists its own options, no inheritsOptionsFrom)
+            // and rejects it as unrecognized. The native's builds() is
+            // build/run/test, hence the gate.
             self.workspace_status.command = next
                 .ok_or("--workspace_status_command requires a path")?
                 .to_owned();
             true
-        } else if let Some(value) = arg.strip_prefix("--workspace_status_command=") {
+        } else if let Some(value) = arg
+            .strip_prefix("--workspace_status_command=")
+            .filter(|_| builds(command))
+        {
             self.workspace_status.command = value.to_owned();
             false
-        } else if arg == "--embed_label" {
-            self.workspace_status.embed_label =
-                next.ok_or("--embed_label requires a label")?.to_owned();
-            true
-        } else if let Some(value) = arg.strip_prefix("--embed_label=") {
+        } else if builds(command) && arg == "--embed_label" {
+            // The --embed_label converter (OneLineStringConverter
+            // :216-233) rejects a multi-line value at parse time.
+            let value = next.ok_or("--embed_label requires a label")?;
+            bazel_rs::workspace_status::validate_embed_label(value)?;
             self.workspace_status.embed_label = value.to_owned();
+            true
+        } else if let Some(value) = arg
+            .strip_prefix("--embed_label=")
+            .filter(|_| builds(command))
+        {
+            bazel_rs::workspace_status::validate_embed_label(value)?;
+            self.workspace_status.embed_label = value.to_owned();
+            false
+        } else if builds(command) && matches!(arg, "--nobuild" | "--nobuild=true" | "--build=false")
+        {
+            // BuildRequestOptions.performExecutionPhase (:154-160):
+            // --nobuild (the --build boolean's negation) stops before the
+            // execution phase.
+            self.no_build = true;
+            false
+        } else if builds(command) && matches!(arg, "--build" | "--build=true") {
+            self.no_build = false;
             false
         } else if let Some(value) = arg.strip_prefix("--registry=") {
             self.resolver

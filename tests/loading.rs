@@ -272,10 +272,19 @@ def bundle(name, srcs):
         let normalize = |bytes: &[u8]| {
             String::from_utf8_lossy(bytes).replace(&cache.display().to_string(), "CACHE")
         };
+        // Cache entries' key names; the workspace status actions are
+        // excluded (their keys embed the volatile timestamp, which two
+        // runs may straddle — they are system actions since the N63
+        // follow-up, not the determinism surface under test).
         let mut keys = fs::read_dir(cache.join("actions"))
             .map(|entries| {
                 entries
-                    .map(|entry| entry.unwrap().file_name())
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| {
+                        !path.join("outputs/bazel-out/stable-status.txt").exists()
+                            && !path.join("outputs/bazel-out/volatile-status.txt").exists()
+                    })
+                    .map(|path| path.file_name().unwrap().to_owned())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();

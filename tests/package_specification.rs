@@ -45,7 +45,33 @@ impl Workspace {
 
     fn untouched(&self) {
         assert!(!self.path().join("executed-marker").exists());
-        assert!(!self.path().join("private-cache/actions").exists());
+        // Nothing of the fixture's executed; the only tolerated cache
+        // entries are the two workspace status write actions, which run
+        // on every executing build since the N63 follow-up (a query
+        // leaves the cache untouched entirely).
+        if let Ok(entries) = fs::read_dir(self.path().join("private-cache/actions")) {
+            for entry in entries.flatten() {
+                let outputs = entry.path().join("outputs");
+                let mut stack = vec![outputs];
+                while let Some(dir) = stack.pop() {
+                    for child in fs::read_dir(&dir).unwrap().flatten() {
+                        if child.file_type().unwrap().is_dir() {
+                            stack.push(child.path());
+                        } else {
+                            let name = child.file_name();
+                            let name = name.to_string_lossy();
+                            assert!(
+                                matches!(
+                                    name.as_ref(),
+                                    "stable-status.txt" | "volatile-status.txt"
+                                ),
+                                "unexpected materialized output: {name}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
         assert!(!self.path().join("bazel-rs-out").exists());
     }
 

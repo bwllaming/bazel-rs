@@ -8,7 +8,7 @@
  },
  "native": {
   "binary": "target/release/bazel-rs",
-  "sha256": "bc17ea3146d5c239f70cbe4a1c61c79b4ec1736bb72cdc277b7c068ce3d57cc3"
+  "sha256": "2a5c312910ba21afdfef77158eb2439bd3c8a20bf75e0f3dad0101840def80ee"
  },
  "fixture_tree_sha256": [
   "4bf304512c34268ac3b403df04ab559671e4bbbb755c7b2790668f1465ba9f4b",
@@ -64,6 +64,16 @@
    "native_stderr_tail": "bazel-rs: action 'BazelWorkspaceStatusAction#volatile': BazelWorkspaceStatusAction volatile-status.txt failed: Failed to determine workspace status: Process exited with status 7\n",
    "reference_stderr_tail": "Computing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //ws:ws_input (0 packages loaded, 0 targets configured)\nAnalyzing: target //ws:ws_input (0 packages loaded, 0 targets configured)\n\nINFO: Analyzed target //ws:ws_input (0 packages loaded, 0 targets configured).\nERROR: <builtin>: BazelWorkspaceStatusAction stable-status.txt failed: Failed to determine workspace status: Process exited with status 7\nTarget //ws:ws_input failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
   },
+  "ws/no_consumer_fails": {
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_text": true,
+   "native_text": true,
+   "native_single_line": true,
+   "verdict": "EXACT_TEXT",
+   "native_stderr_tail": "bazel-rs: action 'BazelWorkspaceStatusAction#volatile': BazelWorkspaceStatusAction volatile-status.txt failed: Failed to determine workspace status: Process exited with status 7\n",
+   "reference_stderr_tail": "Computing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //ws:ws (0 packages loaded, 0 targets configured)\nAnalyzing: target //ws:ws (0 packages loaded, 0 targets configured)\n\nERROR: <builtin>: BazelWorkspaceStatusAction stable-status.txt failed: Failed to determine workspace status: Process exited with status 7\nTarget //ws:ws failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+  },
   "ws/relative_script": {
    "reference_exit": 1,
    "native_exit": 1,
@@ -103,17 +113,21 @@
    "native_stderr_tail": "bazel-rs: analysis of //bin:stamped_lib: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:124, in _cc_library_impl\n      linkstamps = depset(linkstamps),\nerror: a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile\n   --> @@rules_cc+//cc/private/rules_impl:cc_library.bzl:124:26\n    |\n124 |             linkstamps = depset(linkstamps),\n    |                          ^^^^^^^^^^^^^^^^^^\n    |\n\n"
   },
   "native_only/warm_rebuild": {
-   "summary": "bazel-rs: 0 actions executed, 16 cache hits (experimental local execution; not sandboxed)",
-   "note": "the same status (SOURCE_DATE_EPOCH pinned): a fully cached rebuild, the constant-metadata semantics of the volatile files"
+   "summary": "bazel-rs: 0 actions executed, 14 cache hits (experimental local execution; not sandboxed)",
+   "epoch_changed_exit": 0,
+   "volatile_header_unchanged": true,
+   "volatile_header_sha256": "4e51fc47885dc059fec4de0de23758762ee62dc0415227bc2b22f3196a22f46f",
+   "note": "the same status (SOURCE_DATE_EPOCH pinned): a fully cached rebuild, the constant-metadata semantics of the volatile files; plus BLOCKER 2: a changed SOURCE_DATE_EPOCH (1792511811 -> 1800000000) leaves volatile_file.h byte-identical (first timestamp wins; genuine re-executes the volatile translate every build \u2014 the documented native divergence)"
   }
  },
  "counts": {
   "EXACT": 5,
-  "EXACT_TEXT": 2,
+  "EXACT_TEXT": 3,
   "EXPECTED_NATIVE_GAP": 1
  },
  "scratch_removed": false,
  "post_capture_changes": [
-  "the rerun differed from the first run only in genuine Bazel's 'INFO: Elapsed time:/Critical Path' progress lines inside the captured ws/script_failed reference_stderr_tail; those lines are dropped from the stored tail (every verdict row, hash and count is identical)"
+  "N63 follow-up (BLOCKER 1/2 + quick items): added ws/no_consumer_fails (failing script + a target that never consumes the status \u2014 genuine and native both exit 1; exactly one native failure line, Bazel has one action); native_only/warm_rebuild extended with a changed SOURCE_DATE_EPOCH (1792511811 -> 1800000000): volatile_header_unchanged=true (the volatile TranslateBuildInfo key excludes the substitutions; first timestamp wins \u2014 genuine re-executes the volatile translate every build, the documented native divergence, docs/WORKSPACE_STATUS.md). Failing-script scenarios use a fresh native cache (cache-fail): a failure is not a cacheable result. The native status nodes now run on every executing build and are excluded from the action-count summary like Bazel's internal process; existing pinned action keys are unchanged (the golden-key suites filter the two system status outputs by path).",
+  "the rerun differed from the first run only in genuine Bazel's 'INFO: Elapsed time:/Critical Path' progress lines inside the captured reference_stderr_tail fields; those lines are dropped from the stored tails (every verdict row, hash and count is identical)"
  ]
 }

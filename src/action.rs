@@ -258,6 +258,34 @@ pub enum Transform {
     /// (BuildInfoFileWriteAction.execute :121-176), or by Unsupported when
     /// the workspace status could not be determined.
     BuildInfo { volatile: bool },
+    /// A resolved BuildInfoFileWriteAction (N63 follow-up): the template
+    /// expansion whose key is Bazel's computeKey (:185-197) — GUID,
+    /// isVolatile and the callback's bzl digest — plus the template input's
+    /// digest (an ordinary keyed input). The volatile variant's key never
+    /// involves the timestamp: instead of keying the substitutions (which
+    /// embed BUILD_TIMESTAMP), it keys the non-timestamp part of the
+    /// callback result (`keyed_substitutions`: the volatile callback's
+    /// SCM revision/status, or the stable callback's whole result — the
+    /// stable status input also remains a regular keyed input, so a
+    /// changed stable key re-executes it through the input framing, and
+    /// the volatile output's constant-metadata marking keeps consumers
+    /// from re-keying on it either way). On a cache hit the stored
+    /// `substitutions` (first-produced timestamp included) are published
+    /// unchanged, so volatile_file.h is not rewritten by an epoch change:
+    /// first-timestamp-wins, the native reading of executeUnconditionally
+    /// over a constant-metadata output. DOCUMENTED DIVERGENCE: genuine
+    /// re-executes the volatile translate on every build (fresh
+    /// timestamp in volatile_file.h); the native keeps the first bytes.
+    /// `volatile` selects that keying; the stable variant keys its status
+    /// input regularly and its full substitution set.
+    TemplateKeyed {
+        template: PathBuf,
+        substitutions: Vec<(Vec<u8>, Vec<u8>)>,
+        keyed_substitutions: Vec<(Vec<u8>, Vec<u8>)>,
+        executable: bool,
+        volatile: bool,
+        callback_digest: String,
+    },
     /// An action whose execution is an explicit native gap (its outputs are
     /// declared and registered, e.g. workspace-status transforms).
     Unsupported { message: String },
@@ -835,7 +863,8 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
                 return Err("symlink action target must be an input".into());
             }
         }
-        Some(Transform::Template { template, .. }) => {
+        Some(Transform::Template { template, .. })
+        | Some(Transform::TemplateKeyed { template, .. }) => {
             check_one_output(action, "template")?;
             if !action.inputs.iter().any(|(_, name)| name == template) {
                 return Err("template action template must be an input".into());
@@ -1158,6 +1187,37 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
                 frame(&mut hash, value);
             }
             frame(&mut hash, &[u8::from(*executable)]);
+        }
+        (
+            None,
+            _,
+            Some(Transform::TemplateKeyed {
+                template,
+                keyed_substitutions,
+                volatile,
+                callback_digest,
+                ..
+            }),
+        ) => {
+            // BuildInfoFileWriteAction.computeKey (:189-197): GUID,
+            // isVolatile, the callback's bzl digest. The timestamp-bearing
+            // substitutions are deliberately excluded; the template
+            // input's digest enters through the ordinary input framing
+            // below (and the status input's through it too for the stable
+            // variant, or as constant metadata for the volatile one).
+            // `keyed_substitutions` carries only the non-timestamp part of
+            // the callback result (volatile SCM keys; the stable result
+            // in full, which the regular status input already keys).
+            frame(&mut hash, b"build-info-keyed");
+            frame(&mut hash, b"7e4657a6-dd09-435e-9423-51d4846aad4a");
+            frame(&mut hash, &[u8::from(*volatile)]);
+            frame(&mut hash, callback_digest.as_bytes());
+            frame(&mut hash, template.as_os_str().as_bytes());
+            frame_count(&mut hash, keyed_substitutions.len());
+            for (key, value) in keyed_substitutions {
+                frame(&mut hash, key);
+                frame(&mut hash, value);
+            }
         }
         (None, _, Some(Transform::Unsupported { message })) => {
             frame(&mut hash, b"unsupported");
@@ -2059,7 +2119,13 @@ fn run_transform(
             }
             Ok(())
         }
-        Transform::Template {
+        Transform::TemplateKeyed {
+            template,
+            substitutions,
+            executable,
+            ..
+        }
+        | Transform::Template {
             template,
             substitutions,
             executable,

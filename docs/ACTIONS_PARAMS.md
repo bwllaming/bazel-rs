@@ -147,10 +147,15 @@ Both are restricted to Bazel's private-API allowlist
 `bazel_cc_build_info`) get the declared output File and a registered action.
 Since N63 the action executes (docs/WORKSPACE_STATUS.md): planning evaluates
 the translation callback against the build's workspace status and rewrites
-the registration into a Template expansion — the inputs are the workspace
-status artifact and the template, like `BuildInfoFileWriteAction`'s
-(`StarlarkActionFactory.transformBuildInfoFile:501-534`), and a volatile
-output is constant metadata (its changing bytes never re-key consumers).
+the registration into a keyed Template expansion (`Transform::TemplateKeyed`)
+— the inputs are the workspace status artifact and the template, like
+`BuildInfoFileWriteAction`'s (`StarlarkActionFactory.transformBuildInfoFile
+:501-534`), and a volatile output is constant metadata (its changing bytes
+never re-key consumers). The key is Bazel's `computeKey:189-197` (GUID,
+isVolatile, callback bzl digest) plus the template input's digest,
+**excluding the substitutions**: a changed timestamp alone does not re-run
+the volatile translate (the extended `native_only/warm_rebuild` receipt
+row); the stable variant's status input remains a regular keyed input.
 
 ## Cache identity
 

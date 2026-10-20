@@ -58,9 +58,20 @@ impl Workspace {
 
     /// The action keys of the cache (`CACHE/actions/KEY`), sorted.
     fn keys(&self, cache: &str) -> Vec<String> {
+        // The pinned action keys of the fixture's own actions. The two
+        // workspace status write actions (bazel-out/{stable,volatile}
+        // -status.txt, planned on every executing build since the N63
+        // follow-up) are system actions whose keys embed the host name,
+        // user and timestamp; they are not the pinned surface and are
+        // excluded by their outputs.
         let mut keys = fs::read_dir(self.path().join(cache).join("actions"))
             .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                !path.join("outputs/bazel-out/stable-status.txt").exists()
+                    && !path.join("outputs/bazel-out/volatile-status.txt").exists()
+            })
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         keys.sort();
         keys

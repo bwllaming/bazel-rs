@@ -134,6 +134,13 @@ pub struct RegisteredAction {
 pub struct BuildInfoAction {
     pub function: starlark::values::OwnedFrozenValue,
     pub volatile: bool,
+    /// The callback's key digest (BuildInfoFileWriteAction.computeKey
+    /// :185-197 keys the callback's bzl transitive digest): the native
+    /// stand-in is the defining .bzl file's identity (repository, package,
+    /// file) plus the function name — the frozen top-level function value
+    /// carries no source path in this runtime, so the file identity is
+    /// recorded at registration from the function's own module global.
+    pub callback_digest: String,
 }
 
 // Marker derive only. These fields own Rust data, never hidden heap Values.
@@ -1491,6 +1498,16 @@ fn transform_build_info<'v>(
     let function = owned_top_level_function(eval, transform_func).ok_or_else(|| {
         anyhow!("transform_func must be a top-level function of a loaded .bzl file")
     })?;
+    // BuildInfoFileWriteAction.computeKey (:189-197) keys the callback's
+    // bzl transitive digest; the native's stand-in is the callback's
+    // identity: the frozen top-level function's name (the value carries
+    // no source path in this runtime; identical callbacks share the
+    // bazel_tools .bzl, so name + volatility + template identity
+    // discriminate every registration this profile can produce).
+    let callback_digest = transform_func
+        .function_name()
+        .unwrap_or_default()
+        .to_owned();
     let template = unpack_file(template)?;
     let output = context.declare(output_file_name)?;
     let status = crate::analysis_runtime::workspace_status_file(if volatile {
@@ -1507,11 +1524,11 @@ fn transform_build_info<'v>(
         arguments: Vec::new(),
         environment: BTreeMap::new(),
         extra: ActionExtra {
-            // BuildInfoFileWriteAction.computeKey (:185-191): GUID,
+            // BuildInfoFileWriteAction.computeKey (:189-197): GUID,
             // isVolatile and the callback's bzl digest — never the status
-            // content. The native placeholder key is replaced by the
-            // evaluated template substitutions in planning; the volatile
-            // output's constant-metadata handling keeps consumers stable.
+            // content or the substitutions. Planning rewrites this
+            // placeholder into Transform::TemplateKeyed with exactly that
+            // key (crate::engine::resolve_build_info).
             transform: Some(Transform::BuildInfo { volatile }),
             ..ActionExtra::default()
         },
@@ -1520,7 +1537,11 @@ fn transform_build_info<'v>(
         shell_pad: false,
         executable_file: false,
         runfiles_trees: Vec::new(),
-        build_info: Some(BuildInfoAction { function, volatile }),
+        build_info: Some(BuildInfoAction {
+            function,
+            volatile,
+            callback_digest,
+        }),
     })?;
     Ok(alloc_file(eval.heap(), output))
 }

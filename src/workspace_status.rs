@@ -25,11 +25,16 @@
 //! volatile file is rewritten every build and is a constant-metadata
 //! artifact whose changing content does not rebuild consumers, while the
 //! stable file is only rewritten when its content changes
-//! (`FileSystemUtils.maybeUpdateContent` :205-215). A non-zero script exit
-//! fails the build: `Failed to determine workspace status: Process exited
-//! with status N` (createExecutionException + BadExitStatusException's
-//! text, :122-128, 205-209); the script's stderr passes through to the
-//! build's stderr (:114-119).
+//! (`FileSystemUtils.maybeUpdateContent` :205-215). A failing script fails
+//! the build as an ordinary action failure — catastrophe=false, exit code 1
+//! (`createExecutionException` builds an ActionExecutionException with
+//! `catastrophe=false`, :205-213, and the WorkspaceStatus failure detail of
+//! WorkspaceStatusAction.createDetailedExitCode; it is NOT an
+//! infrastructure/catastrophe failure): `Failed to determine workspace
+//! status: Process exited with status N`, or `Process terminated by signal
+//! N` when the shell died by a signal (TerminationStatus.toString :230-238,
+//! via BadExitStatusException/AbnormalTerminationException :122-127); the
+//! script's stderr passes through to the build's stderr (:113-119).
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -85,6 +90,15 @@ impl ComputedWorkspaceStatus {
                 format!("Failed to determine workspace status: {}", error.0)
             }
             Self::Ok(_) => String::new(),
+        }
+    }
+
+    /// A clone behind the OnceLock boundary (the computed status is
+    /// shared by every target's planning; WorkspaceStatus is Clone).
+    pub fn clone_status(&self) -> Self {
+        match self {
+            Self::Ok(status) => Self::Ok(status.clone()),
+            Self::Failed(error) => Self::Failed(WorkspaceStatusError(error.0.clone())),
         }
     }
 }
@@ -238,6 +252,15 @@ pub(crate) fn normalized_command(command: &str) -> String {
     parts.join("/")
 }
 
+/// WorkspaceStatusAction.OneLineStringConverter (:216-233): `--embed_label`
+/// rejects a value containing a newline.
+pub fn validate_embed_label(embed_label: &str) -> Result<(), String> {
+    if embed_label.contains('\n') {
+        return Err("Value must not contain multiple lines".to_owned());
+    }
+    Ok(())
+}
+
 /// Run the workspace status command and compute both status files.
 pub(crate) fn compute(
     options: &WorkspaceStatusOptions,
@@ -245,6 +268,7 @@ pub(crate) fn compute(
     client_env: &std::collections::BTreeMap<String, std::ffi::OsString>,
     now_millis: i64,
 ) -> Result<WorkspaceStatus, WorkspaceStatusError> {
+    validate_embed_label(&options.embed_label).map_err(WorkspaceStatusError)?;
     let mut script_output = String::new();
     if !options.command.is_empty() {
         let mut command = Command::new("/bin/sh");
@@ -257,9 +281,21 @@ pub(crate) fn compute(
             .stdin(Stdio::null());
         let output = crate::spawn_lock::output(&mut command)
             .map_err(|error| WorkspaceStatusError(format!("exec failed: {error}")))?;
-        // The script's stderr is the build's stderr (:114-119).
+        // The script's stderr is the build's stderr (:113-119).
         let _ = std::io::stderr().write_all(&output.stderr);
         if !output.status.success() {
+            // TerminationStatus.toString (:230-238): a signal death reads
+            // `Process terminated by signal N`, a normal non-zero exit
+            // `Process exited with status N`.
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = output.status.signal() {
+                    return Err(WorkspaceStatusError(format!(
+                        "Process terminated by signal {signal}"
+                    )));
+                }
+            }
             return Err(WorkspaceStatusError(format!(
                 "Process exited with status {}",
                 output.status.code().unwrap_or(-1)
@@ -423,5 +459,46 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.0, "Process exited with status 3");
+    }
+
+    #[test]
+    fn a_signalled_script_reports_the_signal() {
+        // TerminationStatus.toString: `Process terminated by signal N`.
+        // The direct child here is /bin/sh; if IT is the one killed
+        // (kill -TERM $$ in the -c string), the wait status is a signal
+        // death. Through a script file the intermediate shell reports
+        // 128+15 instead (the integration test covers that shape).
+        let error = compute(
+            &WorkspaceStatusOptions {
+                command: "kill -TERM $$".to_owned(),
+                embed_label: String::new(),
+            },
+            std::path::Path::new("."),
+            &env(&[]),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "Process terminated by signal 15");
+    }
+
+    #[test]
+    fn embed_label_rejects_multiple_lines() {
+        // WorkspaceStatusAction.OneLineStringConverter (:216-233).
+        assert_eq!(
+            validate_embed_label("a\nb").unwrap_err(),
+            "Value must not contain multiple lines"
+        );
+        assert!(validate_embed_label("one line").is_ok());
+        let error = compute(
+            &WorkspaceStatusOptions {
+                command: String::new(),
+                embed_label: "a\nb".to_owned(),
+            },
+            std::path::Path::new("."),
+            &env(&[]),
+            0,
+        )
+        .unwrap_err();
+        assert_eq!(error.0, "Value must not contain multiple lines");
     }
 }

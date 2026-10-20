@@ -63,6 +63,9 @@ impl Workspace {
             // <action>/outputs/bazel-out/<config>/bin/<file...>
             collect(&entry.path().join("outputs"), &mut names);
         }
+        // The workspace status files materialize on every executing
+        // build (N63 follow-up); they are not validation outputs.
+        names.retain(|name| !matches!(name.as_str(), "stable-status.txt" | "volatile-status.txt"));
         names.sort();
         names
     }
