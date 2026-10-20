@@ -984,7 +984,12 @@ impl RepositorySet {
             self.state.runtime_id,
             &format!("repository:{canonical}"),
             || {
-                let prepared = self.prepare_direct_group(&entry.group_id)?;
+                let prepared = {
+                    let _m = crate::repository_store::timing::mark(
+                        &crate::repository_store::timing::PHASES.prepare_group,
+                    );
+                    self.prepare_direct_group(&entry.group_id)?
+                };
                 let group = &runtime.catalog.groups[&entry.group_id];
                 let declaration = &group.declarations[entry.declaration_index];
                 let attributes = &prepared.attributes[entry.declaration_index];
@@ -1019,8 +1024,31 @@ impl RepositorySet {
                             })?,
                         );
                 }
-                let provenance = serde_json::to_vec(&provenance)
-                    .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                // Digest-form specification (Step A root cause): the byte
+                // spec embedded every loaded .bzl source (~31 MB/repo here,
+                // 64 GB total per warm run) and re-serialized + re-hashed it
+                // per repository. The digest form frames each source's
+                // content digest + mapping instead; `provenance` below keeps
+                // the full bytes for the content identity, unchanged.
+                // The specification is a pure function of the repository
+                // definition, attributes, mappings, host markers and declared
+                // environment values, computed before any execution; warm
+                // invocations reuse its publication after revalidating the
+                // recorded watchable inputs (crate::repository_warm).
+                let (spec_key, provenance) = {
+                    let _m = crate::repository_store::timing::mark(
+                        &crate::repository_store::timing::PHASES.spec_serialize,
+                    );
+                    let key = crate::repository_warm::specification_digest(
+                        self,
+                        &provenance,
+                        &prepared.loaded.sources,
+                        &prepared.definition.environ,
+                    )?;
+                    let bytes = serde_json::to_vec(&provenance)
+                        .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                    (key, bytes)
+                };
                 // Hidden diagnostic (N62 cold-variance hunt,
                 // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
                 // repository, so two cold runs can be diffed field by field.
@@ -1030,16 +1058,10 @@ impl RepositorySet {
                         String::from_utf8_lossy(&provenance)
                     );
                 }
-                // The specification is a pure function of the repository
-                // definition, attributes, mappings, host markers and declared
-                // environment values, computed before any execution; warm
-                // invocations reuse its publication after revalidating the
-                // recorded watchable inputs (crate::repository_warm).
-                let spec = crate::repository_warm::specification(
-                    self,
-                    &provenance,
-                    &prepared.definition.environ,
-                )?;
+                crate::repository_store::timing::count_spec(
+                    spec_key.len() as u64,
+                    provenance.len() as u64,
+                );
                 let workspace = std::fs::canonicalize(self.main_root())
                     .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                 let this = Arc::new(self.clone());
@@ -1051,10 +1073,10 @@ impl RepositorySet {
                 // their unrecorded dependencies (which/execute/executed-file
                 // reads) make stale reuse dangerous.
                 let local = prepared.definition.local;
-                crate::repository_store::materialize(
+                crate::repository_store::materialize_keyed(
                     self.source_cache_path()?,
                     canonical,
-                    &spec,
+                    &spec_key,
                     &provenance,
                     move |tree, recorded| {
                         if local {
@@ -1448,14 +1470,26 @@ impl RepositorySet {
                             String::from_utf8_lossy(&prepared.provenance)
                         );
                     }
+                    // Digest-form specification (see direct path): hash
+                    // the framed provenance bytes once instead of
+                    // re-serializing them into a second spec byte string.
                     // Same pre-execution specification discipline as direct
                     // repositories: definition, attributes (via the extension
                     // provenance), host markers and declared environment.
-                    let spec = crate::repository_warm::specification(
-                        self,
-                        &provenance,
-                        &repository.definition.environ,
-                    )?;
+                    let spec_key = {
+                        let _m = crate::repository_store::timing::mark(
+                            &crate::repository_store::timing::PHASES.spec_serialize,
+                        );
+                        crate::repository_warm::specification_digest_bytes(
+                            self,
+                            &provenance,
+                            &repository.definition.environ,
+                        )?
+                    };
+                    crate::repository_store::timing::count_spec(
+                        spec_key.len() as u64,
+                        provenance.len() as u64,
+                    );
                     let workspace = std::fs::canonicalize(self.main_root())
                         .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                     let this = Arc::new(self.clone());
@@ -1463,10 +1497,10 @@ impl RepositorySet {
                     // Local rules never reuse across invocations here either
                     // (shouldUseCachedRepoContents; see the direct path).
                     let local = repository.definition.local;
-                    crate::repository_store::materialize(
+                    crate::repository_store::materialize_keyed(
                         self.source_cache_path()?,
                         &repository.canonical_name,
-                        &spec,
+                        &spec_key,
                         &provenance,
                         move |tree, recorded| {
                             if local {

@@ -66,7 +66,10 @@ fn sha256(bytes: &[u8]) -> String {
 
 /// Serialize the repository specification: length-framed provenance, the host
 /// markers and the declared environment's captured values. Pure in its inputs;
-/// equal bytes address the same publication pointer.
+/// equal bytes address the same publication pointer. Retained as the
+/// byte-exact reference the digest form mirrors (tests pin equivalence of
+/// inputs); production callers use the digest forms below.
+#[cfg(test)]
 pub(crate) fn specification(
     repositories: &RepositorySet,
     provenance: &[u8],
@@ -94,6 +97,76 @@ pub(crate) fn specification(
         spec.extend_from_slice(bytes);
     }
     Ok(spec)
+}
+
+/// Digest-form specification: the same pure inputs as [`specification`]
+/// with the provenance's embedded `.bzl` sources replaced by their content
+/// digests (see `repository_store::spec_digest_identity`). Addresses the
+/// same pointer when the underlying source bytes are unchanged, without
+/// serializing them. `provenance_fields` is the provenance JSON object
+/// (direct) or the framed ordinary provenance pre-digested by the caller.
+pub(crate) fn specification_digest(
+    repositories: &RepositorySet,
+    provenance_fields: &serde_json::Value,
+    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
+    declared: &DeclaredEnvironment,
+) -> Result<String, String> {
+    let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
+    let mut environment = BTreeMap::new();
+    for name in declared.names() {
+        let value = match repositories.environment().lookup(name) {
+            Ok(Some(value)) => serde_json::Value::String(value),
+            Ok(None) => serde_json::Value::Null,
+            Err(_) => serde_json::Value::Bool(false),
+        };
+        environment.insert(name.to_owned(), value);
+    }
+    let environment = serde_json::to_vec(&environment)
+        .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
+    let mut digest = sha2::Sha256::new();
+    use sha2::Digest as _;
+    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update([0]);
+    digest.update(
+        crate::repository_store::spec_digest_identity(provenance_fields, sources).as_bytes(),
+    );
+    digest.update((host.len() as u64).to_le_bytes());
+    digest.update(&host);
+    digest.update((environment.len() as u64).to_le_bytes());
+    digest.update(&environment);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Digest-form specification over already-serialized provenance bytes
+/// (the ordinary path frames them once for the content identity).
+pub(crate) fn specification_digest_bytes(
+    repositories: &RepositorySet,
+    provenance: &[u8],
+    declared: &DeclaredEnvironment,
+) -> Result<String, String> {
+    let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
+    let mut environment = BTreeMap::new();
+    for name in declared.names() {
+        let value = match repositories.environment().lookup(name) {
+            Ok(Some(value)) => serde_json::Value::String(value),
+            Ok(None) => serde_json::Value::Null,
+            Err(_) => serde_json::Value::Bool(false),
+        };
+        environment.insert(name.to_owned(), value);
+    }
+    let environment = serde_json::to_vec(&environment)
+        .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
+    let mut digest = sha2::Sha256::new();
+    use sha2::Digest as _;
+    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update([0]);
+    digest.update((provenance.len() as u64).to_le_bytes());
+    digest.update(provenance);
+    digest.update((host.len() as u64).to_le_bytes());
+    digest.update(&host);
+    digest.update((environment.len() as u64).to_le_bytes());
+    digest.update(&environment);
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 /// Record the watchable inputs of one execution for later revalidation.

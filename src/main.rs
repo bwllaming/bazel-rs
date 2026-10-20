@@ -457,6 +457,11 @@ fn run() -> Result<(), String> {
         bazel_rs::perf_mark("select.start");
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
         bazel_rs::perf_mark("select.end");
+        bazel_rs::repository_store::timing::report(loading_threads_for_report(
+            &command,
+            loading_phase_threads,
+            &query_options,
+        ));
         // Pattern warnings precede the query's own events.
         for warning in engine.take_warnings() {
             warn(&warning);
@@ -532,6 +537,11 @@ fn run() -> Result<(), String> {
             test: &test_options,
         });
     }
+    bazel_rs::repository_store::timing::report(loading_threads_for_report(
+        &command,
+        loading_phase_threads,
+        &query_options,
+    ));
     let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
     // Analysis warnings precede the result, also when the build fails.
     for warning in engine.take_warnings() {
@@ -1370,6 +1380,20 @@ fn add_user_write(path: &Path) {
     }
     if let Ok(metadata) = std::fs::metadata(path) {
         visit(path, metadata);
+    }
+}
+
+fn loading_threads_for_report(
+    command: &str,
+    explicit: Option<usize>,
+    query_options: &bazel_rs::engine::query::QueryOptions,
+) -> usize {
+    match (command, explicit) {
+        ("query", e) => e.unwrap_or(query_options.loading_phase_threads),
+        (_, Some(v)) => v,
+        _ => std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
     }
 }
 

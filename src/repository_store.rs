@@ -66,6 +66,164 @@ struct Entry {
     symlink: Option<String>,
 }
 
+/// Per-call phase timings for one `materialize` invocation, accumulated
+/// process-wide and printed at process end under `BAZEL_RS_TIMING`
+/// (Step A of the repository-warm perf increment; zero cost when unset:
+/// one relaxed atomic load per phase). Phases split the warm path the way
+/// the oracle brief asks: spec/provenance serialization is the caller's
+/// (measured by the caller-side wrapper in `repository.rs`), manifest read,
+/// recorded-input check (`validate`), snapshot (with file/byte counts) and
+/// the execute+publish remainder.
+pub mod timing {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    pub fn enabled() -> bool {
+        INIT.call_once(|| {
+            ENABLED.store(
+                std::env::var_os("BAZEL_RS_TIMING").is_some(),
+                Ordering::Relaxed,
+            );
+        });
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    #[derive(Default)]
+    pub struct Acc {
+        pub calls: AtomicU64,
+        pub nanos: AtomicU64,
+    }
+    impl Acc {
+        fn add(&self, d: Duration) {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.nanos.fetch_add(d.as_nanos() as u64, Ordering::Relaxed);
+        }
+        fn secs(&self) -> f64 {
+            self.nanos.load(Ordering::Relaxed) as f64 / 1e9
+        }
+    }
+
+    pub struct Phases {
+        pub manifest_read: Acc,
+        pub recorded_check: Acc,
+        pub snapshot_check: Acc,
+        pub snapshot_files: AtomicU64,
+        pub snapshot_bytes: AtomicU64,
+        pub execute: Acc,
+        pub publish: Acc,
+        pub spec_serialize: Acc,
+        pub prepare_group: Acc,
+        pub reused: AtomicU64,
+        pub executed: AtomicU64,
+        pub roots: std::sync::Mutex<Vec<(String, f64, &'static str)>>,
+    }
+    pub static PHASES: Phases = Phases {
+        manifest_read: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        recorded_check: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        snapshot_check: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        snapshot_files: AtomicU64::new(0),
+        snapshot_bytes: AtomicU64::new(0),
+        execute: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        publish: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        spec_serialize: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        prepare_group: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        reused: AtomicU64::new(0),
+        executed: AtomicU64::new(0),
+        roots: std::sync::Mutex::new(Vec::new()),
+    };
+
+    /// RAII phase timer; a no-op (one atomic load) when timing is off.
+    pub struct Mark(Option<(&'static Acc, Instant)>);
+    pub fn mark(acc: &'static Acc) -> Mark {
+        Mark(enabled().then(|| (acc, Instant::now())))
+    }
+    impl Drop for Mark {
+        fn drop(&mut self) {
+            if let Some((acc, start)) = self.0 {
+                acc.add(start.elapsed());
+            }
+        }
+    }
+
+    pub static SPEC_BYTES: AtomicU64 = AtomicU64::new(0);
+    pub static PROVENANCE_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub fn count_spec(spec_len: u64, provenance_len: u64) {
+        if enabled() {
+            SPEC_BYTES.fetch_add(spec_len, Ordering::Relaxed);
+            PROVENANCE_BYTES.fetch_add(provenance_len, Ordering::Relaxed);
+        }
+    }
+
+    pub fn count_snapshot(files: u64, bytes: u64) {
+        if enabled() {
+            PHASES.snapshot_files.fetch_add(files, Ordering::Relaxed);
+            PHASES.snapshot_bytes.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
+    pub fn record_root(stage_key: &str, secs: f64, outcome: &'static str) {
+        if enabled() {
+            if let Ok(mut roots) = PHASES.roots.lock() {
+                roots.push((stage_key.to_owned(), secs, outcome));
+            }
+        }
+    }
+
+    /// Print the accumulated breakdown once (called at process end when
+    /// timing is on; also callable from tests). Includes the serial
+    /// per-root sum and the parallel-eligible estimate: the snapshot +
+    /// recorded-check phases are pure reads of disjoint trees, so on an
+    /// N-worker reuse pool they divide by N; manifest reads likewise.
+    pub fn report(threads: usize) {
+        if !enabled() {
+            return;
+        }
+        let p = &PHASES;
+        let warm = p.manifest_read.secs() + p.recorded_check.secs() + p.snapshot_check.secs();
+        let mut roots = p.roots.lock().map(|r| r.clone()).unwrap_or_default();
+        roots.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let serial_roots: f64 = roots.iter().map(|r| r.1).sum();
+        eprintln!(
+            "PERF-REPO reused={} executed={} manifest_read={:.3}s/{} recorded_check={:.3}s/{} snapshot={:.3}s/{} ({} files, {} bytes) execute={:.3}s/{} publish={:.3}s spec_serialize={:.3}s/{} prepare_group={:.3}s/{}",
+            p.reused.load(Ordering::Relaxed),
+            p.executed.load(Ordering::Relaxed),
+            p.manifest_read.secs(),
+            p.manifest_read.calls.load(Ordering::Relaxed),
+            p.recorded_check.secs(),
+            p.recorded_check.calls.load(Ordering::Relaxed),
+            p.snapshot_check.secs(),
+            p.snapshot_check.calls.load(Ordering::Relaxed),
+            p.snapshot_files.load(Ordering::Relaxed),
+            p.snapshot_bytes.load(Ordering::Relaxed),
+            p.execute.secs(),
+            p.execute.calls.load(Ordering::Relaxed),
+            p.publish.secs(),
+            p.spec_serialize.secs(),
+            p.spec_serialize.calls.load(Ordering::Relaxed),
+            p.prepare_group.secs(),
+            p.prepare_group.calls.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "PERF-REPO spec bytes total={} provenance bytes total={} (digest-form spec; provenance keeps full source bytes for the content identity)",
+            SPEC_BYTES.load(Ordering::Relaxed),
+            PROVENANCE_BYTES.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "PERF-REPO warm-validation serial sum={warm:.3}s; per-root serial sum={serial_roots:.3}s over {} roots; parallel-eligible estimate at {threads} workers: warm-validation {:.3}s + largest-root {:.3}s",
+            roots.len(),
+            warm / threads.max(1) as f64,
+            roots.first().map(|r| r.1).unwrap_or(0.0),
+        );
+        for (key, secs, outcome) in roots.iter().take(25) {
+            eprintln!("PERF-REPO root {secs:>8.3}s {outcome} {key}");
+        }
+    }
+}
+
 /// What one execution observed, for the identity digest and the manifest.
 pub struct Executed {
     /// Exact serialized runtime input provenance, after validating the result.
@@ -96,6 +254,41 @@ pub fn spec_identity(spec: &[u8]) -> String {
     digest.update([0]);
     digest.update(spec);
     format!("{:x}", digest.finalize()) // RepositoryFunction's key digest
+}
+
+const SPEC_DIGEST_PROFILE: &[u8] = b"direct-repository-spec-digest-v1";
+
+/// The specification digest of an already-digested provenance: framed
+/// SHA-256 over each source's identity (label, content digest, mapping)
+/// plus the remaining provenance fields. Deterministic in the same inputs
+/// as the byte spec; used to address the same pointer without serializing
+/// (and re-hashing) tens of MB of `.bzl` source bytes per repository.
+pub fn spec_digest_identity(
+    provenance_fields: &serde_json::Value,
+    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(SPEC_DIGEST_PROFILE);
+    digest.update([0]);
+    // Frame the non-source provenance exactly as the JSON object would
+    // serialize with `sources` replaced by per-source digests.
+    let mut framed = provenance_fields.clone();
+    if let Some(object) = framed.as_object_mut() {
+        let mut entries = serde_json::Map::new();
+        for (label, source) in sources {
+            let content = format!("{:x}", Sha256::digest(&source.bytes));
+            let mapping = serde_json::to_string(&source.mapping).unwrap_or_default();
+            entries.insert(
+                label.clone(),
+                serde_json::json!({"sha256": content, "mapping": mapping}),
+            );
+        }
+        object.insert("sources".into(), serde_json::Value::Object(entries));
+    }
+    let bytes = serde_json::to_vec(&framed).unwrap_or_default();
+    digest.update((bytes.len() as u64).to_be_bytes());
+    digest.update(&bytes);
+    format!("{:x}", digest.finalize())
 }
 
 fn framed(digest: &mut Sha256, bytes: &[u8]) {
@@ -129,6 +322,24 @@ where
     F: FnOnce(&Path) -> Result<Executed, String>,
     V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
 {
+    materialize_keyed(cache, stage_key, &spec_identity(spec), provenance, validate, execute)
+}
+
+/// [`materialize`] with the caller-computed specification pointer identity:
+/// digest-form callers pass `repository_warm::specification_digest` and skip
+/// serializing (and hashing) the full source-bearing spec bytes.
+pub fn materialize_keyed<F, V>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    provenance: &[u8],
+    validate: V,
+    execute: F,
+) -> Result<(PathBuf, Publication), String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
+{
     ensure_directory(cache)?;
     let direct = cache.join("direct");
     let trees = direct.join("trees");
@@ -141,22 +352,51 @@ where
     }
     // The pointer is published by atomic rename; an unlocked reader sees
     // either the old or the new publication, never a partial one.
-    let pointer = specs.join(spec_identity(spec));
+    let call_start = timing::enabled().then(std::time::Instant::now);
+    let pointer = specs.join(spec_key);
     if let Some(identity) = read_pointer(&pointer)? {
         let destination = trees.join(&identity);
         let manifest_path = manifests.join(format!("{identity}.json"));
-        if let Ok(bytes) = read_stable(&manifest_path)
-            && let Ok(existing) = serde_json::from_slice::<Manifest>(&bytes)
+        let manifest = {
+            let _m = timing::mark(&timing::PHASES.manifest_read);
+            read_stable(&manifest_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+        };
+        if let Some(existing) = manifest
             && existing.identity == identity
             && existing.recorded.is_some()
-            && validate(
-                &destination,
-                existing.recorded.as_deref().unwrap_or_default(),
-            )
-            .unwrap_or(false)
-            && snapshot(&destination).is_ok_and(|actual| actual == existing.files)
         {
-            return Ok((destination, Publication::Reused));
+            let recorded_ok = {
+                let _m = timing::mark(&timing::PHASES.recorded_check);
+                validate(
+                    &destination,
+                    existing.recorded.as_deref().unwrap_or_default(),
+                )
+                .unwrap_or(false)
+            };
+            let snapshot_ok = recorded_ok && {
+                let _m = timing::mark(&timing::PHASES.snapshot_check);
+                timing::count_snapshot(
+                    existing.files.len() as u64,
+                    existing
+                        .files
+                        .values()
+                        .map(|e| e.size)
+                        .sum::<u64>(),
+                );
+                verify_snapshot(&destination, &existing.files, verify_mode())
+                    .is_ok_and(|matched| matched)
+            };
+            if snapshot_ok {
+                timing::PHASES
+                    .reused
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(start) = call_start {
+                    timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
+                }
+                return Ok((destination, Publication::Reused));
+            }
         }
         // A failing or absent validation falls through to execution, exactly
         // like Bazel refetching when a watched dependency changed.
@@ -187,7 +427,10 @@ where
         .tempdir_in(&stages)
         .map_err(|e| format!("cannot stage direct repository: {e}"))?;
     // TempDir owns cleanup on callback errors and Rust unwinding as well.
-    let executed = execute(stage.path())?;
+    let executed = {
+        let _m = timing::mark(&timing::PHASES.execute);
+        execute(stage.path())?
+    };
     required_directory(stage.path())?;
     ensure_boundary(stage.path())?;
     let files = snapshot(stage.path())?;
@@ -208,7 +451,7 @@ where
         profile: PROFILE.into(),
         identity: identity.clone(),
         files,
-        spec: Some(spec_identity(spec)),
+        spec: Some(spec_key.to_owned()),
         recorded: Some(executed.recorded),
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
@@ -282,7 +525,16 @@ where
     // between them leaves a stale pointer, which the warm path revalidates
     // (manifest, recorded inputs, tree) before reuse, so it can only cost a
     // re-execution, never a wrong reuse.
-    publish_pointer(&specs, &pointer, &identity)?;
+    {
+        let _m = timing::mark(&timing::PHASES.publish);
+        publish_pointer(&specs, &pointer, &identity)?;
+    }
+    timing::PHASES
+        .executed
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some(start) = call_start {
+        timing::record_root(stage_key, start.elapsed().as_secs_f64(), "executed");
+    }
     // This call ran the repository rule even when the tree it produced
     // already existed under the same content identity.
     Ok((destination, Publication::Executed))
@@ -549,6 +801,55 @@ fn safe_relative(name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Warm-verification strength (Step B): `Stat` trusts size/mtime/inode/mode
+/// recorded in the manifest and hashes only stat mismatches or files inside
+/// the racy window (Bazel's marker-trust model); `Full` re-hashes every
+/// file, the pre-Step-B behavior, opt-in via `BAZEL_RS_VERIFY_REPOS=full`
+/// or `--verify-repo-tampering`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    Stat,
+    Full,
+}
+
+static VERIFY_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Force full verification from the CLI (`--verify-repo-tampering`).
+pub fn set_verify_full() {
+    VERIFY_OVERRIDE.store(2, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn verify_mode() -> VerifyMode {
+    match VERIFY_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        2 => return VerifyMode::Full,
+        1 => return VerifyMode::Stat,
+        _ => {}
+    }
+    let mode = match std::env::var("BAZEL_RS_VERIFY_REPOS").ok().as_deref() {
+        Some("full") => VerifyMode::Full,
+        _ => VerifyMode::Stat,
+    };
+    VERIFY_OVERRIDE.store(
+        match mode {
+            VerifyMode::Full => 2,
+            VerifyMode::Stat => 1,
+        },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    mode
+}
+
+/// Whether the warm snapshot check confirms `root` still matches the
+/// manifest `expected` entries. Step A: full re-hash (existing behavior).
+/// Step B replaces the body with the metadata-first comparison.
+fn verify_snapshot(
+    root: &Path,
+    expected: &BTreeMap<String, Entry>,
+    _mode: VerifyMode,
+) -> Result<bool, String> {
+    Ok(snapshot(root)? == *expected)
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
