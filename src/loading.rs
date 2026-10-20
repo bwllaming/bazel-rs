@@ -543,7 +543,18 @@ pub fn load_shared_definition_any_in(
     }
     let mut loader = Loader::new(repositories, globals, true);
     loader.shared = true;
-    loader.load(label.clone())?;
+    loader.load(label.clone()).map_err(|error| {
+        // A parallel wait-cycle abort escaping a definition load has no
+        // commit unit above it to re-run inline: it is a genuine
+        // re-entrant demand (an extension loading the very module being
+        // evaluated on this thread), so it reports as the load cycle it
+        // is — the raw sentinel never reaches the user (N62 follow-up).
+        if crate::repository_demand::is_parallel_bzl_cycle(&error) {
+            format!("load cycle: {label} (demanded while already being evaluated)")
+        } else {
+            error
+        }
+    })?;
     let module = loader
         .cache
         .get(label)
@@ -731,9 +742,22 @@ type CachedResult = Result<Arc<CachedBzl>, Arc<CachedFailure>>;
 /// The `.bzl` modules a repository set (one invocation) has evaluated for
 /// BUILD files, by canonical label. Lookups and inserts take the lock
 /// briefly; it is never held while evaluating. Lookups only: never iterated.
-#[derive(Default)]
 pub(crate) struct BzlCache {
+    /// Process-unique instance id: the flight registry keys claims by
+    /// (cache instance, label), so independent caches never couple.
+    id: u64,
     modules: std::sync::Mutex<HashMap<Label, CachedResult>>,
+}
+
+static NEXT_BZL_CACHE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Default for BzlCache {
+    fn default() -> Self {
+        Self {
+            id: NEXT_BZL_CACHE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            modules: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 impl std::fmt::Debug for BzlCache {
@@ -744,6 +768,11 @@ impl std::fmt::Debug for BzlCache {
 }
 
 impl BzlCache {
+    /// This cache instance's flight-registry key component.
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+
     fn get(&self, label: &Label) -> Result<Option<CachedResult>, String> {
         Ok(self
             .modules
@@ -864,12 +893,21 @@ impl ModulePrints {
 /// Per-label single-flight `.bzl` evaluation with in-flight WAITING
 /// (review §1.3 as corrected for N62: the global lock serialized
 /// evaluations of *independent* labels). One evaluation per label per
-/// process: the first traversal to reach a cache miss claims the label
-/// and evaluates; a concurrent traversal of the SAME label waits for the
-/// claim and then rechecks the shared cache — exactly the Finish-time
-/// recheck the global lock performed — so one identity and one print
-/// record exist (BzlLoadFunction's stored value). Disjoint labels
-/// evaluate in parallel up to the loading workers' width.
+/// shared cache: the first traversal to reach a cache miss claims the
+/// label and evaluates; a concurrent traversal of the SAME label waits
+/// for the claim and then rechecks the shared cache — exactly the
+/// Finish-time recheck the global lock performed — so one identity and
+/// one print record exist (BzlLoadFunction's stored value). Disjoint
+/// labels evaluate in parallel up to the loading workers' width.
+///
+/// The registry is keyed by (shared-cache instance, label): two
+/// repository sets in one process (tests, embedded callers) never
+/// couple through it, and a claim only ever guards the cache it will
+/// publish to. Winning a claim does NOT by itself license evaluation:
+/// a publisher may have inserted (and released) between this thread's
+/// cache lookup and its claim, so the winner rechecks the cache and
+/// serves the published entry instead of evaluating a second instance
+/// whose identity its package would keep (N62 follow-up).
 ///
 /// Claims are never nested: a module's loads are all evaluated before its
 /// own `Work::Finish` frame (the DFS front-loads them), so a claim owner
@@ -886,12 +924,15 @@ struct BzlFlight {
     completed: std::sync::Condvar,
 }
 
+/// One flight-registry key: a shared-cache instance and a label in it.
+type BzlFlightKey = (u64, Label);
+
 #[derive(Default)]
 struct BzlFlightState {
     /// The label each thread is currently evaluating (its claim).
-    inflight: HashMap<Label, std::thread::ThreadId>,
+    inflight: HashMap<BzlFlightKey, std::thread::ThreadId>,
     /// The label each thread is currently waiting for (no claim held).
-    waiting_for: HashMap<std::thread::ThreadId, Label>,
+    waiting_for: HashMap<std::thread::ThreadId, BzlFlightKey>,
 }
 
 static BZL_FLIGHT: std::sync::OnceLock<BzlFlight> = std::sync::OnceLock::new();
@@ -916,7 +957,7 @@ enum BzlClaim {
 /// The held per-label claim; releases and wakes waiters on drop (including
 /// panics and sentinel aborts, so a claim never outlives its frame).
 struct BzlClaimGuard {
-    label: Label,
+    key: BzlFlightKey,
 }
 
 impl Drop for BzlClaimGuard {
@@ -926,25 +967,54 @@ impl Drop for BzlClaimGuard {
             .state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        state.inflight.remove(&self.label);
+        state.inflight.remove(&self.key);
         flight.completed.notify_all();
     }
 }
 
-/// Claim `label` for evaluation, or wait for the current owner to finish.
-/// A wait that would close a cycle across threads aborts with the
-/// [`crate::repository_demand::PARALLEL_BZL_CYCLE`] sentinel.
-fn bzl_claim(label: &Label) -> Result<BzlClaim, String> {
+/// Test hook (N62 follow-up): invoked between a Finish frame's cache
+/// lookup and its claim, so a unit test can force the interleaving in
+/// which another traversal publishes the label in that window. The
+/// winner must then serve the published entry, never re-evaluate.
+#[cfg(test)]
+type PreClaimHook = std::sync::Arc<dyn Fn(&Label) + Send + Sync>;
+
+#[cfg(test)]
+static PRE_CLAIM_HOOK: std::sync::Mutex<Option<PreClaimHook>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn invoke_pre_claim_hook(label: &Label) {
+    let hook = PRE_CLAIM_HOOK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone();
+    if let Some(hook) = hook {
+        hook(label);
+    }
+}
+
+#[cfg(test)]
+fn set_pre_claim_hook(hook: Option<PreClaimHook>) {
+    *PRE_CLAIM_HOOK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner()) = hook;
+}
+
+/// Claim `label` in `cache` for evaluation, or wait for the current owner
+/// to finish. A wait that would close a cycle across threads aborts with
+/// the [`crate::repository_demand::PARALLEL_BZL_CYCLE`] sentinel.
+fn bzl_claim(cache: u64, label: &Label) -> Result<BzlClaim, String> {
     let current = std::thread::current().id();
+    let key: BzlFlightKey = (cache, label.clone());
     let flight = bzl_flight();
     let mut state = flight
         .state
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
     loop {
-        match state.inflight.get(label).copied() {
+        match state.inflight.get(&key).copied() {
             None => {
-                state.inflight.insert(label.clone(), current);
+                state.inflight.insert(key, current);
                 return Ok(BzlClaim::Owned);
             }
             Some(owner) if owner == current => {
@@ -979,14 +1049,14 @@ fn bzl_claim(label: &Label) -> Result<BzlClaim, String> {
                         label
                     ));
                 }
-                state.waiting_for.insert(current, label.clone());
+                state.waiting_for.insert(current, key.clone());
                 let (unlocked, _resume) = flight
                     .completed
                     .wait_timeout(state, std::time::Duration::from_secs(3600))
                     .unwrap_or_else(|poison| poison.into_inner());
                 state = unlocked;
                 state.waiting_for.remove(&current);
-                if !state.inflight.contains_key(label) {
+                if !state.inflight.contains_key(&key) {
                     return Ok(BzlClaim::Waited);
                 }
                 // Someone else claimed it before we woke; wait again.
@@ -1170,46 +1240,74 @@ impl<'a> Loader<'a> {
                     // cycle across threads aborts the unit (the coordinator
                     // re-runs it inline, reproducing the sequential cycle
                     // message) instead of deadlocking.
+                    // The claim loop: serve from the cache whenever an
+                    // entry exists — before claiming, after waiting, and
+                    // (N62 follow-up) after WINNING a claim, because a
+                    // publisher may have inserted and released between
+                    // this thread's lookup and its claim; evaluating then
+                    // would create a second instance whose identity this
+                    // package keeps even though the cache keeps the
+                    // first. The claim is held across the evaluation and
+                    // publication below and released at the frame's end.
                     let mut served_from_cache = false;
-                    let _claim: Option<BzlClaimGuard> = loop {
-                        if self.shared {
-                            match self.repositories.build_bzl_cache().get(&label)? {
-                                Some(Ok(cached)) => {
-                                    self.functions.extend(cached.functions.iter().cloned());
-                                    self.cache.insert(label.clone(), cached.module.clone());
-                                    self.visibilities
-                                        .insert(label.clone(), cached.visibility.clone());
-                                    if let Some(sink) = self.prints {
-                                        sink.push_cached(&label);
+                    let _claim: Option<BzlClaimGuard> = {
+                        let cache_id = self.repositories.build_bzl_cache().id();
+                        let mut guard: Option<BzlClaimGuard> = None;
+                        loop {
+                            if self.shared {
+                                match self.repositories.build_bzl_cache().get(&label)? {
+                                    Some(Ok(cached)) => {
+                                        self.functions.extend(cached.functions.iter().cloned());
+                                        self.cache.insert(label.clone(), cached.module.clone());
+                                        self.visibilities
+                                            .insert(label.clone(), cached.visibility.clone());
+                                        if let Some(sink) = self.prints {
+                                            sink.push_cached(&label);
+                                        }
+                                        let finished = active.pop();
+                                        debug_assert_eq!(finished.as_ref(), Some(&label));
+                                        served_from_cache = true;
+                                        break;
                                     }
-                                    let finished = active.pop();
-                                    debug_assert_eq!(finished.as_ref(), Some(&label));
-                                    served_from_cache = true;
-                                    break None;
-                                }
-                                Some(Err(failure)) => {
-                                    // This traversal's DFS already visited the
-                                    // module's loads (their markers are in the
-                                    // sink); only the module's own marker is
-                                    // missing before the stored error.
-                                    if let Some(sink) = self.prints {
-                                        sink.push_cached(&label);
+                                    Some(Err(failure)) => {
+                                        // This traversal's DFS already visited the
+                                        // module's loads (their markers are in the
+                                        // sink); only the module's own marker is
+                                        // missing before the stored error.
+                                        if let Some(sink) = self.prints {
+                                            sink.push_cached(&label);
+                                        }
+                                        return Err(failure.error.clone());
                                     }
-                                    return Err(failure.error.clone());
+                                    None => {}
                                 }
-                                None => {}
+                            }
+                            if guard.is_some() {
+                                // We hold the claim and the cache is still
+                                // empty on the post-claim recheck: evaluate.
+                                break;
+                            }
+                            if !self.shared {
+                                break;
+                            }
+                            #[cfg(test)]
+                            invoke_pre_claim_hook(&label);
+                            match bzl_claim(cache_id, &label)? {
+                                BzlClaim::Owned => {
+                                    guard = Some(BzlClaimGuard {
+                                        key: (cache_id, label.clone()),
+                                    });
+                                    // Loop: recheck the cache before
+                                    // evaluating (a publisher may have
+                                    // won the window before our claim).
+                                    continue;
+                                }
+                                // The owner published (or aborted without
+                                // publishing): recheck before evaluating.
+                                BzlClaim::Waited => continue,
                             }
                         }
-                        match bzl_claim(&label)? {
-                            BzlClaim::Owned => {
-                                break Some(BzlClaimGuard {
-                                    label: label.clone(),
-                                });
-                            }
-                            // The owner published (or aborted without
-                            // publishing): recheck before evaluating.
-                            BzlClaim::Waited => continue,
-                        }
+                        guard
                     };
                     if served_from_cache {
                         continue;
@@ -1781,6 +1879,7 @@ mod tests {
     static EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static SHARED_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static SINGLE_FLIGHT_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
+    static CLAIM_RECHECK_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static FAILING_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     /// Rendezvous for the parallel-evaluation test: two evaluations must
     /// both sit in `wait_for_pair` at once (a timeout marks a violation).
@@ -1927,6 +2026,11 @@ mod tests {
 
         fn count_shared_evaluation() -> anyhow::Result<i32> {
             SHARED_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+            Ok(21)
+        }
+
+        fn count_claim_recheck_evaluation() -> anyhow::Result<i32> {
+            CLAIM_RECHECK_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
             Ok(21)
         }
 
@@ -3065,24 +3169,35 @@ lambda_mapper = lambda value: value
     /// unit inline).
     #[test]
     fn wait_cycle_abort_sentinel_prevents_cross_thread_deadlock() {
-        // Unique labels: the flight registry is process-global and lib
-        // tests run concurrently, so a shared label could be claimed by
-        // another test's evaluation and make this claim look contended.
-        let left = Label::parse_canonical("//n62-flight-cycle:left.bzl").unwrap();
-        let right = Label::parse_canonical("//n62-flight-cycle:right.bzl").unwrap();
-        let guard = match bzl_claim(&left) {
+        // The registry is keyed by (cache instance, label), so this test
+        // uses its own cache id: no other test's evaluation can contend
+        // these keys (N62 follow-up — no unique-label workaround needed,
+        // the ordinary names are safe here).
+        let cache = BzlCache::default().id();
+        let left = Label::parse_canonical("//:left.bzl").unwrap();
+        let right = Label::parse_canonical("//:right.bzl").unwrap();
+        let guard = match bzl_claim(cache, &left) {
             Ok(BzlClaim::Owned) => BzlClaimGuard {
-                label: left.clone(),
+                key: (cache, left.clone()),
             },
             Ok(BzlClaim::Waited) => panic!("uncontended claim must be owned"),
             Err(error) => panic!("uncontended claim must be owned: {error}"),
         };
         // A same-thread re-claim is a load cycle through the claim itself.
-        let repeat = match bzl_claim(&left) {
+        let repeat = match bzl_claim(cache, &left) {
             Err(error) => error,
             Ok(_) => panic!("a same-thread re-claim aborts"),
         };
         assert!(crate::repository_demand::is_parallel_bzl_cycle(&repeat));
+        // Another cache instance's claim of the same label is independent.
+        let other_cache_guard = match bzl_claim(cache + 1, &left) {
+            Ok(BzlClaim::Owned) => BzlClaimGuard {
+                key: (cache + 1, left.clone()),
+            },
+            Ok(BzlClaim::Waited) => panic!("a different cache instance must not contend"),
+            Err(error) => panic!("a different cache instance must not contend: {error}"),
+        };
+        drop(other_cache_guard);
         // Register this thread as waiting for `right` while it owns
         // `left` — the state a nested Finish frame would produce.
         {
@@ -3092,20 +3207,22 @@ lambda_mapper = lambda value: value
                 .unwrap_or_else(|poison| poison.into_inner());
             state
                 .waiting_for
-                .insert(std::thread::current().id(), right.clone());
+                .insert(std::thread::current().id(), (cache, right.clone()));
         }
         // The other thread holds `right` and asks for `left`: its
         // wait-cycle walk must observe the registration and abort.
         let registered = Arc::new(std::sync::Barrier::new(2));
         let signal = registered.clone();
         let other = std::thread::spawn(move || {
-            let right_guard = match bzl_claim(&right) {
-                Ok(BzlClaim::Owned) => BzlClaimGuard { label: right },
+            let right_guard = match bzl_claim(cache, &right) {
+                Ok(BzlClaim::Owned) => BzlClaimGuard {
+                    key: (cache, right),
+                },
                 Ok(BzlClaim::Waited) => panic!("uncontended claim must be owned"),
                 Err(error) => panic!("uncontended claim must be owned: {error}"),
             };
             signal.wait();
-            let aborted = match bzl_claim(&left) {
+            let aborted = match bzl_claim(cache, &left) {
                 Err(error) => error,
                 Ok(_) => panic!("a wait closing a cycle across threads aborts"),
             };
@@ -3122,5 +3239,104 @@ lambda_mapper = lambda value: value
             state.waiting_for.remove(&std::thread::current().id());
         }
         drop(guard);
+    }
+
+    /// Post-claim recheck (N62 follow-up blocker): a publisher that
+    /// inserts (and releases) between this thread's cache lookup and its
+    /// claim must win — the claim winner rechecks and serves the cached
+    /// entry instead of evaluating a second instance. The pre-claim hook
+    /// forces exactly that interleaving: inside the window it loads the
+    /// same label through a second loader (one real evaluation, one
+    /// publication); the outer load must then observe exactly one
+    /// evaluation and one cache-hit marker, never its own module lines.
+    #[test]
+    fn claim_winner_rechecks_cache_before_evaluating() {
+        let temp = Temp::new();
+        temp.file("BUILD", "");
+        temp.file("counted.bzl", "value = count_claim_recheck_evaluation()\n");
+        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print])
+            .with(test_globals)
+            .build();
+        let package = root_package();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        CLAIM_RECHECK_EVALUATIONS.store(0, Ordering::Relaxed);
+        // The hook fires between the outer loader's lookup and claim and
+        // publishes the label via an independent shared load, once.
+        let fired = Arc::new(AtomicBool::new(false));
+        let hook = {
+            let repositories = repositories.clone();
+            let globals = globals.clone();
+            let package = package.clone();
+            let fired = fired.clone();
+            Arc::new(move |label: &Label| {
+                if label.name != "counted.bzl" || fired.swap(true, Ordering::Relaxed) {
+                    return;
+                }
+                let prints = LoadPrints::default();
+                let ast = parse("load(':counted.bzl', 'value')");
+                load_build_modules_in(repositories.clone(), &package, &ast, &globals, &prints)
+                    .unwrap();
+            }) as Arc<dyn Fn(&Label) + Send + Sync>
+        };
+        set_pre_claim_hook(Some(hook));
+        let prints = LoadPrints::default();
+        let ast = parse("load(':counted.bzl', 'value')");
+        let result = load_build_modules_in(repositories, &package, &ast, &globals, &prints);
+        set_pre_claim_hook(None);
+        result.unwrap();
+        assert!(fired.load(Ordering::Relaxed), "the hook must have run");
+        assert_eq!(
+            CLAIM_RECHECK_EVALUATIONS.load(Ordering::Relaxed),
+            1,
+            "exactly one evaluation across the forced interleaving"
+        );
+        // The outer unit holds exactly one cache-hit marker and no
+        // evaluated-module lines: it served the published entry.
+        let (module_lines, markers) =
+            prints
+                .take()
+                .into_iter()
+                .fold((0, 0), |(lines, markers), event| match event {
+                    LoadPrintEvent::Module { .. } => (lines + 1, markers),
+                    LoadPrintEvent::Cached(_) => (lines, markers + 1),
+                    LoadPrintEvent::Build(_) => (lines, markers),
+                });
+        assert_eq!((module_lines, markers), (0, 1));
+    }
+
+    /// Demand-cycle error mapping (N62 follow-up): a shared definition
+    /// load for a label this very thread is already evaluating (an
+    /// extension loading the module being evaluated) aborts internally
+    /// with the wait-cycle sentinel, but the sentinel never reaches the
+    /// caller — it reports as the load cycle it is.
+    #[test]
+    fn reentrant_shared_definition_demand_reports_load_cycle_not_sentinel() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name = 'reentrant')\n");
+        temp.file("BUILD", "");
+        temp.file("self.bzl", "value = 1\n");
+        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print])
+            .with(test_globals)
+            .build();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        let label = Label::parse_canonical("//:self.bzl").unwrap();
+        // This thread claims the label, as its Finish frame would while
+        // evaluating it; the nested demand must not deadlock or leak the
+        // sentinel.
+        let cache = repositories.build_bzl_cache().id();
+        let _guard = match bzl_claim(cache, &label) {
+            Ok(BzlClaim::Owned) => BzlClaimGuard {
+                key: (cache, label.clone()),
+            },
+            other => panic!("uncontended claim must be owned: {other:?}"),
+        };
+        let error = load_shared_definition_in(repositories, &label, "value", &globals)
+            .expect_err("re-entrant demand must fail");
+        assert!(error.contains("load cycle"), "{error}");
+        assert!(error.contains("self.bzl"), "{error}");
+        assert!(
+            !error.contains(crate::repository_demand::PARALLEL_BZL_CYCLE),
+            "the raw sentinel must not reach the user: {error:?}"
+        );
     }
 }

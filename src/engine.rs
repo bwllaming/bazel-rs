@@ -1665,7 +1665,21 @@ impl Engine {
                         }
                         Err(error) => {
                             self.emit_load_prints(retried.prints);
-                            Err(error)
+                            // A wait-cycle abort on the inline re-run is
+                            // not spurious: nothing is left to wait for,
+                            // so the demand is a genuine cycle (an
+                            // extension loading the very module being
+                            // evaluated). Report it as the load cycle it
+                            // is — the raw sentinel never reaches the
+                            // user (N62 follow-up).
+                            Err(if crate::repository_demand::is_parallel_bzl_cycle(&error) {
+                                format!(
+                                    "load cycle: //{} (a module demanded while already being evaluated)",
+                                    package.package
+                                )
+                            } else {
+                                error
+                            })
                         }
                     };
                 }

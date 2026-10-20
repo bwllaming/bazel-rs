@@ -455,3 +455,32 @@ identity bugs recur and the bytes are otherwise unobservable.
   evaluation instead of spinning on the global lock; the 1-hour
   condvar timeout is a deadlock backstop only (a timed-out wait
   re-loops and re-checks claims, it does not fail the load).
+
+## N62 follow-up (review round)
+
+Four fixes: (1) **Post-claim cache recheck** — winning a flight claim
+no longer licenses evaluation by itself: a publisher that inserted and
+released between this thread's lookup and its claim wins, and the
+claim winner rechecks and serves the cached entry instead of
+evaluating a second instance whose identity its package would have
+kept (the split the single-flight exists to prevent; the cache's
+first-wins insert had masked it). A `#[cfg(test)]` pre-claim hook
+forces the interleaving; the forcing test fails with exactly two
+evaluations when the recheck is mutated out. (2) **Registry keyed by
+(cache instance, label)** — `BzlCache` carries a process-unique id;
+independent repository sets in one process no longer couple (the
+wait-cycle unit test no longer needs unique labels). (3) **Sentinel
+mapping** — a wait-cycle abort escaping a shared definition load, or
+surviving the coordinator's inline re-run (`commit_load_unit`), is a
+genuine re-entrant demand (an extension loading the very module being
+evaluated): it reports as `load cycle: ...` and the raw
+`\u{1}parallel-bzl-cycle` sentinel never reaches the user. (4)
+**Re-pinned** `store_compatibility.repository_store_sha256` in the
+label_passthrough fixture to the current `src/repository_store.rs`
+hash (`05cc27b6…`; 9b01ce3's test-module change moved it — note the
+pending safe_relative change on another branch will move it again).
+
+A/B rerun: fixture suite 13/13 (genuine a↔b cycle, the three failure
+shapes, diamond+fan-in, action dump, all at 1/8/32 + jitter); cargo
+1,337 lib + 103 suites green (the known `repository_process` SIGINT
+flake passed standalone); python validators 883/883; fmt/clippy clean.
