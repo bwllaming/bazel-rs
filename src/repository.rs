@@ -1023,6 +1023,7 @@ impl RepositorySet {
                     .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
                 crate::repository_store::materialize(
                     self.source_cache_path()?,
+                    canonical,
                     &provenance,
                     |stage| {
                         let inputs = crate::repository_ctx::execute(
@@ -1396,6 +1397,7 @@ impl RepositorySet {
                     provenance.extend_from_slice(&prepared.provenance);
                     crate::repository_store::materialize(
                         self.source_cache_path()?,
+                        &repository.canonical_name,
                         &provenance,
                         |stage| {
                             let inputs = crate::repository_ctx::execute(
@@ -2988,10 +2990,15 @@ mod tests {
         let host = crate::host_os::HostMetadata::fixture("linux", "amd64", "linux");
         let current = crate::host_os::repository_inputs(&host, &inputs).unwrap();
         let run = |bytes: &[u8]| {
-            crate::repository_store::materialize(cache.path(), b"same-provenance", |stage| {
-                std::fs::write(stage.join("constant"), b"same-content").unwrap();
-                Ok(bytes.to_vec())
-            })
+            crate::repository_store::materialize(
+                cache.path(),
+                "same-key",
+                b"same-provenance",
+                |stage| {
+                    std::fs::write(stage.join("constant"), b"same-content").unwrap();
+                    Ok(bytes.to_vec())
+                },
+            )
             .unwrap()
         };
         let old_root = run(&legacy);
@@ -3138,7 +3145,7 @@ mod tests {
                 );
                 assert_eq!(repos.clone().root(&canonical).unwrap_err(), error);
                 assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
-                for subdir in ["trees", "manifests", "locks"] {
+                for subdir in ["trees", "manifests"] {
                     assert_eq!(
                         std::fs::read_dir(
                             f.0.join("bazel-rs-out/repositories/direct").join(subdir)
@@ -3148,6 +3155,17 @@ mod tests {
                         0
                     );
                 }
+                // Deterministic stage locks persist; nothing else does.
+                assert!(
+                    std::fs::read_dir(f.0.join("bazel-rs-out/repositories/direct/locks"))
+                        .unwrap()
+                        .all(|entry| entry
+                            .unwrap()
+                            .file_name()
+                            .to_str()
+                            .unwrap()
+                            .starts_with("stage-"))
+                );
             }
         }
     }

@@ -47,8 +47,19 @@ struct Entry {
 /// Execute into a private stage, then verify and publish its complete tree.
 /// `execute` returns exact serialized runtime input provenance, after validating
 /// its result. `provenance` identifies the definition, attributes and mappings.
-/// Neither byte string may contain the incidental stage pathname.
-pub fn materialize<F>(cache: &Path, provenance: &[u8], execute: F) -> Result<PathBuf, String>
+/// Neither byte string may contain the incidental stage pathname; the stage
+/// pathname itself is derived from `stage_key` (the repository's canonical
+/// name) so repository content that embeds its own working directory —
+/// `ctx.path(".")`, as gazelle's `go_env` does — addresses a path that is
+/// identical in every process and invocation, keeping the tree identity
+/// stable. Concurrent evaluations of the same key serialize on a stage lock
+/// in the cache, like module extension working directories.
+pub fn materialize<F>(
+    cache: &Path,
+    stage_key: &str,
+    provenance: &[u8],
+    execute: F,
+) -> Result<PathBuf, String>
 where
     F: FnOnce(&Path) -> Result<Vec<u8>, String>,
 {
@@ -57,12 +68,34 @@ where
     let trees = direct.join("trees");
     let manifests = direct.join("manifests");
     let locks = direct.join("locks");
-    for path in [&trees, &manifests, &locks] {
+    let stages = direct.join("stages");
+    for path in [&trees, &manifests, &locks, &stages] {
         ensure_directory(path)?;
     }
+    // 128 bits: two repositories sharing a slug would share a stage.
+    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
+    let stage_lock_path = locks.join(format!("stage-{slug}"));
+    if let Some(metadata) = optional_metadata(&stage_lock_path)? {
+        regular_metadata(&metadata)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    no_follow(&mut options);
+    let stage_lock = options.open(&stage_lock_path).map_err(|e| e.to_string())?;
+    regular_metadata(&stage_lock.metadata().map_err(|e| e.to_string())?)?;
+    FileExt::lock_exclusive(&stage_lock)
+        .map_err(|e| format!("cannot lock direct repository stage: {e}"))?;
+    // Held until return: the stage pathname exists only under this lock.
+    let _stage_guard = stage_lock;
+    let stage_path = stages.join(&slug);
+    if optional_metadata(&stage_path)?.is_some() {
+        crate::repository_ctx::remove_tree(&stage_path)
+            .map_err(|e| format!("cannot remove interrupted direct repository stage: {e}"))?;
+    }
     let stage = tempfile::Builder::new()
-        .prefix(".stage-")
-        .tempdir_in(&trees)
+        .prefix(&slug)
+        .rand_bytes(0)
+        .tempdir_in(&stages)
         .map_err(|e| format!("cannot stage direct repository: {e}"))?;
     // TempDir owns cleanup on callback errors and Rust unwinding as well.
     let inputs = execute(stage.path())?;
@@ -87,7 +120,7 @@ where
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
 
     // Recheck parents after the callback, before touching persistent entries.
-    for path in [&trees, &manifests, &locks] {
+    for path in [&trees, &manifests, &locks, &stages] {
         ensure_directory(path)?;
     }
     let lock_path = locks.join(&identity);
@@ -464,12 +497,86 @@ mod tests {
                     .unwrap()
                     .starts_with('.'))
         );
+        // Deterministic stages live in their own directory and never survive
+        // a completed materialization.
+        assert_eq!(
+            fs::read_dir(cache.join("direct/stages"))
+                .map(|entries| entries.count())
+                .unwrap_or(0),
+            0
+        );
+    }
+
+    #[test]
+    fn stage_paths_are_deterministic_across_materializations() {
+        // Repository content may embed its own working directory (gazelle's
+        // go_env writes `ctx.path(".")` into go.env). With a stage keyed by
+        // the repository name, that path is a pure function of the cache and
+        // the key, so re-evaluation reproduces the identity and warm reuse
+        // holds — in this process and in any other sharing the cache.
+        let cache = temp();
+        let embed = |stage: &Path| {
+            fs::write(
+                stage.join("go.env"),
+                format!("GOPATH='{}'\n", stage.display()),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(b"inputs".to_vec())
+        };
+        let first =
+            materialize(cache.path(), "rules_gazelle++go_env", b"provenance", embed).unwrap();
+        // The embedded working directory is the deterministic stage:
+        // <cache>/direct/stages/<32-hex slug of the key>.
+        let embedded = fs::read_to_string(first.join("go.env")).unwrap();
+        let stages_dir = cache.path().join("direct/stages");
+        assert!(embedded.starts_with(&format!("GOPATH='{}", stages_dir.display())));
+        assert_eq!(
+            embedded
+                .lines()
+                .next()
+                .unwrap()
+                .trim_end_matches('\'')
+                .rsplit('/')
+                .next()
+                .unwrap()
+                .len(),
+            32
+        );
+        let second =
+            materialize(cache.path(), "rules_gazelle++go_env", b"provenance", embed).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            fs::read_dir(cache.path().join("direct/trees"))
+                .unwrap()
+                .count(),
+            1
+        );
+        // A different repository embeds a different stage pathname and gets
+        // a different content address.
+        assert_ne!(
+            materialize(cache.path(), "other_repo", b"provenance", embed).unwrap(),
+            first
+        );
+        no_stages(cache.path());
+    }
+
+    #[test]
+    fn interrupted_stage_directory_is_replaced_under_its_lock() {
+        let cache = temp();
+        let slug = blake3::hash(b"stale-key").to_hex()[..32].to_owned();
+        let stale = cache.path().join("direct/stages").join(&slug);
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("leftover"), b"interrupted").unwrap();
+        let tree = materialize(cache.path(), "stale-key", b"", write).unwrap();
+        assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
+        assert!(!tree.join("leftover").exists());
+        no_stages(cache.path());
     }
 
     #[test]
     fn binary_executable_empty_directories_and_boundary() {
         let cache = temp();
-        let tree = materialize(cache.path(), b"definition", write).unwrap();
+        let tree = materialize(cache.path(), "test-key", b"definition", write).unwrap();
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         assert!(tree.join("empty").is_dir());
         assert_eq!(fs::read(tree.join("REPO.bazel")).unwrap(), b"");
@@ -491,9 +598,9 @@ mod tests {
     #[test]
     fn provenance_and_runtime_inputs_are_framed_and_part_of_identity() {
         let cache = temp();
-        let a = materialize(cache.path(), b"a", |_| Ok(b"bc".to_vec())).unwrap();
-        let b = materialize(cache.path(), b"ab", |_| Ok(b"c".to_vec())).unwrap();
-        let c = materialize(cache.path(), b"a", |_| Ok(b"bd".to_vec())).unwrap();
+        let a = materialize(cache.path(), "test-key", b"a", |_| Ok(b"bc".to_vec())).unwrap();
+        let b = materialize(cache.path(), "test-key", b"ab", |_| Ok(b"c".to_vec())).unwrap();
+        let c = materialize(cache.path(), "test-key", b"a", |_| Ok(b"bd".to_vec())).unwrap();
         assert_ne!(a, b);
         assert_ne!(a, c);
     }
@@ -503,7 +610,7 @@ mod tests {
         let cache = temp();
         let count = AtomicUsize::new(0);
         let run = |input: &[u8]| {
-            materialize(cache.path(), b"same", |stage| {
+            materialize(cache.path(), "test-key", b"same", |stage| {
                 count.fetch_add(1, Ordering::SeqCst);
                 write(stage)?;
                 Ok(input.to_vec())
@@ -521,20 +628,20 @@ mod tests {
     fn callback_error_and_panic_clean_private_stage_without_publication() {
         let cache = temp();
         assert!(
-            materialize(cache.path(), b"", |stage| {
+            materialize(cache.path(), "test-key", b"", |stage| {
                 write(stage)?;
                 Err("callback failure".into())
             })
             .is_err()
         );
         let result = std::panic::catch_unwind(|| {
-            materialize(cache.path(), b"", |stage| {
+            materialize(cache.path(), "test-key", b"", |stage| {
                 write(stage).unwrap();
                 panic!("callback panic");
             })
         });
         assert!(result.is_err());
-        for name in ["trees", "manifests", "locks"] {
+        for name in ["trees", "manifests"] {
             assert_eq!(
                 fs::read_dir(cache.path().join("direct").join(name))
                     .unwrap()
@@ -542,6 +649,20 @@ mod tests {
                 0
             );
         }
+        // The stage lock file persists like a publication lock (deleting a
+        // lock file that other processes may hold would break exclusion);
+        // no stage directory and no tree survive the failure.
+        assert!(
+            fs::read_dir(cache.path().join("direct/locks"))
+                .unwrap()
+                .all(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("stage-"))
+        );
+        no_stages(cache.path());
     }
 
     #[test]
@@ -555,7 +676,7 @@ mod tests {
             "BUILD",
             "BUILD.bazel",
         ] {
-            let tree = materialize(cache.path(), boundary.as_bytes(), |stage| {
+            let tree = materialize(cache.path(), "test-key", boundary.as_bytes(), |stage| {
                 fs::write(stage.join(boundary), b"original").unwrap();
                 Ok(vec![])
             })
@@ -575,20 +696,29 @@ mod tests {
     #[test]
     fn corruption_of_bytes_mode_and_empty_directory_is_repaired() {
         let cache = temp();
-        let tree = materialize(cache.path(), b"", write).unwrap();
+        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
         let original = snapshot(&tree).unwrap();
         fs::write(tree.join("data"), b"bad").unwrap();
-        assert_eq!(tree, materialize(cache.path(), b"", write).unwrap());
+        assert_eq!(
+            tree,
+            materialize(cache.path(), "test-key", b"", write).unwrap()
+        );
         assert_eq!(original, snapshot(&tree).unwrap());
         fs::remove_dir(tree.join("empty")).unwrap();
-        assert_eq!(tree, materialize(cache.path(), b"", write).unwrap());
+        assert_eq!(
+            tree,
+            materialize(cache.path(), "test-key", b"", write).unwrap()
+        );
         assert_eq!(original, snapshot(&tree).unwrap());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
         }
-        assert_eq!(tree, materialize(cache.path(), b"", write).unwrap());
+        assert_eq!(
+            tree,
+            materialize(cache.path(), "test-key", b"", write).unwrap()
+        );
         assert_eq!(original, snapshot(&tree).unwrap());
         no_stages(cache.path());
     }
@@ -596,12 +726,12 @@ mod tests {
     #[test]
     fn changed_output_has_a_different_content_address() {
         let cache = temp();
-        let first = materialize(cache.path(), b"", |stage| {
+        let first = materialize(cache.path(), "test-key", b"", |stage| {
             fs::write(stage.join("data"), b"first").unwrap();
             Ok(vec![])
         })
         .unwrap();
-        let second = materialize(cache.path(), b"", |stage| {
+        let second = materialize(cache.path(), "test-key", b"", |stage| {
             fs::write(stage.join("data"), b"second").unwrap();
             Ok(vec![])
         })
@@ -613,38 +743,46 @@ mod tests {
     #[test]
     fn missing_stale_malformed_and_wrong_shape_manifests_are_repaired() {
         let cache = temp();
-        let tree = materialize(cache.path(), b"", write).unwrap();
+        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
         let expected = fs::read(&path).unwrap();
         for bytes in [b"{".as_slice(), b"{}", b"null", b"{\"format\":999}"] {
             fs::write(&path, bytes).unwrap();
-            assert_eq!(tree, materialize(cache.path(), b"", write).unwrap());
+            assert_eq!(
+                tree,
+                materialize(cache.path(), "test-key", b"", write).unwrap()
+            );
             assert_eq!(fs::read(&path).unwrap(), expected);
         }
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        materialize(cache.path(), b"", write).unwrap();
+        materialize(cache.path(), "test-key", b"", write).unwrap();
         assert_eq!(fs::read(&path).unwrap(), expected);
         fs::remove_file(&path).unwrap();
-        materialize(cache.path(), b"", write).unwrap();
+        materialize(cache.path(), "test-key", b"", write).unwrap();
         assert_eq!(fs::read(&path).unwrap(), expected);
         no_stages(cache.path());
     }
 
     #[test]
-    fn concurrent_callbacks_precede_publication_lock() {
+    fn concurrent_callbacks_for_distinct_stages_precede_publication_lock() {
         let cache = temp();
         let barrier = Arc::new(Barrier::new(2));
         let threads: Vec<_> = (0..2)
-            .map(|_| {
+            .map(|index| {
                 let cache = cache.path().to_owned();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
-                    materialize(&cache, b"same", |stage| {
-                        let inputs = write(stage)?;
-                        barrier.wait();
-                        Ok(inputs)
-                    })
+                    materialize(
+                        &cache,
+                        if index == 0 { "stage-a" } else { "stage-b" },
+                        b"same",
+                        |stage| {
+                            let inputs = write(stage)?;
+                            barrier.wait();
+                            Ok(inputs)
+                        },
+                    )
                     .unwrap()
                 })
             })
@@ -655,6 +793,39 @@ mod tests {
             .collect();
         assert_eq!(roots[0], roots[1]);
         assert_eq!(fs::read(roots[0].join("data")).unwrap(), [0, 255, 128, 10]);
+        assert_eq!(
+            fs::read_dir(cache.path().join("direct/trees"))
+                .unwrap()
+                .count(),
+            1
+        );
+        no_stages(cache.path());
+    }
+
+    #[test]
+    fn same_stage_key_evaluations_serialize_on_the_stage_lock() {
+        // Distinct repositories evaluate concurrently; one repository is
+        // single-flight across processes through its deterministic stage.
+        let cache = temp();
+        let count = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let cache = cache.path().to_owned();
+                let count = count.clone();
+                std::thread::spawn(move || {
+                    materialize(&cache, "single-flight", b"same", |stage| {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        write(stage)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let roots: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert_eq!(roots[0], roots[1]);
         assert_eq!(
             fs::read_dir(cache.path().join("direct/trees"))
                 .unwrap()
@@ -704,7 +875,7 @@ mod tests {
             } else {
                 outside.path().join("precious")
             };
-            let tree = materialize(cache.path(), b"", |stage| {
+            let tree = materialize(cache.path(), "test-key", b"", |stage| {
                 symlink(&target, stage.join("link")).unwrap();
                 symlink("missing/dangling", stage.join("dangling")).unwrap();
                 Ok(vec![])
@@ -724,7 +895,7 @@ mod tests {
             // Warm reuse re-verifies the same link entries.
             assert_eq!(
                 tree,
-                materialize(cache.path(), b"", |stage| {
+                materialize(cache.path(), "test-key", b"", |stage| {
                     symlink(&target, stage.join("link")).unwrap();
                     symlink("missing/dangling", stage.join("dangling")).unwrap();
                     Ok(vec![])
@@ -735,21 +906,21 @@ mod tests {
         }
         // Distinct link targets are distinct content identities.
         assert_ne!(trees[0], trees[1]);
-        let tree = materialize(cache.path(), b"", |stage| {
+        let tree = materialize(cache.path(), "test-key", b"", |stage| {
             fs::write(stage.join("link"), b"file").unwrap();
             Ok(vec![])
         })
         .unwrap();
         assert!(!trees.contains(&tree));
         assert!(
-            materialize(cache.path(), b"", |stage| {
+            materialize(cache.path(), "test-key", b"", |stage| {
                 fs::hard_link(outside.path().join("precious"), stage.join("hardlink")).unwrap();
                 Ok(vec![])
             })
             .is_err()
         );
         assert!(
-            materialize(cache.path(), b"", |stage| {
+            materialize(cache.path(), "test-key", b"", |stage| {
                 let _socket = std::os::unix::net::UnixListener::bind(stage.join("socket")).unwrap();
                 Ok(vec![])
             })
@@ -766,13 +937,16 @@ mod tests {
         let cache = temp();
         let outside = temp();
         fs::write(outside.path().join("precious"), b"keep").unwrap();
-        let tree = materialize(cache.path(), b"", write).unwrap();
+        let tree = materialize(cache.path(), "test-key", b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
         fs::remove_dir_all(&tree).unwrap();
         fs::remove_file(&path).unwrap();
         symlink(outside.path(), &tree).unwrap();
         symlink(outside.path().join("precious"), &path).unwrap();
-        assert_eq!(tree, materialize(cache.path(), b"", write).unwrap());
+        assert_eq!(
+            tree,
+            materialize(cache.path(), "test-key", b"", write).unwrap()
+        );
         assert!(
             !fs::symlink_metadata(&tree)
                 .unwrap()
@@ -796,20 +970,28 @@ mod tests {
         let outside = temp();
         std::os::unix::fs::symlink(outside.path(), cache.path().join("link")).unwrap();
         assert!(
-            materialize(&cache.path().join("link/child"), b"", |_| panic!(
+            materialize(
+                &cache.path().join("link/child"),
+                "test-key",
+                b"",
+                |_| panic!("must not evaluate")
+            )
+            .is_err()
+        );
+        assert!(!outside.path().join("child").exists());
+        assert!(
+            materialize(Path::new("relative"), "test-key", b"", |_| panic!(
                 "must not evaluate"
             ))
             .is_err()
         );
-        assert!(!outside.path().join("child").exists());
-        assert!(materialize(Path::new("relative"), b"", |_| panic!("must not evaluate")).is_err());
     }
 
     #[test]
     fn large_files_and_many_entries_publish_but_path_profile_holds() {
         // Above the former 16 MiB file / 64 MiB total / 10000-entry caps.
         let cache = temp();
-        let tree = materialize(cache.path(), b"", |stage| {
+        let tree = materialize(cache.path(), "test-key", b"", |stage| {
             for i in 0..5 {
                 File::create(stage.join(i.to_string()))
                     .unwrap()
@@ -829,7 +1011,7 @@ mod tests {
         );
         assert_eq!(fs::read_dir(tree.join("many")).unwrap().count(), 10_001);
         assert!(
-            materialize(cache.path(), b"", |stage| {
+            materialize(cache.path(), "test-key", b"", |stage| {
                 let mut path = stage.to_owned();
                 for _ in 0..=DEPTH_LIMIT {
                     path.push("d");
@@ -850,7 +1032,7 @@ mod tests {
         let cache = temp();
         for name in [std::ffi::OsString::from_vec(vec![255]), "bad\\name".into()] {
             assert!(
-                materialize(cache.path(), b"", |stage| {
+                materialize(cache.path(), "test-key", b"", |stage| {
                     fs::write(stage.join(name), b"").unwrap();
                     Ok(vec![])
                 })

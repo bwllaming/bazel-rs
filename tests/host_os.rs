@@ -158,7 +158,27 @@ impl Fixture {
     }
 
     fn clean_failure(&self) {
-        assert!(inventory(&self.store()).is_empty());
+        // Deterministic stage locks persist (empty files, like publication
+        // locks); trees, manifests and stage directories stay empty.
+        for name in ["trees", "manifests", "stages"] {
+            let path = self.store().join(name);
+            assert!(
+                !path.exists() || fs::read_dir(&path).unwrap().next().is_none(),
+                "{name} not empty after failure"
+            );
+        }
+        if let Ok(entries) = fs::read_dir(self.store().join("locks")) {
+            for entry in entries {
+                assert!(
+                    entry
+                        .unwrap()
+                        .file_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("stage-")
+                );
+            }
+        }
         assert!(!self.temp.path().join("cache/actions").exists());
         self.no_stages();
     }

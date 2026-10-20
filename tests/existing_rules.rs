@@ -46,7 +46,7 @@ impl Fixture {
         assert_eq!(result.status.code(), Some(1), "{error}");
         assert!(result.stdout.is_empty());
         assert!(error.contains(marker), "{error}");
-        for directory in ["trees", "manifests", "locks"] {
+        for directory in ["trees", "manifests"] {
             let path = self
                 .0
                 .path()
@@ -54,6 +54,18 @@ impl Fixture {
                 .join(directory);
             assert!(!path.exists() || fs::read_dir(path).unwrap().next().is_none());
         }
+        // Deterministic stage locks persist (like publication locks); no
+        // other lock entry may exist.
+        let locks = self.0.path().join("cache/repositories/direct/locks");
+        assert!(
+            !locks.exists()
+                || fs::read_dir(&locks).unwrap().all(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("stage-"))
+        );
     }
 }
 

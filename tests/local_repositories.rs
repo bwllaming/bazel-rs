@@ -155,9 +155,20 @@ fn local_repository_failure_is_lazy_and_never_published() {
     let (_, stderr) = f.build(&["//:data"]);
     assert!(!stderr.contains("LOCAL_CALLBACK_FAILURE"));
     f.reject(&["query", "@unused//:all"], "LOCAL_CALLBACK_FAILURE");
-    for name in ["trees", "manifests", "locks"] {
+    for name in ["trees", "manifests", "stages"] {
         let path = f.0.path().join("cache/repositories/direct").join(name);
         assert!(fs::read_dir(path).unwrap().next().is_none());
+    }
+    // Only the persistent deterministic stage lock may remain.
+    for entry in fs::read_dir(f.0.path().join("cache/repositories/direct/locks")).unwrap() {
+        assert!(
+            entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .starts_with("stage-")
+        );
     }
 }
 
