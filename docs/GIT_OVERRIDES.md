@@ -57,8 +57,7 @@ Incomplete publication is detected and repaired. Cache ancestors and staging
 must be trusted against concurrent hostile mutation; this is not a filesystem
 sandbox.
 
-Exported paths are limited to depth 64 and 4096 bytes (the store path
-profile). N32 removed the former 100000-entry, 1 GiB, 16 MiB MODULE and 1 MiB
+Exported paths follow the store path profile (UTF-8; 4096 bytes total, 255 bytes per component, no NUL, empty, `.` or `..` components (no depth cap)). Note: deeply nested trees (worst case ~2048 levels) can hit EMFILE/thread-stack limits in the recursive walkers; all failures are explicit. N32 removed the former 100000-entry, 1 GiB, 16 MiB MODULE and 1 MiB
 listing caps; files are copied and hashed in streaming fashion. Directory/external/dangling/cyclic symlinks, gitlinks, special files,
 hardlinks and unsafe/non-UTF-8 paths are rejected, including tracked unsupported
 entries outside the selected prefix. Internal relative file links have the

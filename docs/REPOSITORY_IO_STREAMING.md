@@ -93,7 +93,7 @@ Kept:
 - Safety by the correct mechanism, independent of size: per-entry path
   normalization and escape checks, no writes through symlinks, in-root hard
   links only, zip link-escape check, atomic publication.
-- Store path profile (not I/O size): UTF-8 names, 4096-byte paths, depth 64.
+- Store path profile (not I/O size): UTF-8 names, 4096 bytes total, 255 bytes per component, no NUL, empty, `.` or `..` components (no depth cap). Note: deeply nested trees (worst case ~2048 levels) can hit EMFILE/thread-stack limits in the recursive walkers; all failures are explicit.
 - GNU long-name/link and local PAX extension records: 1 MiB each (they are
   buffered in memory; real names are tiny), explicit error beyond.
 - Registry metadata and source archives use the same 10 s connect / 20 s

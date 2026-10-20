@@ -545,7 +545,7 @@ fn safe_relative(name: &str) -> Result<(), String> {
             .any(|part| !matches!(part, Component::Normal(_)))
     {
         return Err(format!(
-            "invalid direct repository path {name:?} or path limit exceeded              (maximum {PATH_LIMIT} bytes total, {NAME_LIMIT} bytes per component)"
+            "invalid direct repository path {name:?}: exceeds the path limit (maximum {PATH_LIMIT} bytes total, {NAME_LIMIT} bytes per component)"
         ));
     }
     Ok(())

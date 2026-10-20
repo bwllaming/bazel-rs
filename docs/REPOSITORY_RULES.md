@@ -335,8 +335,7 @@ Writes (file, template, symlink, rename, extract outputs) must stay inside the
 repository directory: anything else fails with Bazel's `Cannot write outside of
 the repository directory for path ...` (SBEC:331-339). The native profile also
 refuses to traverse a symlinked parent while writing and requires output names
-the content-addressed store can represent (UTF-8 without control characters,
-`\`, `:`, `?`, `#` or `%`; depth 64; 4096 bytes). Arbitrary template bytes,
+the content-addressed store can represent (UTF-8; 4096 bytes total, 255 bytes per component, no NUL, empty, `.` or `..` components (no depth cap)). Arbitrary template bytes,
 including invalid UTF-8 and CRLF, are preserved. Label template and Label read
 inputs resolve like Bazel's getPathFromLabel (the package must exist) and are
 read following symlinks; a symlinked package directory remains a native
@@ -458,8 +457,8 @@ call frames (Starlark forbids recursion); like Bazel there is no tick or heap
 limit (the former 1 M ticks / 128 MiB heap were removed in N43). Ordinary BUILD
 loading is unchanged. Repository I/O has no size or operation-count caps (N32):
 files, templates, downloads and archives of any size are written and hashed in
-streaming fashion. Publication enforces only the store path profile (depth 64,
-4096-byte UTF-8 paths) and hashes each published file incrementally. These are
+streaming fashion. Publication enforces only the store path profile (UTF-8 paths: 4096 bytes total, 255 bytes per component, no NUL, empty, `.` or `..` components (no depth cap))
+and hashes each published file incrementally. Note: deeply nested trees (worst case ~2048 levels) can hit EMFILE/thread-stack limits in the recursive walkers; all failures are explicit. These are
 implementation limits, not a security sandbox.
 
 Direct preparation also preflights one aggregate host budget across a usage's
