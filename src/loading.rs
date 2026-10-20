@@ -136,7 +136,7 @@ pub mod module_timings {
         if REPORTED.set(()).is_err() || !enabled() {
             return;
         }
-        let Some(state) = with(|state| std::mem::take(state)) else {
+        let Some(state) = with(std::mem::take) else {
             return;
         };
         let mut labels = state.labels;
@@ -861,54 +861,138 @@ impl ModulePrints {
     }
 }
 
-/// Single-flight `.bzl` evaluation (review §1.3): one evaluation at a time
-/// process-wide, reentrant per thread. The BzlCache itself is never held
-/// while evaluating, so without this guard two threads could both evaluate
-/// the same label — split function identity and duplicated print() output.
-/// A per-label wait would deadlock on load cycles split across threads, so
-/// the lock is global; it is taken only when a load will evaluate (a cache
-/// miss), never for hits.
-struct BzlEvaluation {
-    lock: std::sync::Mutex<()>,
+/// Per-label single-flight `.bzl` evaluation with in-flight WAITING
+/// (review §1.3 as corrected for N62: the global lock serialized
+/// evaluations of *independent* labels). One evaluation per label per
+/// process: the first traversal to reach a cache miss claims the label
+/// and evaluates; a concurrent traversal of the SAME label waits for the
+/// claim and then rechecks the shared cache — exactly the Finish-time
+/// recheck the global lock performed — so one identity and one print
+/// record exist (BzlLoadFunction's stored value). Disjoint labels
+/// evaluate in parallel up to the loading workers' width.
+///
+/// Claims are never nested: a module's loads are all evaluated before its
+/// own `Work::Finish` frame (the DFS front-loads them), so a claim owner
+/// never waits while holding a claim and the wait graph cannot cycle in
+/// the current architecture. As a safety net for any future nesting, a
+/// wait that would close a cycle across threads (or a same-thread
+/// re-claim) aborts the unit with the [`crate::repository_demand::
+/// PARALLEL_BZL_CYCLE`] sentinel instead of deadlocking; the coordinator
+/// re-runs the unit inline, where a genuine load cycle reports with the
+/// sequential traversal's message and any spurious abort merely re-loads
+/// from the cache.
+struct BzlFlight {
+    state: std::sync::Mutex<BzlFlightState>,
+    completed: std::sync::Condvar,
 }
 
-static BZL_EVALUATION: BzlEvaluation = BzlEvaluation {
-    lock: std::sync::Mutex::new(()),
-};
-
-thread_local! {
-    /// Reentrancy depth of the owning thread (0: not held).
-    static BZL_EVAL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+#[derive(Default)]
+struct BzlFlightState {
+    /// The label each thread is currently evaluating (its claim).
+    inflight: HashMap<Label, std::thread::ThreadId>,
+    /// The label each thread is currently waiting for (no claim held).
+    waiting_for: HashMap<std::thread::ThreadId, Label>,
 }
 
-/// The held single-flight guard (owner thread + depth); released on drop.
-struct BzlEvaluationGuard {
-    _lock: Option<std::sync::MutexGuard<'static, ()>>,
+static BZL_FLIGHT: std::sync::OnceLock<BzlFlight> = std::sync::OnceLock::new();
+
+fn bzl_flight() -> &'static BzlFlight {
+    BZL_FLIGHT.get_or_init(|| BzlFlight {
+        state: std::sync::Mutex::new(BzlFlightState::default()),
+        completed: std::sync::Condvar::new(),
+    })
 }
 
-impl Drop for BzlEvaluationGuard {
+/// The outcome of asking to evaluate `label`.
+#[derive(Debug)]
+enum BzlClaim {
+    /// This thread evaluates; release the claim when published.
+    Owned,
+    /// Another thread's evaluation finished (published or not): recheck
+    /// the shared cache before deciding to evaluate.
+    Waited,
+}
+
+/// The held per-label claim; releases and wakes waiters on drop (including
+/// panics and sentinel aborts, so a claim never outlives its frame).
+struct BzlClaimGuard {
+    label: Label,
+}
+
+impl Drop for BzlClaimGuard {
     fn drop(&mut self) {
-        BZL_EVAL_DEPTH.with(|depth| {
-            depth.set(depth.get().saturating_sub(1));
-        });
+        let flight = bzl_flight();
+        let mut state = flight
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.inflight.remove(&self.label);
+        flight.completed.notify_all();
     }
 }
 
-/// Acquire the global `.bzl` evaluation lock, reentrant per thread: a
-/// nested acquisition by the owner thread (depth > 0) proceeds without
-/// waiting; any other thread waits for the owner's outermost drop.
-fn bzl_evaluation_lock() -> BzlEvaluationGuard {
-    let depth = BZL_EVAL_DEPTH.with(std::cell::Cell::get);
-    if depth > 0 {
-        BZL_EVAL_DEPTH.with(|depth| depth.set(depth.get() + 1));
-        return BzlEvaluationGuard { _lock: None };
-    }
-    let lock = BZL_EVALUATION
-        .lock
+/// Claim `label` for evaluation, or wait for the current owner to finish.
+/// A wait that would close a cycle across threads aborts with the
+/// [`crate::repository_demand::PARALLEL_BZL_CYCLE`] sentinel.
+fn bzl_claim(label: &Label) -> Result<BzlClaim, String> {
+    let current = std::thread::current().id();
+    let flight = bzl_flight();
+    let mut state = flight
+        .state
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    BZL_EVAL_DEPTH.with(|depth| depth.set(1));
-    BzlEvaluationGuard { _lock: Some(lock) }
+    loop {
+        match state.inflight.get(label).copied() {
+            None => {
+                state.inflight.insert(label.clone(), current);
+                return Ok(BzlClaim::Owned);
+            }
+            Some(owner) if owner == current => {
+                // Defensive: a same-thread re-claim means nested Finish
+                // frames (a load cycle through the claim itself).
+                return Err(crate::repository_demand::PARALLEL_BZL_CYCLE.to_owned());
+            }
+            Some(owner) => {
+                // Walk the wait graph: claims are never nested today, so
+                // this terminates immediately in practice; a future nested
+                // claim cycle must abort instead of deadlocking.
+                let mut walker = owner;
+                let mut cyclic = false;
+                loop {
+                    if walker == current {
+                        cyclic = true;
+                        break;
+                    }
+                    match state
+                        .waiting_for
+                        .get(&walker)
+                        .and_then(|next| state.inflight.get(next).copied())
+                    {
+                        Some(next_owner) => walker = next_owner,
+                        None => break,
+                    }
+                }
+                if cyclic {
+                    return Err(format!(
+                        "{}: waiting for {} would close a load cycle across threads",
+                        crate::repository_demand::PARALLEL_BZL_CYCLE,
+                        label
+                    ));
+                }
+                state.waiting_for.insert(current, label.clone());
+                let (unlocked, _resume) = flight
+                    .completed
+                    .wait_timeout(state, std::time::Duration::from_secs(3600))
+                    .unwrap_or_else(|poison| poison.into_inner());
+                state = unlocked;
+                state.waiting_for.remove(&current);
+                if !state.inflight.contains_key(label) {
+                    return Ok(BzlClaim::Waited);
+                }
+                // Someone else claimed it before we woke; wait again.
+            }
+        }
+    }
 }
 
 struct Loader<'a> {
@@ -1076,40 +1160,59 @@ impl<'a> Loader<'a> {
                 }
                 Work::Finish(label, path, ast, loads) => {
                     let own_functions = self.functions.len();
-                    // Single-flight evaluation (review §1.3): the global
-                    // lock is held only while THIS miss evaluates (and
-                    // publishes); concurrent traversals of disjoint labels
-                    // proceed. Re-check the shared cache under the lock:
-                    // another traversal may have published this label —
-                    // or its failure — since our miss, and exactly one
-                    // evaluation must create its identity and prints.
-                    let _single_flight = bzl_evaluation_lock();
-                    if self.shared {
-                        match self.repositories.build_bzl_cache().get(&label)? {
-                            Some(Ok(cached)) => {
-                                self.functions.extend(cached.functions.iter().cloned());
-                                self.cache.insert(label.clone(), cached.module.clone());
-                                self.visibilities
-                                    .insert(label.clone(), cached.visibility.clone());
-                                if let Some(sink) = self.prints {
-                                    sink.push_cached(&label);
+                    // Per-label single-flight with in-flight waiting
+                    // (review §1.3, N62): claim the label and evaluate, or
+                    // wait for the owner and recheck — a concurrent
+                    // traversal may have published this label — or its
+                    // failure — and exactly one evaluation must create its
+                    // identity and prints. Independent labels evaluate in
+                    // parallel on other workers. A wait that would close a
+                    // cycle across threads aborts the unit (the coordinator
+                    // re-runs it inline, reproducing the sequential cycle
+                    // message) instead of deadlocking.
+                    let mut served_from_cache = false;
+                    let _claim: Option<BzlClaimGuard> = loop {
+                        if self.shared {
+                            match self.repositories.build_bzl_cache().get(&label)? {
+                                Some(Ok(cached)) => {
+                                    self.functions.extend(cached.functions.iter().cloned());
+                                    self.cache.insert(label.clone(), cached.module.clone());
+                                    self.visibilities
+                                        .insert(label.clone(), cached.visibility.clone());
+                                    if let Some(sink) = self.prints {
+                                        sink.push_cached(&label);
+                                    }
+                                    let finished = active.pop();
+                                    debug_assert_eq!(finished.as_ref(), Some(&label));
+                                    served_from_cache = true;
+                                    break None;
                                 }
-                                let finished = active.pop();
-                                debug_assert_eq!(finished.as_ref(), Some(&label));
-                                continue;
-                            }
-                            Some(Err(failure)) => {
-                                // This traversal's DFS already visited the
-                                // module's loads (their markers are in the
-                                // sink); only the module's own marker is
-                                // missing before the stored error.
-                                if let Some(sink) = self.prints {
-                                    sink.push_cached(&label);
+                                Some(Err(failure)) => {
+                                    // This traversal's DFS already visited the
+                                    // module's loads (their markers are in the
+                                    // sink); only the module's own marker is
+                                    // missing before the stored error.
+                                    if let Some(sink) = self.prints {
+                                        sink.push_cached(&label);
+                                    }
+                                    return Err(failure.error.clone());
                                 }
-                                return Err(failure.error.clone());
+                                None => {}
                             }
-                            None => {}
                         }
+                        match bzl_claim(&label)? {
+                            BzlClaim::Owned => {
+                                break Some(BzlClaimGuard {
+                                    label: label.clone(),
+                                });
+                            }
+                            // The owner published (or aborted without
+                            // publishing): recheck before evaluating.
+                            BzlClaim::Waited => continue,
+                        }
+                    };
+                    if served_from_cache {
+                        continue;
                     }
                     let self_time = std::time::Instant::now();
                     let (frozen, visibility, prints) = match self.finish_module(&label, &path, *ast)
@@ -1159,10 +1262,11 @@ impl<'a> Loader<'a> {
         prints: Vec<String>,
         loads: Vec<Label>,
     ) -> Result<T, String> {
-        // The no-demand sentinel is never published (P2: a worker's abort
-        // is environmental, not a stored BzlLoadValue error; the
-        // coordinator's inline retry must evaluate the module for real).
-        if self.shared && !crate::repository_demand::is_needs_repository(&error) {
+        // The inline-rerun sentinels (no-demand, parallel wait-cycle) are
+        // never published (P2: a worker's abort is environmental, not a
+        // stored BzlLoadValue error; the coordinator's inline retry must
+        // evaluate the module for real).
+        if self.shared && !crate::repository_demand::is_inline_rerun_sentinel(&error) {
             self.repositories.build_bzl_cache().insert(
                 label.clone(),
                 Err(CachedFailure {
@@ -1671,13 +1775,44 @@ mod tests {
     use super::*;
     use starlark::environment::{GlobalsBuilder, LibraryExtension};
     use starlark::starlark_module;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     static EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static SHARED_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static SINGLE_FLIGHT_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
     static FAILING_EVALUATIONS: AtomicUsize = AtomicUsize::new(0);
+    /// Rendezvous for the parallel-evaluation test: two evaluations must
+    /// both sit in `wait_for_pair` at once (a timeout marks a violation).
+    static PAIR_RENDEZVOUS: std::sync::Mutex<Option<Arc<PairGate>>> = std::sync::Mutex::new(None);
+    static CONCURRENT_PAIR_VIOLATION: AtomicBool = AtomicBool::new(false);
+
+    /// A two-party gate: `enter` returns once both parties arrived (or
+    /// after `deadline`, reporting the timeout).
+    struct PairGate {
+        arrived: AtomicUsize,
+        generation: AtomicU64,
+    }
+
+    impl PairGate {
+        fn enter(&self) -> bool {
+            let generation = self.generation.load(Ordering::Acquire);
+            let count = self.arrived.fetch_add(1, Ordering::AcqRel) + 1;
+            if count == 2 {
+                self.arrived.store(0, Ordering::Release);
+                self.generation.store(generation + 1, Ordering::Release);
+                return true;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while self.generation.load(Ordering::Acquire) == generation {
+                if std::time::Instant::now() > deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+    }
 
     struct Temp(PathBuf);
 
@@ -1777,6 +1912,16 @@ mod tests {
 
         fn count_single_flight_evaluation() -> anyhow::Result<i32> {
             SINGLE_FLIGHT_EVALUATIONS.fetch_add(1, Ordering::Relaxed);
+            Ok(21)
+        }
+
+        fn wait_for_pair() -> anyhow::Result<i32> {
+            let gate = PAIR_RENDEZVOUS.lock().unwrap().clone();
+            if let Some(gate) = gate.as_ref()
+                && !gate.enter()
+            {
+                CONCURRENT_PAIR_VIOLATION.store(true, Ordering::Relaxed);
+            }
             Ok(21)
         }
 
@@ -2802,10 +2947,10 @@ lambda_mapper = lambda value: value
         );
     }
 
-    /// Single-flight `.bzl` evaluation (review §1.3): two threads loading
-    /// the same uncached label run exactly one evaluation — the global
-    /// reentrant lock serializes misses, the cache serves the second —
-    /// and the lock is reentrant per thread (no self-deadlock).
+    /// Per-label single-flight `.bzl` evaluation (review §1.3, N62): two
+    /// threads loading the same uncached label run exactly one evaluation
+    /// — the loser waits for the in-flight claim and rechecks the cache —
+    /// and independent labels evaluate CONCURRENTLY (no global lock).
     #[test]
     fn bzl_evaluation_is_single_flight_and_reentrant() {
         let temp = Temp::new();
@@ -2866,10 +3011,116 @@ lambda_mapper = lambda value: value
         // No prints exist to buffer; the winner evaluated (no marker) and
         // the loser's unit holds exactly one cache-hit marker.
         assert_eq!((module_lines, markers), (0, 1));
-        // Reentrancy: an outer holder acquires again without waiting.
-        let outer = bzl_evaluation_lock();
-        let inner = bzl_evaluation_lock();
-        drop(inner);
-        drop(outer);
+    }
+
+    /// Independent labels evaluate in parallel (N62): each module's
+    /// evaluation blocks in a barrier inside Starlark — with the old
+    /// global evaluation lock both waits time out (serialized); with
+    /// per-label claims the evaluations rendezvous concurrently and both
+    /// units load.
+    #[test]
+    fn independent_bzl_labels_evaluate_concurrently() {
+        let temp = Temp::new();
+        temp.file("BUILD", "");
+        temp.file("left.bzl", "value = wait_for_pair()\n");
+        temp.file("right.bzl", "value = wait_for_pair()\n");
+        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::Print])
+            .with(test_globals)
+            .build();
+        let package = root_package();
+        let repositories = Arc::new(RepositorySet::new(temp.0.clone()));
+        PAIR_RENDEZVOUS.lock().unwrap().replace(Arc::new(PairGate {
+            arrived: AtomicUsize::new(0),
+            generation: AtomicU64::new(0),
+        }));
+        CONCURRENT_PAIR_VIOLATION.store(false, Ordering::Relaxed);
+        let loads: Vec<_> = ["left.bzl", "right.bzl"]
+            .into_iter()
+            .map(|name| {
+                let repositories = repositories.clone();
+                let globals = globals.clone();
+                let package = package.clone();
+                let source = format!("load(':{name}', 'value')");
+                std::thread::spawn(move || {
+                    let prints = LoadPrints::default();
+                    let ast = parse(&source);
+                    load_build_modules_in(repositories, &package, &ast, &globals, &prints).unwrap();
+                    prints.take()
+                })
+            })
+            .collect();
+        for load in loads {
+            load.join().expect("concurrent evaluations complete");
+        }
+        assert!(
+            !CONCURRENT_PAIR_VIOLATION.load(Ordering::Relaxed),
+            "the two labels' evaluations must overlap"
+        );
+    }
+
+    /// The wait-cycle safety net (N62): a claim never deadlocks. A
+    /// same-thread re-claim and a wait that would close a cycle across
+    /// threads abort with the [`crate::repository_demand::
+    /// PARALLEL_BZL_CYCLE`] sentinel instead (the coordinator re-runs the
+    /// unit inline).
+    #[test]
+    fn wait_cycle_abort_sentinel_prevents_cross_thread_deadlock() {
+        // Unique labels: the flight registry is process-global and lib
+        // tests run concurrently, so a shared label could be claimed by
+        // another test's evaluation and make this claim look contended.
+        let left = Label::parse_canonical("//n62-flight-cycle:left.bzl").unwrap();
+        let right = Label::parse_canonical("//n62-flight-cycle:right.bzl").unwrap();
+        let guard = match bzl_claim(&left) {
+            Ok(BzlClaim::Owned) => BzlClaimGuard {
+                label: left.clone(),
+            },
+            Ok(BzlClaim::Waited) => panic!("uncontended claim must be owned"),
+            Err(error) => panic!("uncontended claim must be owned: {error}"),
+        };
+        // A same-thread re-claim is a load cycle through the claim itself.
+        let repeat = match bzl_claim(&left) {
+            Err(error) => error,
+            Ok(_) => panic!("a same-thread re-claim aborts"),
+        };
+        assert!(crate::repository_demand::is_parallel_bzl_cycle(&repeat));
+        // Register this thread as waiting for `right` while it owns
+        // `left` — the state a nested Finish frame would produce.
+        {
+            let mut state = bzl_flight()
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state
+                .waiting_for
+                .insert(std::thread::current().id(), right.clone());
+        }
+        // The other thread holds `right` and asks for `left`: its
+        // wait-cycle walk must observe the registration and abort.
+        let registered = Arc::new(std::sync::Barrier::new(2));
+        let signal = registered.clone();
+        let other = std::thread::spawn(move || {
+            let right_guard = match bzl_claim(&right) {
+                Ok(BzlClaim::Owned) => BzlClaimGuard { label: right },
+                Ok(BzlClaim::Waited) => panic!("uncontended claim must be owned"),
+                Err(error) => panic!("uncontended claim must be owned: {error}"),
+            };
+            signal.wait();
+            let aborted = match bzl_claim(&left) {
+                Err(error) => error,
+                Ok(_) => panic!("a wait closing a cycle across threads aborts"),
+            };
+            (aborted, right_guard)
+        });
+        registered.wait();
+        let (aborted, _right_guard) = other.join().unwrap();
+        assert!(crate::repository_demand::is_parallel_bzl_cycle(&aborted));
+        {
+            let mut state = bzl_flight()
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state.waiting_for.remove(&std::thread::current().id());
+        }
+        drop(guard);
     }
 }

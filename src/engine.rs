@@ -1642,13 +1642,15 @@ impl Engine {
         let (rules, prints) = match unit.result {
             Ok(rules) => (rules, unit.prints),
             Err(error) => {
-                if crate::repository_demand::is_needs_repository(&error) {
-                    // The no-demand sentinel: the module events (evaluated
-                    // lines and cache-hit markers) are emitted now — the
-                    // modules are cached and never evaluate again — while
-                    // the BUILD lines are dropped with the aborted
-                    // evaluation; the inline re-run reproduces the
-                    // sequential output, fetch output included.
+                if crate::repository_demand::is_inline_rerun_sentinel(&error) {
+                    // An inline-rerun sentinel: the no-demand guard (a
+                    // worker, review §1.2) or a parallel `.bzl` wait-cycle
+                    // abort (N62). The module events (evaluated lines and
+                    // cache-hit markers) are emitted now — the modules are
+                    // cached and never evaluate again — while the BUILD
+                    // lines are dropped with the aborted evaluation; the
+                    // inline re-run reproduces the sequential output, fetch
+                    // output and genuine cycle messages included.
                     let module_events = unit
                         .prints
                         .into_iter()

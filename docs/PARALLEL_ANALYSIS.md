@@ -311,3 +311,147 @@ packages themselves).
   count, stdout identical, full 384-action dump identical after
   `trees/<run-hash>` normalization. Full cargo test (102 suites), 881
   python validators, fmt/clippy clean.
+
+## N62 — per-label `.bzl` single-flight (independent modules in parallel)
+
+The global evaluation lock (review §1.3 as implemented in P1/P2) is
+replaced by a per-label flight registry (`BzlFlight` in
+`src/loading.rs`): the first traversal to reach a cache miss claims the
+label and evaluates; a concurrent traversal of the SAME label waits on
+the claim's condvar and then rechecks the shared cache — exactly the
+Finish-time recheck the global lock performed — so one identity and one
+print record exist per label. Disjoint labels evaluate in parallel up
+to the loading workers' width. A claim is released on drop (including
+panics and sentinel aborts).
+
+Claims are never nested in the current architecture (a module's loads
+are all evaluated before its own `Work::Finish` frame), so the wait
+graph cannot cycle. As a safety net, a wait that WOULD close a cycle
+across threads — or a same-thread re-claim — aborts the unit with the
+`PARALLEL_BZL_CYCLE` sentinel (`src/repository_demand.rs`) instead of
+deadlocking; the coordinator treats it exactly like the no-demand
+sentinel (`is_inline_rerun_sentinel`): module events already emitted
+stay emitted, BUILD lines are dropped, and the unit re-runs inline at
+its commit slot, where a genuine load cycle reports with the sequential
+traversal's message (identical bytes) and a spurious abort merely
+re-loads from the cache. Sentinel errors are never published to the
+shared `.bzl` cache (`Loader::failed`).
+
+### Breakdown (cb1b3eb, `BAZEL_RS_TIMING_MODULES=1`)
+
+Post-N61, `//src/ts:all` warm select span is ~122 s of which repository
+`root()` materialization (npm `__links` local repositories re-executed
+by design at ~70 ms each, serialized) is ~121 s; `.bzl` evaluation self
+time is ~0.5 s and BUILD evaluation ~0.25 s. The `.bzl` share the
+global lock serialized never existed on this workspace; N62 is still
+the correct Bazel-equivalent structure (BzlLoadFunction evaluates
+disjoint loads concurrently), and it removes the serialization for
+workspaces whose graphs are evaluation-heavy.
+
+### Perf (`~/code`, warm, release, 64 cores; wall seconds, this session)
+
+| workload | t=1 | t=8 | t=32 | t=8 jitter 40 ms |
+|---|---|---|---|---|
+| query `//src/ts:all` (563,900 B) | 122.4 | 122.9 | 125.6 | — |
+| query `//src/...` (1,280,427 B) | 291.4 | 181.4 | 170.1 | 170.7 |
+| build 60 genrules (`beyondwork.ai`) | fails* | fails* | fails* | fails* |
+
+`//src/ts` is one package: no package breadth, root()-bound — unchanged
+by design. `//src/...` keeps the P2 package-parallel win (post-N61
+baseline in cb1b3eb: t1 284.9 / t8 161.0; this session's t8 181 s is
+within run-to-run root()-materialization variance, and stdout is
+byte-identical). *The 60-genrule warm build currently fails identically
+at every thread count with `invalid direct repository path or
+path/depth limit exceeded` during analysis (a direct-repository
+snapshot rejecting a path containing a forbidden character, in an
+unrelated subsystem; observed identically at t=1/8/32 and under
+jitter, so thread-invariant). The action-graph A/B therefore runs on
+the synthetic fixture below, and the `~/code` query A/B above.
+
+### Determinism evidence (§5)
+
+- Fixture A/B (tests/parallel_loading.rs, 13 rows): the previous 10
+  rows unchanged and green, plus (a) `parallel_bzl_graph_shapes_*`: a
+  diamond (`left`/`right` both load printing `base`) and a wide fan-in
+  (ten modules loading printing `fan`) reached from 11 packages in
+  shuffled roots — byte-identical stdout/stderr at 1/2/8/32 and jitter
+  40/25 ms, each print exactly once; (b)
+  `cross_package_load_cycle_*`: a load cycle (a↔b) reached from two
+  packages with different roots — the first package in pattern order
+  reports `load cycle` naming both modules exactly once, byte-identical
+  at 1/2/8/32 and jitter; (c) `action_dump_*`: warm fixture built at
+  1/8/32 + jitter with `BAZEL_RS_DUMP_ACTIONS=1` — the full action dump
+  byte-identical after `trees/<run-hash>` normalization, stdout/stderr
+  (outside the dump) identical.
+- Unit rows (src/loading.rs): `independent_bzl_labels_evaluate_concurrently`
+  (two labels rendezvous inside Starlark evaluation — impossible under
+  the global lock), `bzl_evaluation_is_single_flight_and_reentrant`
+  (rewritten: loser waits and rechecks), and
+  `wait_cycle_abort_sentinel_prevents_cross_thread_deadlock` (same-thread
+  re-claim and a constructed cross-thread wait cycle both abort with
+  the sentinel; unique labels because the registry is process-global
+  and lib tests run concurrently).
+- `~/code` warm query: `//src/ts:all` md5 `4f4e7201…` and `//src/...`
+  md5 `84b70775…` identical at t=1/8/32 and under 40 ms jitter; stderr
+  identical modulo PERF lines. Warm build of the 60-genrule set fails
+  identically (above) — its query form (`kind(genrule,
+  //src/beyondwork.ai/...)`, 60 targets) is md5-identical at 1/8/32 +
+  jitter.
+- Gates: `cargo test --locked` 1,335 lib tests + 103 integration
+  suites (2,182 tests) pass; two intermittent failures are pre-existing
+  and unrelated (see Residual). Python validators: 882/883 pass; the
+  one failure (`test_validate_label_passthrough` manifest-provenance
+  pin) fails identically on HEAD cb1b3eb — a stale source-hash pin from
+  the N61 era. `fmt`/`clippy -D warnings` clean.
+
+### go_deps cold variance: diagnosed, named residual (no fix)
+
+Question: do cold runs of a `go_deps`-demanding query vary? Three, then
+seven more, independent cold runs (fresh private `--cache-dir` each) of
+`deps(//src/beyondwork.ai/utils/str:str)` — which demands gazelle's
+`go_deps` extension (403 generated targets in the output) — are
+**byte-identical in stdout and stderr** (47,920 B, md5 `5746f65e…`)
+with warm repeats in the same caches also identical and adding zero
+new repository trees (warm reuse works). What DOES vary per cold run
+is the content identity (tree directory name) of ~17 of the 20 direct
+publications, including byte-identical trees: e.g. the Go SDK tree has
+the same 17,357 files with identical content hashes in every run, yet
+a different identity each time. Root cause, traced with the
+`BAZEL_RS_DEBUG_PROVENANCE` diagnostic: the SDK repository's
+*specification* embeds its extension's recorded file probes, whose
+paths are absolute paths into the cache (Bazel's RepoRecordedInput
+records the same absolute output-base paths); downstream, the
+`go_host_compatible_sdk_label` repository's generated `go.env` embeds
+`GOROOT=<that tree path>` and a stage path as file *content*, so the
+identity chain is self-referential across different cache directories.
+Within one cache directory (the supported warm workflow) identities
+are stable and publications are reused (verified: 20 trees before and
+after two warm runs). This is Bazel-equivalent behavior — genuine
+Bazel keys `external/` by output base, and a fresh output base
+re-fetches — so it is a **named residual, not a bug**: cold publication
+identities are cache-path-dependent by design; user-visible output is
+deterministic. (The earlier trees/<run-hash> finding for warm *shared*
+caches was the N61 fix; nothing here reopens it.)
+
+### Diagnostics kept
+
+`BAZEL_RS_DEBUG_PROVENANCE=1` (hidden, off by default) prints each
+direct/ordinary repository's provenance bytes at materialization —
+used to isolate the go_deps chain above; kept because repository
+identity bugs recur and the bytes are otherwise unobservable.
+
+### Residual risks / notes
+
+- Pre-existing intermittent lib test
+  `repository_process::tests::exit_codes_streams_signals_and_spawn_failures_match_bazel_results`
+  failed 2 of 5 full-suite runs this session (a `kill -INT $$` child
+  racing its own output flush; passes standalone and on HEAD, failed
+  identically before N62 changes under parallel load). Unrelated
+  subsystem; not addressed here.
+- The stale validator pin (`repository_store_sha256`) and the
+  direct-repository path-limit failure on the 60-genrule warm build are
+  pre-existing and thread-invariant; both noted for their owners.
+- Per-label waiting means a worker can now block on another worker's
+  evaluation instead of spinning on the global lock; the 1-hour
+  condvar timeout is a deadlock backstop only (a timed-out wait
+  re-loops and re-checks claims, it does not fail the load).

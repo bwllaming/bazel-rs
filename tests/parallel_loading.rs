@@ -644,3 +644,229 @@ fn sentinel_aborted_module_prints_fully_on_the_inline_rerun() {
     assert_eq!(error.matches("M before the demand").count(), 1);
     assert_eq!(error.matches("M after the demand").count(), 1);
 }
+
+/// N62 per-label single-flight: a parallel-`.bzl` graph shape — a diamond
+/// (`left` and `right` both load the printing `base`) and a wide fan-in
+/// (ten modules all loading the printing `fan`), reached from many
+/// packages in shuffled roots, so two workers concurrently load a third
+/// printing module: one evaluation, one print record, the other
+/// traversal a cache hit. Output stays byte-identical across thread
+/// counts and under jitter.
+#[test]
+fn parallel_bzl_graph_shapes_stay_identical_across_thread_counts() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    // The diamond: two modules load the same printing module.
+    ws.file("rules/base.bzl", "print('base top-level')\nv = 1\n");
+    ws.file(
+        "rules/left.bzl",
+        "load('//rules:base.bzl', 'v')\nprint('left top-level')\nl = v\n",
+    );
+    ws.file(
+        "rules/right.bzl",
+        "load('//rules:base.bzl', 'v')\nprint('right top-level')\nr = v\n",
+    );
+    // The wide fan-in: ten modules all load the printing fan module.
+    ws.file("rules/fan.bzl", "print('fan top-level')\nf = 1\n");
+    for index in 0..10 {
+        ws.file(
+            &format!("rules/wide{index}.bzl"),
+            "load('//rules:fan.bzl', 'f')\nw = f\n",
+        );
+    }
+    // Packages reach the shared modules from different roots in different
+    // orders, so concurrent workers converge on `base` and `fan` from
+    // both sides (p01/p02 the diamond, p03.. the fan-in).
+    ws.file(
+        "p01/BUILD",
+        "load('//rules:left.bzl', 'l')\nload('//rules:right.bzl', 'r')\n",
+    );
+    ws.file(
+        "p02/BUILD",
+        "load('//rules:right.bzl', 'r')\nload('//rules:left.bzl', 'l')\n",
+    );
+    for index in 3..12 {
+        let mut build = String::new();
+        for wide in (0..10).rev() {
+            build.push_str(&format!("load('//rules:wide{wide}.bzl', 'w')\n"));
+        }
+        ws.file(&format!("p{index:02}/BUILD"), &build);
+    }
+    let warm = ws.run(&["build", "--loading_phase_threads=1", "//..."]);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    let mut reference = None;
+    for (threads, jitter) in [(1usize, 0u64), (2, 0), (8, 0), (32, 0), (8, 40), (32, 25)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
+        let text = stderr(&run);
+        for line in [
+            "base top-level",
+            "left top-level",
+            "right top-level",
+            "fan top-level",
+        ] {
+            assert_eq!(text.matches(line).count(), 1, "threads={threads}: {text}");
+        }
+        match &reference {
+            None => reference = Some((run.stdout.clone(), text)),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&text, error, "threads={threads}: stderr");
+            }
+        }
+    }
+}
+
+/// N62, the reachable cycle shape: a load CYCLE (a loads b, b loads a)
+/// reached from two packages with different roots — whichever worker
+/// meets it first, the first package in pattern order reports the cycle
+/// with the sequential traversal's message, byte-identical at every
+/// thread count (the cross-thread wait-cycle abort re-runs inline and
+/// cannot change it).
+#[test]
+fn cross_package_load_cycle_message_is_stable_across_thread_counts() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file("rules/a.bzl", "load('//rules:b.bzl', 'b')\na = b\n");
+    ws.file("rules/b.bzl", "load('//rules:a.bzl', 'a')\nb = a\n");
+    ws.file("p01/BUILD", "load('//rules:a.bzl', 'a')\n");
+    ws.file("p02/BUILD", "load('//rules:b.bzl', 'b')\n");
+    let mut reference = None;
+    for (threads, jitter) in [(1usize, 0u64), (2, 0), (8, 0), (32, 0), (8, 40)] {
+        let jitter_text = jitter.to_string();
+        let env: &[(&str, &str)] = if jitter > 0 {
+            &[("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+        } else {
+            &[]
+        };
+        let run = ws.run_env(
+            env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        assert!(!run.status.success(), "threads={threads} must fail");
+        let text = stderr(&run);
+        // The cycle is reported from p01's root (pattern order), naming
+        // both modules of the cycle, exactly once.
+        assert!(text.contains("load cycle"), "threads={threads}: {text}");
+        assert!(text.contains("a.bzl"), "threads={threads}: {text}");
+        assert!(text.contains("b.bzl"), "threads={threads}: {text}");
+        assert_eq!(text.matches("load cycle").count(), 1, "threads={threads}");
+        match &reference {
+            None => reference = Some((run.stdout.clone(), text)),
+            Some((stdout, error)) => {
+                assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
+                assert_eq!(&text, error, "threads={threads}: stderr");
+            }
+        }
+    }
+}
+
+/// N62 action-graph A/B: the same warm fixture built at threads
+/// 1/8/32 and under jitter produces a byte-identical
+/// `BAZEL_RS_DUMP_ACTIONS` dump (ids, argv, inputs, outputs, env,
+/// execution info — review §5) after normalizing the per-run repository
+/// staging paths, and identical stdout/stderr/exit. The dump is on
+/// stderr, gated on the variable's presence (any value).
+#[test]
+fn action_dump_is_identical_across_thread_counts_and_jitter() {
+    let ws = Workspace::new();
+    ws.file("rules/BUILD", "");
+    ws.file(
+        "rules/lib.bzl",
+        "load('//rules:base.bzl', 'v')\nprint('lib top-level')\ndef _impl(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + '.txt')\n    ctx.actions.write(out, 'value=' + str(v))\n    return DefaultInfo(files = depset([out]))\nw_rule = rule(implementation = _impl)\n",
+    );
+    ws.file("rules/base.bzl", "print('base top-level')\nv = 41\n");
+    for index in 0..8 {
+        ws.file(
+            &format!("p{index:02}/BUILD"),
+            &format!(
+                "load('//rules:lib.bzl', 'w_rule')\nw_rule(name = 'w{index:02}')\ngenrule(name = 'g{index:02}', srcs = [':w{index:02}'], outs = ['o{index:02}.txt'], cmd = 'cp $(location :w{index:02}) $@')\n"
+            ),
+        );
+    }
+    let normalize = |text: &str| -> String {
+        // Per-run repository staging paths (pre-existing variance, only
+        // ever visible in this debug dump): trees/<64-hex> directories.
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find("trees/") {
+            out.push_str(&rest[..at]);
+            out.push_str("trees/HASH");
+            let after = &rest[at + "trees/".len()..];
+            let skip = after
+                .char_indices()
+                .take(64)
+                .take_while(|(_, c)| c.is_ascii_hexdigit())
+                .count();
+            rest = &after[skip.min(after.len())..];
+            if skip == 0 {
+                break;
+            }
+        }
+        out.push_str(rest);
+        out
+    };
+    let dump = |threads: usize, jitter: u64| -> (std::process::Output, String) {
+        let jitter_text = jitter.to_string();
+        let mut env: Vec<(&str, &str)> = vec![("BAZEL_RS_DUMP_ACTIONS", "1")];
+        if jitter > 0 {
+            env.push(("BAZEL_RS_LOADING_JITTER", jitter_text.as_str()));
+        }
+        let run = ws.run_env(
+            &env,
+            &[
+                "build",
+                &format!("--loading_phase_threads={threads}"),
+                "//...",
+            ],
+        );
+        let text = stderr(&run);
+        let actions = text
+            .lines()
+            .filter(|line| line.starts_with("ACTION ") || line.starts_with("  "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (run, normalize(&actions))
+    };
+    // Warm the action cache so executed/cached summaries cannot differ.
+    let warm = ws.run(&["build", "--loading_phase_threads=1", "//..."]);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    let (reference, reference_dump) = dump(1, 0);
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    assert!(
+        reference_dump.contains("ACTION "),
+        "dump must contain actions: {reference_dump}"
+    );
+    for (threads, jitter) in [(8usize, 0u64), (32, 0), (8, 40), (32, 25)] {
+        let (run, text) = dump(threads, jitter);
+        assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
+        assert_eq!(run.stdout, reference.stdout, "threads={threads}: stdout");
+        assert_eq!(text, reference_dump, "threads={threads}: action dump");
+        // stderr outside the dump (prints, summaries) is identical too.
+        let clean = |output: &std::process::Output| -> String {
+            stderr(output)
+                .lines()
+                .filter(|line| !(line.starts_with("ACTION ") || line.starts_with("  ")))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(clean(&run), clean(&reference), "threads={threads}: stderr");
+    }
+}

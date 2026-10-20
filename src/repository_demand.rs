@@ -26,6 +26,26 @@ pub fn is_needs_repository(error: &str) -> bool {
     error.contains(NEEDS_REPOSITORY)
 }
 
+/// Marker of the parallel `.bzl` wait-cycle abort (N62): a worker whose
+/// in-flight wait for a label would close a cycle across threads aborts
+/// its unit instead of deadlocking; the coordinator re-runs the unit
+/// inline, so a genuine load cycle reports with the sequential
+/// traversal's message. Never published to the shared `.bzl` cache.
+pub const PARALLEL_BZL_CYCLE: &str = "\u{1}parallel-bzl-cycle";
+
+/// Whether `error` is the parallel wait-cycle abort
+/// ([`PARALLEL_BZL_CYCLE`]).
+pub fn is_parallel_bzl_cycle(error: &str) -> bool {
+    error.contains(PARALLEL_BZL_CYCLE)
+}
+
+/// Whether either inline-rerun sentinel aborted a load unit: the
+/// coordinator re-runs the unit inline at its commit slot (fetching
+/// allowed, waits uncontended) and reproduces the sequential output.
+pub fn is_inline_rerun_sentinel(error: &str) -> bool {
+    is_needs_repository(error) || is_parallel_bzl_cycle(error)
+}
+
 thread_local! {
     /// Depth of the no-demand guard on this thread (0: fetching allowed).
     static NO_DEMAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
