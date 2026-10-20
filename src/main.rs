@@ -22,6 +22,9 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
+Repository verify: --verify-repo-tampering forces full re-hash of warm
+  repository publications (default: stat-fingerprint trust, Bazel's model;
+  env BAZEL_RS_VERIFY_REPOS=full is equivalent).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
@@ -1705,6 +1708,23 @@ impl NativeOptions {
             false
         } else if let Some(value) = arg.strip_prefix("--native-action-dump=") {
             self.action_dump = Some(PathBuf::from(value));
+            false
+        } else if matches!(
+            arg,
+            "--verify_repo_tampering"
+                | "--verify_repo_tampering=true"
+                | "--noverify_repo_tampering=false"
+        ) {
+            // Native-only: full re-hash warm verification (Step B);
+            // BAZEL_RS_VERIFY_REPOS=full is the env equivalent.
+            bazel_rs::repository_store::set_verify_full();
+            false
+        } else if matches!(
+            arg,
+            "--noverify_repo_tampering"
+                | "--noverify_repo_tampering=true"
+                | "--verify_repo_tampering=false"
+        ) {
             false
         } else if arg == "--allow_yanked_versions" {
             self.allowed_yanked_flags.push(

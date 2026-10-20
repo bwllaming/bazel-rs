@@ -52,7 +52,7 @@ struct Manifest {
     recorded: Option<Vec<u8>>,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
     directory: bool,
@@ -64,6 +64,61 @@ struct Entry {
     /// 196-256). Omitted for files and directories, keeping legacy manifests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     symlink: Option<String>,
+    /// Stat fingerprint recorded at publish (Step B): device, inode,
+    /// mtime (sec, nsec) and ctime (sec, nsec). Warm reuse compares stats
+    /// and hashes only on mismatch or inside the racy window. Absent in
+    /// manifests written before Step B (those verify by full hash once
+    /// and are re-published with fingerprints on their next execution).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stat: Option<StatFingerprint>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct StatFingerprint {
+    dev: u64,
+    ino: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+/// Identity-relevant view of a manifest: the entries WITHOUT their stat
+/// fingerprints. The content identity (and every persisted-bytes
+/// comparison) is over content — mode/size/hash/symlink — never over
+/// when or where the tree happens to be staged.
+fn content_view(files: &BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
+    files
+        .iter()
+        .map(|(name, entry)| {
+            (
+                name.clone(),
+                Entry {
+                    stat: None,
+                    ..(*entry).clone()
+                },
+            )
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn fingerprint(metadata: &fs::Metadata) -> StatFingerprint {
+    use std::os::unix::fs::MetadataExt;
+    StatFingerprint {
+        dev: metadata.dev(),
+        ino: metadata.ino(),
+        mtime: (metadata.mtime(), metadata.mtime_nsec()),
+        ctime: (metadata.ctime(), metadata.ctime_nsec()),
+    }
+}
+
+#[cfg(not(unix))]
+fn fingerprint(_metadata: &fs::Metadata) -> StatFingerprint {
+    StatFingerprint {
+        dev: 0,
+        ino: 0,
+        mtime: (0, 0),
+        ctime: (0, 0),
+    }
 }
 
 /// Per-call phase timings for one `materialize` invocation, accumulated
@@ -434,7 +489,7 @@ where
     required_directory(stage.path())?;
     ensure_boundary(stage.path())?;
     let files = snapshot(stage.path())?;
-    let encoded_snapshot = serde_json::to_vec(&files).map_err(|e| e.to_string())?;
+    let encoded_snapshot = serde_json::to_vec(&content_view(&files)).map_err(|e| e.to_string())?;
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
@@ -484,11 +539,12 @@ where
         .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(|e| e.to_string()))
         .is_ok_and(|existing| {
             existing.identity == identity
-                && existing.files == manifest.files
+                && content_view(&existing.files) == content_view(&manifest.files)
                 && existing.spec.is_some()
                 && existing.recorded.is_some()
         })
-        && snapshot(&destination).is_ok_and(|actual| actual == manifest.files))
+        && verify_snapshot(&destination, &manifest.files, verify_mode())
+            .is_ok_and(|matched| matched))
     {
         // Prepare metadata before replacing anything. Quarantine names are private
         // to this publisher, and renaming a corrupt symlink never follows it.
@@ -841,15 +897,114 @@ pub fn verify_mode() -> VerifyMode {
     mode
 }
 
+/// A file's mtime/ctime are this much older than `start` ("racy git",
+/// mirroring `action::racy_safe` for non-owned files): outside the window
+/// a stat match proves the bytes were not rewritten after recording.
+const RACY_MARGIN: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn racy_safe(fp: &StatFingerprint, start: std::time::SystemTime) -> bool {
+    [(fp.mtime), (fp.ctime)].into_iter().all(|(sec, nsec)| {
+        let Ok(sec) = u64::try_from(sec) else {
+            return false;
+        };
+        std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::new(sec, nsec as u32))
+            .and_then(|t| t.checked_add(RACY_MARGIN))
+            .is_some_and(|t| t <= start)
+    })
+}
+
 /// Whether the warm snapshot check confirms `root` still matches the
-/// manifest `expected` entries. Step A: full re-hash (existing behavior).
-/// Step B replaces the body with the metadata-first comparison.
+/// manifest `expected` entries.
+///
+/// `Full` mode re-hashes every file (pre-Step-B behavior). `Stat` mode
+/// (default) walks the tree comparing directory/mode/size/symlink and the
+/// recorded stat fingerprint; a regular file whose fingerprint matches
+/// and is outside the racy window is trusted without hashing (Bazel's
+/// marker trust). On fingerprint mismatch or inside the window the file
+/// is hashed: a tamper that preserves size+mtime still changes ctime (or
+/// the inode), so it is caught by the hash. Entries without a fingerprint
+/// (legacy manifests) always hash. Any structural difference (missing,
+/// extra, type/mode/size change) is a mismatch.
 fn verify_snapshot(
     root: &Path,
     expected: &BTreeMap<String, Entry>,
-    _mode: VerifyMode,
+    mode: VerifyMode,
 ) -> Result<bool, String> {
-    Ok(snapshot(root)? == *expected)
+    if mode == VerifyMode::Full {
+        return Ok(content_view(&snapshot(root)?) == content_view(expected));
+    }
+    let start = std::time::SystemTime::now();
+    fn visit(
+        root: &Path,
+        path: &Path,
+        expected: &BTreeMap<String, Entry>,
+        seen: &mut std::collections::BTreeSet<String>,
+        start: std::time::SystemTime,
+    ) -> Result<bool, String> {
+        let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let name = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .ok_or("non-UTF-8 direct repository path")?
+            .to_owned();
+        if !name.is_empty() {
+            safe_relative(&name)?;
+        }
+        let Some(want) = expected.get(&name) else {
+            return Ok(false); // extra entry
+        };
+        seen.insert(name.clone());
+        if before.file_type().is_symlink() {
+            if want.directory || want.symlink.is_none() {
+                return Ok(false);
+            }
+            let target = fs::read_link(path).map_err(|e| e.to_string())?;
+            let Some(target) = target.to_str() else {
+                return Ok(false);
+            };
+            return Ok(want.symlink.as_deref() == Some(target)
+                && want.size == target.len() as u64);
+        }
+        if before.is_dir() {
+            if !want.directory || mode_of(&before)? != want.mode {
+                return Ok(false);
+            }
+            for child in fs::read_dir(path).map_err(|e| e.to_string())? {
+                if !visit(root, &child.map_err(|e| e.to_string())?.path(), expected, seen, start)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        // Regular file.
+        if want.directory || want.symlink.is_some() {
+            return Ok(false);
+        }
+        regular_metadata(&before)?;
+        if mode_of(&before)? != want.mode || before.len() != want.size {
+            return Ok(false);
+        }
+        let trusted = want
+            .stat
+            .is_some_and(|fp| fp == fingerprint(&before) && racy_safe(&fp, start));
+        if trusted {
+            return Ok(true);
+        }
+        let (_, sha256) = hash_stable(path)?;
+        Ok(sha256 == want.sha256)
+    }
+    required_directory(root)?;
+    let mut seen = std::collections::BTreeSet::new();
+    if !visit(root, root, expected, &mut seen, start)? {
+        return Ok(false);
+    }
+    Ok(seen.len() == expected.len())
+}
+
+fn mode_of(metadata: &fs::Metadata) -> Result<u32, String> {
+    mode(metadata)
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
@@ -892,6 +1047,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                     size: target.len() as u64,
                     sha256: format!("{:x}", Sha256::digest(target.as_bytes())),
                     symlink: Some(target),
+                    stat: Some(fingerprint(&before)),
                 },
             );
             return Ok(());
@@ -902,6 +1058,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
             size: 0,
             sha256: String::new(),
             symlink: None,
+            stat: Some(fingerprint(&before)),
         };
         if !entry.directory {
             regular_metadata(&before)?;
@@ -1223,7 +1380,8 @@ mod tests {
             manifest.recorded.as_deref(),
             Some(br#"{"version":1}"#.as_slice())
         );
-        assert_eq!(manifest.files, snapshot(&tree).unwrap());
+        assert_eq!(content_view(&manifest.files), content_view(&snapshot(&tree).unwrap()));
+        assert!(manifest.files.values().all(|e| e.stat.is_some()));
         no_stages(cache.path());
     }
 
@@ -1419,22 +1577,22 @@ mod tests {
     fn corruption_of_bytes_mode_and_empty_directory_is_repaired() {
         let cache = temp();
         let (tree, _) = publish(cache.path(), b"", write).unwrap();
-        let original = snapshot(&tree).unwrap();
+        let original = content_view(&snapshot(&tree).unwrap());
         fs::write(tree.join("data"), b"bad").unwrap();
         let (again, status) = publish(cache.path(), b"", write).unwrap();
         assert_eq!(tree, again);
         assert_eq!(status, Publication::Executed);
-        assert_eq!(original, snapshot(&tree).unwrap());
+        assert_eq!(original, content_view(&snapshot(&tree).unwrap()));
         fs::remove_dir(tree.join("empty")).unwrap();
         assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
-        assert_eq!(original, snapshot(&tree).unwrap());
+        assert_eq!(original, content_view(&snapshot(&tree).unwrap()));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
         }
         assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
-        assert_eq!(original, snapshot(&tree).unwrap());
+        assert_eq!(original, content_view(&snapshot(&tree).unwrap()));
         no_stages(cache.path());
     }
 
@@ -1526,19 +1684,32 @@ mod tests {
         let cache = temp();
         let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let path = metadata_path(cache.path(), &tree);
-        let expected = fs::read(&path).unwrap();
+        // Compare parsed manifests: a repair re-publishes with FRESH stat
+        // fingerprints (Step B), so raw bytes legitimately differ in the
+        // `stat` fields while every content field is identical.
+        let expected: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let assert_repaired = |path: &Path| {
+            let repaired: Manifest = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            assert_eq!(repaired.identity, expected.identity);
+            assert_eq!(repaired.spec, expected.spec);
+            assert_eq!(repaired.recorded, expected.recorded);
+            assert_eq!(
+                content_view(&repaired.files),
+                content_view(&expected.files)
+            );
+        };
         for bytes in [b"{".as_slice(), b"{}", b"null", b"{\"format\":999}"] {
             fs::write(&path, bytes).unwrap();
             assert_eq!(tree, publish(cache.path(), b"", write).unwrap().0);
-            assert_eq!(fs::read(&path).unwrap(), expected);
+            assert_repaired(&path);
         }
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         publish(cache.path(), b"", write).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert_repaired(&path);
         fs::remove_file(&path).unwrap();
         publish(cache.path(), b"", write).unwrap();
-        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert_repaired(&path);
         no_stages(cache.path());
     }
 
@@ -1822,6 +1993,94 @@ mod tests {
         assert!(safe_relative(&"a".repeat(PATH_LIMIT + 1)).is_err());
         assert!(safe_relative(&"a".repeat(NAME_LIMIT + 1)).is_err());
         assert!(safe_relative(&vec!["d"; 65].join("/")).is_ok());
+        no_stages(cache.path());
+    }
+
+    /// Step B tamper matrix (default Stat verification):
+    /// (1) do-nothing warm call reuses; (2) content changed with size
+    /// changed re-executes; (3) content changed keeping size AND mtime
+    /// (touch -d) still re-executes — the ctime moves, the stat
+    /// fingerprint mismatches, the fallback hash catches it.
+    #[test]
+    fn stat_verify_reuse_and_tamper_matrix() {
+        let cache = temp();
+        let executions = AtomicUsize::new(0);
+        let run = |cache: &Path| {
+            publish(cache, b"", |stage| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                write(stage)
+            })
+            .unwrap()
+        };
+        let (tree, first) = run(cache.path());
+        assert_eq!(first, Publication::Executed);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        // (1) do-nothing: reuse, no execution, stat fingerprints recorded.
+        let (again, status) = run(cache.path());
+        assert_eq!(again, tree);
+        assert_eq!(status, Publication::Reused);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
+                .unwrap();
+        assert!(manifest.files.values().all(|e| e.stat.is_some()));
+        // (2) size change: re-execute.
+        fs::write(tree.join("data"), b"bad-longer-content").unwrap();
+        let (_, status) = run(cache.path());
+        assert_eq!(status, Publication::Executed);
+        assert_eq!(executions.load(Ordering::SeqCst), 2);
+        assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
+        // (3) same size, mtime restored: ctime betrays it; hash catches it.
+        let path = tree.join("data");
+        let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, [9u8, 9, 9, 9]).unwrap();
+        let since = mtime
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let out = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{}.{:09}", since.as_secs(), since.subsec_nanos()))
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "touch: {}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
+        let (_, status) = run(cache.path());
+        assert_eq!(status, Publication::Executed);
+        assert_eq!(executions.load(Ordering::SeqCst), 3);
+        assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
+        // Full mode agrees on the untouched tree.
+        assert_eq!(
+            verify_snapshot(&tree, &snapshot(&tree).unwrap(), VerifyMode::Full).unwrap(),
+            true
+        );
+        no_stages(cache.path());
+    }
+
+    /// Step B performance shape: a wide tree (2,000 files) verifies by
+    /// stat without hashing — proven functionally by corrupting a file
+    /// with same size+mtime (caught) while the untouched tree reuses.
+    /// The ≤50 ms Go-SDK-tree target is measured on the real cache in
+    /// docs/REPOSITORY_WARM_PERF.md (stat walk of the 15,643-file tree).
+    #[test]
+    fn stat_verify_wide_tree_reuses_without_rehash() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"wide", |stage| {
+            for i in 0..2000 {
+                fs::write(stage.join(format!("f{i}")), vec![7u8; 4096]).unwrap();
+            }
+            Ok(vec![])
+        })
+        .unwrap();
+        let expected = snapshot(&tree).unwrap();
+        assert!(verify_snapshot(&tree, &expected, VerifyMode::Stat).unwrap());
+        assert!(verify_snapshot(&tree, &expected, VerifyMode::Full).unwrap());
+        // Warm reuse through the pointer does not execute again.
+        let (_, status) = publish(cache.path(), b"wide", |_| {
+            panic!("wide tree must reuse under stat verification")
+        })
+        .unwrap();
+        assert_eq!(status, Publication::Reused);
         no_stages(cache.path());
     }
 

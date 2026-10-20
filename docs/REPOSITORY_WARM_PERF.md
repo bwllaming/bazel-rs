@@ -90,3 +90,32 @@ already negligible here; per-root total 0.34 s after the digest fix. The
 serial remainder is coordinator `.bzl` evaluation gated on repo demand:
 with reuse-only demand on workers (Step C), the 2,058 reuse checks
 (~0.1 ms each) leave the critical path and units stop aborting.
+
+## Step B — metadata-first snapshot
+
+Manifest `Entry` gains `stat: {dev, ino, mtime, ctime}` (serde-optional;
+legacy manifests parse unchanged and hash-verify until re-published).
+The content identity is computed over `content_view` (entries without
+stat), so tree identities — and the persisted-bytes fixture round-trip —
+are unchanged. Warm `verify_snapshot`:
+
+- `Stat` (default): walk comparing structure/mode/size/symlink + the stat
+  fingerprint; trusted files (fingerprint equal, mtime+ctime older than
+  the 2 s racy margin, mirroring `action::racy_safe`) are not hashed.
+  Fingerprint mismatch or racy → hash that file (a size+mtime-preserving
+  tamper moves ctime/inode and is caught — test
+  `stat_verify_reuse_and_tamper_matrix`: do-nothing reuse, size-change
+  re-execute, touch-preserved tamper re-execute).
+- `Full` (opt-in): `BAZEL_RS_VERIFY_REPOS=full` or
+  `--verify-repo-tampering` re-hashes everything (pre-Step-B behavior).
+
+Measured on the real 15,643-file / 244 MB tree: stat walk 0.39 s vs hash
+walk 2.73 s in Python; the Rust verifier shares the walk code with the
+hash path minus the reads (target ≤50 ms is for the warm *reuse check of
+the Go SDK tree inside a run* — with fingerprints recorded it performs
+15k stats and zero reads; the residual is page-cache dependent and
+reported honestly in the final numbers rather than asserted).
+
+Note: manifests written before Step B carry no fingerprints, so each
+such tree hash-verifies once more (still reuses — no re-execution), and
+upgrades when it next executes for another reason.
