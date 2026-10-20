@@ -18,6 +18,166 @@ use std::sync::Arc;
 
 const MAX_LOAD_DEPTH: usize = 256;
 
+/// Per-label `.bzl` evaluation self-time and BUILD-file time buckets
+/// (`BAZEL_RS_TIMING_MODULES=1`, hidden measurement aid for N62's
+/// breakdown: where a package's load wall time goes — shared-graph
+/// evaluation by label vs BUILD/macro evaluation). Printed once at
+/// process exit through [`report`]; never on unless the variable is set,
+/// so user-visible output (and the A/B suites) are unaffected.
+pub mod module_timings {
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Default)]
+    struct State {
+        /// (label, self seconds, evaluated here vs taken from an in-flight
+        /// waiter's recheck)
+        labels: Vec<(String, f64, bool)>,
+        /// (label, enter seconds) — reading, statically checking and
+        /// resolving the source path of a cache miss.
+        enters: Vec<(String, f64)>,
+        /// (package, [parse seconds, .bzl graph seconds, BUILD
+        /// evaluation+freeze seconds]) — target creation and macros run in
+        /// the evaluation bucket.
+        builds: Vec<(String, [f64; 3])>,
+        evaluated: usize,
+        waits: usize,
+        hits: usize,
+        /// Aggregated enter-phase buckets: path resolution, read, parse and
+        /// static checks.
+        enter_parts: [f64; 3],
+        /// Aggregated source_path buckets: repository root (demand,
+        /// materialization, warm validation) vs the component walk.
+        source_parts: [f64; 2],
+        /// (repository, seconds) of the slow root resolutions.
+        roots: Vec<(String, f64)>,
+    }
+
+    static STATE: Mutex<Option<State>> = Mutex::new(None);
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+
+    pub fn enabled() -> bool {
+        *ENABLED.get_or_init(|| std::env::var_os("BAZEL_RS_TIMING_MODULES").is_some())
+    }
+
+    fn with<T>(record: impl FnOnce(&mut State) -> T) -> Option<T> {
+        if !enabled() {
+            return None;
+        }
+        let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+        Some(record(guard.get_or_insert_with(State::default)))
+    }
+
+    /// One `.bzl` label's evaluation self-time (the `Work::Finish` frame:
+    /// visibility checks, evaluation, freeze, publish — waits excluded).
+    pub fn record_label(label: &str, seconds: f64, evaluated_here: bool) {
+        let _ = with(|state| {
+            if evaluated_here {
+                state.evaluated += 1;
+                state.labels.push((label.to_owned(), seconds, true));
+            } else {
+                state.waits += 1;
+            }
+        });
+    }
+
+    /// One shared-cache hit at traversal time (no evaluation).
+    pub fn record_hit() {
+        let _ = with(|state| state.hits += 1);
+    }
+
+    /// One cache miss's enter phase (path resolution + read + parse +
+    /// static checks), excluding its loads' own work.
+    pub fn record_enter(label: &str, seconds: f64) {
+        let _ = with(|state| state.enters.push((label.to_owned(), seconds)));
+    }
+
+    /// Sub-buckets of the enter phase, aggregated over all labels.
+    pub fn record_enter_parts(path: f64, read: f64, parse: f64) {
+        let _ = with(|state| {
+            state.enter_parts[0] += path;
+            state.enter_parts[1] += read;
+            state.enter_parts[2] += parse;
+        });
+    }
+
+    /// One `repositories.root()` resolution from the loader (first demand
+    /// materializes/warm-validates the repository; later calls are cached
+    /// slot reads). Only meaningful entries are kept for the report.
+    pub fn record_root(repository: &str, seconds: f64) {
+        let _ = with(|state| {
+            if seconds >= 0.01 {
+                state.roots.push((repository.to_owned(), seconds));
+            }
+        });
+    }
+
+    /// Sub-buckets of `source_path`: resolving the repository root
+    /// (materializing/warm-validating it on first demand) and the rest
+    /// (component walk, symlink policy resolution).
+    pub fn record_source_parts(root: f64, rest: f64) {
+        let _ = with(|state| {
+            state.source_parts[0] += root;
+            state.source_parts[1] += rest;
+        });
+    }
+
+    /// One package's BUILD-file buckets.
+    pub fn record_build(package: &str, parse: f64, bzl: f64, evaluation: f64) {
+        let _ = with(|state| {
+            state
+                .builds
+                .push((package.to_owned(), [parse, bzl, evaluation]))
+        });
+    }
+
+    /// The one-shot report (stderr, `PERF`-prefixed like the phase marks).
+    pub fn report() {
+        static REPORTED: OnceLock<()> = OnceLock::new();
+        if REPORTED.set(()).is_err() || !enabled() {
+            return;
+        }
+        let Some(state) = with(|state| std::mem::take(state)) else {
+            return;
+        };
+        let mut labels = state.labels;
+        labels.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let self_total: f64 = labels.iter().map(|(_, seconds, _)| *seconds).sum();
+        let mut enters = state.enters;
+        enters.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let enter_total: f64 = enters.iter().map(|(_, seconds)| *seconds).sum();
+        eprintln!(
+            "PERF modules: evaluated={} waits={} hits={} self_total={:.3}s enter_total={:.3}s",
+            state.evaluated, state.waits, state.hits, self_total, enter_total
+        );
+        eprintln!(
+            "PERF enter-parts: path={:.3}s read={:.3}s parse={:.3}s",
+            state.enter_parts[0], state.enter_parts[1], state.enter_parts[2]
+        );
+        eprintln!(
+            "PERF source-parts: root={:.3}s walk={:.3}s",
+            state.source_parts[0], state.source_parts[1]
+        );
+        let mut roots = state.roots;
+        roots.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (repository, seconds) in roots.iter().take(40) {
+            eprintln!("PERF repo-root {seconds:9.3}s @@{repository}");
+        }
+        for (label, seconds, _) in labels.iter().take(40) {
+            eprintln!("PERF module-self {seconds:9.3}s {label}");
+        }
+        for (label, seconds) in enters.iter().take(40) {
+            eprintln!("PERF module-enter {seconds:9.3}s {label}");
+        }
+        let mut builds = state.builds;
+        builds.sort_by(|a, b| (b.1[1] + b.1[2]).total_cmp(&(a.1[1] + a.1[2])));
+        for (package, [parse, bzl, evaluation]) in builds.iter().take(20) {
+            eprintln!(
+                "PERF build parse={parse:9.3}s bzl={bzl:9.3}s eval={evaluation:9.3}s {package}"
+            );
+        }
+    }
+}
+
 // Owned extension phase context, deliberately distinct from BUILD declarations.
 #[allow(unsafe_code)]
 mod extension_context {
@@ -820,6 +980,7 @@ impl<'a> Loader<'a> {
         let Some(cached) = self.repositories.build_bzl_cache().get(label)? else {
             return Ok(false);
         };
+        crate::loading::module_timings::record_hit();
         let cached = match cached {
             Ok(cached) => cached,
             // A cached failure replays for every loading package (P2
@@ -870,9 +1031,14 @@ impl<'a> Loader<'a> {
                     // identity, so it needs no single-flight guard (review
                     // §1.3); the evaluation in Work::Finish takes it.
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
+                        let enter_started = std::time::Instant::now();
                         let (path, ast, dependencies) = self
                             .enter_module(&label)
                             .or_else(|error| self.failed(&label, error, Vec::new(), Vec::new()))?;
+                        crate::loading::module_timings::record_enter(
+                            &label.to_string(),
+                            enter_started.elapsed().as_secs_f64(),
+                        );
                         self.load_graph.insert(label.clone(), dependencies.clone());
                         active.push(label.clone());
                         work.extend(
@@ -945,6 +1111,7 @@ impl<'a> Loader<'a> {
                             None => {}
                         }
                     }
+                    let self_time = std::time::Instant::now();
                     let (frozen, visibility, prints) = match self.finish_module(&label, &path, *ast)
                     {
                         Ok(finished) => finished,
@@ -964,6 +1131,11 @@ impl<'a> Loader<'a> {
                             }),
                         )?;
                     }
+                    crate::loading::module_timings::record_label(
+                        &label.to_string(),
+                        self_time.elapsed().as_secs_f64(),
+                        true,
+                    );
                     self.cache.insert(label.clone(), frozen);
                     self.visibilities.insert(label.clone(), visibility);
                     let finished = active.pop();
@@ -1005,9 +1177,12 @@ impl<'a> Loader<'a> {
 
     /// Read, parse and statically check a module; its direct loads.
     fn enter_module(&mut self, label: &Label) -> Result<(PathBuf, AstModule, Vec<Label>), String> {
+        let timing_path = std::time::Instant::now();
         let path = self.source_path(label)?;
+        let timing_read = std::time::Instant::now();
         let bytes = fs::read(&path)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
+        let timing_parse = std::time::Instant::now();
         let source = std::str::from_utf8(&bytes)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
         // Bazel lexes a file as the Latin-1 chars of its bytes
@@ -1063,7 +1238,22 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+        self.enter_module_timings(timing_path, timing_read, timing_parse);
         Ok((path, ast, dependencies))
+    }
+
+    /// The enter-phase buckets of one [`Self::enter_module`] call.
+    fn enter_module_timings(
+        &self,
+        timing_path: std::time::Instant,
+        timing_read: std::time::Instant,
+        timing_parse: std::time::Instant,
+    ) {
+        crate::loading::module_timings::record_enter_parts(
+            timing_read.duration_since(timing_path).as_secs_f64(),
+            timing_parse.duration_since(timing_read).as_secs_f64(),
+            timing_parse.elapsed().as_secs_f64(),
+        );
     }
 
     /// Check a module's load visibilities, evaluate and freeze it, and
@@ -1223,6 +1413,7 @@ impl<'a> Loader<'a> {
     }
 
     fn source_path(&self, label: &Label) -> Result<PathBuf, String> {
+        let timing_root = std::time::Instant::now();
         // This checks every package-directory component (including symlinks and
         // nested workspaces), without reading/evaluating the BUILD contents.
         let root = self.repositories.root(&label.repository).map_err(|error| {
@@ -1234,6 +1425,10 @@ impl<'a> Loader<'a> {
                 error
             }
         })?;
+        let timing_rest = std::time::Instant::now();
+        let root_seconds = timing_rest.duration_since(timing_root).as_secs_f64();
+        crate::loading::module_timings::record_source_parts(root_seconds, 0.0);
+        crate::loading::module_timings::record_root(&label.repository, root_seconds);
         // BzlLoadFunction's ContainingPackageLookup: ignored directories are
         // deleted packages, so the lookup continues with the parent.
         let ignored = self
@@ -1333,6 +1528,10 @@ impl<'a> Loader<'a> {
                 }
             }
         }
+        crate::loading::module_timings::record_source_parts(
+            0.0,
+            timing_rest.elapsed().as_secs_f64(),
+        );
         Ok(linked.unwrap_or(path))
     }
 }

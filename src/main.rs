@@ -479,6 +479,7 @@ fn run() -> Result<(), String> {
             .and_then(|()| stdout.flush())
             .map_err(|e| format!("I/O error: {e}"))?;
         if outcome.exit_code != 0 {
+            bazel_rs::loading::module_timings::report();
             std::process::exit(outcome.exit_code);
         }
         return Ok(());
@@ -1111,6 +1112,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         .summaries
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
+    bazel_rs::loading::module_timings::report();
     std::process::exit(if failed_to_build {
         1
     } else if passed {
@@ -1162,6 +1164,7 @@ fn test_build_failure(
     print!("{}", summary_text(&summaries, 0, options));
     use std::io::Write;
     let _ = std::io::stdout().flush();
+    bazel_rs::loading::module_timings::report();
     std::process::exit(1);
 }
 
@@ -2342,7 +2345,11 @@ fn warn(warning: &str) {
 }
 
 fn main() {
-    if let Err(error) = run() {
+    let result = run();
+    // N62 breakdown aid (BAZEL_RS_TIMING_MODULES=1): report before any
+    // exit path, idempotent, silent unless enabled.
+    bazel_rs::loading::module_timings::report();
+    if let Err(error) = result {
         let error = located(&error);
         eprintln!("bazel-rs: {error}");
         // A sandbox setup failure is an environmental failure of the

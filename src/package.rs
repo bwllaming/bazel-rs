@@ -2166,6 +2166,7 @@ fn evaluate_at(
         enable_top_level_stmt: false,
         ..Dialect::Standard
     };
+    let timing_parse = std::time::Instant::now();
     let ast = AstModule::parse(filename, source, &dialect).map_err(|e| format!("{e:#}"))?;
     // Bazel BUILD files disallow call splats even though ordinary .bzl files
     // support them. Inspect the real AST, never the textual spelling in strings.
@@ -2190,6 +2191,7 @@ fn evaluate_at(
     crate::guarded_globals::check_universe(&ast)?;
     // Both global environments are immutable: built once per invocation.
     let (globals, bzl_globals) = repositories.build_phase_globals();
+    let timing_bzl = std::time::Instant::now();
     let loaded = crate::loading::load_build_modules_in(
         repositories.clone(),
         package,
@@ -2197,6 +2199,7 @@ fn evaluate_at(
         &bzl_globals,
         prints,
     )?;
+    let timing_eval = std::time::Instant::now();
     let modules = loaded
         .modules
         .iter()
@@ -2253,6 +2256,18 @@ fn evaluate_at(
             )))
             .map_err(|e| format!("cannot freeze BUILD module: {e:?}"))
     });
+    let timing_frozen = std::time::Instant::now();
+    let package_display_for_timing = if package.repository.is_empty() {
+        package.package.clone()
+    } else {
+        format!("@@{}//{}", package.repository, package.package)
+    };
+    crate::loading::module_timings::record_build(
+        &package_display_for_timing,
+        timing_bzl.duration_since(timing_parse).as_secs_f64(),
+        timing_eval.duration_since(timing_bzl).as_secs_f64(),
+        timing_frozen.duration_since(timing_eval).as_secs_f64(),
+    );
     // PackageFunction.java:551-591: a legacy glob I/O error fails the package
     // first (TargetDefinitionContext.beforeBuild, :822-826); otherwise a
     // Skyframe glob symlink issue does (:567-585).
