@@ -259,25 +259,22 @@ pub enum Transform {
     /// the workspace status could not be determined.
     BuildInfo { volatile: bool },
     /// A resolved BuildInfoFileWriteAction (N63 follow-up): the template
-    /// expansion whose key is Bazel's computeKey (:185-197) — GUID,
+    /// expansion whose key is Bazel's computeKey (:189-197) — GUID,
     /// isVolatile and the callback's bzl digest — plus the template input's
-    /// digest (an ordinary keyed input). The volatile variant's key never
-    /// involves the timestamp: instead of keying the substitutions (which
-    /// embed BUILD_TIMESTAMP), it keys the non-timestamp part of the
-    /// callback result (`keyed_substitutions`: the volatile callback's
-    /// SCM revision/status, or the stable callback's whole result — the
-    /// stable status input also remains a regular keyed input, so a
-    /// changed stable key re-executes it through the input framing, and
-    /// the volatile output's constant-metadata marking keeps consumers
-    /// from re-keying on it either way). On a cache hit the stored
-    /// `substitutions` (first-produced timestamp included) are published
-    /// unchanged, so volatile_file.h is not rewritten by an epoch change:
-    /// first-timestamp-wins, the native reading of executeUnconditionally
-    /// over a constant-metadata output. DOCUMENTED DIVERGENCE: genuine
-    /// re-executes the volatile translate on every build (fresh
-    /// timestamp in volatile_file.h); the native keeps the first bytes.
-    /// `volatile` selects that keying; the stable variant keys its status
-    /// input regularly and its full substitution set.
+    /// digest (an ordinary keyed input), plus `keyed_substitutions`: the
+    /// non-timestamp part of the callback result (the volatile callback's
+    /// SCM revision/status; the stable callback's whole result, which the
+    /// stable variant's regular keyed status input already keys, so it is
+    /// equivalent there). The timestamp-bearing substitutions are never
+    /// keyed. The volatile status input is constant metadata and the
+    /// volatile status action re-executes every build, so a volatile
+    /// change — a new timestamp, or a changed SCM key — produces fresh
+    /// substitutions under a fresh (or, when nothing but the timestamp
+    /// changed, the same) key and volatile_file.h is rewritten with the
+    /// current values, like genuine (whose volatile translate likewise
+    /// re-runs on timestamp or SCM change and cache-hits when neither
+    /// changed, verified in the N63 paired capture). `volatile` selects
+    /// that keying.
     TemplateKeyed {
         template: PathBuf,
         substitutions: Vec<(Vec<u8>, Vec<u8>)>,

@@ -113,21 +113,27 @@ status, planned once per executing invocation (above), and a
 the failure line appears once. `tests/workspace_status.rs` and the receipt's
 `native_only/warm_rebuild` row pin the rebuild behavior.
 
-The volatile `TranslateBuildInfo` action must NOT re-run when only the
-timestamp changes: its key is Bazel's `computeKey:189-197` (GUID
-`7e4657a6-…`, isVolatile, the callback's bzl digest) plus the template
-input's digest, **excluding the substitutions**, with the volatile status
-input constant-metadata (`StarlarkActionFactory:510-519`); the stable
-variant's status input remains a regular keyed input (a changed stable key
-re-keys it — equivalent). The native keys the resolved action
+The volatile `TranslateBuildInfo` key excludes the timestamp-bearing
+substitutions: its key is Bazel's `computeKey:189-197` (GUID `7e4657a6-…`,
+isVolatile, the callback's bzl digest) plus the template input's digest,
+with the volatile status input constant-metadata
+(`StarlarkActionFactory:510-519`); the stable variant's status input
+remains a regular keyed input (a changed stable key re-keys it —
+equivalent). The native keys the resolved action
 (`Transform::TemplateKeyed`) by exactly those components plus the
-non-timestamp part of the callback result (the volatile SCM keys) and
-publishes the cached output on a hit. **Documented divergence:** genuine
-re-executes the volatile translate every build, so its `volatile_file.h`
-always carries the current timestamp; the native keeps the first-produced
-bytes under a changed `SOURCE_DATE_EPOCH` (first-timestamp-wins) — the
-receipt's extended `native_only/warm_rebuild` row pins this
-(`volatile_header_unchanged`).
+non-timestamp part of the callback result (the volatile SCM keys). Because
+the volatile status action re-executes every build, a volatile change
+rewrites `volatile_file.h` with the current values — a new timestamp, and
+likewise a changed SCM revision/status, re-runs the translate on genuine
+(controlled: timestamp-only and SCM-only changes each rewrite the header;
+an unchanged build cache-hits the translate). The native matches the SCM
+half exactly (the keyed non-timestamp substitutions re-key and rewrite)
+and the no-change half (a cache hit). Under a timestamp-only change the
+native intentionally does NOT rewrite: the native volatile status file
+is constant-metadata, so an epoch-only change leaves the cached header
+byte-identical — that timestamp-only case is a native constant-metadata
+divergence, pinned by `volatile_header_unchanged`; the SCM case is not
+divergent and must never regress to it.
 
 ## ctx.info_file / ctx.version_file
 

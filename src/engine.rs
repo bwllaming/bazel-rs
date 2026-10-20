@@ -144,6 +144,10 @@ struct ActionPlanning {
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
     client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    /// The client environment this build's workspace status computed
+    /// against (N63 follow-up 2): captured by ensure_workspace_status so
+    /// a test can inject a per-build environment deterministically.
+    status_client_environment: std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     /// The repositories of the packages each configured target transitively
     /// depends on, itself included (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest,
     /// N23f): per configured target key, since select() can choose
@@ -225,6 +229,8 @@ struct PlanState<'a> {
     pub producers: &'a mut BTreeMap<PathBuf, String>,
     pub source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
     pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    pub status_client_environment:
+        &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
 }
 
@@ -243,6 +249,7 @@ impl ActionPlanning {
             nodes,
             source_inputs,
             client_environment,
+            status_client_environment,
             native_output_groups,
             validation,
             repositories,
@@ -272,6 +279,7 @@ impl ActionPlanning {
             producers,
             source_inputs,
             client_environment,
+            status_client_environment,
             workspace_status,
         }
     }
@@ -8078,6 +8086,7 @@ impl Engine {
             nodes,
             source_inputs,
             client_environment,
+            status_client_environment,
             workspace_status,
             aspect_provider_files,
             ..
@@ -8090,6 +8099,7 @@ impl Engine {
                 nodes,
                 producers,
                 client_environment,
+                status_client_environment,
                 available,
             )?;
         }
@@ -8397,6 +8407,7 @@ impl Engine {
             nodes,
             source_inputs,
             client_environment,
+            status_client_environment,
             native_output_groups,
             validation,
             repositories,
@@ -8632,6 +8643,7 @@ impl Engine {
                         producers: &mut *producers,
                         source_inputs: &mut *source_inputs,
                         client_environment: &mut *client_environment,
+                        status_client_environment: &mut *status_client_environment,
                         workspace_status: &mut *workspace_status,
                     };
                     self.plan_aspect_dependency(
@@ -9011,6 +9023,7 @@ impl Engine {
             nodes,
             source_inputs,
             client_environment,
+            status_client_environment,
             runfiles_nodes,
             workspace_status,
             ..
@@ -9091,6 +9104,7 @@ impl Engine {
                 nodes,
                 producers,
                 client_environment,
+                status_client_environment,
                 &mut available,
             )?;
         }
@@ -9834,6 +9848,14 @@ impl Engine {
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
         crate::perf_mark("plan.start");
+        // The workspace status is computed at most once per build
+        // (OnceLock), and recomputed by the NEXT build of this Engine —
+        // each invocation runs the status script afresh (Bazel runs the
+        // workspace status action on every build, WorkspaceStatusAction
+        // executeUnconditionally). The per-build ActionPlanning state is
+        // likewise dropped so its OnceCells (client env) re-read.
+        self.workspace_status_once = std::sync::OnceLock::new();
+        self.action_planning = None;
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -10044,6 +10066,7 @@ impl Engine {
                 state_ref.nodes,
                 state_ref.producers,
                 state_ref.client_environment,
+                state_ref.status_client_environment,
                 &mut available,
             )?;
             status_artifacts = available.into_values().collect();
@@ -11241,12 +11264,16 @@ impl Engine {
     /// computation plans ONE failing node (volatile-status.txt) — Bazel's
     /// one action fails once — so the build reports a single
     /// `Failed to determine workspace status: ...` line.
+    #[allow(clippy::too_many_arguments)]
     fn ensure_workspace_status(
         &self,
         plan: &mut Option<WorkspaceStatusPlan>,
         nodes: &mut Vec<PlannedAction>,
         producers: &mut BTreeMap<PathBuf, String>,
-        client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+        #[allow(unused_variables)] client_environment: &std::cell::OnceCell<
+            BTreeMap<String, std::ffi::OsString>,
+        >,
+        status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
         available: &mut BTreeMap<File, Artifact>,
     ) -> Result<(), String> {
         if !self.execute_build {
@@ -11255,7 +11282,7 @@ impl Engine {
             // (ctx.info_file is an analysis-time File value).
             if plan.is_none() {
                 let client_env =
-                    client_environment.get_or_init(crate::action_env::client_environment);
+                    status_client_environment.get_or_init(crate::action_env::client_environment);
                 let computed = self.workspace_status_computed(client_env).clone_status();
                 let bare = |name: &str, constant: bool| Artifact {
                     real: PathBuf::from(format!("bazel-out/{name}")),
@@ -11283,7 +11310,8 @@ impl Engine {
             return Ok(());
         }
         if plan.is_none() {
-            let client_env = client_environment.get_or_init(crate::action_env::client_environment);
+            let client_env =
+                status_client_environment.get_or_init(crate::action_env::client_environment);
             let computed = self.workspace_status_computed(client_env);
             let owner = "@bazel_tools//tools:internal_platform";
             // The build-data-root execution paths of the status files
@@ -12902,6 +12930,85 @@ m = macro(implementation=emit)
                 1
             );
         }
+    }
+
+    #[allow(unsafe_code)] // the test sets the process env (edition 2024)
+    /// N63 follow-up 2: two `build()` calls on ONE Engine recompute the
+    /// workspace status per build (the OnceLock is per build, reset in
+    /// plan_build): a changed SOURCE_DATE_EPOCH between the builds lands
+    /// in the second build's volatile-status.txt. Reading the env var is
+    /// process-global, so this test owns it exclusively (no other test in
+    /// this binary sets SOURCE_DATE_EPOCH; the status unit tests use the
+    /// pure function with an explicit client env).
+    #[test]
+    fn workspace_status_recomputes_on_each_build_of_one_engine() {
+        let f = Fixture::new();
+        f.write("MODULE.bazel", "");
+        f.write(
+            "BUILD",
+            "genrule(name='g',outs=['g.txt'],cmd='printf x > $@')\n",
+        );
+        let cache = f.0.join("cache");
+        // Inject each build's client environment deterministically into
+        // the (fresh, per-build) ActionPlanning status cell — the real
+        // process env is read once per Engine by the general cell and
+        // cannot be varied per build in-process reliably.
+        let _guard = env_lock().lock().unwrap();
+        let volatile_bytes = |cache: &std::path::Path| -> Vec<u8> {
+            // The volatile content of THIS build: materialized (hardlinked
+            // from its cache entry at execution). Several cache entries
+            // may hold volatile-status.txt; the one whose bytes parse
+            // with the newest BUILD_TIMESTAMP is the latest write.
+            let actions = cache.join("actions");
+            let mut best: Option<(i64, Vec<u8>)> = None;
+            for entry in std::fs::read_dir(&actions).unwrap().flatten() {
+                let path = entry.path().join("outputs/bazel-out/volatile-status.txt");
+                if path.exists() {
+                    let bytes = std::fs::read(&path).unwrap();
+                    let text = String::from_utf8_lossy(&bytes);
+                    let stamp: i64 = text
+                        .lines()
+                        .find_map(|l| l.strip_prefix("BUILD_TIMESTAMP "))
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0);
+                    if best.as_ref().is_none_or(|(s, _)| stamp >= *s) {
+                        best = Some((stamp, bytes));
+                    }
+                }
+            }
+            best.expect("volatile status output materialized").1
+        };
+        let mut engine = Engine::new(f.0.clone());
+        // ActionPlanning (and both its env cells) is created fresh by
+        // every plan_build, so setting the process env before each build
+        // deterministically varies the second build's status.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1700000000") };
+        let first = engine.build(&[test_label("//:g")], &cache).unwrap();
+        assert_eq!(first.executed, 1);
+        let one = volatile_bytes(&cache);
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1800000000") };
+        let second = engine.build(&[test_label("//:g")], &cache).unwrap();
+        assert_eq!(second.executed, 0, "the genrule itself stays cached");
+        let two = volatile_bytes(&cache);
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+        assert_ne!(one, two, "the second build recomputed the status");
+        assert!(
+            String::from_utf8_lossy(&one).contains("BUILD_TIMESTAMP 1700000000\n"),
+            "{}",
+            String::from_utf8_lossy(&one)
+        );
+        assert!(
+            String::from_utf8_lossy(&two).contains("BUILD_TIMESTAMP 1800000000\n"),
+            "{}",
+            String::from_utf8_lossy(&two)
+        );
+    }
+
+    /// Serializes the env-mutating workspace status test above against
+    /// any other test thread that builds with the default client env.
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
     }
 
     #[test]

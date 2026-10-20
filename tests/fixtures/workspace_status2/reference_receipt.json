@@ -8,7 +8,7 @@
  },
  "native": {
   "binary": "target/release/bazel-rs",
-  "sha256": "2a5c312910ba21afdfef77158eb2439bd3c8a20bf75e0f3dad0101840def80ee"
+  "sha256": "d2659db1cf0d02e4a1db3c8157bbecf8a9b6a8c9b247b4f3f743f2ed8d3698d4"
  },
  "fixture_tree_sha256": [
   "4bf304512c34268ac3b403df04ab559671e4bbbb755c7b2790668f1465ba9f4b",
@@ -117,7 +117,11 @@
    "epoch_changed_exit": 0,
    "volatile_header_unchanged": true,
    "volatile_header_sha256": "4e51fc47885dc059fec4de0de23758762ee62dc0415227bc2b22f3196a22f46f",
-   "note": "the same status (SOURCE_DATE_EPOCH pinned): a fully cached rebuild, the constant-metadata semantics of the volatile files; plus BLOCKER 2: a changed SOURCE_DATE_EPOCH (1792511811 -> 1800000000) leaves volatile_file.h byte-identical (first timestamp wins; genuine re-executes the volatile translate every build \u2014 the documented native divergence)"
+   "scm_change_rewrites": {
+    "genuine": true,
+    "native": true
+   },
+   "note": "the same status (SOURCE_DATE_EPOCH pinned): a fully cached rebuild, the constant-metadata semantics of the volatile files; plus BLOCKER 2 / follow-up 2: a changed SOURCE_DATE_EPOCH (1792511811 -> 1800000000) leaves the native volatile_file.h byte-identical (the timestamp substitutions are excluded from the key and the volatile status file is constant-metadata; genuine rewrites with the new timestamp in this timestamp-only case \u2014 measured, a native constant-metadata divergence), while an SCM change (deadbeefcafe -> feedface42) rewrites the header on genuine AND native (scm_change_rewrites)"
   }
  },
  "counts": {
@@ -127,7 +131,7 @@
  },
  "scratch_removed": false,
  "post_capture_changes": [
-  "N63 follow-up (BLOCKER 1/2 + quick items): added ws/no_consumer_fails (failing script + a target that never consumes the status \u2014 genuine and native both exit 1; exactly one native failure line, Bazel has one action); native_only/warm_rebuild extended with a changed SOURCE_DATE_EPOCH (1792511811 -> 1800000000): volatile_header_unchanged=true (the volatile TranslateBuildInfo key excludes the substitutions; first timestamp wins \u2014 genuine re-executes the volatile translate every build, the documented native divergence, docs/WORKSPACE_STATUS.md). Failing-script scenarios use a fresh native cache (cache-fail): a failure is not a cacheable result. The native status nodes now run on every executing build and are excluded from the action-count summary like Bazel's internal process; existing pinned action keys are unchanged (the golden-key suites filter the two system status outputs by path).",
+  "N63 follow-up 2: measured against genuine 9.3 (controlled same-server builds) \u2014 a timestamp-only change REWRITES genuine's volatile_file.h (volatile action re-executes), an SCM-only change re-runs genuine's translate (action count 2->3) and rewrites it, and an unchanged build cache-hits the translate. Correction of the follow-up's premise: Bazel does NOT keep volatile_file.h unchanged on volatile changes. The native keeps keyed_substitutions (the non-timestamp callback result): it matches genuine on SCM changes and on no-change, and intentionally diverges ONLY on timestamp-only changes (volatile status file is constant-metadata; volatile_header_unchanged pinned natively). native_only/warm_rebuild now also proves scm_change_rewrites on genuine and native (deadbeefcafe -> feedface42).",
   "the rerun differed from the first run only in genuine Bazel's 'INFO: Elapsed time:/Critical Path' progress lines inside the captured reference_stderr_tail fields; those lines are dropped from the stored tails (every verdict row, hash and count is identical)"
  ]
 }
