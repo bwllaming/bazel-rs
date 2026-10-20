@@ -1021,6 +1021,15 @@ impl RepositorySet {
                 }
                 let provenance = serde_json::to_vec(&provenance)
                     .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                // Hidden diagnostic (N62 cold-variance hunt,
+                // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
+                // repository, so two cold runs can be diffed field by field.
+                if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
+                    eprintln!(
+                        "PROVENANCE {canonical} {}",
+                        String::from_utf8_lossy(&provenance)
+                    );
+                }
                 // The specification is a pure function of the repository
                 // definition, attributes, mappings, host markers and declared
                 // environment values, computed before any execution; warm
@@ -1432,6 +1441,13 @@ impl RepositorySet {
                     provenance.extend_from_slice(repository.canonical_name.as_bytes());
                     provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
                     provenance.extend_from_slice(&prepared.provenance);
+                    if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
+                        eprintln!(
+                            "PROVENANCE-ORDINARY {} {}",
+                            repository.canonical_name,
+                            String::from_utf8_lossy(&prepared.provenance)
+                        );
+                    }
                     // Same pre-execution specification discipline as direct
                     // repositories: definition, attributes (via the extension
                     // provenance), host markers and declared environment.
