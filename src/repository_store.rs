@@ -738,10 +738,21 @@ mod tests {
                 format!("GOPATH='{}'\n", stage.display()),
             )
             .map_err(|e| e.to_string())?;
-            Ok(b"inputs".to_vec())
+            Ok(Executed {
+                inputs: b"inputs".to_vec(),
+                recorded: br#"{"version":1}"#.to_vec(),
+            })
         };
-        let first =
-            materialize(cache.path(), "rules_gazelle++go_env", b"provenance", embed).unwrap();
+        let first = materialize(
+            cache.path(),
+            "rules_gazelle++go_env",
+            b"spec-go-env",
+            b"provenance",
+            |_, _| Ok(true),
+            embed,
+        )
+        .unwrap()
+        .0;
         // The embedded working directory is the deterministic stage:
         // <cache>/direct/stages/<32-hex slug of the key>.
         let embedded = fs::read_to_string(first.join("go.env")).unwrap();
@@ -759,8 +770,16 @@ mod tests {
                 .len(),
             32
         );
-        let second =
-            materialize(cache.path(), "rules_gazelle++go_env", b"provenance", embed).unwrap();
+        let second = materialize(
+            cache.path(),
+            "rules_gazelle++go_env",
+            b"spec-go-env",
+            b"provenance",
+            |_, _| Ok(true),
+            embed,
+        )
+        .unwrap()
+        .0;
         assert_eq!(first, second);
         assert_eq!(
             fs::read_dir(cache.path().join("direct/trees"))
@@ -771,7 +790,16 @@ mod tests {
         // A different repository embeds a different stage pathname and gets
         // a different content address.
         assert_ne!(
-            materialize(cache.path(), "other_repo", b"provenance", embed).unwrap(),
+            materialize(
+                cache.path(),
+                "other_repo",
+                b"spec-other",
+                b"provenance",
+                |_, _| Ok(true),
+                embed,
+            )
+            .unwrap()
+            .0,
             first
         );
         no_stages(cache.path());
