@@ -742,6 +742,12 @@ mod tests {
         // the repository name, that path is a pure function of the cache and
         // the key, so re-evaluation reproduces the identity and warm reuse
         // holds — in this process and in any other sharing the cache.
+        //
+        // The second materialization FORCES re-execution (a failing
+        // `validate` falls through to the stage, exactly like a changed
+        // watched input): a warm-reusing second call would just follow the
+        // spec pointer to the first tree and prove nothing about the stage
+        // pathname's determinism.
         let cache = temp();
         let embed = |stage: &Path| {
             fs::write(
@@ -781,16 +787,26 @@ mod tests {
                 .len(),
             32
         );
-        let second = materialize(
+        let (second, publication) = materialize(
             cache.path(),
             "rules_gazelle++go_env",
             b"spec-go-env",
             b"provenance",
-            |_, _| Ok(true),
+            // Invalidate the recorded watchable inputs: the rule must
+            // re-execute into the same keyed stage.
+            |_, _| Ok(false),
             embed,
         )
-        .unwrap()
-        .0;
+        .unwrap();
+        assert_eq!(publication, Publication::Executed);
+        // Re-executed (not warm-reused), into the same deterministic stage,
+        // so the embedded path and the content identity both reproduce and
+        // no second tree is published.
+        assert_eq!(
+            fs::read_to_string(second.join("go.env")).unwrap(),
+            embedded,
+            "re-execution must embed the same stage pathname"
+        );
         assert_eq!(first, second);
         assert_eq!(
             fs::read_dir(cache.path().join("direct/trees"))
