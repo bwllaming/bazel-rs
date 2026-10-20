@@ -819,6 +819,56 @@ mod tests {
     }
 
     #[test]
+    fn bazel_legal_in_repository_filenames_publish_and_snapshot() {
+        // User regression (~/code, Bazel 9.3.0): a direct repository merely
+        // CONTAINING `n_structure_trailing_#.json` (Bazel's own JSON
+        // conformance asset, len=87 depth=8) failed the whole build with
+        // `invalid direct repository path or path/depth limit exceeded`.
+        // On Linux `#`, `%`, `?`, `:` are ordinary filename bytes (only `/`
+        // and NUL are structural); Bazel accepts such names via
+        // os.DirEntry-flat traversal. Exercise BOTH snapshot() of an
+        // existing tree and materialize-into-store publication.
+        let cache = temp();
+        let names = [
+            "transport/http/protocol/internal/json/testdata/test_parsing/n_structure_trailing_#.json",
+            "x#y.json",
+            "lit%{name}.txt",
+            "what?.txt",
+            "colon:name.txt",
+        ];
+        // (1) snapshot() over a pre-existing direct-repository tree.
+        let source = temp();
+        for name in names {
+            let path = source.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"genuine").unwrap();
+        }
+        let snap = snapshot(source.path()).unwrap();
+        for name in names {
+            assert!(snap.contains_key(name), "snapshot missing {name}");
+        }
+        // (2) materialize-into-store: publish, then warm-reuse (which
+        // re-snapshots the published tree) must succeed identically.
+        let (tree, status) = publish(cache.path(), b"", |stage| {
+            for name in names {
+                let path = stage.join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, b"genuine").unwrap();
+            }
+            Ok(vec![])
+        })
+        .unwrap();
+        assert_eq!(status, Publication::Executed);
+        for name in names {
+            assert_eq!(fs::read(tree.join(name)).unwrap(), b"genuine");
+        }
+        let (warm, status) = publish(cache.path(), b"", |_| panic!("must reuse")).unwrap();
+        assert_eq!(status, Publication::Reused);
+        assert_eq!(warm, tree);
+        no_stages(cache.path());
+    }
+
+    #[test]
     fn binary_executable_empty_directories_and_boundary() {
         let cache = temp();
         let (tree, status) = publish(cache.path(), b"definition", write).unwrap();
