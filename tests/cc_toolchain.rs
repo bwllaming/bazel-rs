@@ -246,29 +246,109 @@ fn compilation_mode_dbg_selects_the_dbg_tool_and_features() {
 }
 
 #[test]
-fn stamped_build_info_fails_explicitly_and_genrule_toolchains_expand() {
+fn stamped_build_info_translates_the_workspace_status() {
     let ws = Workspace::new(true);
-    let output = ws.build(&["//bi:stamped"]);
+    // N63: the translator's stamped group builds — the
+    // transform_version_file/transform_info_file actions execute as template
+    // expansions of the workspace status (TranslateBuildInfo). The volatile
+    // header carries the built-in BUILD_TIMESTAMP; the stable one the
+    // built-in user/host pair (machine-dependent values, keyed by name).
+    let built = outputs(&ws.build(&["//bi:stamped", "//bi:redacted"]));
+    let volatile = built
+        .iter()
+        .find(|(_, path)| path.ends_with("volatile_file.h"))
+        .map(|(_, path)| fs::read_to_string(path).unwrap())
+        .unwrap();
+    let stable = built
+        .iter()
+        .find(|(_, path)| path.ends_with("non_volatile_file.h"))
+        .map(|(_, path)| fs::read_to_string(path).unwrap())
+        .unwrap();
+    assert!(
+        volatile.starts_with("#define BUILD_SCM_REVISION \"0\"\n"),
+        "{volatile}"
+    );
+    assert!(
+        volatile
+            .lines()
+            .any(|line| line.starts_with("#define BUILD_TIMESTAMP "))
+            && volatile.ends_with("\n"),
+        "{volatile}"
+    );
+    let stable_lines: Vec<&str> = stable.lines().collect();
+    assert_eq!(stable_lines.len(), 3, "{stable}");
+    assert!(
+        stable_lines[0].starts_with("#define BUILD_EMBED_LABEL \""),
+        "{stable}"
+    );
+    assert!(
+        stable_lines[1].starts_with("#define BUILD_HOST \""),
+        "{stable}"
+    );
+    assert!(
+        stable_lines[2].starts_with("#define BUILD_USER \""),
+        "{stable}"
+    );
+
+    // A --workspace_status_command script's keys land in both headers, and
+    // SOURCE_DATE_EPOCH pins the timestamp (byte-identical rebuilds).
+    let script = ws.0.path().join("status.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\necho 'STABLE_COMMIT deadbeef'\necho 'BUILD_USER stampuser'\necho 'BUILD_SCM_REVISION deadbeef'\necho 'BUILD_SCM_STATUS clean'\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&script).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script, permissions).unwrap();
+    let flag = format!("--workspace_status_command={}", script.display());
+    let built = outputs(&ws.build(&[&flag, "--embed_label=n63", "//bi:stamped"]));
+    let volatile = built
+        .iter()
+        .find(|(_, path)| path.ends_with("volatile_file.h"))
+        .map(|(_, path)| fs::read_to_string(path).unwrap())
+        .unwrap();
+    let stable = built
+        .iter()
+        .find(|(_, path)| path.ends_with("non_volatile_file.h"))
+        .map(|(_, path)| fs::read_to_string(path).unwrap())
+        .unwrap();
+    let volatile_lines: Vec<&str> = volatile.lines().collect();
+    assert_eq!(
+        &volatile_lines[..2],
+        &[
+            "#define BUILD_SCM_REVISION \"deadbeef\"",
+            "#define BUILD_SCM_STATUS \"clean\""
+        ],
+        "{volatile}"
+    );
+    assert!(
+        volatile_lines[2]
+            .trim_start_matches("#define BUILD_TIMESTAMP ")
+            .parse::<i64>()
+            .is_ok(),
+        "{volatile}"
+    );
+    assert_eq!(
+        stable.lines().next(),
+        Some("#define BUILD_EMBED_LABEL \"n63\""),
+        "{stable}"
+    );
+    assert!(
+        stable.ends_with("#define BUILD_USER \"stampuser\"\n"),
+        "{stable}"
+    );
+
+    // A failing script is an infrastructure failure with Bazel's text.
+    let output = ws.build(&["--workspace_status_command=true; exit 9", "//bi:stamped"]);
     let text = stderr(&output);
     assert!(!output.status.success(), "{text}");
-    // Both translator actions fail explicitly; the build stops at the first
-    // failure (--nokeep_going), so whether the second one also ran and
-    // reported depends on scheduling: at least one is reported, and every
-    // reported one has its exact text.
-    let needles = [
-        "actions.transform_version_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
-        "actions.transform_info_file output bazel-out/k8-fastbuild/bin/external/bazel_tools/tools/build_defs/build_info/non_volatile_file.h: workspace status (build info) transformation is not supported by the native profile",
-    ];
     assert!(
-        needles.iter().any(|needle| text.contains(needle)),
-        "{needles:?} in:\n{text}"
+        text.contains("Failed to determine workspace status: Process exited with status 9"),
+        "{text}"
     );
-    for line in text
-        .lines()
-        .filter(|line| line.contains("actions.transform_"))
-    {
-        assert!(needles.iter().any(|needle| line.contains(needle)), "{line}");
-    }
+
     // N53: the genrule `toolchains` attribute expands the cc_toolchain_alias
     // TemplateVariableInfo Make variables; the output equals the genuine
     // Bazel 9.3 reference row gen/toolchains_attribute.

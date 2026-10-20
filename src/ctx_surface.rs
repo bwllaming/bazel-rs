@@ -1942,6 +1942,13 @@ pub(crate) fn frozen_string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<
     frozen_owned_strings(heap, items)
 }
 
+/// A fresh mutable Starlark list of strings, one per access (the Starlark
+/// conversion of a Java method returning `List`,
+/// net.starlark.java.eval.Starlark#fromJava).
+pub(crate) fn mutable_string_list<'v>(heap: Heap<'v>, items: &[String]) -> Value<'v> {
+    heap.alloc(AllocList(items.iter().map(String::as_str)))
+}
+
 pub(crate) fn frozen_string_dict<'v>(heap: Heap<'v>, entries: &[(String, String)]) -> Value<'v> {
     frozen_dict(heap, entries)
 }

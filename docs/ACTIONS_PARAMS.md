@@ -144,8 +144,13 @@ runs eagerly at `add_joined` (Bazel: when the template action executes).
 Both are restricted to Bazel's private-API allowlist
 (`BuiltinRestriction.failIfCalledOutsideDefaultAllowlist`) with Bazel's
 `file '...' cannot use private API`. Allowed callers (bazel_tools'
-`bazel_cc_build_info`) get the declared output File and a registered action;
-building that output (workspace-status stamping) fails explicitly.
+`bazel_cc_build_info`) get the declared output File and a registered action.
+Since N63 the action executes (docs/WORKSPACE_STATUS.md): planning evaluates
+the translation callback against the build's workspace status and rewrites
+the registration into a Template expansion — the inputs are the workspace
+status artifact and the template, like `BuildInfoFileWriteAction`'s
+(`StarlarkActionFactory.transformBuildInfoFile:501-534`), and a volatile
+output is constant metadata (its changing bytes never re-key consumers).
 
 ## Cache identity
 

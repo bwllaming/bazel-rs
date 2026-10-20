@@ -857,6 +857,7 @@ fn solib_symlink(context: &Context, library: &File, link_path: &str) -> anyhow::
         deferred: None,
         exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         runfiles_trees: Vec::new(),
+        build_info: None,
     })?;
     Ok(symlink)
 }
@@ -1144,6 +1145,7 @@ fn create_cc_compile_action<'v>(
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
+            build_info: None,
         })
         .map_err(|error| failure(format!("cc_internal.{F}: {error}")))?;
     Ok(())

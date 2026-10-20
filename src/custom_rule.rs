@@ -311,7 +311,18 @@ pub(crate) const ATTRIBUTE_FLAGS: &[&str] = &[
 /// DIRECT_COMPILE_TIME_INPUT is only read by CompileOneDependencyTransformer
 /// (--compile_one_dependency, pkgcache/CompileOneDependencyTransformer.java),
 /// which the native profile does not implement.
-const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &["SKIP_CONSTRAINTS_OVERRIDE", "DIRECT_COMPILE_TIME_INPUT"];
+/// Attribute.PropertyFlags with no unmodelled analysis-time behavior, so
+/// they never produce a declared-but-unanalyzed gap
+/// (crate::custom_rule::AttrDeclaration::unanalyzed).
+/// `SKIP_CONSTRAINTS_OVERRIDE` and `DIRECT_COMPILE_TIME_INPUT` are unused by
+/// the checks the native profile models; `SKIP_ANALYSIS_TIME_FILETYPE_CHECK`
+/// is honored by crate::analysis::prerequisite_errors (it skips
+/// validateDirectPrerequisiteFileTypes, RuleContext.java:1946-1949).
+const NO_OP_ATTRIBUTE_FLAGS: &[&str] = &[
+    "SKIP_CONSTRAINTS_OVERRIDE",
+    "DIRECT_COMPILE_TIME_INPUT",
+    "SKIP_ANALYSIS_TIME_FILETYPE_CHECK",
+];
 
 /// BuildType.convertFromBuildLangType (packages/BuildType.java:245-253): an
 /// ORDER_INDEPENDENT attribute's converted List value is canonicalized with
@@ -1959,6 +1970,8 @@ impl AttrSpec {
     /// prerequisite's files to build must match, by file name: `'L' does not
     /// produce any RULE ATTR files (expected TYPES)`, with Bazel's native
     /// attribute name. There are no tree artifacts natively.
+    /// SKIP_ANALYSIS_TIME_FILETYPE_CHECK skips the whole check
+    /// (validateDirectPrerequisiteFileTypes :1946-1949).
     pub(crate) fn produced_file_type_error<'f>(
         &self,
         name: &str,
@@ -1966,6 +1979,14 @@ impl AttrSpec {
         label: &str,
         mut file_names: impl Iterator<Item = &'f str>,
     ) -> Option<String> {
+        if self
+            .declaration
+            .flags
+            .iter()
+            .any(|flag| flag == "SKIP_ANALYSIS_TIME_FILETYPE_CHECK")
+        {
+            return None;
+        }
         let allowed = self.allowed_file_types();
         let checked = match allowed {
             AllowedFileTypes::None => false,

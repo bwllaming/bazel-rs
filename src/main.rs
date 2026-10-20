@@ -129,6 +129,7 @@ fn run() -> Result<(), String> {
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut spawn_options = bazel_rs::sandbox::SpawnOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
+    let mut workspace_status = bazel_rs::workspace_status::WorkspaceStatusOptions::default();
     let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
     let mut aspects = Vec::new();
     let mut aspects_parameters = Vec::new();
@@ -209,6 +210,7 @@ fn run() -> Result<(), String> {
         remote_options = native.remote;
         spawn_options = native.spawn;
         runfiles_options = native.runfiles;
+        workspace_status = native.workspace_status;
         output_selection = native.output.clone();
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
@@ -379,6 +381,7 @@ fn run() -> Result<(), String> {
     };
     let mut engine = Engine::with_repositories(repositories.clone());
     engine.set_runfiles_options(runfiles_options);
+    engine.set_workspace_status(workspace_status);
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
@@ -1480,6 +1483,9 @@ struct NativeOptions {
     test: bazel_rs::test_command::TestOptions,
     /// The spawn strategy and sandbox options (N59, crate::sandbox).
     spawn: bazel_rs::sandbox::SpawnOptions,
+    /// --workspace_status_command/--embed_label (WorkspaceStatusAction
+    /// .Options; N63, crate::workspace_status).
+    workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions,
 }
 
 impl NativeOptions {
@@ -1504,6 +1510,7 @@ impl NativeOptions {
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
             spawn: bazel_rs::sandbox::SpawnOptions::default(),
+            workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -1596,6 +1603,24 @@ impl NativeOptions {
                 .push(bazel_rs::module_cli::registry_path(value)?);
             self.raw_registries.push(value.to_owned());
             true
+        } else if arg == "--workspace_status_command" {
+            // WorkspaceStatusAction.Options (:80-97): a build-command option
+            // (BazelWorkspaceStatusModule.getCommandOptions :323-328), the
+            // shell command string of the workspace status action (N63).
+            self.workspace_status.command = next
+                .ok_or("--workspace_status_command requires a path")?
+                .to_owned();
+            true
+        } else if let Some(value) = arg.strip_prefix("--workspace_status_command=") {
+            self.workspace_status.command = value.to_owned();
+            false
+        } else if arg == "--embed_label" {
+            self.workspace_status.embed_label =
+                next.ok_or("--embed_label requires a label")?.to_owned();
+            true
+        } else if let Some(value) = arg.strip_prefix("--embed_label=") {
+            self.workspace_status.embed_label = value.to_owned();
+            false
         } else if let Some(value) = arg.strip_prefix("--registry=") {
             self.resolver
                 .registries

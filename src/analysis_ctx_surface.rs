@@ -190,17 +190,28 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
             crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
         ))
     }
-    /// StarlarkRuleContext.getFeatures (:776-780): an immutable list.
+    /// StarlarkRuleContext.getFeatures (:776-780): ImmutableList.copyOf of
+    /// the rule's features. Starlark's Java List conversion
+    /// (net.starlark.java.eval.Starlark#fromJava) hands rules a fresh
+    /// mutable list per access, and rules_cc's `cc_binary` relies on it
+    /// (cc_binary.bzl:511-512 `features = ctx.features;
+    /// features.append(linking_mode)`).
     #[starlark(attribute)]
     fn features<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         let rule = current_surface(this)?;
-        Ok(surface::frozen_string_list(heap, &rule.config.features.on))
+        Ok(crate::ctx_surface::mutable_string_list(
+            heap,
+            &rule.config.features.on,
+        ))
     }
     /// StarlarkRuleContext.getDisabledFeatures (:782-786).
     #[starlark(attribute)]
     fn disabled_features<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         let rule = current_surface(this)?;
-        Ok(surface::frozen_string_list(heap, &rule.config.features.off))
+        Ok(crate::ctx_surface::mutable_string_list(
+            heap,
+            &rule.config.features.off,
+        ))
     }
     /// StarlarkRuleContext.tokenize (:917-927).
     fn tokenize<'v>(

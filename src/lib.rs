@@ -121,6 +121,7 @@ mod toolchain_info;
 pub mod toolchains;
 pub mod visibility;
 pub mod workspace;
+pub mod workspace_status;
 
 /// Phase timestamps for the parallel-analysis baseline and gate
 /// (`BAZEL_RS_TIMING=1`): elapsed wall time and VmRSS at each mark, on

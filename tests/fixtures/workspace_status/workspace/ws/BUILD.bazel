@@ -1,5 +1,7 @@
-load(":defs.bzl", "ws", "ws_input")
+load(":defs.bzl", "ws", "ws_cat", "ws_input")
 
 ws(name = "ws")
 
 ws_input(name = "ws_input")
+
+ws_cat(name = "ws_cat")

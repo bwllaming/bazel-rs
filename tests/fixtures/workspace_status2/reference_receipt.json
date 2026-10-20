@@ -1,0 +1,119 @@
+{
+ "schema": "n63-workspace-status-reference-receipt/v1",
+ "fixture": "workspace_status2 (the workspace_status ws fixture and the cc_compile bin/ fixture targets)",
+ "purpose": "N63: the workspace status action (BazelWorkspaceStatusModule.java), ctx.info_file/version_file as real action inputs, and cc_binary's _build_info_files translator; deterministic through a fixed --workspace_status_command script, --embed_label and SOURCE_DATE_EPOCH=1792511811",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "bc17ea3146d5c239f70cbe4a1c61c79b4ec1736bb72cdc277b7c068ce3d57cc3"
+ },
+ "fixture_tree_sha256": [
+  "4bf304512c34268ac3b403df04ab559671e4bbbb755c7b2790668f1465ba9f4b",
+  24
+ ],
+ "verdicts": {
+  "EXACT": "equal sha256 of the compared outputs",
+  "EXACT_TEXT": "both fail with the same message text and exit code",
+  "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message",
+  "MISMATCH": "anything else"
+ },
+ "scenarios": {
+  "ws/outputs": {
+   "reference_exit": 0,
+   "native_exit": 0,
+   "rows": {
+    "ws.txt": {
+     "verdict": "EXACT",
+     "sha256": "f1004676f82c7572c08b7f997eca39797d7b53ecdce30a16d0b49cbe9bcd5cf6"
+    },
+    "ws.args": {
+     "verdict": "EXACT",
+     "sha256": "05938afff41a855cd9f9b99cedd9903ae78cde8903719063dee7d3d7279266bd"
+    }
+   }
+  },
+  "ws/no_command": {
+   "reference_exit": 0,
+   "native_exit": 0,
+   "rows": {
+    "ws_input.txt": {
+     "verdict": "EXACT",
+     "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    }
+   }
+  },
+  "ws/script": {
+   "reference_exit": 0,
+   "native_exit": 0,
+   "rows": {
+    "ws_cat.txt": {
+     "verdict": "EXACT",
+     "sha256": "71db8da2accd4f654b8f47ce3ea44dda33b9d8d012e0d0ec577b96fc45c1111b"
+    }
+   }
+  },
+  "ws/script_failed": {
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_text": true,
+   "native_text": true,
+   "verdict": "EXACT_TEXT",
+   "native_stderr_tail": "bazel-rs: action 'BazelWorkspaceStatusAction#volatile': BazelWorkspaceStatusAction volatile-status.txt failed: Failed to determine workspace status: Process exited with status 7\n",
+   "reference_stderr_tail": "Computing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //ws:ws_input (0 packages loaded, 0 targets configured)\nAnalyzing: target //ws:ws_input (0 packages loaded, 0 targets configured)\n\nINFO: Analyzed target //ws:ws_input (0 packages loaded, 0 targets configured).\nERROR: <builtin>: BazelWorkspaceStatusAction stable-status.txt failed: Failed to determine workspace status: Process exited with status 7\nTarget //ws:ws_input failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+  },
+  "ws/relative_script": {
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_text": true,
+   "native_text": true,
+   "verdict": "EXACT_TEXT"
+  },
+  "cc/primary": {
+   "reference_exit": 0,
+   "native_exit": 0,
+   "rows": {
+    "tool": {
+     "verdict": "EXACT",
+     "sha256": "deda4c4547b96d973f0868aa9fb2ff773c1656bcbc720721519b1bf8463c6edb"
+    },
+    "status_cat.txt": {
+     "verdict": "EXACT",
+     "sha256": "71db8da2accd4f654b8f47ce3ea44dda33b9d8d012e0d0ec577b96fc45c1111b"
+    },
+    "volatile_file.h": {
+     "verdict": "EXACT",
+     "sha256": "4e51fc47885dc059fec4de0de23758762ee62dc0415227bc2b22f3196a22f46f"
+    },
+    "non_volatile_file.h": {
+     "verdict": "EXACT",
+     "sha256": "a8c010102b1cc4fa869dcf81c376e2ce7da72709b2bc0347aa8a5446b5fe22c3"
+    }
+   },
+   "verdict": "EXACT"
+  },
+  "cc/linkstamp": {
+   "reference_exit": 0,
+   "native_exit": 1,
+   "declared_gap": "cc_library's linkstamp attribute puts rules_cc's LinkstampInfo provider (whose fields are wrap_with_check_private_api closures, create_linkstamp.bzl:41-44) in a linker-input depset; a local closure cannot cross analyses natively",
+   "native_text": true,
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "native_stderr_tail": "bazel-rs: analysis of //bin:stamped_lib: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:124, in _cc_library_impl\n      linkstamps = depset(linkstamps),\nerror: a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile\n   --> @@rules_cc+//cc/private/rules_impl:cc_library.bzl:124:26\n    |\n124 |             linkstamps = depset(linkstamps),\n    |                          ^^^^^^^^^^^^^^^^^^\n    |\n\n"
+  },
+  "native_only/warm_rebuild": {
+   "summary": "bazel-rs: 0 actions executed, 16 cache hits (experimental local execution; not sandboxed)",
+   "note": "the same status (SOURCE_DATE_EPOCH pinned): a fully cached rebuild, the constant-metadata semantics of the volatile files"
+  }
+ },
+ "counts": {
+  "EXACT": 5,
+  "EXACT_TEXT": 2,
+  "EXPECTED_NATIVE_GAP": 1
+ },
+ "scratch_removed": false,
+ "post_capture_changes": [
+  "the rerun differed from the first run only in genuine Bazel's 'INFO: Elapsed time:/Critical Path' progress lines inside the captured ws/script_failed reference_stderr_tail; those lines are dropped from the stored tail (every verdict row, hash and count is identical)"
+ ]
+}

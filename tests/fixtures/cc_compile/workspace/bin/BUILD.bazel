@@ -1,0 +1,49 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load(":defs.bzl", "stamped_headers", "status_cat")
+
+# N63: a cc_binary over a built cc_library, the recorded next cc boundary
+# (the _build_info_files output group reaching the workspace-status
+# artifacts). `tool` links with the default stamp=0 (redacted build info);
+# `stamped_tool` compiles a linkstamp through the non-redacted group
+# (transform_version_file/transform_info_file over the status files).
+cc_library(
+    name = "lib",
+    srcs = ["lib.c"],
+    hdrs = ["lib.h"],
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "tool",
+    srcs = ["main.c"],
+    deps = [":lib"],
+)
+
+cc_library(
+    name = "stamped_lib",
+    srcs = ["lib.c"],
+    hdrs = ["lib.h"],
+    linkstamp = "stamp.cc",
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "stamped_tool",
+    srcs = ["main.c"],
+    deps = [":stamped_lib"],
+    stamp = 1,
+)
+
+# The translator's stamped build-info headers (transform_version_file /
+# transform_info_file over the workspace status files).
+stamped_headers(name = "stamped_headers")
+
+# The status files an action sees (ctx.info_file + ctx.version_file).
+status_cat(name = "status_cat")
+
+cc_binary(
+    name = "stamp1_tool",
+    srcs = ["main.c"],
+    deps = [":lib"],
+    stamp = 1,
+)

@@ -119,6 +119,21 @@ pub struct RegisteredAction {
     pub exec_group: String,
     /// Runfiles trees of the spawn's tools (N23f).
     pub runfiles_trees: Vec<ToolRunfilesTree>,
+    /// An actions.transform_{version,info}_file registration (N63): the
+    /// Starlark translation callback (StarlarkActionFactory
+    /// .transformBuildInfoFile :501-534 keeps the function the same way)
+    /// and which status file it translates. Planning evaluates the callback
+    /// against the build's workspace status and rewrites the action into a
+    /// template expansion (BuildInfoFileWriteAction.execute :121-176).
+    pub build_info: Option<BuildInfoAction>,
+}
+
+/// The translation callback of an `actions.transform_version_file` /
+/// `actions.transform_info_file` action (true: the volatile status file).
+#[derive(Clone, Debug)]
+pub struct BuildInfoAction {
+    pub function: starlark::values::OwnedFrozenValue,
+    pub volatile: bool,
 }
 
 // Marker derive only. These fields own Rust data, never hidden heap Values.
@@ -281,6 +296,7 @@ impl Context {
             deferred: None,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
+            build_info: None,
         })
     }
 
@@ -299,6 +315,7 @@ impl Context {
             deferred,
             exec_group,
             runfiles_trees,
+            build_info,
         } = registration;
         ensure!(
             !outputs.is_empty(),
@@ -329,14 +346,11 @@ impl Context {
             );
         }
         for input in &inputs {
-            if is_workspace_status_file(input) {
-                bail!(
-                    "action input {}: workspace status artifacts (ctx.info_file/ctx.version_file) are not produced by the native profile",
-                    input.path
-                );
-            }
+            // The workspace status files are produced by the build's
+            // BazelWorkspaceStatusAction (N63), planned as a system node
+            // whose artifacts resolve these inputs.
             ensure!(
-                self.known_file(input),
+                is_workspace_status_file(input) || self.known_file(input),
                 "action input {} is not a dependency or declared output",
                 input.path
             );
@@ -385,6 +399,7 @@ impl Context {
             deferred,
             exec_group,
             runfiles_trees,
+            build_info,
         });
         Ok(())
     }
@@ -411,6 +426,8 @@ pub(crate) struct Registration {
     pub exec_group: String,
     /// Runfiles trees of the spawn's tools (N23f).
     pub runfiles_trees: Vec<ToolRunfilesTree>,
+    /// An actions.transform_{version,info}_file registration (N63).
+    pub build_info: Option<BuildInfoAction>,
 }
 
 /// The runfiles tree of an action tool or executable, staged into the spawn
@@ -804,6 +821,7 @@ fn register_spawn(
         deferred,
         exec_group,
         runfiles_trees,
+        build_info: None,
     })
 }
 
@@ -992,6 +1010,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             deferred,
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
+            build_info: None,
         })?;
         Ok(NoneType)
     }
@@ -1311,6 +1330,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             shell_pad: false,
             executable_file: false,
             runfiles_trees: Vec::new(),
+            build_info: None,
         })?;
         Ok(NoneType)
     }
@@ -1396,6 +1416,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             shell_pad: false,
             executable_file: false,
             runfiles_trees: Vec::new(),
+            build_info: None,
         })?;
         Ok(NoneType)
     }
@@ -1442,7 +1463,13 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
     }
 }
 
-/// StarlarkActionFactory.transformBuildInfoFile (:501-534).
+/// StarlarkActionFactory.transformBuildInfoFile (:501-534): the declared
+/// output is the build-info file of the rule's package; the action takes
+/// the workspace status artifact (volatile for transform_version_file,
+/// stable for transform_info_file) and the template as inputs. The output
+/// of the volatile transform is a constant-metadata artifact
+/// (getConstantMetadataArtifact) whose changing bytes do not rebuild
+/// consumers; the native marks it in planning (N63).
 fn transform_build_info<'v>(
     this: Value<'v>,
     transform_func: Value<'v>,
@@ -1457,35 +1484,43 @@ fn transform_build_info<'v>(
         transform_func.function_name().is_some(),
         "transform_func must be a function"
     );
+    // The callback outlives analysis: BuildInfoFileWriteAction keeps the
+    // StarlarkFunction and calls it at execution; the native keeps the
+    // frozen top-level function and planning evaluates it against the
+    // build's workspace status.
+    let function = owned_top_level_function(eval, transform_func).ok_or_else(|| {
+        anyhow!("transform_func must be a top-level function of a loaded .bzl file")
+    })?;
     let template = unpack_file(template)?;
     let output = context.declare(output_file_name)?;
-    let function = if volatile {
-        "transform_version_file"
+    let status = crate::analysis_runtime::workspace_status_file(if volatile {
+        "volatile-status.txt"
     } else {
-        "transform_info_file"
-    };
+        "stable-status.txt"
+    });
     context.register_action(Registration {
         outputs: vec![output.clone()],
-        inputs: vec![template],
+        inputs: vec![status, template],
         command: String::new(),
         write: None,
         program: None,
         arguments: Vec::new(),
         environment: BTreeMap::new(),
         extra: ActionExtra {
-            transform: Some(Transform::Unsupported {
-                message: format!(
-                    "actions.{function} output {}: workspace status (build info) transformation is not supported by the native profile (docs/ACTIONS_PARAMS.md)",
-                    output.path
-                ),
-            }),
+            // BuildInfoFileWriteAction.computeKey (:185-191): GUID,
+            // isVolatile and the callback's bzl digest — never the status
+            // content. The native placeholder key is replaced by the
+            // evaluated template substitutions in planning; the volatile
+            // output's constant-metadata handling keeps consumers stable.
+            transform: Some(Transform::BuildInfo { volatile }),
             ..ActionExtra::default()
         },
         deferred: None,
         exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
-            shell_pad: false,
-            executable_file: false,
+        shell_pad: false,
+        executable_file: false,
         runfiles_trees: Vec::new(),
+        build_info: Some(BuildInfoAction { function, volatile }),
     })?;
     Ok(alloc_file(eval.heap(), output))
 }

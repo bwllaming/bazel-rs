@@ -168,13 +168,20 @@ impl Workspace {
     }
 
     fn build(&self, cache: &str, args: &[&str]) -> Output {
+        self.build_with_env(cache, args, &[])
+    }
+
+    /// `build` plus extra client environment variables (N63's
+    /// SOURCE_DATE_EPOCH pins the workspace status timestamp).
+    fn build_with_env(&self, cache: &str, args: &[&str], env: &[(&str, &str)]) -> Output {
         let registry = format!(
             "--registry=file://{}",
             manifest()
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
         );
-        Command::new("/usr/bin/timeout")
+        let mut command = Command::new("/usr/bin/timeout");
+        command
             .args(["--kill-after=5s", "900s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
@@ -185,9 +192,11 @@ impl Workspace {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
             .env("TMPDIR", self.root.join("tmp"))
-            .env("LC_ALL", "C")
-            .output()
-            .unwrap()
+            .env("LC_ALL", "C");
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command.output().unwrap()
     }
 
     /// sha256 of every artifact under the cache (bazel-out relative path).
@@ -216,6 +225,16 @@ fn sha256(bytes: &[u8]) -> String {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+/// `label\tpath` lines of a successful build.
+fn outputs(output: &Output) -> Vec<(String, PathBuf)> {
+    assert!(output.status.success(), "{}", stderr(output));
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(label, path)| (label.to_owned(), PathBuf::from(path)))
+        .collect()
 }
 
 #[test]
@@ -286,6 +305,112 @@ fn module_interfaces_fail_before_any_native_boundary() {
     // The rule's own gate (attrs.bzl) comes before any native boundary.
     assert!(
         text.contains("attribute module_interfaces: requires --experimental_cpp_modules"),
+        "{text}"
+    );
+}
+
+/// N63: the recorded next cc boundary closed — `cc_binary` over a built
+/// `cc_library` links end to end (SKIP_ANALYSIS_TIME_FILETYPE_CHECK honored
+/// on `deps`, the rules_cc root BUILD's link_extra_lib implicit dep), the
+/// workspace status action feeds `ctx.info_file`/`ctx.version_file` inputs
+/// and the `_build_info_files` translator, and the fixed status script +
+/// SOURCE_DATE_EPOCH make every byte reproducible (the paired genuine
+/// capture is tests/fixtures/workspace_status2/reference_receipt.json).
+#[test]
+fn cc_binary_links_and_the_workspace_status_stamps() {
+    if !Path::new("/usr/bin/gcc").exists() && !Path::new("/usr/bin/cc").exists() {
+        eprintln!("skipped: no host C compiler for cc_configure");
+        return;
+    }
+    let ws = Workspace::new();
+    let script = format!("--workspace_status_command={}/status.sh", ws.root.display());
+    let pinned = [("SOURCE_DATE_EPOCH", "1792511811")];
+    let first = ws.build_with_env(
+        "cache",
+        &[&script, "//bin:tool", "//bin:stamp1_tool"],
+        &pinned,
+    );
+    assert!(first.status.success(), "{}", stderr(&first));
+    let built = outputs(&first);
+    let binary = built
+        .iter()
+        .find(|(label, _)| label == "//bin:tool")
+        .map(|(_, path)| fs::read(path).unwrap())
+        .unwrap();
+    // A real ELF that runs correctly.
+    assert!(
+        binary.starts_with(&[0x7f, b'E', b'L', b'F']),
+        "{} bytes",
+        binary.len()
+    );
+
+    // The status files and the stamped build-info headers, deterministic
+    // under SOURCE_DATE_EPOCH + the fixed script.
+    let deterministic = ws.build_with_env(
+        "cache2",
+        &[
+            script.as_str(),
+            "--embed_label=n63-fixture",
+            "//bin:status_cat",
+            "//bin:stamped_headers",
+        ],
+        &pinned,
+    );
+    assert!(deterministic.status.success(), "{}", stderr(&deterministic));
+    let built = outputs(&deterministic);
+    let read = |suffix: &str| {
+        built
+            .iter()
+            .find(|(_, path)| path.ends_with(suffix))
+            .map(|(_, path)| fs::read_to_string(path).unwrap())
+            .unwrap_or_else(|| panic!("no output {suffix} in {built:?}"))
+    };
+    let host = read("status_cat.txt")
+        .lines()
+        .find(|line| line.starts_with("BUILD_HOST "))
+        .unwrap()
+        .trim_start_matches("BUILD_HOST ")
+        .to_owned();
+    assert_eq!(
+        read("status_cat.txt"),
+        format!(
+            "BUILD_EMBED_LABEL n63-fixture\nBUILD_HOST {host}\nBUILD_USER stampuser\nSTABLE_COMMIT deadbeefcafe\nSTABLE_SCM_STATUS clean\nBUILD_SCM_REVISION deadbeefcafe\nBUILD_SCM_STATUS clean\nBUILD_TIMESTAMP 1792511811\nFORMATTED_DATE 2026 Oct 20 15 56 51 Tue\n"
+        )
+    );
+    assert_eq!(
+        read("volatile_file.h"),
+        "#define BUILD_SCM_REVISION \"deadbeefcafe\"\n#define BUILD_SCM_STATUS \"clean\"\n#define BUILD_TIMESTAMP 1792511811\n"
+    );
+    assert_eq!(
+        read("non_volatile_file.h"),
+        format!(
+            "#define BUILD_EMBED_LABEL \"n63-fixture\"\n#define BUILD_HOST \"{host}\"\n#define BUILD_USER \"stampuser\"\n"
+        )
+    );
+
+    // The same build in a fresh cache reproduces identical bytes.
+    let cold = ws.build_with_env(
+        "cache3",
+        &[
+            script.as_str(),
+            "--embed_label=n63-fixture",
+            "//bin:status_cat",
+            "//bin:stamped_headers",
+            "//bin:tool",
+        ],
+        &pinned,
+    );
+    assert!(cold.status.success(), "{}", stderr(&cold));
+
+    // The recorded remaining cc boundary: a cc_library `linkstamp` attribute
+    // puts the LinkstampInfo provider (rules_cc's private-API wrapper
+    // functions) in a linker-input depset, which cannot cross analyses
+    // natively; the failure is explicit.
+    let output = ws.build("cache", &[&script, "//bin:stamped_tool"]);
+    let text = stderr(&output);
+    assert!(!output.status.success(), "{text}");
+    assert!(
+        text.contains("a depset element containing a function that is not a global def of a loaded .bzl file is not implemented in the native profile"),
         "{text}"
     );
 }

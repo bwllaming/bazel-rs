@@ -221,6 +221,16 @@ pub struct ActionExtra {
     pub mnemonic: String,
     /// A native, process-free transform of one input into the only output.
     pub transform: Option<Transform>,
+    /// Input destinations whose digests are excluded from the action key:
+    /// constant-metadata artifacts (Artifact.isConstantMetadata), the
+    /// volatile workspace status file and the volatile build-info files a
+    /// transform_version_file action writes (BazelWorkspaceStatusAction
+    /// marks them "constant metadata", BazelWorkspaceStatusAction.java
+    /// :211-215; BuildInfoFileWriteAction's volatile output is created with
+    /// getConstantMetadataArtifact, StarlarkActionFactory.java:514-519).
+    /// Their bytes are staged like any input's, but a change does not
+    /// rebuild the consumer (ActionKeyComputer skips constant metadata).
+    pub constant_metadata: Vec<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -242,6 +252,12 @@ pub enum Transform {
         substitutions: Vec<(Vec<u8>, Vec<u8>)>,
         executable: bool,
     },
+    /// An actions.transform_version_file/actions.transform_info_file
+    /// registration (N63): a placeholder replaced during planning by a
+    /// Template expansion of the evaluated translation callback
+    /// (BuildInfoFileWriteAction.execute :121-176), or by Unsupported when
+    /// the workspace status could not be determined.
+    BuildInfo { volatile: bool },
     /// An action whose execution is an explicit native gap (its outputs are
     /// declared and registered, e.g. workspace-status transforms).
     Unsupported { message: String },
@@ -829,6 +845,10 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             }
         }
         Some(Transform::Unsupported { .. }) => check_one_output(action, "unsupported")?,
+        // The registration-time shape; planning rewrites it into a Template
+        // (crate::engine::resolve_build_info) before plan_action validates
+        // the template input.
+        Some(Transform::BuildInfo { .. }) => check_one_output(action, "build info")?,
         Some(Transform::RunfilesManifest { entries }) => {
             check_one_output(action, "runfiles manifest")?;
             check_runfiles_entries(action, entries)?;
@@ -1143,6 +1163,13 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             frame(&mut hash, b"unsupported");
             frame(&mut hash, message.as_bytes());
         }
+        (None, _, Some(Transform::BuildInfo { volatile })) => {
+            // Replaced during planning (crate::engine); keyed like the
+            // resolved action would be, so a stray registration cannot
+            // collide with either transform.
+            frame(&mut hash, b"build-info");
+            frame(&mut hash, &[u8::from(*volatile)]);
+        }
         (None, _, Some(Transform::RunfilesManifest { entries })) => {
             frame(&mut hash, b"runfiles-manifest");
             frame_runfiles_entries(&mut hash, entries, &origins);
@@ -1213,6 +1240,14 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     frame(&mut hash, &(inputs.len() as u64).to_le_bytes());
     for (name, input) in &inputs {
         frame(&mut hash, name.as_os_str().as_bytes());
+        // Constant-metadata inputs (the volatile status and build-info
+        // files) are staged but never keyed: a changed BUILD_TIMESTAMP must
+        // not rebuild their consumers
+        // (ActionKeyComputer/Artifact.isConstantMetadata).
+        if action.extra.constant_metadata.contains(name) {
+            frame(&mut hash, b"constant-metadata");
+            continue;
+        }
         frame_staged(&mut hash, input);
     }
     frame(&mut hash, &(outputs.len() as u64).to_le_bytes());
@@ -1945,6 +1980,9 @@ fn run_transform(
             .ok_or_else(|| format!("missing runfiles input '{}'", destination.display()))
     };
     match transform {
+        Transform::BuildInfo { .. } => {
+            Err("build info transform must be resolved during planning".to_owned())
+        }
         Transform::Unsupported { message } => Err(message.clone()),
         Transform::RunfilesManifest { entries } => {
             let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();

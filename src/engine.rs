@@ -37,6 +37,11 @@ struct Artifact {
     owner: String,
     /// A tree artifact (declared directory).
     directory: bool,
+    /// A constant-metadata artifact (Artifact.isConstantMetadata): its
+    /// digest is excluded from consumer action keys — the volatile
+    /// workspace status file and the volatile build-info files
+    /// (N63, docs/WORKSPACE_STATUS.md).
+    constant_metadata: bool,
 }
 
 impl Artifact {
@@ -162,6 +167,13 @@ struct ActionPlanning {
         (Label, Option<ConfigId>, Vec<String>),
         std::sync::Arc<crate::starlark_types::Target>,
     >,
+    /// The workspace status of this build (N63): the computed
+    /// BazelWorkspaceStatusAction outputs and the planned system nodes'
+    /// artifacts. `None` until the first action that consumes a status file
+    /// or an actions.transform_{version,info}_file registration needs it —
+    /// like Bazel, a build whose targets never touch the workspace status
+    /// never runs `--workspace_status_command`.
+    workspace_status: Option<WorkspaceStatusPlan>,
     /// The one shared `Target` value of each dependency edge's configured
     /// target (N55): allocated once and referenced by every consumer's
     /// `ctx.attr`, every provider that stores it and every depset snapshot
@@ -211,6 +223,7 @@ struct PlanState<'a> {
     pub producers: &'a mut BTreeMap<PathBuf, String>,
     pub source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
     pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
 }
 
 impl ActionPlanning {
@@ -235,6 +248,7 @@ impl ActionPlanning {
             aspect_provider_files,
             target_identities,
             aspect_target_identities,
+            workspace_status,
             ..
         } = self;
         PlanState {
@@ -256,10 +270,19 @@ impl ActionPlanning {
             producers,
             source_inputs,
             client_environment,
+            workspace_status,
         }
     }
 }
 
+/// The per-build workspace status plan (N63): the computed status and the
+/// two system write nodes' artifacts (the BazelWorkspaceStatusAction's
+/// stable and volatile outputs).
+struct WorkspaceStatusPlan {
+    computed: crate::workspace_status::ComputedWorkspaceStatus,
+    stable: Artifact,
+    volatile: Artifact,
+}
 /// What `bazel run` executes after the build (Engine::build_for_run).
 #[derive(Clone, Debug)]
 struct RunPlan {
@@ -1244,6 +1267,9 @@ pub struct Engine {
     /// Errors reported during a build that do not fail it, without the
     /// `ERROR: ` prefix (runfiles prefix conflicts under ConflictPolicy.ERROR).
     errors: Vec<String>,
+    /// `--workspace_status_command`/`--embed_label` of later builds
+    /// (WorkspaceStatusAction.Options; N63).
+    workspace_status: crate::workspace_status::WorkspaceStatusOptions,
 }
 
 impl Engine {
@@ -1302,6 +1328,7 @@ impl Engine {
             run_trees: true,
             run_plans: BTreeMap::new(),
             errors: Vec::new(),
+            workspace_status: crate::workspace_status::WorkspaceStatusOptions::default(),
         }
     }
 
@@ -1315,6 +1342,16 @@ impl Engine {
     /// The runfiles options of later builds (`--build_runfile_links`, ...).
     pub fn set_runfiles_options(&mut self, options: crate::runfiles_tree::RunfilesOptions) {
         self.runfiles_options = options;
+    }
+
+    /// The workspace status options of later builds
+    /// (`--workspace_status_command`, `--embed_label`;
+    /// WorkspaceStatusAction.Options, N63).
+    pub fn set_workspace_status(
+        &mut self,
+        options: crate::workspace_status::WorkspaceStatusOptions,
+    ) {
+        self.workspace_status = options;
     }
 
     /// The requested top-level output groups of later builds
@@ -6666,6 +6703,7 @@ impl Engine {
         match self.target(label)? {
             Target::Source(real) => Ok(vec![Artifact {
                 directory: false,
+                constant_metadata: false,
                 real,
                 exec: label.source_exec_path(),
                 producer: None,
@@ -7985,16 +8023,31 @@ impl Engine {
             nodes,
             source_inputs,
             client_environment,
+            workspace_status,
             aspect_provider_files,
             ..
         } = state;
         let main_ignored = self.ignored("")?;
+        // N63: plan the workspace status system nodes on first need.
+        if Self::workspace_status_needed(&analyzed.actions) {
+            self.ensure_workspace_status(
+                workspace_status,
+                nodes,
+                producers,
+                client_environment,
+                available,
+            )?;
+        }
         for registered in &analyzed.actions {
             for (index, file) in registered.outputs.iter().enumerate() {
                 let exec = PathBuf::from(&file.path);
                 register_output(producers, &exec, &action_owner)?;
                 let artifact = Artifact {
                     directory: file.is_directory,
+                    constant_metadata: registered
+                        .build_info
+                        .as_ref()
+                        .is_some_and(|build_info| build_info.volatile),
                     real: exec.clone(),
                     exec: exec.clone(),
                     producer: Some((registered.action.id.clone(), index)),
@@ -8013,7 +8066,10 @@ impl Engine {
                 ));
             }
         }
-        for registered in analyzed.actions {
+        for mut registered in analyzed.actions {
+            // N63: resolve an actions.transform_{version,info}_file
+            // registration into its template expansion.
+            self.resolve_build_info(workspace_status, &mut registered)?;
             let inputs = registered
                 .inputs
                 .iter()
@@ -8293,6 +8349,7 @@ impl Engine {
             aspect_providers,
             aspect_provider_files,
             aspect_target_identities,
+            workspace_status,
             ..
         } = state;
         // The transitive repositories of this configured target: its own and
@@ -8520,6 +8577,7 @@ impl Engine {
                         producers: &mut *producers,
                         source_inputs: &mut *source_inputs,
                         client_environment: &mut *client_environment,
+                        workspace_status: &mut *workspace_status,
                     };
                     self.plan_aspect_dependency(
                         &mut planning,
@@ -8899,6 +8957,7 @@ impl Engine {
             source_inputs,
             client_environment,
             runfiles_nodes,
+            workspace_status,
             ..
         } = state;
         let mut snapshot = snapshot;
@@ -8967,6 +9026,19 @@ impl Engine {
                 &ignored,
             )?;
         }
+        // N63: plan the workspace status system nodes before indexing this
+        // target's outputs, so actions consuming bazel-out/{stable,volatile}
+        // -status.txt (or a transform_{version,info}_file registration)
+        // resolve their artifacts.
+        if Self::workspace_status_needed(&analyzed.actions) {
+            self.ensure_workspace_status(
+                workspace_status,
+                nodes,
+                producers,
+                client_environment,
+                &mut available,
+            )?;
+        }
         // First index EVERY action's outputs, so registration order is not
         // an execution order and forward generated dependencies are legal.
         for registered in &analyzed.actions {
@@ -8975,6 +9047,10 @@ impl Engine {
                 register_output(producers, &exec, &key.label.to_string())?;
                 let artifact = Artifact {
                     directory: file.is_directory,
+                    constant_metadata: registered
+                        .build_info
+                        .as_ref()
+                        .is_some_and(|build_info| build_info.volatile),
                     real: exec.clone(),
                     exec: exec.clone(),
                     producer: Some((registered.action.id.clone(), index)),
@@ -9017,6 +9093,9 @@ impl Engine {
             runfiles_nodes.insert(key.clone(), nodes_of_target);
         }
         for mut registered in analyzed.actions {
+            // N63: resolve an actions.transform_{version,info}_file
+            // registration into its template expansion.
+            self.resolve_build_info(workspace_status, &mut registered)?;
             let mut inputs = registered
                 .inputs
                 .iter()
@@ -9469,6 +9548,7 @@ impl Engine {
                 .enumerate()
                 .map(|(index, exec)| Artifact {
                     directory: false,
+                    constant_metadata: false,
                     real: exec.clone(),
                     exec,
                     producer: Some((action_owner.clone(), index)),
@@ -10826,6 +10906,7 @@ impl RunfilesPlanning<'_> {
         register_output(self.producers, &exec, &key.label.to_string())?;
         let artifact = Artifact {
             directory: false,
+            constant_metadata: false,
             real: exec.clone(),
             exec: exec.clone(),
             producer: Some((id.to_owned(), 0)),
@@ -11033,6 +11114,225 @@ impl Engine {
             location: rule.location.clone(),
         }))
     }
+
+    /// Whether any registered action of a target needs the workspace status:
+    /// an action input of a status file (ctx.info_file/ctx.version_file) or
+    /// an actions.transform_{version,info}_file registration. Like Bazel,
+    /// the BazelWorkspaceStatusAction (and so --workspace_status_command)
+    /// only runs when some action consumes its outputs.
+    fn workspace_status_needed(registered: &[crate::analysis_runtime::RegisteredAction]) -> bool {
+        registered.iter().any(|action| {
+            action
+                .inputs
+                .iter()
+                .any(crate::analysis_runtime::is_workspace_status_file)
+                || action.build_info.is_some()
+        })
+    }
+
+    /// Plan the BazelWorkspaceStatusAction (N63) on first need and expose
+    /// its two artifacts to `available`: one system write node per status
+    /// file (Bazel has one action with both outputs;
+    /// BazelWorkspaceStatusAction.execute :174-225). The stable node's
+    /// content key makes it a cache hit while the stable status is
+    /// unchanged (maybeUpdateContent preserves the file on no change);
+    /// the volatile node re-executes every build (executeUnconditionally)
+    /// but its artifact is constant metadata, so consumers never re-key on
+    /// the changing timestamp. A failed status script plans two failing
+    /// nodes so the failure surfaces at execution with Bazel's text
+    /// (`Failed to determine workspace status: ...`, :205-209).
+    fn ensure_workspace_status(
+        &self,
+        plan: &mut Option<WorkspaceStatusPlan>,
+        nodes: &mut Vec<PlannedAction>,
+        producers: &mut BTreeMap<PathBuf, String>,
+        client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+        available: &mut BTreeMap<File, Artifact>,
+    ) -> Result<(), String> {
+        if plan.is_none() {
+            let client_env = client_environment.get_or_init(crate::action_env::client_environment);
+            let computed = match crate::workspace_status::compute(
+                &self.workspace_status,
+                self.repositories.main_root(),
+                client_env,
+                crate::workspace_status::current_time_millis(client_env),
+            ) {
+                Ok(status) => crate::workspace_status::ComputedWorkspaceStatus::Ok(status),
+                Err(error) => crate::workspace_status::ComputedWorkspaceStatus::Failed(error),
+            };
+            let owner = "@bazel_tools//tools:internal_platform";
+            let mut status = Vec::new();
+            for (suffix, name, constant) in [
+                ("stable", "stable-status.txt", false),
+                ("volatile", "volatile-status.txt", true),
+            ] {
+                // The build-data-root execution path of the status files
+                // (SkyframeExecutor.java:1474-1496: bazel-out/stable-status.txt
+                // and bazel-out/volatile-status.txt).
+                let file = format!("bazel-out/{name}");
+                let id = format!("BazelWorkspaceStatusAction#{suffix}");
+                let path = PathBuf::from(&file);
+                register_output(producers, &path, owner)?;
+                let (write, transform) = match &computed {
+                    crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => (
+                        Some(crate::action::WriteAction {
+                            content: if suffix == "stable" {
+                                status.stable_bytes.clone()
+                            } else {
+                                status.volatile_bytes.clone()
+                            },
+                            executable: false,
+                        }),
+                        None,
+                    ),
+                    crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => (
+                        None,
+                        Some(crate::action::Transform::Unsupported {
+                            message: format!(
+                                "BazelWorkspaceStatusAction {name} failed: Failed to determine workspace status: {}",
+                                error.0
+                            ),
+                        }),
+                    ),
+                };
+                status.push(Artifact {
+                    real: path.clone(),
+                    exec: path,
+                    producer: Some((id.clone(), 0)),
+                    owner: String::new(),
+                    directory: false,
+                    constant_metadata: constant,
+                });
+                nodes.push(PlannedAction {
+                    action: Action {
+                        id,
+                        command: String::new(),
+                        inputs: Vec::new(),
+                        outputs: vec![PathBuf::from(&file)],
+                        write,
+                        program: None,
+                        arguments: Vec::new(),
+                        environment: BTreeMap::new(),
+                        shell_strict: false,
+                        extra: crate::action::ActionExtra {
+                            transform,
+                            mnemonic: "BazelWorkspaceStatusAction".to_owned(),
+                            ..crate::action::ActionExtra::default()
+                        },
+                        ..Action::default()
+                    },
+                    dependencies: Vec::new(),
+                    deferred: None,
+                });
+            }
+            *plan = Some(WorkspaceStatusPlan {
+                computed,
+                stable: status[0].clone(),
+                volatile: status[1].clone(),
+            });
+        }
+        let planned = plan.as_ref().expect("just planned");
+        available.insert(
+            crate::analysis_runtime::workspace_status_file("stable-status.txt"),
+            planned.stable.clone(),
+        );
+        available.insert(
+            crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
+            planned.volatile.clone(),
+        );
+        Ok(())
+    }
+
+    /// Resolve one actions.transform_{version,info}_file registration
+    /// (N63): evaluate the Starlark translation callback against the
+    /// build's workspace status and rewrite the action into a template
+    /// expansion (BuildInfoFileWriteAction.execute :121-176 parses the
+    /// status file, calls the callback and expands the template; the
+    /// native computes the same substitutions during planning, so
+    /// execution is the ordinary Template transform). A volatile output is
+    /// constant metadata (getConstantMetadataArtifact): its changing bytes
+    /// never re-key consumers, and the substitution changes re-execute the
+    /// transform itself like executeUnconditionally.
+    fn resolve_build_info(
+        &self,
+        plan: &Option<WorkspaceStatusPlan>,
+        registered: &mut crate::analysis_runtime::RegisteredAction,
+    ) -> Result<(), String> {
+        let Some(build_info) = registered.build_info.take() else {
+            return Ok(());
+        };
+        let computed = plan
+            .as_ref()
+            .map(|plan| &plan.computed)
+            .ok_or_else(|| "build info action without a workspace status plan".to_owned())?;
+        let status = match computed {
+            crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => status,
+            crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => {
+                registered.action.extra.transform = Some(crate::action::Transform::Unsupported {
+                    message: format!(
+                        "TranslateBuildInfo {} failed: Failed to determine workspace status: {}",
+                        if build_info.volatile {
+                            "volatile-status.txt"
+                        } else {
+                            "stable-status.txt"
+                        },
+                        error.0
+                    ),
+                });
+                return Ok(());
+            }
+        };
+        let values = if build_info.volatile {
+            &status.volatile_bytes
+        } else {
+            &status.stable_bytes
+        };
+        let parsed = crate::workspace_status::parse_values(values);
+        // BuildInfoFileWriteAction.execute :128-141: one positional dict
+        // argument, a fresh transient Starlark thread
+        // ("translate_build_info_file").
+        let substitutions = starlark::environment::Module::with_temp_heap(|module| {
+            let mut eval = starlark::eval::Evaluator::new(&module);
+            let dict = module.heap().alloc(starlark::values::dict::AllocDict(
+                parsed.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+            ));
+            let function = module
+                .heap()
+                .access_owned_frozen_value(&build_info.function);
+            let returned = eval
+                .eval_function(function, &[dict], &[])
+                .map_err(|error| error.to_string())?;
+            let dict = starlark::values::dict::DictRef::from_value(returned)
+                .ok_or("the transform_func callback must return a dict of strings to strings")?;
+            let mut pairs = Vec::new();
+            for (key, value) in dict.iter() {
+                let key = key.unpack_str().ok_or(
+                    "the transform_func callback must return a dict of strings to strings",
+                )?;
+                let value = value.unpack_str().ok_or(
+                    "the transform_func callback must return a dict of strings to strings",
+                )?;
+                pairs.push((
+                    crate::bazel_bytes::internal_bytes(key).into_owned(),
+                    crate::bazel_bytes::internal_bytes(value).into_owned(),
+                ));
+            }
+            Ok::<_, String>(pairs)
+        })?;
+        // The template is the registration's second input (the status file
+        // first, like BuildInfoFileWriteAction's inputs).
+        let template = registered
+            .inputs
+            .get(1)
+            .map(|file| PathBuf::from(&file.path))
+            .ok_or_else(|| "build info action has no template input".to_owned())?;
+        registered.action.extra.transform = Some(crate::action::Transform::Template {
+            template,
+            substitutions,
+            executable: false,
+        });
+        Ok(())
+    }
 }
 
 fn plan_action(
@@ -11073,6 +11373,11 @@ fn plan_action(
                 ));
             }
             continue;
+        }
+        // Constant-metadata inputs (N63) key without their digest
+        // (crate::action::prepare).
+        if artifact.constant_metadata {
+            action.extra.constant_metadata.push(artifact.exec.clone());
         }
         if let Some((action_id, output_index)) = artifact.producer {
             dependencies.push(Dependency {
@@ -11362,6 +11667,7 @@ mod tests {
         );
         let source = |exec: &str, owner: &str| Artifact {
             directory: false,
+            constant_metadata: false,
             real: PathBuf::from("/ws").join(exec),
             exec: PathBuf::from(exec),
             producer: None,
@@ -11383,6 +11689,7 @@ mod tests {
             (
                 Artifact {
                     directory: false,
+                    constant_metadata: false,
                     producer: Some(("//:gen".into(), 0)),
                     ..source("node_modules/o.txt", "//:gen")
                 },
@@ -12228,6 +12535,7 @@ m = macro(implementation=emit)
     fn source_paths_keep_first_occurrences_in_order_without_generated_inputs() {
         let artifact = |real: &str, producer: Option<usize>| Artifact {
             directory: false,
+            constant_metadata: false,
             real: real.into(),
             exec: real.into(),
             producer: producer.map(|index| ("//app:gen".to_owned(), index)),
@@ -12435,6 +12743,7 @@ m = macro(implementation=emit)
         ] {
             let artifact = Artifact {
                 directory: false,
+                constant_metadata: false,
                 real: PathBuf::from("/real/local/root/p/in"),
                 exec: PathBuf::from(exec),
                 producer,
@@ -12445,6 +12754,7 @@ m = macro(implementation=emit)
         }
         let main = Artifact {
             directory: false,
+            constant_metadata: false,
             real: PathBuf::from("/root/external/dep/in"),
             exec: PathBuf::from("external/dep/in"),
             producer: None,

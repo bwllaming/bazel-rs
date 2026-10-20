@@ -31,3 +31,14 @@ def _ws_input_impl(ctx):
     return [DefaultInfo(files = depset([out]))]
 
 ws_input = rule(_ws_input_impl)
+
+def _ws_cat_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        outputs = [out],
+        inputs = [ctx.info_file, ctx.version_file],
+        command = "cat %s %s > %s" % (ctx.info_file.path, ctx.version_file.path, out.path),
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+ws_cat = rule(_ws_cat_impl)

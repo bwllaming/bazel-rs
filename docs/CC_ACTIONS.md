@@ -128,7 +128,18 @@ identical modulo the shift.
   and shareable compile outputs.
 - **FDO**: `absolute_symlink` (absolute-path FDO profiles); FDO/propeller
   profiles remain N25d's explicit toolchain-analysis gaps.
-- **libc_top** (N25d5) and stamped link outputs remain unsupported.
+- **libc_top** (N25d5) remains unsupported.
+- **cc_library `linkstamp`** (N63's recorded remaining boundary): rules_cc's
+  `LinkstampInfo` fields are `wrap_with_check_private_api` closures
+  (`create_linkstamp.bzl:41-44`); a local closure cannot cross analyses in
+  the native depset representation, so a linkstamp-carrying dependency fails
+  explicitly at the `depset(linkstamps)` of `cc_library`
+  (tests/fixtures/workspace_status2/reference_receipt.json, row
+  `cc/linkstamp`). The stamped build-info translation itself is supported
+  (docs/WORKSPACE_STATUS.md): `cc_binary` over a built `cc_library` links
+  byte-identically to genuine, and the `_build_info_files`
+  `volatile_file.h`/`non_volatile_file.h` are byte-exact under a fixed
+  `--workspace_status_command` script + `SOURCE_DATE_EPOCH`.
 - **Windows/macOS toolchains** and `expand_and_tokenize` (objc flag
   expansion) fail explicitly; the profile runs the Linux `@local_config_cc`
   toolchain only.
