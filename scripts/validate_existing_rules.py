@@ -256,8 +256,13 @@ def marker_count(record):
 
 def publication_evidence(cache):
     # Include metadata/cache manifests, not only final generated trees.
+    # Integration-18 (deterministic stages): the empty cross-process stage lock
+    # locks/stage-<32 hex> stays behind like every repository lock file; it is
+    # not a publication, so it is not evidence of one (a non-empty one is).
     root = cache / 'repositories/direct'
-    return sorted(str(p.relative_to(cache)) for p in root.rglob('*') if p.is_file()) if root.exists() else []
+    return sorted(str(p.relative_to(cache)) for p in root.rglob('*') if p.is_file()
+                  and not (p.parent == root / 'locks' and re.fullmatch('stage-[0-9a-f]{32}', p.name)
+                           and p.stat().st_size == 0)) if root.exists() else []
 
 
 def command_argv(args, reference, engine, cache, registry, command, target, extra, item):
@@ -354,7 +359,10 @@ def validate_phase(phase, report, args, workspace, reference, item):
             continue
         success(record)
         if engine == 'native':
-            if marker_count(record) != value['callbacks']:
+            # Integration-18 (N61): the warm build reuses the unchanged repository
+            # publications through their specification pointers, so repository
+            # callbacks print only in the cold build.
+            if marker_count(record) != (value['callbacks'] if index == 0 else 0):
                 raise ValueError('fresh CLI callback count mismatch')
             common.action_counts(record, (value['actions'], 0) if index == 0 else (0, value['actions']))
         if command != ('build' if engine == 'native' else 'cquery'):

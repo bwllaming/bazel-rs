@@ -417,6 +417,17 @@ def check_publication(value):
     expected = {p: dict(mode=0o644, raw=blob(raw)) for p, raw in REPOSITORY_FILES.items()}
     require(value['inventory'] == expected, 'repository source inventory/0644/bytes')
     manifest = json.loads(unblob(value['manifests'][identity + '.json']['raw']))
+    # Integration-18 (N61): native manifests append the pre-execution
+    # specification digest ('spec', 64 hex, the specs/ pointer name) and the
+    # recorded world ('recorded', the bytes of a JSON document) after the four
+    # legacy fields; nothing else may join them.
+    require(list(manifest)[:4] == ['format', 'profile', 'identity', 'files']
+            and list(manifest)[4:] in ([], ['spec', 'recorded'])
+            and (len(manifest) == 4 or (re.fullmatch('[0-9a-f]{64}', str(manifest['spec']))
+                 and isinstance(manifest['recorded'], list)
+                 and all(type(b) is int and 0 <= b < 256 for b in manifest['recorded'])
+                 and isinstance(json.loads(bytes(manifest['recorded'])), dict))), 'publication manifest N61 fields')
+    manifest = {k: manifest[k] for k in ('format', 'profile', 'identity', 'files')}
     # repository_store::snapshot visits (root, root) first, recording the empty
     # relative path as a real directory entry. Do not discard it or accept an
     # empty-file digest in its place. These are this fixture's observed modes.
@@ -437,7 +448,12 @@ def callback_sequences(step):
     full = analysis if case == 'custom' else extension + ('LP_REPOSITORY_CALLBACK',)
     if engine == 'native':
         if verb == 'build':
-            return (full,)  # Fresh process: exact sequence even with reused publications/actions.
+            # Fresh process: exact sequence even with reused actions. Integration-18
+            # (N61): a warm build reuses the unchanged repository publication through
+            # its specification pointer, so the repository callback runs only cold.
+            if case == 'extension' and stage == 'warm':
+                return (extension,)
+            return (full,)
         # A loading-only query may demand the extension mapping, never analysis
         # or repository materialization. This is not a cache-hit inference.
         return ((),) if case == 'custom' else ((), extension)

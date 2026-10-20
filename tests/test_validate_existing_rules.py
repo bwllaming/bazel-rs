@@ -248,7 +248,8 @@ class ReplayTests(unittest.TestCase):
         reference = suite.DirectReference(args.reference, workspace, root, None, 'existing-rules')
         records = []
         for i, (command, target, extra) in enumerate(suite.steps_for(value, engine)):
-            rec = record('NATIVERUN\nNATIVERUN\n'+('1 actions executed, 0 cache hits' if i == 0 else '0 actions executed, 1 cache hits'), 0)
+            # Integration-18 (N61): the warm build reuses both repository publications.
+            rec = record(('NATIVERUN\nNATIVERUN\n1 actions executed, 0 cache hits' if i == 0 else '0 actions executed, 1 cache hits'), 0)
             rec.update(id=i, name='extension.'+probe+'.native.'+str(i), cwd=str(workspace), timeout_seconds=args.timeout,
                 argv=suite.extensions.command_argv(args, reference, engine, cache, root / 'registry', command, target, extra),
                 stdout='//:result\t'+str(output)+'\n')
@@ -266,7 +267,7 @@ class ReplayTests(unittest.TestCase):
             values = self.positive(Path(tmp))
             suite.validate_phase(*values)
             for mutate in (
-                    lambda p, r: r['runs'][1].update(stderr='0 actions executed, 1 cache hits'),
+                    lambda p, r: r['runs'][1].update(stderr='NATIVERUN\n0 actions executed, 1 cache hits'),
                     lambda p, r: r['runs'][0].update(stderr='NATIVERUN\nNATIVERUN\n0 actions executed, 1 cache hits'),
                     lambda p, r: p['outputs'][0][0].update(mode=0o755),
                     lambda p, r: p['outputs'][0][0].update(sha256='0'*64),

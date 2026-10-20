@@ -213,7 +213,9 @@ def synthetic_report(reference_only=False, config_prefix='unit-cpu-fastbuild'):
                         row['publication'] = publication()
                 if engine == 'native' and verb == 'build':
                     count = 2 if case == 'custom' else 1
-                    text = ('LP_ANALYSIS_CALLBACK\n' if case == 'custom' else 'LP_EXTENSION_CALLBACK\nLP_REPOSITORY_CALLBACK\n')
+                    # Integration-18 (N61): a warm native build reuses the repository publication.
+                    text = ('LP_ANALYSIS_CALLBACK\n' if case == 'custom' else
+                            'LP_EXTENSION_CALLBACK\n' + ('LP_REPOSITORY_CALLBACK\n' if stage == 'cold' else ''))
                     text += f'bazel-rs: {count if stage == "cold" else 0} actions executed, {0 if stage == "cold" else count} cache hits\n'
                     row['stderr'] = suite.blob(text.encode())
                 elif engine == 'native':
@@ -533,9 +535,16 @@ class ReplayTests(unittest.TestCase):
             with self.subTest(case=case, name=name), self.assertRaises(ValueError):
                 suite.replay(report, self.config, self.binding)
 
-    def test_native_warm_callbacks_repeat_but_identity_and_cache_are_independent(self):
+    def test_native_warm_callbacks_reuse_but_identity_and_cache_are_independent(self):
         row = next(r for r in self.report['runs'] if r['step'] == ['extension', 'native', 'warm', 'build'])
-        self.assertIn('LP_REPOSITORY_CALLBACK', suite.unblob(row['stderr']).decode())
+        # Integration-18 (N61): the warm build reuses the publication; the repository callback stays silent.
+        self.assertNotIn('LP_REPOSITORY_CALLBACK', suite.unblob(row['stderr']).decode())
+        self.assertIn('LP_EXTENSION_CALLBACK', suite.unblob(row['stderr']).decode())
+        repeated = copy.deepcopy(self.report)
+        repeated['runs'][row['id']]['stderr'] = suite.blob(suite.unblob(row['stderr']).replace(
+            b'LP_EXTENSION_CALLBACK\n', b'LP_EXTENSION_CALLBACK\nLP_REPOSITORY_CALLBACK\n'))
+        with self.assertRaises(ValueError):
+            suite.replay(repeated, self.config, self.binding)
         for field, value in (('roots', ['a' * 64, '.stage-stray']), ('inventory', {}), ('manifests', {}), ('identity', 'b' * 64)):
             report = copy.deepcopy(self.report)
             report['runs'][row['id']]['publication'][field] = value

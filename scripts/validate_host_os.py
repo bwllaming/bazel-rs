@@ -82,7 +82,7 @@ LIMITATIONS = [
     'Same-host outputs do not prove cross-host flag keying; required native-unit receipts are separate.',
     'Reference whole-object JSON is source-derived only and UNPROBED; whole-json is NATIVE_BOUNDARY.',
     'repository_ctx.os.environ is ONE cold state per route: Bazel records no dependency for it (StarlarkOS.java:49-54) and may serve a cached repository while native re-executes every invocation, so cross-invocation environment transitions are not differential; module_ctx.os.environ, module_ctx.getenv and module_extension(environ=...) are differential probes (extension, ctor).',
-    'K-to-L migration is NATIVE_VERSION_MIGRATION, never reference parity; since N61 repository identities are pinned across native versions (a rekey would invalidate existing caches).',
+    'K-to-L migration is NATIVE_VERSION_MIGRATION, never reference parity; the pinned K baseline predates N51/N52/N61, so every repository rekeys once (N61 identity stability holds from N61 on).',
     'A new repository ID with equal logical bytes may hit the consumer action cache.',
     'No ambient names/values, JVM property overrides, public host injection, SDK/application or full acceptance claim.',
     'BUILD probe checks only undefined global os at its bound compile-time source site; not full BUILD namespace parity.',
@@ -594,11 +594,12 @@ def run_phase(args, runner, scratch, workspace, ref, item, probe, engine):
         check_cache(outputs, name)
     if engine == 'migration':
         roots = [o['roots'] for o in outputs]
-        # N61 pins repository identities across native versions: the K-to-L
-        # binary change must NOT rekey a repository (identity stability is the
-        # contract; a rekey here would invalidate every existing cache).
-        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] != roots[2]:
-            raise ValueError('K-to-L repository identity rekeyed or detached')
+        # The pinned K baseline (622afa65) predates N51/N52/N61, so the K-to-L
+        # change rekeys every repository once (observed on the integration-18
+        # pre-gate binary); N61's cross-version stability starts with N61 itself
+        # (tests/repository_warm_reuse.rs). Each binary stays stable cold/warm.
+        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] == roots[2]:
+            raise ValueError('missing one-time K-to-L identity migration')
         inventories = []
         for obs in outputs:
             identity = Path(obs['roots']['data.txt']).name
@@ -621,9 +622,13 @@ def migration_counts(engine, index, seen):
     manifest of another format, or another key, is a cache miss
     (docs/HARDLINK_STAGING.md, "pre-v8 entries rebuild once"). N61 pins
     repository identities across native versions and does not touch action
-    keys, so the first L build now hits the K action cache like any other
-    unchanged rebuild; every build follows the plain seen-bytes rule.
+    keys, but the pinned K baseline (622afa65) predates native-action-v8, so
+    the first L build still rebuilds once (observed on the integration-18
+    pre-gate binary: K 1/0, 0/1; L 1/0); every other build keeps the plain
+    seen-bytes rule.
     """
+    if engine == 'migration' and index == 2:
+        return (1, 0)
     return (0, 1) if seen else (1, 0)
 
 def shutdown(ref, runner, report):
@@ -848,11 +853,10 @@ def validate_phase(phase, report, args, scratch, workspace, ref):
         check_cache(output_steps, name)
     if engine == 'migration':
         roots = [o['roots'] for o in output_steps]
-        # N61 pins repository identities across native versions: the K-to-L
-        # binary change must NOT rekey a repository (a rekey would invalidate
-        # every existing cache).
-        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] != roots[2]:
-            raise ValueError('K-to-L repository identity rekeyed or detached')
+        # The pinned K baseline predates N51/N52/N61: one-time K-to-L rekey
+        # (see run_phase); each binary stays stable cold/warm.
+        if roots[0] != roots[1] or roots[2] != roots[3] or roots[0] == roots[2]:
+            raise ValueError('missing one-time K-to-L rekey')
         inventories = [json.loads(base64.b64decode(o['metadata'][str(cache / 'repositories/direct/manifests' /
             (Path(o['roots']['data.txt']).name+'.json'))]['bytes_base64']))['files'] for o in output_steps]
         if any(v != inventories[0] for v in inventories):

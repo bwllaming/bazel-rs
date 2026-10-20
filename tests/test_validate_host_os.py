@@ -639,12 +639,12 @@ if __name__ == '__main__':
 
 
 class MigrationCountsTest(unittest.TestCase):
-    def test_n61_pins_repository_and_action_identity_across_native_versions(self):
+    def test_k_baseline_predates_v8_keys_so_the_first_l_build_rebuilds_once(self):
         import validate_host_os as h
-        # N61: no action-key or repository-identity migration between K and L,
-        # so every K-to-L build follows the plain seen-bytes cache rule (the
-        # pre-N61 one-time v8 rebuild no longer applies).
-        self.assertEqual(h.migration_counts('migration', 2, True), (0, 1))
+        # The pinned K baseline (622afa65) writes pre-native-action-v8 keys: the
+        # first L build rebuilds once (integration-18 pre-gate discovery: K 1/0,
+        # 0/1; L 1/0, 0/1); every other build follows the plain seen-bytes rule.
+        self.assertEqual(h.migration_counts('migration', 2, True), (1, 0))
         self.assertEqual(h.migration_counts('migration', 3, True), (0, 1))
         self.assertEqual(h.migration_counts('migration', 1, True), (0, 1))
         self.assertEqual(h.migration_counts('migration', 0, False), (1, 0))
