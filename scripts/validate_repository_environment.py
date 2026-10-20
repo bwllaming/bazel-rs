@@ -31,10 +31,11 @@ SECRET = 'SYNTHETIC_SECRET_42'
 # names are compared against the union of every fixture's declared names.
 ODD_NAMES = frozenset(('', '=', 'A=B', A+'\0TAIL'))
 WATCHED_NAMES = KEYS | ODD_NAMES
-# Environment VALUES never persist (Bazel's MODULE.bazel.lock discipline).
+# Environment VALUES never persist in native publication metadata — a native
+# policy (Bazel's own .marker file stores `ENV:` values in plain text).
 # Since N61 a publication manifest additionally carries the pre-execution
 # specification digest (`spec`, one hex digest) and the recorded watch probes
-# (`recorded`: input digests plus Bazel-lockfile-style environment NAMES).
+# (`recorded`: input digests plus environment NAMES).
 VALUES = ('alpha', 'bee', 'unused', 'question', SECRET)
 MANIFEST_CORE = frozenset(('format', 'profile', 'identity', 'files'))
 MANIFEST_RECORDED = frozenset(('spec', 'recorded'))
@@ -66,8 +67,9 @@ def check_publication_schema(data, message):
 
 
 def check_publication_privacy(data, message):
-    """Environment names may persist only as recorded watch probes; values and
-    every other name mention must stay absent (digests are opaque hex)."""
+    """Native policy: environment names may persist only as recorded watch
+    probes and values must stay absent everywhere (Bazel's .marker stores
+    ENV: values in plain text; digests here are opaque hex)."""
     probes = None
     if data.get('recorded') is not None:
         try:
@@ -463,15 +465,17 @@ def expected_callbacks(name, probe, engine, index):
     label = states(name, probe)[index][0]
     if engine == 'native':
         # N61: publications are keyed by the pre-execution specification and
-        # revalidated against the recorded inputs, so a state equal to the
+        # revalidated against the recorded inputs, so any state equal to the
         # pointer-addressed publication's world reuses it without executing.
-        # Two engine-specific differences vs the reference model: a changed
-        # client environment refetches (whole-repoEnv digest probe), and a
-        # restored earlier value reuses that value's own publication whenever
-        # the specification keys it.
-        if label in ('warm', 'source-warm') or (label == 'restore'
+        # Engine-specific differences vs the reference model: a restored
+        # earlier value reuses that value's own publication whenever the
+        # specification keys it, and per-repository watch sets mean only the
+        # repositories whose declared world changed execute (isolation).
+        if label in ('warm', 'unrelated', 'source-warm') or (label == 'restore'
                                                 and native_restore_reuses(name, probe)):
             return []
+        if name == 'isolation':
+            return ['A']
         return ['A', 'B'] if value['repos'] == 2 else ['A']
     return [] if label in ('warm', 'unrelated', 'source-warm') else ['A']
 

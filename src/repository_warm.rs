@@ -35,18 +35,13 @@ struct FileProbe {
     state: String,
 }
 
-/// The observed-environment probe: names only, never values
-/// (StarlarkBaseExternalContext environment redaction).
+/// The observed-environment probe: names only, never values — a native
+/// policy (Bazel's .marker stores `ENV:` values in plain text; the native
+/// manifest never persists environment values).
 #[derive(Serialize, Deserialize)]
 struct WatchedProbe {
     sha256: String,
     names: Vec<String>,
-}
-
-/// The client-environment digest probe (ClientEnvironmentValue).
-#[derive(Serialize, Deserialize)]
-struct ClientProbe {
-    sha256: String,
 }
 
 /// Recorded watchable inputs persisted in a publication manifest. These bytes
@@ -56,8 +51,6 @@ struct ClientProbe {
 #[derive(Serialize, Deserialize)]
 struct RecordedInputs {
     version: u8,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    client_environment: Option<ClientProbe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     templates: Vec<TemplateProbe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -104,16 +97,16 @@ pub(crate) fn specification(
 }
 
 /// Record the watchable inputs of one execution for later revalidation.
+/// Repositories depend only on their declared `environ` values (framed into
+/// the specification itself) and these recorded inputs — `os.environ` and
+/// unrequested environment changes record nothing, like Bazel's
+/// RepoRecordedInput set (ENV: only through declared names or getenv).
 pub(crate) fn record(
     inputs: &crate::repository_ctx::ExecutionInputs,
     watch_names: &[String],
-    client_environment: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let recorded = RecordedInputs {
         version: 1,
-        client_environment: client_environment.map(|sha256| ClientProbe {
-            sha256: sha256.to_owned(),
-        }),
         templates: inputs
             .templates
             .iter()
@@ -153,15 +146,6 @@ pub(crate) fn unchanged(
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
     if recorded.version != 1 {
         return Ok(false);
-    }
-    if let Some(client) = &recorded.client_environment {
-        // ClientEnvironmentValue re-check: any client-environment change
-        // refetches, like Bazel's repository fetch dependency on it.
-        if repositories.environment().client_digest().ok().as_deref()
-            != Some(client.sha256.as_str())
-        {
-            return Ok(false);
-        }
     }
     if let Some(watched) = &recorded.watched_env {
         // RepositoryEnvironmentValue re-checks: reobserve exactly the recorded

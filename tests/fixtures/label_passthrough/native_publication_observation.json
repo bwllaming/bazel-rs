@@ -4,12 +4,7 @@
     "report": "artifacts/label-passthrough-native-preparation-calibrated.json",
     "report_sha256": "75c7eefc6a9d5247c30ebdf6651221256c24c43a83c66fd1c6e5f23758fe85fa",
     "run_id": 25,
-    "step": [
-      "extension",
-      "native",
-      "cold",
-      "build"
-    ],
+    "step": ["extension", "native", "cold", "build"],
     "returncode": 0,
     "native_sha256": "6e6bdf3d13d9a2970a6a47c3eb5edd48d072fa6b282b8b382ec77e095a7d2ed2",
     "repository_store_sha256": "1d0a0f1564f3eb757564e849f78614b72028206541ca208bb4d1f3194e24673a",
@@ -21,9 +16,7 @@
   },
   "publication": {
     "identity": "2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964",
-    "roots": [
-      "2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964"
-    ],
+    "roots": ["2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964"],
     "manifests": {
       "2fb9dd9d4dde0b8250fdfc72e06d22fb1337bc17151e94d15654883236b8a964.json": {
         "mode": 384,

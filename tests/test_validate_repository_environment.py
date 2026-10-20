@@ -99,7 +99,7 @@ class PlanTests(unittest.TestCase):
                          [['A'], [], ['A'], [], ['A']])
         # N61: warm and restored states reuse the attr-keyed publication.
         self.assertEqual([suite.expected_callbacks('module-getenv', 'ordinary', 'native', i) for i in range(5)],
-                         [['A'], [], ['A'], ['A'], []])
+                         [['A'], [], ['A'], [], []])
         outputs = [suite.expected_outputs('module-getenv', 'ordinary', env, source)['a.txt']
                    for _, env, source in suite.states('module-getenv', 'ordinary')]
         self.assertEqual(outputs, [b'prefix:alpha\n']*2+[b'prefix:beta\n']*2+[b'prefix:alpha\n'])
@@ -115,18 +115,22 @@ class PlanTests(unittest.TestCase):
             self.assertIn(b'"CONST"', dynamic)
 
     def test_engine_specific_callback_counts(self):
-        # N61: warm, restored and source-warm states reuse the pointer-addressed
-        # publication; changed client environments and changed sources execute.
+        # N61: warm, unrelated, restored and source-warm states reuse the
+        # pointer-addressed publication; changed declared values and changed
+        # sources execute.
         self.assertEqual([suite.expected_callbacks('watched', 'direct.snapshot', 'native', i) for i in range(7)],
-                         [['A'], [], ['A'], ['A'], [], ['A'], []])
+                         [['A'], [], ['A'], [], [], ['A'], []])
         self.assertEqual([suite.expected_callbacks('watched', 'direct.snapshot', 'reference', i) for i in range(7)],
                          [['A'], [], ['A'], [], ['A'], ['A'], []])
         self.assertEqual(suite.expected_callbacks('isolation', 'ordinary', 'reference', 2), ['A'])
-        self.assertEqual(suite.expected_callbacks('isolation', 'ordinary', 'native', 2), ['A', 'B'])
+        # N61 per-repository watch sets: only the repository whose declared
+        # value changed executes (the other reuses its publication).
+        self.assertEqual(suite.expected_callbacks('isolation', 'ordinary', 'native', 2), ['A'])
         # Empty declared sets share one specification: the pointer follows the
-        # latest world, so restoring re-executes like Bazel's external/<name>.
+        # latest recorded world, so restoring re-executes like Bazel's
+        # external/<name>; unrelated churn reuses like a matching marker.
         self.assertEqual([suite.expected_callbacks('identity', 'direct.dynamic', 'native', i) for i in range(5)],
-                         [['A'], [], ['A'], ['A'], ['A']])
+                         [['A'], [], ['A'], [], ['A']])
         self.assertEqual([suite.expected_callbacks('defaults', 'direct', 'native', i) for i in range(5)],
                          [['A'], [], ['A'], ['A'], ['A']])
 
@@ -197,9 +201,9 @@ class PlanTests(unittest.TestCase):
         self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'reference', i) for i in range(6)],
                          [['A'], [], ['A'], [], ['A'], ['A']])
         # N61: warm and restored overrides reuse; a changed override value or a
-        # dropped flag executes.
+        # dropped flag executes (an unchanged override masks the client churn).
         self.assertEqual([suite.expected_callbacks('repo-env', 'ordinary.split', 'native', i) for i in range(6)],
-                         [['A'], [], ['A'], ['A'], [], ['A']])
+                         [['A'], [], ['A'], [], [], ['A']])
 
 
 class PrivacyTests(unittest.TestCase):

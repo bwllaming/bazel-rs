@@ -19,8 +19,13 @@ repository specification first (rule identity, attributes, mappings, host
 markers, declared environment values — `repository_store`, N61) and reuses the
 existing publication without executing the callback when its recorded inputs
 (templates, watched files/directories, observed environment) are unchanged;
-any changed recorded input or specification executes the callback again. This
-behavior applies to both `local=False` and `local=True`.
+any changed recorded input or specification executes the callback again.
+`local=False` repositories reuse this way; `local=True` repositories never
+reuse across invocations — they always execute again
+(`RepositoryFetchFunction.shouldUseCachedRepoContents`: local repositories
+never use cached contents while fetching is enabled, and a native invocation
+is a fresh server; their unrecorded `which`/`execute`/executed-file
+dependencies make stale reuse dangerous).
 Unused repositories remain lazy; failed callbacks do not publish partial trees.
 
 This is **not** full persistent-server parity (Bazel 9.3 keeps one resident

@@ -467,14 +467,17 @@ fn repository_environ_is_the_client_environment_and_never_a_recorded_dependency(
     };
     let alpha = f.build(&[(A, "alpha")]);
     alpha.assert_bytes(format!("[\"alpha\",{}]\n", keys(true)).as_bytes());
-    // No dependency is recorded in the identity inputs, but every fetch
-    // implicitly depends on the client environment (N61's ClientEnvironment
-    // digest probe): a changed value refetches, like Bazel.
+    // os.environ records no dependency, and no whole-client-environment probe
+    // exists (N61 follow-up: repositories depend only on declared environ
+    // values and recorded inputs): a changed value REUSES the publication,
+    // like Bazel serving a cached external/<name> whose rule never recorded
+    // an environment input.
     let beta = f.build(&[(A, "beta")]);
-    beta.assert_bytes(format!("[\"beta\",{}]\n", keys(true)).as_bytes());
-    assert_ne!(f.identity(&alpha), f.identity(&beta));
+    beta.assert_bytes(format!("[\"alpha\",{}]\n", keys(true)).as_bytes());
+    assert_eq!(f.identity(&alpha), f.identity(&beta));
     let absent = f.build(&[]);
-    absent.assert_bytes(format!("[\"fallback\",{}]\n", keys(false)).as_bytes());
+    absent.assert_bytes(format!("[\"alpha\",{}]\n", keys(true)).as_bytes());
+    assert_eq!(f.identity(&alpha), f.identity(&absent));
     let restored = f.build(&[(A, "alpha")]);
     assert_eq!(f.identity(&alpha), f.identity(&restored));
 }

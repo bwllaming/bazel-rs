@@ -3606,10 +3606,6 @@ fn rule_definition_information(definition: &RuleDefinition, canonical_name: &str
 pub struct ExecutedRepository {
     pub inputs: ExecutionInputs,
     pub watch_names: Vec<String>,
-    /// Digest of the client environment observed by the execution (every
-    /// repository fetch implicitly depends on it, like Bazel's
-    /// ClientEnvironmentValue); never part of the content identity.
-    pub client_environment: Option<String>,
 }
 
 /// Execute only into the caller's precreated private stage. Failures may leave
@@ -3717,12 +3713,10 @@ pub fn execute(
             Ok(())
         })?;
         replant_symlinks(&context.stage)?;
-        let client_environment = context.repositories.environment().client_digest().ok();
         let (inputs, watch_names) = context.finish_with_names()?;
         Ok(ExecutedRepository {
             inputs,
             watch_names,
-            client_environment,
         })
     };
     run().map_err(|error| {

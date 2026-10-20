@@ -69,7 +69,12 @@ impl Fixture {
             command.env_remove(key);
         }
         for (key, value) in environment {
-            assert!(matches!(*key, A | B | UNUSED | "?"));
+            // Beyond the fixture's synthetic names, only shell bookkeeping
+            // variables that differ between working directories may pass.
+            assert!(matches!(
+                *key,
+                A | B | UNUSED | "?" | "PWD" | "OLDPWD" | "SHLVL" | "_"
+            ));
             command.env(key, value);
         }
         command
@@ -326,16 +331,15 @@ fn lifecycle(route: Route) {
     f.manifest(first.path(f.made_label()));
     let warm = f.build(&targets, &[(A, "alpha")]);
     // N61: identical specification (declared value alpha) and unchanged
-    // client environment reuse the verified publication without executing.
+    // recorded inputs reuse the verified publication without executing.
     warm.callbacks(0);
     assert_eq!(warm.paths, first.paths);
     assert_eq!(warm.bytes, first.bytes);
     assert!(warm.stderr.contains("0 actions executed, 1 cache hits"));
     let unrelated = f.build(&targets, &[(A, "alpha"), (UNUSED, "unrelated")]);
-    // The client environment changed (every fetch implicitly depends on it,
-    // like Bazel's ClientEnvironmentValue): the repository refetches and
-    // republishes the same content identity.
-    unrelated.callbacks(1);
+    // An UNDECLARED, unread environment change records nothing (Bazel's
+    // RepoRecordedInput set): the publication is reused as-is.
+    unrelated.callbacks(0);
     assert_eq!(unrelated.paths, first.paths);
     assert_eq!(unrelated.bytes, first.bytes);
     assert!(
@@ -361,10 +365,43 @@ fn lifecycle(route: Route) {
 }
 
 #[test]
+fn undeclared_environment_changes_including_pwd_reuse_the_publication() {
+    // Only DECLARED environ values (in the specification) and recorded reads
+    // refetch; shell bookkeeping variables that differ between working
+    // directories (PWD/OLDPWD/SHLVL/_) record nothing and must never break
+    // warm reuse.
+    for route in ROUTES {
+        let f = Fixture::new(route, "", GET, DECLARED);
+        let targets = ["@made//:data"];
+        let shell = |dir: &'static str, old: &'static str, depth: &'static str| {
+            vec![
+                ("PWD", dir),
+                ("OLDPWD", old),
+                ("SHLVL", depth),
+                (A, "alpha"),
+            ]
+        };
+        let first = f.build(&targets, &shell("/one", "/old/one", "1"));
+        first.assert_bytes(b"alpha");
+        first.callbacks(1);
+        let warm = f.build(&targets, &shell("/two", "/old/two", "5"));
+        warm.callbacks(0);
+        assert_eq!(warm.paths, first.paths);
+        warm.assert_bytes(b"alpha");
+        let changed = f.build(&targets, &[(A, "beta")]);
+        changed.callbacks(1);
+        changed.assert_bytes(b"beta");
+        let restored = f.build(&targets, &shell("/one", "/old/one", "1"));
+        restored.callbacks(0);
+        assert_eq!(restored.paths, first.paths);
+        restored.assert_bytes(b"alpha");
+    }
+}
+
+#[test]
 fn direct_getenv_drives_real_consumer_and_environment_keyed_publication() {
     lifecycle(Route::Direct);
 }
-
 #[test]
 fn ordinary_extension_repository_getenv_drives_real_consumer_and_publication() {
     lifecycle(Route::Extension);
@@ -519,8 +556,10 @@ fn shared_snapshot_does_not_merge_other_repository_watch_sets() {
     let first = f.build(&targets, &[(A, "alpha"), (B, "one")]);
     let second = f.build(&targets, &[(A, "alpha"), (B, "two")]);
     first.callbacks(2);
-    second.callbacks(2);
-    for built in [&first, &second] {
+    // N61: only the repository whose DECLARED value changed re-executes; the
+    // other reuses its publication (watch sets stay per-repository).
+    second.callbacks(1);
+    for (built, expected) in [(&first, &["other", "made"][..]), (&second, &["other"][..])] {
         assert_eq!(built.labels, [other, made]);
         let markers: Vec<_> = built
             .stderr
@@ -530,7 +569,7 @@ fn shared_snapshot_does_not_merge_other_repository_watch_sets() {
                     .map(|(_, name)| name.trim())
             })
             .collect();
-        assert_eq!(markers, ["other", "made"], "{}", built.stderr);
+        assert_eq!(markers, expected, "{}", built.stderr);
         built.assert_bytes(b"constant");
     }
     assert_ne!(first.path(other), second.path(other));
@@ -726,7 +765,15 @@ fn repository_environ_untracked_and_extension_environ_and_module_getenv_supporte
     let manifest = os.manifest(first.path(os.made_label()));
     assert!(!serde_json::to_string(&manifest).unwrap().contains("beta"));
     let second = os.generated(&[(A, "alpha")]);
-    assert_eq!(second.bytes[os.made_label()], b"none|BAZEL_RS_ENV_A,PATH");
+    // os.environ records NO dependency (and no client-environment probe
+    // exists), so the untracked B change reuses the first publication and
+    // keeps serving its bytes — exactly like Bazel serving a cached
+    // external/<name> whose rule never recorded that input.
+    assert_eq!(
+        second.bytes[os.made_label()],
+        b"beta|BAZEL_RS_ENV_A,BAZEL_RS_ENV_B,PATH"
+    );
+    assert_eq!(second.path(os.made_label()), first.path(os.made_label()));
     // module_extension(environ=...) and module_ctx.getenv are supported
     // extension environment inputs (StarlarkBaseExternalContext.java:1535-1565).
     for (source, expected) in [

@@ -516,14 +516,15 @@ def check_cache(observations, name):
 def native_reuses(name, index, engine='native'):
     """N61: the publication-reuse steps of the multi-state native phases —
     the specification pointer addresses a publication whose recorded world is
-    unchanged (warm; a source that stays changed; a restored declared value;
-    the second build of the K-to-L migration pair)."""
+    unchanged (warm; an undeclared environment change; a source that stays
+    changed; a restored declared value; the second build of the K-to-L
+    migration pair)."""
     if engine == 'migration':
         return index == 3
     if name == 'cache':
         return index in (1, 3)
     if name == 'getenv-control':
-        return index in (1, 4)
+        return index in (1, 3, 4)
     return False
 
 

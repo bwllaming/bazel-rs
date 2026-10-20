@@ -1035,12 +1035,22 @@ impl RepositorySet {
                     .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                 let this = Arc::new(self.clone());
                 let validating = Arc::new(self.clone());
+                // A local rule never reuses a publication across invocations:
+                // Bazel's RepositoryFetchFunction.shouldUseCachedRepoContents
+                // keeps local repositories refetching while fetching is
+                // enabled, and every native invocation is a fresh server —
+                // their unrecorded dependencies (which/execute/executed-file
+                // reads) make stale reuse dangerous.
+                let local = prepared.definition.local;
                 crate::repository_store::materialize(
                     self.source_cache_path()?,
                     canonical,
                     &spec,
                     &provenance,
                     move |tree, recorded| {
+                        if local {
+                            return Ok(false);
+                        }
                         crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
                     },
                     move |stage| {
@@ -1061,7 +1071,6 @@ impl RepositorySet {
                         let recorded = crate::repository_warm::record(
                             &executed.inputs,
                             &executed.watch_names,
-                            executed.client_environment.as_deref(),
                         )?;
                         Ok(crate::repository_store::Executed { inputs, recorded })
                     },
@@ -1435,12 +1444,18 @@ impl RepositorySet {
                         .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                     let this = Arc::new(self.clone());
                     let validating = Arc::new(self.clone());
+                    // Local rules never reuse across invocations here either
+                    // (shouldUseCachedRepoContents; see the direct path).
+                    let local = repository.definition.local;
                     crate::repository_store::materialize(
                         self.source_cache_path()?,
                         &repository.canonical_name,
                         &spec,
                         &provenance,
                         move |tree, recorded| {
+                            if local {
+                                return Ok(false);
+                            }
                             crate::repository_warm::unchanged(
                                 &validating,
                                 &workspace,
@@ -1466,7 +1481,6 @@ impl RepositorySet {
                             let recorded = crate::repository_warm::record(
                                 &executed.inputs,
                                 &executed.watch_names,
-                                executed.client_environment.as_deref(),
                             )?;
                             Ok(crate::repository_store::Executed { inputs, recorded })
                         },
@@ -3175,9 +3189,10 @@ mod tests {
                     assert!(calls >= 1);
                     assert_eq!(repos.clone().root(&canonical).unwrap(), root);
                     assert_eq!(reader.calls.load(Ordering::SeqCst), calls);
-                    // Only inventory, digests and Bazel-lockfile-style names
-                    // persist; environment VALUES never appear (Bazel's
-                    // MODULE.bazel.lock records `ENV:` names the same way).
+                    // Only inventory, digests and watch-probe NAMES persist
+                    // (a native policy: Bazel's own .marker stores ENV:
+                    // values in plain text; the native manifest never
+                    // persists environment VALUES).
                     for entry in
                         std::fs::read_dir(f.0.join("bazel-rs-out/repositories/direct/manifests"))
                             .unwrap()

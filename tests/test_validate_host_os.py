@@ -655,11 +655,12 @@ class MigrationCountsTest(unittest.TestCase):
 class NativeReuseStepsTest(unittest.TestCase):
     def test_warm_and_restored_states_reuse_the_publication(self):
         import validate_host_os as h
-        # cache: warm, source-warm; getenv-control: warm, restored value;
+        # cache: warm, source-warm; getenv-control: warm, unrelated (an
+        # undeclared change under the same declared value), restored value;
         # migration: the second K-to-L build. Everything else executes.
         self.assertEqual([h.native_reuses('cache', i) for i in range(5)], [False, True, False, True, False])
         self.assertEqual([h.native_reuses('getenv-control', i) for i in range(6)],
-                         [False, True, False, False, True, False])
+                         [False, True, False, True, True, False])
         self.assertEqual([h.native_reuses('migration', i, 'migration') for i in range(4)],
                          [False, False, False, True])
         self.assertFalse(h.native_reuses('metadata', 0))

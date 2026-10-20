@@ -114,10 +114,13 @@ fn local_repository_cold_warm_callbacks_execute_once_per_demanded_repository() {
         let (first, stderr) = f.build(&["@made//:one", "@made//:two"]);
         assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), 1);
         let (second, stderr) = f.build(&["@made//:one", "@made//:two"]);
-        // N61: the warm invocation reuses the verified publication (both local
-        // values, and configure=True metadata) without re-running the rule,
-        // like Bazel's fetch-once external/<name> directory.
-        assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), 0);
+        // N61: a warm invocation reuses the verified publication without
+        // re-running the rule — EXCEPT local=True repositories, which always
+        // execute again (RepositoryFetchFunction.shouldUseCachedRepoContents:
+        // local repositories never use cached contents while fetching is
+        // enabled, and a native invocation is a fresh server).
+        let warm = if option.contains("local=True") { 1 } else { 0 };
+        assert_eq!(stderr.matches("LOCAL_CALLBACK_EXECUTED").count(), warm);
         assert_eq!(first, second);
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|(_, bytes)| bytes == b"9.3.0"));

@@ -177,9 +177,6 @@ pub(crate) struct Snapshot {
     retained: Mutex<Retained>,
     reader: Arc<dyn EnvironmentReader>,
     client: OnceLock<Result<Arc<ClientEnvironment>, EnvError>>,
-    /// Digest of the client environment (RepositoryFunction's implicit
-    /// ClientEnvironmentValue dependency): recomputed on warm revalidation.
-    client_digest: OnceLock<Result<String, EnvError>>,
 }
 impl fmt::Debug for Snapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -213,7 +210,6 @@ impl Snapshot {
             retained: Mutex::new(Retained::default()),
             reader,
             client: OnceLock::new(),
-            client_digest: OnceLock::new(),
         }
     }
 
@@ -254,29 +250,6 @@ impl Snapshot {
             watch.observe(self, name)?;
         }
         Ok(watch.inputs()?.map(|watched| watched.sha256))
-    }
-
-    /// A value-covering digest of the complete client environment
-    /// (`repoEnv`): RepositoryFunction's implicit ClientEnvironmentValue
-    /// dependency, so a changed client environment refetches every repository.
-    /// Only the digest is ever persisted, never names or values.
-    pub(crate) fn client_digest(&self) -> Result<String, EnvError> {
-        self.client_digest
-            .get_or_init(|| {
-                let environment = self.client_environment()?;
-                let mut hash = Sha256::new();
-                hash.update(b"repository-client-environment-v1");
-                hash.update([0]);
-                hash.update((environment.len() as u64).to_be_bytes());
-                for (name, value) in environment.iter() {
-                    hash.update((name.len() as u64).to_be_bytes());
-                    hash.update(name);
-                    hash.update((value.len() as u64).to_be_bytes());
-                    hash.update(value);
-                }
-                Ok(format!("{:x}", hash.finalize()))
-            })
-            .clone()
     }
 
     fn observe(&self, name: &str) -> Result<Arc<Entry>, EnvError> {

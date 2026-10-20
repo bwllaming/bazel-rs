@@ -300,21 +300,34 @@ content-addressed tree.
 A warm invocation revalidates the previous publication for that specification —
 the manifest, the recorded watchable inputs (template bytes, watched
 file/directory states, observed environment names, exactly Bazel's
-RepoRecordedInput set) and the tree snapshot — and reuses it without running
-the repository rule, like Bazel reusing `external/<name>` until a dependency
-changes. Changed attributes, declared environment values, host markers,
+RepoRecordedInput set) and a full re-hash of the published tree against the
+manifest inventory — and reuses it without running the repository rule, like
+Bazel reusing `external/<name>` until a dependency changes. The full-tree
+re-hash is deliberately STRONGER than Bazel's marker trust (Bazel believes the
+marker file unless the recorded inputs changed; the native store also verifies
+every content digest on reuse — a cheaper metadata-only check can replace it
+later). Changed attributes, declared environment values, host markers,
 template contents, watched files or observed environment values refetch: the
 rule executes again and publishes (or re-deduplicates) a tree under the
 unchanged content-addressing formula, so deterministic repositories keep their
-identities across re-executions. Values of environment variables are never
-persisted; the manifest records names and digests only, matching Bazel's
-`ENV:` lockfile rows. A rule whose output is nondeterministic under unchanged
-recorded inputs is pinned to its first publication, exactly like a Bazel fetch
-into a warm output base. Every fetch also implicitly depends on the client
-environment (`repoEnv`, like Bazel's ClientEnvironmentValue): only its digest
-is recorded, and any changed value refetches. A publication written by an
-older binary (a manifest without the specification and recorded fields) is
-upgraded by exactly one re-execution; after that warm invocations reuse it.
+identities across re-executions.
+
+Environment persistence is a NATIVE policy, not Bazel's: the native manifest
+records names and digests only — values never persist — while Bazel's own
+`.marker` file stores `ENV:` values in plain text. `os.environ` and
+unrequested environment changes record nothing (a changed undeclared variable
+reuses the publication, like Bazel serving a cached repository whose rule
+never recorded that input).
+
+`local=True` repositories never reuse a publication across invocations: Bazel's
+`RepositoryFetchFunction.shouldUseCachedRepoContents` keeps local repositories
+refetching while fetching is enabled, and every native invocation is a fresh
+server — their unrecorded dependencies (`which`/`execute`/executed-file reads)
+make stale reuse dangerous. A rule whose output is nondeterministic under
+unchanged recorded inputs is pinned to its first publication, exactly like a
+Bazel fetch into a warm output base. A publication written by an older binary
+(a manifest without the specification and recorded fields) is upgraded by
+exactly one re-execution; after that warm invocations reuse it.
 
 ### Writes
 
