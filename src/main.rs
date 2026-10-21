@@ -1477,7 +1477,9 @@ fn loading_threads_for_report(
         )
     };
     match (command, explicit) {
-        ("query", e) => e.or(query_options.loading_phase_threads).unwrap_or_else(auto),
+        ("query", e) => e
+            .or(query_options.loading_phase_threads)
+            .unwrap_or_else(auto),
         (_, Some(v)) => v,
         _ => auto(),
     }

@@ -365,7 +365,10 @@ mod tests {
         const GB: u64 = 1024;
         // <32 GB: 70% (small hosts keep the larger share).
         assert_eq!(default_cap_for_total_mb(16 * GB), 16 * GB * 7 / 10);
-        assert_eq!(default_cap_for_total_mb(32 * GB - 1), (32 * GB - 1) * 7 / 10);
+        assert_eq!(
+            default_cap_for_total_mb(32 * GB - 1),
+            (32 * GB - 1) * 7 / 10
+        );
         // 32–<128 GB: 50% (the original 64 GB host assumption: 32 GB).
         assert_eq!(default_cap_for_total_mb(32 * GB), 16 * GB);
         assert_eq!(default_cap_for_total_mb(64 * GB), 32 * GB);
