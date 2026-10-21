@@ -309,6 +309,53 @@ bad=rule(implementation=_impl)
     );
 }
 
+/// Item 6 audit (perf follow-up 2): `actions.symlink`'s progress_message
+/// is the same string-or-NoneType class — explicit None behaves like
+/// omitting it (the default "Creating symlink %{output}" progress), and
+/// a non-string non-None fails with the unified message. exec_group and
+/// toolchain on run/run_shell already accept explicit None (covered by
+/// tests/exec_groups.rs).
+#[test]
+fn symlink_accepts_explicit_none_progress_message() {
+    let ws = Workspace::new(
+        r#"
+def _impl(ctx):
+    out=ctx.actions.declare_file('o.txt')
+    ctx.actions.write(out, 'linked')
+    link=ctx.actions.declare_file('link.txt')
+    ctx.actions.symlink(output=link, target_file=out, progress_message=None)
+    return [DefaultInfo(files=depset([link]))]
+none_ok=rule(implementation=_impl)
+"#,
+        "load(':defs.bzl','none_ok')\nnone_ok(name='x')\n",
+    );
+    let result = ws.run(&["build", ":x"]);
+    let output = outputs(&result).remove(0);
+    assert_eq!(fs::read(output).unwrap(), b"linked");
+
+    let bad = Workspace::new(
+        r#"
+def _impl(ctx):
+    out=ctx.actions.declare_file('o.txt')
+    ctx.actions.write(out, 'linked')
+    link=ctx.actions.declare_file('link.txt')
+    ctx.actions.symlink(output=link, target_file=out, progress_message=42)
+    return [DefaultInfo(files=depset([link]))]
+bad=rule(implementation=_impl)
+"#,
+        "load(':defs.bzl','bad')\nbad(name='y')\n",
+    );
+    let result = bad.run(&["build", ":y"]);
+    assert!(!result.status.success());
+    assert!(
+        errors(&result).contains(
+            "parameter 'progress_message' got value of type 'int', want 'string or NoneType'"
+        ),
+        "{}",
+        errors(&result)
+    );
+}
+
 #[test]
 fn custom_provider_identity_survives_separate_packages_and_carries_nondefault_files() {
     let ws = Workspace::new(

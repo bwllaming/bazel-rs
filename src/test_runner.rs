@@ -1044,6 +1044,7 @@ impl Runner<'_> {
                 {
                     use std::os::unix::process::CommandExt;
                     command.arg0(XML_EXEC_PATH);
+                    command.process_group(0);
                 }
                 command.args(&xml_arguments);
                 command

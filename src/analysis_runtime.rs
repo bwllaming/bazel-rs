@@ -1328,17 +1328,14 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             bail!("symlink() with \"output\" directory param cannot be executable");
         }
         // AbstractAction.getProgressMessage (actions/AbstractAction.java:380-400):
-        // "Creating symlink %{output}" unless given.
-        let progress = match progress_message {
-            Some(value) if !value.is_none() => value
-                .unpack_str()
-                .ok_or_else(|| anyhow!("progress_message must be a string or None"))?
-                .to_owned(),
-            _ => "Creating symlink %{output}".to_owned(),
-        }
-        .replace("%{label}", &context.label.to_string())
-        .replace("%{output}", crate::runfiles::root_relative(&output))
-        .replace("%{input}", crate::runfiles::root_relative(&target));
+        // "Creating symlink %{output}" unless given. `progress_message`
+        // is declared string-or-NoneType (StarlarkActionFactoryApi), so
+        // an explicit None is the absent value, like run/run_shell.
+        let progress = string_or_none(progress_message, "symlink", "progress_message")?
+            .unwrap_or_else(|| "Creating symlink %{output}".to_owned())
+            .replace("%{label}", &context.label.to_string())
+            .replace("%{output}", crate::runfiles::root_relative(&output))
+            .replace("%{input}", crate::runfiles::root_relative(&target));
         context.register_action(Registration {
             outputs: vec![output],
             inputs: vec![target.clone()],

@@ -2744,6 +2744,13 @@ pub fn execute_with_remote(
             command
         };
         command.current_dir(&execroot).env_clear();
+        {
+            // Its own process group: the memory watchdog kills live
+            // groups on a ceiling hit (crate::memory_limit), and a
+            // group also keeps an action's descendants addressable.
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
         // Exactly resolved_environment (ActionEnvironment.resolve,
         // ActionEnvironment.java:113-122), the remote key's environment;
         // then PosixLocalEnvProvider's TMPDIR, last.

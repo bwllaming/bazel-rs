@@ -197,9 +197,6 @@ struct PreparedOrdinary {
     generated_mapping: BTreeMap<String, String>,
     repositories: BTreeMap<String, OrdinaryRepository>,
     provenance: Vec<u8>,
-    /// Per-canonical-name framed provenance (canonical name + group
-    /// bytes), built once per repository on first demand (review R1).
-    framed: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
     /// Per-canonical-name spec digest cache (review R1).
     spec_keys: std::sync::Mutex<BTreeMap<String, String>>,
     /// SHA-256 of `provenance`, computed ONCE per prepared group:
@@ -212,22 +209,19 @@ struct PreparedOrdinary {
 
 impl PreparedOrdinary {
     /// Length-framed provenance bytes for one repository of this group:
-    /// canonical name + the group's shared provenance bytes. Cached per
-    /// canonical name (review R1: framed once, never re-serialized).
+    /// canonical name + the group's shared provenance bytes. Built ON
+    /// DEMAND and returned unretained (perf follow-up 2): caching a copy
+    /// per canonical name held a full ~31 MB provenance copy per executed
+    /// repository forever (a cold run executing ~2,058 repositories would
+    /// hold ~64 GB), and each canonical name executes at most once per
+    /// process, so a cache could never be hit twice. The caller
+    /// (materialize_lazy) runs this only on the execute path.
     fn framed_provenance(&self, canonical_name: &str) -> Vec<u8> {
-        if let Ok(cache) = self.framed.lock()
-            && let Some(bytes) = cache.get(canonical_name)
-        {
-            return bytes.clone();
-        }
         let mut framed = Vec::with_capacity(16 + canonical_name.len() + self.provenance.len());
         framed.extend_from_slice(&(canonical_name.len() as u64).to_le_bytes());
         framed.extend_from_slice(canonical_name.as_bytes());
         framed.extend_from_slice(&(self.provenance.len() as u64).to_le_bytes());
         framed.extend_from_slice(&self.provenance);
-        if let Ok(mut cache) = self.framed.lock() {
-            cache.insert(canonical_name.to_owned(), framed.clone());
-        }
         framed
     }
 
@@ -1623,7 +1617,6 @@ impl RepositorySet {
                 generated_mapping,
                 repositories,
                 provenance,
-                framed: std::sync::Mutex::new(BTreeMap::new()),
                 spec_keys: std::sync::Mutex::new(BTreeMap::new()),
                 provenance_digest,
             })
@@ -1722,9 +1715,11 @@ impl RepositorySet {
                             String::from_utf8_lossy(&prepared.provenance)
                         );
                     }
-                    // Framed provenance + spec digest are cached on the
-                    // prepared group (review R1); provenance bytes are
-                    // materialized lazily on the execute path only.
+                    // The spec digest is cached on the prepared group
+                    // (review R1); framed provenance bytes are built on
+                    // demand, unretained, on the execute path only
+                    // (materialize_lazy; perf follow-up 2 — no per-repo
+                    // ~31 MB cache).
                     let canonical_name = repository.canonical_name.clone();
                     let spec_key = {
                         let _m = crate::repository_store::timing::mark(

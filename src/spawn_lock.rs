@@ -57,10 +57,37 @@ static LOCK: RwLock<()> = RwLock::new(());
 
 /// `command.spawn()` while no executable is open for writing in this process.
 /// Only the start is guarded; never wait for the child while holding it.
+///
+/// Every start also registers the child's process group with the memory
+/// watchdog (crate::memory_limit::register_live_group) so a watchdog kill
+/// can SIGKILL live child groups before exiting. Only children started
+/// in their OWN group (callers that set `process_group(0)`) are
+/// registered — signalling a shared group (e.g. this process's own, for
+/// short-lived grouped-in-parent helpers) would kill bazel-rs itself.
 #[allow(clippy::disallowed_methods)]
 pub fn spawn(command: &mut Command) -> io::Result<Child> {
     let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
-    command.spawn()
+    let child = command.spawn()?;
+    if crate::memory_limit::watchdog_armed() {
+        let pid = child.id();
+        // The caller asked for a private group iff the child is its own
+        // group leader. /proc/<pid>/stat field 5 (pgrp) decides without
+        // retaining caller state.
+        if process_group_of(pid) == Some(pid) {
+            crate::memory_limit::register_live_group(pid);
+        }
+    }
+    Ok(child)
+}
+
+/// The process-group id of `pid` from /proc/<pid>/stat (field 5; the
+/// comm field may contain spaces/parens, so parse after the last ')').
+/// None off Linux or when the process is already gone.
+fn process_group_of(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    // Remaining fields: state ppid pgrp ...
+    after_comm.split_whitespace().nth(2)?.parse().ok()
 }
 
 /// `command.output()` with the start through [`spawn`]: stdout and stderr
