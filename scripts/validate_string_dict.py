@@ -17,6 +17,17 @@ import sys
 import tempfile
 
 import validate_string_list_dict as common
+
+# Integration-19: strip the native default memory-cap announcement (one first
+# stderr line, native-only safety valve; not a diagnostic). See
+# validate_module_extensions.strip_memory_announcement.
+MEMORY_ANNOUNCEMENT = re.compile(
+    r'\Abazel-rs: memory limit defaulted to \d+ MB \([^\n]*\); set BAZEL_RS_MAX_MEMORY_MB '
+    r'\(recommended\) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, '
+    r'not child actions\n')
+
+def strip_memory_announcement(text):
+    return MEMORY_ANNOUNCEMENT.sub('', text, count=1)
 import validate_repository_environment as controlled
 from validate import ROOT, file_evidence, reference_output_paths, write_report
 from validate_direct_repositories import DirectReference, REFERENCE_SHA256
@@ -150,7 +161,7 @@ input bytes and absence of outputs/publication before accepting the phase.
         +f' --> {path}:{line}:{column}\n  |\n{line} | {source}\n'
         +'  | '+' '*(column-1)+'^'*len(source[column-1:])+'\n  |\n\n')
     if (row.get('name') != name+'.'+probe+'.native.0'
-            or row['stderr'] not in [trace + footer for footer in footers]
+            or strip_memory_announcement(row['stderr']) not in [trace + footer for footer in footers]
             or row['stdout'] != '' or row['returncode'] != 1):
         raise ValueError('unbound native '+diagnostic+' diagnostic')
     return error
@@ -183,7 +194,7 @@ def require_rejection(row, diagnostic, engine='reference'):
                 f'  * //:defs.bzl:{line}, in <module>\n      {source}\n{error}\n'
                 f' --> //:defs.bzl:{line}:3\n  |\n{line} | {source}\n'
                 +'  |   '+'^'*len(source[2:])+'\n  |\n\n')
-            if (row.get('name') != 'constructor.doc-int.native.0' or row['stderr'] != trace
+            if (row.get('name') != 'constructor.doc-int.native.0' or strip_memory_announcement(row['stderr']) != trace
                     or row['stdout'] != '' or row['returncode'] != 1):
                 raise ValueError('unbound native doc-int diagnostic')
             pattern = r'(?m:^'+re.escape(error)+r'$)'

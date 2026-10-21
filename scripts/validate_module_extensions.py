@@ -131,8 +131,20 @@ def success(record):
     return text
 
 
+# Integration-19: every native invocation first prints the default memory-cap
+# announcement (native-only safety valve; genuine Bazel has no such line).
+# It is not part of any diagnostic: strip exactly that one first line.
+MEMORY_ANNOUNCEMENT = re.compile(
+    r'\Abazel-rs: memory limit defaulted to \d+ MB \([^\n]*\); set BAZEL_RS_MAX_MEMORY_MB '
+    r'\(recommended\) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, '
+    r'not child actions\n')
+
+def strip_memory_announcement(text):
+    return MEMORY_ANNOUNCEMENT.sub('', text, count=1)
+
 def require_rejection(record, diagnostic):
     code, text = record['returncode'], record['stderr']
+    text = strip_memory_announcement(text)
     if (type(code) is not int or not 0 < code < 128 or code in (101, 124, 125, 126, 127)
             or record['timed_out'] or record.get('spawn_error') or record.get('interrupted')
             or record.get('output_truncated') or record['stdout'].strip() or UNRELATED.search(text)
