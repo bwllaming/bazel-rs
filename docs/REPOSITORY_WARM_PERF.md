@@ -193,3 +193,87 @@ the pristine f0f9c22 binary), and `//src/k8s:alertdashboards` fails in
 `ctx.actions.run` (`progress_message` None). The acceptance build set
 is the 41 genrule targets in artifacts/stepD-50.txt that build at
 baseline.
+
+## Perf follow-up (commits 97caa84 + 6fa2be8, 2026-10-21)
+
+Review items R1–R4 landed in 97caa84; R5 (progress_message) in 6fa2be8.
+
+### What the dead workers' diff implemented (adopted after audit)
+
+1. **Source digests once per prepared group**: `PreparedGroup.source_entries`
+   is a `OnceLock<Result<Vec<u8>,String>>` of digest-entry bytes; the direct
+   spec key *streams* per-repo fields + those cached bytes through a
+   counting pass + a SHA-256 sink pre-seeded with the Step-A framing
+   (`specification_digest_streaming`). Ordinary: `PreparedOrdinary` caches
+   the SHA-256 of the group provenance once + per-canonical spec keys
+   (`specification_digest_mixed`, new pointer profile — old ordinary
+   pointers miss once and republish; direct pointers byte-identical:
+   reused count unchanged, test `source_digest_streaming_matches_value_form`
+   + `spec_reference_matches_streamed_and_racy_never_trusted`).
+   **Provenance bytes are lazy**: `materialize_lazy` runs the provenance
+   closure only on the execute path (after the double-checked warm probe
+   under the stage lock added during adoption — sequential semantics
+   unchanged). Warm provenance-bytes total: 0.
+2. **Probe errors are sentinel misses**: `get_or_probe` maps every probe
+   `Err` to `Ok(None)`; the coordinator's sequential path owns all errors
+   (test `probe_error_maps_to_sentinel_without_populating`).
+3. **Racy fingerprints (git model)**: a fingerprint is trusted only when
+   mtime AND ctime are >=2s older than the verify start; `snapshot`
+   records a fingerprint only for files already settled at recording time
+   (`settled_fingerprint` — freshly written trees carry none); a fallback
+   hash match refreshes the manifest fingerprint **atomically**
+   (`refresh_manifest`: re-read, identity+content guard, temp+rename);
+   `PERF-REPO files_hashed_during_verify=N` counts fallback hashes.
+4. **`unwrap_or_default` x2 in `spec_digest_identity` removed**: mapping and
+   framed serialization errors propagate as `Err`.
+5. **R5 (separate commit 6fa2be8)**: `ctx.actions.run`/`run_shell` accept
+   explicit `None` for `mnemonic`/`progress_message` (string-or-NoneType,
+   Bazel's declared types); non-string non-None fails with Bazel's message.
+   `//src/k8s:alertdashboards` now builds (was the documented failure).
+
+### Corrected root cause (supersedes "Why the walls miss" above)
+
+The Step D conclusion that the remaining wall was serial .bzl evaluation
+was wrong. It was **per-repository source hashing + deep copies**: every
+warm run re-serialized and re-hashed the ~31 MB .bzl closure per
+repository (Step A measured `spec_serialize=30.7–87s`; the digest form
+still re-hashed per repo and cloned the closure-bearing Value). NOT bzl
+serialization per se — the closure bytes themselves, hashed 2,058 times.
+After this follow-up `spec_serialize=0.003s/2058`, total warm validation
+~0.07s, and the coordinator is no longer the bottleneck.
+
+### Before/after on this branch (warm, ~/code, default cache, t=32)
+
+| workload | BEFORE (c78542b binary) | AFTER (97caa84+) |
+|---|---|---|
+| `query //src/ts:all` | 105.5s (spec_serialize 87.0s) | **10.9s** (spec_serialize 0.003s) |
+| `query //src/...` (18,798 targets) | OOM-killed @309s under contention (Step D: 143.9–226.5s) | **55.0s**, exit 0 |
+| warm build (41 genrule targets, 363 actions) | 80.9s class (Step D 68–77s) | **80.9s**, 363/363 cache hits, 0 executed |
+| new trees on warm runs | — | **0** (12,388 stable everywhere) |
+| stdout | md5 `eb4c8839…` (ts) | **byte-identical** t=1/8/32 + jitter8, ts and src (18,798 lines, md5 `820747e4…`) |
+| `reused/executed` (ts) | 2056/2 | **2056/2** (direct pointers unchanged) |
+| `files_hashed_during_verify` (ts) | — (counter new) | 6 |
+
+## Memory ceiling (separate commit, `feat: BAZEL_RS_MAX_MEMORY_MB/--memory-limit ceiling with graceful watchdog`)
+
+`--memory-limit=<MB>` (build/run/test/query) or `BAZEL_RS_MAX_MEMORY_MB`
+(flag wins, Bazel's CLI-over-env) installs at startup, before heavy work:
+RLIMIT_AS = 4x cap (floor 4 GB — virtual runs ~3–4x RSS; a 1x/2x rlimit
+allocator-aborts at ~34s on //src/... while RSS is ~2 GB) via rustix
+(warn-and-continue where RLIMIT_AS is unavailable), plus a watchdog
+thread polling /proc/self/statm every 250 ms: >75% warns once; >cap
+prints `bazel-rs: memory limit of MB exceeded (killed)` and exits 42.
+Rust allocation failure aborts (handle_alloc_error) and cannot be made
+graceful — the watchdog is the graceful path, the rlimit the backstop.
+Caveat: exit(42) does not group-kill already-spawned children (the
+sandbox worker inherits RLIMIT_AS across exec and dies on its next
+allocation; a non-allocating child may be reparented). Unset = no cap,
+no watchdog, unchanged behavior. Normal capped exits print
+`bazel-rs: peak RSS (VmHWM) N MB (memory limit M MB)`.
+
+Measured warm peaks (VmHWM, this branch): ts:all t32 **601 MB**;
+`//src/...` t32 **3,423 MB**, t8 **3,426 MB**; warm build (363 actions)
+**1,566 MB**. 6 GB and 8 GB caps both complete all three (exit 0,
+byte-identical stdout). At `--memory-limit=2048`, //src/... warns at 75%
+(1,569 MB) then is killed at **exit 42** (33.2s) with the exact message
+above; ts:all under a 2048 cap completes (peak 601 MB).

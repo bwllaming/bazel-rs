@@ -264,6 +264,51 @@ direct=rule(implementation=_impl)
     assert!(errors(&result).contains("2 actions executed"));
 }
 
+/// Bazel declares `mnemonic`/`progress_message` string-or-None on
+/// run/run_shell: an explicit None must behave like omitting the
+/// parameter (the //src/k8s:alertdashboards shape), and a non-string
+/// non-None value must fail with the string-or-NoneType message.
+#[test]
+fn run_and_run_shell_accept_explicit_none_mnemonic_and_progress_message() {
+    let ws = Workspace::new(
+        r#"
+def _impl(ctx):
+    tool=ctx.actions.declare_file('tool.sh')
+    ctx.actions.write(tool, '#!/bin/bash\nprintf ok > "$1"\n', is_executable=True)
+    a=ctx.actions.declare_file('a.txt')
+    ctx.actions.run(executable=tool, outputs=[a], arguments=[a.path], mnemonic=None, progress_message=None)
+    b=ctx.actions.declare_file('b.txt')
+    ctx.actions.run_shell(outputs=[b], inputs=[a], command='cat "$1" > "$2"', arguments=[a.path, b.path], mnemonic=None, progress_message=None)
+    return [DefaultInfo(files=depset([b]))]
+none_ok=rule(implementation=_impl)
+"#,
+        "load(':defs.bzl','none_ok')\nnone_ok(name='x')\n",
+    );
+    let result = ws.run(&["build", ":x"]);
+    let output = outputs(&result).remove(0);
+    assert_eq!(fs::read(output).unwrap(), b"ok");
+
+    let bad = Workspace::new(
+        r#"
+def _impl(ctx):
+    out=ctx.actions.declare_file('o.txt')
+    ctx.actions.run_shell(outputs=[out], command='true', progress_message=42)
+    return [DefaultInfo(files=depset([out]))]
+bad=rule(implementation=_impl)
+"#,
+        "load(':defs.bzl','bad')\nbad(name='y')\n",
+    );
+    let result = bad.run(&["build", ":y"]);
+    assert!(!result.status.success());
+    assert!(
+        errors(&result).contains(
+            "parameter 'progress_message' got value of type 'int', want 'string or NoneType'"
+        ),
+        "{}",
+        errors(&result)
+    );
+}
+
 #[test]
 fn custom_provider_identity_survives_separate_packages_and_carries_nondefault_files() {
     let ws = Workspace::new(

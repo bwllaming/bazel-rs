@@ -664,6 +664,29 @@ impl<'v> StarlarkValue<'v> for Actions<'v> {
     }
 }
 
+/// A `string or NoneType` action parameter (StarlarkActionFactoryApi:
+/// `mnemonic`/`progress_message` are declared string-or-None): an absent
+/// or explicit-None value is None; anything else must be a string.
+fn string_or_none(
+    value: Option<Value<'_>>,
+    function: &str,
+    parameter: &str,
+) -> anyhow::Result<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.is_none() => Ok(None),
+        Some(value) => value
+            .unpack_str()
+            .map(|text| Some(text.to_owned()))
+            .ok_or_else(|| {
+                anyhow!(
+                    "in call to {function}(), parameter '{parameter}' got value of type '{}', want 'string or NoneType'",
+                    value.get_type()
+                )
+            }),
+    }
+}
+
 fn string_dict(value: Value<'_>, what: &str) -> anyhow::Result<BTreeMap<String, String>> {
     let dict = DictRef::from_value(value)
         .ok_or_else(|| anyhow!("{what} must be a string-to-string dict"))?;
@@ -1035,13 +1058,15 @@ fn action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] exec_group: Option<Value<'v>>,
         #[starlark(require = named)] resource_set: Option<Value<'v>>,
         #[starlark(require = named)] toolchain: Option<Value<'v>>,
-        #[starlark(require = named)] mnemonic: Option<&str>,
-        #[starlark(require = named)] progress_message: Option<&str>,
+        #[starlark(require = named)] mnemonic: Option<Value<'v>>,
+        #[starlark(require = named)] progress_message: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         // Scheduling hints with no effect on a local spawn's results.
         let _ = resource_set;
+        let mnemonic = string_or_none(mnemonic, "run_shell", "mnemonic")?;
+        let progress_message = string_or_none(progress_message, "run_shell", "progress_message")?;
         let groups = group_arguments(this, context, "run_shell", exec_group, toolchain, eval)?;
         // runShell resolves the execution platform of a string command
         // first (StarlarkActionFactory.java:634-642, getExecutionPlatform:589-599).
@@ -1071,10 +1096,8 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 execution_requirements,
                 input_manifests,
                 groups,
-                progress_message: progress_message.map(str::to_owned),
-                mnemonic: mnemonic
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| "Action".to_owned()),
+                progress_message,
+                mnemonic: mnemonic.unwrap_or_else(|| "Action".to_owned()),
             },
             Vec::new(),
             Vec::new(),
@@ -1181,12 +1204,14 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] exec_group: Option<Value<'v>>,
         #[starlark(require = named)] resource_set: Option<Value<'v>>,
         #[starlark(require = named)] toolchain: Option<Value<'v>>,
-        #[starlark(require = named)] mnemonic: Option<&str>,
-        #[starlark(require = named)] progress_message: Option<&str>,
+        #[starlark(require = named)] mnemonic: Option<Value<'v>>,
+        #[starlark(require = named)] progress_message: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
         let _ = resource_set;
+        let mnemonic = string_or_none(mnemonic, "run", "mnemonic")?;
+        let progress_message = string_or_none(progress_message, "run", "progress_message")?;
         let groups = group_arguments(this, context, "run", exec_group, toolchain, eval)?;
         // The executable first (StarlarkActionFactory.run, :433-458).
         if let Some(file) = File::from_value(executable) {
@@ -1246,10 +1271,8 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 execution_requirements,
                 input_manifests,
                 groups,
-                progress_message: progress_message.map(str::to_owned),
-                mnemonic: mnemonic
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| "Action".to_owned()),
+                progress_message,
+                mnemonic: mnemonic.unwrap_or_else(|| "Action".to_owned()),
             },
             extra_inputs,
             trees,
