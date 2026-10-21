@@ -3,12 +3,13 @@
 //! `BAZEL_RS_MAX_MEMORY_MB` (environment) or `--memory-limit=<MB>`
 //! (build/run/test/query option; flag wins over env, Bazel's CLI-over-env
 //! convention) caps THIS process's RSS. When neither is set, the cap
-//! defaults to 50% of the machine's MemTotal (/proc/meminfo; on this
-//! 64 GB host, 32 GB) so a runaway invocation fails gracefully instead
-//! of OOM-killing the machine. Set the env var to move the default: the
-//! env var is the recommended place — `--memory-limit` in a shared
-//! `.bazelrc` also reaches genuine Bazel, which rejects the unknown
-//! option and breaks.
+//! defaults on a sliding scale of MemTotal (/proc/meminfo) — see
+//! [`default_cap_for_total_mb`]: at most 64 GB however large the host,
+//! so a runaway invocation fails gracefully instead of OOM-killing the
+//! machine or starving its other services. Set the env var to move the
+//! default: the env var is the recommended place — `--memory-limit` in
+//! a shared `.bazelrc` also reaches genuine Bazel, which rejects the
+//! unknown option and breaks.
 //!
 //! There is deliberately NO RLIMIT_AS (perf follow-up 2): an address-
 //! space rlimit is inherited by every child process, so a cap sized for
@@ -108,12 +109,16 @@ pub fn parse_cap_mb(value: &str) -> Option<u64> {
     }
 }
 
+/// Human-readable default policy, interpolated into the below-minimum
+/// error so the two never drift apart.
+pub const DEFAULT_POLICY: &str = "the default sliding scale (70% of machine memory up to 32 GB, 50% from 32–128 GB, capped at 64 GB above 128 GB)";
+
 /// Validate an explicit cap: below MIN_CAP_MB the process's own startup
 /// footprint exceeds the budget, so the cap could only ever kill.
 pub fn validate_cap_mb(cap_mb: u64) -> Result<u64, String> {
     if cap_mb < MIN_CAP_MB {
         return Err(format!(
-            "memory limit of {cap_mb} MB is below the minimum of {MIN_CAP_MB} MB (bazel-rs's own startup footprint exceeds it); raise the limit or unset it for the default of 50% of machine memory"
+            "memory limit of {cap_mb} MB is below the minimum of {MIN_CAP_MB} MB (bazel-rs's own startup footprint exceeds it); raise the limit or unset it for {DEFAULT_POLICY}"
         ));
     }
     Ok(cap_mb)
@@ -132,18 +137,67 @@ pub fn mem_total_mb() -> Option<u64> {
     None
 }
 
-/// The default cap when neither flag nor env is set: 50% of MemTotal,
-/// so a runaway bazel-rs is stopped before it can OOM the host while
-/// ordinary work (measured warm peaks are single-digit GB) is never
-/// near it. None when MemTotal is unknown (no cap, as before).
+/// The default cap for a host of `total_mb` MemTotal (the sliding
+/// scale; perf follow-up 3). Exact policy:
+///
+/// | MemTotal          | default cap |
+/// |-------------------|-------------|
+/// | >= 128 GB         | 64 GB (flat) |
+/// | 32 GB – <128 GB   | 50% of MemTotal |
+/// | < 32 GB           | 70% of MemTotal |
+///
+/// Rationale: the old flat 50% was picked on an assumed 64 GB host
+/// (32 GB); on the real 251 GB host it allowed ~128 GB — a runaway
+/// bazel-rs was seen at 68+ GB alongside many other services before a
+/// human killed it. No measured run needs more than single-digit GB
+/// (warm/cold peaks in docs/REPOSITORY_WARM_PERF.md are <= ~3.5 GB), so
+/// large hosts get an absolute 64 GB ceiling: generous headroom over
+/// every measured workload, bounded damage on a shared host. Small
+/// hosts keep a larger share because bazel-rs's own fixed footprint
+/// (binary, caches, one worker heap) is a bigger fraction there and
+/// there is typically less else competing. All thresholds in MB
+/// (1 GB = 1024 MB); boundaries are inclusive at the low end.
+pub fn default_cap_for_total_mb(total_mb: u64) -> u64 {
+    const GB: u64 = 1024;
+    if total_mb >= 128 * GB {
+        64 * GB
+    } else if total_mb >= 32 * GB {
+        total_mb / 2
+    } else {
+        total_mb * 7 / 10
+    }
+}
+
+/// One-line description of the default for `total_mb`, for the
+/// once-per-run announcement (e.g. `65536 MB (64 GB flat cap for hosts
+/// with at least 128 GB of machine memory)`).
+pub fn default_cap_description(total_mb: u64, cap_mb: u64) -> String {
+    const GB: u64 = 1024;
+    if total_mb >= 128 * GB {
+        format!("{cap_mb} MB (64 GB flat cap for hosts with at least 128 GB of machine memory)")
+    } else if total_mb >= 32 * GB {
+        format!("{cap_mb} MB (50% of machine memory)")
+    } else {
+        format!("{cap_mb} MB (70% of machine memory)")
+    }
+}
+
+/// The installed cap when neither flag nor env is set, with its
+/// announcement description. None when MemTotal is unknown (no cap,
+/// as before) or the computed cap is below the satisfiable minimum.
+pub fn default_cap() -> Option<(u64, String)> {
+    let total = mem_total_mb()?;
+    let cap = default_cap_for_total_mb(total);
+    (cap >= MIN_CAP_MB).then(|| (cap, default_cap_description(total, cap)))
+}
+
+/// Back-compat shim: the default cap alone, without its description.
 pub fn default_cap_mb() -> Option<u64> {
-    mem_total_mb()
-        .map(|total| total / 2)
-        .filter(|cap| *cap >= MIN_CAP_MB)
+    default_cap().map(|(cap, _)| cap)
 }
 
 /// Resolve the effective cap: explicit (flag over env, both validated
-/// by the caller) wins; otherwise the 50%-of-MemTotal default. The
+/// by the caller) wins; otherwise the sliding-scale default. The
 /// returned bool marks the default so the caller can say so once.
 pub fn effective_cap(explicit_mb: Option<u64>) -> Option<(u64, bool)> {
     match explicit_mb {
@@ -275,19 +329,45 @@ mod tests {
     fn caps_below_the_minimum_are_rejected_with_a_clear_message() {
         let error = validate_cap_mb(64).unwrap_err();
         assert!(error.contains("below the minimum of 256 MB"), "{error}");
-        assert!(error.contains("50% of machine memory"), "{error}");
+        assert!(error.contains("sliding scale"), "{error}");
+        assert!(error.contains("capped at 64 GB"), "{error}");
         assert!(validate_cap_mb(255).unwrap_err().contains("256 MB"));
         assert_eq!(validate_cap_mb(256), Ok(256));
         assert_eq!(validate_cap_mb(32768), Ok(32768));
     }
 
     #[test]
-    fn default_cap_is_half_of_mem_total() {
+    fn default_cap_sliding_scale_boundaries() {
+        const GB: u64 = 1024;
+        // <32 GB: 70% (small hosts keep the larger share).
+        assert_eq!(default_cap_for_total_mb(16 * GB), 16 * GB * 7 / 10);
+        assert_eq!(default_cap_for_total_mb(32 * GB - 1), (32 * GB - 1) * 7 / 10);
+        // 32–<128 GB: 50% (the original 64 GB host assumption: 32 GB).
+        assert_eq!(default_cap_for_total_mb(32 * GB), 16 * GB);
+        assert_eq!(default_cap_for_total_mb(64 * GB), 32 * GB);
+        assert_eq!(default_cap_for_total_mb(128 * GB - 1), (128 * GB - 1) / 2);
+        // >=128 GB: flat 64 GB, however large the host (the 251 GB
+        // host that motivated this: NOT ~128 GB).
+        assert_eq!(default_cap_for_total_mb(128 * GB), 64 * GB);
+        assert_eq!(default_cap_for_total_mb(251 * GB), 64 * GB);
+        assert_eq!(default_cap_for_total_mb(1024 * GB), 64 * GB);
+        // Descriptions name the tier that produced the cap.
+        assert!(default_cap_description(16 * GB, 0).contains("70%"));
+        assert!(default_cap_description(64 * GB, 0).contains("50%"));
+        assert!(default_cap_description(251 * GB, 64 * GB).contains("64 GB flat cap"));
+    }
+
+    #[test]
+    fn default_cap_matches_mem_total() {
         if let Some(total) = mem_total_mb() {
             assert!(total > 1024, "this host reports {total} MB");
-            assert_eq!(default_cap_mb(), Some(total / 2));
-            assert_eq!(effective_cap(None), Some((total / 2, true)));
+            let expected = default_cap_for_total_mb(total);
+            assert_eq!(default_cap_mb(), Some(expected));
+            assert_eq!(effective_cap(None), Some((expected, true)));
             assert_eq!(effective_cap(Some(4096)), Some((4096, false)));
+            let (cap, description) = default_cap().expect("default on this host");
+            assert_eq!(cap, expected);
+            assert!(description.contains(&format!("{cap} MB")), "{description}");
         }
     }
 

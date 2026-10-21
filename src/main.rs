@@ -24,7 +24,8 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMORY_MB
   caps bazel-rs's own RSS (watchdog only, exit 33 = Bazel's OOM; no RLIMIT_AS, so
-  child actions keep host limits); flag wins over env; unset = 50% of machine RAM.
+  child actions keep host limits); flag wins over env; unset = sliding-scale default
+  (70% of RAM below 32 GB, 50% from 32-128 GB, flat 64 GB at/above 128 GB).
   Prefer the env var: --memory-limit in a shared .bazelrc breaks genuine Bazel
   (docs/REPOSITORY_WARM_PERF.md).
 Repository verify: --verify-repo-tampering forces full re-hash of warm
@@ -233,8 +234,10 @@ fn run() -> Result<(), String> {
     };
     // Memory ceiling (native-only safety valve, crate::memory_limit):
     // --memory-limit=<MB> wins over BAZEL_RS_MAX_MEMORY_MB (Bazel's
-    // CLI-over-env convention). Unset both = the default cap of 50% of
-    // MemTotal, announced once below. Installed before any heavy work.
+    // CLI-over-env convention). Unset both = the sliding-scale default
+    // cap (70% of MemTotal below 32 GB, 50% from 32–128 GB, flat 64 GB
+    // at/above 128 GB), announced once below. Installed before any
+    // heavy work.
     // Watchdog-only (no RLIMIT_AS, which would hard-cap every child):
     // exceeding the RSS cap kills live child groups and exits 33
     // (Bazel's OUT_OF_MEMORY) instead of an OOM kill of the host.
@@ -267,8 +270,12 @@ fn run() -> Result<(), String> {
     if let Some(cap_mb) = memory_limit_mb {
         if default_capped {
             bazel_rs::memory_limit::mark_default_cap();
+            // Announce the exact policy that produced the cap.
+            let description = bazel_rs::memory_limit::default_cap()
+                .map(|(_, text)| text)
+                .unwrap_or_else(|| format!("{cap_mb} MB"));
             eprintln!(
-                "bazel-rs: memory limit defaulted to {cap_mb} MB (50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions"
+                "bazel-rs: memory limit defaulted to {description}; set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions"
             );
         }
         bazel_rs::memory_limit::install_ceiling(cap_mb);
@@ -1538,7 +1545,7 @@ struct NativeOptions {
     loading_phase_threads: Option<usize>,
     /// --memory-limit=<MB> (native-only): watchdog-only RSS ceiling for
     /// bazel-rs itself (not child actions); flag wins over
-    /// BAZEL_RS_MAX_MEMORY_MB; unset = 50% of machine RAM
+    /// BAZEL_RS_MAX_MEMORY_MB; unset = the sliding-scale default
     /// (crate::memory_limit). Prefer the env var in shared setups.
     memory_limit_mb: Option<u64>,
     /// The N40 rc options outside the configuration (crate::rc_options).

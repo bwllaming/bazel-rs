@@ -1,6 +1,7 @@
-//! Memory ceiling CLI coverage (crate::memory_limit, perf follow-up 2):
-//! watchdog-only (no RLIMIT_AS), Bazel's OOM exit code 33, the <256 MB
-//! rejection, and the default cap of 50% of machine RAM when unset.
+//! Memory ceiling CLI coverage (crate::memory_limit, perf follow-ups
+//! 2+3): watchdog-only (no RLIMIT_AS), Bazel's OOM exit code 33, the
+//! <256 MB rejection, and the sliding-scale default cap when unset
+//! (70% of RAM below 32 GB, 50% from 32–128 GB, flat 64 GB above).
 //! The kill path is exercised with a small-but-legal cap against a
 //! query whose warm peak is larger; the child-group kill is exercised
 //! with a build whose action spawns a long-lived grandchild.
@@ -63,11 +64,13 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// Unset cap: the 50%-of-MemTotal default is announced once and the
-/// run completes. The default stays silent otherwise (no peak line —
-/// that is explicit-cap-only, so ordinary runs keep their summary as
-/// the last bazel-rs line). (Warm peaks of this fixture are tens of
-/// MB, far below any host's default.)
+/// Unset cap: the sliding-scale default is announced once, naming the
+/// exact policy tier for this host, and the run completes. The default
+/// stays silent otherwise (no peak line — that is explicit-cap-only,
+/// so ordinary runs keep their summary as the last bazel-rs line).
+/// (Warm peaks of this fixture are tens of MB, far below any host's
+/// default.) On this 251 GB host the announcement must name the flat
+/// 64 GB tier (65536 MB), NOT ~50% (~128 GB).
 #[test]
 fn default_cap_is_announced_and_completes() {
     let ws = Workspace::new(&[("BUILD.bazel", "filegroup(name='x', srcs=[])\n")]);
@@ -78,9 +81,20 @@ fn default_cap_is_announced_and_completes() {
         err.contains("bazel-rs: memory limit defaulted to "),
         "{err}"
     );
-    assert!(err.contains("(50% of machine memory)"), "{err}");
+    // Exactly one tier description, matching this host's MemTotal.
+    let total_mb = bazel_rs::memory_limit::mem_total_mb().expect("MemTotal on Linux");
+    let (cap_mb, description) =
+        bazel_rs::memory_limit::default_cap().expect("default cap on Linux");
+    assert!(
+        err.contains(&format!("defaulted to {description}")),
+        "want {description:?} in: {err}"
+    );
     assert!(err.contains("not child actions"), "{err}");
     assert!(!err.contains("peak RSS (VmHWM)"), "{err}");
+    if total_mb >= 128 * 1024 {
+        assert_eq!(cap_mb, 64 * 1024, "large hosts get the flat 64 GB cap");
+        assert!(err.contains("65536 MB (64 GB flat cap"), "{err}");
+    }
 }
 
 /// Caps below the minimum are rejected with a clear message, by flag
