@@ -183,7 +183,11 @@ impl<T> DemandSlot<T> {
                 "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
             ));
         }
-        match probe()? {
+        // A probe ERROR maps to a miss, never to the unit's error (review
+        // R2): sequential materialize treats verification errors as
+        // mismatch + re-execute, so the coordinator's sequential path must
+        // own every error. The probe is a pure optimization.
+        match probe().unwrap_or(None) {
             Some(value) => {
                 // Publish for all later demands; a concurrent publisher
                 // (another worker probing the same repo, or the
@@ -635,6 +639,38 @@ mod tests {
     /// gets the NeedsRepository sentinel instead of running the
     /// initializer, without populating the slot; a ready value is served
     /// as usual, and a later unguarded demand evaluates normally.
+    /// Review R2: a probe ERROR is a miss, not the unit's error — the
+    /// sentinel comes back, the slot stays empty, and the coordinator's
+    /// sequential path owns the real error later.
+    #[test]
+    fn probe_error_maps_to_sentinel_without_populating() {
+        let slot = DemandSlot::new();
+        let _guard = no_demand();
+        let _reuse = reuse_only();
+        let error = slot
+            .get_or_probe(
+                7,
+                "repository:x",
+                || Err::<Option<usize>, String>("manifest unreadable".into()),
+                || Ok(1),
+            )
+            .unwrap_err();
+        assert!(is_needs_repository(&error), "{error}");
+        assert!(slot.ready().is_none());
+        // Probe miss behaves identically.
+        let error = slot
+            .get_or_probe(7, "repository:x", || Ok(None), || Ok(1))
+            .unwrap_err();
+        assert!(is_needs_repository(&error));
+        assert!(slot.ready().is_none());
+        // Probe hit publishes for later demands.
+        assert_eq!(
+            slot.get_or_probe(7, "repository:x", || Ok(Some(5)), || Ok(1)),
+            Ok(&5)
+        );
+        assert_eq!(slot.ready(), Some(&5));
+    }
+
     #[test]
     fn no_demand_guard_returns_sentinel_without_populating() {
         let slot = DemandSlot::new();

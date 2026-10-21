@@ -75,6 +75,120 @@ struct PreparedGroup {
     loaded: loading::LoadedDefinition,
     label: Label,
     attributes: Vec<BTreeMap<String, AttrValue>>,
+    /// Serialized source-digest entries of `loaded.sources`, computed ONCE
+    /// when the group is prepared (review R1): every sibling repository
+    /// frames only these digests + its own attributes/mappings into its
+    /// spec key. Bytes (not a `Value` tree) so per-repo framing streams.
+    source_entries: std::sync::OnceLock<Result<Vec<u8>, String>>,
+}
+
+impl PreparedGroup {
+    fn source_entries(&self) -> Result<&[u8], String> {
+        self.source_entries
+            .get_or_init(|| {
+                crate::repository_store::source_digest_entries_bytes(&self.loaded.sources)
+            })
+            .as_deref()
+            .map_err(Clone::clone)
+    }
+}
+
+/// Serialize one direct provenance object with `sources` rendered from
+/// `sources_json` (the full `SourceProvenance` map for the content
+/// identity, or the group's cached digest entries for the spec key).
+/// Field order is the historical `serde_json::json!` order
+/// (preserve_order: insertion order), so both renderings stay
+/// byte-identical to the forms they replace.
+#[allow(clippy::too_many_arguments)]
+fn write_direct_provenance<W: std::io::Write>(
+    out: &mut W,
+    group: &crate::repository_catalog::DirectGroup,
+    prepared: &PreparedGroup,
+    entry: &crate::repository_catalog::DirectRepository,
+    attributes: &BTreeMap<String, AttrValue>,
+    owner_mapping: &BTreeMap<String, String>,
+    sources_json: &[u8],
+) -> Result<(), String> {
+    fn field<W: std::io::Write>(
+        out: &mut W,
+        first: &mut bool,
+        name: &str,
+        value: &impl serde::Serialize,
+    ) -> Result<(), String> {
+        if !*first {
+            out.write_all(b",").map_err(io_err)?;
+        }
+        *first = false;
+        out.write_all(
+            serde_json::to_string(name)
+                .map_err(|e| format!("cannot serialize repository provenance: {e}"))?
+                .as_bytes(),
+        )
+        .map_err(io_err)?;
+        out.write_all(b":").map_err(io_err)?;
+        serde_json::to_writer(&mut *out, value)
+            .map_err(|e| format!("cannot serialize repository provenance: {e}"))
+    }
+    fn io_err(e: std::io::Error) -> String {
+        format!("cannot serialize repository provenance: {e}")
+    }
+    out.write_all(b"{").map_err(io_err)?;
+    let mut first = true;
+    field(out, &mut first, "profile", &"direct-file-template-v1")?;
+    field(out, &mut first, "owner", &group.owner)?;
+    field(out, &mut first, "raw_identity", &group.raw_identity)?;
+    field(out, &mut first, "public_label", &prepared.label.to_string())?;
+    field(
+        out,
+        &mut first,
+        "definition_identity",
+        &prepared.definition.identity,
+    )?;
+    // sources: pre-rendered bytes (full closure or digest entries).
+    if !first {
+        out.write_all(b",").map_err(io_err)?;
+    }
+    first = false;
+    out.write_all(b"\"sources\":").map_err(io_err)?;
+    out.write_all(sources_json).map_err(io_err)?;
+    field(out, &mut first, "attributes", &attributes)?;
+    field(out, &mut first, "schema", &prepared.definition.schema)?;
+    field(out, &mut first, "local", &prepared.definition.local)?;
+    field(out, &mut first, "owner_mapping", &owner_mapping)?;
+    field(out, &mut first, "repository_mapping", &entry.mapping)?;
+    if prepared.definition.configure {
+        field(out, &mut first, "configure", &true)?;
+    }
+    if !prepared.definition.environ.is_empty() {
+        field(out, &mut first, "environ", &prepared.definition.environ)?;
+    }
+    out.write_all(b"}").map_err(io_err)?;
+    Ok(())
+}
+
+/// Render the full direct provenance bytes (execute path only, review
+/// R1): the closure is serialized from `prepared.loaded.sources`
+/// in place — no intermediate `Value` tree.
+fn direct_provenance_bytes(
+    prepared: &PreparedGroup,
+    group: &crate::repository_catalog::DirectGroup,
+    entry: &crate::repository_catalog::DirectRepository,
+    attributes: &BTreeMap<String, AttrValue>,
+    owner_mapping: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    let sources = serde_json::to_vec(&prepared.loaded.sources)
+        .map_err(|e| format!("cannot serialize repository provenance: {e}"))?;
+    let mut out = Vec::with_capacity(sources.len() + 1024);
+    write_direct_provenance(
+        &mut out,
+        group,
+        prepared,
+        entry,
+        attributes,
+        owner_mapping,
+        &sources,
+    )?;
+    Ok(out)
 }
 
 #[derive(Debug)]
@@ -83,6 +197,66 @@ struct PreparedOrdinary {
     generated_mapping: BTreeMap<String, String>,
     repositories: BTreeMap<String, OrdinaryRepository>,
     provenance: Vec<u8>,
+    /// Per-canonical-name framed provenance (canonical name + group
+    /// bytes), built once per repository on first demand (review R1).
+    framed: std::sync::Mutex<BTreeMap<String, Vec<u8>>>,
+    /// Per-canonical-name spec digest cache (review R1).
+    spec_keys: std::sync::Mutex<BTreeMap<String, String>>,
+    /// SHA-256 of `provenance`, computed ONCE per prepared group:
+    /// `specification_digest_bytes` framed these bytes into every
+    /// sibling's spec key, re-hashing the whole (closure-bearing) group
+    /// provenance per repository — the ordinary-path twin of the direct
+    /// 64 GB re-hash. The per-repo key now mixes this digest instead.
+    provenance_digest: [u8; 32],
+}
+
+impl PreparedOrdinary {
+    /// Length-framed provenance bytes for one repository of this group:
+    /// canonical name + the group's shared provenance bytes. Cached per
+    /// canonical name (review R1: framed once, never re-serialized).
+    fn framed_provenance(&self, canonical_name: &str) -> Vec<u8> {
+        if let Ok(cache) = self.framed.lock()
+            && let Some(bytes) = cache.get(canonical_name)
+        {
+            return bytes.clone();
+        }
+        let mut framed = Vec::with_capacity(16 + canonical_name.len() + self.provenance.len());
+        framed.extend_from_slice(&(canonical_name.len() as u64).to_le_bytes());
+        framed.extend_from_slice(canonical_name.as_bytes());
+        framed.extend_from_slice(&(self.provenance.len() as u64).to_le_bytes());
+        framed.extend_from_slice(&self.provenance);
+        if let Ok(mut cache) = self.framed.lock() {
+            cache.insert(canonical_name.to_owned(), framed.clone());
+        }
+        framed
+    }
+
+    /// Spec digest for one repository, cached per canonical name.
+    /// Mixes the group's ONCE-computed provenance digest with only the
+    /// per-repository frame (canonical name + host + environment), so a
+    /// warm run never re-hashes the shared closure bytes per sibling.
+    fn spec_key(
+        &self,
+        repositories: &RepositorySet,
+        canonical_name: &str,
+        declared: &crate::repository_environment::DeclaredEnvironment,
+    ) -> Result<String, String> {
+        if let Ok(cache) = self.spec_keys.lock()
+            && let Some(key) = cache.get(canonical_name)
+        {
+            return Ok(key.clone());
+        }
+        let key = crate::repository_warm::specification_digest_mixed(
+            repositories,
+            canonical_name,
+            &self.provenance_digest,
+            declared,
+        )?;
+        if let Ok(mut cache) = self.spec_keys.lock() {
+            cache.insert(canonical_name.to_owned(), key.clone());
+        }
+        Ok(key)
+    }
 }
 
 #[derive(Debug)]
@@ -965,6 +1139,7 @@ impl RepositorySet {
                 loaded,
                 label,
                 attributes,
+                source_entries: std::sync::OnceLock::new(),
             })
         })
     }
@@ -988,47 +1163,14 @@ impl RepositorySet {
         let Some(prepared) = runtime.groups.get(&entry.group_id).and_then(|s| s.ready()) else {
             return Ok(None);
         };
-        let _declaration = &group.declarations[entry.declaration_index];
         let attributes = &prepared.attributes[entry.declaration_index];
-        let mut provenance = serde_json::json!({
-            "profile": "direct-file-template-v1",
-            "owner": group.owner,
-            "raw_identity": group.raw_identity,
-            "public_label": prepared.label.to_string(),
-            "definition_identity": prepared.definition.identity,
-            "sources": prepared.loaded.sources,
-            "attributes": attributes,
-            "schema": prepared.definition.schema,
-            "local": prepared.definition.local,
-            "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
-            "repository_mapping": entry.mapping,
-        });
-        if prepared.definition.configure {
-            provenance
-                .as_object_mut()
-                .expect("provenance object")
-                .insert("configure".to_owned(), serde_json::Value::Bool(true));
-        }
-        if !prepared.definition.environ.is_empty() {
-            provenance
-                .as_object_mut()
-                .expect("provenance object")
-                .insert(
-                    "environ".to_owned(),
-                    serde_json::to_value(&prepared.definition.environ).map_err(|_| {
-                        "cannot serialize repository environment declaration".to_owned()
-                    })?,
-                );
-        }
         if prepared.definition.local {
             return Ok(None); // local rules never reuse across invocations
         }
-        let spec_key = crate::repository_warm::specification_digest(
-            self,
-            &provenance,
-            &prepared.loaded.sources,
-            &prepared.definition.environ,
-        )?;
+        // Per-repository frame only: the group's cached source-digest
+        // entries + this repo's attributes/mappings (review R1). No deep
+        // copy of the closure, no re-hash of source bytes.
+        let spec_key = self.direct_spec_key(prepared, group, entry, attributes)?;
         let workspace = std::fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let validating = self.clone();
@@ -1038,6 +1180,46 @@ impl RepositorySet {
             move |tree, recorded| {
                 crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
             },
+        )
+    }
+
+    /// The direct spec key, streamed: per-repo fields + the group's
+    /// once-computed digest entries. No closure `Value` is built.
+    fn direct_spec_key(
+        &self,
+        prepared: &PreparedGroup,
+        group: &crate::repository_catalog::DirectGroup,
+        entry: &crate::repository_catalog::DirectRepository,
+        attributes: &BTreeMap<String, AttrValue>,
+    ) -> Result<String, String> {
+        let runtime = self.direct_runtime()?;
+        let owner_mapping = &runtime.catalog.owner_mappings[&group.owner];
+        let entries = prepared.source_entries()?;
+        crate::repository_warm::specification_digest_streaming(
+            self,
+            |out: &mut crate::repository_store::CountWriter| {
+                write_direct_provenance(
+                    out,
+                    group,
+                    prepared,
+                    entry,
+                    attributes,
+                    owner_mapping,
+                    entries,
+                )
+            },
+            |out: &mut crate::repository_store::SeededDigestWriter| {
+                write_direct_provenance(
+                    out,
+                    group,
+                    prepared,
+                    entry,
+                    attributes,
+                    owner_mapping,
+                    entries,
+                )
+            },
+            &prepared.definition.environ,
         )
     }
 
@@ -1068,76 +1250,32 @@ impl RepositorySet {
                 let group = &runtime.catalog.groups[&entry.group_id];
                 let declaration = &group.declarations[entry.declaration_index];
                 let attributes = &prepared.attributes[entry.declaration_index];
-                let mut provenance = serde_json::json!({
-                    "profile": "direct-file-template-v1",
-                    "owner": group.owner,
-                    "raw_identity": group.raw_identity,
-                    "public_label": prepared.label.to_string(),
-                    "definition_identity": prepared.definition.identity,
-                    "sources": prepared.loaded.sources,
-                    "attributes": attributes,
-                    "schema": prepared.definition.schema,
-                    "local": prepared.definition.local,
-                    "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
-                    "repository_mapping": entry.mapping,
-                });
-                if prepared.definition.configure {
-                    // Omitted when false so pre-existing provenance keys are unchanged.
-                    provenance
-                        .as_object_mut()
-                        .expect("provenance object")
-                        .insert("configure".to_owned(), serde_json::Value::Bool(true));
-                }
-                if !prepared.definition.environ.is_empty() {
-                    provenance
-                        .as_object_mut()
-                        .expect("provenance object")
-                        .insert(
-                            "environ".to_owned(),
-                            serde_json::to_value(&prepared.definition.environ).map_err(|_| {
-                                "cannot serialize repository environment declaration".to_owned()
-                            })?,
-                        );
-                }
-                // Digest-form specification (Step A root cause): the byte
-                // spec embedded every loaded .bzl source (~31 MB/repo here,
-                // 64 GB total per warm run) and re-serialized + re-hashed it
-                // per repository. The digest form frames each source's
-                // content digest + mapping instead; `provenance` below keeps
-                // the full bytes for the content identity, unchanged.
-                // The specification is a pure function of the repository
-                // definition, attributes, mappings, host markers and declared
-                // environment values, computed before any execution; warm
-                // invocations reuse its publication after revalidating the
-                // recorded watchable inputs (crate::repository_warm).
-                let (spec_key, provenance) = {
+                // Digest-form specification (Step A + review R1): the spec
+                // key streams the group's ONCE-computed source-digest
+                // entries + this repo's attributes/mappings. The full
+                // provenance bytes are serialized LAZILY, only on the
+                // execute path inside materialize (closure runs there).
+                let owner_mapping = runtime.catalog.owner_mappings[&group.owner].clone();
+                let spec_key = {
                     let _m = crate::repository_store::timing::mark(
                         &crate::repository_store::timing::PHASES.spec_serialize,
                     );
-                    let key = crate::repository_warm::specification_digest(
-                        self,
-                        &provenance,
-                        &prepared.loaded.sources,
-                        &prepared.definition.environ,
-                    )?;
-                    let bytes = serde_json::to_vec(&provenance).map_err(|error| {
-                        format!("cannot serialize repository provenance: {error}")
-                    })?;
-                    (key, bytes)
+                    self.direct_spec_key(prepared, group, entry, attributes)?
                 };
                 // Hidden diagnostic (N62 cold-variance hunt,
                 // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
                 // repository, so two cold runs can be diffed field by field.
+                // Only computed when the diagnostic is requested (lazy
+                // provenance otherwise stays unserialized on reuse paths).
                 if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
+                    let provenance =
+                        direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)?;
                     eprintln!(
                         "PROVENANCE {canonical} {}",
                         String::from_utf8_lossy(&provenance)
                     );
                 }
-                crate::repository_store::timing::count_spec(
-                    spec_key.len() as u64,
-                    provenance.len() as u64,
-                );
+                crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
                 let workspace = std::fs::canonicalize(self.main_root())
                     .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                 let this = Arc::new(self.clone());
@@ -1149,11 +1287,13 @@ impl RepositorySet {
                 // their unrecorded dependencies (which/execute/executed-file
                 // reads) make stale reuse dangerous.
                 let local = prepared.definition.local;
-                crate::repository_store::materialize_keyed(
+                crate::repository_store::materialize_lazy(
                     self.source_cache_path()?,
                     canonical,
                     &spec_key,
-                    &provenance,
+                    move || {
+                        direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)
+                    },
                     move |tree, recorded| {
                         if local {
                             return Ok(false);
@@ -1474,7 +1614,19 @@ impl RepositorySet {
                 environ: &definition.environ,
                 watched_env: inputs.watched_env.as_ref(),
             }, usize::MAX)?; // No size cap (Bazel has none); allocation failure stays explicit.
-            Ok(PreparedOrdinary { loaded, generated_mapping, repositories, provenance })
+            let provenance_digest = {
+                use sha2::Digest as _;
+                sha2::Sha256::digest(&provenance).into()
+            };
+            Ok(PreparedOrdinary {
+                loaded,
+                generated_mapping,
+                repositories,
+                provenance,
+                framed: std::sync::Mutex::new(BTreeMap::new()),
+                spec_keys: std::sync::Mutex::new(BTreeMap::new()),
+                provenance_digest,
+            })
         })
     }
 
@@ -1523,14 +1675,11 @@ impl RepositorySet {
         if repository.definition.local {
             return Ok(None);
         }
-        let mut provenance = Vec::new();
-        provenance.extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
-        provenance.extend_from_slice(repository.canonical_name.as_bytes());
-        provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
-        provenance.extend_from_slice(&prepared.provenance);
-        let spec_key = crate::repository_warm::specification_digest_bytes(
+        // The group's framed provenance is built once (cached on the
+        // prepared group); the per-repo spec digest likewise (review R1).
+        let spec_key = prepared.spec_key(
             self,
-            &provenance,
+            &repository.canonical_name,
             &repository.definition.environ,
         )?;
         let workspace = std::fs::canonicalize(self.main_root())
@@ -1566,21 +1715,6 @@ impl RepositorySet {
                                 )
                             })?;
                     let definition_label = Label::parse_canonical(label)?;
-                    // Length-frame the already serialized bytes; serializing
-                    // Vec<u8> as a JSON number array would amplify them again.
-                    let mut provenance = Vec::new();
-                    provenance
-                        .try_reserve_exact(
-                            16 + repository.canonical_name.len() + prepared.provenance.len(),
-                        )
-                        .map_err(|e| {
-                            format!("ordinary extension host provenance allocation limit: {e}")
-                        })?;
-                    provenance
-                        .extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
-                    provenance.extend_from_slice(repository.canonical_name.as_bytes());
-                    provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
-                    provenance.extend_from_slice(&prepared.provenance);
                     if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
                         eprintln!(
                             "PROVENANCE-ORDINARY {} {}",
@@ -1588,26 +1722,21 @@ impl RepositorySet {
                             String::from_utf8_lossy(&prepared.provenance)
                         );
                     }
-                    // Digest-form specification (see direct path): hash
-                    // the framed provenance bytes once instead of
-                    // re-serializing them into a second spec byte string.
-                    // Same pre-execution specification discipline as direct
-                    // repositories: definition, attributes (via the extension
-                    // provenance), host markers and declared environment.
+                    // Framed provenance + spec digest are cached on the
+                    // prepared group (review R1); provenance bytes are
+                    // materialized lazily on the execute path only.
+                    let canonical_name = repository.canonical_name.clone();
                     let spec_key = {
                         let _m = crate::repository_store::timing::mark(
                             &crate::repository_store::timing::PHASES.spec_serialize,
                         );
-                        crate::repository_warm::specification_digest_bytes(
+                        prepared.spec_key(
                             self,
-                            &provenance,
+                            &repository.canonical_name,
                             &repository.definition.environ,
                         )?
                     };
-                    crate::repository_store::timing::count_spec(
-                        spec_key.len() as u64,
-                        provenance.len() as u64,
-                    );
+                    crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
                     let workspace = std::fs::canonicalize(self.main_root())
                         .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                     let this = Arc::new(self.clone());
@@ -1615,11 +1744,11 @@ impl RepositorySet {
                     // Local rules never reuse across invocations here either
                     // (shouldUseCachedRepoContents; see the direct path).
                     let local = repository.definition.local;
-                    crate::repository_store::materialize_keyed(
+                    crate::repository_store::materialize_lazy(
                         self.source_cache_path()?,
                         &repository.canonical_name,
                         &spec_key,
-                        &provenance,
+                        move || Ok(prepared.framed_provenance(&canonical_name)),
                         move |tree, recorded| {
                             if local {
                                 return Ok(false);

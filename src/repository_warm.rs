@@ -106,10 +106,16 @@ pub(crate) fn specification(
 /// same pointer when the underlying source bytes are unchanged, without
 /// serializing them. `provenance_fields` is the provenance JSON object
 /// (direct) or the framed ordinary provenance pre-digested by the caller.
+/// Reference form whose inner framing production mirrors in
+/// `specification_digest_streaming` (identity equivalence is pinned by
+/// the repository_store tests; kept cfg(test) so no closure-bearing
+/// `Value` is ever built in production).
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn specification_digest(
     repositories: &RepositorySet,
     provenance_fields: &serde_json::Value,
-    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
+    source_entries: &serde_json::Map<String, serde_json::Value>,
     declared: &DeclaredEnvironment,
 ) -> Result<String, String> {
     let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
@@ -129,7 +135,8 @@ pub(crate) fn specification_digest(
     digest.update(b"direct-repository-spec-digest-v1");
     digest.update([0]);
     digest.update(
-        crate::repository_store::spec_digest_identity(provenance_fields, sources).as_bytes(),
+        crate::repository_store::spec_digest_identity(provenance_fields, source_entries)?
+            .as_bytes(),
     );
     digest.update((host.len() as u64).to_le_bytes());
     digest.update(&host);
@@ -138,8 +145,100 @@ pub(crate) fn specification_digest(
     Ok(format!("{:x}", digest.finalize()))
 }
 
-/// Digest-form specification over already-serialized provenance bytes
-/// (the ordinary path frames them once for the content identity).
+/// Streaming direct spec key (review R1): `frame` writes the provenance
+/// object with digest-form sources, exactly the bytes
+/// [`specification_digest`] frames through `spec_digest_identity`, but
+/// without materializing the closure-bearing `Value`. The inner
+/// identity is SHA-256 over `SPEC_DIGEST_PROFILE \0 <be-len> <framed>`;
+/// the outer key frames that hex string + host + environment as before.
+/// Serialization errors propagate (item 4).
+pub(crate) fn specification_digest_streaming(
+    repositories: &RepositorySet,
+    frame_count: impl Fn(&mut crate::repository_store::CountWriter) -> Result<(), String>,
+    frame_hash: impl Fn(&mut crate::repository_store::SeededDigestWriter) -> Result<(), String>,
+    declared: &DeclaredEnvironment,
+) -> Result<String, String> {
+    let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
+    let mut environment = BTreeMap::new();
+    for name in declared.names() {
+        let value = match repositories.environment().lookup(name) {
+            Ok(Some(value)) => serde_json::Value::String(value),
+            Ok(None) => serde_json::Value::Null,
+            Err(_) => serde_json::Value::Bool(false),
+        };
+        environment.insert(name.to_owned(), value);
+    }
+    let environment = serde_json::to_vec(&environment)
+        .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
+    // Inner identity = sha256(profile || 0 || be(len) || framed bytes).
+    // Pass 1 counts, pass 2 hashes into a pre-seeded digest. Both passes
+    // stream only per-repo fields + the group's cached digest-entry
+    // bytes — never the closure.
+    let mut counter = crate::repository_store::CountWriter(0);
+    frame_count(&mut counter)?;
+    let mut seeded = crate::repository_store::SeededDigestWriter::new(
+        b"direct-repository-spec-digest-v1",
+        counter.0,
+    );
+    frame_hash(&mut seeded)?;
+    let identity = seeded.finish_hex();
+    use sha2::Digest as _;
+    let mut digest = sha2::Sha256::new();
+    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update([0]);
+    digest.update(identity.as_bytes());
+    digest.update((host.len() as u64).to_le_bytes());
+    digest.update(&host);
+    digest.update((environment.len() as u64).to_le_bytes());
+    digest.update(&environment);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Ordinary spec key from the group's ONCE-computed provenance digest
+/// (review R1, ordinary twin): the per-repository work is framing the
+/// canonical name + host + environment around 32 digest bytes — never
+/// re-hashing the shared closure-bearing provenance per sibling.
+/// Distinct profile byte-string from the byte form it replaces, so old
+/// pointers simply miss once and republish (content identity, which
+/// still frames the full provenance bytes, is unchanged).
+pub(crate) fn specification_digest_mixed(
+    repositories: &RepositorySet,
+    canonical_name: &str,
+    provenance_digest: &[u8; 32],
+    declared: &DeclaredEnvironment,
+) -> Result<String, String> {
+    let host = crate::host_os::host_spec(repositories.host()?.as_ref())?;
+    let mut environment = BTreeMap::new();
+    for name in declared.names() {
+        let value = match repositories.environment().lookup(name) {
+            Ok(Some(value)) => serde_json::Value::String(value),
+            Ok(None) => serde_json::Value::Null,
+            Err(_) => serde_json::Value::Bool(false),
+        };
+        environment.insert(name.to_owned(), value);
+    }
+    let environment = serde_json::to_vec(&environment)
+        .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
+    let mut digest = sha2::Sha256::new();
+    use sha2::Digest as _;
+    digest.update(b"ordinary-repository-spec-digest-v2");
+    digest.update([0]);
+    digest.update((canonical_name.len() as u64).to_le_bytes());
+    digest.update(canonical_name.as_bytes());
+    digest.update(provenance_digest);
+    digest.update((host.len() as u64).to_le_bytes());
+    digest.update(&host);
+    digest.update((environment.len() as u64).to_le_bytes());
+    digest.update(&environment);
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Reference byte form the mixed form replaces (Step A framing).
+/// `specification_digest_mixed` deliberately addresses a new pointer:
+/// old ordinary pointers simply miss once and republish. Kept cfg(test)
+/// so production never re-hashes provenance bytes per repository.
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn specification_digest_bytes(
     repositories: &RepositorySet,
     provenance: &[u8],

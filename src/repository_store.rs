@@ -34,7 +34,7 @@ const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
 const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v1";
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
     format: u32,
@@ -167,6 +167,10 @@ pub mod timing {
         pub snapshot_check: Acc,
         pub snapshot_files: AtomicU64,
         pub snapshot_bytes: AtomicU64,
+        /// Files actually hashed during warm verification (review R3):
+        /// acceptance requires 0 after a run whose repos were staged by a
+        /// build (fingerprints recorded settled, outside the racy window).
+        pub files_hashed: AtomicU64,
         pub execute: Acc,
         pub publish: Acc,
         pub spec_serialize: Acc,
@@ -190,6 +194,7 @@ pub mod timing {
         },
         snapshot_files: AtomicU64::new(0),
         snapshot_bytes: AtomicU64::new(0),
+        files_hashed: AtomicU64::new(0),
         execute: Acc {
             calls: AtomicU64::new(0),
             nanos: AtomicU64::new(0),
@@ -284,6 +289,10 @@ pub mod timing {
             p.prepare_group.calls.load(Ordering::Relaxed),
         );
         eprintln!(
+            "PERF-REPO files_hashed_during_verify={}",
+            p.files_hashed.load(Ordering::Relaxed),
+        );
+        eprintln!(
             "PERF-REPO spec bytes total={} provenance bytes total={} (digest-form spec; provenance keeps full source bytes for the content identity)",
             SPEC_BYTES.load(Ordering::Relaxed),
             PROVENANCE_BYTES.load(Ordering::Relaxed),
@@ -334,37 +343,151 @@ pub fn spec_identity(spec: &[u8]) -> String {
 
 const SPEC_DIGEST_PROFILE: &[u8] = b"direct-repository-spec-digest-v1";
 
+/// Per-source digests of one loaded `.bzl` closure, computed ONCE per
+/// prepared group per invocation (review R1): children of a group share
+/// the same closure, so hashing it per repository re-hashed tens of MB
+/// per sibling (64 GB per warm run). Rendering is byte-identical to the
+/// per-call form it replaces, so existing specification pointers hit.
+pub fn source_digest_entries(
+    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut entries = serde_json::Map::new();
+    for (label, source) in sources {
+        let content = format!("{:x}", Sha256::digest(&source.bytes));
+        let mapping = serde_json::to_string(&source.mapping)
+            .map_err(|e| format!("cannot serialize repository mapping for {label}: {e}"))?;
+        entries.insert(
+            label.clone(),
+            serde_json::json!({"sha256": content, "mapping": mapping}),
+        );
+    }
+    Ok(entries)
+}
+
+/// Streaming twin of [`source_digest_entries`]: serialize each digest
+/// entry value once, in label order, without building a `Value` tree.
+/// Byte-identical to the `sources` object [`source_digest_entries`]
+/// produces (JSON object keys sorted by `BTreeMap` iteration; serde_json
+/// escapes strings deterministically), so existing pointers still hit.
+pub fn source_digest_entries_bytes(
+    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
+) -> Result<Vec<u8>, String> {
+    // Cheap pre-pass: digests + mapping strings only (no source copying).
+    let mut rendered: Vec<(&str, String, String)> = Vec::with_capacity(sources.len());
+    for (label, source) in sources {
+        let content = format!("{:x}", Sha256::digest(&source.bytes));
+        let mapping = serde_json::to_string(&source.mapping)
+            .map_err(|e| format!("cannot serialize repository mapping for {label}: {e}"))?;
+        rendered.push((label.as_str(), content, mapping));
+    }
+    let mut out = Vec::with_capacity(2 + rendered.len() * 96);
+    out.push(b'{');
+    for (index, (label, content, mapping)) in rendered.iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        // {"<label>":{"mapping":"<mapping-json-string>","sha256":"<hex>"}}
+        // Key order inside the entry matches serde_json::json! with
+        // preserve_order off? No: Map preserves insertion order, and the
+        // Value form inserts "sha256" then "mapping" via json! — which
+        // serde_json sorts? json! builds a Map; with preserve_order the
+        // insertion order (sha256, mapping) is kept. Reproduce exactly.
+        out.extend_from_slice(
+            serde_json::to_string(label)
+                .map_err(|e| format!("cannot serialize repository source label: {e}"))?
+                .as_bytes(),
+        );
+        out.extend_from_slice(b":{\"sha256\":");
+        out.extend_from_slice(
+            serde_json::to_string(content)
+                .map_err(|e| format!("cannot serialize repository source digest: {e}"))?
+                .as_bytes(),
+        );
+        out.extend_from_slice(b",\"mapping\":");
+        out.extend_from_slice(
+            serde_json::to_string(mapping)
+                .map_err(|e| format!("cannot serialize repository mapping for {label}: {e}"))?
+                .as_bytes(),
+        );
+        out.push(b'}');
+    }
+    out.push(b'}');
+    Ok(out)
+}
+
 /// The specification digest of an already-digested provenance: framed
-/// SHA-256 over each source's identity (label, content digest, mapping)
-/// plus the remaining provenance fields. Deterministic in the same inputs
-/// as the byte spec; used to address the same pointer without serializing
-/// (and re-hashing) tens of MB of `.bzl` source bytes per repository.
+/// SHA-256 over the group's source-digest entries plus the remaining
+/// (per-repository) provenance fields. Serialization errors propagate
+/// (review R1 item 4): defaulting them would key every repository to
+/// the same pointer.
 pub fn spec_digest_identity(
     provenance_fields: &serde_json::Value,
-    sources: &BTreeMap<String, crate::loading::SourceProvenance>,
-) -> String {
+    source_entries: &serde_json::Map<String, serde_json::Value>,
+) -> Result<String, String> {
     let mut digest = Sha256::new();
     digest.update(SPEC_DIGEST_PROFILE);
     digest.update([0]);
-    // Frame the non-source provenance exactly as the JSON object would
-    // serialize with `sources` replaced by per-source digests.
+    // Frames the provenance fields exactly as the JSON object would
+    // serialize with `sources` replaced by the group's digest entries.
+    // In this test-only form `provenance_fields` carries no source bytes
+    // (callers pass the digest-form object); production frames per-repo
+    // bytes via SeededDigestWriter without materializing any Value.
     let mut framed = provenance_fields.clone();
     if let Some(object) = framed.as_object_mut() {
-        let mut entries = serde_json::Map::new();
-        for (label, source) in sources {
-            let content = format!("{:x}", Sha256::digest(&source.bytes));
-            let mapping = serde_json::to_string(&source.mapping).unwrap_or_default();
-            entries.insert(
-                label.clone(),
-                serde_json::json!({"sha256": content, "mapping": mapping}),
-            );
-        }
-        object.insert("sources".into(), serde_json::Value::Object(entries));
+        object.insert(
+            "sources".into(),
+            serde_json::Value::Object(source_entries.clone()),
+        );
     }
-    let bytes = serde_json::to_vec(&framed).unwrap_or_default();
+    let bytes = serde_json::to_vec(&framed)
+        .map_err(|e| format!("cannot serialize repository specification: {e}"))?;
     digest.update((bytes.len() as u64).to_be_bytes());
     digest.update(&bytes);
-    format!("{:x}", digest.finalize())
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+/// SHA-256 sink pre-seeded with `profile || 0 || be(len)` — the
+/// [`spec_digest_identity`] framing — for streaming provenance
+/// serialization. The length must be known first (a counting pass);
+/// both passes are O(per-repo fields), never O(closure).
+pub struct SeededDigestWriter {
+    digest: Sha256,
+}
+
+impl SeededDigestWriter {
+    pub fn new(profile: &[u8], framed_len: u64) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(profile);
+        digest.update([0]);
+        digest.update(framed_len.to_be_bytes());
+        Self { digest }
+    }
+    pub fn finish_hex(self) -> String {
+        format!("{:x}", self.digest.finalize())
+    }
+}
+
+impl Write for SeededDigestWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.digest.update(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Counting-only sink (first pass of the length-framed digest).
+pub struct CountWriter(pub u64);
+
+impl Write for CountWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 += bytes.len() as u64;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn framed(digest: &mut Sha256, bytes: &[u8]) {
@@ -396,7 +519,7 @@ pub fn materialize<F, V>(
 ) -> Result<(PathBuf, Publication), String>
 where
     F: FnOnce(&Path) -> Result<Executed, String>,
-    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
 {
     materialize_keyed(
         cache,
@@ -406,6 +529,49 @@ where
         validate,
         execute,
     )
+}
+
+/// Persist refreshed stat fingerprints into a manifest (review R3):
+/// re-read the manifest, apply ONLY fingerprint updates whose content
+/// fields still match what this process verified, and atomically rename
+/// over the old file. A concurrent publisher's newer manifest (different
+/// identity/content) is left untouched. Best-effort by contract.
+fn refresh_manifest(
+    manifest_path: &Path,
+    manifests_dir: &Path,
+    verified: Manifest,
+    refreshed: &BTreeMap<String, StatFingerprint>,
+) -> Result<(), String> {
+    let bytes = read_stable(manifest_path)?;
+    let mut current: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if current.identity != verified.identity
+        || content_view(&current.files) != content_view(&verified.files)
+    {
+        return Ok(()); // someone republished; their fingerprints win
+    }
+    let mut changed = false;
+    for (name, fp) in refreshed {
+        if let Some(entry) = current.files.get_mut(name)
+            && entry.stat != Some(*fp)
+        {
+            entry.stat = Some(*fp);
+            changed = true;
+        }
+    }
+    if !changed {
+        return Ok(());
+    }
+    let encoded = serde_json::to_vec(&current).map_err(|e| e.to_string())?;
+    let mut stage = tempfile::NamedTempFile::new_in(manifests_dir)
+        .map_err(|e| format!("cannot stage manifest refresh: {e}"))?;
+    stage
+        .write_all(&encoded)
+        .and_then(|()| stage.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    stage
+        .persist(manifest_path)
+        .map_err(|e| format!("cannot publish manifest refresh: {e}"))?;
+    Ok(())
 }
 
 /// Reuse-only probe (Step C): if the specification pointer names a valid
@@ -454,7 +620,22 @@ where
             existing.files.len() as u64,
             existing.files.values().map(|e| e.size).sum::<u64>(),
         );
-        verify_snapshot(&destination, &existing.files, verify_mode()).is_ok_and(|matched| matched)
+        match verify_snapshot_detailed(&destination, &existing.files, verify_mode()) {
+            Ok(outcome) => {
+                if outcome.matched && !outcome.refreshed.is_empty() {
+                    // Best-effort refresh (review R3): failure only costs
+                    // re-hashing next time, never correctness.
+                    let _ = refresh_manifest(
+                        &manifest_path,
+                        &direct.join("manifests"),
+                        existing,
+                        &outcome.refreshed,
+                    );
+                }
+                outcome.matched
+            }
+            Err(_) => false,
+        }
     };
     if !verified {
         return Ok(None);
@@ -466,7 +647,7 @@ where
 }
 
 /// [`materialize`] with the caller-computed specification pointer identity:
-/// digest-form callers pass `repository_warm::specification_digest` and skip
+/// digest-form callers pass a streamed specification digest and skip
 /// serializing (and hashing) the full source-bearing spec bytes.
 pub fn materialize_keyed<F, V>(
     cache: &Path,
@@ -478,7 +659,33 @@ pub fn materialize_keyed<F, V>(
 ) -> Result<(PathBuf, Publication), String>
 where
     F: FnOnce(&Path) -> Result<Executed, String>,
-    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
+{
+    materialize_lazy(
+        cache,
+        stage_key,
+        spec_key,
+        || Ok(provenance.to_vec()),
+        &validate,
+        execute,
+    )
+}
+
+/// [`materialize_keyed`] with lazily serialized provenance (review R1):
+/// `provenance` runs ONLY on the execute path (after the warm probe
+/// misses), so a warm reuse never serializes the closure-bearing bytes.
+pub fn materialize_lazy<F, V, P>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    provenance: P,
+    validate: V,
+    execute: F,
+) -> Result<(PathBuf, Publication), String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
+    P: FnOnce() -> Result<Vec<u8>, String>,
 {
     ensure_directory(cache)?;
     let direct = cache.join("direct");
@@ -494,14 +701,18 @@ where
     // either the old or the new publication, never a partial one. The warm
     // check is the shared `try_reuse` probe (worker-safe).
     let call_start = timing::enabled().then(std::time::Instant::now);
-    if let Some(destination) = try_reuse(cache, spec_key, validate)? {
+    if let Some(destination) = try_reuse(cache, spec_key, &validate)? {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
         return Ok((destination, Publication::Reused));
     }
     // A failing or absent validation falls through to execution, exactly
-    // like Bazel refetching when a watched dependency changed.
+    // like Bazel refetching when a watched dependency changed. Only now —
+    // under the stage lock, after the double-checked reuse below — is the
+    // provenance serialized (review R1).
+    let provenance = provenance()?;
+    let provenance = provenance.as_slice();
     // 128 bits: two repositories sharing a slug would share a stage.
     let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
     let stage_lock_path = locks.join(format!("stage-{slug}"));
@@ -517,6 +728,15 @@ where
         .map_err(|e| format!("cannot lock direct repository stage: {e}"))?;
     // Held until return: the stage pathname exists only under this lock.
     let _stage_guard = stage_lock;
+    // A concurrent publisher may have won while this process waited on
+    // the stage lock: re-probe before executing (sequential semantics
+    // unchanged; the pre-lock probe stays the fast path).
+    if let Some(destination) = try_reuse(cache, spec_key, &validate)? {
+        if let Some(start) = call_start {
+            timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
+        }
+        return Ok((destination, Publication::Reused));
+    }
     let stage_path = stages.join(&slug);
     if optional_metadata(&stage_path)?.is_some() {
         crate::repository_ctx::remove_tree(&stage_path)
@@ -960,6 +1180,20 @@ fn racy_safe(fp: &StatFingerprint, start: std::time::SystemTime) -> bool {
     })
 }
 
+/// The fingerprint `metadata` may carry in a manifest recorded at
+/// `recorded_at` (review R3): only a file already trusted at recording
+/// time — mtime AND ctime at least the racy margin (2s) older than
+/// `recorded_at` — may be fingerprinted. A younger file could still be
+/// rewritten with the same coarse timestamps; it gets NO fingerprint
+/// and is hashed on warm verify (whose match then refreshes it).
+fn settled_fingerprint(
+    metadata: &fs::Metadata,
+    recorded_at: std::time::SystemTime,
+) -> Option<StatFingerprint> {
+    let fp = fingerprint(metadata);
+    racy_safe(&fp, recorded_at).then_some(fp)
+}
+
 /// Whether the warm snapshot check confirms `root` still matches the
 /// manifest `expected` entries.
 ///
@@ -977,16 +1211,48 @@ fn verify_snapshot(
     expected: &BTreeMap<String, Entry>,
     mode: VerifyMode,
 ) -> Result<bool, String> {
+    Ok(verify_snapshot_detailed(root, expected, mode)?.matched)
+}
+
+/// Outcome of a warm verification: whether the tree matches, and the
+/// refreshed fingerprints for entries whose fallback hash matched but
+/// whose recorded fingerprint was missing/stale/racy (review R3: the
+/// caller persists them so the next warm run trusts by stat).
+#[derive(Debug)]
+struct Verified {
+    matched: bool,
+    refreshed: BTreeMap<String, StatFingerprint>,
+}
+
+fn verify_snapshot_detailed(
+    root: &Path,
+    expected: &BTreeMap<String, Entry>,
+    mode: VerifyMode,
+) -> Result<Verified, String> {
+    verify_snapshot_at(root, expected, mode, std::time::SystemTime::now())
+}
+
+/// [`verify_snapshot_detailed`] with the racy-window reference instant
+/// injected (production: now; tests: a settled future, deterministically).
+fn verify_snapshot_at(
+    root: &Path,
+    expected: &BTreeMap<String, Entry>,
+    mode: VerifyMode,
+    start: std::time::SystemTime,
+) -> Result<Verified, String> {
     if mode == VerifyMode::Full {
-        return Ok(content_view(&snapshot(root)?) == content_view(expected));
+        return Ok(Verified {
+            matched: content_view(&snapshot(root)?) == content_view(expected),
+            refreshed: BTreeMap::new(),
+        });
     }
-    let start = std::time::SystemTime::now();
     fn visit(
         root: &Path,
         path: &Path,
         expected: &BTreeMap<String, Entry>,
         seen: &mut std::collections::BTreeSet<String>,
         start: std::time::SystemTime,
+        refreshed: &mut BTreeMap<String, StatFingerprint>,
     ) -> Result<bool, String> {
         let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
@@ -1023,6 +1289,7 @@ fn verify_snapshot(
                     expected,
                     seen,
                     start,
+                    refreshed,
                 )? {
                     return Ok(false);
                 }
@@ -1037,21 +1304,41 @@ fn verify_snapshot(
         if mode_of(&before)? != want.mode || before.len() != want.size {
             return Ok(false);
         }
+        let current = fingerprint(&before);
         let trusted = want
             .stat
-            .is_some_and(|fp| fp == fingerprint(&before) && racy_safe(&fp, start));
+            .is_some_and(|fp| fp == current && racy_safe(&fp, start));
         if trusted {
             return Ok(true);
         }
+        timing::PHASES
+            .files_hashed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (_, sha256) = hash_stable(path)?;
-        Ok(sha256 == want.sha256)
+        if sha256 != want.sha256 {
+            return Ok(false);
+        }
+        // Hash matched: refresh the fingerprint (review R3) when the
+        // current stat is settled relative to THIS verify's start, so an
+        // external ctime bump (chmod/backup) doesn't re-hash forever.
+        if racy_safe(&current, start) && want.stat != Some(current) {
+            refreshed.insert(name, current);
+        }
+        Ok(true)
     }
     required_directory(root)?;
     let mut seen = std::collections::BTreeSet::new();
-    if !visit(root, root, expected, &mut seen, start)? {
-        return Ok(false);
+    let mut refreshed = BTreeMap::new();
+    if !visit(root, root, expected, &mut seen, start, &mut refreshed)? {
+        return Ok(Verified {
+            matched: false,
+            refreshed: BTreeMap::new(),
+        });
     }
-    Ok(seen.len() == expected.len())
+    Ok(Verified {
+        matched: seen.len() == expected.len(),
+        refreshed,
+    })
 }
 
 fn mode_of(metadata: &fs::Metadata) -> Result<u32, String> {
@@ -1059,7 +1346,15 @@ fn mode_of(metadata: &fs::Metadata) -> Result<u32, String> {
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
-    fn visit(root: &Path, path: &Path, files: &mut BTreeMap<String, Entry>) -> Result<(), String> {
+    // Recording moment for fingerprint settling (review R3): taken once
+    // before the walk; files younger than the racy margin get no stat.
+    let recorded_at = std::time::SystemTime::now();
+    fn visit(
+        root: &Path,
+        path: &Path,
+        files: &mut BTreeMap<String, Entry>,
+        recorded_at: std::time::SystemTime,
+    ) -> Result<(), String> {
         let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
             .strip_prefix(root)
@@ -1098,7 +1393,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                     size: target.len() as u64,
                     sha256: format!("{:x}", Sha256::digest(target.as_bytes())),
                     symlink: Some(target),
-                    stat: Some(fingerprint(&before)),
+                    stat: settled_fingerprint(&before, recorded_at),
                 },
             );
             return Ok(());
@@ -1109,7 +1404,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
             size: 0,
             sha256: String::new(),
             symlink: None,
-            stat: Some(fingerprint(&before)),
+            stat: settled_fingerprint(&before, recorded_at),
         };
         if !entry.directory {
             regular_metadata(&before)?;
@@ -1121,7 +1416,12 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
         files.insert(name, entry);
         if directory {
             for child in fs::read_dir(path).map_err(|e| e.to_string())? {
-                visit(root, &child.map_err(|e| e.to_string())?.path(), files)?;
+                visit(
+                    root,
+                    &child.map_err(|e| e.to_string())?.path(),
+                    files,
+                    recorded_at,
+                )?;
             }
         }
         if !stable(
@@ -1134,7 +1434,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
     }
     required_directory(root)?;
     let mut files = BTreeMap::new();
-    visit(root, root, &mut files)?;
+    visit(root, root, &mut files, recorded_at)?;
     Ok(files)
 }
 
@@ -1160,6 +1460,155 @@ mod tests {
             fs::set_permissions(stage.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
         }
         Ok(b"exact runtime inputs".to_vec())
+    }
+
+    /// Review R1 equivalence: the streamed digest-entry bytes are
+    /// byte-identical to the `Value` form, and the streamed spec identity
+    /// (count + seeded hash) equals `spec_digest_identity` — so pointers
+    /// published before the streaming switch still hit.
+    #[test]
+    fn source_digest_streaming_matches_value_form() {
+        let mut sources = BTreeMap::new();
+        for (label, bytes, mapping) in [
+            ("//a:x.bzl", &b"one"[..], [("m", "n")].as_slice()),
+            ("@r//b:y.bzl", b"two \xff\xfe", [].as_slice()),
+            ("//z.bzl", b"", [("a\"q", "b\\c"), ("é", "ü")].as_slice()),
+        ] {
+            sources.insert(
+                label.to_owned(),
+                crate::loading::SourceProvenance {
+                    bytes: bytes.to_vec(),
+                    mapping: mapping
+                        .iter()
+                        .map(|(a, b)| (a.to_string(), b.to_string()))
+                        .collect(),
+                },
+            );
+        }
+        let value_form = serde_json::to_vec(&serde_json::Value::Object(
+            source_digest_entries(&sources).unwrap(),
+        ))
+        .unwrap();
+        let streamed = source_digest_entries_bytes(&sources).unwrap();
+        assert_eq!(streamed, value_form);
+        // spec_digest_identity over a framed object, Value vs streaming.
+        let fields = serde_json::json!({
+            "profile": "direct-file-template-v1",
+            "sources": {"placeholder": true},
+            "attributes": {"x": "y"},
+        });
+        let via_value =
+            spec_digest_identity(&fields, &source_digest_entries(&sources).unwrap()).unwrap();
+        let mut framed = fields.clone();
+        framed.as_object_mut().unwrap().insert(
+            "sources".into(),
+            serde_json::Value::Object(serde_json::Map::new()),
+        );
+        // Rebuild the exact streamed framed bytes: serialize `fields`
+        // with sources replaced by the streamed entries object.
+        let mut manual = Vec::new();
+        {
+            let obj = fields.as_object().unwrap();
+            manual.push(b'{');
+            let mut first = true;
+            for (key, value) in obj {
+                if !first {
+                    manual.push(b',');
+                }
+                first = false;
+                manual.extend(serde_json::to_vec(key).unwrap());
+                manual.push(b':');
+                if key == "sources" {
+                    manual.extend_from_slice(&streamed);
+                } else {
+                    manual.extend(serde_json::to_vec(value).unwrap());
+                }
+            }
+            manual.push(b'}');
+        }
+        let mut counter = CountWriter(0);
+        use std::io::Write as _;
+        counter.write_all(&manual).unwrap();
+        let mut seeded = SeededDigestWriter::new(SPEC_DIGEST_PROFILE, counter.0);
+        seeded.write_all(&manual).unwrap();
+        assert_eq!(seeded.finish_hex(), via_value);
+        let _ = framed;
+    }
+
+    /// The reference spec identity (Step A framing) must equal the
+    /// streamed form production uses: byte-identical inner framing, so
+    /// pointers published with `spec_digest_identity` keep hitting.
+    /// Also pins git-style racy trust: a fingerprint whose times are NOT
+    /// at least the racy margin (2s) older than the verify start is never
+    /// trusted (hashed instead), and `settled_fingerprint` refuses
+    /// fresh files at recording time.
+    #[test]
+    fn spec_reference_matches_streamed_and_racy_never_trusted() {
+        let mut sources = BTreeMap::new();
+        sources.insert(
+            "//a:x.bzl".to_owned(),
+            crate::loading::SourceProvenance {
+                bytes: b"one".to_vec(),
+                mapping: [("m".to_owned(), "n".to_owned())].into_iter().collect(),
+            },
+        );
+        let fields = serde_json::json!({"profile": "direct-file-template-v1",
+            "sources": {"replaced": true}, "attributes": {"x": "y"}});
+        let entries = source_digest_entries(&sources).unwrap();
+        let reference = spec_digest_identity(&fields, &entries).unwrap();
+        let framed_bytes = {
+            let obj = fields.as_object().unwrap();
+            let mut manual = vec![b'{'];
+            let mut first = true;
+            for (key, value) in obj {
+                if !first {
+                    manual.push(b',');
+                }
+                first = false;
+                manual.extend(serde_json::to_vec(key).unwrap());
+                manual.push(b':');
+                if key == "sources" {
+                    manual.extend(source_digest_entries_bytes(&sources).unwrap());
+                } else {
+                    manual.extend(serde_json::to_vec(value).unwrap());
+                }
+            }
+            manual.push(b'}');
+            manual
+        };
+        let mut counter = CountWriter(0);
+        use std::io::Write as _;
+        counter.write_all(&framed_bytes).unwrap();
+        let mut seeded = SeededDigestWriter::new(SPEC_DIGEST_PROFILE, counter.0);
+        seeded.write_all(&framed_bytes).unwrap();
+        assert_eq!(
+            seeded.finish_hex(),
+            reference,
+            "streamed != reference spec identity"
+        );
+        // Racy: fresh fingerprint (mtime/ctime ~= now) must hash, not trust.
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
+        let fresh = fingerprint(&fs::metadata(tree.join("data")).unwrap());
+        assert!(!racy_safe(&fresh, std::time::SystemTime::now()));
+        assert_eq!(
+            settled_fingerprint(
+                &fs::metadata(tree.join("data")).unwrap(),
+                std::time::SystemTime::now()
+            ),
+            None
+        );
+        let mut files = manifest.files.clone();
+        files.get_mut("data").unwrap().stat = Some(fresh);
+        let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
+        let outcome = verify_snapshot_detailed(&tree, &files, VerifyMode::Stat).unwrap();
+        assert!(outcome.matched);
+        assert!(
+            timing::PHASES.files_hashed.load(Ordering::Relaxed) > hashed_before,
+            "racy fingerprint must fall back to hashing"
+        );
     }
 
     /// Publish with an unchanged-world validator (every warm call reuses).
@@ -1435,7 +1884,10 @@ mod tests {
             content_view(&manifest.files),
             content_view(&snapshot(&tree).unwrap())
         );
-        assert!(manifest.files.values().all(|e| e.stat.is_some()));
+        // Freshly written files are inside the racy window at publish:
+        // they carry NO fingerprint (review R3) and are hash-verified on
+        // first warm reuse, which then refreshes them.
+        assert!(manifest.files.values().all(|e| e.stat.is_none()));
         no_stages(cache.path());
     }
 
@@ -2066,14 +2518,16 @@ mod tests {
         let (tree, first) = run(cache.path());
         assert_eq!(first, Publication::Executed);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
-        // (1) do-nothing: reuse, no execution, stat fingerprints recorded.
+        // (1) do-nothing: reuse, no execution. Fresh entries carry no
+        // fingerprint yet (racy at publish, review R3); the first warm
+        // verify hash-matches and refreshes settled fingerprints in.
         let (again, status) = run(cache.path());
         assert_eq!(again, tree);
         assert_eq!(status, Publication::Reused);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         let manifest: Manifest =
             serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
-        assert!(manifest.files.values().all(|e| e.stat.is_some()));
+        assert!(manifest.files.values().all(|e| e.stat.is_none()));
         // (2) size change: re-execute.
         fs::write(tree.join("data"), b"bad-longer-content").unwrap();
         let (_, status) = run(cache.path());
@@ -2105,6 +2559,117 @@ mod tests {
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         // Full mode agrees on the untouched tree.
         assert!(verify_snapshot(&tree, &snapshot(&tree).unwrap(), VerifyMode::Full).unwrap());
+        no_stages(cache.path());
+    }
+
+    /// Review R3: fingerprints settle through use. A freshly published
+    /// manifest carries none (racy at publish); the first warm verify
+    /// hashes + refreshes once the file is settled; a later external
+    /// ctime bump (chmod) hash-matches once and refreshes again instead
+    /// of re-hashing forever; a settled fingerprint then trusts by stat.
+    #[test]
+    fn fingerprint_refresh_settles_after_hash_match() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let read_manifest = |cache: &Path| -> Manifest {
+            serde_json::from_slice(&fs::read(metadata_path(cache, &tree)).unwrap()).unwrap()
+        };
+        assert!(read_manifest(cache.path()).files["data"].stat.is_none());
+        // Backdate `data`'s mtime an hour: content/state guards (mode,
+        // size, hash) are unaffected; only the fingerprint logic reacts.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let since = old
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap();
+        let out = std::process::Command::new("touch")
+            .arg("-d")
+            .arg(format!("@{}.{:09}", since.as_secs(), since.subsec_nanos()))
+            .arg(tree.join("data"))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        // Drop persisted fingerprints (legacy-manifest state).
+        {
+            let path = metadata_path(cache.path(), &tree);
+            let mut manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            for entry in manifest.files.values_mut() {
+                entry.stat = None;
+            }
+            fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        }
+        // Warm verify through the real path: fresh ctime means the
+        // fingerprint is NOT settled relative to the verify start, so
+        // this reuse hash-matches WITHOUT refreshing yet.
+        let (_, status) = publish(cache.path(), b"", |_| panic!("must reuse")).unwrap();
+        assert_eq!(status, Publication::Reused);
+        assert!(read_manifest(cache.path()).files["data"].stat.is_none());
+        // Settlement, deterministically: verify as of +1h. The file's
+        // times are settled relative to that start, so the hash match
+        // REFRESHES the missing fingerprint with the current stat.
+        let manifest = read_manifest(cache.path());
+        let settled_start = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let outcome =
+            verify_snapshot_at(&tree, &manifest.files, VerifyMode::Stat, settled_start).unwrap();
+        assert!(outcome.matched);
+        let current = fingerprint(&fs::metadata(tree.join("data")).unwrap());
+        assert_eq!(outcome.refreshed.get("data"), Some(&current));
+        assert!(!racy_safe(&current, std::time::SystemTime::now()));
+        assert!(racy_safe(&current, settled_start));
+        // Recording-side gate (review R3): a fresh file gets no
+        // fingerprint at publish; the same stat is settled vs +1h.
+        let metadata = fs::metadata(tree.join("data")).unwrap();
+        assert_eq!(
+            settled_fingerprint(&metadata, std::time::SystemTime::now()),
+            None
+        );
+        assert_eq!(settled_fingerprint(&metadata, settled_start), Some(current));
+        // Persist through refresh_manifest and observe the manifest.
+        refresh_manifest(
+            &metadata_path(cache.path(), &tree),
+            &cache.path().join("direct/manifests"),
+            manifest.clone(),
+            &outcome.refreshed,
+        )
+        .unwrap();
+        let manifest = read_manifest(cache.path());
+        assert_eq!(manifest.files["data"].stat, Some(current));
+        // Fingerprint matches but is fresh (racy) vs now: verify still
+        // hashes (no refresh, no trust) — and still matches.
+        let outcome = verify_snapshot_detailed(&tree, &manifest.files, VerifyMode::Stat).unwrap();
+        assert!(outcome.matched);
+        assert!(outcome.refreshed.is_empty());
+        // Settled vs +1h with the fingerprint recorded: trusted by stat,
+        // zero files hashed.
+        let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
+        let outcome =
+            verify_snapshot_at(&tree, &manifest.files, VerifyMode::Stat, settled_start).unwrap();
+        assert!(outcome.matched);
+        assert!(outcome.refreshed.is_empty());
+        assert_eq!(
+            timing::PHASES.files_hashed.load(Ordering::Relaxed),
+            hashed_before,
+            "settled fingerprint must trust by stat without hashing"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // External ctime bump only: round-trip the mode back to the
+            // recorded 0o755 — content mode unchanged, ctime bumped.
+            fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+            let manifest = read_manifest(cache.path());
+            let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
+            let outcome =
+                verify_snapshot_detailed(&tree, &manifest.files, VerifyMode::Stat).unwrap();
+            assert!(outcome.matched);
+            // The bumped file hashed (fingerprint stale) — the counter
+            // proves the fallback ran; refresh is empty only because the
+            // bumped stat is still fresh (correct: it settles later).
+            assert!(
+                timing::PHASES.files_hashed.load(Ordering::Relaxed) > hashed_before,
+                "ctime bump must fall back to hashing"
+            );
+        }
         no_stages(cache.path());
     }
 
