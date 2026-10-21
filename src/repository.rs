@@ -1668,8 +1668,9 @@ impl RepositorySet {
         if repository.definition.local {
             return Ok(None);
         }
-        // The group's framed provenance is built once (cached on the
-        // prepared group); the per-repo spec digest likewise (review R1).
+        // Only the per-repo spec digest is cached (small strings,
+        // review R1); framed provenance bytes are built on demand on
+        // the execute path, never retained (perf follow-up 2).
         let spec_key = prepared.spec_key(
             self,
             &repository.canonical_name,
