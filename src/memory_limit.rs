@@ -196,6 +196,30 @@ pub fn default_cap_mb() -> Option<u64> {
     default_cap().map(|(cap, _)| cap)
 }
 
+/// Per-loading-worker heap budget for the auto thread bound (perf
+/// follow-up 3): each `--loading_phase_threads` worker evaluates
+/// packages on its own Starlark heap; 64 MB per worker is the planning
+/// allowance (the 16 MiB stack is virtual-cheap beside it). With the
+/// minimum explicit cap (256 MB) this still floors at 2 workers.
+pub const WORKER_HEAP_MB: u64 = 64;
+
+/// Bound an AUTO loading-thread count by the memory cap (perf
+/// follow-up 3): `min(auto_threads, cap_mb / 64 MB per worker)`,
+/// floored at 2 so a tiny-but-legal cap still parallelizes. Only the
+/// "auto" expansion is bounded — an explicit
+/// `--loading_phase_threads=N` is the user's stated intent and is
+/// never rewritten (the watchdog still enforces the cap). `None` cap
+/// (MemTotal unknown, no watchdog) leaves auto unbounded.
+pub fn bound_auto_loading_threads(auto_threads: usize, cap_mb: Option<u64>) -> usize {
+    match cap_mb {
+        Some(cap_mb) => {
+            let by_memory = (cap_mb / WORKER_HEAP_MB).max(2) as usize;
+            auto_threads.min(by_memory).max(1)
+        }
+        None => auto_threads.max(1),
+    }
+}
+
 /// Resolve the effective cap: explicit (flag over env, both validated
 /// by the caller) wins; otherwise the sliding-scale default. The
 /// returned bool marks the default so the caller can say so once.
@@ -369,6 +393,21 @@ mod tests {
             assert_eq!(cap, expected);
             assert!(description.contains(&format!("{cap} MB")), "{description}");
         }
+    }
+
+    #[test]
+    fn auto_loading_threads_bound_by_cap() {
+        // No cap: auto is untouched.
+        assert_eq!(bound_auto_loading_threads(64, None), 64);
+        // This host's default (64 GB): 65536/64 = 1024 » 64 CPUs.
+        assert_eq!(bound_auto_loading_threads(64, Some(64 * 1024)), 64);
+        // 2048 MB cap: 2048/64 = 32 workers max.
+        assert_eq!(bound_auto_loading_threads(64, Some(2048)), 32);
+        assert_eq!(bound_auto_loading_threads(8, Some(2048)), 8);
+        // Floor of 2 even at the minimum legal cap; never below 1.
+        assert_eq!(bound_auto_loading_threads(64, Some(256)), 4);
+        assert_eq!(bound_auto_loading_threads(64, Some(64)), 2);
+        assert_eq!(bound_auto_loading_threads(1, Some(64)), 1);
     }
 
     #[test]

@@ -56,8 +56,11 @@ pub struct QueryOptions {
     /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java): "auto"
     /// (the default) or a positive integer. Both loaders' pattern
     /// expansion parallelizes package loading with it (P2,
-    /// docs/PARALLEL_ANALYSIS.md).
-    pub loading_phase_threads: usize,
+    /// docs/PARALLEL_ANALYSIS.md). `None` = "auto" (unset or spelled
+    /// `auto`): main expands it through the memory-cap bound
+    /// (crate::memory_limit::bound_auto_loading_threads); an explicit
+    /// integer is kept exactly as given.
+    pub loading_phase_threads: Option<usize>,
 }
 
 impl Default for QueryOptions {
@@ -80,9 +83,7 @@ impl Default for QueryOptions {
             query_file: String::new(),
             output_file: String::new(),
             graphless: None,
-            loading_phase_threads: std::thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1),
+            loading_phase_threads: None,
         }
     }
 }
@@ -208,15 +209,17 @@ impl QueryOptions {
                 }
                 "loading_phase_threads" => {
                     self.loading_phase_threads = if value == "auto" {
-                        Self::default().loading_phase_threads
+                        None
                     } else {
-                        value
-                            .parse::<usize>()
-                            .ok()
-                            .filter(|n| *n > 0)
-                            .ok_or_else(|| {
-                                format!("While parsing option --loading_phase_threads={value}: not a positive integer or 'auto'")
-                            })?
+                        Some(
+                            value
+                                .parse::<usize>()
+                                .ok()
+                                .filter(|n| *n > 0)
+                                .ok_or_else(|| {
+                                    format!("While parsing option --loading_phase_threads={value}: not a positive integer or 'auto'")
+                                })?,
+                        )
                     }
                 }
                 _ => unreachable!(),

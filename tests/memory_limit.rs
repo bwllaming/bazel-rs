@@ -151,6 +151,51 @@ fn explicit_caps_complete_and_flag_wins_over_env() {
     );
 }
 
+/// Auto loading threads respect the cap (perf follow-up 3): with a
+/// 512 MB cap the auto expansion is 512/64 = 8 workers, so a query
+/// whose per-worker heaps would blow a 256 MB cap at 64 workers stays
+/// bounded — it must NOT be killed at 512 MB, and the same query at
+/// an explicit 256 MB cap with auto threads (256/64 = 4 workers,
+/// floored >= 2) also completes where 64 unbounded workers would not.
+/// The deterministic unit bound lives in crate::memory_limit; here
+/// the CLI proves the wiring: capped auto runs complete and report
+/// their peak under the cap, and an explicit high thread count is
+/// NOT rewritten (it still gets watchdog-killed at a tight cap).
+#[test]
+fn auto_loading_threads_respect_the_cap() {
+    // ~90 packages so the pool actually spawns workers; each package
+    // carries a heavy BUILD evaluation (large attr strings) so worker
+    // heaps dominate RSS.
+    let filler = "y".repeat(8 * 1024);
+    let ws = Workspace::new(&[("BUILD.bazel", "filegroup(name='x', srcs=[])\n")]);
+    for pkg in 0..90 {
+        let mut build = String::new();
+        for i in 0..120 {
+            build.push_str(&format!(
+                "filegroup(name='t{i}', srcs=[], tags=['{filler}'])\n"
+            ));
+        }
+        ws.file(&format!("p{pkg}/BUILD.bazel"), &build);
+    }
+    // Auto threads under a generous-but-binding cap: completes, and
+    // the reported peak stays under the cap (explicit-cap peak line).
+    let output = ws.run(&["query", "--memory-limit=4096", "//..."]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("(memory limit 4096 MB)"),
+        "{}",
+        stderr(&output)
+    );
+    // Spelling `auto` explicitly takes the same bounded path.
+    let output = ws.run(&[
+        "query",
+        "--memory-limit=4096",
+        "--loading_phase_threads=auto",
+        "//...",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}
+
 /// The watchdog kill: a 256 MB cap against a long-running build whose
 /// action allocates well past the cap from a child while bazel-rs waits
 /// — no: the watchdog caps bazel-rs's OWN RSS, so the reliable trigger

@@ -120,6 +120,13 @@ fn run() -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
     let options = evaluate_rc(&line, &command, &cwd, &root, &path_to_binary)?;
+    // --jobs default: available CPUs, max 32 (the "N26" bound — the
+    // action worker pool never exceeds 32 however many CPUs the host
+    // has; explicit --jobs=N is kept exactly). Memory-wise the action
+    // workers are cheap beside loading: each runs child processes
+    // (whose RSS the cap does not count) and holds only its action
+    // record; the in-process heap pool is the loading workers, bounded
+    // separately by the cap below.
     let mut jobs = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
@@ -211,7 +218,11 @@ fn run() -> Result<(), String> {
         allowed_yanked_flags = native.allowed_yanked_flags;
         raw_registries = native.raw_registries;
         jobs = native.jobs.unwrap_or(jobs);
-        loading_phase_threads = native.loading_phase_threads;
+        // `auto` in the native parser is the LOADING_AUTO marker: not
+        // an explicit count (main bounds the auto expansion by the cap).
+        loading_phase_threads = native
+            .loading_phase_threads
+            .filter(|threads| *threads != LOADING_AUTO);
         native.resolver.isolated_extension_usages = native.rc.isolated_extension_usages;
         resolver_options = native.resolver;
         repository_downloads_enabled = native.downloads;
@@ -450,15 +461,16 @@ fn run() -> Result<(), String> {
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
-    // "auto" (the default) keeps the engine's available-processors value.
-    engine.set_loading_phase_threads(match (command.as_str(), loading_phase_threads) {
-        ("query", explicit) => explicit.unwrap_or(query_options.loading_phase_threads),
-        (_, explicit) => explicit.unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1)
-        }),
-    });
+    // "auto" (the default) expands to the available processors BOUNDED
+    // by the memory cap (perf follow-up 3: min(auto, cap/64 MB per
+    // worker heap), floored at 2 — crate::memory_limit); an explicit
+    // integer is the user's stated intent and is never rewritten.
+    engine.set_loading_phase_threads(loading_threads_for_report(
+        &command,
+        loading_phase_threads,
+        &query_options,
+        memory_limit_mb,
+    ));
     // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421):
     // the requested output groups; a command that runs the tests it builds
     // keeps the `default` group for failure reporting (shouldRunTests).
@@ -520,6 +532,7 @@ fn run() -> Result<(), String> {
             &command,
             loading_phase_threads,
             &query_options,
+            memory_limit_mb,
         ));
         // Pattern warnings precede the query's own events.
         for warning in engine.take_warnings() {
@@ -601,6 +614,7 @@ fn run() -> Result<(), String> {
         &command,
         loading_phase_threads,
         &query_options,
+        memory_limit_mb,
     ));
     let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
     // Analysis warnings precede the result, also when the build fails.
@@ -1444,28 +1458,44 @@ fn add_user_write(path: &Path) {
     }
 }
 
+/// The effective loading-thread count (also the timing report's):
+/// an explicit `--loading_phase_threads=N` (either parser) is kept
+/// exactly; the "auto" expansion (available processors) is bounded by
+/// the memory cap (crate::memory_limit::bound_auto_loading_threads).
 fn loading_threads_for_report(
     command: &str,
     explicit: Option<usize>,
     query_options: &bazel_rs::engine::query::QueryOptions,
+    cap_mb: Option<u64>,
 ) -> usize {
+    let auto = || {
+        bazel_rs::memory_limit::bound_auto_loading_threads(
+            std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1),
+            cap_mb,
+        )
+    };
     match (command, explicit) {
-        ("query", e) => e.unwrap_or(query_options.loading_phase_threads),
+        ("query", e) => e.or(query_options.loading_phase_threads).unwrap_or_else(auto),
         (_, Some(v)) => v,
-        _ => std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1),
+        _ => auto(),
     }
 }
 
+/// Raw parse marker for `--loading_phase_threads=auto` in the native
+/// (build/run/test) parser: `usize::MAX` stands for "auto" until main
+/// resolves it against the memory cap; explicit integers pass through.
+/// (`query` tracks auto as `QueryOptions::loading_phase_threads: None`.)
+const LOADING_AUTO: usize = usize::MAX;
+
 /// `--loading_phase_threads` (LoadingPhaseThreadsOption.java): "auto" or
-/// a positive integer; "auto" keeps the engine default (the available
-/// processors, as Bazel's converter expands it).
+/// a positive integer; "auto" is the LOADING_AUTO marker, expanded by
+/// main through the memory-cap bound (as Bazel's converter expands it
+/// to the available processors, then capped).
 fn parse_loading_phase_threads(value: &str) -> Result<usize, String> {
     if value == "auto" {
-        return Ok(std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1));
+        return Ok(LOADING_AUTO);
     }
     if !value.is_empty()
         && value.bytes().all(|b| b.is_ascii_digit())
