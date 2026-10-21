@@ -854,6 +854,14 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
             execution_note()
         );
     }
+    if !engine.execute_build() {
+        // --nobuild: analysis succeeded and 0 actions executed, but no
+        // target was built to run (RunCommand.getBuiltTargets finds no
+        // successful targets; genuine 9.3 scratch capture
+        // `run --nobuild //pkg:tool` exits 2 with this message; native
+        // reports the same text through its exit-1 channel).
+        return Err("No targets found to run".into());
+    }
     // getBuiltTargets/fullyValidateTarget (RunCommand.java:435-568, 1136-1185).
     let Some(target) = target else {
         return Err(format!("Cannot run target {label}: Not executable"));
@@ -1146,6 +1154,15 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     if tests.is_empty() {
         eprintln!("ERROR: No test targets were found, yet testing was requested");
         std::process::exit(4);
+    }
+    if !engine.execute_build() {
+        // --nobuild: the build succeeded with 0 actions but nothing was
+        // built to run (TestCommand: getSuccessfulTargets is null without
+        // the execution phase, so the command reports `Couldn't start
+        // the build. Unable to run tests`, exit 1; genuine 9.3 scratch
+        // capture `test --nobuild //pkg:t`).
+        eprintln!("ERROR: Couldn't start the build. Unable to run tests");
+        std::process::exit(1);
     }
     let mut specs = Vec::new();
     for label in &tests {
@@ -1789,6 +1806,18 @@ impl NativeOptions {
             // execution phase.
             self.no_build = true;
             false
+        } else if builds(command) && arg.starts_with("--nobuild=") {
+            // The `no`-prefixed boolean form takes no value
+            // (OptionsParserImpl: `--nobuild=false :: Unexpected value
+            // after boolean option: --nobuild=false`, genuine capture).
+            return Err(
+                match bazel_rs::configuration::boolean_option(arg, "build") {
+                    Some(Ok(_)) | None => {
+                        format!("{arg} :: Unexpected value after boolean option: {arg}")
+                    }
+                    Some(Err(error)) => error,
+                },
+            );
         } else if builds(command) && matches!(arg, "--build" | "--build=true") {
             self.no_build = false;
             false

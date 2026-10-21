@@ -1,0 +1,19 @@
+load(":defs.bzl", "my_bin", "my_test")
+
+genrule(
+    name = "gen",
+    srcs = ["in.txt"],
+    outs = ["out.txt"],
+    cmd = "cat $(SRCS) > $@",
+)
+
+genrule(
+    name = "bad",
+    srcs = ["in.txt"],
+    outs = ["bad.txt"],
+    cmd = "exit 42",
+)
+
+my_bin(name = "tool")
+
+my_test(name = "t")

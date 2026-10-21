@@ -1,0 +1,325 @@
+{
+ "cases": {
+  "build-build-false": {
+   "argv": [
+    "build",
+    "--build=false",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 0,
+    "seconds": 8.454,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:gen (5 packages loaded, 6 targets configured)\nINFO: Analyzed target //pkg:gen (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 7.529s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 0,
+    "seconds": 0.041,
+    "stderr_tail": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/out.txt\n",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-nobuild-bad": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:bad"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 0,
+    "seconds": 8.291,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:bad (5 packages loaded, 6 targets configured)\nINFO: Analyzed target //pkg:bad (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 7.451s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 0,
+    "seconds": 0.04,
+    "stderr_tail": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "stdout": "//pkg:bad\tbazel-out/k8-fastbuild/bin/pkg/bad.txt\n",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-nobuild-false": {
+   "argv": [
+    "build",
+    "--nobuild=false",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 2,
+    "seconds": 1.263,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --nobuild=false :: Unexpected value after boolean option: --nobuild=false\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.008,
+    "stderr_tail": "bazel-rs: --nobuild=false :: Unexpected value after boolean option: --nobuild=false\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-nobuild-gen": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 0,
+    "seconds": 8.471,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:gen (5 packages loaded, 6 targets configured)\nINFO: Analyzed target //pkg:gen (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 7.565s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 0,
+    "seconds": 0.039,
+    "stderr_tail": "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/out.txt\n",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-nobuild-missing": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:missing"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 1,
+    "seconds": 7.869,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nWARNING: Target pattern parsing failed.\nERROR: Skipping '//pkg:missing': no such target '//pkg:missing': target 'missing' not declared in package 'pkg' defined by /tmp/opencode/nobuild-capture-woo3_e1b/g-build-nobuild-missing/pkg/BUILD.bazel\nERROR: no such target '//pkg:missing': target 'missing' not declared in package 'pkg' defined by /tmp/opencode/nobuild-capture-woo3_e1b/g-build-nobuild-missing/pkg/BUILD.bazel\nINFO: Elapsed time: 6.970s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.046,
+    "stderr_tail": "bazel-rs: no such target '//pkg:missing': target 'missing' not declared in package 'pkg' defined by /tmp/opencode/nobuild-capture-woo3_e1b/n-build-nobuild-missing/pkg/BUILD.bazel\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-nobuild-true": {
+   "argv": [
+    "build",
+    "--nobuild=true",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 2,
+    "seconds": 1.235,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --nobuild=true :: Unexpected value after boolean option: --nobuild=true\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.008,
+    "stderr_tail": "bazel-rs: --nobuild=true :: Unexpected value after boolean option: --nobuild=true\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-normal-bad": {
+   "argv": [
+    "build",
+    "//pkg:bad"
+   ],
+   "genuine": {
+    "bazel_out_files": [
+     "_tmp/actions/stderr-2",
+     "_tmp/actions/stdout-2",
+     "stable-status.txt",
+     "volatile-status.txt"
+    ],
+    "exit": 1,
+    "seconds": 8.346,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:bad (5 packages loaded, 6 targets configured)\nAnalyzing: target //pkg:bad (5 packages loaded, 6 targets configured)\n\nINFO: Analyzed target //pkg:bad (6 packages loaded, 9 targets configured).\nERROR: /tmp/opencode/nobuild-capture-woo3_e1b/g-build-normal-bad/pkg/BUILD.bazel:10:8: Executing genrule //pkg:bad failed: (Exit 42): bash failed: error executing Genrule command (from genrule rule target //pkg:bad) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; exit 42'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nTarget //pkg:bad failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.552s, Critical Path: 0.04s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [
+     "cas/2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f-555",
+     "cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03-444",
+     "locks/55e57e695ece955968f8b0dfbfa2e9575c62ac18fa67066ccf807b617faf32cb.lock"
+    ],
+    "exit": 1,
+    "seconds": 0.047,
+    "stderr_tail": "bazel-rs: action '//pkg:bad': action '//pkg:bad' failed (exit status: 42):\nstdout:\n\nstderr:\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "build-normal-gen": {
+   "argv": [
+    "build",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [
+     "_tmp/actions/stderr-2",
+     "_tmp/actions/stdout-2",
+     "k8-fastbuild/bin/pkg/out.txt",
+     "stable-status.txt",
+     "volatile-status.txt"
+    ],
+    "exit": 0,
+    "seconds": 8.645,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:gen (5 packages loaded, 6 targets configured)\nAnalyzing: target //pkg:gen (5 packages loaded, 6 targets configured)\n\nINFO: Analyzed target //pkg:gen (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/out.txt\nINFO: Elapsed time: 7.770s, Critical Path: 0.04s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [
+     "actions/a2d171aa94558c8784e52fe004c44982727f4e4fb698ffd9b1d37ca2685daa21/manifest.json",
+     "actions/a2d171aa94558c8784e52fe004c44982727f4e4fb698ffd9b1d37ca2685daa21/outputs/bazel-out/k8-fastbuild/bin/pkg/out.txt",
+     "cas/2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f-555",
+     "cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03-444",
+     "cas/5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03-555",
+     "locks/a2d171aa94558c8784e52fe004c44982727f4e4fb698ffd9b1d37ca2685daa21.lock"
+    ],
+    "exit": 0,
+    "seconds": 0.049,
+    "stderr_tail": "bazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "stdout": "//pkg:gen\t/tmp/opencode/nobuild-capture-woo3_e1b/n-build-normal-gen/cache/actions/a2d171aa94558c8784e52fe004c44982727f4e4fb698ffd9b1d37ca2685daa21/outputs/bazel-out/k8-fastbuild/bin/pkg/out.txt\n",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  },
+  "query-nobuild": {
+   "argv": [
+    "query",
+    "--nobuild",
+    "//pkg:gen"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 2,
+    "seconds": 1.225,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --nobuild :: Unrecognized option: --nobuild (did you mean '--null'?)\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.007,
+    "stderr_tail": "bazel-rs: unsupported option \"--nobuild\"; options are never silently ignored\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "KNOWN_DIVERGENCE"
+  },
+  "run-nobuild": {
+   "argv": [
+    "run",
+    "--nobuild",
+    "//pkg:tool"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 2,
+    "seconds": 9.602,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:tool (5 packages loaded, 6 targets configured)\nINFO: Analyzed target //pkg:tool (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 8.452s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\nERROR: No targets found to run\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.037,
+    "stderr_tail": "//pkg:tool\tbazel-out/k8-fastbuild/bin/pkg/tool\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: No targets found to run\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "KNOWN_DIVERGENCE"
+  },
+  "test-nobuild": {
+   "argv": [
+    "test",
+    "--nobuild",
+    "//pkg:t"
+   ],
+   "genuine": {
+    "bazel_out_files": [],
+    "exit": 1,
+    "seconds": 9.606,
+    "stderr_tail": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nComputing main repo mapping: \nLoading: \nLoading: 0 packages loaded\nAnalyzing: target //pkg:t (5 packages loaded, 6 targets configured)\nINFO: Analyzed target //pkg:t (80 packages loaded, 835 targets configured).\nINFO: Found 1 test target...\nINFO: Elapsed time: 8.582s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\nERROR: Couldn't start the build. Unable to run tests\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "native": {
+    "cache_files": [],
+    "exit": 1,
+    "seconds": 0.055,
+    "stderr_tail": "//pkg:t\tbazel-out/k8-fastbuild/bin/pkg/t.sh\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: Couldn't start the build. Unable to run tests\n",
+    "stdout": "",
+    "timed_out": false
+   },
+   "verdict": "EXACT_CORE"
+  }
+ },
+ "counts": {
+  "known_divergence": 2,
+  "match": 9
+ },
+ "fixture": "nobuild",
+ "fixture_files_sha256": {
+  "MODULE.bazel": "4a2ed76f3b2b061c1230640348f17cb20f7279919117c714177aec55995cea1e",
+  "pkg/BUILD.bazel": "94be090f31129a8982b96f98a9bd824a71caa75fd3a7455461d49ef253922e19",
+  "pkg/defs.bzl": "8d1a118ca3e42416f8bfd144f6844bbe8badc1fcaa730a0cf9a1d45cdc3e275c",
+  "pkg/in.txt": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+ },
+ "genuine_key_findings": [
+  "build --nobuild //pkg:gen: exit 0, stderr has 'INFO: Analyzed target //pkg:gen', 'INFO: 0 processes.', 'INFO: Build completed successfully, 0 total actions'; NO 'Target //pkg:gen up-to-date:' line (that prints only with execution); bazel-out has no out.txt and no stable/volatile-status.txt (workspace-status action is execution-phase).",
+  "build --nobuild //pkg:bad (exit-42 genrule): exit 0, 0 actions \u2014 the failing action never runs.",
+  "build (normal) //pkg:bad: exit 1. build --nobuild //pkg:missing: exit 1 (analysis/loading errors still surface).",
+  "--build=false == --nobuild (exit 0, 0 actions); --build=true executes; --nobuild=true/--nobuild=false rejected exit 2 'Unexpected value after boolean option'.",
+  "test --nobuild //pkg:t: exit 1, 'Build completed successfully, 0 total actions' then 'ERROR: Couldn't start the build. Unable to run tests'.",
+  "run --nobuild //pkg:tool: exit 2, 'Build completed successfully, 0 total actions' then 'ERROR: No targets found to run'.",
+  "query --nobuild: exit 2, '--nobuild :: Unrecognized option: --nobuild' (QueryCommand does not inherit BuildCommand options)."
+ ],
+ "known_divergences": [
+  "run --nobuild exit code: genuine 2, native 1 (native's single error channel); message text 'No targets found to run' matches.",
+  "query --nobuild: genuine 'Unrecognized option' (exit 2), native explicit 'unsupported option \"--nobuild\"; options are never silently ignored' (exit 1) \u2014 both reject, never silently ignore.",
+  "Native summary line is its own format ('bazel-rs: 0 actions executed, 0 cache hits ...') vs genuine 'INFO: 0 processes.' / '0 total actions'; counts (0/0) match. Native reports the planned artifact path on stdout under --nobuild where genuine prints no up-to-date line \u2014 native's BuildSummary.outputs reporting is uniform across modes."
+ ],
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "b5aefed3ef9f36598983b324657538cec85e6cbd46f2afb8222d376db2f48ccf"
+ },
+ "purpose": "--nobuild (BuildRequestOptions.performExecutionPhase :146-158): analysis completes, zero actions execute, zero outputs written; failing genrule succeeds; test/run/query applicability.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "flags": "--batch --ignore_all_rc_files --output_base=<private per case>",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8"
+ },
+ "schema": "nobuild-reference-receipt/v1",
+ "scratch_removed": true
+}

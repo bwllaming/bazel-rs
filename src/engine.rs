@@ -1386,6 +1386,11 @@ impl Engine {
         self.execute_build = execute;
     }
 
+    /// Whether later builds execute (see `set_execute_build`).
+    pub fn execute_build(&self) -> bool {
+        self.execute_build
+    }
+
     /// The one workspace status computation of this invocation (N63
     /// follow-up): OnceLock-guarded so it runs exactly once even when
     /// parallel planning (N62) reaches it from several threads.
@@ -6909,7 +6914,19 @@ impl Engine {
             return Err(format!("--native-action-dump: {error}"));
         }
         dump_action_graph(&nodes);
-        let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        // --nobuild: analysis/planning completed above; the execution
+        // phase is skipped entirely (BuildTool skips ExecutionTool
+        // without an execution phase), so no action runs, no output is
+        // written and the summary reports 0 executed / 0 hits. Planned
+        // artifacts are still reported below at their exec paths, as
+        // BuildResultPrinter reports artifactsToBuild under --nobuild.
+        // (Status planning is already gated in plan_build: no status
+        // nodes reach `nodes` under --nobuild.)
+        let results = if self.execute_build {
+            scheduler::execute_graph(cache, nodes, jobs)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
         crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
         // The workspace status nodes (BazelWorkspaceStatusAction#*) execute
@@ -6929,8 +6946,10 @@ impl Engine {
             }
         }
         for (key, mut artifact) in requested {
-            if let Some((id, index)) = &artifact.producer {
-                artifact.real = results[id].outputs[*index].clone();
+            if let Some((id, index)) = &artifact.producer
+                && let Some(result) = results.get(id)
+            {
+                artifact.real = result.outputs[*index].clone();
             }
             summary.outputs.push((key.label, artifact.real));
         }
@@ -6944,8 +6963,10 @@ impl Engine {
                     artifacts
                         .into_iter()
                         .map(|mut artifact| {
-                            if let Some((id, index)) = &artifact.producer {
-                                artifact.real = results[id].outputs[*index].clone();
+                            if let Some((id, index)) = &artifact.producer
+                                && let Some(result) = results.get(id)
+                            {
+                                artifact.real = result.outputs[*index].clone();
                             }
                             artifact.real
                         })
@@ -7404,7 +7425,13 @@ impl Engine {
         let plans = std::mem::take(&mut self.run_plans);
         crate::perf_mark("plan.end");
         dump_action_graph(&nodes);
-        let results = scheduler::execute_graph(cache, nodes, jobs)?;
+        // --nobuild: skip the execution phase (see build_with_options);
+        // run/test then find no built target (handled in main).
+        let results = if self.execute_build {
+            scheduler::execute_graph(cache, nodes, jobs)?
+        } else {
+            std::collections::BTreeMap::new()
+        };
         crate::perf_mark("execute.end");
         let mut summary = BuildSummary::default();
         // Workspace status nodes are not counted (see build_with_options).
@@ -7419,13 +7446,18 @@ impl Engine {
             }
         }
         for (key, mut artifact) in requested {
-            if let Some((id, index)) = &artifact.producer {
-                artifact.real = results[id].outputs[*index].clone();
+            if let Some((id, index)) = &artifact.producer
+                && let Some(result) = results.get(id)
+            {
+                artifact.real = result.outputs[*index].clone();
             }
             summary.outputs.push((key.label, artifact.real));
         }
         let published = |artifact: &Artifact| match &artifact.producer {
-            Some((id, index)) => results[id].outputs[*index].clone(),
+            Some((id, index)) => results.get(id).map_or_else(
+                || artifact.real.clone(),
+                |result| result.outputs[*index].clone(),
+            ),
             None => artifact.real.clone(),
         };
         let mut targets = BTreeMap::new();
