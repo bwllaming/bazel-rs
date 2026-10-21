@@ -44,7 +44,9 @@ impl Fixture {
         f
     }
     fn file(&self, name: &str, contents: &str) {
-        fs::write(self.0.path().join(name), contents).unwrap();
+        let path = self.0.path().join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
     }
     fn path(&self, name: &str) -> PathBuf {
         self.0.path().join(name)
@@ -191,4 +193,58 @@ fn warm_second_process_hits_publication_pointers_and_lockfile() {
         "publications must be reused untouched"
     );
     assert_eq!(fs::read(&lockfile).unwrap_or_default(), before.4);
+}
+
+/// Step C: with the cache warm, parallel loading at several thread counts
+/// (and under worker jitter) serves the repositories through the
+/// reuse-only worker probe — byte-identical query output, and still no
+/// new trees, no rewritten pointers, no re-execution.
+#[test]
+fn warm_parallel_query_is_byte_identical_and_reuses() {
+    let f = Fixture::new();
+    f.file(
+        "BUILD.bazel",
+        "genrule(\n\
+         \x20   name = 'uses_repos',\n\
+         \x20   srcs = ['@direct_repo//:value', '@generated_repo//:value'],\n\
+         \x20   outs = ['uses.txt'],\n\
+         \x20   cmd = 'cat $(SRCS) > $@',\n\
+         )\n",
+    );
+    for i in 0..8 {
+        // Packages demand both repositories via srcs labels.
+        f.file(
+            &format!("p{i}/BUILD.bazel"),
+            "genrule(name = 'g', srcs = ['@direct_repo//:value', '@generated_repo//:value'], outs = ['o.txt'], cmd = 'cat $(SRCS) > $@')\n",
+        );
+    }
+    assert_green(&f.run_build("cache-par"));
+    let direct = f.path("cache-par/repositories/direct");
+    let trees_before = listing(&direct.join("trees"));
+    let specs_before = publication_state(&direct.join("specs"));
+    let mut outputs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (threads, jitter) in [("1", None), ("8", None), ("32", None), ("8", Some("25"))] {
+        let mut cmd = f.command("cache-par");
+        cmd.args([
+            "query",
+            "--experimental-builtin-modules",
+            &format!("--loading_phase_threads={threads}"),
+            "//...",
+        ]);
+        if let Some(j) = jitter {
+            cmd.env("BAZEL_RS_LOADING_JITTER", j);
+        }
+        let out = cmd.output().unwrap();
+        assert_green(&out);
+        outputs.push((out.stdout.clone(), out.stderr.clone()));
+    }
+    for pair in outputs.windows(2) {
+        assert_eq!(pair[0].0, pair[1].0, "query stdout must be byte-identical across thread counts/jitter");
+    }
+    assert_eq!(listing(&direct.join("trees")), trees_before, "no new trees on warm parallel query");
+    assert_eq!(
+        publication_state(&direct.join("specs")),
+        specs_before,
+        "spec pointers hit, not rewritten, under the worker probe"
+    );
 }

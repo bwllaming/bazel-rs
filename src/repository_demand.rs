@@ -73,6 +73,36 @@ impl Drop for NoDemandGuard {
     }
 }
 
+thread_local! {
+    /// Depth of reuse-only mode on this thread (Step C): a demand whose
+    /// warm publication validates may be served on this thread (pure
+    /// reads: pointer, manifest, recorded-input check, stat verify);
+    /// anything that would execute a rule, evaluate an extension or print
+    /// still fails with the sentinel. Implies no-demand for execution.
+    static REUSE_ONLY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether this thread may serve warm repository reuse (but never fetch).
+pub fn reuse_only_active() -> bool {
+    REUSE_ONLY.with(std::cell::Cell::get) > 0
+}
+
+/// RAII scope: reuse-only demand (see [`reuse_only_active`]). Workers enter
+/// it inside the no-demand guard; a miss aborts with the sentinel and the
+/// coordinator fetches inline at the commit slot, in demand order.
+pub struct ReuseOnlyGuard;
+
+pub fn reuse_only() -> ReuseOnlyGuard {
+    REUSE_ONLY.with(|depth| depth.set(depth.get() + 1));
+    ReuseOnlyGuard
+}
+
+impl Drop for ReuseOnlyGuard {
+    fn drop(&mut self) {
+        REUSE_ONLY.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 /// A single demand result, allowing callers to borrow the cached value.
 ///
 /// The evaluator never runs under a lock. Recursive demand fails with a cycle
@@ -122,6 +152,63 @@ impl<T> DemandSlot<T> {
             return Err(format!(
                 "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
             ));
+        }
+        self.evaluate(runtime_id, key, init)
+    }
+
+    /// Reuse-only evaluation (Step C): under the no-demand guard, try
+    /// `probe` first — a pure-read warm check that may produce the value
+    /// without fetching. On a probe miss the sentinel is returned WITHOUT
+    /// populating the slot (the coordinator fetches inline later); on a
+    /// probe hit the value is published so every later demand is a ready
+    /// hit. Outside the guard (or with a ready value) this is exactly
+    /// [`Self::get_or_try_init`]. Concurrency: two threads may probe the
+    /// same slot; the loser of the publish race reports the winner's
+    /// value (probes are pure reads, so a duplicate probe is harmless).
+    pub fn get_or_probe(
+        &self,
+        runtime_id: u64,
+        key: &str,
+        probe: impl FnOnce() -> Result<Option<T>, String>,
+        init: impl FnOnce() -> Result<T, String>,
+    ) -> Result<&T, String> {
+        if let Some(result) = self.ready.get() {
+            return result.as_ref().map_err(Clone::clone);
+        }
+        if !no_demand_active() {
+            return self.evaluate(runtime_id, key, init);
+        }
+        if !reuse_only_active() {
+            return Err(format!(
+                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
+            ));
+        }
+        match probe()? {
+            Some(value) => {
+                // Publish for all later demands; a concurrent publisher
+                // (another worker probing the same repo, or the
+                // coordinator fetching) wins and we serve its value.
+                let _ = self.ready.set(Ok(value));
+                self.ready
+                    .get()
+                    .expect("just published or concurrently published")
+                    .as_ref()
+                    .map_err(Clone::clone)
+            }
+            None => Err(format!(
+                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
+            )),
+        }
+    }
+
+    fn evaluate(
+        &self,
+        runtime_id: u64,
+        key: &str,
+        init: impl FnOnce() -> Result<T, String>,
+    ) -> Result<&T, String> {
+        if let Some(result) = self.ready.get() {
+            return result.as_ref().map_err(Clone::clone);
         }
 
         let current_thread = thread::current().id();

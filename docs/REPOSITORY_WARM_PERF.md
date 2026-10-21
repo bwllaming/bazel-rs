@@ -119,3 +119,40 @@ reported honestly in the final numbers rather than asserted).
 Note: manifests written before Step B carry no fingerprints, so each
 such tree hash-verifies once more (still reuses — no re-execution), and
 upgrades when it next executes for another reason.
+
+## Step C — parallel warm reuse (reuse-only demand)
+
+Workers already ran under the no-demand sentinel; every first repo demand
+aborted the load unit to the coordinator, serializing all 2,058 warm
+checks (and their `.bzl` provenance work) on one thread. Step C adds a
+**reuse-only** thread mode (`repository_demand::reuse_only`, entered by
+loading workers inside the no-demand guard):
+
+- `DemandSlot::get_or_probe`: under the guard, a pure-read probe may
+  produce the value (published into the slot for all later demands); a
+  miss returns the sentinel WITHOUT populating the slot — the coordinator
+  fetches inline at the commit slot, in demand/pattern order, exactly as
+  before. Errors, prints and first-error-wins are untouched: probes never
+  print, never execute a rule, never evaluate an extension.
+- `repository_store::try_reuse` is the shared warm probe (pointer →
+  manifest → recorded-input validate → stat verify), also used by
+  `materialize_keyed` itself.
+- Direct repos probe only when the group's prepared slot is already
+  ready (definition/attributes known without evaluating anything new);
+  ordinary repos only when the extension group is already prepared.
+  `local` rules never probe (they never reuse across invocations).
+
+Batch-prefetch evaluation: the natural boundaries are (a)
+`select_filtered`'s package list — already known before workers start,
+but the repos each package needs are only discovered by its load DFS —
+and (b) each `load()` statement — inside the DFS. A separate prefetch
+pass would have to guess the load graph; the probe instead converts the
+demand itself into the prefetch: the first worker to demand a repo
+validates it in parallel with the other workers' loads, and the slot
+publish serves the rest. Extension/callback execution stays on the
+coordinator (fallback path unchanged).
+
+Determinism: warm `//src/ts:all` stdout byte-identical at
+threads 1/8/32 and threads=8 + 25 ms jitter; the three failure shapes
+stay green in tests/parallel_loading.rs (sentinel abort suppresses
+partial prints; cached-failure replay; first error in pattern order).

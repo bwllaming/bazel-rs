@@ -969,6 +969,74 @@ impl RepositorySet {
         })
     }
 
+    /// Step C worker probe for a direct repository: compute the digest-form
+    /// specification WITHOUT evaluating the defining `.bzl` (the shared
+    /// BzlCache can only serve already-evaluated modules — checked through
+    /// `ReuseSources` hashes, pure stats/reads of files whose roots are
+    /// already materialized), then `try_reuse`. Any doubt → `Ok(None)`
+    /// (sentinel; coordinator fetches inline, exactly as before Step C).
+    fn try_reuse_direct(
+        &self,
+        _canonical: &str,
+        entry: &crate::repository_catalog::DirectRepository,
+    ) -> Result<Option<PathBuf>, String> {
+        let runtime = self.direct_runtime()?;
+        let group = &runtime.catalog.groups[&entry.group_id];
+        if group.owner_profile_error.is_some() {
+            return Ok(None);
+        }
+        let Some(prepared) = runtime.groups.get(&entry.group_id).and_then(|s| s.ready()) else {
+            return Ok(None);
+        };
+        let _declaration = &group.declarations[entry.declaration_index];
+        let attributes = &prepared.attributes[entry.declaration_index];
+        let mut provenance = serde_json::json!({
+            "profile": "direct-file-template-v1",
+            "owner": group.owner,
+            "raw_identity": group.raw_identity,
+            "public_label": prepared.label.to_string(),
+            "definition_identity": prepared.definition.identity,
+            "sources": prepared.loaded.sources,
+            "attributes": attributes,
+            "schema": prepared.definition.schema,
+            "local": prepared.definition.local,
+            "owner_mapping": runtime.catalog.owner_mappings[&group.owner],
+            "repository_mapping": entry.mapping,
+        });
+        if prepared.definition.configure {
+            provenance
+                .as_object_mut()
+                .expect("provenance object")
+                .insert("configure".to_owned(), serde_json::Value::Bool(true));
+        }
+        if !prepared.definition.environ.is_empty() {
+            provenance
+                .as_object_mut()
+                .expect("provenance object")
+                .insert(
+                    "environ".to_owned(),
+                    serde_json::to_value(&prepared.definition.environ).map_err(|_| {
+                        "cannot serialize repository environment declaration".to_owned()
+                    })?,
+                );
+        }
+        if prepared.definition.local {
+            return Ok(None); // local rules never reuse across invocations
+        }
+        let spec_key = crate::repository_warm::specification_digest(
+            self,
+            &provenance,
+            &prepared.loaded.sources,
+            &prepared.definition.environ,
+        )?;
+        let workspace = std::fs::canonicalize(self.main_root())
+            .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let validating = self.clone();
+        crate::repository_store::try_reuse(self.source_cache_path()?, &spec_key, move |tree, recorded| {
+            crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+        })
+    }
+
     fn direct_root(&self, canonical: &str) -> Result<&Path, String> {
         let runtime = self.direct_runtime()?;
         let entry = runtime.catalog.repositories.get(canonical).ok_or_else(|| {
@@ -980,9 +1048,12 @@ impl RepositorySet {
             .ok_or_else(|| format!("missing direct repository root slot @@{canonical}"))?;
         // Claim before preparation: definitions can themselves be generated,
         // and a recursive definition demand must encounter our cycle guard.
-        slot.get_or_try_init(
+        // Step C: on a worker, the probe arm may serve a warm publication
+        // (pure reads, via `try_reuse_direct`) without preparing the group.
+        slot.get_or_probe(
             self.state.runtime_id,
             &format!("repository:{canonical}"),
+            || self.try_reuse_direct(canonical, entry),
             || {
                 let prepared = {
                     let _m = crate::repository_store::timing::mark(
@@ -1428,13 +1499,52 @@ impl RepositorySet {
         Ok((prepared, repository))
     }
 
+    /// Step C worker probe for an ordinary (extension-generated)
+    /// repository: only when the group is already prepared (its slot is
+    /// ready — extension evaluation itself is coordinator-only) and the
+    /// rule is not local.
+    fn try_reuse_ordinary(&self, canonical: &str) -> Result<Option<PathBuf>, String> {
+        let Some((prefix, _name)) = canonical.rsplit_once('+') else {
+            return Ok(None);
+        };
+        let runtime = self.direct_runtime()?;
+        let Some(id) = runtime.catalog.ordinary_routes.get(prefix) else {
+            return Ok(None);
+        };
+        let Some(prepared) = runtime.ordinary.get(id).and_then(|s| s.ready()) else {
+            return Ok(None);
+        };
+        let (_, repository) = self.ordinary_repository(canonical)?;
+        if repository.definition.local {
+            return Ok(None);
+        }
+        let mut provenance = Vec::new();
+        provenance
+            .extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
+        provenance.extend_from_slice(repository.canonical_name.as_bytes());
+        provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
+        provenance.extend_from_slice(&prepared.provenance);
+        let spec_key = crate::repository_warm::specification_digest_bytes(
+            self,
+            &provenance,
+            &repository.definition.environ,
+        )?;
+        let workspace = std::fs::canonicalize(self.main_root())
+            .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let validating = self.clone();
+        crate::repository_store::try_reuse(self.source_cache_path()?, &spec_key, move |tree, recorded| {
+            crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+        })
+    }
+
     fn ordinary_root(&self, canonical: &str) -> Result<&Path, String> {
         let (prepared, repository) = self.ordinary_repository(canonical)?;
         repository
             .root
-            .get_or_try_init(
+            .get_or_probe(
                 self.state.runtime_id,
                 &format!("repository:{canonical}"),
+                || self.try_reuse_ordinary(canonical),
                 || {
                     let (label, _) =
                         repository

@@ -1762,9 +1762,15 @@ impl Engine {
                             // Workers never fetch (review §1.2): asking for
                             // an unfetched repository returns the sentinel;
                             // the coordinator re-runs the unit inline at
-                            // its commit slot.
+                            // its commit slot. Step C: reuse-only demand is
+                            // enabled — a warm publication whose recorded
+                            // inputs validate may be served on the worker
+                            // (pure reads, published into the demand slot);
+                            // a miss still aborts with the sentinel.
                             let guard = crate::repository_demand::no_demand();
+                            let reuse = crate::repository_demand::reuse_only();
                             let unit = package::evaluate_load_unit(repositories.clone(), id);
+                            drop(reuse);
                             drop(guard);
                             *slots[index].lock().unwrap() = Some(unit);
                         }

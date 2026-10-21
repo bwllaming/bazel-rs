@@ -380,6 +380,70 @@ where
     materialize_keyed(cache, stage_key, &spec_identity(spec), provenance, validate, execute)
 }
 
+/// Reuse-only probe (Step C): if the specification pointer names a valid
+/// publication whose recorded inputs validate and whose tree verifies,
+/// return its root WITHOUT executing and without taking any stage lock.
+/// Pure reads only — safe on worker threads. `Ok(None)` = no reusable
+/// publication (caller decides: sentinel under the guard, execute else).
+pub fn try_reuse<V>(
+    cache: &Path,
+    spec_key: &str,
+    validate: V,
+) -> Result<Option<PathBuf>, String>
+where
+    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
+{
+    let direct = cache.join("direct");
+    let pointer = direct.join("specs").join(spec_key);
+    let Some(identity) = read_pointer(&pointer)? else {
+        return Ok(None);
+    };
+    let destination = direct.join("trees").join(&identity);
+    let manifest_path = direct
+        .join("manifests")
+        .join(format!("{identity}.json"));
+    let existing = {
+        let _m = timing::mark(&timing::PHASES.manifest_read);
+        let Some(bytes) = read_stable(&manifest_path).ok() else {
+            return Ok(None);
+        };
+        let Ok(existing) = serde_json::from_slice::<Manifest>(&bytes) else {
+            return Ok(None);
+        };
+        existing
+    };
+    if existing.identity != identity || existing.recorded.is_none() {
+        return Ok(None);
+    }
+    let recorded_ok = {
+        let _m = timing::mark(&timing::PHASES.recorded_check);
+        validate(
+            &destination,
+            existing.recorded.as_deref().unwrap_or_default(),
+        )
+        .unwrap_or(false)
+    };
+    if !recorded_ok {
+        return Ok(None);
+    }
+    let verified = {
+        let _m = timing::mark(&timing::PHASES.snapshot_check);
+        timing::count_snapshot(
+            existing.files.len() as u64,
+            existing.files.values().map(|e| e.size).sum::<u64>(),
+        );
+        verify_snapshot(&destination, &existing.files, verify_mode())
+            .is_ok_and(|matched| matched)
+    };
+    if !verified {
+        return Ok(None);
+    }
+    timing::PHASES
+        .reused
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(Some(destination))
+}
+
 /// [`materialize`] with the caller-computed specification pointer identity:
 /// digest-form callers pass `repository_warm::specification_digest` and skip
 /// serializing (and hashing) the full source-bearing spec bytes.
@@ -406,56 +470,17 @@ where
         ensure_directory(path)?;
     }
     // The pointer is published by atomic rename; an unlocked reader sees
-    // either the old or the new publication, never a partial one.
+    // either the old or the new publication, never a partial one. The warm
+    // check is the shared `try_reuse` probe (worker-safe).
     let call_start = timing::enabled().then(std::time::Instant::now);
-    let pointer = specs.join(spec_key);
-    if let Some(identity) = read_pointer(&pointer)? {
-        let destination = trees.join(&identity);
-        let manifest_path = manifests.join(format!("{identity}.json"));
-        let manifest = {
-            let _m = timing::mark(&timing::PHASES.manifest_read);
-            read_stable(&manifest_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
-        };
-        if let Some(existing) = manifest
-            && existing.identity == identity
-            && existing.recorded.is_some()
-        {
-            let recorded_ok = {
-                let _m = timing::mark(&timing::PHASES.recorded_check);
-                validate(
-                    &destination,
-                    existing.recorded.as_deref().unwrap_or_default(),
-                )
-                .unwrap_or(false)
-            };
-            let snapshot_ok = recorded_ok && {
-                let _m = timing::mark(&timing::PHASES.snapshot_check);
-                timing::count_snapshot(
-                    existing.files.len() as u64,
-                    existing
-                        .files
-                        .values()
-                        .map(|e| e.size)
-                        .sum::<u64>(),
-                );
-                verify_snapshot(&destination, &existing.files, verify_mode())
-                    .is_ok_and(|matched| matched)
-            };
-            if snapshot_ok {
-                timing::PHASES
-                    .reused
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if let Some(start) = call_start {
-                    timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
-                }
-                return Ok((destination, Publication::Reused));
-            }
+    if let Some(destination) = try_reuse(cache, spec_key, validate)? {
+        if let Some(start) = call_start {
+            timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
-        // A failing or absent validation falls through to execution, exactly
-        // like Bazel refetching when a watched dependency changed.
+        return Ok((destination, Publication::Reused));
     }
+    // A failing or absent validation falls through to execution, exactly
+    // like Bazel refetching when a watched dependency changed.
     // 128 bits: two repositories sharing a slug would share a stage.
     let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
     let stage_lock_path = locks.join(format!("stage-{slug}"));
@@ -583,7 +608,7 @@ where
     // re-execution, never a wrong reuse.
     {
         let _m = timing::mark(&timing::PHASES.publish);
-        publish_pointer(&specs, &pointer, &identity)?;
+        publish_pointer(&specs, &specs.join(spec_key), &identity)?;
     }
     timing::PHASES
         .executed
