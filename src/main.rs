@@ -22,6 +22,8 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
+Memory ceiling: --memory-limit=<MB> (build/run/test) or BAZEL_RS_MAX_MEMORY_MB
+  caps RSS (watchdog exit 42) + RLIMIT_AS; flag wins over env (docs/REPOSITORY_WARM_PERF.md).
 Repository verify: --verify-repo-tampering forces full re-hash of warm
   repository publications (default: stat-fingerprint trust, Bazel's model;
   env BAZEL_RS_VERIFY_REPOS=full is equivalent).
@@ -119,6 +121,7 @@ fn run() -> Result<(), String> {
         .unwrap_or(1)
         .min(32);
     let mut loading_phase_threads: Option<usize> = None;
+    let mut memory_limit_flag_mb: Option<u64> = None;
     let mut resolver_options = bazel_rs::module_graph::ResolverOptions::default();
     let mut repository_downloads_enabled = true;
     let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
@@ -197,6 +200,7 @@ fn run() -> Result<(), String> {
                 registry.check_lockfile_spelling(raw)?;
             }
         }
+        memory_limit_flag_mb = native.memory_limit_mb;
         lockfile_mode = native.lockfile_mode;
         lockfile_target = native.lockfile_target;
         action_dump = native.action_dump;
@@ -224,6 +228,26 @@ fn run() -> Result<(), String> {
         test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
+    // Memory ceiling (native-only safety valve, crate::memory_limit):
+    // --memory-limit=<MB> wins over BAZEL_RS_MAX_MEMORY_MB (Bazel's
+    // CLI-over-env convention); unset both = today's behavior. Installed
+    // before any heavy work: RLIMIT_AS covers the whole process
+    // (inherited by the sandbox worker across exec); the watchdog makes
+    // exceeding the RSS cap a graceful exit 42 instead of an OOM kill.
+    let memory_limit_mb = memory_limit_flag_mb.or_else(|| {
+        std::env::var("BAZEL_RS_MAX_MEMORY_MB").ok().and_then(|value| {
+            let parsed = bazel_rs::memory_limit::parse_cap_mb(&value);
+            if parsed.is_none() && !value.trim().is_empty() {
+                eprintln!(
+                    "bazel-rs: warning: ignoring invalid BAZEL_RS_MAX_MEMORY_MB={value:?} (want a positive integer number of MB)"
+                );
+            }
+            parsed
+        })
+    });
+    if let Some(cap_mb) = memory_limit_mb {
+        bazel_rs::memory_limit::install_ceiling(cap_mb);
+    }
     // The repository environment (client environment with --repo_env,
     // CommandEnvironment.java:342-416) and the downloader's proxies over it
     // (crate::download_proxy), fixed for the whole command.
@@ -490,6 +514,7 @@ fn run() -> Result<(), String> {
             bazel_rs::loading::module_timings::report();
             std::process::exit(outcome.exit_code);
         }
+        bazel_rs::memory_limit::report_peak(memory_limit_mb);
         return Ok(());
     }
     if command == "test" {
@@ -606,6 +631,7 @@ fn run() -> Result<(), String> {
             execution_note()
         );
     }
+    bazel_rs::memory_limit::report_peak(memory_limit_mb);
     Ok(())
 }
 
@@ -1421,6 +1447,12 @@ fn parse_loading_phase_threads(value: &str) -> Result<usize, String> {
     ))
 }
 
+fn parse_memory_limit_mb(value: &str) -> Result<u64, String> {
+    bazel_rs::memory_limit::parse_cap_mb(value).ok_or_else(|| {
+        format!("--memory-limit requires a positive integer number of MB, got {value:?}")
+    })
+}
+
 fn parse_jobs(value: &str) -> Result<usize, String> {
     if !value.is_empty()
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -1479,6 +1511,9 @@ struct NativeOptions {
     /// docs/PARALLEL_ANALYSIS.md); None keeps the engine's default
     /// (LoadingPhaseThreadsOption "auto": the available processors).
     loading_phase_threads: Option<usize>,
+    /// --memory-limit=<MB> (native-only): hard process memory ceiling;
+    /// flag wins over BAZEL_RS_MAX_MEMORY_MB (crate::memory_limit).
+    memory_limit_mb: Option<u64>,
     /// The N40 rc options outside the configuration (crate::rc_options).
     rc: bazel_rs::rc_options::RcOptions,
     resolver: bazel_rs::module_graph::ResolverOptions,
@@ -1533,6 +1568,7 @@ impl NativeOptions {
         Self {
             jobs: None,
             loading_phase_threads: None,
+            memory_limit_mb: None,
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
@@ -1769,6 +1805,14 @@ impl NativeOptions {
             .filter(|_| builds(command))
         {
             self.loading_phase_threads = Some(parse_loading_phase_threads(value)?);
+            false
+        } else if arg == "--memory-limit" {
+            self.memory_limit_mb = Some(parse_memory_limit_mb(
+                next.ok_or("--memory-limit requires a value in MB")?,
+            )?);
+            true
+        } else if let Some(value) = arg.strip_prefix("--memory-limit=") {
+            self.memory_limit_mb = Some(parse_memory_limit_mb(value)?);
             false
         } else if builds(command) && arg == "--spawn_strategy" {
             // CommaSeparatedNonEmptyOptionListConverter (ExecutionOptions.

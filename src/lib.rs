@@ -65,6 +65,7 @@ pub mod location_printer;
 pub mod lockfile;
 mod lockfile_extensions;
 pub mod materializer;
+pub mod memory_limit;
 pub mod module_cli;
 pub mod module_extension;
 pub mod module_graph;
