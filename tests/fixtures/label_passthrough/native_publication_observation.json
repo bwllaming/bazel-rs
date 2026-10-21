@@ -11,7 +11,7 @@
     "scope": "Exact publication field from the retained cold extension row. The original 30-command report remains FAIL; no warm observation or full-preparation acceptance is implied."
   },
   "store_compatibility": {
-    "repository_store_sha256": "8aded87790294c6c86d4dc653b195a6a301c4c0395cde00b5580df0b14414959",
+    "repository_store_sha256": "82e808b152f2441d17ba872f5eb2830ee3950bcc54ba2afdd57f562a00a3f4b5",
     "basis": "retained_legacy_manifest_bytes_round_trip_without_a_symlink_field"
   },
   "publication": {

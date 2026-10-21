@@ -1262,8 +1262,13 @@ impl RepositorySet {
                 // Only computed when the diagnostic is requested (lazy
                 // provenance otherwise stays unserialized on reuse paths).
                 if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
-                    let provenance =
-                        direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)?;
+                    let provenance = direct_provenance_bytes(
+                        prepared,
+                        group,
+                        entry,
+                        attributes,
+                        &owner_mapping,
+                    )?;
                     eprintln!(
                         "PROVENANCE {canonical} {}",
                         String::from_utf8_lossy(&provenance)

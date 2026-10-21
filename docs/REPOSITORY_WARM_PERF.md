@@ -496,3 +496,5 @@ past materialization. New trees on warm runs: **0** (12,388 stable;
 production cache restored untouched after the cold runs and
 re-verified warm: ts 9.0s, 601 MB, md5 eb4c8839…). `--memory-limit=64`
 is rejected with the sliding-scale policy text, exit 1.
+
+Polish (integration-19): FOLLOW-UP 3 LANDED (sliding cap 64GB, bounded auto threads).
