@@ -473,3 +473,26 @@ see the acceptance table at the end of this section (filled by the
 re-acceptance run; the follow-up-2 cold number was 3,430 MB at the
 old 128,683 MB default, i.e. the peak was never the problem — the
 cap around it was).
+
+Measured with the follow-up-3 release binary (this host, 251 GB /
+MemTotal 257,366 MB, production cache `~/code/bazel-rs-out` unless
+cold): the announcement on every run is the 65,536 MB line above.
+
+| workload | wall | peak RSS (VmHWM sampled) | stdout |
+|---|---|---|---|
+| warm `query //src/ts:all` t=32 | 10.8s | 601 MB | md5 eb4c8839… |
+| warm `query //src/...` t=32 | 56.3s | 3,425 MB | md5 820747e4… (18,798 lines) |
+| warm `query //src/...` t=1 / t=8 / jitter8 | 49.8s / 51.3s / 52.6s | 3,429 / 3,440 / 3,440 MB | all md5 820747e4… |
+| warm build 41 targets t=32 `--jobs=32` | 72.1s | 1,395 MB | 363/363 cache hits, 0 executed, md5 d89a7d7d… |
+| warm `//src/...` auto threads, `--memory-limit=8192` | 52.6s | 3,442 MB | md5 820747e4… |
+| warm `//src/...` `--memory-limit=2048` | 34.0s | killed (75% warning at 1,667 MB) | **exit 33**, killed line |
+| **cold** `query //src/ts:all` (empty cache) | 78.4s | **607 MB** | md5 eb4c8839…, 2,058 trees published |
+| **cold** `query //src/...` (same cold cache) | 144.7s | **3,434 MB** | md5 820747e4…, 3,858 trees |
+
+Cold acceptance: cold `//src/...` peak **3,434 MB ≤ 65,536 MB cap +
+5%** (5.2% of the cap) — the cold executed path stays in the warm
+peak class, confirming per-repo provenance bytes are not retained
+past materialization. New trees on warm runs: **0** (12,388 stable;
+production cache restored untouched after the cold runs and
+re-verified warm: ts 9.0s, 601 MB, md5 eb4c8839…). `--memory-limit=64`
+is rejected with the sliding-scale policy text, exit 1.
