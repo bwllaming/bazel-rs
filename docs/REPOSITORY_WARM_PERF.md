@@ -156,3 +156,40 @@ Determinism: warm `//src/ts:all` stdout byte-identical at
 threads 1/8/32 and threads=8 + 25 ms jitter; the three failure shapes
 stay green in tests/parallel_loading.rs (sentinel abort suppresses
 partial prints; cached-failure replay; first error in pattern order).
+
+## Acceptance measurements (Step D, final binary, warm, t=32)
+
+| workload | BEFORE (f0f9c22) | AFTER | target | verdict |
+|---|---|---|---|---|
+| `query //src/ts:all` | 123.1–129.3s | **57.8–65.9s** (stdout byte-identical) | ≤25s | MISS |
+| `query //src/...` (18,798 targets) | not recorded (est. ≥230s by ts ratio) | **143.9–226.5s** | ≤60s | MISS |
+| warm build 41 genrule targets, 363 actions | ~240s class (60-target set) | **68–77s, 363/363 cache hits, 0 executed** | ≤15s at 384/384 | MISS |
+| new trees on warm runs | +54/run class | **0** (12,386 stable across all warm runs) | 0 | PASS |
+| `BAZEL_RS_DUMP_ACTIONS` dump | — | byte-identical t=1 vs t=32 vs jitter8 (after `trees/<hash>` normalization, as before) | identical | PASS |
+| stdout at t=1/8/32 + jitter | — | byte-identical on query and build | identical | PASS |
+| full cargo test | — | 104 suites / ~2,027 tests, 0 failed | green | PASS |
+| python validators | 881 | 883 tests OK | green | PASS |
+| fmt / clippy -D warnings | — | clean | clean | PASS |
+
+### Why the walls miss, honestly
+
+Repository work is now off the critical path (warm validation totals
+0.2–1.1 s per run; per-root serial sum 0.26–1.2 s). What remains is
+`.bzl` evaluation: the rules_js/rules_go macro graphs are re-evaluated
+in every process (no resident server), and `Work::Finish` serializes
+evaluation on the single global `BZL_EVALUATION` lock (review §1.3's
+known simplification, flagged in PARALLEL_ANALYSIS.md as the N62
+lever: per-label single-flight with in-flight waiting, or an
+invocation-persistent `.bzl` cache). At t=1 vs t=32 the walls are
+identical (60.5 vs 60.9 s), proving the remaining time is that serial
+evaluation, not repository fetching — this increment removed the
+repository share (~63 s of the 123 s; spec serialization 64 GB → digest
+keys, warm validation 51 s serial → parallel probes).
+
+Also observed, pre-existing at f0f9c22 and out of scope: building
+`*_unique_buildid` genrule targets fails with `invalid direct
+repository path or path/depth limit exceeded` (confirmed identical on
+the pristine f0f9c22 binary), and `//src/k8s:alertdashboards` fails in
+`ctx.actions.run` (`progress_message` None). The acceptance build set
+is the 41 genrule targets in artifacts/stepD-50.txt that build at
+baseline.

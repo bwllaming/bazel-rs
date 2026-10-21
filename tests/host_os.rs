@@ -652,7 +652,19 @@ fn unchanged_host_keeps_environment_watches_and_manifest_profile_without_action_
             let changed = f.build(&[(A, "beta")]);
             changed.assert_bytes(b"constant");
             assert_ne!(f.identity(&changed), f.identity(&first));
-            assert_eq!(f.manifest(&changed)["files"], first_manifest["files"]);
+            // Files match on content; `stat` fingerprints (Step B) record
+            // the new tree's inodes/times and legitimately differ.
+            let strip_stat = |files: &serde_json::Value| {
+                let mut files = files.clone();
+                for entry in files.as_object_mut().unwrap().values_mut() {
+                    entry.as_object_mut().unwrap().remove("stat");
+                }
+                files
+            };
+            assert_eq!(
+                strip_stat(&f.manifest(&changed)["files"]),
+                strip_stat(&first_manifest["files"])
+            );
             assert_eq!(
                 inventory(changed.paths[&f.label()].parent().unwrap()),
                 first_tree

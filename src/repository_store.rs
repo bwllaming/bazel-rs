@@ -176,15 +176,36 @@ pub mod timing {
         pub roots: std::sync::Mutex<Vec<(String, f64, &'static str)>>,
     }
     pub static PHASES: Phases = Phases {
-        manifest_read: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
-        recorded_check: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
-        snapshot_check: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        manifest_read: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
+        recorded_check: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
+        snapshot_check: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
         snapshot_files: AtomicU64::new(0),
         snapshot_bytes: AtomicU64::new(0),
-        execute: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
-        publish: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
-        spec_serialize: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
-        prepare_group: Acc { calls: AtomicU64::new(0), nanos: AtomicU64::new(0) },
+        execute: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
+        publish: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
+        spec_serialize: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
+        prepare_group: Acc {
+            calls: AtomicU64::new(0),
+            nanos: AtomicU64::new(0),
+        },
         reused: AtomicU64::new(0),
         executed: AtomicU64::new(0),
         roots: std::sync::Mutex::new(Vec::new()),
@@ -221,10 +242,10 @@ pub mod timing {
     }
 
     pub fn record_root(stage_key: &str, secs: f64, outcome: &'static str) {
-        if enabled() {
-            if let Ok(mut roots) = PHASES.roots.lock() {
-                roots.push((stage_key.to_owned(), secs, outcome));
-            }
+        if enabled()
+            && let Ok(mut roots) = PHASES.roots.lock()
+        {
+            roots.push((stage_key.to_owned(), secs, outcome));
         }
     }
 
@@ -377,7 +398,14 @@ where
     F: FnOnce(&Path) -> Result<Executed, String>,
     V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
 {
-    materialize_keyed(cache, stage_key, &spec_identity(spec), provenance, validate, execute)
+    materialize_keyed(
+        cache,
+        stage_key,
+        &spec_identity(spec),
+        provenance,
+        validate,
+        execute,
+    )
 }
 
 /// Reuse-only probe (Step C): if the specification pointer names a valid
@@ -385,11 +413,7 @@ where
 /// return its root WITHOUT executing and without taking any stage lock.
 /// Pure reads only — safe on worker threads. `Ok(None)` = no reusable
 /// publication (caller decides: sentinel under the guard, execute else).
-pub fn try_reuse<V>(
-    cache: &Path,
-    spec_key: &str,
-    validate: V,
-) -> Result<Option<PathBuf>, String>
+pub fn try_reuse<V>(cache: &Path, spec_key: &str, validate: V) -> Result<Option<PathBuf>, String>
 where
     V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
 {
@@ -399,9 +423,7 @@ where
         return Ok(None);
     };
     let destination = direct.join("trees").join(&identity);
-    let manifest_path = direct
-        .join("manifests")
-        .join(format!("{identity}.json"));
+    let manifest_path = direct.join("manifests").join(format!("{identity}.json"));
     let existing = {
         let _m = timing::mark(&timing::PHASES.manifest_read);
         let Some(bytes) = read_stable(&manifest_path).ok() else {
@@ -432,8 +454,7 @@ where
             existing.files.len() as u64,
             existing.files.values().map(|e| e.size).sum::<u64>(),
         );
-        verify_snapshot(&destination, &existing.files, verify_mode())
-            .is_ok_and(|matched| matched)
+        verify_snapshot(&destination, &existing.files, verify_mode()).is_ok_and(|matched| matched)
     };
     if !verified {
         return Ok(None);
@@ -989,15 +1010,20 @@ fn verify_snapshot(
             let Some(target) = target.to_str() else {
                 return Ok(false);
             };
-            return Ok(want.symlink.as_deref() == Some(target)
-                && want.size == target.len() as u64);
+            return Ok(want.symlink.as_deref() == Some(target) && want.size == target.len() as u64);
         }
         if before.is_dir() {
             if !want.directory || mode_of(&before)? != want.mode {
                 return Ok(false);
             }
             for child in fs::read_dir(path).map_err(|e| e.to_string())? {
-                if !visit(root, &child.map_err(|e| e.to_string())?.path(), expected, seen, start)? {
+                if !visit(
+                    root,
+                    &child.map_err(|e| e.to_string())?.path(),
+                    expected,
+                    seen,
+                    start,
+                )? {
                     return Ok(false);
                 }
             }
@@ -1405,7 +1431,10 @@ mod tests {
             manifest.recorded.as_deref(),
             Some(br#"{"version":1}"#.as_slice())
         );
-        assert_eq!(content_view(&manifest.files), content_view(&snapshot(&tree).unwrap()));
+        assert_eq!(
+            content_view(&manifest.files),
+            content_view(&snapshot(&tree).unwrap())
+        );
         assert!(manifest.files.values().all(|e| e.stat.is_some()));
         no_stages(cache.path());
     }
@@ -1718,10 +1747,7 @@ mod tests {
             assert_eq!(repaired.identity, expected.identity);
             assert_eq!(repaired.spec, expected.spec);
             assert_eq!(repaired.recorded, expected.recorded);
-            assert_eq!(
-                content_view(&repaired.files),
-                content_view(&expected.files)
-            );
+            assert_eq!(content_view(&repaired.files), content_view(&expected.files));
         };
         for bytes in [b"{".as_slice(), b"{}", b"null", b"{\"format\":999}"] {
             fs::write(&path, bytes).unwrap();
@@ -2046,8 +2072,7 @@ mod tests {
         assert_eq!(status, Publication::Reused);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
         let manifest: Manifest =
-            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
-                .unwrap();
+            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
         assert!(manifest.files.values().all(|e| e.stat.is_some()));
         // (2) size change: re-execute.
         fs::write(tree.join("data"), b"bad-longer-content").unwrap();
@@ -2068,17 +2093,18 @@ mod tests {
             .arg(&path)
             .output()
             .unwrap();
-        assert!(out.status.success(), "touch: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "touch: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
         let (_, status) = run(cache.path());
         assert_eq!(status, Publication::Executed);
         assert_eq!(executions.load(Ordering::SeqCst), 3);
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         // Full mode agrees on the untouched tree.
-        assert_eq!(
-            verify_snapshot(&tree, &snapshot(&tree).unwrap(), VerifyMode::Full).unwrap(),
-            true
-        );
+        assert!(verify_snapshot(&tree, &snapshot(&tree).unwrap(), VerifyMode::Full).unwrap());
         no_stages(cache.path());
     }
 

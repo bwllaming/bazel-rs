@@ -67,9 +67,10 @@ fn sha256(bytes: &[u8]) -> String {
 /// Serialize the repository specification: length-framed provenance, the host
 /// markers and the declared environment's captured values. Pure in its inputs;
 /// equal bytes address the same publication pointer. Retained as the
-/// byte-exact reference the digest form mirrors (tests pin equivalence of
-/// inputs); production callers use the digest forms below.
+/// byte-exact reference the digest form mirrors; production callers use the
+/// digest forms below.
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn specification(
     repositories: &RepositorySet,
     provenance: &[u8],

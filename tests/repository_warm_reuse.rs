@@ -239,9 +239,16 @@ fn warm_parallel_query_is_byte_identical_and_reuses() {
         outputs.push((out.stdout.clone(), out.stderr.clone()));
     }
     for pair in outputs.windows(2) {
-        assert_eq!(pair[0].0, pair[1].0, "query stdout must be byte-identical across thread counts/jitter");
+        assert_eq!(
+            pair[0].0, pair[1].0,
+            "query stdout must be byte-identical across thread counts/jitter"
+        );
     }
-    assert_eq!(listing(&direct.join("trees")), trees_before, "no new trees on warm parallel query");
+    assert_eq!(
+        listing(&direct.join("trees")),
+        trees_before,
+        "no new trees on warm parallel query"
+    );
     assert_eq!(
         publication_state(&direct.join("specs")),
         specs_before,

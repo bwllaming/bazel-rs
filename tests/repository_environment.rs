@@ -149,6 +149,17 @@ impl Fixture {
         manifest
     }
 
+    /// Manifest `files` with the Step-B `stat` fingerprints removed:
+    /// comparisons of tree content across publications must not depend on
+    /// the staged tree's inodes/timestamps.
+    fn files_content(manifest: &Value) -> Value {
+        let mut files = manifest["files"].clone();
+        for entry in files.as_object_mut().unwrap().values_mut() {
+            entry.as_object_mut().unwrap().remove("stat");
+        }
+        files
+    }
+
     fn clean_failure(&self) {
         // Deterministic stage locks persist (empty files); trees, manifests
         // and stage directories stay empty after failures.
@@ -418,8 +429,8 @@ fn constant_watch(body: &str, options: &str) {
             built.assert_bytes(b"constant");
             built.callbacks(1);
             assert_eq!(
-                f.manifest(built.path(f.made_label()))["files"],
-                f.manifest(first.path(f.made_label()))["files"]
+                Fixture::files_content(&f.manifest(built.path(f.made_label()))),
+                Fixture::files_content(&f.manifest(first.path(f.made_label())))
             );
         }
         assert_ne!(absent.paths, empty.paths);
@@ -577,8 +588,8 @@ fn shared_snapshot_does_not_merge_other_repository_watch_sets() {
     assert_eq!(first.bytes, second.bytes);
     for label in [other, made] {
         assert_eq!(
-            f.manifest(first.path(label))["files"],
-            f.manifest(second.path(label))["files"]
+            Fixture::files_content(&f.manifest(first.path(label))),
+            Fixture::files_content(&f.manifest(second.path(label)))
         );
     }
 }

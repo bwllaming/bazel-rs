@@ -1032,9 +1032,13 @@ impl RepositorySet {
         let workspace = std::fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let validating = self.clone();
-        crate::repository_store::try_reuse(self.source_cache_path()?, &spec_key, move |tree, recorded| {
-            crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
-        })
+        crate::repository_store::try_reuse(
+            self.source_cache_path()?,
+            &spec_key,
+            move |tree, recorded| {
+                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+            },
+        )
     }
 
     fn direct_root(&self, canonical: &str) -> Result<&Path, String> {
@@ -1116,8 +1120,9 @@ impl RepositorySet {
                         &prepared.loaded.sources,
                         &prepared.definition.environ,
                     )?;
-                    let bytes = serde_json::to_vec(&provenance)
-                        .map_err(|error| format!("cannot serialize repository provenance: {error}"))?;
+                    let bytes = serde_json::to_vec(&provenance).map_err(|error| {
+                        format!("cannot serialize repository provenance: {error}")
+                    })?;
                     (key, bytes)
                 };
                 // Hidden diagnostic (N62 cold-variance hunt,
@@ -1519,8 +1524,7 @@ impl RepositorySet {
             return Ok(None);
         }
         let mut provenance = Vec::new();
-        provenance
-            .extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
+        provenance.extend_from_slice(&(repository.canonical_name.len() as u64).to_le_bytes());
         provenance.extend_from_slice(repository.canonical_name.as_bytes());
         provenance.extend_from_slice(&(prepared.provenance.len() as u64).to_le_bytes());
         provenance.extend_from_slice(&prepared.provenance);
@@ -1532,9 +1536,13 @@ impl RepositorySet {
         let workspace = std::fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let validating = self.clone();
-        crate::repository_store::try_reuse(self.source_cache_path()?, &spec_key, move |tree, recorded| {
-            crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
-        })
+        crate::repository_store::try_reuse(
+            self.source_cache_path()?,
+            &spec_key,
+            move |tree, recorded| {
+                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+            },
+        )
     }
 
     fn ordinary_root(&self, canonical: &str) -> Result<&Path, String> {
