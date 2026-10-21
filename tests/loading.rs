@@ -39,7 +39,18 @@ impl Drop for Workspace {
     }
 }
 fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
+    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+    // Startup notice, not a diagnostic (crate::memory_limit).
+    let stderr = stderr
+        .lines()
+        .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if stderr.is_empty() {
+        stderr
+    } else {
+        stderr + "\n"
+    }
 }
 fn outputs(o: &Output) -> Vec<PathBuf> {
     assert!(o.status.success(), "{}", stderr(o));

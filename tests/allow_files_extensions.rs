@@ -162,6 +162,17 @@ impl Fixture {
     fn rejected(&self, target: &str) -> String {
         let output = self.build(target);
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        // Startup notice, not a diagnostic (crate::memory_limit).
+        let stderr = stderr
+            .lines()
+            .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stderr = if stderr.is_empty() {
+            stderr
+        } else {
+            stderr + "\n"
+        };
         assert_eq!(output.status.code(), Some(1), "{stderr}");
         assert!(output.stdout.is_empty(), "{stderr}");
         stderr.replace(&self.0.path().display().to_string(), "WS")

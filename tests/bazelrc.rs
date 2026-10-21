@@ -132,7 +132,18 @@ impl Workspace {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // Startup notice, not a diagnostic (crate::memory_limit).
+    let stderr = stderr
+        .lines()
+        .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if stderr.is_empty() {
+        stderr
+    } else {
+        stderr + "\n"
+    }
 }
 
 fn rc_path(ws: &Workspace, name: &str) -> String {

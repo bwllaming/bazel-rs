@@ -266,6 +266,7 @@ fn run() -> Result<(), String> {
     };
     if let Some(cap_mb) = memory_limit_mb {
         if default_capped {
+            bazel_rs::memory_limit::mark_default_cap();
             eprintln!(
                 "bazel-rs: memory limit defaulted to {cap_mb} MB (50% of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions"
             );

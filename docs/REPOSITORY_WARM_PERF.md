@@ -277,3 +277,124 @@ Measured warm peaks (VmHWM, this branch): ts:all t32 **601 MB**;
 byte-identical stdout). At `--memory-limit=2048`, //src/... warns at 75%
 (1,569 MB) then is killed at **exit 42** (33.2s) with the exact message
 above; ts:all under a 2048 cap completes (peak 601 MB).
+
+## Perf follow-up 2 (oracle blockers on 97caa84/22cade7/a15efa8)
+
+### 1. Provenance cache blowup — REMOVED
+
+`PreparedOrdinary::framed_provenance` cached a full framed copy of the
+group's ~31 MB provenance per canonical name, forever. Each canonical
+name executes at most once per process, so the cache could never be
+hit twice; a cold run executing ~2,058 ordinary repositories would
+have held ~64 GB. `framed_provenance` now builds the bytes ON DEMAND
+and returns them unretained (`materialize_lazy` already ran it only on
+the execute path). The per-name spec-key cache stays (small strings).
+
+Evidence that the executed-path peak is bounded (this host, 251 GB
+RAM, default cap): cold `//src/ts:all` from an empty cache (cache dir
+moved aside): exit 0, 75.7s, VmHWM 609 MB, md5 eb4c8839… Cold
+`//src/...` (executes the repos ts misses): exit 0, 143.8s, VmHWM
+3,430 MB, 3,858 trees published, md5 820747e4… — the same peak class
+as warm (3,423 MB), NOT the ~64 GB the cache implied. The production
+cache was then restored untouched (12,388 trees) and re-verified warm.
+
+### 2+3. Memory ceiling — watchdog-only, default-capped, exit 33
+
+a15efa8's RLIMIT_AS is DROPPED entirely (no setrlimit remains): an
+address-space rlimit is inherited by every child, so a bazel-rs-sized
+cap hard-breaks legitimate child actions (node/JVM/Go reserve far more
+virtual space than they touch). Regression test
+`watchdog_installs_no_rlimit_as` samples /proc/<pid>/limits of the
+running binary and asserts `Max address space: unlimited` throughout.
+
+The watchdog (250 ms /proc/self/statm poll) now: >75% warns once;
+>cap sets the stop flag, SIGKILLs every live child process group
+registered through `spawn_lock::spawn` (children started in their own
+group: action spawns now `process_group(0)`, joining repository
+execute(), git, credential helpers and test spawns; kill via the
+existing `git_process::kill_group`), prints the killed line, and exits
+**33** — Bazel's own OUT_OF_MEMORY (ExitCode.java:33) — not the old
+private 42. Caps < 256 MB are rejected up front (`memory limit of
+64 MB is below the minimum of 256 MB (bazel-rs's own startup footprint
+exceeds it); raise the limit or unset it for the default of 50% of
+machine memory`).
+
+Unset flag+env now installs a DEFAULT cap of 50% of MemTotal, announced
+once: `bazel-rs: memory limit defaulted to 128683 MB (50% of machine
+memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass
+--memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not
+child actions`. (The brief's "64 GB host -> 32 GB" assumed 64 GB; this
+host actually has 251 GB RAM, so the default is 128,683 MB. The rule
+is the same: half of MemTotal.) Set BAZEL_RS_MAX_MEMORY_MB to move it:
+**the env var is the recommended place** — `--memory-limit` in a
+shared `.bazelrc` also reaches genuine Bazel, which rejects the
+unknown option and breaks. The cap bounds bazel-rs itself, not child
+actions: a JVM/node action keeps the host's limits, and bazel-rs's RSS
+does not include children's pages.
+
+Measured with the fixed binary: `--memory-limit=2048` on warm
+`//src/...`: 75% warning at 1,667 MB, killed line, **exit 33**.
+`--memory-limit=64`: rejected, exit 1, message above. Unset on
+`//src/ts:all`: default line + `peak RSS (VmHWM) 600 MB (memory limit
+128683 MB)`, exit 0.
+
+### 4. Prefix-binary evidence for //src/...
+
+The surviving /tmp binary at the prefix turned out DISTRUSTED (it
+reported ~69 GB and was OOM-killed at 137 both warm and guarded —
+inconsistent with every other build; discarded, not evidence). c78542b
+was rebuilt from source in the isolated scratch checkout
+/tmp/opencode/perf-prefix-build (its .envrc forces an in-tree target,
+noted): warm `//src/...` t=32 completes in 162.0s, sampled peak
+3,438 MB, stdout BYTE-IDENTICAL to fu-src32.out (md5 820747e4…,
+18,798 lines). Together with the fixed binary's byte-identical run,
+the c78542b->HEAD output identity for //src/... is now proven directly.
+`//src/...` t=1/8 outputs added (fixed binary): t=1, t=8, jitter8
+(BAZEL_RS_LOADING_JITTER=25) all md5 820747e4….
+
+### 5. Peak-memory bisect (warm //src/... t=32, same cache)
+
+| binary | wall | peak RSS |
+|---|---|---|
+| f0f9c22 (rebuilt in scratch) | 394.2s | 3,439 MB |
+| c78542b (rebuilt in scratch) | 162.0s | 3,438 MB |
+| HEAD (fixed) | 56–62s | 3,423–3,439 MB |
+
+**Attribution, honestly:** the "1.24 GB history vs 3.42 GB now" gap
+does NOT reproduce between any of these three binaries on this cache —
+all three peak at ~3.44 GB. The perf increments (f0f9c22->c78542b->HEAD)
+changed TIME (394s -> 162s -> ~60s) by removing the 64 GB of spec
+serialization, not the peak. The 3.4 GB peak is the retained
+analysis/loading state for 18,798 targets (its plateau is already
+reached by ~40s in, before repository execution dominates), and the
+1.24 GB figure from Step-D-era notes was measured on the smaller
+warm-build workload (41 targets; the fixed binary measures 1,396 MB
+there), not on //src/... . First-after-upgrade behaviour: ordinary
+pointers republish once (new pointer profile from 97caa84), direct
+pointers unchanged (the warm ts run still reports its 600 MB peak and
+byte-identical stdout; the reused/executed split is unchanged from the
+97caa84 measurement);
+cold peaks bounded as in §1.
+
+### 6. Same-class audit (actions string-or-None)
+
+`actions.symlink`'s `progress_message` rejected explicit None with a
+hand-rolled message-divergent check — same class as the run/run_shell
+fix. It now goes through the shared `string_or_none` (explicit None =
+default "Creating symlink %{output}"; int fails with the unified
+string-or-NoneType message). Test: `symlink_accepts_explicit_none_progress_message`.
+`exec_group`/`toolchain` on run/run_shell already accept explicit None
+(`group_arguments`; covered by tests/exec_groups.rs). `actions.write`'s
+`mnemonic` is accepted-and-discarded by design (Bazel validates its
+type; the native profile registers no mnemonic for write actions) —
+not the rejecting-None class, left as is.
+
+### Acceptance re-measure (fixed binary, warm, production cache)
+
+| workload | result |
+|---|---|
+| `query //src/ts:all` t=32 | 8.3–11s, md5 eb4c8839…, peak 600 MB |
+| `query //src/...` t=32 | 56–62s, md5 820747e4…, peak 3,423 MB |
+| `query //src/...` t=1 / t=8 / jitter8 | all md5 820747e4… |
+| build 41 targets (stepD-50 head) | 72s, 363/363 cache hits, 0 executed, md5 d89a7d7d… (== fu-build32.out), peak 1,396 MB |
+| new trees on warm runs | 0 (12,388 stable) |

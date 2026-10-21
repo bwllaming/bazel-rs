@@ -63,9 +63,11 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// Unset cap: the 50%-of-MemTotal default is announced once, the run
-/// completes, and the peak line names the default. (Warm peaks of this
-/// fixture are tens of MB, far below any host's default.)
+/// Unset cap: the 50%-of-MemTotal default is announced once and the
+/// run completes. The default stays silent otherwise (no peak line —
+/// that is explicit-cap-only, so ordinary runs keep their summary as
+/// the last bazel-rs line). (Warm peaks of this fixture are tens of
+/// MB, far below any host's default.)
 #[test]
 fn default_cap_is_announced_and_completes() {
     let ws = Workspace::new(&[("BUILD.bazel", "filegroup(name='x', srcs=[])\n")]);
@@ -78,7 +80,7 @@ fn default_cap_is_announced_and_completes() {
     );
     assert!(err.contains("(50% of machine memory)"), "{err}");
     assert!(err.contains("not child actions"), "{err}");
-    assert!(err.contains("peak RSS (VmHWM)"), "{err}");
+    assert!(!err.contains("peak RSS (VmHWM)"), "{err}");
 }
 
 /// Caps below the minimum are rejected with a clear message, by flag
@@ -174,6 +176,91 @@ fn watchdog_kills_over_cap_with_bazel_oom_code_33() {
         "{}",
         stderr(&output)
     );
+}
+
+/// No RLIMIT_AS is installed (perf follow-up 2 blocker regression):
+/// with the watchdog already installed (the binary announces it on the
+/// debug hook), /proc/self/limits of the bazel-rs process must still
+/// show an unlimited address space. An address-space rlimit would be
+/// inherited by every child action and hard-break node/JVM/Go tools.
+#[test]
+fn watchdog_installs_no_rlimit_as() {
+    // Sample /proc/<pid>/limits repeatedly while a large query runs:
+    // ceiling installation happens before heavy work, so samples taken
+    // after ~1s are post-install; every sample must show unlimited.
+    let mut filler = String::new();
+    for i in 0..8000 {
+        filler.push_str(&format!("filegroup(name='t{i}', srcs=[])\n"));
+    }
+    let ws = Workspace::new(&[("BUILD.bazel", &filler)]);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+    command
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=private-cache",
+            "query",
+            "--memory-limit=4096",
+            "//...",
+        ])
+        .current_dir(ws.path())
+        .env("BAZEL_RS_DEBUG_WATCHDOG", "1")
+        .env_remove("BAZEL_RS_MAX_MEMORY_MB")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let pid = child.id();
+    // Drain stdout/stderr so the child never blocks on a full pipe.
+    let drain_out = child.stdout.take().unwrap();
+    let drain_err = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut sink = Vec::new();
+        let _ = std::io::BufReader::new(drain_out).read_to_end(&mut sink);
+    });
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut sink = Vec::new();
+        let _ = std::io::BufReader::new(drain_err).read_to_end(&mut sink);
+    });
+    // Wait until the process exits or we have sampled post-install
+    // limits. The debug line goes to stderr, which we cannot read
+    // without draining; /proc/<pid>/limits is sampled live instead,
+    // and the kill-path test separately proves the watchdog runs.
+    // Sampling starts immediately; ceiling installation happens within
+    // the first moments (before heavy work), so samples taken after
+    // ~1s are post-install. We assert the address space stays
+    // unlimited at every sample.
+    let start = std::time::Instant::now();
+    let mut samples = 0;
+    loop {
+        match child.try_wait().unwrap() {
+            Some(status) => {
+                assert!(status.success(), "query failed: {status}");
+                break;
+            }
+            None => {
+                if start.elapsed() > std::time::Duration::from_secs(1) {
+                    let limits = fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+                    let line = limits
+                        .lines()
+                        .find(|l| l.starts_with("Max address space"))
+                        .expect("limits line");
+                    assert!(
+                        line.contains("unlimited"),
+                        "RLIMIT_AS installed (must stay unlimited): {line}"
+                    );
+                    samples += 1;
+                }
+                assert!(
+                    start.elapsed() < std::time::Duration::from_secs(120),
+                    "query timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    assert!(samples > 0, "never sampled the running process");
+    let _ = ws;
 }
 
 /// The watchdog kill sweeps live child groups: a build whose action

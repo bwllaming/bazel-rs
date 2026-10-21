@@ -59,7 +59,19 @@ impl Fixture {
     }
 }
 fn error(result: &Output) -> String {
-    String::from_utf8_lossy(&result.stderr).into_owned()
+    let stderr = String::from_utf8_lossy(&result.stderr).into_owned();
+    // Startup notice, not a diagnostic (crate::memory_limit); stripping
+    // it also keeps the "no host limit" assertions below about limits.
+    let stderr = stderr
+        .lines()
+        .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if stderr.is_empty() {
+        stderr
+    } else {
+        stderr + "\n"
+    }
 }
 fn reject(result: &Output, marker: &str) {
     assert!(!result.status.success());

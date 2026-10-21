@@ -40,6 +40,14 @@ pub const MIN_CAP_MB: u64 = 256;
 
 static WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// The installed cap is the silent default (set by main before install).
+static DEFAULT_CAP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Mark the cap about to be installed as the default (main only, so
+/// report_peak can stay silent for it).
+pub fn mark_default_cap() {
+    DEFAULT_CAP_ACTIVE.store(true, Ordering::SeqCst);
+}
 static LIVE_GROUPS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
 
 /// True once the watchdog has fired: workers should stop starting new
@@ -173,6 +181,12 @@ fn page_size_bytes() -> Option<u64> {
 /// the module docs). Idempotent. Call from main::run startup before
 /// any heavy work, once the effective cap is resolved.
 pub fn install_ceiling(cap_mb: u64) {
+    // Debug/test hook: announce installation so a harness sampling
+    // /proc/<pid>/limits knows the ceiling is in force (the RLIMIT_AS
+    // regression check reads the limits only after this line).
+    if std::env::var_os("BAZEL_RS_DEBUG_WATCHDOG").is_some_and(|v| !v.is_empty()) {
+        eprintln!("bazel-rs: debug: watchdog installed (cap {cap_mb} MB)");
+    }
     start_watchdog(cap_mb);
 }
 
@@ -188,10 +202,13 @@ pub fn peak_rss_bytes() -> Option<u64> {
     None
 }
 
-/// Print the final peak line at normal exit when a cap is installed
-/// (BAZEL_RS_TIMING-style diagnostics; stderr, once). No-op without cap.
+/// Print the final peak line at normal exit when an EXPLICIT cap is
+/// installed (BAZEL_RS_TIMING-style diagnostics; stderr, once). The
+/// default cap is silent apart from its one-line announcement: a peak
+/// line on every run would drown the build summary (and broke the
+/// summary-line parsers). No-op without any cap.
 pub fn report_peak(cap_mb: Option<u64>) {
-    if cap_mb.is_none() {
+    if cap_mb.is_none() || DEFAULT_CAP_ACTIVE.load(Ordering::SeqCst) {
         return;
     }
     if let Some(peak) = peak_rss_bytes() {

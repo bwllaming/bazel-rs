@@ -66,6 +66,16 @@ impl Fixture {
 
     fn rejected(&self, output: &Output, message: &str) -> String {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stderr = stderr
+            .lines()
+            .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let stderr = if stderr.is_empty() {
+            stderr
+        } else {
+            stderr + "\n"
+        };
         assert_eq!(output.status.code(), Some(1), "{stderr}");
         assert!(output.stdout.is_empty(), "{stderr}");
         assert!(

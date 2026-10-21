@@ -90,7 +90,22 @@ impl Workspace {
 }
 
 fn errors(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    // The default memory-cap announcement (crate::memory_limit) is a
+    // startup notice, not part of the diagnostics compared here.
+
+    let stderr = stderr
+        .lines()
+        .filter(|line| !line.starts_with("bazel-rs: memory limit defaulted to "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if stderr.is_empty() {
+        stderr
+    } else {
+        stderr
+            + "
+"
+    }
 }
 
 const LINUX: &str = "--host_platform=//p:linux";
