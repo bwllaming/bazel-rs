@@ -398,3 +398,78 @@ not the rejecting-None class, left as is.
 | `query //src/...` t=1 / t=8 / jitter8 | all md5 820747e4… |
 | build 41 targets (stepD-50 head) | 72s, 363/363 cache hits, 0 executed, md5 d89a7d7d… (== fu-build32.out), peak 1,396 MB |
 | new trees on warm runs | 0 (12,388 stable) |
+
+## Perf follow-up 3 (memory ceiling: the 68+ GB recurrence)
+
+A bazel-rs process was again seen consuming **68+ GB** on this host
+(251 GB RAM, many other services; killed by hand). Root causes, in
+order of contribution:
+
+### 1. The default cap was sized for the wrong host
+
+56d0803's flat 50%-of-MemTotal default was picked under the brief's
+assumed 64 GB host (→ 32 GB). This host has 251 GB, so the default
+was **128,683 MB** — a runaway had ~128 GB of headroom before the
+watchdog fired, on a host whose other services need the memory.
+
+**New exact policy** (`memory_limit::default_cap_for_total_mb`,
+sliding scale; 1 GB = 1024 MB, boundaries inclusive at the low end):
+
+| MemTotal | default cap |
+|---|---|
+| >= 128 GB | **64 GB flat** (65,536 MB) |
+| 32 GB – <128 GB | 50% of MemTotal |
+| < 32 GB | 70% of MemTotal |
+
+Rationale: no measured workload needs more than single-digit GB
+(warm/cold peaks below are ≤ ~3.5 GB), so large shared hosts get an
+absolute 64 GB ceiling — ~18× the largest measured peak, bounded
+damage beside other services. Small hosts keep a larger share: the
+binary's fixed footprint is a bigger fraction there and less else
+competes. This host now announces, once:
+`bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions`.
+The announcement names the tier that produced the cap (50%/70%
+wording on smaller hosts); the below-minimum error interpolates the
+same policy text so the two cannot drift. Watchdog-only, no
+RLIMIT_AS, exit 33, ≥256 MB floor: all unchanged.
+
+### 2. Provenance retention — audited, already fixed, not regressed
+
+The 64 GB class from follow-up 2 stays eliminated: spec identity is
+digest-form (`specification_digest*` over once-per-group source
+digests; per-repo frames are canonical name + attributes only),
+`PreparedOrdinary::framed_provenance` builds bytes on demand and
+returns them unretained, `materialize_lazy` invokes the provenance
+closure only after the warm probe misses under the stage lock, and
+the registry session's fetch memo holds `Arc<Vec<u8>>` per registry
+file (shared, parsed-per-read — not per-repo copies). One stale
+comment claiming framed bytes were "built once (cached)" was
+corrected. Landed numbers (follow-up 2, unchanged): warm
+`//src/ts:all` peak 600–609 MB; warm `//src/...` 3,423 MB; cold
+`//src/...` 3,430 MB — re-measured for this follow-up below.
+
+### 3. Per-command thread bounding
+
+- `--jobs` (action execution): default `min(available CPUs, 32)` —
+  the pool never exceeds 32; explicit `--jobs=N` is kept exactly.
+  Action workers spawn child processes (their RSS is not bazel-rs's
+  and is not capped) and hold only action records in-process.
+- `--loading_phase_threads` (package loading): workers each own a
+  Starlark heap on a 16 MiB stack. The **auto** expansion now respects
+  the cap: `threads = min(auto, cap_mb / 64 MB per worker heap)`,
+  floored at 2 (`memory_limit::bound_auto_loading_threads`). At this
+  host's 64 GB default the bound is 1024 » 64 CPUs (no change); at a
+  2048 MB cap it is 32; at the 256 MB minimum it is 4. An explicit
+  `--loading_phase_threads=N` is the user's stated intent and is
+  **never rewritten** (the watchdog still enforces the cap).
+  QueryOptions now records `auto` as `None` instead of expanding at
+  parse time, so query takes the same bound.
+
+### 4. Cold-run acceptance
+
+Cold `//src/...` (empty repository cache) must complete under the
+cap with peak RSS ≤ cap + 5%. Measured with the follow-up-3 binary —
+see the acceptance table at the end of this section (filled by the
+re-acceptance run; the follow-up-2 cold number was 3,430 MB at the
+old 128,683 MB default, i.e. the peak was never the problem — the
+cap around it was).

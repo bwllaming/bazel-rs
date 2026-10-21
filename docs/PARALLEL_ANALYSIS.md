@@ -484,3 +484,15 @@ A/B rerun: fixture suite 13/13 (genuine a↔b cycle, the three failure
 shapes, diamond+fan-in, action dump, all at 1/8/32 + jitter); cargo
 1,337 lib + 103 suites green (the known `repository_process` SIGINT
 flake passed standalone); python validators 883/883; fmt/clippy clean.
+### Memory-cap bound on the auto expansion (perf follow-up 3)
+
+The "auto" expansion of `--loading_phase_threads` is bounded by the
+process memory cap: `min(auto, cap_mb / 64 MB per worker heap)`,
+floored at 2 (`memory_limit::bound_auto_loading_threads`), because
+each worker owns a Starlark heap (16 MiB stacks are virtual-cheap
+beside it). Explicit `--loading_phase_threads=N` is never rewritten.
+`--jobs` (action execution) defaults to `min(CPUs, 32)` and is a
+separate pool of child-spawning workers. See
+docs/REPOSITORY_WARM_PERF.md "Perf follow-up 3".
+
+Postscript (integration-19): N62 LANDED (flight registry; bzl self-time 0.5s; src mmap maps the serialized provenance that the digest-form spec replaced).
