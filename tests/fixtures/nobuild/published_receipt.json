@@ -1,0 +1,151 @@
+{
+ "schema": "nobuild-reference-receipt/v1",
+ "fixture": "nobuild/published_workspace",
+ "purpose": "Every artifact an executing build reports or publishes is built (strict scheduler-result indexing, --nobuild fallback only): an aspect's artifact of an output group its base target shares, and a test's runfiles without links or manifests.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "--batch --ignore_all_rc_files --output_user_root=<private per case>"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "00fe6e6f0636edb04b9e8194c6906f2460a15b06bb143738a070f55eba101d7d"
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "f387a1110f1f7a67751f7e7941c94b88b30ef413e238a6a6eb32be630e9199aa",
+  "pkg/BUILD.bazel": "ab2f519efd4f82d84afc84934b7ff8aed15eafa2f9f2bc2e94705d88d359c9af",
+  "pkg/defs.bzl": "a5626a94b91e359f1eb18a7b42197044d1d5921e9eac736aed3e084e55a09436"
+ },
+ "genuine_key_findings": [
+  "build --aspects=//pkg:defs.bzl%extra_aspect --output_groups=extra //pkg:t (the aspect adds to the 'extra' group //pkg:t already has): exit 0, 'Target //pkg:t up-to-date: bazel-bin/pkg/t.base' AND 'Aspect //pkg:defs.bzl%extra_aspect of //pkg:t up-to-date: bazel-bin/pkg/t.aspect', both files written, '3 total actions' (t.base, t.aspect, workspace status).",
+  "The same with --nobuild: exit 0, 0 total actions, nothing written, no up-to-date lines.",
+  "test --nobuild_runfile_links //pkg:dt and test --nobuild_runfile_manifests --output_groups=default //pkg:dt: exit 0, the test (which cats its generated data runfile) passes; data.txt is built in both (the test action consumes the runfiles tree, TestActionBuilder.java:255-257)."
+ ],
+ "native_before": [
+  "fe93cc1^ (strict results[id] indexing, no --nobuild): all three executing cases panic 'no entry found for key' (the aspect's t.aspect action, the unbuilt runfiles tree and the unbuilt data runfile were pruned, yet reported/published).",
+  "fe93cc1 (results.get fallback also when executing): the aspect case executes 1 action and reports the never-built planned path 'bazel-out/k8-fastbuild/bin/pkg/t.aspect' as up-to-date; the tests fall back to planned paths."
+ ],
+ "known_divergences": [
+  "Native summary line is its own format ('bazel-rs: N actions executed, ...'); native does not count the workspace status action (genuine '3 total actions' vs native '2 actions executed').",
+  "Under --nobuild native still reports the planned paths (stdout 'LABEL\\tPATH' and the stderr aspect report) where genuine prints no up-to-date lines (pre-existing, see reference_receipt.json)."
+ ],
+ "cases": {
+  "build-aspect-shared-group": {
+   "argv": [
+    "build",
+    "--show_result=10",
+    "--aspects=//pkg:defs.bzl%extra_aspect",
+    "--output_groups=extra",
+    "//pkg:t"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.87,
+    "stdout": "",
+    "stderr_tail": "INFO: Analyzed target //pkg:t (5 packages loaded, 7 targets configured, 1 aspect application).\nINFO: Found 1 target...\nTarget //pkg:t up-to-date:\n  bazel-bin/pkg/t.base\nAspect //pkg:defs.bzl%extra_aspect of //pkg:t up-to-date:\n  bazel-bin/pkg/t.aspect\nINFO: Elapsed time: 9.587s, Critical Path: 0.03s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "bazel_bin_pkg_files": {
+     "t.aspect": "aspect\n",
+     "t.base": "base\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.051,
+    "stdout": "//pkg:t\t<cache>/actions/4f4074bfbd821e9a4b3e8f7553ea56380b551104643e59ffedad5cac0910a9e6/outputs/bazel-out/k8-fastbuild/bin/pkg/t.base\n",
+    "stderr_tail": "Aspect //pkg:defs.bzl%extra_aspect of //pkg:t up-to-date:\n  <cache>/actions/7bf57c2fb7addf9cd1e0ede591e7385d188c7b6db682b3c7523d898fb63b8d71/outputs/bazel-out/k8-fastbuild/bin/pkg/t.aspect\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "built_pkg_outputs": {
+     "t.aspect": "aspect\n",
+     "t.base": "base\n"
+    }
+   },
+   "verdict": "MATCH (exit, both outputs built with genuine bytes, aspect reported)"
+  },
+  "build-nobuild-aspect-shared-group": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--show_result=10",
+    "--aspects=//pkg:defs.bzl%extra_aspect",
+    "--output_groups=extra",
+    "//pkg:t"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.455,
+    "stdout": "",
+    "stderr_tail": "INFO: Analyzed target //pkg:t (5 packages loaded, 7 targets configured, 1 aspect application).\nINFO: Found 1 target...\nINFO: Elapsed time: 9.212s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "bazel_bin_pkg_files": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.042,
+    "stdout": "//pkg:t\tbazel-out/k8-fastbuild/bin/pkg/t.base\n",
+    "stderr_tail": "Aspect //pkg:defs.bzl%extra_aspect of //pkg:t up-to-date:\n  bazel-out/k8-fastbuild/bin/pkg/t.aspect\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "built_pkg_outputs": {}
+   },
+   "verdict": "MATCH (exit, 0 actions, nothing written); report-format divergence known"
+  },
+  "test-nobuild-runfile-links": {
+   "argv": [
+    "test",
+    "--nobuild_runfile_links",
+    "//pkg:dt"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.414,
+    "stdout": "//pkg:dt                                                                 PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+    "stderr_tail": "INFO: Analyzed target //pkg:dt (81 packages loaded, 837 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:dt up-to-date:\n  bazel-bin/pkg/dt.sh\nINFO: Elapsed time: 11.163s, Critical Path: 0.09s\nINFO: 7 processes: 5 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "bazel_bin_pkg_files": {
+     "data.txt": "data-content\n",
+     "dt.sh": "#!/bin/sh\nexec cat pkg/data.txt\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.659,
+    "stdout": "//pkg:dt                                                                 PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+    "stderr_tail": "//pkg:dt\t<cache>/actions/d8a77f4a023a1fb0bc01fd26374c041b4ddf9c2f0d34cc54cfb136e0f39fb71e/outputs/bazel-out/k8-fastbuild/bin/pkg/dt.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "built_pkg_outputs": {
+     "data.txt": "data-content\n",
+     "dt.sh": "#!/bin/sh\nexec cat pkg/data.txt\n"
+    }
+   },
+   "verdict": "MATCH (exit, test passes, data.txt built)"
+  },
+  "test-nobuild-runfile-manifests-output-groups": {
+   "argv": [
+    "test",
+    "--nobuild_runfile_manifests",
+    "--output_groups=default",
+    "//pkg:dt"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.299,
+    "stdout": "//pkg:dt                                                                 PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+    "stderr_tail": "INFO: Analyzed target //pkg:dt (81 packages loaded, 837 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:dt up-to-date:\n  bazel-bin/pkg/dt.sh\nINFO: Elapsed time: 11.181s, Critical Path: 0.09s\nINFO: 6 processes: 4 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 6 total actions\n",
+    "bazel_bin_pkg_files": {
+     "data.txt": "data-content\n",
+     "dt.sh": "#!/bin/sh\nexec cat pkg/data.txt\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.716,
+    "stdout": "//pkg:dt                                                                 PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+    "stderr_tail": "//pkg:dt\t<cache>/actions/d8a77f4a023a1fb0bc01fd26374c041b4ddf9c2f0d34cc54cfb136e0f39fb71e/outputs/bazel-out/k8-fastbuild/bin/pkg/dt.sh\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "built_pkg_outputs": {
+     "data.txt": "data-content\n",
+     "dt.sh": "#!/bin/sh\nexec cat pkg/data.txt\n"
+    }
+   },
+   "verdict": "MATCH (exit, test passes, data.txt built)"
+  }
+ },
+ "counts": {
+  "match": 4,
+  "known_divergence": 2
+ },
+ "scratch_removed": true
+}

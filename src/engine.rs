@@ -1094,6 +1094,25 @@ fn destination(dependency: &Dependency) -> String {
     dependency.destination.to_string_lossy().into_owned()
 }
 
+/// Where a planned artifact is reported or published after the execution
+/// phase. An executing build indexes the scheduler results exactly as
+/// before `--nobuild` existed: execute_graph returns one result per planned
+/// node or fails, and plan_build keeps the producer of everything reported
+/// or published, so a missing result is an invariant violation that panics
+/// rather than an unbuilt artifact silently reported as built. Only
+/// `--nobuild` (no execution phase, no results) keeps the planned exec
+/// path, as BuildResultPrinter reports artifactsToBuild without executing.
+fn executed_path(
+    results: &BTreeMap<String, action::ActionResult>,
+    execute_build: bool,
+    artifact: &Artifact,
+) -> PathBuf {
+    match &artifact.producer {
+        Some((id, index)) if execute_build => results[id].outputs[*index].clone(),
+        _ => artifact.real.clone(),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -7034,13 +7053,10 @@ impl Engine {
                 summary.executed += 1;
             }
         }
-        for (key, mut artifact) in requested {
-            if let Some((id, index)) = &artifact.producer
-                && let Some(result) = results.get(id)
-            {
-                artifact.real = result.outputs[*index].clone();
-            }
-            summary.outputs.push((key.label, artifact.real));
+        let execute_build = self.execute_build;
+        for (key, artifact) in requested {
+            let real = executed_path(&results, execute_build, &artifact);
+            summary.outputs.push((key.label, real));
         }
         summary.non_empty_targets = target_results;
         summary.aspects = aspect_reports
@@ -7050,15 +7066,8 @@ impl Engine {
                     aspect,
                     label,
                     artifacts
-                        .into_iter()
-                        .map(|mut artifact| {
-                            if let Some((id, index)) = &artifact.producer
-                                && let Some(result) = results.get(id)
-                            {
-                                artifact.real = result.outputs[*index].clone();
-                            }
-                            artifact.real
-                        })
+                        .iter()
+                        .map(|artifact| executed_path(&results, execute_build, artifact))
                         .collect(),
                 )
             })
@@ -7534,21 +7543,12 @@ impl Engine {
                 summary.executed += 1;
             }
         }
-        for (key, mut artifact) in requested {
-            if let Some((id, index)) = &artifact.producer
-                && let Some(result) = results.get(id)
-            {
-                artifact.real = result.outputs[*index].clone();
-            }
-            summary.outputs.push((key.label, artifact.real));
+        let execute_build = self.execute_build;
+        for (key, artifact) in requested {
+            let real = executed_path(&results, execute_build, &artifact);
+            summary.outputs.push((key.label, real));
         }
-        let published = |artifact: &Artifact| match &artifact.producer {
-            Some((id, index)) => results.get(id).map_or_else(
-                || artifact.real.clone(),
-                |result| result.outputs[*index].clone(),
-            ),
-            None => artifact.real.clone(),
-        };
+        let published = |artifact: &Artifact| executed_path(&results, execute_build, artifact);
         let mut targets = BTreeMap::new();
         for (label, plan) in plans {
             let Some(executable) = &plan.executable else {
@@ -10549,10 +10549,30 @@ impl Engine {
                 {
                     hidden.push((key.clone(), executable.clone()));
                 }
+                // The published runfiles entries (staged by content) are
+                // built like the runfiles tree a test action consumes
+                // (TestActionBuilder.java:255-257), also when neither the
+                // tree nor the manifest is (--nobuild_runfile_manifests with
+                // an --output_groups override dropping the runfiles group).
+                for artifact in runfiles_nodes
+                    .get(&actual_key)
+                    .into_iter()
+                    .flat_map(|support| &support.entries)
+                    .filter_map(|(_, artifact)| artifact.as_ref())
+                {
+                    if seen.insert((key.clone(), artifact.file())) {
+                        hidden.push((key.clone(), artifact.clone()));
+                    }
+                }
                 let plan = RunPlan {
                     executable,
+                    // Only a built tree is published (build_requests): `run`
+                    // always builds it, `test` only with the target under
+                    // --build_runfile_links (above); the test runner stages
+                    // runfiles by content and never reads it.
                     tree: runfiles_nodes
                         .get(&actual_key)
+                        .filter(|_| self.run_trees || self.runfiles_options.links())
                         .and_then(|support| support.tree.clone()),
                     entries: runfiles_nodes
                         .get(&actual_key)
@@ -10577,6 +10597,17 @@ impl Engine {
             .chain(&hidden)
             .filter_map(|(_, artifact)| artifact.producer.as_ref().map(|(id, _)| id.clone()))
             .collect::<Vec<_>>();
+        // Every reported aspect artifact is built too, also one of an output
+        // group the base target shares (whose `requested` files are the base
+        // target's only, above): CompletionFunction builds each top-level
+        // aspect's own artifactsToBuild (getValueAndArtifactsToBuild,
+        // CompletionFunction.java:362-376).
+        todo.extend(
+            aspect_reports
+                .iter()
+                .flat_map(|(_, _, artifacts)| artifacts)
+                .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.clone())),
+        );
         let mut required = BTreeSet::new();
         while let Some(id) = todo.pop() {
             if required.insert(id.clone()) {
@@ -12070,6 +12101,48 @@ mod tests {
     #[test]
     fn compute_boundary_types_are_send() {
         compute_boundary_is_send();
+    }
+
+    fn generated_out_txt() -> Artifact {
+        Artifact {
+            real: PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
+            exec: PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
+            producer: Some(("//pkg:gen#genrule".into(), 0)),
+            owner: "//pkg:gen".into(),
+            directory: false,
+            constant_metadata: false,
+        }
+    }
+
+    /// Only `--nobuild` reports the planned exec path; an executing build
+    /// reports the executed output.
+    #[test]
+    fn executed_path_falls_back_to_the_planned_path_only_under_nobuild() {
+        let artifact = generated_out_txt();
+        let mut results = BTreeMap::new();
+        assert_eq!(executed_path(&results, false, &artifact), artifact.real);
+        let executed =
+            PathBuf::from("/cache/actions/k/outputs/bazel-out/k8-fastbuild/bin/pkg/out.txt");
+        results.insert(
+            "//pkg:gen#genrule".to_owned(),
+            action::ActionResult {
+                outputs: vec![executed.clone()],
+                cache_hit: false,
+                remote_hit: false,
+                trees: BTreeMap::new(),
+            },
+        );
+        assert_eq!(executed_path(&results, true, &artifact), executed);
+        assert_eq!(executed_path(&results, false, &artifact), artifact.real);
+    }
+
+    /// An executing build never reports an unbuilt artifact: a missing
+    /// scheduler result panics exactly as the `results[id]` indexing before
+    /// `--nobuild` support did.
+    #[test]
+    #[should_panic(expected = "no entry found for key")]
+    fn executed_path_never_falls_back_when_executing() {
+        executed_path(&BTreeMap::new(), true, &generated_out_txt());
     }
 
     #[test]

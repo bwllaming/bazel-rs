@@ -1,0 +1,15 @@
+load(":defs.bzl", "data_test", "grouped")
+
+grouped(name = "t")
+
+genrule(
+    name = "data",
+    outs = ["data.txt"],
+    cmd = "echo data-content > $@",
+)
+
+data_test(
+    name = "dt",
+    size = "small",
+    data = [":data"],
+)

@@ -19,6 +19,11 @@ struct Workspace(tempfile::TempDir);
 
 impl Workspace {
     fn new() -> Self {
+        Self::fixture("workspace")
+    }
+
+    /// A copy of `tests/fixtures/nobuild/<name>`.
+    fn fixture(name: &str) -> Self {
         let base = std::env::var_os("TMPDIR")
             .map(PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
@@ -28,7 +33,7 @@ impl Workspace {
                 .tempdir_in(base)
                 .unwrap(),
         );
-        let source = manifest().join("tests/fixtures/nobuild/workspace");
+        let source = manifest().join("tests/fixtures/nobuild").join(name);
         copy(&source, ws.path());
         ws
     }
@@ -208,6 +213,95 @@ fn nobuild_test_and_run_do_not_execute() {
         stderr(&run)
     );
     assert!(ws.cache_files().is_empty());
+}
+
+/// The `build` of `//pkg:t` with an aspect adding to the output group its
+/// base target already has (tests/fixtures/nobuild/published_workspace).
+const SHARED_GROUP_ASPECT: [&str; 5] = [
+    "build",
+    "--show_result=10",
+    "--aspects=//pkg:defs.bzl%extra_aspect",
+    "--output_groups=extra",
+    "//pkg:t",
+];
+
+/// The paths listed under the aspect's `up-to-date:` report.
+fn aspect_report(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .skip_while(|line| *line != "Aspect //pkg:defs.bzl%extra_aspect of //pkg:t up-to-date:")
+        .skip(1)
+        .take_while(|line| line.starts_with("  "))
+        .map(str::trim)
+        .collect()
+}
+
+#[test]
+fn executing_build_builds_every_reported_artifact() {
+    // Only --nobuild may report a planned (unexecuted) path. Genuine builds
+    // and reports the aspect's own `t.aspect` next to `t.base`
+    // (published_receipt.json); natively its action used to be pruned, so
+    // the build either panicked on the missing scheduler result or — with a
+    // fallback for every missing result — reported an unbuilt path.
+    let ws = Workspace::fixture("published_workspace");
+    let output = ws.run(&SHARED_GROUP_ASPECT);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(err.contains("2 actions executed, 0 cache hits"), "{err}");
+    let reported = aspect_report(&err);
+    assert_eq!(reported.len(), 1, "{err}");
+    let path = Path::new(reported[0]);
+    assert!(path.starts_with(ws.path().join("cache/actions")), "{err}");
+    assert!(path.ends_with("bazel-out/k8-fastbuild/bin/pkg/t.aspect"));
+    assert_eq!(fs::read_to_string(path).unwrap(), "aspect\n");
+
+    // --nobuild: the same report at the planned exec path, nothing built.
+    let ws = Workspace::fixture("published_workspace");
+    let mut arguments = SHARED_GROUP_ASPECT.to_vec();
+    arguments.insert(1, "--nobuild");
+    let output = ws.run(&arguments);
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(err.contains("0 actions executed, 0 cache hits"), "{err}");
+    assert_eq!(
+        aspect_report(&err),
+        ["bazel-out/k8-fastbuild/bin/pkg/t.aspect"],
+        "{err}"
+    );
+    assert!(ws.cache_files().is_empty(), "{:?}", ws.cache_files());
+}
+
+#[test]
+fn executing_test_builds_what_it_publishes() {
+    // A test publishes its runfiles: the tree only when it is built (not
+    // under --nobuild_runfile_links), the runfiles entries always — also
+    // without manifests and with an --output_groups override (genuine: the
+    // test action consumes the runfiles tree, TestActionBuilder.java:255-257;
+    // both commands pass, published_receipt.json). The test cats its
+    // generated data runfile, so it passes only if that was built.
+    for arguments in [
+        &["test", "--nobuild_runfile_links", "//pkg:dt"][..],
+        &[
+            "test",
+            "--nobuild_runfile_manifests",
+            "--output_groups=default",
+            "//pkg:dt",
+        ],
+    ] {
+        let ws = Workspace::fixture("published_workspace");
+        let output = ws.run(arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{arguments:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stdout(&output).contains("Executed 1 out of 1 test: 1 test passes."),
+            "{arguments:?}: {}",
+            stdout(&output)
+        );
+    }
 }
 
 #[test]
