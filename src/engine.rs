@@ -1137,6 +1137,9 @@ pub struct Engine {
     /// parallel-analysis review): the worker pool size for parallel
     /// package loading. 1 keeps loading fully sequential.
     loading_phase_threads: usize,
+    /// M5: nesting depth of `analyze_key` (plan_timings::PlanStage::Analyze
+    /// outermost attribution); untouched unless BAZEL_RS_TIMING=1.
+    analyze_depth: usize,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -1305,6 +1308,7 @@ impl Engine {
             loading_phase_threads: std::thread::available_parallelism()
                 .map(usize::from)
                 .unwrap_or(1),
+            analyze_depth: 0,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -2662,7 +2666,28 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<(), String> {
-        self.analyze_key(label, config, true, active, configured, plan)
+        // M5: phase-1 steps inside the plan span (see plan_timings).
+        let timing = crate::plan_timings::enabled();
+        let outermost = timing && self.analyze_depth == 0;
+        if timing {
+            self.analyze_depth += 1;
+        }
+        let before = plan.len();
+        let mut timer = crate::plan_timings::StageTimer::start_outermost(
+            crate::plan_timings::PlanStage::Analyze,
+            u64::MAX,
+            0,
+            outermost,
+        );
+        let result = self.analyze_key(label, config, true, active, configured, plan);
+        if timing {
+            self.analyze_depth -= 1;
+            if plan.len() > before {
+                timer.set_index(before as u64);
+            }
+        }
+        timer.finish();
+        result
     }
 
     /// [`Self::analyze`] for a ConfiguredTargetKey with an explicit
@@ -6547,6 +6572,24 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
     ) -> Result<Vec<(String, ConfigMatching)>, String> {
+        let timer = crate::plan_timings::StageTimer::start(
+            crate::plan_timings::PlanStage::ConfigConditions,
+            u64::MAX,
+            0,
+        );
+        let result = self.config_conditions_timed(rule, config, active, configured, plan);
+        timer.finish();
+        result
+    }
+
+    fn config_conditions_timed(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<Vec<(String, ConfigMatching)>, String> {
         let mut keys = Vec::new();
         for text in configured_attributes::rule_config_dependencies(rule) {
             let label = self.resolve_rule_src(rule, &text)?;
@@ -9106,7 +9149,13 @@ impl Engine {
                 surface.target_platform = crate::platforms::TargetPlatform::Resolved(platform);
                 custom.surface = Arc::new(surface);
             }
+            let timer = crate::plan_timings::StageTimer::start(
+                crate::plan_timings::PlanStage::CommitRetry,
+                u64::MAX,
+                0,
+            );
             let retry = Engine::compute_target(snapshot);
+            timer.finish();
             snapshot = retry.0;
             outcome = retry.1;
         }
@@ -9120,7 +9169,14 @@ impl Engine {
             // demand may fetch. The aborted attempt's buffered lines are
             // dropped with it; the re-run is the sequential evaluation
             // and reproduces its output exactly.
-            Engine::compute_target(snapshot).1
+            let timer = crate::plan_timings::StageTimer::start(
+                crate::plan_timings::PlanStage::CommitRetry,
+                u64::MAX,
+                0,
+            );
+            let retried = Engine::compute_target(snapshot).1;
+            timer.finish();
+            retried
         } else {
             drop(snapshot);
             outcome
@@ -9814,15 +9870,41 @@ impl Engine {
         state: &mut ActionPlanning,
         plan: &Plan,
         configured: &mut ConfiguredNodes,
+        // M5 span ownership, see plan_targets_timed callers.
+        outer: bool,
     ) -> Result<(), String> {
+        // M5 (docs/PARALLEL_ANALYSIS.md "P3 instrumentation"): per-stage
+        // timers; inert unless BAZEL_RS_TIMING=1. `outer` marks the
+        // phase-2 call in plan_build (span end) vs plan_pending flushes
+        // driven inside phase 1, whose targets time identically; the
+        // span starts at the first plan_targets entry either way.
+        crate::plan_timings::note_span_start();
+        let result = self.plan_targets_timed(state, plan, configured);
+        if outer {
+            crate::plan_timings::record_span();
+        }
+        result
+    }
+
+    fn plan_targets_timed(
+        &mut self,
+        state: &mut ActionPlanning,
+        plan: &Plan,
+        configured: &mut ConfiguredNodes,
+    ) -> Result<(), String> {
+        use crate::plan_timings::{PlanStage, StageTimer};
         while let Some((key, rule)) = plan.get(state.done) {
+            let index = state.done as u64;
             state.done += 1;
             self.flush_delegations(state);
             // The P1 split of plan_target (review §3): prepare builds the
             // coordinator context and the owned snapshot, compute runs the
             // pure implementation analysis, commit applies the effects in
             // the sequential order. Phase 1 remains fully sequential.
+            let class = crate::plan_timings::class_id(rule.rule_class_name());
+            let timer = StageTimer::start(PlanStage::Prepare, index, class);
             let prepared = self.prepare_target(state, key, rule, configured)?;
+            timer.finish();
             let PreparedTarget {
                 key,
                 config,
@@ -9838,7 +9920,9 @@ impl Engine {
             let kind = match kind {
                 PreparedKind::Custom(custom) => {
                     let mut custom = *custom;
+                    let timer = StageTimer::start(PlanStage::Compute, index, class);
                     let (snapshot, outcome) = Engine::compute_target(custom.snapshot);
+                    timer.finish();
                     custom.snapshot = snapshot;
                     computed = Some(outcome);
                     PreparedKind::Custom(Box::new(custom))
@@ -9856,7 +9940,10 @@ impl Engine {
                 transitive,
                 kind,
             };
-            self.commit_target(state, configured, rule, prepared, computed)?;
+            let timer = StageTimer::start(PlanStage::Commit, index, class);
+            let committed = self.commit_target(state, configured, rule, prepared, computed);
+            timer.finish();
+            committed?;
         }
         self.flush_delegations(state);
         Ok(())
@@ -9884,7 +9971,13 @@ impl Engine {
                 crate::rule_declarations::canonical_form(&config_setting.label)
             ));
         };
-        let result = self.plan_targets(&mut state, plan, configured);
+        let timer = crate::plan_timings::StageTimer::start(
+            crate::plan_timings::PlanStage::PendingFlush,
+            u64::MAX,
+            0,
+        );
+        let result = self.plan_targets(&mut state, plan, configured, false);
+        timer.finish();
         self.action_planning = Some(state);
         result
     }
@@ -10038,7 +10131,36 @@ impl Engine {
         // the same exec paths as the actual generated files. Targets planned
         // early (a Starlark flag_values key, Self::plan_pending) are kept.
         let mut state = self.action_planning.take().unwrap_or_default();
-        self.plan_targets(&mut state, &plan, &mut configured)?;
+        self.plan_targets(&mut state, &plan, &mut configured, true)?;
+        if crate::plan_timings::enabled() {
+            // M5 report inputs: plan index -> label, and the dep graph by
+            // plan index (rule_edges labels resolved to plan positions).
+            let labels: Vec<String> = plan
+                .iter()
+                .map(|(key, _)| crate::rule_declarations::canonical_form(&key.label))
+                .collect();
+            let positions: HashMap<&ConfiguredTargetKey, u64> = plan
+                .iter()
+                .enumerate()
+                .map(|(index, (key, _))| (key, index as u64))
+                .collect();
+            let mut edges: HashMap<u64, Vec<u64>> = HashMap::new();
+            for (index, (key, rule)) in plan.iter().enumerate() {
+                let mut deps = Vec::new();
+                for edge in self.rule_edges(rule) {
+                    if let Ok(label) = self.resolve_rule_src(rule, &edge.label) {
+                        let dep = ConfiguredTargetKey::new(label, key.config);
+                        if let Some(dep_index) = positions.get(&dep) {
+                            deps.push(*dep_index);
+                        }
+                    }
+                }
+                if !deps.is_empty() {
+                    edges.insert(index as u64, deps);
+                }
+            }
+            crate::plan_timings::report(&labels, &edges);
+        }
         // N58: the top-level aspects of `--aspects` (and the appended
         // ValidateTarget of `--experimental_use_validation_aspect`) applied
         // to each requested target (ToplevelStarlarkAspectFunction): the

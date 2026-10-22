@@ -496,3 +496,95 @@ separate pool of child-spawning workers. See
 docs/REPOSITORY_WARM_PERF.md "Perf follow-up 3".
 
 Postscript (integration-19): N62 LANDED (flight registry; bzl self-time 0.5s; src mmap maps the serialized provenance that the digest-form spec replaced).
+
+## P3 instrumentation — plan_targets stage timers (M5)
+
+Rationale: P0 measured phase 2 at 1.10 s on the 60-genrule workload and
+P3 was declared NO-GO there, but no instrument could say, for a given
+build, whether phase-2 wall is prepare, compute or commit — the split
+that decides whether parallelizing compute (P3) can win at all, given
+the invariant that **commit stays sequential** (it owns every state
+mutation and every output write, in plan order). M5 adds that
+instrument: `src/plan_timings.rs`, modeled on `module_timings`
+(src/loading.rs) — a process-global, append-only record list fed by
+µs timers at the stage boundaries, reported once from `plan_build`
+right after the outer `plan_targets` call.
+
+Records (`PlanStageRecord { index, stage, class, elapsed_us, outermost }`):
+
+- `prepare` / `compute` / `commit` per planned target, at the P1 split
+  points inside `plan_targets` (`index` = the target's plan position,
+  `class` = its interned rule class). Native targets have no `compute`.
+- `commit_retry`: the compute re-runs inline in `commit_custom_target`
+  (NEEDS_TARGET_PLATFORM / no-demand) — real compute, counted as such.
+- `analyze`: each phase-1 `Engine::analyze` step, re-attributed to the
+  plan index its target joins at; nested steps overlap their parent, so
+  coverage sums only `outermost` steps (tracked by `Engine::analyze_depth`).
+- `pending_flush`: one `plan_pending` flush (a `config_setting`'s
+  Starlark `flag_values` key forcing its key's implementation to run
+  during phase 1); `config_conditions`: one `config_conditions` call.
+  Both are inside the span and their targets record their own stage
+  rows, so both are report-only (never added into coverage).
+
+Span and coverage: the span starts at the first `plan_targets` entry
+(on this class of workspace most targets are planned by phase-1
+flushes, not by the phase-2 call — the outer call alone spans ~0.1 s of
+a ~46 s plan span) and ends when the outer call returns, i.e. exactly
+`plan.phase1_analysis_done − plan.start` on the PERF marks plus the
+phase-2 tail. Coverage = (prepare+compute+commit+commit_retry
++ outermost analyze − pending_flush) / span; the flush subtraction
+removes the one overlap (flush wall contains its targets' stage times).
+
+Use: `BAZEL_RS_TIMING=1` (the env that already gates `perf_mark`).
+Output is stderr-only, after the standard plan summary marks, as
+`PERF-STAGE` lines: per-stage totals with counts, the envelope
+(`plan_span` + covered %), a per-rule-class table (top 15 by total,
+with % of covered time and the prepare/compute/commit split), and the
+critical path — the longest dependency chain's summed compute, walked
+over the dep graph rebuilt from the plan (`rule_edges` resolved to
+plan indices) with each node's label and compute time. The module
+report stays `BAZEL_RS_TIMING_MODULES=1`-only; the stage report is not
+printed in MODULES-only mode. With neither variable set, every hook is
+one relaxed atomic load and output is byte-identical.
+
+How to read it for a P3 decision: parallel compute can recover at most
+the `compute` (+ `commit_retry`) total, and only down to the
+critical-path compute; `commit` is the sequential floor, and
+`prepare` is coordinator work a P3 design must also parallelize (or
+accept as serial) before promising a speedup.
+`--loading_phase_threads` does not affect phase 2; the 1/32 A/B below
+confirms the report itself is thread-count-invariant.
+
+### Measured: oauth2token (`~/code`, warm, `--nobuild`)
+
+`BAZEL_RS_TIMING=1 BAZEL_RS_TIMING_MODULES=1 bazel-rs build --nobuild
+--experimental-builtin-modules //src/beyondwork.ai/tools/oauth2token:all`
+(18,968 planned targets, 707 Starlark computes):
+
+| stage | seconds | count |
+|---|---|---|
+| prepare | 17.0 | 18,968 |
+| compute | 17.0–17.6 | 707 |
+| commit | 4.8 | 18,968 |
+| commit_retry | 0.0 | 0 |
+| analyze (all steps; outermost ≈ span − flush residual) | 185–186 | 142,273 |
+| pending_flush | 38.8–39.6 | 1,237 |
+| config_conditions | 1.5 | 18,976 |
+| **plan_span** | **46.1–47.1** | **covered 99.9%** |
+
+Per-class (top): `go_library` is 92.5% of covered stage time
+(prepare 16.1 s / compute 16.3 s / commit 4.1 s). Critical path:
+compute 0.69 s over 21 targets (… → `//:nogo_actual`, 0.11 s) — i.e.
+even perfect compute parallelism is bounded by prepare+commit
+(≈22 s serial) unless prepare is parallelized too; compute's 17 s
+would compress toward the 0.69 s path. That is the P3 sizing question
+this instrument exists to answer, per workspace.
+
+Before/after: base `fe93cc1` vs this commit, same command — stdout and
+stderr byte-identical without timing vars (54.8 s vs 56.5 s wall,
+within warm-run variance); with `BAZEL_RS_TIMING=1` the new lines are
+the only additions (52–53 s). `--loading_phase_threads=1` vs `=32`
+with timing: stdout identical, stderr identical modulo `PERF` lines
+and one pre-existing thread-dependent lockfile line (present at base
+too), exit 0; stage counts identical, values run-dependent as expected.
+
