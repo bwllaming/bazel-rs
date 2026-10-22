@@ -1207,6 +1207,16 @@ pub struct Engine {
     /// Whether a Starlark flag's rule explicitly sets `scope = "target"`
     /// (reset by the exec transition), per flag (computed on first use).
     flag_scopes: BTreeMap<Label, bool>,
+    /// The interned exec configuration of each (parent configuration,
+    /// execution platform) (Self::exec_configuration): the exec transition
+    /// is a function of the parent's interned configuration (never replaced
+    /// once interned), the platform and the parent's target-scoped flags
+    /// (Self::target_scoped_flags: the Starlark flag labels of the
+    /// top-level and the parent configuration, and their `flag_scopes`
+    /// entries, fixed once recorded), so it is computed once per pair.
+    /// Only successes are memoized; cleared with `configurations` and
+    /// `flag_scopes` (Self::set_configuration).
+    exec_transitions: HashMap<(ConfigId, Label), ConfigId>,
     /// Applied Starlark transitions: the resulting configuration
     /// (StarlarkTransitionCache; failures are not cached).
     transition_cache: BTreeMap<TransitionCacheKey, (ConfigId, Vec<String>)>,
@@ -1328,6 +1338,7 @@ impl Engine {
             toolchain_cycle_reports: BTreeMap::new(),
             exec_configurations: BTreeMap::new(),
             flag_scopes: BTreeMap::new(),
+            exec_transitions: HashMap::new(),
             transition_cache: BTreeMap::new(),
             transition_details: BTreeMap::new(),
             edge_configs: BTreeMap::new(),
@@ -1596,6 +1607,7 @@ impl Engine {
         self.platforms.clear();
         self.registered_toolchains.clear();
         self.flag_scopes.clear();
+        self.exec_transitions.clear();
         self.transition_cache.clear();
         self.transition_details.clear();
     }
@@ -3734,12 +3746,41 @@ impl Engine {
                     .clone()
             }
         };
+        // Everything the transition below depends on besides `config` and
+        // `platform` is fixed until Self::set_configuration (Self::exec_transitions).
+        let key = (config, platform);
+        if let Some(&exec) = self.exec_transitions.get(&key) {
+            #[cfg(debug_assertions)]
+            self.check_exec_transition_memo(&key, exec);
+            return Ok(exec);
+        }
         let target_scoped = self.target_scoped_flags(config)?;
         // An invalid exec output directory name fails the dependency's
         // configuration (InvalidMnemonicException), reported at the rule.
-        self.configurations
-            .intern_exec(config, platform, &target_scoped)
-            .map_err(|error| located(rule.location.as_deref(), error))
+        let exec = self
+            .configurations
+            .intern_exec(config, key.1.clone(), &target_scoped)
+            .map_err(|error| located(rule.location.as_deref(), error))?;
+        self.exec_transitions.insert(key, exec);
+        Ok(exec)
+    }
+
+    /// Debug builds recompute a memoized exec transition
+    /// (Self::exec_transitions) on every hit: its key must cover every input
+    /// of the computation. The recomputation has no side effects: the flag
+    /// scopes and the exec configuration were recorded by the memoized call.
+    #[cfg(debug_assertions)]
+    fn check_exec_transition_memo(&mut self, key: &(ConfigId, Label), memoized: ConfigId) {
+        let (config, platform) = key;
+        let recomputed = self.target_scoped_flags(*config).and_then(|target_scoped| {
+            self.configurations
+                .intern_exec(*config, platform.clone(), &target_scoped)
+        });
+        assert_eq!(
+            recomputed,
+            Ok(memoized),
+            "internal error: stale exec configuration memo for {config} and {platform}"
+        );
     }
 
     /// The Starlark flags of the top-level configuration and of `config`
@@ -13542,6 +13583,36 @@ m = macro(implementation=emit)
                 .intern_exec(exec, test_label("//p:linux"), &BTreeSet::new()),
             Ok(exec)
         );
+    }
+
+    /// The exec transition is computed once per (parent configuration,
+    /// execution platform) (Engine::exec_transitions): every rule with exec
+    /// edges in that configuration gets the memoized configuration (debug
+    /// builds recompute it on each hit), exec of exec is the exec
+    /// configuration itself, and a new top-level configuration clears it.
+    #[test]
+    fn exec_configurations_are_memoized_per_parent_and_platform() {
+        let (_f, mut engine) = two_configuration_engine(
+            "load('//r:defs.bzl', 'gen')\ngen(name='leaf')\ngen(name='a', tool=':leaf')\ngen(name='b', tool=':leaf')\ngen(name='top', tool=':a', dep=':b')\n",
+            "",
+            "",
+        );
+        let labels = engine.select_for_build(&["//:top".into()], "").unwrap();
+        engine.plan_build(&labels).unwrap();
+        let top = engine.configurations.top();
+        let key = |name: &str, config| ConfiguredTargetKey::new(test_label(name), config);
+        let exec = engine.exec_configurations[&key("//:top", top)];
+        assert_ne!(exec, top);
+        // `//:b` (top-level) and `//:a` (exec, through `//:top`'s tool).
+        assert_eq!(engine.exec_configurations[&key("//:b", top)], exec);
+        assert_eq!(engine.exec_configurations[&key("//:a", exec)], exec);
+        let linux = test_label("//p:linux");
+        assert_eq!(
+            engine.exec_transitions,
+            HashMap::from([((top, linux.clone()), exec), ((exec, linux), exec)])
+        );
+        engine.set_configuration(Configuration::default());
+        assert!(engine.exec_transitions.is_empty());
     }
 
     /// N35 (docs/EXEC_GROUPS.md): each action runs in the exec group it
