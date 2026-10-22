@@ -202,6 +202,94 @@ const EXPECTED: &str = "attr_dict=True\n\
          frozen_depset_identity=True\n\
          repr=[<target //:leaf>, <alias target //:alias of //:leaf>, <target //:leaf>]\n";
 
+/// `target.files` for rule, source-file, output-file and alias targets
+/// (package `files`): every read is the target's one files-to-build depset,
+/// also `target[DefaultInfo].files` (AbstractConfiguredTarget.get,
+/// analysis/configuredtargets/AbstractConfiguredTarget.java:216-225, and
+/// DefaultInfo.DelegatingDefaultInfo.getFiles, analysis/DefaultInfo.java:153-157:
+/// the FileProvider's one NestedSet; Depset.equals is its identity).
+const FILES_DEFS: &str = r#"
+def _leaf_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, ctx.label.name)
+    return [DefaultInfo(files = depset([out]))]
+
+leaf = rule(_leaf_impl)
+
+def _writer_impl(ctx):
+    ctx.actions.write(ctx.outputs.out, ctx.label.name)
+    return [DefaultInfo(files = depset([ctx.outputs.out]))]
+
+writer = rule(_writer_impl, attrs = {"out": attr.output()})
+
+def _check_impl(ctx):
+    dep = ctx.attr.dep
+    keyed = {}
+    keyed[dep.files] = 1
+    keyed[dep[DefaultInfo].files] = 2
+    rows = [
+        "rule=%s %s %s" % (
+            dep.files == dep.files,
+            dep.files == dep[DefaultInfo].files,
+            dep[DefaultInfo].files == dep[DefaultInfo].files,
+        ),
+        "source=%s" % (ctx.attr.src.files == ctx.attr.src.files),
+        "output=%s" % (ctx.attr.out.files == ctx.attr.out.files),
+        "alias=%s" % (ctx.attr.via_alias.files == ctx.attr.via_alias.files),
+        "dict_keys=%d" % len(keyed),
+        "depset_elements=%d" % len(depset([dep.files, dep.files]).to_list()),
+        "transitive=%s %s" % (
+            depset(transitive = [dep.files]) == dep.files,
+            depset(transitive = [dep.files, dep.files]) == dep.files,
+        ),
+        "in_list=%s" % (dep.files in [dep.files]),
+        "contents=%s" % [f.short_path for f in dep.files.to_list()],
+        "repr=%s" % repr(ctx.attr.src.files),
+        "type=%s %s" % (type(dep.files), bool(dep.files)),
+    ]
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "\n".join(rows) + "\n")
+    return [DefaultInfo(files = depset([out]))]
+
+check = rule(_check_impl, attrs = {
+    "dep": attr.label(),
+    "src": attr.label(allow_files = True),
+    "out": attr.label(allow_files = True),
+    "via_alias": attr.label(),
+})
+"#;
+
+const FILES_BUILD: &str = r#"load(":defs.bzl", "check", "leaf", "writer")
+
+leaf(name = "leaf")
+
+alias(name = "alias", actual = ":leaf")
+
+writer(name = "writer", out = "writer.out")
+
+check(
+    name = "check",
+    dep = ":leaf",
+    src = ":data.txt",
+    out = ":writer.out",
+    via_alias = ":alias",
+)
+"#;
+
+/// The exact rows genuine Bazel 9.3.0 prints for `//files:check` (paired
+/// capture, tests/fixtures/target_identity/files_reference_receipt.json).
+const FILES_EXPECTED: &str = "rule=True True True\n\
+         source=True\n\
+         output=True\n\
+         alias=True\n\
+         dict_keys=1\n\
+         depset_elements=1\n\
+         transitive=True True\n\
+         in_list=True\n\
+         contents=[\"files/leaf.txt\"]\n\
+         repr=depset([<source file files/data.txt>])\n\
+         type=depset True\n";
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
 impl Workspace {
@@ -267,6 +355,24 @@ fn one_target_value_per_configured_target_across_the_analysis() {
     let stdout = String::from_utf8_lossy(&result.stdout);
     let path = PathBuf::from(stdout.lines().next().unwrap().split_once('\t').unwrap().1);
     assert_eq!(fs::read_to_string(path).unwrap(), EXPECTED);
+}
+
+/// `target.files` is one depset per target (W0-C2): equal across reads and
+/// to `target[DefaultInfo].files`, so one dict key, one depset element and a
+/// reused transitive set, for every configured-target class. Genuine Bazel
+/// 9.3.0 prints the same rows (paired capture, `files_reference_receipt.json`).
+#[test]
+fn target_files_is_one_depset_per_target() {
+    let ws = Workspace::new();
+    ws.file("files/defs.bzl", FILES_DEFS);
+    ws.file("files/BUILD.bazel", FILES_BUILD);
+    ws.file("files/data.txt", "data\n");
+    let result = ws.run(&["build", "--experimental-builtin-modules", "//files:check"]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let path = PathBuf::from(stdout.lines().next().unwrap().split_once('\t').unwrap().1);
+    assert_eq!(fs::read_to_string(path).unwrap(), FILES_EXPECTED);
 }
 
 /// The frozen copy keeps Bazel's shallow-copy semantics (N49b): the copy

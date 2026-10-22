@@ -158,6 +158,20 @@ order = "preorder")` of a default `x` is a new depset. Elements, order and
 action keys are unchanged (`tests/depset_identity_keys.rs`, golden keys
 recorded with the pre-N49b binary).
 
+`target.files` is the target's one files-to-build depset, the same one as
+`target[DefaultInfo].files` (AbstractConfiguredTarget.get,
+`analysis/configuredtargets/AbstractConfiguredTarget.java:216-225`, and
+DelegatingDefaultInfo.getFiles, `analysis/DefaultInfo.java:153-157`: the
+FileProvider's one NestedSet). So `t.files == t.files`, one dict key, one
+depset element and `depset(transitive = [t.files]) == t.files` hold for rule,
+source-file, output-file and alias targets, as in Bazel (paired capture
+`tests/fixtures/target_identity/files_reference_receipt.json`, EXACT; before
+W0-C2 every read built a new depset). Its elements, order and repr are
+unchanged. Known divergences (unchanged): Bazel's files-to-build set is the
+very depset the rule returned in DefaultInfo, and an alias shares its
+actual's (`rules/AliasConfiguredTarget.java:205-213`); natively each Target
+value builds its own depset from its files.
+
 ## Traversal
 
 NestedSet.toList (`NestedSet.java:485-498, 604-627`) walks each node's

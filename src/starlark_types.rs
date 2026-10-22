@@ -1930,7 +1930,11 @@ impl<'v> StarlarkValue<'v> for TargetValue {
 
     fn get_attr(&self, name: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         Some(match name {
-            "files" => alloc_depset(heap, self.0.files.clone()),
+            // The target's one files-to-build depset, also `target[DefaultInfo].files`
+            // (AbstractConfiguredTarget.get, :216-225, through
+            // DefaultInfo.DelegatingDefaultInfo.getFiles, analysis/DefaultInfo.java:153-157:
+            // the FileProvider's NestedSet), so every read is the same depset.
+            "files" => heap.alloc(self.0.files_depset.clone()),
             "label" => heap.alloc(self.0.label.clone()),
             // AbstractConfiguredTarget.getValue (:58-59, :89-92): the default
             // provider's fields through the (possibly implicit empty)
@@ -3496,6 +3500,16 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
             }
         }
         pass("target[DefaultInfo].files.to_list() == [a] and target.files.to_list() == [a]");
+        // Every read of `target.files` is the target's one files-to-build
+        // depset, also `target[DefaultInfo].files` (genuine Bazel 9.3.0,
+        // tests/target_identity.rs `target_files_is_one_depset_per_target`):
+        // one dict key and one depset element; its repr is unchanged.
+        pass("target.files == target.files and target.files == target[DefaultInfo].files");
+        pass("len(dict([(target.files, 1), (target[DefaultInfo].files, 2)])) == 1");
+        pass(
+            "len(depset([target.files, target.files]).to_list()) == 1 and depset(transitive = [target.files]) == target.files",
+        );
+        pass("repr(target.files) == 'depset([<source file pkg/a.txt>])'");
         pass("target.label == Label('//pkg:rule') and type(target) == 'Target'");
         // DefaultDefaultInfo fields are None unless given (DefaultInfo.java:84-145).
         pass(

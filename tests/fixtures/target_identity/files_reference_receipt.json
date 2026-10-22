@@ -1,0 +1,72 @@
+{
+ "schema": "w0c2-target-files-reference-receipt/v1",
+ "purpose": "W0-C2: `target.files` returns the target's one files-to-build depset. Paired native vs genuine evidence only; tests/target_identity.rs `target_files_is_one_depset_per_target` asserts the reference rows, no test reads this file.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --host_jvm_args=-Xmx512m",
+  "command_flags": "build --lockfile_mode=off --noshow_progress --color=no --curses=no //files:check //probe:check"
+ },
+ "native": {
+  "flags": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules TARGET (one target per invocation)",
+  "before": {
+   "binary": "release build of 6bebe72 (base)",
+   "sha256": "b1d76919d8ba829a87da20361073f61219d7ad4ed8064d1997956602f9c5acdb"
+  },
+  "after": {
+   "binary": "target/debug/bazel-rs with W0-C2",
+   "sha256": "c235d8276343baee3ec1f36f3f5d38f527f1c5eb7c6658099bc4075a0370bd94"
+  }
+ },
+ "environment": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR; one scratch workspace per engine",
+ "script": {
+  "path": "/tmp/opencode/bazel-perf-w0bc-genuine/capture.py (outside the repository)",
+  "sha256": "8204eb8d24a605730b444bc5ee8c9f9672bbb00804c5d96b279a1d79d42a69ec"
+ },
+ "fixture": {
+  "source": "tests/target_identity.rs",
+  "sha256": "f52725d34dfb40748bcff43e7785e58dda123df18afdd0455a9104d9a9c3a20a",
+  "extracted": [
+   "FILES_DEFS -> files/defs.bzl",
+   "FILES_BUILD -> files/BUILD.bazel"
+  ],
+  "inline": [
+   "MODULE.bazel: module(name='target_identity')",
+   "files/data.txt: data",
+   "probe/defs.bzl, probe/BUILD.bazel (scratch only)"
+  ],
+  "files_sha256": {
+   "MODULE.bazel": "2f7a8d38e263178c7a9aff3568255eb54bcbcb2685ebdbe41f41aca11ee255f6",
+   "files/defs.bzl": "ca28ce8365c436070f134b317ae0b5e8ababb09f17accb0ae16ad5a715d092c0",
+   "files/BUILD.bazel": "b403c68633504db28fba6f6264f0f632e9fe5dbd7033c49d71806410513cb341",
+   "files/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+   "probe/defs.bzl": "e861b835460a4d5860eb2ee794b815310b35ab6a858ff9d656e3e890636a7345",
+   "probe/BUILD.bazel": "3a2c4471c16bf46faf67cf34f34d8fa0a5731c051098baa3f2cfa58ead3252a6"
+  }
+ },
+ "rows": {
+  "//files:check": {
+   "reference": "rule=True True True\nsource=True\noutput=True\nalias=True\ndict_keys=1\ndepset_elements=1\ntransitive=True True\nin_list=True\ncontents=[\"files/leaf.txt\"]\nrepr=depset([<source file files/data.txt>])\ntype=depset True\n",
+   "native_before": "rule=False False True\nsource=False\noutput=False\nalias=False\ndict_keys=2\ndepset_elements=2\ntransitive=False False\nin_list=False\ncontents=[\"files/leaf.txt\"]\nrepr=depset([<source file files/data.txt>])\ntype=depset True\n",
+   "native_after": "rule=True True True\nsource=True\noutput=True\nalias=True\ndict_keys=1\ndepset_elements=1\ntransitive=True True\nin_list=True\ncontents=[\"files/leaf.txt\"]\nrepr=depset([<source file files/data.txt>])\ntype=depset True\n",
+   "label": "EXACT (after); before differed in every identity row"
+  },
+  "//probe:check": {
+   "reference": "returned=True\nalias_actual=True True\nto_list_fresh=True\n",
+   "native_before": "returned=False\nalias_actual=False False\nto_list_fresh=True\n",
+   "native_after": "returned=False\nalias_actual=False False\nto_list_fresh=True\n",
+   "label": "KNOWN_DIVERGENCE, unchanged by W0-C2: Bazel's files-to-build NestedSet is the depset the rule returned in DefaultInfo (`returned`) and an alias delegates its FileProvider to the actual (`alias_actual`, rules/AliasConfiguredTarget.java:205-213); natively each Target value builds its own depset from the flattened files"
+  }
+ },
+ "exits": {
+  "reference": 0,
+  "native_before": {
+   "//files:check": 0,
+   "//probe:check": 0
+  },
+  "native_after": {
+   "//files:check": 0,
+   "//probe:check": 0
+  }
+ }
+}
