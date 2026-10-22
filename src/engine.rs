@@ -5902,6 +5902,10 @@ impl Engine {
         patterns: &[(String, String)],
     ) -> Result<Vec<Label>, ResolutionError> {
         let mut labels: Vec<Label> = Vec::new();
+        // The labels already in `labels`: first-copy dedupe in O(1) per
+        // label (a linear `labels.contains` was quadratic in the number of
+        // registered toolchains).
+        let mut seen: HashSet<Label> = HashSet::new();
         for (repository, pattern) in patterns {
             let invalid = |message: String| {
                 ResolutionError::Toolchain(crate::toolchains::invalid_registered_toolchain(
@@ -6012,7 +6016,8 @@ impl Engine {
                 vec![label]
             };
             for label in found {
-                if !labels.contains(&label) {
+                if !seen.contains(&label) {
+                    seen.insert(label.clone());
                     labels.push(label);
                 }
             }
