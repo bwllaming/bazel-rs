@@ -30,12 +30,29 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 const PROFILE: &str = "direct-file-template-v1";
+/// The manifest schema this binary writes and trusts (see [`Manifest`]).
+const MANIFEST_FORMAT: u32 = 1;
 const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
 const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v1";
 
+/// A publication's manifest.
+///
+/// Forward compatibility (review i20): readers TOLERATE unknown fields. A
+/// newer binary's additive metadata (as `spec`, `recorded` and `Entry.stat`
+/// once were) is ignored instead of making this binary discard a valid
+/// publication and republish it — the churn every such addition used to
+/// cause between versions. Integrity does not rest on rejecting unknown
+/// fields but on checks that stay strict: the schema gate
+/// ([`parse_manifest`]: `format` and `profile` exactly this binary's; a
+/// change to what an existing field means, or a field that must not be
+/// ignored, must bump `format`), the required fields and their types, the
+/// identity the pointer names, the recorded inputs `validate` rechecks and
+/// the tree verified against the known entry fields. Writers are
+/// unchanged, and a manifest this binary did not write byte-for-byte is
+/// never rewritten in place (`refresh_manifest`), so a newer binary's
+/// fields are never silently stripped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Manifest {
     format: u32,
     profile: String,
@@ -52,8 +69,14 @@ struct Manifest {
     recorded: Option<Vec<u8>>,
 }
 
+/// One tree entry of a [`Manifest`]. Unknown fields are tolerated: reuse
+/// re-derives every known field (type, mode, size, digest, symlink target)
+/// from the tree on disk, and identity/equality compare
+/// [`content_view`]s of the known content fields, so an unrecognized
+/// per-entry attribute can never widen what is trusted. The stat
+/// fingerprint ([`StatFingerprint`], always tolerant) only narrows trust:
+/// it must equal the current stat outside the racy window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Entry {
     directory: bool,
     mode: u32,
@@ -98,6 +121,14 @@ fn content_view(files: &BTreeMap<String, Entry>) -> BTreeMap<String, Entry> {
             )
         })
         .collect()
+}
+
+/// The manifest in `bytes`, if this binary may trust it: it parses (unknown
+/// fields ignored, see [`Manifest`]) and passes the strict schema gate.
+fn parse_manifest(bytes: &[u8]) -> Option<Manifest> {
+    serde_json::from_slice::<Manifest>(bytes)
+        .ok()
+        .filter(|manifest| manifest.format == MANIFEST_FORMAT && manifest.profile == PROFILE)
 }
 
 #[cfg(unix)]
@@ -543,11 +574,18 @@ fn refresh_manifest(
     refreshed: &BTreeMap<String, StatFingerprint>,
 ) -> Result<(), String> {
     let bytes = read_stable(manifest_path)?;
-    let mut current: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let Some(mut current) = parse_manifest(&bytes) else {
+        return Ok(()); // someone republished something else; leave it
+    };
     if current.identity != verified.identity
         || content_view(&current.files) != content_view(&verified.files)
     {
         return Ok(()); // someone republished; their fingerprints win
+    }
+    // Rewrite only what this binary wrote: re-serializing a newer binary's
+    // manifest would drop the fields this one does not know.
+    if serde_json::to_vec(&current).map_err(|e| e.to_string())? != bytes {
+        return Ok(());
     }
     let mut changed = false;
     for (name, fp) in refreshed {
@@ -595,7 +633,7 @@ where
         let Some(bytes) = read_stable(&manifest_path).ok() else {
             return Ok(None);
         };
-        let Ok(existing) = serde_json::from_slice::<Manifest>(&bytes) else {
+        let Some(existing) = parse_manifest(&bytes) else {
             return Ok(None);
         };
         existing
@@ -768,7 +806,7 @@ where
     }
     let identity = format!("{:x}", digest.finalize());
     let manifest = Manifest {
-        format: 1,
+        format: MANIFEST_FORMAT,
         profile: PROFILE.into(),
         identity: identity.clone(),
         files,
@@ -802,8 +840,9 @@ where
     // invocation could ever validate-and-reuse it through the pointer.
     // Only the specification pointer below records this specification's claim.
     if !(read_stable(&manifest_path)
-        .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).map_err(|e| e.to_string()))
-        .is_ok_and(|existing| {
+        .ok()
+        .and_then(|bytes| parse_manifest(&bytes))
+        .is_some_and(|existing| {
             existing.identity == identity
                 && content_view(&existing.files) == content_view(&manifest.files)
                 && existing.spec.is_some()
@@ -884,9 +923,15 @@ fn publish_pointer(specs: &Path, pointer: &Path, identity: &str) -> Result<(), S
 }
 
 /// Read a specification pointer, checking its shape like every other entry.
+/// Unknown fields are tolerated (review i20): only `identity` is ever used,
+/// and only after the strict checks below — `format` exactly 1 and a
+/// 64-digit lowercase hex identity, which is joined into store paths — and
+/// the warm probe then requires the manifest it names to carry the same
+/// identity and revalidates recorded inputs and tree before any reuse. A
+/// newer binary's additive pointer field therefore cannot change what is
+/// reused, where rejecting it would fail this binary's builds outright.
 fn read_pointer(path: &Path) -> Result<Option<String>, String> {
     #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
     struct Pointer {
         format: u32,
         identity: String,
@@ -2160,6 +2205,86 @@ mod tests {
         .unwrap();
         assert_eq!(again, tree);
         assert_eq!(third, Publication::Reused);
+        no_stages(cache.path());
+    }
+
+    /// Review i20 (forward compatibility): a manifest with fields a newer
+    /// binary added — top level, per entry, inside a stat fingerprint — and
+    /// a pointer with an extra field are reused, not republished: their
+    /// bytes stay untouched, also when changed recorded inputs re-run the
+    /// rule with identical output. A manifest of another schema (`format`
+    /// or `profile`) is never trusted and is republished as this binary's.
+    #[test]
+    fn unknown_manifest_fields_are_reused_not_republished() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        let mut newer: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        newer["written_by"] = "a newer bazel-rs".into();
+        newer["files"]["data"]["xattrs"] = serde_json::json!({"user.origin": "x"});
+        newer["files"]["data"]["stat"] = serde_json::json!(
+            {"dev": 1, "ino": 2, "mtime": [3, 4], "ctime": [5, 6], "btime": [7, 8]}
+        );
+        fs::write(&path, serde_json::to_vec(&newer).unwrap()).unwrap();
+        let pointer = cache
+            .path()
+            .join("direct/specs")
+            .join(spec_identity(b"spec"));
+        let mut claim: serde_json::Value =
+            serde_json::from_slice(&fs::read(&pointer).unwrap()).unwrap();
+        claim["written_by"] = "a newer bazel-rs".into();
+        fs::write(&pointer, serde_json::to_vec(&claim).unwrap()).unwrap();
+        let manifest_bytes = fs::read(&path).unwrap();
+        let pointer_bytes = fs::read(&pointer).unwrap();
+
+        let (again, status) = publish(cache.path(), b"", |_| {
+            panic!("a newer manifest must be reused")
+        })
+        .unwrap();
+        assert_eq!((again, status), (tree.clone(), Publication::Reused));
+        assert_eq!(fs::read(&path).unwrap(), manifest_bytes);
+        assert_eq!(fs::read(&pointer).unwrap(), pointer_bytes);
+        // Changed recorded inputs re-run the rule; its identical output
+        // finds the equivalent newer manifest and leaves it as written.
+        let (again, status) = publish_spec(cache.path(), b"spec", b"", false, write).unwrap();
+        assert_eq!((again, status), (tree.clone(), Publication::Executed));
+        assert_eq!(fs::read(&path).unwrap(), manifest_bytes);
+        // A fingerprint refresh never rewrites (so never strips) it either.
+        let parsed = parse_manifest(&manifest_bytes).unwrap();
+        let settled = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let outcome = verify_snapshot_at(&tree, &parsed.files, VerifyMode::Stat, settled).unwrap();
+        assert!(outcome.matched && outcome.refreshed.contains_key("data"));
+        refresh_manifest(
+            &path,
+            &cache.path().join("direct/manifests"),
+            parsed,
+            &outcome.refreshed,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), manifest_bytes);
+
+        for (field, value) in [
+            ("format", serde_json::json!(2)),
+            ("profile", serde_json::json!("direct-file-template-v2")),
+        ] {
+            let mut other: serde_json::Value = serde_json::from_slice(&manifest_bytes).unwrap();
+            other[field] = value;
+            fs::write(&path, serde_json::to_vec(&other).unwrap()).unwrap();
+            let executions = AtomicUsize::new(0);
+            let (again, status) = publish(cache.path(), b"", |stage| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                write(stage)
+            })
+            .unwrap();
+            assert_eq!((again, status), (tree.clone(), Publication::Executed));
+            assert_eq!(executions.load(Ordering::SeqCst), 1, "{field}");
+            let republished: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                (republished.format, republished.profile.as_str()),
+                (MANIFEST_FORMAT, PROFILE)
+            );
+        }
         no_stages(cache.path());
     }
 

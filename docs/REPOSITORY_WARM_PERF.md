@@ -498,3 +498,42 @@ re-verified warm: ts 9.0s, 601 MB, md5 eb4c8839…). `--memory-limit=64`
 is rejected with the sliding-scale policy text, exit 1.
 
 Polish (integration-19): FOLLOW-UP 3 LANDED (sliding cap 64GB, bounded auto threads).
+
+## i20 hardening — store manifests
+
+### Forward-compatible readers
+
+Every addition to the manifest (`Entry.symlink`, `spec`/`recorded`,
+`Entry.stat`) used to make the binaries before it reject the newer
+manifests (`deny_unknown_fields`), discard the valid publication and
+republish it — re-executing the repository rule whenever two versions
+shared a cache. Readers now tolerate unknown fields; writers are
+unchanged. Per struct (`src/repository_store.rs`):
+
+- `Manifest`: tolerant. Integrity rests on checks that stay strict: the
+  new explicit schema gate `parse_manifest` (`format` = 1 and `profile`
+  = `direct-file-template-v1`; a change to what an existing field means,
+  or a field that must not be ignored, has to bump `format`), the
+  required fields and their types, the identity the pointer names, the
+  recorded inputs `validate` rechecks and the tree verification.
+- `Entry`: tolerant. Reuse re-derives every known field (type, mode,
+  size, digest, symlink target) from the tree on disk and identity /
+  equality compare `content_view`s of the known content fields, so an
+  unrecognized per-entry attribute cannot widen what is trusted.
+- `StatFingerprint`: tolerant (it already was); a fingerprint only
+  narrows trust (equal to the current stat, outside the racy window).
+- Pointer (`read_pointer`): tolerant of unknown fields, strict
+  otherwise (`format` = 1 and a 64-digit lowercase hex identity, which is
+  joined into store paths). Only the identity is used, and the warm probe
+  revalidates the manifest it names; rejecting an additive field would
+  fail this binary's builds outright.
+- A manifest this binary did not write byte-for-byte (a newer binary's,
+  with fields this one does not know) is reused but never rewritten by
+  a fingerprint refresh, which would strip those fields.
+
+Test: `unknown_manifest_fields_are_reused_not_republished` (newer
+top-level, entry and fingerprint fields plus a newer pointer field:
+reused with the bytes untouched, also through an identical re-execution;
+another `format`/`profile` is republished as this binary's). With
+`deny_unknown_fields` restored on `Entry` the test fails with the
+re-execution it guards against.
