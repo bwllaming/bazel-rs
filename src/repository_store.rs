@@ -919,13 +919,18 @@ where
         .tempdir_in(&stages)
         .map_err(|e| format!("cannot stage direct repository: {e}"))?;
     // TempDir owns cleanup on callback errors and Rust unwinding as well.
-    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
-        stage_key.to_owned()
-    });
+    let started = std::time::Instant::now();
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
-        execute(stage.path())?
+        execute(stage.path())
     };
+    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+        format!(
+            "{stage_key} ({:.1} ms)",
+            started.elapsed().as_secs_f64() * 1000.0
+        )
+    });
+    let executed = executed?;
     required_directory(stage.path())?;
     ensure_boundary(stage.path())?;
     let files = snapshot(stage.path())?;

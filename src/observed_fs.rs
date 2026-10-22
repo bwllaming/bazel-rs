@@ -53,7 +53,9 @@ pub const MARKER_OPEN: &str = "/.bazel-rs-snapshot-marker/window-open";
 pub const MARKER_CLOSE: &str = "/.bazel-rs-snapshot-marker/window-close";
 
 const SHARDS: usize = 64;
-const TAINT_DETAILS: usize = 12;
+/// Distinct details kept per taint kind (the dump lists them all; the
+/// stderr summary the first few).
+const TAINT_DETAILS: usize = 1000;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
@@ -380,6 +382,13 @@ impl Taint {
             Self::Unstable => "unstable",
             Self::TestHook => "test-hook",
         }
+    }
+
+    /// Recorded when an action is registered during analysis, which the
+    /// plan may still prune (it keeps only the actions requested outputs
+    /// need): an upper bound until the saved plan itself is checked (W5).
+    pub fn plan_dependent(self) -> bool {
+        matches!(self, Self::BuildInfo | Self::MapEach)
     }
 }
 

@@ -65,6 +65,12 @@ pub struct Report {
     pub mismatches: usize,
     /// The first mismatches, in path order per thread block.
     pub examples: Vec<String>,
+    /// The first observations that needed a content check.
+    pub content_checked: Vec<String>,
+    /// Thread time spent on filesystem observations and on integrity
+    /// entries (summed over the threads).
+    pub observation_time: Duration,
+    pub integrity_time: Duration,
 }
 
 #[derive(Default)]
@@ -76,6 +82,9 @@ struct Tally {
     integrity: usize,
     mismatches: usize,
     examples: Vec<String>,
+    content_checked: Vec<String>,
+    observation_time: Duration,
+    integrity_time: Duration,
 }
 
 impl Tally {
@@ -300,6 +309,57 @@ fn check_integrity(entry: &IntegrityEntry) -> Result<(), String> {
     Ok(())
 }
 
+/// The roots of the verified repository trees, sorted.
+fn verified_roots(recording: &Recording) -> Vec<&Path> {
+    let mut roots: Vec<&Path> = recording
+        .repositories
+        .iter()
+        .map(|repository| repository.root.as_path())
+        .collect();
+    roots.sort();
+    roots
+}
+
+/// Whether `path` lies inside (or is) one of the sorted, non-nested `roots`.
+fn inside(roots: &[&Path], path: &Path) -> bool {
+    let at = roots.partition_point(|root| *root <= path);
+    at > 0 && path.starts_with(roots[at - 1])
+}
+
+/// How many observations lie inside verified repository trees.
+pub fn observations_inside_verified_trees(recording: &Recording) -> usize {
+    let roots = verified_roots(recording);
+    recording
+        .observations
+        .iter()
+        .filter(|(path, _)| inside(&roots, path))
+        .count()
+}
+
+/// The recording a per-tree summary policy would validate (PLAN-L2 §7 "when
+/// to escalate": repository tree checks above 20 ms on a hit): observations
+/// outside the verified repository trees only — a content-addressed tree
+/// whose root and manifest are unchanged stands for everything recorded
+/// inside it — and per tree only the root and manifest integrity entries.
+pub fn per_tree_summary(recording: &Recording) -> Recording {
+    let roots = verified_roots(recording);
+    let mut summary = recording.clone();
+    summary
+        .observations
+        .retain(|(path, _)| !inside(&roots, path));
+    for repository in &mut summary.repositories {
+        let root = repository.root.clone();
+        let manifest = repository.manifest.clone();
+        repository.entries.retain(|entry| {
+            entry.path == root
+                || manifest
+                    .as_ref()
+                    .is_some_and(|manifest| entry.path == *manifest)
+        });
+    }
+    summary
+}
+
 /// Validate every observation of `recording` against the current
 /// filesystem and environment on `threads` scoped threads (never stops
 /// early; see the module docs).
@@ -333,6 +393,7 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
                         break;
                     }
                     for item in &work[start..(start + BLOCK).min(work.len())] {
+                        let began = Instant::now();
                         match item {
                             Work::Observation(path, observation) => {
                                 tally.observations += 1;
@@ -342,9 +403,17 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
                                     Ok(Checked::Content { refresh }) => {
                                         tally.content_checks += 1;
                                         tally.refreshable += usize::from(refresh);
+                                        if tally.content_checked.len() < EXAMPLES {
+                                            tally.content_checked.push(format!(
+                                                "{} {}",
+                                                observation.op.name(),
+                                                escape(path.as_os_str())
+                                            ));
+                                        }
                                     }
                                     Err(text) => tally.mismatch(text),
                                 }
+                                tally.observation_time += began.elapsed();
                             }
                             Work::Integrity(repository, entry) => {
                                 tally.integrity += 1;
@@ -357,6 +426,7 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
                                         tally.examples.push(text);
                                     }
                                 }
+                                tally.integrity_time += began.elapsed();
                             }
                         }
                     }
@@ -387,9 +457,14 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
         report.integrity += tally.integrity;
         report.mismatches += tally.mismatches;
         report.examples.extend(tally.examples);
+        report.content_checked.extend(tally.content_checked);
+        report.observation_time += tally.observation_time;
+        report.integrity_time += tally.integrity_time;
     }
     report.examples.sort();
     report.examples.truncate(EXAMPLES);
+    report.content_checked.sort();
+    report.content_checked.truncate(EXAMPLES);
     report.repositories_to_verify = stale_repositories
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -484,5 +559,58 @@ mod tests {
         fs::write(root.join("missing"), b"").unwrap();
         let report = dry_run(&recording, 1);
         assert_eq!(report.mismatches, 3, "{:?}", report.examples);
+    }
+
+    #[test]
+    fn per_tree_summary_keeps_outside_observations_and_tree_heads() {
+        use crate::observed_fs::{FileKind, IntegrityEntry, RepositoryRecord};
+        let entry = |path: &str| IntegrityEntry {
+            path: path.into(),
+            state: Ok((FileKind::File, StatKey::default())),
+            racy: false,
+        };
+        let recording = Recording {
+            observations: vec![
+                (
+                    "/c/trees/a".into(),
+                    observation(Op::Canon, Outcome::Error(2)),
+                ),
+                (
+                    "/c/trees/a/BUILD".into(),
+                    observation(Op::Stat, Outcome::Error(2)),
+                ),
+                (
+                    "/c/trees/ab/x".into(),
+                    observation(Op::Stat, Outcome::Error(2)),
+                ),
+                ("/ws/BUILD".into(), observation(Op::Stat, Outcome::Error(2))),
+            ],
+            repositories: vec![RepositoryRecord {
+                kind: "registry",
+                name: "a".into(),
+                root: "/c/trees/a".into(),
+                manifest: Some("/c/trees/a.json".into()),
+                entries: vec![
+                    entry("/c/trees/a.json"),
+                    entry("/c/trees/a"),
+                    entry("/c/trees/a/BUILD"),
+                ],
+            }],
+            ..Recording::default()
+        };
+        assert_eq!(observations_inside_verified_trees(&recording), 2);
+        let summary = per_tree_summary(&recording);
+        let kept: Vec<_> = summary
+            .observations
+            .iter()
+            .map(|(path, _)| path.to_str().unwrap())
+            .collect();
+        assert_eq!(kept, ["/c/trees/ab/x", "/ws/BUILD"]);
+        let entries: Vec<_> = summary.repositories[0]
+            .entries
+            .iter()
+            .map(|entry| entry.path.to_str().unwrap())
+            .collect();
+        assert_eq!(entries, ["/c/trees/a.json", "/c/trees/a"]);
     }
 }

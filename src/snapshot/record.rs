@@ -120,12 +120,36 @@ impl Session {
             return;
         };
         let recording = recorder.snapshot();
-        let threads = std::thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1)
-            .min(16);
-        let validation = crate::snapshot::validate::dry_run(&recording, threads);
-        let summary = summary(&self.command, &recording, &validation);
+        // Measurement knobs of the record mode only: the validation's thread
+        // count (default min(available parallelism, 16), PLAN-L2 §1c) and how
+        // many times to repeat the dry run (the first one pays cold caches).
+        let knob = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+        };
+        let threads = knob("BAZEL_RS_SNAPSHOT_THREADS").unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(usize::from)
+                .unwrap_or(1)
+                .min(16)
+        });
+        let validations: Vec<_> = (0..knob("BAZEL_RS_SNAPSHOT_DRY_RUNS").unwrap_or(1).min(20))
+            .map(|_| crate::snapshot::validate::dry_run(&recording, threads))
+            .collect();
+        let mut summary = summary(&self.command, &recording, &validations);
+        // The alternative policy's cost, for the W5 decision.
+        let reduced = crate::snapshot::validate::per_tree_summary(&recording);
+        let per_tree = crate::snapshot::validate::dry_run(&reduced, threads);
+        summary.push(format!(
+            "validation dry-run, per-tree summary policy (observations outside verified trees; root + manifest lstat per tree): {} ms on {} threads: {} observations, {} integrity entries; {} mismatch(es)",
+            millis(per_tree.elapsed),
+            per_tree.threads,
+            per_tree.observations,
+            per_tree.integrity,
+            per_tree.mismatches,
+        ));
         for line in &summary {
             observed_fs::diag(line);
         }
@@ -155,14 +179,21 @@ fn millis(duration: std::time::Duration) -> String {
 pub fn summary(
     command: &str,
     recording: &Recording,
-    validation: &crate::snapshot::validate::Report,
+    validations: &[crate::snapshot::validate::Report],
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    let eligible = recording.taints.is_empty();
+    // `unless-pruned`: only taints recorded when analysis registered an
+    // action the plan may still prune (Taint::plan_dependent).
+    let eligible = if recording.taints.is_empty() {
+        "yes"
+    } else if recording.taints.keys().all(|taint| taint.plan_dependent()) {
+        "unless-pruned"
+    } else {
+        "no"
+    };
     lines.push(format!(
-        "record: command={command} window={} ms eligible={}",
+        "record: command={command} window={} ms eligible={eligible}",
         recording.window.map_or_else(|| "open".to_owned(), millis),
-        if eligible { "yes" } else { "no" }
     ));
     let mut by_op: BTreeMap<&str, usize> = BTreeMap::new();
     let mut projections: BTreeMap<&str, usize> = BTreeMap::new();
@@ -216,7 +247,7 @@ pub fn summary(
         integrity_racy += repository.entries.iter().filter(|entry| entry.racy).count();
     }
     lines.push(format!(
-        "repositories: {} verified trees ({}), {} integrity entries (racy {integrity_racy})",
+        "repositories: {} verified trees ({}), {} integrity entries (racy {integrity_racy}); {} observations inside verified trees",
         recording.repositories.len(),
         kinds
             .iter()
@@ -224,33 +255,56 @@ pub fn summary(
             .collect::<Vec<_>>()
             .join(", "),
         kinds.values().map(|(_, entries)| entries).sum::<usize>(),
+        crate::snapshot::validate::observations_inside_verified_trees(recording),
     ));
     if recording.taints.is_empty() {
         lines.push("taints: none".to_owned());
     }
     for (taint, record) in &recording.taints {
+        const SHOWN: usize = 12;
+        let more = record.details.len().saturating_sub(SHOWN);
         lines.push(format!(
-            "taint {}: {} occurrence(s): {}",
+            "taint {}{}: {} occurrence(s), {} distinct: {}{}",
             taint.name(),
+            if taint.plan_dependent() {
+                " (registered by analysis; the plan may prune it)"
+            } else {
+                ""
+            },
             record.count,
-            record.details.join(" | ")
+            record.details.len(),
+            record.details[..record.details.len().min(SHOWN)].join(" | "),
+            if more > 0 {
+                format!(" | (+{more} more in the dump)")
+            } else {
+                String::new()
+            }
         ));
     }
-    lines.push(format!(
-        "validation dry-run: {} ms on {} threads: {} observations ({} trusted by stat, {} content checks, {} refreshable), {} env, {} integrity entries; {} mismatch(es), {} repositories to re-verify",
-        millis(validation.elapsed),
-        validation.threads,
-        validation.observations,
-        validation.trusted_by_stat,
-        validation.content_checks,
-        validation.refreshable,
-        validation.env,
-        validation.integrity,
-        validation.mismatches,
-        validation.repositories_to_verify,
-    ));
-    for example in &validation.examples {
-        lines.push(format!("validation: {example}"));
+    for validation in validations {
+        lines.push(format!(
+            "validation dry-run: {} ms on {} threads: {} observations ({} trusted by stat, {} content checks, {} refreshable; {} ms thread time), {} env, {} integrity entries ({} ms thread time); {} mismatch(es), {} repositories to re-verify",
+            millis(validation.elapsed),
+            validation.threads,
+            validation.observations,
+            validation.trusted_by_stat,
+            validation.content_checks,
+            validation.refreshable,
+            millis(validation.observation_time),
+            validation.env,
+            validation.integrity,
+            millis(validation.integrity_time),
+            validation.mismatches,
+            validation.repositories_to_verify,
+        ));
+    }
+    if let Some(validation) = validations.first() {
+        for example in &validation.examples {
+            lines.push(format!("validation: {example}"));
+        }
+        for path in &validation.content_checked {
+            lines.push(format!("validation content check: {path}"));
+        }
     }
     lines
 }
