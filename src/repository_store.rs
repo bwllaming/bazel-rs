@@ -63,7 +63,8 @@ struct Manifest {
     /// written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spec: Option<String>,
-    /// Opaque recorded watchable inputs (caller JSON) rechecked by `validate`
+    /// Opaque recorded watchable inputs (caller JSON with a numeric
+    /// `version`, [`recorded_version`]) rechecked by `validate`
     /// on warm calls before any reuse; never part of the identity digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recorded: Option<Vec<u8>>,
@@ -129,6 +130,40 @@ fn parse_manifest(bytes: &[u8]) -> Option<Manifest> {
     serde_json::from_slice::<Manifest>(bytes)
         .ok()
         .filter(|manifest| manifest.format == MANIFEST_FORMAT && manifest.profile == PROFILE)
+}
+
+/// The version of opaque recorded-probe bytes: every caller records a JSON
+/// object with a numeric `version` (`repository_warm::RecordedInputs`,
+/// version 1 since recorded probes exist). None when the bytes carry none
+/// this binary can read — a format it does not know.
+fn recorded_version(recorded: &[u8]) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Versioned {
+        version: u64,
+    }
+    serde_json::from_slice::<Versioned>(recorded)
+        .ok()
+        .map(|versioned| versioned.version)
+}
+
+/// Whether an execution that recorded `new` probes and kept a publication's
+/// identity republishes it over the persisted manifest's `existing` probes
+/// (review i20): to add missing probes (a manifest older than the field),
+/// or to replace different probes of the same or an OLDER version. Never
+/// over a newer version, nor over probes whose version this binary cannot
+/// read: it cannot validate them (so it executes), but replacing them
+/// would strip a newer binary's manifest, which would then re-execute and
+/// republish in turn — the i18.1↔i19 ping-pong at every probe-format bump.
+/// One-directional like the forward-compatible manifest readers.
+fn upgrades_recorded(existing: Option<&[u8]>, new: &[u8]) -> bool {
+    let Some(existing) = existing else {
+        return true;
+    };
+    existing != new
+        && matches!(
+            (recorded_version(existing), recorded_version(new)),
+            (Some(old), Some(new)) if old <= new
+        )
 }
 
 #[cfg(unix)]
@@ -345,8 +380,9 @@ pub struct Executed {
     /// Exact serialized runtime input provenance, after validating the result.
     /// These bytes (never the incidental stage pathname) enter the identity.
     pub inputs: Vec<u8>,
-    /// Opaque recorded watchable-input probes (caller JSON) persisted in the
-    /// manifest and rechecked by `validate` on later warm calls.
+    /// Opaque recorded watchable-input probes (caller JSON with a numeric
+    /// `version`, see `recorded_version`) persisted in the manifest and
+    /// rechecked by `validate` on later warm calls.
     pub recorded: Vec<u8>,
 }
 
@@ -856,15 +892,17 @@ where
     // Identical content from another specification (or this one) needs no
     // republication: the tree and its inventory already match ours, AND the
     // persisted manifest already carries this format's specification digest
-    // and exactly this execution's recorded probes — a manifest written
-    // before those fields existed (an older binary's publication), or whose
-    // probes an older binary spelled differently (review i20: version-1
-    // probes into the store, which are never trusted), must be upgraded
-    // once, or no later invocation could ever validate-and-reuse it through
-    // the pointer and the rule would re-execute on every run. Equal
-    // identities record equal probes otherwise (the identity covers the
-    // observations they are derived from), so this republishes nothing else.
-    // Only the specification pointer below records this specification's claim.
+    // and recorded probes this binary need not upgrade
+    // ([`upgrades_recorded`]) — a manifest written before those fields
+    // existed (an older binary's publication), or whose probes an older
+    // binary spelled differently (review i20: version-1 probes into the
+    // store, which are never trusted), must be upgraded once, or no later
+    // invocation could ever validate-and-reuse it through the pointer and
+    // the rule would re-execute on every run. A NEWER binary's probes are
+    // never replaced. Equal identities record equal probes otherwise (the
+    // identity covers the observations they are derived from), so this
+    // republishes nothing else. Only the specification pointer below
+    // records this specification's claim.
     if !(read_stable(&manifest_path)
         .ok()
         .and_then(|bytes| parse_manifest(&bytes))
@@ -872,7 +910,10 @@ where
             existing.identity == identity
                 && content_view(&existing.files) == content_view(&manifest.files)
                 && existing.spec.is_some()
-                && existing.recorded == manifest.recorded
+                && !upgrades_recorded(
+                    existing.recorded.as_deref(),
+                    manifest.recorded.as_deref().unwrap_or_default(),
+                )
         })
         && verify_snapshot(&destination, &manifest.files, verify_mode())
             .is_ok_and(|matched| matched))
@@ -2369,6 +2410,77 @@ mod tests {
         let manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(manifest.recorded.as_deref(), Some(UPGRADED));
         assert_eq!(run(false), (tree.clone(), Publication::Reused));
+        no_stages(cache.path());
+    }
+
+    /// Review i20: the upgrade is one-directional. This binary cannot
+    /// validate a NEWER binary's probes (version 3 here, in a manifest with
+    /// a field it does not know), so it executes — but an execution keeping
+    /// the identity leaves that publication exactly as written: manifest
+    /// bytes, tree and file inodes unchanged, on every run. Replacing it
+    /// would strip the newer probes, and the newer binary would re-execute
+    /// and republish in turn (the i18.1↔i19 ping-pong). Probes this binary
+    /// cannot read at all are kept the same way.
+    #[cfg(unix)]
+    #[test]
+    fn newer_recorded_probes_are_never_replaced() {
+        use std::os::unix::fs::MetadataExt;
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        for newer_probes in [
+            &br#"{"version":3,"probes":["a newer spelling"]}"#[..],
+            b"\x00a binary probe format",
+        ] {
+            let mut newer: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            newer["recorded"] = serde_json::to_value(newer_probes).unwrap();
+            newer["written_by"] = "a newer bazel-rs".into();
+            fs::write(&path, serde_json::to_vec(&newer).unwrap()).unwrap();
+            let manifest = fs::read_to_string(&path).unwrap();
+            let inodes = || {
+                (
+                    fs::metadata(&tree).unwrap().ino(),
+                    fs::metadata(tree.join("data")).unwrap().ino(),
+                )
+            };
+            let before = inodes();
+            let executions = AtomicUsize::new(0);
+            for _ in 0..2 {
+                let outcome = materialize(
+                    cache.path(),
+                    "test-key",
+                    b"spec",
+                    b"",
+                    |_, recorded| Ok(recorded_version(recorded) == Some(2)),
+                    |stage| {
+                        executions.fetch_add(1, Ordering::SeqCst);
+                        write(stage).map(|inputs| Executed {
+                            inputs,
+                            recorded: br#"{"version":2}"#.to_vec(),
+                        })
+                    },
+                )
+                .unwrap();
+                assert_eq!(outcome, (tree.clone(), Publication::Executed));
+                assert_eq!(fs::read_to_string(&path).unwrap(), manifest);
+                assert_eq!(inodes(), before);
+            }
+            assert_eq!(executions.load(Ordering::SeqCst), 2);
+        }
+        assert!(upgrades_recorded(None, br#"{"version":2}"#));
+        assert!(upgrades_recorded(
+            Some(br#"{"version":2,"files":[]}"#),
+            br#"{"version":2}"#
+        ));
+        assert!(!upgrades_recorded(
+            Some(br#"{"version":2}"#),
+            br#"{"version":2}"#
+        ));
+        assert!(!upgrades_recorded(
+            Some(br#"{"version":3}"#),
+            br#"{"version":2}"#
+        ));
         no_stages(cache.path());
     }
 

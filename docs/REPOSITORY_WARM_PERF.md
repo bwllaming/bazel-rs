@@ -539,6 +539,21 @@ another `format`/`profile` is republished as this binary's). With
 `deny_unknown_fields` restored on `Entry` the test fails with the
 re-execution it guards against.
 
+Recorded probes follow the same one-directional rule. An execution that
+keeps a publication's identity republishes it only to add missing
+`recorded` probes (a manifest older than the field) or to replace
+different probes of the same or an older `version` (the v1 → v2 upgrade
+of review i20, `upgrades_recorded`). It never replaces a newer version,
+nor probes whose version it cannot read: it cannot validate them, so it
+executes the rule, but republishing would quarantine the tree and strip
+the newer binary's manifest, which would then re-execute and republish
+in turn on every switch — the i18.1↔i19 ping-pong again at the next
+probe-format bump. Test: `newer_recorded_probes_are_never_replaced`
+(version-3 probes plus an unknown field, and unreadable probe bytes:
+two executions each leave the manifest bytes and the tree and file
+inodes unchanged); with the former `existing.recorded ==
+manifest.recorded` rule it fails on the first execution.
+
 ### Safe warm refresh
 
 `try_reuse` was documented as "pure reads only — safe on worker
