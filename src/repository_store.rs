@@ -1288,6 +1288,12 @@ fn verify_snapshot(
 struct Verified {
     matched: bool,
     refreshed: BTreeMap<String, StatFingerprint>,
+    /// Regular files this verification hashed. Tests assert on it: the
+    /// process-wide `files_hashed` counter is shared with concurrently
+    /// running tests (review i20: a concurrent test's hashes made a delta
+    /// assertion on it flaky).
+    #[cfg_attr(not(test), allow(dead_code))]
+    hashed: u64,
 }
 
 fn verify_snapshot_detailed(
@@ -1307,9 +1313,14 @@ fn verify_snapshot_at(
     start: std::time::SystemTime,
 ) -> Result<Verified, String> {
     if mode == VerifyMode::Full {
+        let files = snapshot(root)?;
         return Ok(Verified {
-            matched: content_view(&snapshot(root)?) == content_view(expected),
+            matched: content_view(&files) == content_view(expected),
             refreshed: BTreeMap::new(),
+            hashed: files
+                .values()
+                .filter(|entry| !entry.directory && entry.symlink.is_none())
+                .count() as u64,
         });
     }
     fn visit(
@@ -1319,6 +1330,7 @@ fn verify_snapshot_at(
         seen: &mut std::collections::BTreeSet<String>,
         start: std::time::SystemTime,
         refreshed: &mut BTreeMap<String, StatFingerprint>,
+        hashed: &mut u64,
     ) -> Result<bool, String> {
         let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
@@ -1356,6 +1368,7 @@ fn verify_snapshot_at(
                     seen,
                     start,
                     refreshed,
+                    hashed,
                 )? {
                     return Ok(false);
                 }
@@ -1380,6 +1393,7 @@ fn verify_snapshot_at(
         timing::PHASES
             .files_hashed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *hashed += 1;
         let (_, sha256) = hash_stable(path)?;
         if sha256 != want.sha256 {
             return Ok(false);
@@ -1395,15 +1409,26 @@ fn verify_snapshot_at(
     required_directory(root)?;
     let mut seen = std::collections::BTreeSet::new();
     let mut refreshed = BTreeMap::new();
-    if !visit(root, root, expected, &mut seen, start, &mut refreshed)? {
+    let mut hashed = 0;
+    if !visit(
+        root,
+        root,
+        expected,
+        &mut seen,
+        start,
+        &mut refreshed,
+        &mut hashed,
+    )? {
         return Ok(Verified {
             matched: false,
             refreshed: BTreeMap::new(),
+            hashed,
         });
     }
     Ok(Verified {
         matched: seen.len() == expected.len(),
         refreshed,
+        hashed,
     })
 }
 
@@ -1668,11 +1693,10 @@ mod tests {
         );
         let mut files = manifest.files.clone();
         files.get_mut("data").unwrap().stat = Some(fresh);
-        let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
         let outcome = verify_snapshot_detailed(&tree, &files, VerifyMode::Stat).unwrap();
         assert!(outcome.matched);
         assert!(
-            timing::PHASES.files_hashed.load(Ordering::Relaxed) > hashed_before,
+            outcome.hashed > 0,
             "racy fingerprint must fall back to hashing"
         );
     }
@@ -2786,14 +2810,12 @@ mod tests {
         assert!(outcome.refreshed.is_empty());
         // Settled vs +1h with the fingerprint recorded: trusted by stat,
         // zero files hashed.
-        let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
         let outcome =
             verify_snapshot_at(&tree, &manifest.files, VerifyMode::Stat, settled_start).unwrap();
         assert!(outcome.matched);
         assert!(outcome.refreshed.is_empty());
         assert_eq!(
-            timing::PHASES.files_hashed.load(Ordering::Relaxed),
-            hashed_before,
+            outcome.hashed, 0,
             "settled fingerprint must trust by stat without hashing"
         );
         #[cfg(unix)]
@@ -2804,17 +2826,13 @@ mod tests {
             fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
             fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
             let manifest = read_manifest(cache.path());
-            let hashed_before = timing::PHASES.files_hashed.load(Ordering::Relaxed);
             let outcome =
                 verify_snapshot_detailed(&tree, &manifest.files, VerifyMode::Stat).unwrap();
             assert!(outcome.matched);
             // The bumped file hashed (fingerprint stale) — the counter
             // proves the fallback ran; refresh is empty only because the
             // bumped stat is still fresh (correct: it settles later).
-            assert!(
-                timing::PHASES.files_hashed.load(Ordering::Relaxed) > hashed_before,
-                "ctime bump must fall back to hashing"
-            );
+            assert!(outcome.hashed > 0, "ctime bump must fall back to hashing");
         }
         no_stages(cache.path());
     }
