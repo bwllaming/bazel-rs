@@ -333,9 +333,15 @@ enum Mutability {
     Unknown(String),
 }
 
+/// A `def` or lambda (`<function NAME from MODULE>`) rather than another
+/// value of type `function` (a built-in's `<built-in function NAME>`).
+/// The type is checked first: the repr of any other value (a struct or
+/// provider instance holding large depsets) is never computed.
 fn is_starlark_def(value: Value<'_>) -> bool {
-    let repr = value.to_repr();
-    value.get_type() == "function" && repr.starts_with("<function ") && repr.contains(" from ")
+    value.get_type() == "function" && {
+        let repr = value.to_repr();
+        repr.starts_with("<function ") && repr.contains(" from ")
+    }
 }
 
 /// Starlark.isImmutable (net/starlark/java/eval/Starlark.java:156-167) and
@@ -747,6 +753,78 @@ mod tests {
             eval_with_frozen(FROZEN, "repr(depset([(L,), (L2,), (N,)]))"),
             Ok("depset([([1, (\"t\",)],), ([[1], {\"k\": [2]}],)])".to_owned())
         );
+    }
+
+    /// `is_starlark_def` checks the type before it computes a repr, with the
+    /// truth table of the repr-first predicate it replaced: only a value of
+    /// type `function` printing as `<function NAME from MODULE>` (a `def` or
+    /// a lambda) is a Starlark function; structs, tuples, provider instances
+    /// and providers, built-ins and bound methods are not.
+    #[test]
+    fn starlark_defs_are_recognized_by_type_then_repr() {
+        use starlark::environment::{GlobalsBuilder, LibraryExtension};
+        use starlark::values::Value;
+        use starlark::values::list::ListRef;
+        use starlark::values::tuple::TupleRef;
+        fn repr_first(value: Value<'_>) -> bool {
+            let repr = value.to_repr();
+            value.get_type() == "function"
+                && repr.starts_with("<function ")
+                && repr.contains(" from ")
+        }
+        let globals = GlobalsBuilder::extended_by(&[LibraryExtension::StructType])
+            .with(crate::starlark_types::analysis_globals)
+            .with(crate::providers::globals)
+            .build();
+        // provider() needs a .bzl loading context.
+        let context = crate::loading::ExtensionContext {
+            byte_strings: false,
+            label: crate::label::Label::parse("//pkg:defs.bzl", "").unwrap(),
+            repositories: std::sync::Arc::new(crate::repository::RepositorySet::new(
+                std::path::PathBuf::from("."),
+            )),
+        };
+        let code = r#"
+P = provider(fields = ["x"])
+
+def f():
+    pass
+
+[
+    ("struct", struct(a = 1, d = depset([1]), f = f), False),
+    ("tuple", (1, f), False),
+    ("provider instance", P(x = depset(["a"])), False),
+    ("provider", P, False),
+    ("DefaultInfo", DefaultInfo, False),
+    ("def", f, True),
+    ("lambda", lambda: 1, True),
+    ("builtin", len, False),
+    ("bound method", "x".upper, False),
+    ("depset", depset([1]), False),
+    ("string", "<function f from x>", False),
+    ("None", None, False),
+    ("list", [f], False),
+    ("dict", {"f": f}, False),
+]
+"#;
+        Module::with_temp_heap(|module| {
+            let ast =
+                AstModule::parse("//pkg:defs.bzl", code.to_owned(), &Dialect::Standard).unwrap();
+            let mut evaluator = Evaluator::new(&module);
+            evaluator.extra = Some(&context);
+            let cases = evaluator.eval_module(ast, &globals).unwrap();
+            let cases = ListRef::from_value(cases).unwrap();
+            assert_eq!(cases.len(), 14);
+            for case in cases.iter() {
+                let [name, value, expected] = TupleRef::from_value(case).unwrap().content() else {
+                    panic!("a (name, value, expected) case");
+                };
+                let (name, expected) =
+                    (name.unpack_str().unwrap(), expected.unpack_bool().unwrap());
+                assert_eq!(super::is_starlark_def(*value), expected, "{name}");
+                assert_eq!(repr_first(*value), expected, "{name}");
+            }
+        });
     }
 
     #[test]
