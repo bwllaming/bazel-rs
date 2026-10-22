@@ -18,8 +18,9 @@ use crate::package::Rule;
 use crate::repository::RepositorySet;
 use crate::starlark_types::{Depset, File, Target, alloc_file, alloc_shared_target, alloc_target};
 
+/// What a consumer sees of one dependency edge's configured target.
 #[derive(Clone, Debug)]
-pub struct DependencyTarget {
+pub struct DependencyView {
     pub label: String,
     pub files: Vec<File>,
     pub is_source: bool,
@@ -30,11 +31,13 @@ pub struct DependencyTarget {
     /// Actual native `filegroup` rule (Filegroup.java).
     pub is_filegroup: bool,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
-    pub provider_files: Vec<File>,
+    /// Shared with the engine's per-target provider files (W1a).
+    pub provider_files: Arc<Vec<File>>,
     /// Display names of the returned declared providers, in return order.
     pub provider_keys: Vec<String>,
-    /// RunfilesProvider/FilesToRunProvider (docs/RUNFILES.md).
-    pub runfiles: crate::runfiles::TargetRunfiles,
+    /// RunfilesProvider/FilesToRunProvider (docs/RUNFILES.md), shared with
+    /// the engine's planned runfiles of the target (W1a).
+    pub runfiles: Arc<crate::runfiles::TargetRunfiles>,
     /// The actual rule's class name (ConfiguredTargetAndData.getRuleClass):
     /// `None` for files and package groups.
     pub rule_class: Option<String>,
@@ -48,6 +51,47 @@ pub struct DependencyTarget {
     /// (crate::engine `ActionPlanning`; Bazel's one ConfiguredTarget
     /// instance per label and configuration).
     pub(crate) identity: std::sync::Arc<Target>,
+}
+
+/// A dependency edge's [`DependencyView`], shared: the engine memoizes one
+/// view per requested label and edge configuration and hands every edge
+/// of that key the same view (W1a, PLAN-L1 §2.1), so cloning is an `Arc`
+/// bump. Fields read through `Deref`; writes through `DerefMut` are
+/// copy-on-write, so a handle keeps value semantics (a change never
+/// reaches another handle of the same view).
+#[derive(Clone)]
+pub struct DependencyTarget(Arc<DependencyView>);
+
+impl DependencyTarget {
+    pub fn new(view: DependencyView) -> Self {
+        Self(Arc::new(view))
+    }
+}
+
+impl From<DependencyView> for DependencyTarget {
+    fn from(view: DependencyView) -> Self {
+        Self::new(view)
+    }
+}
+
+impl std::ops::Deref for DependencyTarget {
+    type Target = DependencyView;
+
+    fn deref(&self) -> &DependencyView {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for DependencyTarget {
+    fn deref_mut(&mut self) -> &mut DependencyView {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl std::fmt::Debug for DependencyTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 use crate::analysis_runtime::Context;
@@ -1697,7 +1741,7 @@ fn analyze_aspect_inner(
             .flat_map(|dep| {
                 dep.files
                     .iter()
-                    .chain(&dep.provider_files)
+                    .chain(dep.provider_files.iter())
                     .cloned()
                     .chain(dep.runfiles.files())
             })
@@ -2134,7 +2178,7 @@ fn analyze_inner(
                 target
                     .files
                     .iter()
-                    .chain(&target.provider_files)
+                    .chain(target.provider_files.iter())
                     .cloned()
                     .chain(target.runfiles.files())
             })
@@ -2669,20 +2713,20 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 &producer.provider_keys,
                 &producer.runfiles,
             ));
-            DependencyTarget {
+            DependencyTarget::new(DependencyView {
                 label: "//:producer".into(),
                 files: producer.files,
                 is_source: false,
                 is_rule: true,
                 is_package_group: false,
                 providers: producer.providers,
-                provider_files: producer.provider_files,
+                provider_files: Arc::new(producer.provider_files),
                 provider_keys: producer.provider_keys,
                 is_filegroup: false,
-                runfiles: producer.runfiles,
+                runfiles: Arc::new(producer.runfiles),
                 rule_class: Some("producer".into()),
                 identity,
-            }
+            })
         })]);
         let consumer = analyze(&package[&Label::parse("//:consumer", "").unwrap()], &deps).unwrap();
         assert_eq!(consumer.actions.len(), 1);
@@ -2785,20 +2829,20 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
                 &[],
                 &Default::default(),
             ));
-            DependencyTarget {
+            DependencyTarget::new(DependencyView {
                 label: "//pkg:dep".into(),
                 files: Vec::new(),
                 is_source: false,
                 is_rule: true,
                 is_package_group: false,
                 providers,
-                provider_files: Vec::new(),
+                provider_files: Default::default(),
                 provider_keys: Vec::new(),
                 is_filegroup: false,
                 runfiles: Default::default(),
                 rule_class: Some("dep_rule".into()),
                 identity,
-            }
+            })
         };
         (BTreeMap::from([(target.label.clone(), target)]), specs)
     }

@@ -442,7 +442,7 @@ pub(crate) fn merged_dependency(
             provider_keys.push(id.clone());
         }
     }
-    let mut provider_files = base.provider_files.clone();
+    let mut provider_files = Vec::clone(&base.provider_files);
     for value in aspects.iter().flat_map(|(_, providers)| providers.values()) {
         for file in crate::providers::provider_files(value.value()).map_err(|e| e.to_string())? {
             if !provider_files.contains(&file) {
@@ -468,7 +468,7 @@ pub(crate) fn merged_dependency(
         &provider_keys,
         &crate::runfiles::TargetRunfiles::default(),
     ));
-    Ok(DependencyTarget {
+    Ok(DependencyTarget::new(crate::analysis::DependencyView {
         label: base.label.clone(),
         files,
         is_source: base.is_source,
@@ -476,10 +476,10 @@ pub(crate) fn merged_dependency(
         is_package_group: base.is_package_group,
         is_filegroup: base.is_filegroup,
         providers,
-        provider_files,
+        provider_files: std::sync::Arc::new(provider_files),
         provider_keys,
-        runfiles: crate::runfiles::TargetRunfiles::default(),
+        runfiles: Default::default(),
         rule_class: base.rule_class.clone(),
         identity,
-    })
+    }))
 }

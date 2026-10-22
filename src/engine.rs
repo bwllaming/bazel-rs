@@ -42,38 +42,80 @@ struct Artifact {
     /// workspace status file and the volatile build-info files
     /// (N63, docs/WORKSPACE_STATUS.md).
     constant_metadata: bool,
+    /// The artifact's File, computed once by [`Artifact::new`] (W1a,
+    /// PLAN-L1 §2.1) from `exec`, the producer's presence, `owner` and
+    /// `directory` — clones share it. It is fixed at construction: a
+    /// staged tool runfile (commit_custom_target) rewrites only `exec`
+    /// to its runfiles-tree destination and keeps the staged artifact's
+    /// File; plan_action compares such copies on their fields.
+    file: Arc<File>,
 }
 
 impl Artifact {
-    fn file(&self) -> File {
-        // A generated file is relative to its configuration's output root.
-        let exec = self.exec.to_string_lossy();
-        let relative = self
-            .producer
-            .as_ref()
-            .and_then(|_| crate::label::split_generated_root(&exec))
-            .map_or(self.exec.as_path(), |(_, relative)| Path::new(relative));
-        // External short paths are metadata, never filesystem lookup paths.
-        let short_path = if Label::parse_canonical(&self.owner)
-            .is_ok_and(|label| !label.repository.is_empty())
-        {
-            relative
-                .strip_prefix("external")
-                .map(|path| PathBuf::from("..").join(path))
-                .unwrap_or_else(|_| relative.to_path_buf())
-        } else {
-            relative.to_path_buf()
-        };
-        File {
-            is_directory: self.directory,
-            path: self.exec.to_string_lossy().into_owned(),
-            short_path: short_path.to_string_lossy().into_owned(),
-            owner: self.owner.clone(),
-            is_source: self.producer.is_none(),
+    fn new(
+        real: PathBuf,
+        exec: PathBuf,
+        producer: Option<(String, usize)>,
+        owner: String,
+        directory: bool,
+        constant_metadata: bool,
+    ) -> Self {
+        let file = Arc::new(Self::compute_file(
+            &exec,
+            producer.is_some(),
+            &owner,
+            directory,
+        ));
+        Self {
+            real,
+            exec,
+            producer,
+            owner,
+            directory,
+            constant_metadata,
+            file,
         }
+    }
+
+    /// The File of an artifact at `exec` (the algorithm `file()` ran on
+    /// every call before W1a).
+    fn compute_file(exec_path: &Path, generated: bool, owner: &str, directory: bool) -> File {
+        // A generated file is relative to its configuration's output root.
+        let exec = exec_path.to_string_lossy();
+        let generated_root = if generated {
+            crate::label::split_generated_root(&exec)
+        } else {
+            None
+        };
+        let relative = generated_root.map_or(exec_path, |(_, relative)| Path::new(relative));
+        // External short paths are metadata, never filesystem lookup paths.
+        let short_path =
+            if Label::parse_canonical(owner).is_ok_and(|label| !label.repository.is_empty()) {
+                relative
+                    .strip_prefix("external")
+                    .map(|path| PathBuf::from("..").join(path))
+                    .unwrap_or_else(|_| relative.to_path_buf())
+            } else {
+                relative.to_path_buf()
+            };
+        File {
+            is_directory: directory,
+            path: exec_path.to_string_lossy().into_owned(),
+            short_path: short_path.to_string_lossy().into_owned(),
+            owner: owner.to_owned(),
+            is_source: !generated,
+        }
+    }
+
+    fn file(&self) -> File {
+        File::clone(&self.file)
     }
 }
 
+/// A configured target's artifacts (its files to build), shared: the
+/// planned `dry` lists, their delegation copies and the dependency views
+/// hold one list (W1a).
+type Artifacts = Arc<Vec<Artifact>>;
 type Locations = BTreeMap<String, Vec<PathBuf>>;
 /// Declared generated artifacts by configuration and execution path.
 type Declared = BTreeMap<(ConfigId, PathBuf), Artifact>;
@@ -106,15 +148,17 @@ enum Target {
 /// actions. `done` counts the planned entries of the build's plan.
 #[derive(Default)]
 struct ActionPlanning {
-    dry: BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    dry: BTreeMap<ConfiguredTargetKey, Artifacts>,
     custom_providers:
         BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    provider_files: BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    /// Shared with the dependency views (W1a): aliases and delegations
+    /// share their actual's list.
+    provider_files: BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     /// Returned declared-provider names per analyzed rule (Target debugPrint).
     provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>>,
     /// RunfilesProvider/FilesToRunProvider of analyzed rule targets
     /// (docs/RUNFILES.md); file targets and other native rules have none.
-    runfiles_info: BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+    runfiles_info: BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
     /// File metadata is not a source filesystem path. Keep the real artifact
     /// identity even when a custom provider forwards a non-default file.
     artifact_index: BTreeMap<File, Artifact>,
@@ -198,6 +242,243 @@ struct ActionPlanning {
     /// and an exec-configured rule edge are their own keys, hence their
     /// own instances.
     target_identities: BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
+    /// The memoized dependency view of each dependency edge key (W1a,
+    /// PLAN-L1 §2.1; Engine::plan_dependency_view).
+    views: DependencyViews,
+}
+
+/// The dependency views of a build, keyed like the edge that requested
+/// them: the requested label in the edge's configuration.
+type DependencyViews = HashMap<ConfiguredTargetKey, Arc<PlannedView>>;
+
+/// One memoized dependency view (W1a, PLAN-L1 §2.1): what every edge of
+/// one (requested label, edge configuration) gets — the view itself — and
+/// what it adds to the consumer's `available` artifacts, replayed per edge
+/// in the per-edge order ([`PlannedView::replay`]). Built on the first
+/// edge, after the dependency committed: every input (the dependency's
+/// `dry` artifacts or declared outputs, providers, provider files,
+/// runfiles, the alias chain and rule-transition delegations, the
+/// framework OutputGroupInfo and the shared Target identity) is final by
+/// then. Errors are never memoized.
+struct PlannedView {
+    target: DependencyTarget,
+    /// The dependency's artifacts (Engine::artifacts): `target.files` with
+    /// their artifacts.
+    defaults: Artifacts,
+    /// Per provider file of `target`: whether it is one of `defaults`'
+    /// Files. Their replay is skipped: per edge, the per-edge code
+    /// registered `defaults` in `artifact_index` right before it looked
+    /// the provider files up, so it re-inserted the same artifacts.
+    provider_defaults: Vec<bool>,
+    /// The files of `target.runfiles.files()` that are not among
+    /// `defaults`' Files (skipped likewise), resolved through
+    /// `artifact_index` per edge.
+    runfiles_files: Vec<File>,
+    /// `target.runfiles.manifests()`: added when planned.
+    manifests: Vec<File>,
+}
+
+impl PlannedView {
+    /// Add the view's artifacts to a consumer's `available` ones in the
+    /// per-edge order: the dependency's artifacts, its provider files and
+    /// runfiles (their artifacts through `artifact_index`), then its
+    /// runfiles manifests when planned. Inserting each key once is the same
+    /// map as the per-edge insert sequence: a later insert of a key
+    /// replaces the value, and within one view a key's last value is the
+    /// one inserted here.
+    fn replay(
+        &self,
+        artifact_index: &BTreeMap<File, Artifact>,
+        available: &mut BTreeMap<File, Artifact>,
+    ) -> Result<(), String> {
+        for artifact in self.defaults.iter() {
+            available.insert(artifact.file(), artifact.clone());
+        }
+        for (file, default) in self
+            .target
+            .provider_files
+            .iter()
+            .zip(&self.provider_defaults)
+        {
+            if !default {
+                let artifact = provider_file_artifact(artifact_index, file)?;
+                available.insert(file.clone(), artifact.clone());
+            }
+        }
+        for file in &self.runfiles_files {
+            let artifact = runfiles_file_artifact(artifact_index, file)?;
+            available.insert(file.clone(), artifact.clone());
+        }
+        for file in &self.manifests {
+            if let Some(artifact) = artifact_index.get(file) {
+                available.insert(file.clone(), artifact.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// BAZEL_RS_VERIFY_VIEWS: a later edge skips re-registering the
+    /// dependency's artifacts in `artifact_index`, which is only sound
+    /// while their entries are unchanged.
+    fn verify_index(&self, key: &ConfiguredTargetKey, artifact_index: &BTreeMap<File, Artifact>) {
+        for artifact in self.defaults.iter() {
+            let indexed = artifact_index.get(&*artifact.file);
+            if !indexed.is_some_and(|indexed| same_artifact(indexed, artifact)) {
+                panic!(
+                    "BAZEL_RS_VERIFY_VIEWS: the artifact index entry of {} (a default artifact of the memoized dependency view of {} in {}) changed after the view was built: memoized {artifact:?}, indexed {indexed:?}",
+                    artifact.file.path, key.label, key.config
+                );
+            }
+        }
+    }
+
+    /// BAZEL_RS_VERIFY_VIEWS: the memoized view equals the view this edge
+    /// rebuilt (what the per-edge code computed before W1a): its files,
+    /// providers (keys), provider files, runfiles, rule class, the shared
+    /// Target identity (pointer) and the artifacts it makes available.
+    fn verify(&self, key: &ConfiguredTargetKey, rebuilt: Result<PlannedView, String>) {
+        let stale = |what: &str, memoized: &dyn std::fmt::Debug, rebuilt: &dyn std::fmt::Debug| {
+            stale_view(key, what, memoized, rebuilt)
+        };
+        let rebuilt = match rebuilt {
+            Ok(rebuilt) => rebuilt,
+            Err(error) => stale_view(key, "the outcome", &"Ok", &error),
+        };
+        let (memo, now) = (&*self.target, &*rebuilt.target);
+        if memo.label != now.label {
+            stale("label", &memo.label, &now.label);
+        }
+        if memo.files != now.files {
+            stale("files", &memo.files, &now.files);
+        }
+        let kinds = |view: &analysis::DependencyView| {
+            (
+                view.is_source,
+                view.is_rule,
+                view.is_package_group,
+                view.is_filegroup,
+            )
+        };
+        if kinds(memo) != kinds(now) {
+            stale("target kind", &kinds(memo), &kinds(now));
+        }
+        let provider_ids =
+            |view: &analysis::DependencyView| view.providers.keys().cloned().collect::<Vec<_>>();
+        if provider_ids(memo) != provider_ids(now) {
+            stale("providers", &provider_ids(memo), &provider_ids(now));
+        }
+        if memo.provider_keys != now.provider_keys {
+            stale("provider keys", &memo.provider_keys, &now.provider_keys);
+        }
+        if memo.provider_files != now.provider_files {
+            stale("provider files", &memo.provider_files, &now.provider_files);
+        }
+        if memo.rule_class != now.rule_class {
+            stale("rule class", &memo.rule_class, &now.rule_class);
+        }
+        if !Arc::ptr_eq(&memo.identity, &now.identity) {
+            stale(
+                "Target identity",
+                &Arc::as_ptr(&memo.identity),
+                &Arc::as_ptr(&now.identity),
+            );
+        }
+        if self.provider_defaults != rebuilt.provider_defaults {
+            stale(
+                "provider files among the artifacts",
+                &self.provider_defaults,
+                &rebuilt.provider_defaults,
+            );
+        }
+        if self.runfiles_files != rebuilt.runfiles_files {
+            stale(
+                "runfiles files",
+                &self.runfiles_files,
+                &rebuilt.runfiles_files,
+            );
+        }
+        if self.manifests != rebuilt.manifests {
+            stale("runfiles manifests", &self.manifests, &rebuilt.manifests);
+        }
+        let executable = |view: &analysis::DependencyView| {
+            view.runfiles
+                .files_to_run
+                .as_ref()
+                .map(|files_to_run| files_to_run.executable.clone())
+        };
+        if executable(memo) != executable(now) {
+            stale("executable", &executable(memo), &executable(now));
+        }
+        if self.defaults.len() != rebuilt.defaults.len()
+            || self
+                .defaults
+                .iter()
+                .zip(rebuilt.defaults.iter())
+                .any(|(memo, now)| !same_artifact(memo, now))
+        {
+            stale("artifacts", &self.defaults, &rebuilt.defaults);
+        }
+    }
+}
+
+/// The BAZEL_RS_VERIFY_VIEWS failure: a memoized dependency view differs
+/// from the one its edge rebuilt.
+fn stale_view(
+    key: &ConfiguredTargetKey,
+    what: &str,
+    memoized: &dyn std::fmt::Debug,
+    rebuilt: &dyn std::fmt::Debug,
+) -> ! {
+    panic!(
+        "BAZEL_RS_VERIFY_VIEWS: the memoized dependency view of {} in {} is stale: {what} differs\n  memoized: {memoized:?}\n  rebuilt:  {rebuilt:?}",
+        key.label, key.config
+    )
+}
+
+/// Whether two artifacts are the same in every field.
+fn same_artifact(a: &Artifact, b: &Artifact) -> bool {
+    a.real == b.real
+        && a.exec == b.exec
+        && a.producer == b.producer
+        && a.owner == b.owner
+        && a.directory == b.directory
+        && a.constant_metadata == b.constant_metadata
+        && a.file == b.file
+}
+
+/// Whether BAZEL_RS_VERIFY_VIEWS=1 asks to rebuild every memoized
+/// dependency view on each later edge and compare (W1a's debug verifier).
+fn verify_views() -> bool {
+    static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("BAZEL_RS_VERIFY_VIEWS").is_some_and(|value| value == "1")
+    });
+    *VERIFY
+}
+
+/// The artifact of a dependency's provider file.
+fn provider_file_artifact<'a>(
+    artifact_index: &'a BTreeMap<File, Artifact>,
+    file: &File,
+) -> Result<&'a Artifact, String> {
+    artifact_index.get(file).ok_or_else(|| {
+        format!(
+            "provider file has no declared artifact identity: {}",
+            file.path
+        )
+    })
+}
+
+/// The artifact of a dependency's runfiles file.
+fn runfiles_file_artifact<'a>(
+    artifact_index: &'a BTreeMap<File, Artifact>,
+    file: &File,
+) -> Result<&'a Artifact, String> {
+    artifact_index.get(file).ok_or_else(|| {
+        format!(
+            "runfiles file has no declared artifact identity: {}",
+            file.path
+        )
+    })
 }
 
 /// The mutable planning fields an aspect application needs (N58): the same
@@ -205,12 +486,12 @@ struct ActionPlanning {
 /// aspect planner can recurse (an aspect application plans its own
 /// dependencies through the shared machinery).
 struct PlanState<'a> {
-    pub dry: &'a mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    pub dry: &'a mut BTreeMap<ConfiguredTargetKey, Artifacts>,
     pub custom_providers:
         &'a mut BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    pub provider_files: &'a mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    pub provider_files: &'a mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     pub provider_keys: &'a mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-    pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+    pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
     pub artifact_index: &'a mut BTreeMap<File, Artifact>,
     pub declared: &'a mut Declared,
     pub native_output_groups:
@@ -218,7 +499,6 @@ struct PlanState<'a> {
     pub validation: &'a mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
     pub target_identities:
         &'a mut BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
-    pub repositories: &'a mut BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
     pub aspect_providers: &'a mut BTreeMap<
         crate::aspects::AspectApplicationKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
@@ -232,6 +512,7 @@ struct PlanState<'a> {
     pub status_client_environment:
         &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
+    pub views: &'a mut DependencyViews,
 }
 
 impl ActionPlanning {
@@ -252,12 +533,12 @@ impl ActionPlanning {
             status_client_environment,
             native_output_groups,
             validation,
-            repositories,
             aspect_providers,
             aspect_provider_files,
             target_identities,
             aspect_target_identities,
             workspace_status,
+            views,
             ..
         } = self;
         PlanState {
@@ -271,7 +552,6 @@ impl ActionPlanning {
             native_output_groups,
             validation,
             target_identities,
-            repositories,
             aspect_providers,
             aspect_provider_files,
             aspect_target_identities,
@@ -281,6 +561,7 @@ impl ActionPlanning {
             client_environment,
             status_client_environment,
             workspace_status,
+            views,
         }
     }
 }
@@ -6884,18 +7165,30 @@ impl Engine {
         &mut self,
         label: &Label,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
         declared: &Declared,
     ) -> Result<Vec<Artifact>, String> {
+        self.shared_artifacts(label, config, built, declared)
+            .map(Arc::unwrap_or_clone)
+    }
+
+    /// [`Self::artifacts`], sharing a planned target's list.
+    fn shared_artifacts(
+        &mut self,
+        label: &Label,
+        config: ConfigId,
+        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        declared: &Declared,
+    ) -> Result<Artifacts, String> {
         match self.target(label)? {
-            Target::Source(real) => Ok(vec![Artifact {
-                directory: false,
-                constant_metadata: false,
+            Target::Source(real) => Ok(Arc::new(vec![Artifact::new(
                 real,
-                exec: label.source_exec_path(),
-                producer: None,
-                owner: label.to_string(),
-            }]),
+                label.source_exec_path(),
+                None,
+                label.to_string(),
+                false,
+                false,
+            )])),
             Target::Rule(rule) => built
                 .get(&ConfiguredTargetKey::new(rule.label.clone(), config))
                 .cloned()
@@ -6915,7 +7208,7 @@ impl Engine {
                 declared
                     .get(&(config, exec))
                     .cloned()
-                    .map(|artifact| vec![artifact])
+                    .map(|artifact| Arc::new(vec![artifact]))
                     .ok_or_else(|| format!("missing analyzed output {label}"))
             }
         }
@@ -6925,7 +7218,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         config: ConfigId,
-        built: &BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
         declared: &Declared,
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::new();
@@ -7608,19 +7901,28 @@ impl Engine {
     /// applications): the resolved target's artifacts, providers (with the
     /// framework OutputGroupInfo), provider files, runfiles and the one
     /// shared `Target` value (N55) — everything a consumer's `ctx.attr`
-    /// entry holds (DependencyResolver + ConfiguredTargetAndData).
+    /// entry holds (DependencyResolver + ConfiguredTargetAndData) — with
+    /// its artifacts added to the consumer's `available` ones.
+    ///
+    /// Memoized per edge key, the requested label in the edge's
+    /// configuration (W1a, PLAN-L1 §2.1): the first edge builds the view
+    /// (Self::dependency_view) after the dependency committed, when its
+    /// every input is final; later edges share it and replay its
+    /// `available` additions (PlannedView::replay). Errors are never
+    /// memoized. `BAZEL_RS_VERIFY_VIEWS=1` rebuilds the view on every
+    /// later edge and panics when the memoized one went stale.
     #[allow(clippy::too_many_arguments)]
     fn plan_dependency_view(
         &mut self,
         configured: &mut ConfiguredNodes,
-        dry: &mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+        dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
         custom_providers: &mut BTreeMap<
             ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         >,
-        provider_files: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
         provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
         artifact_index: &mut BTreeMap<File, Artifact>,
         declared: &mut Declared,
         native_output_groups: &mut BTreeMap<
@@ -7632,16 +7934,93 @@ impl Engine {
             TargetIdentityKey,
             std::sync::Arc<crate::starlark_types::Target>,
         >,
-        _repositories: &mut BTreeMap<ConfiguredTargetKey, Arc<BTreeSet<String>>>,
+        views: &mut DependencyViews,
         available: &mut BTreeMap<File, Artifact>,
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
-        let artifacts = self.artifacts(label, edge_config, dry, declared)?;
+        let key = ConfiguredTargetKey::new(label.clone(), edge_config);
+        let view = match views.get(&key).cloned() {
+            Some(view) => {
+                if verify_views() {
+                    view.verify_index(&key, artifact_index);
+                    let rebuilt = self.dependency_view(
+                        configured,
+                        dry,
+                        custom_providers,
+                        provider_files,
+                        provider_keys,
+                        runfiles_info,
+                        artifact_index,
+                        declared,
+                        native_output_groups,
+                        validation,
+                        target_identities,
+                        label,
+                        edge_config,
+                    );
+                    view.verify(&key, rebuilt);
+                }
+                view
+            }
+            None => {
+                let view = Arc::new(self.dependency_view(
+                    configured,
+                    dry,
+                    custom_providers,
+                    provider_files,
+                    provider_keys,
+                    runfiles_info,
+                    artifact_index,
+                    declared,
+                    native_output_groups,
+                    validation,
+                    target_identities,
+                    label,
+                    edge_config,
+                )?);
+                views.insert(key, view.clone());
+                view
+            }
+        };
+        view.replay(artifact_index, available)?;
+        Ok(view.target.clone())
+    }
+
+    /// Build the dependency view of one edge key (the miss path of
+    /// Self::plan_dependency_view, the per-edge code before W1a): the
+    /// dependency's artifacts join `artifact_index`, every provider and
+    /// runfiles file must already be in it.
+    #[allow(clippy::too_many_arguments)]
+    fn dependency_view(
+        &mut self,
+        configured: &mut ConfiguredNodes,
+        dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
+        custom_providers: &mut BTreeMap<
+            ConfiguredTargetKey,
+            BTreeMap<String, starlark::values::OwnedFrozenValue>,
+        >,
+        provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
+        provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
+        runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
+        artifact_index: &mut BTreeMap<File, Artifact>,
+        declared: &mut Declared,
+        native_output_groups: &mut BTreeMap<
+            ConfiguredTargetKey,
+            starlark::values::OwnedFrozenValue,
+        >,
+        validation: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        target_identities: &mut BTreeMap<
+            TargetIdentityKey,
+            std::sync::Arc<crate::starlark_types::Target>,
+        >,
+        label: &Label,
+        edge_config: ConfigId,
+    ) -> Result<PlannedView, String> {
+        let artifacts = self.shared_artifacts(label, edge_config, dry, declared)?;
         let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
-        for artifact in artifacts {
+        for artifact in artifacts.iter() {
             artifact_index.insert(artifact.file(), artifact.clone());
-            available.insert(artifact.file(), artifact);
         }
         let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
         let forwarded = self.forwarded_actual(configured, &dependency);
@@ -7676,41 +8055,33 @@ impl Engine {
             _ if is_rule => self.planned_validation(custom_providers, validation, &actual_key),
             _ => Vec::new(),
         };
-        let mut target_provider_files =
+        let mut target_provider_files: Arc<Vec<File>> =
             provider_files.get(&dependency).cloned().unwrap_or_default();
         // The validation files not already among the dependency's
         // provider files (a Starlark rule lists them; a native rule
         // or output-file target does not) join them here.
         for file in &validation {
             if !target_provider_files.contains(file) {
-                target_provider_files.push(file.clone());
+                Arc::make_mut(&mut target_provider_files).push(file.clone());
             }
         }
-        for file in &target_provider_files {
-            let artifact = artifact_index.get(file).ok_or_else(|| {
-                format!(
-                    "provider file has no declared artifact identity: {}",
-                    file.path
-                )
-            })?;
-            available.insert(file.clone(), artifact.clone());
+        for file in target_provider_files.iter() {
+            provider_file_artifact(artifact_index, file)?;
         }
+        let default_files = files.iter().collect::<HashSet<_>>();
+        let provider_defaults = target_provider_files
+            .iter()
+            .map(|file| default_files.contains(file))
+            .collect();
         let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
-        for file in runfiles.files() {
-            let artifact = artifact_index.get(&file).ok_or_else(|| {
-                format!(
-                    "runfiles file has no declared artifact identity: {}",
-                    file.path
-                )
-            })?;
-            available.insert(file, artifact.clone());
+        let mut runfiles_files = runfiles.files();
+        for file in &runfiles_files {
+            runfiles_file_artifact(artifact_index, file)?;
         }
+        runfiles_files.retain(|file| !default_files.contains(file));
+        drop(default_files);
         // N23f: the FilesToRunProvider manifests are generated files.
-        for file in runfiles.manifests() {
-            if let Some(artifact) = artifact_index.get(&file) {
-                available.insert(file, artifact.clone());
-            }
-        }
+        let manifests = runfiles.manifests();
         let mut providers = custom_providers
             .get(&dependency)
             .cloned()
@@ -7825,24 +8196,30 @@ impl Engine {
                     .clone()
             }
         };
-        Ok(DependencyTarget {
-            label: actual.to_string(),
-            files,
-            is_source: matches!(target, Target::Source(_)),
-            is_rule,
-            is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-            is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-            providers,
-            provider_files: target_provider_files,
-            provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
-            runfiles,
-            rule_class: match &target {
-                Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
-                    Some(rule.rule_class_name().to_owned())
-                }
-                _ => None,
-            },
-            identity,
+        Ok(PlannedView {
+            target: DependencyTarget::new(analysis::DependencyView {
+                label: actual.to_string(),
+                files,
+                is_source: matches!(target, Target::Source(_)),
+                is_rule,
+                is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+                is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+                providers,
+                provider_files: target_provider_files,
+                provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
+                runfiles,
+                rule_class: match &target {
+                    Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                        Some(rule.rule_class_name().to_owned())
+                    }
+                    _ => None,
+                },
+                identity,
+            }),
+            defaults: artifacts,
+            provider_defaults,
+            runfiles_files,
+            manifests,
         })
     }
 
@@ -7880,7 +8257,7 @@ impl Engine {
                 native_output_groups,
                 validation,
                 target_identities,
-                repositories,
+                views,
                 ..
             } = state;
             self.plan_dependency_view(
@@ -7895,7 +8272,7 @@ impl Engine {
                 native_output_groups,
                 validation,
                 target_identities,
-                repositories,
+                views,
                 available,
                 label,
                 edge_config,
@@ -7963,7 +8340,7 @@ impl Engine {
         base = crate::aspects::merged_dependency(&base, &applications)?;
         // The merged files of every aspect (DefaultInfo.files) are action
         // inputs of the consumer: known artifacts.
-        for file in &base.provider_files {
+        for file in base.provider_files.iter() {
             if let Some(artifact) = state.artifact_index.get(file) {
                 available.insert(file.clone(), artifact.clone());
             }
@@ -8250,17 +8627,17 @@ impl Engine {
             for (index, file) in registered.outputs.iter().enumerate() {
                 let exec = PathBuf::from(&file.path);
                 register_output(producers, &exec, &action_owner)?;
-                let artifact = Artifact {
-                    directory: file.is_directory,
-                    constant_metadata: registered
+                let artifact = Artifact::new(
+                    exec.clone(),
+                    exec.clone(),
+                    Some((registered.action.id.clone(), index)),
+                    file.owner.clone(),
+                    file.is_directory,
+                    registered
                         .build_info
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
-                    real: exec.clone(),
-                    exec: exec.clone(),
-                    producer: Some((registered.action.id.clone(), index)),
-                    owner: file.owner.clone(),
-                };
+                );
                 available.insert(file.clone(), artifact.clone());
                 artifact_index.insert(file.clone(), artifact.clone());
                 declared.insert((base_key.config, exec), artifact);
@@ -8325,7 +8702,7 @@ impl Engine {
                 native_output_groups,
                 validation,
                 target_identities,
-                repositories,
+                views,
                 ..
             } = state;
             return Ok((
@@ -8341,7 +8718,7 @@ impl Engine {
                     native_output_groups,
                     validation,
                     target_identities,
-                    repositories,
+                    views,
                     available,
                     label,
                     edge_config,
@@ -8387,7 +8764,7 @@ impl Engine {
                         native_output_groups,
                         validation,
                         target_identities,
-                        repositories,
+                        views,
                         ..
                     } = state;
                     return Ok((
@@ -8403,7 +8780,7 @@ impl Engine {
                             native_output_groups,
                             validation,
                             target_identities,
-                            repositories,
+                            views,
                             available,
                             label,
                             edge_config,
@@ -8427,7 +8804,7 @@ impl Engine {
                 native_output_groups,
                 validation,
                 target_identities,
-                repositories,
+                views,
                 ..
             } = state;
             return Ok((
@@ -8443,7 +8820,7 @@ impl Engine {
                     native_output_groups,
                     validation,
                     target_identities,
-                    repositories,
+                    views,
                     available,
                     label,
                     edge_config,
@@ -8471,7 +8848,7 @@ impl Engine {
                 native_output_groups,
                 validation,
                 target_identities,
-                repositories,
+                views,
                 ..
             } = state;
             return Ok((
@@ -8487,7 +8864,7 @@ impl Engine {
                     native_output_groups,
                     validation,
                     target_identities,
-                    repositories,
+                    views,
                     available,
                     label,
                     edge_config,
@@ -8559,34 +8936,42 @@ impl Engine {
             aspect_provider_files,
             aspect_target_identities,
             workspace_status,
+            views,
             ..
         } = state;
+        // The rule's dependency edges, built once per prepare (W1a).
+        let edges = self.rule_edges(rule);
+        let custom_rule = matches!(rule.kind, RuleKind::Custom);
         // The transitive repositories of this configured target: its own and
-        // those of every (configured) dependency edge; Starlark rules redo
-        // this below with their resolved dependencies and toolchains.
+        // those of every (configured) dependency edge. A Starlark rule
+        // computes them from its resolved dependencies and toolchains below
+        // instead; this loop only reads planning state, so it is skipped
+        // there (W1a).
         let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
-        let edge_exec = self.exec_configurations.get(key).copied();
-        for edge in self.rule_edges(rule) {
-            let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
-                continue;
-            };
-            let edge_config = match &edge.cfg {
-                EdgeCfg::Target => Some(key.config),
-                EdgeCfg::Exec(None) => Some(edge_exec.unwrap_or(key.config)),
-                EdgeCfg::Exec(Some(group)) => Some(
-                    self.group_exec_configurations
-                        .get(&(key.clone(), group.clone()))
-                        .copied()
-                        .unwrap_or(key.config),
-                ),
-                EdgeCfg::NoConfig => None,
-                EdgeCfg::Starlark(attribute) => self
-                    .edge_configs
-                    .get(key)
-                    .and_then(|configs| configs.get(attribute))
-                    .copied(),
-            };
-            transitive.extend(self.dependency_repositories(repositories, label, edge_config));
+        if !custom_rule {
+            let edge_exec = self.exec_configurations.get(key).copied();
+            for edge in &edges {
+                let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
+                    continue;
+                };
+                let edge_config = match &edge.cfg {
+                    EdgeCfg::Target => Some(key.config),
+                    EdgeCfg::Exec(None) => Some(edge_exec.unwrap_or(key.config)),
+                    EdgeCfg::Exec(Some(group)) => Some(
+                        self.group_exec_configurations
+                            .get(&(key.clone(), group.clone()))
+                            .copied()
+                            .unwrap_or(key.config),
+                    ),
+                    EdgeCfg::NoConfig => None,
+                    EdgeCfg::Starlark(attribute) => self
+                        .edge_configs
+                        .get(key)
+                        .and_then(|configs| configs.get(attribute))
+                        .copied(),
+                };
+                transitive.extend(self.dependency_repositories(repositories, label, edge_config));
+            }
         }
         let key = key.clone();
         let config = key.config;
@@ -8615,7 +9000,7 @@ impl Engine {
                 kind: PreparedKind::PackageGroup,
             });
         }
-        if matches!(rule.kind, RuleKind::Custom) {
+        if custom_rule {
             let mut dependency_targets = BTreeMap::new();
             let mut available = BTreeMap::new();
             // Resolved dependencies only: `$config_dependencies` is never a
@@ -8633,7 +9018,7 @@ impl Engine {
                 String,
                 Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
             > = BTreeMap::new();
-            for edge in self.rule_edges(rule) {
+            for edge in &edges {
                 let label = self.resolve_rule_src(rule, &edge.label)?;
                 if let Some(spec) = rule
                     .custom
@@ -8757,7 +9142,7 @@ impl Engine {
                         native_output_groups,
                         validation,
                         target_identities,
-                        repositories,
+                        views,
                         &mut available,
                         &label,
                         edge_config,
@@ -8778,7 +9163,6 @@ impl Engine {
                         native_output_groups: &mut *native_output_groups,
                         validation: &mut *validation,
                         target_identities: &mut *target_identities,
-                        repositories: &mut *repositories,
                         aspect_providers: &mut *aspect_providers,
                         aspect_provider_files: &mut *aspect_provider_files,
                         aspect_target_identities: &mut *aspect_target_identities,
@@ -8788,6 +9172,7 @@ impl Engine {
                         client_environment: &mut *client_environment,
                         status_client_environment: &mut *status_client_environment,
                         workspace_status: &mut *workspace_status,
+                        views: &mut *views,
                     };
                     self.plan_aspect_dependency(
                         &mut planning,
@@ -9094,8 +9479,8 @@ impl Engine {
                     key.clone(),
                     BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
                 );
-                provider_files.insert(key.clone(), Vec::new());
-                dry.insert(key, Vec::new());
+                provider_files.insert(key.clone(), Arc::default());
+                dry.insert(key, Arc::default());
                 return Ok(());
             }
             PreparedKind::Custom(custom) => {
@@ -9236,7 +9621,7 @@ impl Engine {
         self.check_transition_allowlist(rule, &key, configured)?;
         custom_providers.insert(key.clone(), analyzed.providers.clone());
         provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
-        provider_files.insert(key.clone(), analyzed.provider_files.clone());
+        provider_files.insert(key.clone(), Arc::new(analyzed.provider_files.clone()));
         for file in &analyzed.declared {
             let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
             let short_name = Path::new(&file.path)
@@ -9270,17 +9655,17 @@ impl Engine {
             for (index, file) in registered.outputs.iter().enumerate() {
                 let exec = PathBuf::from(&file.path);
                 register_output(producers, &exec, &key.label.to_string())?;
-                let artifact = Artifact {
-                    directory: file.is_directory,
-                    constant_metadata: registered
+                let artifact = Artifact::new(
+                    exec.clone(),
+                    exec.clone(),
+                    Some((registered.action.id.clone(), index)),
+                    file.owner.clone(),
+                    file.is_directory,
+                    registered
                         .build_info
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
-                    real: exec.clone(),
-                    exec: exec.clone(),
-                    producer: Some((registered.action.id.clone(), index)),
-                    owner: file.owner.clone(),
-                };
+                );
                 available.insert(file.clone(), artifact.clone());
                 artifact_index.insert(file.clone(), artifact.clone());
                 declared.insert((config, exec), artifact);
@@ -9298,7 +9683,7 @@ impl Engine {
                 ));
             }
         }
-        runfiles_info.insert(key.clone(), analyzed.runfiles.clone());
+        runfiles_info.insert(key.clone(), Arc::new(analyzed.runfiles.clone()));
         if let Some(nodes_of_target) = self.plan_runfiles_support(
             &key,
             rule,
@@ -9432,7 +9817,7 @@ impl Engine {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        dry.insert(key.clone(), defaults);
+        dry.insert(key.clone(), Arc::new(defaults));
         Ok(())
     }
 
@@ -9771,13 +10156,15 @@ impl Engine {
             let artifacts = outputs
                 .into_iter()
                 .enumerate()
-                .map(|(index, exec)| Artifact {
-                    directory: false,
-                    constant_metadata: false,
-                    real: exec.clone(),
-                    exec,
-                    producer: Some((action_owner.clone(), index)),
-                    owner: rule.label.to_string(),
+                .map(|(index, exec)| {
+                    Artifact::new(
+                        exec.clone(),
+                        exec,
+                        Some((action_owner.clone(), index)),
+                        rule.label.to_string(),
+                        false,
+                        false,
+                    )
                 })
                 .collect::<Vec<_>>();
             for artifact in &artifacts {
@@ -9786,12 +10173,14 @@ impl Engine {
             }
             runfiles_info.insert(
                 key.clone(),
-                crate::runfiles::TargetRunfiles::genrule(
-                    &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
-                )
-                .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                Arc::new(
+                    crate::runfiles::TargetRunfiles::genrule(
+                        &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
+                    )
+                    .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                ),
             );
-            dry.insert(key, artifacts);
+            dry.insert(key, Arc::new(artifacts));
         } else {
             restricted_to_error(rule)?;
             // The native platform providers, visible to Starlark as
@@ -9813,7 +10202,7 @@ impl Engine {
                 if let Some(provider) = provider {
                     let (id, value) = crate::platform_providers::freeze(provider)?;
                     custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
-                    provider_files.insert(key.clone(), Vec::new());
+                    provider_files.insert(key.clone(), Arc::default());
                 }
                 // ConfigFeatureFlagProvider, visible as
                 // dep[config_common.FeatureFlagInfo].
@@ -9823,7 +10212,7 @@ impl Engine {
                         key.clone(),
                         BTreeMap::from([(crate::feature_flags::PROVIDER_ID.to_owned(), value)]),
                     );
-                    provider_files.insert(key.clone(), Vec::new());
+                    provider_files.insert(key.clone(), Arc::default());
                 }
             }
             // An alias-like target forwards its actual's files (above) and
@@ -9863,15 +10252,17 @@ impl Engine {
                 let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
                 let srcs = srcs
                     .iter()
-                    .map(|(files, runfiles)| (files.as_slice(), runfiles))
+                    .map(|(files, runfiles)| (files.as_slice(), &**runfiles))
                     .collect::<Vec<_>>();
                 runfiles_info.insert(
                     key.clone(),
-                    crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
-                        .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                    Arc::new(
+                        crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
+                            .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                    ),
                 );
             }
-            dry.insert(key, inputs);
+            dry.insert(key, Arc::new(inputs));
         }
         Ok(())
     }
@@ -10788,22 +11179,31 @@ impl Engine {
 
 /// The runfiles providers a dependent sees: file targets have a
 /// SingleExecutableFilesToRunProvider and no RunfilesProvider
-/// (analysis/configuredtargets/FileConfiguredTarget.java:85-101).
+/// (analysis/configuredtargets/FileConfiguredTarget.java:85-101). A rule's
+/// analyzed providers are shared when they carry their FilesToRunProvider
+/// (`with_files_to_run` then keeps them as they are).
 fn dependency_runfiles(
     target: &Target,
     files: &[File],
-    analyzed: Option<&crate::runfiles::TargetRunfiles>,
-) -> crate::runfiles::TargetRunfiles {
+    analyzed: Option<&Arc<crate::runfiles::TargetRunfiles>>,
+) -> Arc<crate::runfiles::TargetRunfiles> {
     match target {
-        Target::Source(_) | Target::Output(..) => files
-            .first()
-            .cloned()
-            .map(crate::runfiles::TargetRunfiles::file)
-            .unwrap_or_default(),
-        Target::Rule(_) => analyzed
-            .cloned()
-            .unwrap_or_default()
-            .with_files_to_run(files),
+        Target::Source(_) | Target::Output(..) => Arc::new(
+            files
+                .first()
+                .cloned()
+                .map(crate::runfiles::TargetRunfiles::file)
+                .unwrap_or_default(),
+        ),
+        Target::Rule(_) => match analyzed {
+            Some(analyzed) if analyzed.files_to_run.is_some() => Arc::clone(analyzed),
+            analyzed => Arc::new(
+                analyzed
+                    .map(|analyzed| crate::runfiles::TargetRunfiles::clone(analyzed))
+                    .unwrap_or_default()
+                    .with_files_to_run(files),
+            ),
+        },
     }
 }
 
@@ -10811,14 +11211,14 @@ fn dependency_runfiles(
 /// requested key that delegates to it (a rule transition's key).
 fn flush_delegations(
     delegations: &mut Vec<(ConfiguredTargetKey, ConfiguredTargetKey)>,
-    dry: &mut BTreeMap<ConfiguredTargetKey, Vec<Artifact>>,
+    dry: &mut BTreeMap<ConfiguredTargetKey, Artifacts>,
     custom_providers: &mut BTreeMap<
         ConfiguredTargetKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
     >,
-    provider_files: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
-    runfiles_info: &mut BTreeMap<ConfiguredTargetKey, crate::runfiles::TargetRunfiles>,
+    runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
 ) {
     delegations.retain(|(requested, owner)| {
         let Some(files) = dry.get(owner).cloned() else {
@@ -11270,14 +11670,14 @@ impl RunfilesPlanning<'_> {
     ) -> Result<Artifact, String> {
         let exec = PathBuf::from(&file.path);
         register_output(self.producers, &exec, &key.label.to_string())?;
-        let artifact = Artifact {
-            directory: false,
-            constant_metadata: false,
-            real: exec.clone(),
-            exec: exec.clone(),
-            producer: Some((id.to_owned(), 0)),
-            owner: file.owner.clone(),
-        };
+        let artifact = Artifact::new(
+            exec.clone(),
+            exec.clone(),
+            Some((id.to_owned(), 0)),
+            file.owner.clone(),
+            false,
+            false,
+        );
         self.artifact_index.insert(file.clone(), artifact.clone());
         self.declared.insert((key.config, exec), artifact.clone());
         Ok(artifact)
@@ -11537,13 +11937,15 @@ impl Engine {
                 let client_env =
                     status_client_environment.get_or_init(crate::action_env::client_environment);
                 let computed = self.workspace_status_computed(client_env).clone_status();
-                let bare = |name: &str, constant: bool| Artifact {
-                    real: PathBuf::from(format!("bazel-out/{name}")),
-                    exec: PathBuf::from(format!("bazel-out/{name}")),
-                    producer: None,
-                    owner: String::new(),
-                    directory: false,
-                    constant_metadata: constant,
+                let bare = |name: &str, constant: bool| {
+                    Artifact::new(
+                        PathBuf::from(format!("bazel-out/{name}")),
+                        PathBuf::from(format!("bazel-out/{name}")),
+                        None,
+                        String::new(),
+                        false,
+                        constant,
+                    )
                 };
                 *plan = Some(WorkspaceStatusPlan {
                     computed,
@@ -11622,22 +12024,22 @@ impl Engine {
                         None,
                     ));
                     (
-                        Artifact {
-                            real: stable_path.clone(),
-                            exec: stable_path,
-                            producer: Some(("BazelWorkspaceStatusAction#stable".to_owned(), 0)),
-                            owner: String::new(),
-                            directory: false,
-                            constant_metadata: false,
-                        },
-                        Artifact {
-                            real: volatile_path.clone(),
-                            exec: volatile_path,
-                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            owner: String::new(),
-                            directory: false,
-                            constant_metadata: true,
-                        },
+                        Artifact::new(
+                            stable_path.clone(),
+                            stable_path,
+                            Some(("BazelWorkspaceStatusAction#stable".to_owned(), 0)),
+                            String::new(),
+                            false,
+                            false,
+                        ),
+                        Artifact::new(
+                            volatile_path.clone(),
+                            volatile_path,
+                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            String::new(),
+                            false,
+                            true,
+                        ),
                     )
                 }
                 crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => {
@@ -11655,25 +12057,25 @@ impl Engine {
                         }),
                     ));
                     (
-                        Artifact {
-                            real: stable_path.clone(),
-                            exec: stable_path,
+                        Artifact::new(
+                            stable_path.clone(),
+                            stable_path,
                             // The failing node has one output; consumers
                             // of either file depend on it at index 0 and
                             // fail with it (the node never produces).
-                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            owner: String::new(),
-                            directory: false,
-                            constant_metadata: false,
-                        },
-                        Artifact {
-                            real: volatile_path.clone(),
-                            exec: volatile_path,
-                            producer: Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            owner: String::new(),
-                            directory: false,
-                            constant_metadata: true,
-                        },
+                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            String::new(),
+                            false,
+                            false,
+                        ),
+                        Artifact::new(
+                            volatile_path.clone(),
+                            volatile_path,
+                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
+                            String::new(),
+                            false,
+                            true,
+                        ),
                     )
                 }
             };
@@ -11847,17 +12249,45 @@ fn plan_action(
         .collect();
     action::validate_structure(&action)?;
     action.inputs.clear();
-    let mut dependencies = Vec::new();
+    // Inputs at one execution path must be one File; later occurrences
+    // are dropped. At a shared path, File equality is the equality of
+    // (path text, directory, producer presence, owner): `short_path`
+    // derives from the path, the producer's presence and the owner
+    // (Artifact::compute_file). The fields are compared, never the cached
+    // File: a staged tool runfile's `exec` is its runfiles-tree destination
+    // (commit_custom_target), not the path its File was computed from.
     // Lookups only: dependencies and inputs keep the declaration order.
-    let mut seen = HashMap::new();
-    for artifact in inputs {
-        if let Some(previous) = seen.insert(artifact.exec.clone(), artifact.file()) {
-            if previous != artifact.file() {
-                return Err(format!(
-                    "different artifacts map to the same execution path: {}",
-                    artifact.exec.display()
-                ));
+    let mut first = Vec::with_capacity(inputs.len());
+    {
+        type Identity<'a> = (&'a std::ffi::OsStr, bool, bool, &'a str);
+        let mut seen: HashMap<&Path, Identity<'_>> = HashMap::new();
+        for artifact in &inputs {
+            let identity = (
+                artifact.exec.as_os_str(),
+                artifact.directory,
+                artifact.producer.is_some(),
+                artifact.owner.as_str(),
+            );
+            match seen.entry(artifact.exec.as_path()) {
+                std::collections::hash_map::Entry::Occupied(previous) => {
+                    if *previous.get() != identity {
+                        return Err(format!(
+                            "different artifacts map to the same execution path: {}",
+                            artifact.exec.display()
+                        ));
+                    }
+                    first.push(false);
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(identity);
+                    first.push(true);
+                }
             }
+        }
+    }
+    let mut dependencies = Vec::new();
+    for (artifact, first) in inputs.into_iter().zip(first) {
+        if !first {
             continue;
         }
         // Constant-metadata inputs (N63) key without their digest
@@ -12104,14 +12534,14 @@ mod tests {
     }
 
     fn generated_out_txt() -> Artifact {
-        Artifact {
-            real: PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
-            exec: PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
-            producer: Some(("//pkg:gen#genrule".into(), 0)),
-            owner: "//pkg:gen".into(),
-            directory: false,
-            constant_metadata: false,
-        }
+        Artifact::new(
+            PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
+            PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
+            Some(("//pkg:gen#genrule".into(), 0)),
+            "//pkg:gen".into(),
+            false,
+            false,
+        )
     }
 
     /// Only `--nobuild` reports the planned exec path; an executing build
@@ -12193,13 +12623,15 @@ mod tests {
             vec!["pkg".into(), "src/ts/node_modules".into()],
             vec!["**/node_modules".into()],
         );
-        let source = |exec: &str, owner: &str| Artifact {
-            directory: false,
-            constant_metadata: false,
-            real: PathBuf::from("/ws").join(exec),
-            exec: PathBuf::from(exec),
-            producer: None,
-            owner: owner.into(),
+        let source = |exec: &str, owner: &str| {
+            Artifact::new(
+                PathBuf::from("/ws").join(exec),
+                PathBuf::from(exec),
+                None,
+                owner.into(),
+                false,
+                false,
+            )
         };
         for (artifact, expected) in [
             (source("node_modules/b.txt", "//:node_modules/b.txt"), false),
@@ -12215,12 +12647,14 @@ mod tests {
                 true,
             ),
             (
-                Artifact {
-                    directory: false,
-                    constant_metadata: false,
-                    producer: Some(("//:gen".into(), 0)),
-                    ..source("node_modules/o.txt", "//:gen")
-                },
+                Artifact::new(
+                    PathBuf::from("/ws").join("node_modules/o.txt"),
+                    PathBuf::from("node_modules/o.txt"),
+                    Some(("//:gen".into(), 0)),
+                    "//:gen".into(),
+                    false,
+                    false,
+                ),
                 true,
             ),
         ] {
@@ -13061,13 +13495,15 @@ m = macro(implementation=emit)
 
     #[test]
     fn source_paths_keep_first_occurrences_in_order_without_generated_inputs() {
-        let artifact = |real: &str, producer: Option<usize>| Artifact {
-            directory: false,
-            constant_metadata: false,
-            real: real.into(),
-            exec: real.into(),
-            producer: producer.map(|index| ("//app:gen".to_owned(), index)),
-            owner: "//app:x".into(),
+        let artifact = |real: &str, producer: Option<usize>| {
+            Artifact::new(
+                real.into(),
+                real.into(),
+                producer.map(|index| ("//app:gen".to_owned(), index)),
+                "//app:x".into(),
+                false,
+                false,
+            )
         };
         let inputs = [
             artifact("b", None),
@@ -13348,25 +13784,25 @@ m = macro(implementation=emit)
                 "../dep+/p/out",
             ),
         ] {
-            let artifact = Artifact {
-                directory: false,
-                constant_metadata: false,
-                real: PathBuf::from("/real/local/root/p/in"),
-                exec: PathBuf::from(exec),
+            let artifact = Artifact::new(
+                PathBuf::from("/real/local/root/p/in"),
+                PathBuf::from(exec),
                 producer,
-                owner: "@@dep+//p:target".into(),
-            };
+                "@@dep+//p:target".into(),
+                false,
+                false,
+            );
             assert_eq!(artifact.file().short_path, expected);
             assert_eq!(artifact.file().path, exec);
         }
-        let main = Artifact {
-            directory: false,
-            constant_metadata: false,
-            real: PathBuf::from("/root/external/dep/in"),
-            exec: PathBuf::from("external/dep/in"),
-            producer: None,
-            owner: "//external/dep:in".into(),
-        };
+        let main = Artifact::new(
+            PathBuf::from("/root/external/dep/in"),
+            PathBuf::from("external/dep/in"),
+            None,
+            "//external/dep:in".into(),
+            false,
+            false,
+        );
         assert_eq!(main.file().short_path, "external/dep/in");
     }
 
