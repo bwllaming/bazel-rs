@@ -562,29 +562,52 @@ where
     )
 }
 
-/// Persist refreshed stat fingerprints into a manifest (review R3):
-/// re-read the manifest, apply ONLY fingerprint updates whose content
-/// fields still match what this process verified, and atomically rename
-/// over the old file. A concurrent publisher's newer manifest (different
-/// identity/content) is left untouched. Best-effort by contract.
+/// Persist refreshed stat fingerprints into the manifest of publication
+/// `identity` (review R3) — the only write of the warm probe, safe against
+/// concurrent probes (worker threads, other processes) and publishers
+/// (review i20):
+/// - under the publication's lock `locks/<identity>`, which a publisher
+///   holds while it replaces the manifest; the lock is only TRIED, never
+///   awaited (no worker blocks; a busy lock means a publisher is writing
+///   the manifest, with fingerprints of its own) and never created;
+/// - compare-and-swap: the manifest is rewritten only if it still holds
+///   exactly the `verified` bytes the probe checked the tree against, so
+///   a newer publication or another probe's refresh wins, and repeating a
+///   refresh changes nothing (idempotent);
+/// - only a manifest this binary wrote byte-for-byte is rewritten (a newer
+///   binary's fields are never stripped), through a temp file renamed over
+///   it: readers see the old or the new manifest, never a partial one.
+///
+/// Best-effort by contract: a skip or failure only costs re-hashing on a
+/// later run, never correctness.
 fn refresh_manifest(
-    manifest_path: &Path,
-    manifests_dir: &Path,
-    verified: Manifest,
+    direct: &Path,
+    identity: &str,
+    verified: &[u8],
     refreshed: &BTreeMap<String, StatFingerprint>,
 ) -> Result<(), String> {
-    let bytes = read_stable(manifest_path)?;
-    let Some(mut current) = parse_manifest(&bytes) else {
-        return Ok(()); // someone republished something else; leave it
+    let mut options = OpenOptions::new();
+    options.read(true);
+    no_follow(&mut options);
+    let Ok(lock) = options.open(direct.join("locks").join(identity)) else {
+        return Ok(()); // no publication lock to coordinate with
     };
-    if current.identity != verified.identity
-        || content_view(&current.files) != content_view(&verified.files)
-    {
-        return Ok(()); // someone republished; their fingerprints win
+    regular_metadata(&lock.metadata().map_err(|e| e.to_string())?)?;
+    if FileExt::try_lock_exclusive(&lock).is_err() {
+        return Ok(()); // a publisher or another refresh is writing it
     }
+    // The File releases the lock on every exit.
+    let manifests = direct.join("manifests");
+    let manifest_path = manifests.join(format!("{identity}.json"));
+    if read_stable(&manifest_path).ok().as_deref() != Some(verified) {
+        return Ok(()); // replaced since the probe read it: theirs wins
+    }
+    let Some(mut current) = parse_manifest(verified) else {
+        return Ok(());
+    };
     // Rewrite only what this binary wrote: re-serializing a newer binary's
     // manifest would drop the fields this one does not know.
-    if serde_json::to_vec(&current).map_err(|e| e.to_string())? != bytes {
+    if serde_json::to_vec(&current).map_err(|e| e.to_string())? != verified {
         return Ok(());
     }
     let mut changed = false;
@@ -600,14 +623,14 @@ fn refresh_manifest(
         return Ok(());
     }
     let encoded = serde_json::to_vec(&current).map_err(|e| e.to_string())?;
-    let mut stage = tempfile::NamedTempFile::new_in(manifests_dir)
+    let mut stage = tempfile::NamedTempFile::new_in(&manifests)
         .map_err(|e| format!("cannot stage manifest refresh: {e}"))?;
     stage
         .write_all(&encoded)
         .and_then(|()| stage.as_file().sync_all())
         .map_err(|e| e.to_string())?;
     stage
-        .persist(manifest_path)
+        .persist(&manifest_path)
         .map_err(|e| format!("cannot publish manifest refresh: {e}"))?;
     Ok(())
 }
@@ -615,7 +638,10 @@ fn refresh_manifest(
 /// Reuse-only probe (Step C): if the specification pointer names a valid
 /// publication whose recorded inputs validate and whose tree verifies,
 /// return its root WITHOUT executing and without taking any stage lock.
-/// Pure reads only — safe on worker threads. `Ok(None)` = no reusable
+/// Reads only, except one best-effort write: a fallback hash match may
+/// refresh stat fingerprints into the manifest ([`refresh_manifest`]:
+/// try-locked, compare-and-swap, atomic rename, idempotent) — safe on
+/// worker threads and across processes. `Ok(None)` = no reusable
 /// publication (caller decides: sentinel under the guard, execute else).
 pub fn try_reuse<V>(cache: &Path, spec_key: &str, validate: V) -> Result<Option<PathBuf>, String>
 where
@@ -628,7 +654,7 @@ where
     };
     let destination = direct.join("trees").join(&identity);
     let manifest_path = direct.join("manifests").join(format!("{identity}.json"));
-    let existing = {
+    let (bytes, existing) = {
         let _m = timing::mark(&timing::PHASES.manifest_read);
         let Some(bytes) = read_stable(&manifest_path).ok() else {
             return Ok(None);
@@ -636,7 +662,7 @@ where
         let Some(existing) = parse_manifest(&bytes) else {
             return Ok(None);
         };
-        existing
+        (bytes, existing)
     };
     if existing.identity != identity || existing.recorded.is_none() {
         return Ok(None);
@@ -663,12 +689,7 @@ where
                 if outcome.matched && !outcome.refreshed.is_empty() {
                     // Best-effort refresh (review R3): failure only costs
                     // re-hashing next time, never correctness.
-                    let _ = refresh_manifest(
-                        &manifest_path,
-                        &direct.join("manifests"),
-                        existing,
-                        &outcome.refreshed,
-                    );
+                    let _ = refresh_manifest(&direct, &identity, &bytes, &outcome.refreshed);
                 }
                 outcome.matched
             }
@@ -2256,9 +2277,9 @@ mod tests {
         let outcome = verify_snapshot_at(&tree, &parsed.files, VerifyMode::Stat, settled).unwrap();
         assert!(outcome.matched && outcome.refreshed.contains_key("data"));
         refresh_manifest(
-            &path,
-            &cache.path().join("direct/manifests"),
-            parsed,
+            &cache.path().join("direct"),
+            &parsed.identity,
+            &manifest_bytes,
             &outcome.refreshed,
         )
         .unwrap();
@@ -2750,9 +2771,9 @@ mod tests {
         assert_eq!(settled_fingerprint(&metadata, settled_start), Some(current));
         // Persist through refresh_manifest and observe the manifest.
         refresh_manifest(
-            &metadata_path(cache.path(), &tree),
-            &cache.path().join("direct/manifests"),
-            manifest.clone(),
+            &cache.path().join("direct"),
+            &manifest.identity,
+            &fs::read(metadata_path(cache.path(), &tree)).unwrap(),
             &outcome.refreshed,
         )
         .unwrap();
@@ -2795,6 +2816,111 @@ mod tests {
                 "ctime bump must fall back to hashing"
             );
         }
+        no_stages(cache.path());
+    }
+
+    /// Review i20: concurrent warm probes (worker threads here; processes
+    /// contend on the same flock) refresh the manifest safely: every probe
+    /// reuses, the manifest ends with the settled fingerprint and intact
+    /// content in the canonical bytes, no staged refresh is left behind,
+    /// and a later probe rewrites nothing (idempotent).
+    #[test]
+    fn concurrent_warm_probes_refresh_the_manifest_safely() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        let published = parse_manifest(&fs::read(&path).unwrap()).unwrap();
+        assert!(published.files["data"].stat.is_none()); // racy at publish
+        // Let the tree settle past the racy margin, so the probes' fallback
+        // hash matches refresh the fingerprint for real.
+        std::thread::sleep(RACY_MARGIN + std::time::Duration::from_millis(200));
+        let spec_key = spec_identity(b"spec");
+        let barrier = Arc::new(Barrier::new(16));
+        let probes: Vec<_> = (0..16)
+            .map(|_| {
+                let cache = cache.path().to_owned();
+                let spec_key = spec_key.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    try_reuse(&cache, &spec_key, |_, _| Ok(true))
+                })
+            })
+            .collect();
+        for probe in probes {
+            assert_eq!(probe.join().unwrap().unwrap(), Some(tree.clone()));
+        }
+        let bytes = fs::read(&path).unwrap();
+        let refreshed = parse_manifest(&bytes).unwrap();
+        assert_eq!(serde_json::to_vec(&refreshed).unwrap(), bytes);
+        assert_eq!(
+            (&refreshed.identity, &refreshed.spec, &refreshed.recorded),
+            (&published.identity, &published.spec, &published.recorded)
+        );
+        assert_eq!(
+            content_view(&refreshed.files),
+            content_view(&published.files)
+        );
+        assert_eq!(
+            refreshed.files["data"].stat,
+            Some(fingerprint(&fs::metadata(tree.join("data")).unwrap()))
+        );
+        let manifests: Vec<_> = fs::read_dir(cache.path().join("direct/manifests"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(manifests, [path.file_name().unwrap()]);
+        assert_eq!(
+            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            Some(tree.clone())
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        no_stages(cache.path());
+    }
+
+    /// Review i20: the refresh is a compare-and-swap under the publication
+    /// lock — skipped (never awaited: this thread holds the lock) while a
+    /// publisher holds it, skipped when the manifest changed since the
+    /// probe read it (the newer manifest wins), applied once otherwise.
+    #[test]
+    fn manifest_refresh_is_a_locked_compare_and_swap() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let direct = cache.path().join("direct");
+        let path = metadata_path(cache.path(), &tree);
+        let original = fs::read(&path).unwrap();
+        let manifest = parse_manifest(&original).unwrap();
+        let identity = manifest.identity.clone();
+        let settled = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        let outcome =
+            verify_snapshot_at(&tree, &manifest.files, VerifyMode::Stat, settled).unwrap();
+        let refreshed = outcome.refreshed["data"];
+        {
+            let publisher = File::open(direct.join("locks").join(&identity)).unwrap();
+            FileExt::lock_exclusive(&publisher).unwrap();
+            refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+        let mut other = manifest.clone();
+        other.files.get_mut("data").unwrap().stat = Some(StatFingerprint {
+            dev: 1,
+            ino: 2,
+            mtime: (3, 4),
+            ctime: (5, 6),
+        });
+        let newer = serde_json::to_vec(&other).unwrap();
+        fs::write(&path, &newer).unwrap();
+        refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), newer);
+        fs::write(&path, &original).unwrap();
+        refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
+        let written = fs::read(&path).unwrap();
+        assert_eq!(
+            parse_manifest(&written).unwrap().files["data"].stat,
+            Some(refreshed)
+        );
+        refresh_manifest(&direct, &identity, &written, &outcome.refreshed).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), written);
         no_stages(cache.path());
     }
 

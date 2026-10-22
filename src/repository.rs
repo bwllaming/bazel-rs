@@ -1229,7 +1229,8 @@ impl RepositorySet {
         // Claim before preparation: definitions can themselves be generated,
         // and a recursive definition demand must encounter our cycle guard.
         // Step C: on a worker, the probe arm may serve a warm publication
-        // (pure reads, via `try_reuse_direct`) without preparing the group.
+        // (reads plus at most an idempotent manifest refresh, via
+        // `try_reuse_direct`) without preparing the group.
         slot.get_or_probe(
             self.state.runtime_id,
             &format!("repository:{canonical}"),

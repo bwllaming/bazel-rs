@@ -157,14 +157,16 @@ impl<T> DemandSlot<T> {
     }
 
     /// Reuse-only evaluation (Step C): under the no-demand guard, try
-    /// `probe` first — a pure-read warm check that may produce the value
-    /// without fetching. On a probe miss the sentinel is returned WITHOUT
+    /// `probe` first — a warm check (reads plus at most an idempotent,
+    /// best-effort manifest refresh, repository_store::try_reuse) that may
+    /// produce the value without fetching. On a probe miss the sentinel is returned WITHOUT
     /// populating the slot (the coordinator fetches inline later); on a
     /// probe hit the value is published so every later demand is a ready
     /// hit. Outside the guard (or with a ready value) this is exactly
     /// [`Self::get_or_try_init`]. Concurrency: two threads may probe the
     /// same slot; the loser of the publish race reports the winner's
-    /// value (probes are pure reads, so a duplicate probe is harmless).
+    /// value (probes only read, or refresh a manifest idempotently, so a
+    /// duplicate probe is harmless).
     pub fn get_or_probe(
         &self,
         runtime_id: u64,

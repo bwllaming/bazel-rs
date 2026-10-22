@@ -222,7 +222,8 @@ Review items R1–R4 landed in 97caa84; R5 (progress_message) in 6fa2be8.
    records a fingerprint only for files already settled at recording time
    (`settled_fingerprint` — freshly written trees carry none); a fallback
    hash match refreshes the manifest fingerprint **atomically**
-   (`refresh_manifest`: re-read, identity+content guard, temp+rename);
+   (`refresh_manifest`: re-read, identity+content guard, temp+rename;
+   since i20 a try-locked compare-and-swap, see "Safe warm refresh");
    `PERF-REPO files_hashed_during_verify=N` counts fallback hashes.
 4. **`unwrap_or_default` x2 in `spec_digest_identity` removed**: mapping and
    framed serialization errors propagate as `Err`.
@@ -537,3 +538,35 @@ reused with the bytes untouched, also through an identical re-execution;
 another `format`/`profile` is republished as this binary's). With
 `deny_unknown_fields` restored on `Entry` the test fails with the
 re-execution it guards against.
+
+### Safe warm refresh
+
+`try_reuse` was documented as "pure reads only — safe on worker
+threads", yet a fallback hash match rewrites the manifest to add stat
+fingerprints, without the repository lock: a probe could rename a
+manifest derived from the bytes it read over a manifest a publisher (or
+another probe) had just written. Not a correctness hole — identity fixes
+content, and a stale fingerprint only mismatches and re-hashes — but a
+lost update and an untrue contract. `refresh_manifest` is now:
+
+- under the publication's lock `locks/<identity>` (held by publishers
+  while they replace the manifest), only *tried*: a busy lock skips the
+  refresh, so no worker thread ever blocks, and the lock is never
+  created by a probe;
+- a compare-and-swap: the manifest is rewritten only if it still holds
+  exactly the bytes the probe verified the tree against, so a newer
+  publication or another probe's refresh wins and repeating a refresh
+  changes nothing;
+- canonical-only (above) and a temp file renamed over the manifest, so
+  readers see the old or the new manifest, never a partial one.
+
+The `try_reuse` doc now states the one best-effort write. Tests:
+`concurrent_warm_probes_refresh_the_manifest_safely` (16 threads probe a
+settled publication at once: all reuse, the manifest ends canonical with
+the settled fingerprint and intact content, no staged refresh left, a
+later probe rewrites nothing) and
+`manifest_refresh_is_a_locked_compare_and_swap` (skipped while the lock
+is held — the test thread itself holds it, so a blocking refresh would
+hang; skipped when the manifest changed since it was read; applied once
+otherwise). Mutating the lock or the byte-exact compare back to the old
+identity+content guard fails the latter.
