@@ -808,6 +808,9 @@ where
     if !verified {
         return Ok(None);
     }
+    // REPO + INTEGRITY records of the analysis snapshot (after the
+    // fingerprint refresh above, so the manifest's key is the final one).
+    crate::observed_fs::repository_tree("direct", spec_key, &destination, Some(&manifest_path));
     timing::PHASES
         .reused
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -916,6 +919,9 @@ where
         .tempdir_in(&stages)
         .map_err(|e| format!("cannot stage direct repository: {e}"))?;
     // TempDir owns cleanup on callback errors and Rust unwinding as well.
+    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+        stage_key.to_owned()
+    });
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
         execute(stage.path())?
@@ -1079,6 +1085,7 @@ fn read_pointer(path: &Path) -> Result<Option<String>, String> {
     let Ok(bytes) = read_stable(path) else {
         return Ok(None);
     };
+    crate::observed_fs::note_read(path, &bytes);
     let pointer: Pointer = serde_json::from_slice(&bytes).map_err(|e| {
         format!(
             "cannot parse direct repository specification {}: {e}",

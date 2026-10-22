@@ -1,0 +1,4 @@
+filegroup(
+    name = "sources",
+    srcs = glob(["**/*.go"], exclude = ["data/deeper/skip.go"]) + ["data/notes.md"],
+)

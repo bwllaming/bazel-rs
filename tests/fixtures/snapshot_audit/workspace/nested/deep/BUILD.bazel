@@ -1,0 +1,1 @@
+filegroup(name = "deep", srcs = ["//:input.txt"])

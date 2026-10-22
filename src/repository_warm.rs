@@ -400,7 +400,7 @@ pub(crate) fn unchanged(
         let Some(path) = resolve(repositories, workspace, tree, &template.source)? else {
             return Ok(false);
         };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(bytes) = crate::observed_fs::read(&path) else {
             return Ok(false);
         };
         if sha256(&bytes) != template.sha256 {

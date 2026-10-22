@@ -14,8 +14,8 @@
 //! * `.bazelignore` parsing mirrors `skyframe/IgnoredSubdirectoriesFunction.java`
 //!   (`PathFragmentLineProcessor`, `PathFragment.create` normalization).
 
+use crate::observed_fs;
 use std::collections::HashSet;
-use std::fs;
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -404,15 +404,15 @@ pub fn for_repository(
 /// inside the repository.
 fn read_bazelignore(root: &Path) -> Result<Vec<(String, Option<String>)>, String> {
     let path = root.join(".bazelignore");
-    match fs::metadata(&path) {
+    match observed_fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Ok(Vec::new()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(not_readable(&path, &error)),
     }
-    let canonical_root = fs::canonicalize(root)
+    let canonical_root = observed_fs::canonicalize(root)
         .map_err(|e| format!("cannot resolve repository root {}: {e}", root.display()))?;
-    let resolved = fs::canonicalize(&path).map_err(|error| not_readable(&path, &error))?;
+    let resolved = observed_fs::canonicalize(&path).map_err(|error| not_readable(&path, &error))?;
     if !resolved.starts_with(&canonical_root) {
         return Err(format!(
             ".bazelignore file {} resolves outside workspace {}",
@@ -420,7 +420,7 @@ fn read_bazelignore(root: &Path) -> Result<Vec<(String, Option<String>)>, String
             canonical_root.display()
         ));
     }
-    let bytes = fs::read(&path).map_err(|error| not_readable(&path, &error))?;
+    let bytes = observed_fs::read(&path).map_err(|error| not_readable(&path, &error))?;
     parse_bazelignore(&path.display().to_string(), &bytes)
 }
 

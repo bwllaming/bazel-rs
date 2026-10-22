@@ -200,6 +200,7 @@ impl ActionEnvironment {
 /// read once per invocation (names that are not UTF-8 cannot be requested
 /// by `--action_env` and are skipped).
 pub fn client_environment() -> BTreeMap<String, OsString> {
+    // snapshot-unrecorded: inherited action-env values are re-resolved after planning on every run (PLAN-L2 §1a, finalize).
     std::env::vars_os()
         .filter_map(|(name, value)| Some((name.into_string().ok()?, value)))
         .collect()

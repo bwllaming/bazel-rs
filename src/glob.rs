@@ -280,11 +280,54 @@ fn jni_error_at(line: u32, path: &Path, error: &io::Error) -> String {
 /// an `opendir` failure is `[unix_jni.cc:562] PATH (strerror)`, a `readdir`
 /// failure `[unix_jni.cc:581] PATH (strerror)`; both are the legacy globber's
 /// IOException (DefaultSyscallCache.readdirImpl does not wrap them).
-fn read_listing(directory: &Path) -> Result<Vec<fs::DirEntry>, String> {
-    fs::read_dir(directory)
+///
+/// The listing is recorded for the analysis snapshot projected to what the
+/// walker uses (crate::observed_fs, [`listing_keeps`]); a host directory
+/// reached through a link keeps every entry (the native safety cap counts
+/// them all).
+fn read_listing(
+    directory: &Path,
+    pattern: &Pattern<'_>,
+    relative: &str,
+    host: bool,
+) -> Result<Vec<fs::DirEntry>, String> {
+    let projection = if host {
+        crate::observed_fs::Projection::All
+    } else {
+        crate::observed_fs::Projection::Glob {
+            pattern: pattern.text.to_owned(),
+            relative: relative.to_owned(),
+        }
+    };
+    crate::observed_fs::read_dir_projected(directory, &projection)
         .map_err(|error| jni_error_at(562, directory, &error))?
+        .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| jni_error_at(581, directory, &error))
+}
+
+/// Whether the glob walker uses the entry `name` of the directory at
+/// `relative` (below the package) for the include `pattern` — the snapshot
+/// projection of its listings (crate::observed_fs::Projection::Glob): an
+/// entry the pattern matches or descends into (`Walker::walk`'s state
+/// check), a BUILD marker (`is_subpackage` answers from a subdirectory's
+/// early listing) and a name that is not UTF-8 (the walker's error).
+pub(crate) fn listing_keeps(pattern: &str, relative: &str, name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return true;
+    };
+    if matches!(name, "BUILD" | "BUILD.bazel") {
+        return true;
+    }
+    let Ok(pattern) = Pattern::parse(pattern) else {
+        return true;
+    };
+    let path = if relative.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{relative}/{name}")
+    };
+    pattern.states(&path).contains(&true)
 }
 
 /// Return the results of `glob()` like Bazel 9.3's SINGLE_GLOBS_HYBRID
@@ -334,7 +377,7 @@ pub fn glob(
         .collect::<Result<Vec<_>, _>>()?;
     // Also validates package paths and regular BUILD files.
     crate::workspace::package_build_file(root, package)?;
-    let canonical_root = fs::canonicalize(root)
+    let canonical_root = crate::observed_fs::canonicalize(root)
         .map_err(|error| format!("cannot resolve repository root {}: {error}", root.display()))?;
     let directory = if package.is_empty() {
         canonical_root.clone()
@@ -432,10 +475,12 @@ impl Walker<'_> {
         while let Some(current) = pending.pop() {
             let mut entries = match current.listing {
                 Some(entries) => entries,
-                None => match read_listing(&current.logical) {
-                    Ok(entries) => entries,
-                    Err(error) => return Ok(Walk::Io(error)),
-                },
+                None => {
+                    match read_listing(&current.logical, pattern, &current.relative, current.host) {
+                        Ok(entries) => entries,
+                        Err(error) => return Ok(Walk::Io(error)),
+                    }
+                }
             };
             if current.host {
                 host_entries += entries.len();
@@ -481,7 +526,7 @@ impl Walker<'_> {
                 let (is_directory, is_file, real, anchor, host) = if kind.is_symlink() {
                     // UnixGlob.processSymlink: statIfFound(FOLLOW) on the
                     // logical path; a missing target is skipped.
-                    let metadata = match fs::metadata(&logical) {
+                    let metadata = match crate::observed_fs::metadata(&logical) {
                         Ok(metadata) => metadata,
                         Err(error)
                             if error.kind() == io::ErrorKind::NotFound
@@ -506,7 +551,7 @@ impl Walker<'_> {
                             continue;
                         }
                     }
-                    let real = match fs::canonicalize(&logical) {
+                    let real = match crate::observed_fs::canonicalize(&logical) {
                         Ok(real) => real,
                         Err(error) => return Ok(Walk::Io(jni_error(&logical, &error))),
                     };
@@ -529,6 +574,19 @@ impl Walker<'_> {
                             self.canonical_root.display()
                         ));
                     };
+                    if anchor != self.canonical_root {
+                        // A link out of the repository taints the analysis
+                        // snapshot (which roots are materialized depends on
+                        // the run, PLAN-L2 §1b).
+                        crate::observed_fs::taint(
+                            if self.links.others.iter().any(|(_, root)| *root == anchor) {
+                                crate::observed_fs::Taint::CrossRepositorySymlink
+                            } else {
+                                crate::observed_fs::Taint::HostSymlink
+                            },
+                            || format!("glob link {} -> {}", logical.display(), real.display()),
+                        );
+                    }
                     let host = current.host || anchor == real;
                     (metadata.is_dir(), metadata.is_file(), real, anchor, host)
                 } else {
@@ -560,7 +618,7 @@ impl Walker<'_> {
                     // subpackage, and its dirents answer the BUILD lookup.
                     // (Bazel reads ignored directories too; native does not.)
                     let listing = if descend && pattern.wildcard_next(&state) {
-                        match read_listing(&logical) {
+                        match read_listing(&logical, pattern, &path, host) {
                             Ok(entries) => Some(entries),
                             Err(error) => return Ok(Walk::Io(error)),
                         }
@@ -634,7 +692,7 @@ fn is_subpackage(
     listing: Option<&[fs::DirEntry]>,
     deferred: &mut Option<String>,
 ) -> bool {
-    let mut followed_file = |path: &Path| match fs::metadata(path) {
+    let mut followed_file = |path: &Path| match crate::observed_fs::metadata(path) {
         Ok(metadata) => metadata.is_file(),
         Err(error)
             if error.kind() == io::ErrorKind::NotFound

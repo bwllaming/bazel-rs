@@ -795,6 +795,11 @@ fn register_spawn(
     };
     let environment = environment.fixed;
     let (arguments, param_files, deferred) = if spec.deferred() {
+        if spec.deferred_map_each() {
+            crate::observed_fs::taint(crate::observed_fs::Taint::MapEach, || {
+                format!("{} ({progress})", context.label)
+            });
+        }
         let spec = Arc::new(spec);
         let deferred = Deferred(Arc::new(
             move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
@@ -983,6 +988,11 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 None,
             )
         } else {
+            if crate::command_line::has_deferred_map_each(&snapshot.groups) {
+                crate::observed_fs::taint(crate::observed_fs::Taint::MapEach, || {
+                    format!("{} (write {})", context.label, output.path)
+                });
+            }
             let snapshot = Arc::new(snapshot);
             let deferred = Deferred(Arc::new(
                 move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
@@ -1508,6 +1518,9 @@ fn transform_build_info<'v>(
         .to_owned();
     let template = unpack_file(template)?;
     let output = context.declare(output_file_name)?;
+    crate::observed_fs::taint(crate::observed_fs::Taint::BuildInfo, || {
+        format!("{} ({})", context.label, output.path)
+    });
     let status = crate::analysis_runtime::workspace_status_file(if volatile {
         "volatile-status.txt"
     } else {

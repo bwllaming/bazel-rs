@@ -261,20 +261,20 @@ pub(crate) fn read_root_module(
     root: &Path,
     options: &ResolverOptions,
 ) -> Result<RootModuleSnapshot, String> {
-    let root_path = std::fs::canonicalize(root).map_err(|e| {
+    let root_path = crate::observed_fs::canonicalize(root).map_err(|e| {
         format!(
             "cannot resolve root module directory {}: {e}",
             root.display()
         )
     })?;
-    if !root_path.is_dir() {
+    if !crate::observed_fs::is_dir(&root_path) {
         return Err(format!(
             "root module path is not a directory: {}",
             root_path.display()
         ));
     }
     let path = root_path.join("MODULE.bazel");
-    let source = match std::fs::read_to_string(&path) {
+    let source = match crate::observed_fs::read_to_string(&path) {
         Ok(source) => source,
         Err(error) => {
             let diagnostic = format!("cannot read MODULE file {}: {error}", path.display());
@@ -978,11 +978,12 @@ impl Discovery<'_> {
         }
         if let Some(ModuleOverride::LocalPath { path }) = self.overrides.get(name) {
             // Root-relative, not relative to whichever transitive module uses it.
-            let path = std::fs::canonicalize(self.root_path.join(path)).map_err(|e| {
-                format!("cannot resolve local override for {name:?} at {path:?}: {e}")
-            })?;
+            let path =
+                crate::observed_fs::canonicalize(self.root_path.join(path)).map_err(|e| {
+                    format!("cannot resolve local override for {name:?} at {path:?}: {e}")
+                })?;
             let file = path.join("MODULE.bazel");
-            let source = std::fs::read_to_string(&file)
+            let source = crate::observed_fs::read_to_string(&file)
                 .map_err(|e| format!("cannot read MODULE file {}: {e}", file.display()))?;
             let module = bzlmod::evaluate_source_with_builtins(
                 &non_registry_module_file(name),

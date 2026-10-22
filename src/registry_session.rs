@@ -180,7 +180,7 @@ impl RegistrySession {
             LockfileTarget::Workspace => (workspace_lockfile.clone(), Some(workspace_lockfile)),
             LockfileTarget::ReadOnly => (workspace_lockfile, None),
             LockfileTarget::Overlay(path) => (
-                if path.exists() {
+                if crate::observed_fs::exists(path) {
                     path.clone()
                 } else {
                     workspace_lockfile
@@ -369,10 +369,12 @@ impl RegistrySession {
 
     fn cas_get(&self, hash: &str) -> Option<Vec<u8>> {
         let path = self.cas.as_ref()?.join(hash);
+        // snapshot-unrecorded: content-addressed blob, checked against its hash below; a miss is a network fetch, which taints (PLAN-L2 §1b).
         let metadata = std::fs::symlink_metadata(&path).ok()?;
         if !metadata.is_file() {
             return None;
         }
+        // snapshot-unrecorded: content-addressed blob (see above).
         let bytes = std::fs::read(&path).ok()?;
         (sha256_hex(&bytes) == hash).then_some(bytes)
     }
@@ -388,6 +390,7 @@ impl RegistrySession {
         }
         let publish = || -> std::io::Result<()> {
             std::fs::create_dir_all(directory)?;
+            // snapshot-unrecorded: publishing a fetched blob (the fetch taints).
             if std::fs::symlink_metadata(directory)?
                 .file_type()
                 .is_symlink()
@@ -649,7 +652,8 @@ impl RegistrySession {
 /// The native hidden lockfile of `workspace` under `--cache-dir` (Bazel:
 /// `<output_base>/MODULE.bazel.lock`; an output base is per workspace).
 pub fn hidden_lockfile_path(cache_dir: &Path, workspace: &Path) -> PathBuf {
-    let canonical = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    let canonical =
+        crate::observed_fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     cache_dir
         .join("hidden-lockfiles")
         .join(sha256_hex(canonical.as_os_str().as_encoded_bytes()))

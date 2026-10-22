@@ -71,6 +71,7 @@ pub mod module_cli;
 pub mod module_extension;
 pub mod module_graph;
 pub mod native_rules;
+pub mod observed_fs;
 pub mod output_group_info;
 pub mod package;
 pub mod package_specification;
@@ -107,6 +108,7 @@ pub mod runfiles;
 pub mod runfiles_tree;
 pub mod sandbox;
 pub mod scheduler;
+pub mod snapshot;
 pub mod source_links;
 pub mod spawn_lock;
 pub mod starlark_options;
@@ -133,6 +135,12 @@ pub mod workspace_status;
 /// (docs/artifacts PARALLEL_ANALYSIS.md).
 pub fn perf_mark(name: &str) {
     use std::sync::OnceLock;
+    // The end of planning (build, test and run all mark it right after
+    // `plan_build`) closes the analysis-snapshot recording window
+    // (crate::observed_fs, BAZEL_RS_SNAPSHOT=record); a no-op otherwise.
+    if name == "plan.end" {
+        observed_fs::close_window();
+    }
     static START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {

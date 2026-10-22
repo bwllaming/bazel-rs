@@ -101,6 +101,7 @@ pub(crate) trait EnvironmentReader: Send + Sync {
     /// runtime/CommandEnvironment.java:333-416). Only `repository_ctx.os.environ`
     /// and `repository_ctx.execute` enumerate it; `getenv` stays name-scoped.
     fn all(&self) -> Result<Vec<(OsString, OsString)>, ReadError> {
+        // snapshot-unrecorded: enumerating the environment taints the snapshot (Snapshot::client_environment).
         Ok(std::env::vars_os().collect())
     }
 }
@@ -108,6 +109,7 @@ pub(crate) trait EnvironmentReader: Send + Sync {
 struct ProcessReader;
 impl EnvironmentReader for ProcessReader {
     fn read(&self, name: &str) -> Result<Option<OsString>, ReadError> {
+        // snapshot-unrecorded: recorded as ENV by Snapshot::capture (every reader).
         Ok(std::env::var_os(name))
     }
 }
@@ -221,6 +223,9 @@ impl Snapshot {
     /// set on first use, so every repository of one invocation observes the
     /// same map, like one Bazel command. Failures are cached, never partial.
     pub(crate) fn client_environment(&self) -> Result<Arc<ClientEnvironment>, EnvError> {
+        crate::observed_fs::taint(crate::observed_fs::Taint::EnvironmentEnumerated, || {
+            "repository environment (os.environ / execute)".to_owned()
+        });
         self.client
             .get_or_init(|| {
                 ClientEnvironment::from_entries(self.reader.all().map_err(|_| EnvError::Read)?)
@@ -303,8 +308,10 @@ impl Snapshot {
         // var_os necessarily allocates its initial OsString before we know its
         // size. All subsequent scanning/conversion/cache allocation is precharged.
         let Some(raw) = self.reader.read(name).map_err(|_| EnvError::Read)? else {
+            crate::observed_fs::note_env(std::ffi::OsStr::new(name), None);
             return Ok(Captured::Absent);
         };
+        crate::observed_fs::note_env(std::ffi::OsStr::new(name), Some(&raw));
         let bytes = raw.as_encoded_bytes();
         if bytes.len() > MAX_VALUE {
             return Err(EnvError::ValueLimit);

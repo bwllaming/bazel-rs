@@ -1,0 +1,332 @@
+//! `BAZEL_RS_SNAPSHOT=record` (L2-W3, PLAN-L2 §1b/§7): open the
+//! crate::observed_fs recording window at the snapshot check point (main,
+//! after the bootstrap values that form the snapshot key and before the
+//! registry session opens), close it at the end of planning (the
+//! `plan.end` mark, crate::perf_mark; explicitly for `query`), then report:
+//!
+//! * `bazel-rs-snapshot:` diagnostics lines on stderr — observation counts by
+//!   op, distinct paths, environment reads, verified repositories and their
+//!   integrity entries, every taint with its first reasons, whether the run
+//!   would be eligible to save, and the measured time of the §1c validation
+//!   (crate::snapshot::validate) as a dry run over everything recorded;
+//! * with `BAZEL_RS_SNAPSHOT_DUMP=<file>`, a text dump of every observation
+//!   plus the same summary (scripts/snapshot_fs_audit.py reads it).
+//!
+//! Nothing else changes: stdout, the rest of stderr and every output are
+//! byte-identical with recording on and off. The diagnostics appear only
+//! when `BAZEL_RS_SNAPSHOT` is set.
+
+use crate::observed_fs::{self, Op, Outcome, Recording, Taint, escape};
+use crate::registry_session::SessionHandle;
+use crate::repo_env::EnvVar;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::fmt::Write as _;
+use std::io::Write as _;
+use std::path::PathBuf;
+
+/// The mode variable; `record` is the only mode W3 implements.
+pub const MODE_VAR: &str = "BAZEL_RS_SNAPSHOT";
+/// Where the text dump goes (nothing is written without it).
+pub const DUMP_VAR: &str = "BAZEL_RS_SNAPSHOT_DUMP";
+
+/// One command's recording; reports when finished or dropped.
+pub struct Session {
+    command: String,
+    dump: Option<PathBuf>,
+    registry: Option<SessionHandle>,
+    reported: bool,
+}
+
+/// Start recording when `BAZEL_RS_SNAPSHOT=record`. `repo_env` decides
+/// which environment names an option fixes (not validated against the
+/// process environment).
+pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
+    let mode = std::env::var_os(MODE_VAR)?;
+    if mode != "record" {
+        observed_fs::diag(&format!(
+            "ignoring {MODE_VAR}={}: only `record` is implemented",
+            escape(&mode)
+        ));
+        return None;
+    }
+    let fixed: BTreeSet<OsString> = repo_env
+        .iter()
+        .filter_map(|value| match value {
+            EnvVar::Set(name, _) | EnvVar::Unset(name) => Some(OsString::from(name)),
+            EnvVar::Inherit(_) => None,
+        })
+        .collect();
+    if !observed_fs::open_window(fixed) {
+        return None;
+    }
+    // PLAN-L2 §1a: runs with a test or debug hook are never saved.
+    for (name, _) in std::env::vars_os() {
+        let name = name.to_string_lossy();
+        if name == "BAZEL_RS_LOADING_JITTER"
+            || name == "BAZEL_RS_LOADING_NO_DEMAND"
+            || name.starts_with("BAZEL_RS_DEBUG_")
+        {
+            observed_fs::taint(Taint::TestHook, || name.into_owned());
+        }
+    }
+    Some(Session {
+        command: command.to_owned(),
+        dump: std::env::var_os(DUMP_VAR).map(PathBuf::from),
+        registry: None,
+        reported: false,
+    })
+}
+
+impl Session {
+    /// The registry session whose pending lockfile writes taint the run.
+    pub fn set_registry_session(&mut self, registry: SessionHandle) {
+        self.registry = Some(registry);
+    }
+
+    /// The command succeeded: report now.
+    pub fn finish(mut self) {
+        self.report(true);
+    }
+
+    fn report(&mut self, success: bool) {
+        if self.reported {
+            return;
+        }
+        self.reported = true;
+        let planned = !observed_fs::recording();
+        observed_fs::close_window();
+        if !planned {
+            observed_fs::taint_after_window(Taint::Errors, || {
+                "planning did not complete (the window was still open at exit)".to_owned()
+            });
+        }
+        if !success {
+            observed_fs::taint_after_window(Taint::Errors, || "the command failed".to_owned());
+        }
+        if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
+            if session.updated_lockfile().is_some() {
+                observed_fs::taint_after_window(Taint::LockfileWritePending, || {
+                    "MODULE.bazel.lock (workspace or --native-lockfile target)".to_owned()
+                });
+            }
+            if let Some((path, _)) = session.updated_hidden_lockfile() {
+                observed_fs::taint_after_window(Taint::LockfileWritePending, || {
+                    format!("hidden lockfile {}", escape(path.as_os_str()))
+                });
+            }
+        }
+        let Some(recorder) = observed_fs::recorder() else {
+            return;
+        };
+        let recording = recorder.snapshot();
+        let threads = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(16);
+        let validation = crate::snapshot::validate::dry_run(&recording, threads);
+        let summary = summary(&self.command, &recording, &validation);
+        for line in &summary {
+            observed_fs::diag(line);
+        }
+        if let Some(path) = &self.dump
+            && let Err(error) = write_dump(path, &recording, &summary)
+        {
+            observed_fs::diag(&format!(
+                "cannot write {DUMP_VAR}={}: {error}",
+                escape(path.as_os_str())
+            ));
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Reached without finish(): the command returned an error.
+        self.report(false);
+    }
+}
+
+fn millis(duration: std::time::Duration) -> String {
+    format!("{:.3}", duration.as_secs_f64() * 1000.0)
+}
+
+/// The report lines (without the `bazel-rs-snapshot:` prefix).
+pub fn summary(
+    command: &str,
+    recording: &Recording,
+    validation: &crate::snapshot::validate::Report,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let eligible = recording.taints.is_empty();
+    lines.push(format!(
+        "record: command={command} window={} ms eligible={}",
+        recording.window.map_or_else(|| "open".to_owned(), millis),
+        if eligible { "yes" } else { "no" }
+    ));
+    let mut by_op: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut projections: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut racy_reads = 0usize;
+    let mut errors = 0usize;
+    for (_, observation) in &recording.observations {
+        *by_op.entry(observation.op.name()).or_default() += 1;
+        if let Op::ReadDir(projection) = &observation.op {
+            let kind = match projection {
+                observed_fs::Projection::All => "all",
+                observed_fs::Projection::Directories => "dirs",
+                observed_fs::Projection::Glob { .. } => "glob",
+            };
+            *projections.entry(kind).or_default() += 1;
+        }
+        match observation.outcome {
+            Outcome::Read { racy: true, .. } | Outcome::Listing { racy: true, .. } => {
+                racy_reads += 1;
+            }
+            Outcome::Error(_) => errors += 1,
+            _ => {}
+        }
+    }
+    let ops = ["READ", "STAT", "LSTAT", "READDIR", "CANON", "READLINK"]
+        .iter()
+        .map(|op| format!("{op} {}", by_op.get(op).copied().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let projections = projections
+        .iter()
+        .map(|(kind, count)| format!("{kind} {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    lines.push(format!(
+        "observations: {} over {} paths ({ops}; READDIR projections: {}); racy {racy_reads}; error outcomes {errors}",
+        recording.observations.len(),
+        recording.distinct_paths(),
+        if projections.is_empty() { "none".to_owned() } else { projections },
+    ));
+    let fixed = recording.env.iter().filter(|(_, env)| env.fixed).count();
+    lines.push(format!(
+        "env: {} variables read (fixed by --repo_env: {fixed})",
+        recording.env.len()
+    ));
+    let mut kinds: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    let mut integrity_racy = 0usize;
+    for repository in &recording.repositories {
+        let entry = kinds.entry(repository.kind).or_default();
+        entry.0 += 1;
+        entry.1 += repository.entries.len();
+        integrity_racy += repository.entries.iter().filter(|entry| entry.racy).count();
+    }
+    lines.push(format!(
+        "repositories: {} verified trees ({}), {} integrity entries (racy {integrity_racy})",
+        recording.repositories.len(),
+        kinds
+            .iter()
+            .map(|(kind, (trees, entries))| format!("{kind} {trees}/{entries}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        kinds.values().map(|(_, entries)| entries).sum::<usize>(),
+    ));
+    if recording.taints.is_empty() {
+        lines.push("taints: none".to_owned());
+    }
+    for (taint, record) in &recording.taints {
+        lines.push(format!(
+            "taint {}: {} occurrence(s): {}",
+            taint.name(),
+            record.count,
+            record.details.join(" | ")
+        ));
+    }
+    lines.push(format!(
+        "validation dry-run: {} ms on {} threads: {} observations ({} trusted by stat, {} content checks, {} refreshable), {} env, {} integrity entries; {} mismatch(es), {} repositories to re-verify",
+        millis(validation.elapsed),
+        validation.threads,
+        validation.observations,
+        validation.trusted_by_stat,
+        validation.content_checks,
+        validation.refreshable,
+        validation.env,
+        validation.integrity,
+        validation.mismatches,
+        validation.repositories_to_verify,
+    ));
+    for example in &validation.examples {
+        lines.push(format!("validation: {example}"));
+    }
+    lines
+}
+
+fn write_dump(
+    path: &std::path::Path,
+    recording: &Recording,
+    summary: &[String],
+) -> std::io::Result<()> {
+    let mut text = String::new();
+    let _ = writeln!(text, "# bazel-rs snapshot recording (L2-W3) v1");
+    let _ = writeln!(text, "window_start_ns {}", recording.window_start_ns);
+    for (path, observation) in &recording.observations {
+        let op = match &observation.op {
+            Op::ReadDir(projection) => format!("READDIR[{projection}]"),
+            op => op.name().to_owned(),
+        };
+        let _ = writeln!(
+            text,
+            "OBS {} {op} {}",
+            escape(path.as_os_str()),
+            observation.outcome
+        );
+    }
+    for (name, env) in &recording.env {
+        let _ = writeln!(
+            text,
+            "ENV {} {}{}",
+            escape(name),
+            env.digest.map_or_else(
+                || "unset".to_owned(),
+                |digest| format!("sha256:{}", observed_fs::hex(&digest))
+            ),
+            if env.fixed { " fixed" } else { "" }
+        );
+    }
+    for repository in &recording.repositories {
+        let _ = writeln!(
+            text,
+            "REPO {} {} {} manifest:{} entries:{}",
+            repository.kind,
+            escape(std::ffi::OsStr::new(&repository.name)),
+            escape(repository.root.as_os_str()),
+            repository
+                .manifest
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), |path| escape(path.as_os_str())),
+            repository.entries.len()
+        );
+        for entry in &repository.entries {
+            let state = match &entry.state {
+                Ok((kind, key)) => format!("{} key:{key}", kind.letter() as char),
+                Err(errno) => format!("error:{errno}"),
+            };
+            let _ = writeln!(
+                text,
+                "INT {} {state}{}",
+                escape(entry.path.as_os_str()),
+                if entry.racy { " racy" } else { "" }
+            );
+        }
+    }
+    for (taint, record) in &recording.taints {
+        for detail in &record.details {
+            let _ = writeln!(
+                text,
+                "TAINT {} count:{} {detail}",
+                taint.name(),
+                record.count
+            );
+        }
+    }
+    for line in summary {
+        let _ = writeln!(text, "SUMMARY {line}");
+    }
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(text.as_bytes())?;
+    file.flush()
+}

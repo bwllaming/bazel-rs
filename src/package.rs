@@ -1844,7 +1844,7 @@ fn repo_file_value(
         });
     };
     // RepoFileFunction.java:110-116: the IOException message is exactly this.
-    let source = std::fs::read_to_string(&path)
+    let source = crate::observed_fs::read_to_string(&path)
         .map_err(|_| format!("error reading REPO.bazel file at {}", path.display()))?;
     let dialect = Dialect {
         enable_def: false,
@@ -2108,7 +2108,7 @@ fn evaluate_in_with_prints(
         return Err(error);
     }
     let build = crate::workspace::package_build_file(root, &package.package)?;
-    let source = std::fs::read_to_string(&build)
+    let source = crate::observed_fs::read_to_string(&build)
         .map_err(|e| format!("cannot read {}: {e}", build.display()))?;
     evaluate_at(
         repositories,
@@ -2127,11 +2127,11 @@ fn evaluate_in_with_prints(
 /// native diagnostics.
 fn no_build_file(root: &std::path::Path, package: &PackageId) -> Option<String> {
     let directory = root.join(&package.package);
-    let missing = match std::fs::metadata(&directory) {
+    let missing = match crate::observed_fs::metadata(&directory) {
         Ok(metadata) => {
             metadata.is_dir()
-                && !directory.join("BUILD.bazel").is_file()
-                && !directory.join("BUILD").is_file()
+                && !crate::observed_fs::is_file(directory.join("BUILD.bazel"))
+                && !crate::observed_fs::is_file(directory.join("BUILD"))
         }
         Err(error) => error.kind() == std::io::ErrorKind::NotFound,
     };

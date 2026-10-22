@@ -8,11 +8,10 @@
 
 use crate::bzlmod::{ModuleFile, PatchOptions};
 use crate::label::Label;
+use crate::observed_fs;
 use crate::patching::{self, Patch};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::Read;
 use std::path::{Component, Path};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,7 +182,7 @@ impl LocalPatchPlan {
 }
 
 fn check_directory(path: &Path, kind: &str) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path)
+    let metadata = observed_fs::symlink_metadata(path)
         .map_err(|e| format!("cannot access {kind} directory {}: {e}", path.display()))?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
@@ -229,7 +228,7 @@ fn check_descendant_directories(root: &Path, relative: &str, kind: &str) -> Resu
 fn check_package_marker(package: &Path) -> Result<(), String> {
     for name in ["BUILD.bazel", "BUILD"] {
         let path = package.join(name);
-        match fs::symlink_metadata(&path) {
+        match observed_fs::symlink_metadata(&path) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() {
                     return Err(format!(
@@ -263,7 +262,7 @@ fn check_package_marker(package: &Path) -> Result<(), String> {
 /// Read a whole patch file (PatchUtil reads patches into memory); there is no
 /// artificial per-file or total size cap.
 fn read_patch(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::symlink_metadata(path)
+    let metadata = observed_fs::symlink_metadata(path)
         .map_err(|e| format!("cannot access patch file {}: {e}", path.display()))?;
     if metadata.file_type().is_symlink() {
         return Err(format!(
@@ -277,18 +276,21 @@ fn read_patch(path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
-    let mut file =
-        File::open(path).map_err(|e| format!("cannot open patch file {}: {e}", path.display()))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read patch file {}: {e}", path.display()))?;
-    Ok(bytes)
+    observed_fs::read_staged(path).map_err(|error| match error {
+        observed_fs::ReadError::Open(e) => {
+            format!("cannot open patch file {}: {e}", path.display())
+        }
+        observed_fs::ReadError::Read(e) => {
+            format!("cannot read patch file {}: {e}", path.display())
+        }
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bzlmod::{Dependency, ModuleInfo};
+    use std::fs::{self, File};
     use tempfile::TempDir;
 
     fn change(path: &str, before: &str, after: &str) -> String {

@@ -486,7 +486,7 @@ pub fn read_query(residue: &[String], options: &QueryOptions) -> Option<String> 
         return None;
     }
     let cwd = std::env::current_dir().ok()?;
-    let bytes = std::fs::read(cwd.join(&options.query_file)).ok()?;
+    let bytes = crate::observed_fs::read(cwd.join(&options.query_file)).ok()?;
     Some(bytes.into_iter().map(char::from).collect())
 }
 

@@ -433,7 +433,7 @@ pub fn java_string_cmp(a: &str, b: &str) -> Ordering {
 
 /// Read the lockfile at `path` in `mode` (never called for `off`).
 pub fn read(path: &Path, mode: LockfileMode) -> Result<Lockfile, String> {
-    match std::fs::read(path) {
+    match crate::observed_fs::read(path) {
         Ok(bytes) => {
             // FileSystemUtils.readContent(UTF_8) decodes with replacement.
             let text = String::from_utf8_lossy(&bytes);

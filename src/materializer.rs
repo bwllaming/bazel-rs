@@ -330,8 +330,18 @@ pub fn materialize_with_registry_config(
         && manifest.format == FORMAT
         && tree_matches(&destination, &manifest.files)
     {
+        // REPO + INTEGRITY records of the analysis snapshot.
+        crate::observed_fs::repository_tree(
+            "registry",
+            &format!("{name}@{version}"),
+            &destination,
+            Some(&manifest_path),
+        );
         return Ok(destination);
     }
+    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
+        format!("registry archive {name}@{version}")
+    });
     let blob = cached_download(&cache, &urls, &integrity, downloads_enabled)?;
     let staging = tempfile::Builder::new()
         .prefix(".stage-")

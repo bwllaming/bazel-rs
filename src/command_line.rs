@@ -272,6 +272,14 @@ pub(crate) fn has_deferred(groups: &[Group]) -> bool {
         .any(|group| matches!(group, Group::Deferred(_)))
 }
 
+/// Whether a tree-artifact expansion of `groups` calls a Starlark `map_each`
+/// at execution time (an analysis-snapshot taint, PLAN-L2 §1b).
+pub(crate) fn has_deferred_map_each(groups: &[Group]) -> bool {
+    groups
+        .iter()
+        .any(|group| matches!(group, Group::Deferred(vector) if vector.map_each.is_some()))
+}
+
 /// ShellEscaper (ShellEscaper.java:57-110): only ASCII letters/digits and
 /// `@%-_+:,./` are safe; `~` is safe except at the start.
 pub(crate) fn shell_quote_required(text: &str) -> bool {
@@ -329,6 +337,13 @@ pub(crate) type Expanded = (Vec<String>, Vec<(PathBuf, Vec<u8>)>);
 impl CommandLineSpec {
     pub(crate) fn deferred(&self) -> bool {
         self.parts.iter().any(|part| has_deferred(&part.groups))
+    }
+
+    /// [`has_deferred_map_each`] over every part.
+    pub(crate) fn deferred_map_each(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| has_deferred_map_each(&part.groups))
     }
 
     /// CommandLines.expand (actions/CommandLines.java:89-153).

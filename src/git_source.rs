@@ -182,6 +182,13 @@ pub fn materialize<T>(
         && manifest.commit == commit
         && snapshot(&destination, false).is_ok_and(|actual| actual == manifest.files)
     {
+        // REPO + INTEGRITY records of the analysis snapshot.
+        crate::observed_fs::repository_tree(
+            "git",
+            &spec.remote,
+            &destination,
+            Some(&manifest_path),
+        );
         let module_file = read_whole(&destination.join("MODULE.bazel"))?;
         let value = validate(&destination, &module_file)?;
         return Ok((
@@ -198,6 +205,12 @@ pub fn materialize<T>(
         .prefix(".stage-")
         .tempdir_in(&trees)
         .map_err(|e| format!("cannot stage Git tree: {e}"))?;
+    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
+        format!("git fetch {} {commit}", spec.remote)
+    });
+    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
+        format!("git tree {} {commit}", spec.remote)
+    });
     fetch_export(spec, &commit, &cache, stage.path())?;
     patches.apply_tree(stage.path())?;
     let files = snapshot(stage.path(), true)?;

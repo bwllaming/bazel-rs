@@ -12,20 +12,20 @@
 
 use crate::ignored::IgnoredSubdirectories;
 use crate::label::{is_valid_package_name, validate_package_path};
-use std::fs;
+use crate::observed_fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 const MARKERS: [&str; 4] = ["MODULE.bazel", "REPO.bazel", "WORKSPACE.bazel", "WORKSPACE"];
 
 pub fn workspace_root(start: &Path) -> Result<PathBuf, String> {
-    let start = fs::canonicalize(start).map_err(|e| {
+    let start = observed_fs::canonicalize(start).map_err(|e| {
         format!(
             "cannot resolve workspace starting path {}: {e}",
             start.display()
         )
     })?;
-    let mut current = if start.is_dir() {
+    let mut current = if observed_fs::is_dir(&start) {
         start.as_path()
     } else {
         start
@@ -94,8 +94,14 @@ pub fn discover_packages_skipping(
         }
         // excludedPaths.filterForDirectory: only entries that can match below.
         let ignored = ignored.filter_for_directory(&package);
-        let entries = fs::read_dir(&directory)
-            .map_err(|e| format!("cannot read package directory {}: {e}", directory.display()))?;
+        // Only subdirectories matter here: the snapshot records this
+        // listing projected to them (adding a source file to a package does
+        // not invalidate it).
+        let entries =
+            observed_fs::read_dir_projected(&directory, &observed_fs::Projection::Directories)
+                .map_err(|e| {
+                    format!("cannot read package directory {}: {e}", directory.display())
+                })?;
         for entry in entries {
             let entry =
                 entry.map_err(|e| format!("cannot read entry in {}: {e}", directory.display()))?;
@@ -146,9 +152,9 @@ pub fn discover_packages_skipping(
 }
 
 fn canonical_root(root: &Path) -> Result<PathBuf, String> {
-    let resolved = fs::canonicalize(root)
+    let resolved = observed_fs::canonicalize(root)
         .map_err(|e| format!("cannot resolve workspace root {}: {e}", root.display()))?;
-    if !resolved.is_dir() {
+    if !observed_fs::is_dir(&resolved) {
         return Err(format!(
             "workspace root is not a directory: {}",
             resolved.display()
@@ -167,7 +173,7 @@ fn package_directory(root: &Path, package: &str) -> Result<PathBuf, String> {
                 ));
             }
             directory.push(component);
-            let metadata = fs::symlink_metadata(&directory).map_err(|e| {
+            let metadata = observed_fs::symlink_metadata(&directory).map_err(|e| {
                 format!(
                     "cannot inspect package directory {}: {e}",
                     directory.display()
@@ -191,7 +197,7 @@ fn package_directory(root: &Path, package: &str) -> Result<PathBuf, String> {
 }
 
 fn is_regular_file(path: &Path) -> Result<bool, String> {
-    match fs::metadata(path) {
+    match observed_fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
@@ -215,7 +221,7 @@ pub(crate) fn has_marker(directory: &Path) -> Result<bool, String> {
 pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
     let root = canonical_root(root)?;
     let path = root.join("REPO.bazel");
-    match fs::metadata(&path) {
+    match observed_fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
         // RepoFileFunction.java:110-116: reading fails with exactly this
         // IOException message (the cause is not part of it).
@@ -233,7 +239,7 @@ pub fn repo_file(root: &Path) -> Result<Option<PathBuf>, String> {
             ));
         }
     }
-    let resolved = fs::canonicalize(&path)
+    let resolved = observed_fs::canonicalize(&path)
         .map_err(|e| format!("cannot resolve REPO.bazel file {}: {e}", path.display()))?;
     if !resolved.starts_with(&root) {
         return Err(format!(
@@ -255,7 +261,7 @@ pub(crate) fn is_package(root: &Path, package: &str) -> Result<bool, String> {
     let canonical = canonical_root(root)?;
     let mut directory = canonical.clone();
     directory.extend(package.split('/').filter(|part| !part.is_empty()));
-    match fs::metadata(&directory) {
+    match observed_fs::metadata(&directory) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Ok(false),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
@@ -273,7 +279,7 @@ fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, Str
         if !is_regular_file(&path)? {
             continue;
         }
-        let resolved = fs::canonicalize(&path)
+        let resolved = observed_fs::canonicalize(&path)
             .map_err(|e| format!("cannot resolve build file {}: {e}", path.display()))?;
         if !resolved.starts_with(root) {
             return Err(format!(
@@ -290,6 +296,7 @@ fn find_build_file(root: &Path, directory: &Path) -> Result<Option<PathBuf>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);

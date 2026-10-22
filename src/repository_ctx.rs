@@ -701,9 +701,19 @@ fn file_state(host: &Path) -> anyhow::Result<String> {
     })
 }
 
-/// `file_state` for warm-publication revalidation (RepoRecordedInput states).
+/// `file_state` for warm-publication revalidation (RepoRecordedInput
+/// states), observed through crate::observed_fs for the analysis snapshot
+/// (the same state string).
 pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
-    file_state(host).ok()
+    Some(match crate::observed_fs::metadata(host) {
+        Err(_) => "missing".to_owned(),
+        Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
+        Ok(metadata) if metadata.is_file() => format!(
+            "file:{}",
+            crate::observed_fs::hex(&crate::observed_fs::sha256_file(host).ok()?)
+        ),
+        Ok(_) => "other".to_owned(),
+    })
 }
 
 /// A file whose mtime and ctime are this much older than the moment hashing
@@ -924,14 +934,16 @@ impl FileDigestMemo {
 /// digest of the sorted entry names, each NUL-terminated. `None` when the
 /// directory cannot be observed.
 pub(crate) fn recorded_dirents_state(host: &Path) -> Option<String> {
-    let mut names: Vec<Vec<u8>> = fs::read_dir(host)
-        .ok()?
-        .map(|entry| {
-            entry
-                .ok()
-                .map(|entry| entry.file_name().as_encoded_bytes().to_vec())
-        })
-        .collect::<Option<_>>()?;
+    let mut names: Vec<Vec<u8>> =
+        crate::observed_fs::read_dir_projected(host, &crate::observed_fs::Projection::All)
+            .ok()?
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .ok()
+                    .map(|entry| entry.file_name().as_encoded_bytes().to_vec())
+            })
+            .collect::<Option<_>>()?;
     names.sort_unstable();
     let mut hash = Vec::new();
     for name in names {
@@ -944,9 +956,52 @@ pub(crate) fn recorded_dirents_state(host: &Path) -> Option<String> {
 /// StarlarkRepositoryContext.watch_tree's recorded state (SRC:568-609): the
 /// recursive tree digest. `None` when the tree cannot be observed.
 pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
-    tree_digest(host)
+    observed_tree_digest(host)
         .ok()
         .map(|digest| format!("dirtree:{digest}"))
+}
+
+/// [`tree_digest`] observed through crate::observed_fs (the same digest),
+/// for warm-publication revalidation inside the snapshot window.
+fn observed_tree_digest(root: &Path) -> std::io::Result<String> {
+    use crate::observed_fs;
+    fn visit(directory: &Path, prefix: &[u8], out: &mut Vec<u8>) -> std::io::Result<()> {
+        let mut entries =
+            observed_fs::read_dir_projected(directory, &observed_fs::Projection::All)?
+                .into_iter()
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()?;
+        entries.sort();
+        for name in entries {
+            let path = directory.join(&name);
+            let mut relative = prefix.to_vec();
+            if !relative.is_empty() {
+                relative.push(b'/');
+            }
+            relative.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&relative);
+            out.push(0);
+            let metadata = observed_fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() {
+                out.extend_from_slice(b"link\0");
+                out.extend_from_slice(observed_fs::read_link(&path)?.as_os_str().as_bytes());
+            } else if metadata.is_dir() {
+                out.extend_from_slice(b"dir");
+                out.push(0);
+                visit(&path, &relative, out)?;
+            } else if metadata.is_file() {
+                let digest = observed_fs::hex(&observed_fs::sha256_file(&path)?);
+                out.extend_from_slice(format!("file\0{digest}").as_bytes());
+            } else {
+                out.extend_from_slice(b"other");
+            }
+            out.push(0);
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(root, b"", &mut out)?;
+    Ok(sha256(&out))
 }
 
 /// The SHA-256 of a file of a watched tree ([`tree_digest`]; the files a
@@ -6557,5 +6612,40 @@ ctx.read("sub/old.txt") == "b\n" or fail("directory")"#
         fixture.run_loaded(loaded, BTreeMap::new()).unwrap();
         assert_eq!(fixture.bytes("decoded"), [0xff, 0x00, 0xe9, 0xc3, 0xa9]);
         assert_eq!(fixture.bytes("literal"), [0xff, 0x80, b'A', 0xe9]);
+    }
+
+    /// The snapshot-observed recorded-input states equal the execution-side
+    /// ones (warm reuse compares them with what execution recorded).
+    #[test]
+    fn observed_recorded_states_match_execution_states() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("tree/sub")).unwrap();
+        fs::write(root.join("tree/a.txt"), b"alpha").unwrap();
+        fs::write(root.join("tree/sub/b.bin"), [0u8, 0xff, 1]).unwrap();
+        std::os::unix::fs::symlink("a.txt", root.join("tree/link")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent", root.join("tree/dangling")).unwrap();
+        assert_eq!(
+            observed_tree_digest(&root.join("tree")).unwrap(),
+            tree_digest(&root.join("tree")).unwrap()
+        );
+        for name in [
+            "tree",
+            "tree/a.txt",
+            "tree/link",
+            "tree/dangling",
+            "missing",
+        ] {
+            assert_eq!(
+                recorded_file_state(&root.join(name)),
+                file_state(&root.join(name)).ok(),
+                "{name}"
+            );
+        }
+        assert!(
+            recorded_dirents_state(&root.join("tree"))
+                .is_some_and(|state| state.starts_with("dirents:"))
+        );
+        assert_eq!(recorded_dirents_state(&root.join("missing")), None);
     }
 }

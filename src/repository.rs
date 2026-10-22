@@ -545,7 +545,7 @@ impl RepositorySet {
                 if self.state.source_cache.is_absolute() {
                     Ok(self.state.source_cache.clone())
                 } else {
-                    std::fs::canonicalize(&self.state.root)
+                    crate::observed_fs::canonicalize(&self.state.root)
                         .map(|root| root.join(&self.state.source_cache))
                         .map_err(|e| {
                             format!(
@@ -959,7 +959,7 @@ impl RepositorySet {
             if let Some(canonical) = memo.get(&path) {
                 return Some(canonical.clone());
             }
-            let canonical = std::fs::canonicalize(&path).ok()?;
+            let canonical = crate::observed_fs::canonicalize(&path).ok()?;
             memo.insert(path, canonical.clone());
             Some(canonical)
         };
@@ -1239,7 +1239,7 @@ impl RepositorySet {
         // entries + this repo's attributes/mappings (review R1). No deep
         // copy of the closure, no re-hash of source bytes.
         let spec_key = self.direct_spec_key(prepared, group, entry, attributes)?;
-        let workspace = std::fs::canonicalize(self.main_root())
+        let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let validating = self.clone();
         crate::repository_store::try_reuse(
@@ -1350,7 +1350,7 @@ impl RepositorySet {
                     );
                 }
                 crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
-                let workspace = std::fs::canonicalize(self.main_root())
+                let workspace = crate::observed_fs::canonicalize(self.main_root())
                     .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                 let this = Arc::new(self.clone());
                 let validating = Arc::new(self.clone());
@@ -1459,6 +1459,9 @@ impl RepositorySet {
                     (recorded, metadata, None)
                 }
                 None => {
+                    crate::observed_fs::taint(crate::observed_fs::Taint::ExtensionEvaluated, || {
+                        format!("{}%{}", group.label, group.symbol)
+                    });
                     let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
                     let mut execution = crate::extension_ctx::execute(
                         Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
@@ -1761,7 +1764,7 @@ impl RepositorySet {
             &repository.canonical_name,
             &repository.definition.environ,
         )?;
-        let workspace = std::fs::canonicalize(self.main_root())
+        let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
         let validating = self.clone();
         crate::repository_store::try_reuse(
@@ -1818,7 +1821,7 @@ impl RepositorySet {
                         )?
                     };
                     crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
-                    let workspace = std::fs::canonicalize(self.main_root())
+                    let workspace = crate::observed_fs::canonicalize(self.main_root())
                         .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
                     let this = Arc::new(self.clone());
                     let validating = Arc::new(self.clone());
@@ -2098,13 +2101,13 @@ fn registry_source_root(
             ));
         }
     };
-    let root = std::fs::canonicalize(&chosen).map_err(|error| {
+    let root = crate::observed_fs::canonicalize(&chosen).map_err(|error| {
         format!(
             "cannot resolve registry local_path source {}: {error}",
             chosen.display()
         )
     })?;
-    if !root.is_dir() {
+    if !crate::observed_fs::is_dir(&root) {
         return Err(format!(
             "registry local_path source is not a directory: {}",
             root.display()
@@ -2578,10 +2581,10 @@ impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
         let host = self
             .host_path(path)
             .map_err(|error| format!("failed to stat {path}: {error}"))?;
-        match std::fs::metadata(&host) {
+        match crate::observed_fs::metadata(&host) {
             Ok(metadata) if metadata.is_dir() => Ok("DIR".to_owned()),
             Ok(metadata) if metadata.is_file() => {
-                let bytes = std::fs::read(&host)
+                let bytes = crate::observed_fs::read(&host)
                     .map_err(|error| format!("failed to stat {path}: {error}"))?;
                 Ok(
                     sha2::Digest::finalize(<sha2::Sha256 as sha2::Digest>::new_with_prefix(&bytes))
@@ -2611,13 +2614,15 @@ impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
             return Err(reason);
         }
         let host = self.host_path(path)?;
-        let names = std::fs::read_dir(&host)
-            .and_then(|entries| {
-                entries
-                    .map(|entry| entry.map(|entry| entry.file_name().as_bytes().to_vec()))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(|error| format!("failed to list {path}: {error}"))?;
+        let names =
+            crate::observed_fs::read_dir_projected(&host, &crate::observed_fs::Projection::All)
+                .and_then(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|entry| entry.map(|entry| entry.file_name().as_bytes().to_vec()))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(|error| format!("failed to list {path}: {error}"))?;
         Ok(crate::lockfile_extensions::dirents_marker_value(&names))
     }
 

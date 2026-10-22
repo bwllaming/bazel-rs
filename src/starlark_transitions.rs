@@ -1102,7 +1102,7 @@ fn implementation_site(def: &TransitionDef, repositories: &RepositorySet) -> (St
         return fallback();
     };
     let path = root.join(&label.package).join(&label.name);
-    let Ok(source) = std::fs::read_to_string(&path) else {
+    let Ok(source) = crate::observed_fs::read_to_string(&path) else {
         return fallback();
     };
     for (index, line) in source.lines().enumerate() {

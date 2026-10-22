@@ -412,6 +412,10 @@ fn run() -> Result<(), String> {
             .as_deref(),
         &allowed_yanked_flags,
     )?;
+    // The analysis-snapshot check point (PLAN-L2 §1a): everything above is
+    // bootstrap (part of the snapshot key); with BAZEL_RS_SNAPSHOT=record the
+    // recording window opens here and closes at the end of planning.
+    let mut snapshot_recording = bazel_rs::snapshot::record::start(&command, &rc_options.repo_env);
     let session = bazel_rs::registry_session::SessionHandle::new(
         bazel_rs::registry_session::RegistrySession::open(
             &root,
@@ -432,6 +436,9 @@ fn run() -> Result<(), String> {
         ),
     );
     resolver_options.registry_session = session.clone();
+    if let Some(recording) = &mut snapshot_recording {
+        recording.set_registry_session(session.clone());
+    }
     let _lockfile_writer = LockfileWriter(session);
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
@@ -542,6 +549,8 @@ fn run() -> Result<(), String> {
         bazel_rs::perf_mark("select.start");
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
         bazel_rs::perf_mark("select.end");
+        // A query's planning is its loading.
+        bazel_rs::observed_fs::close_window();
         bazel_rs::repository_store::timing::report(loading_threads_for_report(
             &command,
             loading_phase_threads,
@@ -571,10 +580,14 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("I/O error: {e}"))?;
         if outcome.exit_code != 0 {
             bazel_rs::loading::module_timings::report();
+            drop(snapshot_recording);
             bazel_rs::digest_memo::finish();
             std::process::exit(outcome.exit_code);
         }
         bazel_rs::memory_limit::report_peak(memory_limit_mb);
+        if let Some(recording) = snapshot_recording {
+            recording.finish();
+        }
         return Ok(());
     }
     if command == "test" {
@@ -589,6 +602,7 @@ fn run() -> Result<(), String> {
             options: &test_options,
             remote_enabled,
             lockfile_gate: &lockfile_gate,
+            snapshot: snapshot_recording,
         });
     }
     bazel_rs::perf_mark("select.start");
@@ -623,6 +637,7 @@ fn run() -> Result<(), String> {
             options: &run_options,
             remote_enabled,
             test: &test_options,
+            snapshot: snapshot_recording,
         });
     }
     let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
@@ -641,6 +656,9 @@ fn run() -> Result<(), String> {
     }
     for error in engine.take_errors() {
         eprintln!("ERROR: {error}");
+        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
+            format!("analysis error: {error}")
+        });
     }
     let summary = result?;
     let non_empty_targets = summary.non_empty_targets;
@@ -696,6 +714,9 @@ fn run() -> Result<(), String> {
         );
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
+    if let Some(recording) = snapshot_recording {
+        recording.finish();
+    }
     Ok(())
 }
 
@@ -762,6 +783,8 @@ struct RunContext<'a> {
     options: &'a bazel_rs::run_command::RunOptions,
     remote_enabled: bool,
     test: &'a bazel_rs::test_command::TestOptions,
+    /// BAZEL_RS_SNAPSHOT=record: reported once the build part ends.
+    snapshot: Option<bazel_rs::snapshot::record::Session>,
 }
 
 /// `run` (runtime/commands/RunCommand.java:250-391): build exactly one
@@ -784,6 +807,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         options,
         remote_enabled,
         test,
+        snapshot,
     } = context;
     // validateTargets (RunCommand.java:1052-1111).
     if labels.len() > 1 {
@@ -820,6 +844,16 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     for error in engine.take_errors() {
         eprintln!("ERROR: {error}");
+        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
+            format!("analysis error: {error}")
+        });
+    }
+    // The build part is the snapshot's scope (the run itself replaces this
+    // process).
+    if let Some(recording) = snapshot
+        && result.is_ok()
+    {
+        recording.finish();
     }
     let (summary, target) = result?;
     for (label, output) in &summary.outputs {
@@ -1004,6 +1038,8 @@ struct TestContext<'a> {
     remote_enabled: bool,
     /// Opens the lockfile write once test-target loading succeeded.
     lockfile_gate: &'a LockfileGate,
+    /// BAZEL_RS_SNAPSHOT=record: reported once the build part ends.
+    snapshot: Option<bazel_rs::snapshot::record::Session>,
 }
 
 /// Label.print: `//pkg:name` or `@@repo//pkg:name`.
@@ -1080,6 +1116,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         options,
         remote_enabled,
         lockfile_gate,
+        snapshot,
     } = context;
     let selected = engine.select_for_test(patterns, relative_directory);
     for warning in engine.take_warnings() {
@@ -1113,6 +1150,18 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     }
     for error in engine.take_errors() {
         eprintln!("ERROR: {error}");
+        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
+            format!("analysis error: {error}")
+        });
+    }
+    // The build part is the snapshot's scope (test results are execution
+    // outcomes; the test runner exits the process).
+    if let Some(recording) = snapshot {
+        if result.is_ok() {
+            recording.finish();
+        } else {
+            drop(recording);
+        }
     }
     let (summary, targets) = match result {
         Ok(built) => built,

@@ -95,7 +95,7 @@ impl Registry {
                 if !no_symlinks(root)? {
                     return Ok(None);
                 }
-                let metadata = std::fs::metadata(root).map_err(|e| {
+                let metadata = crate::observed_fs::metadata(root).map_err(|e| {
                     format!("cannot inspect local registry {}: {e}", root.display())
                 })?;
                 if !metadata.is_dir() {
@@ -268,7 +268,7 @@ fn no_symlinks(path: &Path) -> Result<bool, String> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
-        match std::fs::symlink_metadata(&current) {
+        match crate::observed_fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(format!(
                     "symlink registry paths are unsupported: {}",
@@ -288,15 +288,30 @@ fn no_symlinks(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// A local registry file's bytes (`open_local` then `read_all`, recorded
+/// for the analysis snapshot through crate::observed_fs).
 fn read_local(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    open_local(path)?.map(read_all).transpose()
-}
-
-fn open_local(path: &Path) -> Result<Option<std::fs::File>, String> {
-    if !no_symlinks(path)? {
+    if !local_regular_file(path)? {
         return Ok(None);
     }
-    let metadata = std::fs::metadata(path)
+    match crate::observed_fs::read_staged(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(crate::observed_fs::ReadError::Open(error)) => {
+            Err(format!("cannot read {}: {error}", path.display()))
+        }
+        Err(crate::observed_fs::ReadError::Read(_)) => {
+            Err("cannot read complete resource body".to_owned())
+        }
+    }
+}
+
+/// `Ok(false)` when a path component is missing; an error unless every
+/// component is a non-symlink and the path a regular file.
+fn local_regular_file(path: &Path) -> Result<bool, String> {
+    if !no_symlinks(path)? {
+        return Ok(false);
+    }
+    let metadata = crate::observed_fs::metadata(path)
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
     if !metadata.is_file() {
         return Err(format!(
@@ -304,6 +319,14 @@ fn open_local(path: &Path) -> Result<Option<std::fs::File>, String> {
             path.display()
         ));
     }
+    Ok(true)
+}
+
+fn open_local(path: &Path) -> Result<Option<std::fs::File>, String> {
+    if !local_regular_file(path)? {
+        return Ok(None);
+    }
+    // snapshot-unrecorded: a file:// archive download (download_to), which taints the run.
     std::fs::File::open(path)
         .map(Some)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))
@@ -368,6 +391,7 @@ fn open_http_with(
     client: &Client,
     url: Url,
 ) -> Result<Option<reqwest::blocking::Response>, String> {
+    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || url.to_string());
     crate::download_proxy::check(&url)?;
     // Credential helper headers for the requested URL (DownloadManager
     // credentialFactory, bazel/BazelRepositoryModule.java:446-477; N41).
@@ -428,6 +452,9 @@ fn read_all(mut reader: impl Read) -> Result<Vec<u8>, String> {
 /// permitted for source URLs, but credentials are not. Returns the size.
 pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
     validate_download_url(url)?;
+    crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
+        format!("download {url}")
+    });
     let reader: Option<Box<dyn Read>> = if url.starts_with("file://") {
         open_local(&file_path(url)?)?.map(|file| Box::new(file) as Box<dyn Read>)
     } else {

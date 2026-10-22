@@ -12,6 +12,7 @@
 //! symlink components, so downstream input readers keep their no-symlink
 //! checks. Concurrent hostile mutation of the tree is outside this model.
 
+use crate::observed_fs;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fs;
@@ -149,7 +150,7 @@ pub fn resolve_with_policy(
     if policy.host_reads
         && let Resolution::Resolved(path) = &resolution
     {
-        let start = fs::canonicalize(root)
+        let start = observed_fs::canonicalize(root)
             .map_err(|e| format!("cannot resolve repository root {}: {e}", root.display()))?;
         if !policy.permits(&start, path) {
             return Err(format!(
@@ -189,7 +190,7 @@ fn resolve_across_inner(
     host_reads: bool,
 ) -> Result<Resolution, String> {
     let shown = relative.display();
-    let start_root = fs::canonicalize(root)
+    let start_root = observed_fs::canonicalize(root)
         .map_err(|e| format!("cannot resolve repository root {}: {e}", root.display()))?;
     if relative
         .components()
@@ -199,7 +200,7 @@ fn resolve_across_inner(
     }
     let mut candidates: Vec<PathBuf> = others
         .iter()
-        .filter_map(|(_, path)| fs::canonicalize(path).ok())
+        .filter_map(|(_, path)| observed_fs::canonicalize(path).ok())
         .collect();
     if !others.is_empty() {
         // The starting repository is materialized too.
@@ -207,7 +208,7 @@ fn resolve_across_inner(
     }
     let blocked: Vec<PathBuf> = blocked
         .iter()
-        .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        .map(|path| observed_fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
         .collect();
     // Longest-prefix root containing `path` (lexically absolute).
     let owner = |path: &Path| -> Option<PathBuf> {
@@ -224,6 +225,9 @@ fn resolve_across_inner(
         }
         Some(found.clone())
     };
+    // A hop out of the starting repository taints the analysis snapshot:
+    // which roots are materialized depends on the run (PLAN-L2 §1b).
+    let origin = start_root.clone();
     let mut root = start_root;
     let mut pending = VecDeque::new();
     push_front(&mut pending, relative);
@@ -243,13 +247,25 @@ fn resolve_across_inner(
                   resolved: &mut Vec<OsString>,
                   pending: &mut VecDeque<OsString>|
      -> bool {
-        let Some(next) = owner(&absolute).or_else(|| {
+        let owned = owner(&absolute);
+        let host = owned.is_none();
+        let Some(next) = owned.or_else(|| {
             // Host reads continue physically from the filesystem root; the
             // caller rejects a final path inside a blocked prefix.
             host_reads.then(|| PathBuf::from("/"))
         }) else {
             return false;
         };
+        if next != origin {
+            observed_fs::taint(
+                if host {
+                    observed_fs::Taint::HostSymlink
+                } else {
+                    observed_fs::Taint::CrossRepositorySymlink
+                },
+                || format!("{shown} in {} -> {}", origin.display(), absolute.display()),
+            );
+        }
         let inside = absolute
             .strip_prefix(&next)
             .expect("owner contains path")
@@ -277,7 +293,7 @@ fn resolve_across_inner(
                 if !reroot(absolute.clone(), &mut root, &mut resolved, &mut pending) {
                     // Bazel reports a missing target as a missing file; only an
                     // existing outside target is the native restriction.
-                    if fs::metadata(&absolute).is_err() {
+                    if observed_fs::metadata(&absolute).is_err() {
                         return Ok(Resolution::Missing(absolute));
                     }
                     return Err(format!(
@@ -290,7 +306,7 @@ fn resolve_across_inner(
         }
         resolved.push(part);
         let path = current(&root, &resolved);
-        let metadata = match fs::symlink_metadata(&path) {
+        let metadata = match observed_fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error)
                 if error.kind() == io::ErrorKind::NotFound
@@ -314,7 +330,7 @@ fn resolve_across_inner(
                     "source symlink path {shown} exceeds {MAX_LINK_HOPS} symlink hops (cycle?)"
                 ));
             }
-            let target = fs::read_link(&path)
+            let target = observed_fs::read_link(&path)
                 .map_err(|e| format!("cannot read source symlink {}: {e}", path.display()))?;
             resolved.pop();
             if target.is_absolute() {
@@ -341,7 +357,7 @@ fn resolve_across_inner(
                         absolute.join(&rest)
                     };
                     if !reroot(joined.clone(), &mut root, &mut resolved, &mut pending) {
-                        if fs::metadata(&joined).is_err() {
+                        if observed_fs::metadata(&joined).is_err() {
                             return Ok(Resolution::Missing(joined));
                         }
                         return Err(format!(
@@ -497,7 +513,7 @@ impl FileValues {
                     path.display()
                 )));
             }
-            let target = fs::read_link(&real).map_err(|error| {
+            let target = observed_fs::read_link(&real).map_err(|error| {
                 SymlinkIssue::Io(format!("cannot read symlink {}: {error}", real.display()))
             })?;
             let base = if target.is_absolute() {
@@ -549,7 +565,7 @@ impl FileValues {
 }
 
 fn lstat(path: &Path) -> Result<Option<fs::Metadata>, SymlinkIssue> {
-    match fs::symlink_metadata(path) {
+    match observed_fs::symlink_metadata(path) {
         Ok(metadata) => Ok(Some(metadata)),
         Err(error)
             if error.kind() == io::ErrorKind::NotFound

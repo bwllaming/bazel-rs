@@ -454,7 +454,7 @@ pub(crate) fn evaluate_with_builtins(
     context: EvaluationContext,
     injection: BuiltinInjection,
 ) -> Result<ModuleFile, String> {
-    let source = std::fs::read_to_string(path)
+    let source = crate::observed_fs::read_to_string(path)
         .map_err(|e| format!("cannot read MODULE file {}: {e}", path.display()))?;
     evaluate_source_with_builtins(&path.to_string_lossy(), source, context, injection)
 }

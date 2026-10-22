@@ -218,8 +218,18 @@ pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
         && fs::read(&manifest_path).is_ok_and(|bytes| bytes == MANIFEST)
         && verified_warm(&destination, &bundle.manifest)
     {
+        // REPO + INTEGRITY records of the analysis snapshot.
+        crate::observed_fs::repository_tree(
+            "builtin",
+            "bazel_tools",
+            &destination,
+            Some(&manifest_path),
+        );
         return Ok(destination);
     }
+    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryMaterialized, || {
+        "embedded @bazel_tools".to_owned()
+    });
     let staging = stage_tree(&trees, ARCHIVE, &bundle.manifest)?;
     remove_cache_entry(&destination)?;
     fs::rename(staging.path(), &destination)

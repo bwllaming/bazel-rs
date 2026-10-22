@@ -12,7 +12,6 @@ use starlark::syntax::{AstModule, Dialect};
 use starlark::values::{FrozenHeapName, OwnedFrozenValue};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1382,7 +1381,7 @@ impl<'a> Loader<'a> {
         let timing_path = std::time::Instant::now();
         let path = self.source_path(label)?;
         let timing_read = std::time::Instant::now();
-        let bytes = fs::read(&path)
+        let bytes = crate::observed_fs::read(&path)
             .map_err(|e| format!("cannot read {label} ({}): {e}", path.display()))?;
         let timing_parse = std::time::Instant::now();
         let source = std::str::from_utf8(&bytes)
@@ -1662,7 +1661,7 @@ impl<'a> Loader<'a> {
             let inspect = |e: std::io::Error| {
                 format!("cannot inspect load {label} ({}): {e}", path.display())
             };
-            let mut metadata = match fs::symlink_metadata(&path) {
+            let mut metadata = match crate::observed_fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(e)
                     if e.kind() == std::io::ErrorKind::NotFound
@@ -1684,7 +1683,7 @@ impl<'a> Loader<'a> {
                         return Err(no_such_file());
                     }
                     Ok(crate::source_links::Resolution::Resolved(resolved)) => {
-                        metadata = fs::metadata(&resolved).map_err(inspect)?;
+                        metadata = crate::observed_fs::metadata(&resolved).map_err(inspect)?;
                         linked = Some(resolved);
                     }
                 }
@@ -1716,7 +1715,7 @@ impl<'a> Loader<'a> {
                 };
                 for name in names {
                     let build = path.join(name);
-                    match fs::metadata(&build) {
+                    match crate::observed_fs::metadata(&build) {
                         Ok(metadata) if metadata.is_file() => {
                             return Err(format!(
                                 "load {label} crosses a subpackage boundary at {}; use that package's label",
@@ -1873,6 +1872,7 @@ mod tests {
     use super::*;
     use starlark::environment::{GlobalsBuilder, LibraryExtension};
     use starlark::starlark_module;
+    use std::fs;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);

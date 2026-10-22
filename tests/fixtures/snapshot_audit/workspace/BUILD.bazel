@@ -1,0 +1,18 @@
+load("//tools:defs.bzl", "concat", "text_files")
+
+text_files(name = "texts")
+
+concat(
+    name = "joined",
+    srcs = [":texts", "//pkg:sources"],
+    out = "joined.txt",
+)
+
+exports_files(["input.txt", "link.txt"])
+
+genrule(
+    name = "upper",
+    srcs = ["link.txt"],
+    outs = ["upper.txt"],
+    cmd = "tr '[:lower:]' '[:upper:]' < $< > $@",
+)

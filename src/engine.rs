@@ -1267,6 +1267,7 @@ type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 /// One JSON object per planned action (`--native-action-dump`).
 fn dump_actions(nodes: &[scheduler::PlannedAction], path: &Path) -> std::io::Result<()> {
     use std::io::Write;
+    // snapshot-unrecorded: --native-action-dump output (a write).
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -2162,7 +2163,7 @@ impl Engine {
                 relative.push('/');
             }
             relative.push_str(component);
-            match std::fs::symlink_metadata(&directory) {
+            match crate::observed_fs::symlink_metadata(&directory) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(format!(
                         "output {out} has an unsupported symlink source-tree parent {}",
@@ -2186,7 +2187,8 @@ impl Engine {
             // So is an invalid package name (PackageLookupFunction.java:91-96).
             let subpackage = ignored.matching_entry(&relative).is_none()
                 && crate::label::is_valid_package_name(&relative)
-                && (directory.join("BUILD.bazel").is_file() || directory.join("BUILD").is_file());
+                && (crate::observed_fs::is_file(directory.join("BUILD.bazel"))
+                    || crate::observed_fs::is_file(directory.join("BUILD")));
             // No nested repositories in Bazel 9.3
             // (LocalRepositoryLookupFunction.java:27-35).
             if subpackage {
@@ -2329,7 +2331,7 @@ impl Engine {
                 relative.push('/');
             }
             relative.push_str(&component.as_os_str().to_string_lossy());
-            let metadata = match std::fs::symlink_metadata(&path) {
+            let metadata = match crate::observed_fs::symlink_metadata(&path) {
                 Ok(metadata) => metadata,
                 // A declared (assumed) input file is a target whether or not
                 // the file exists (Package.java:893-920); a missing file only
@@ -2350,7 +2352,8 @@ impl Engine {
             if i + 1 < parts.len()
                 && ignored.matching_entry(&relative).is_none()
                 && crate::label::is_valid_package_name(&relative)
-                && (path.join("BUILD.bazel").is_file() || path.join("BUILD").is_file())
+                && (crate::observed_fs::is_file(path.join("BUILD.bazel"))
+                    || crate::observed_fs::is_file(path.join("BUILD")))
             {
                 return Err(format!(
                     "{label} crosses a package boundary at {}",
@@ -2379,14 +2382,14 @@ impl Engine {
         // A source directory is an input file target too, matched by name
         // like any file (Package.java:893-920, RuleContext.java:1865); only
         // its use as an action input or requested output is not modelled.
-        if path.is_dir() {
+        if crate::observed_fs::is_dir(&path) {
             self.source_directories
                 .entry(path.clone())
                 .or_default()
                 .insert(label.clone());
             return Ok((path, !linked));
         }
-        if !path.is_file() {
+        if !crate::observed_fs::is_file(&path) {
             return Err(format!("source is not a regular file: {label}"));
         }
         Ok((path, !linked))
@@ -2420,12 +2423,12 @@ impl Engine {
         };
         let suggestion = if label.name == "*" {
             String::new()
-        } else if candidate.is_dir() {
+        } else if crate::observed_fs::is_dir(&candidate) {
             format!(
                 "; however, a source directory of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}, or define a filegroup?)",
                 label.name
             )
-        } else if candidate.exists() {
+        } else if crate::observed_fs::exists(&candidate) {
             format!(
                 "; however, a source file of this name exists.  (Perhaps add 'exports_files([\"{}\"])' to {relative_build}?)",
                 label.name
@@ -2601,7 +2604,7 @@ impl Engine {
                     .map_err(Loading)?
                     .to_path_buf();
                 let skip = self.repositories.link_policy(&context.repository).blocked;
-                let packages = if root.join(&context.package).is_dir() {
+                let packages = if crate::observed_fs::is_dir(root.join(&context.package)) {
                     let discovered = workspace::discover_packages_skipping(
                         &root,
                         &context.package,
@@ -4669,15 +4672,17 @@ impl Engine {
             ))
         };
         Ok(match self.target(actual)? {
-            Target::Source(path) if std::fs::symlink_metadata(&path).is_err() => Some(format!(
-                "{} '{}' does not exist",
-                if actual.name.contains('.') {
-                    "target"
-                } else {
-                    "rule"
-                },
-                crate::rule_declarations::canonical_form(actual)
-            )),
+            Target::Source(path) if crate::observed_fs::symlink_metadata(&path).is_err() => {
+                Some(format!(
+                    "{} '{}' does not exist",
+                    if actual.name.contains('.') {
+                        "target"
+                    } else {
+                        "rule"
+                    },
+                    crate::rule_declarations::canonical_form(actual)
+                ))
+            }
             Target::Source(_) => misplaced("source file"),
             Target::Output(..) => misplaced("generated file"),
             Target::Rule(_) => None,
@@ -4797,7 +4802,9 @@ impl Engine {
         let kind = match self.target(actual)? {
             Target::Rule(_) => return Ok(Vec::new()),
             Target::Source(path) => {
-                if !allowed.matches(&actual.name) && std::fs::symlink_metadata(&path).is_err() {
+                if !allowed.matches(&actual.name)
+                    && crate::observed_fs::symlink_metadata(&path).is_err()
+                {
                     None
                 } else {
                     Some("source file")
@@ -6250,7 +6257,7 @@ impl Engine {
                     .root(&context.repository)
                     .map_err(invalid)?
                     .to_path_buf();
-                let mut packages = if root.join(&context.package).is_dir() {
+                let mut packages = if crate::observed_fs::is_dir(root.join(&context.package)) {
                     workspace::discover_packages_skipping(
                         &root,
                         &context.package,
@@ -10895,7 +10902,7 @@ impl Engine {
         let missing = |real: &Path| {
             missing_sources
                 .get(real)
-                .filter(|_| std::fs::symlink_metadata(real).is_err())
+                .filter(|_| crate::observed_fs::symlink_metadata(real).is_err())
                 .map(crate::rule_declarations::canonical_form)
         };
         // Bazel accepts source directories as inputs with unsound change
@@ -10905,7 +10912,7 @@ impl Engine {
         let directory = |real: &Path| -> Vec<String> {
             directories
                 .get(real)
-                .filter(|_| real.is_dir())
+                .filter(|_| crate::observed_fs::is_dir(real))
                 .into_iter()
                 .flatten()
                 .map(crate::rule_declarations::canonical_form)
