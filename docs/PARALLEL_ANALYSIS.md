@@ -7,7 +7,9 @@ in a later session after the parent reviews P1.
 
 ## P0 — baseline (`BAZEL_RS_TIMING` phase marks)
 
-`BAZEL_RS_TIMING=1` prints `PERF <elapsed>s rss=<kB> <mark>` on stderr.
+`BAZEL_RS_TIMING=1` prints `PERF <elapsed>s rss=<kB> <mark>` on stderr
+(since W0-A followed by ` hwm=<kB>kB`, the peak RSS so far; see
+docs/PERF_LAYER1.md).
 Marks: `main.start`, `select.start`/`select.end` (pattern expansion and,
 for query, the whole evaluation), `plan.start`, `plan.phase1_analysis_done`,
 `plan.phase2_actions_done` (implementations and action planning, including

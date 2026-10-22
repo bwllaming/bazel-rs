@@ -26,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+mod alloc_report;
 pub mod query;
 mod query_attrs;
 
@@ -80,6 +81,9 @@ impl Artifact {
     /// The File of an artifact at `exec` (the algorithm `file()` ran on
     /// every call before W1a).
     fn compute_file(exec_path: &Path, generated: bool, owner: &str, directory: bool) -> File {
+        // W0-A work counter: one File computed (label parsing dominates it;
+        // since W1a once per Artifact, `file()` only clones the cache).
+        crate::plan_timings::note_artifact_file();
         // A generated file is relative to its configuration's output root.
         let exec = exec_path.to_string_lossy();
         let generated_root = if generated {
@@ -7886,6 +7890,8 @@ impl Engine {
     ) -> Result<DependencyTarget, String> {
         let key = ConfiguredTargetKey::new(label.clone(), edge_config);
         if let Some(view) = views.get(&key).cloned() {
+            // W0-A view counters: the W1a memo answered, nothing was built.
+            crate::plan_timings::note_dependency_view(&(label, edge_config), false);
             if verify_views() {
                 let rebuilt = self.dependency_view(
                     configured,
@@ -7905,6 +7911,7 @@ impl Engine {
             }
             return Ok(view);
         }
+        crate::plan_timings::note_dependency_view(&(label, edge_config), true);
         let view = self.dependency_view(
             configured,
             dry,
@@ -10150,7 +10157,9 @@ impl Engine {
         // driven inside phase 1, whose targets time identically; the
         // span starts at the first plan_targets entry either way.
         crate::plan_timings::note_span_start();
+        let before = state.done;
         let result = self.plan_targets_timed(state, plan, configured);
+        crate::plan_timings::record_batch(outer, state.done.saturating_sub(before) as u64);
         if outer {
             crate::plan_timings::record_span();
         }
@@ -10432,6 +10441,8 @@ impl Engine {
             }
             crate::plan_timings::report(&labels, &edges);
         }
+        // W0-A: retained-memory breakdown (BAZEL_RS_TIMING_ALLOC=1 only).
+        alloc_report::report_if_enabled(self, &state, &plan, &configured);
         // N58: the top-level aspects of `--aspects` (and the appended
         // ValidateTarget of `--experimental_use_validation_aspect`) applied
         // to each requested target (ToplevelStarlarkAspectFunction): the

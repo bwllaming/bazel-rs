@@ -129,10 +129,14 @@ pub mod workspace;
 pub mod workspace_status;
 
 /// Phase timestamps for the parallel-analysis baseline and gate
-/// (`BAZEL_RS_TIMING=1`): elapsed wall time and VmRSS at each mark, on
-/// stderr, prefixed `PERF`. Loading and the two planning phases are marked
-/// so their share of analysis wall time is measurable end to end
-/// (docs/artifacts PARALLEL_ANALYSIS.md).
+/// (`BAZEL_RS_TIMING=1`): elapsed wall time, VmRSS and the peak RSS so far
+/// (VmHWM) at each mark, on stderr, prefixed `PERF`. Loading and the two
+/// planning phases are marked so their share of analysis wall time is
+/// measurable end to end (docs/PARALLEL_ANALYSIS.md, docs/PERF_LAYER1.md).
+///
+/// Line shape: `PERF <t>s rss=<kB>kB <mark> hwm=<kB>kB`. The peak is
+/// appended after the mark name so parsers of the original
+/// `PERF <t>s rss=<kB>kB <mark>` prefix keep working unchanged.
 pub fn perf_mark(name: &str) {
     use std::sync::OnceLock;
     // The end of planning (build, test and run all mark it right after
@@ -144,18 +148,37 @@ pub fn perf_mark(name: &str) {
     static START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
-        let rss = std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .map(|l| l.split_whitespace().nth(1).unwrap_or("").to_owned())
-            })
-            .unwrap_or_default();
-        eprintln!(
-            "PERF {:>9.3}s rss={}kB {name}",
-            start.elapsed().as_secs_f64(),
-            rss
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let (rss, hwm) = (
+            proc_status_kb(&status, "VmRSS:"),
+            proc_status_kb(&status, "VmHWM:"),
         );
+        eprintln!(
+            "PERF {:>9.3}s rss={}kB {name} hwm={}kB",
+            start.elapsed().as_secs_f64(),
+            rss,
+            hwm
+        );
+    }
+}
+
+/// The value column of one `/proc/self/status` field (`VmRSS:`, `VmHWM:`),
+/// in kB as the kernel prints it; empty when absent (non-Linux).
+pub(crate) fn proc_status_kb<'a>(status: &'a str, field: &str) -> &'a str {
+    status
+        .lines()
+        .find(|line| line.starts_with(field))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("")
+}
+
+#[cfg(test)]
+mod perf_mark_tests {
+    #[test]
+    fn proc_status_fields_are_read_by_name() {
+        let status = "Name:\tbazel-rs\nVmHWM:\t  204800 kB\nVmRSS:\t  102400 kB\n";
+        assert_eq!(super::proc_status_kb(status, "VmRSS:"), "102400");
+        assert_eq!(super::proc_status_kb(status, "VmHWM:"), "204800");
+        assert_eq!(super::proc_status_kb(status, "VmSwap:"), "");
     }
 }

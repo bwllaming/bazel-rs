@@ -16,8 +16,16 @@
 //! distinct class), and the accumulator is a single mutexed `Vec` —
 //! phase 2 is sequential today, so contention is nil, and the shape
 //! already tolerates P3 workers appending concurrently.
+//!
+//! W0-A (docs/PERF_LAYER1.md) adds three work counters to the same
+//! report, under the same switch: the batch sizes of the phase-1
+//! `plan_pending` flushes (`PERF-STAGE flush-batch`), and dependency-view
+//! requests vs. constructions vs. distinct view keys plus the number of
+//! `Artifact::file` conversions (`PERF-STAGE views`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
@@ -86,7 +94,22 @@ struct State {
     /// Wall span of the outermost `plan_targets` call (first entry to its
     /// return), microseconds; nested `plan_pending` flushes are inside it.
     span_us: Option<u64>,
+    /// W0-A: targets planned by each phase-1 `plan_pending` flush, in
+    /// flush order (`record_batch`).
+    flush_batches: Vec<u64>,
+    /// W0-A: targets planned by the phase-2 (outer) `plan_targets` call.
+    phase2_batch: u64,
+    /// W0-A: distinct dependency-view keys requested (hashes of the
+    /// (label, edge configuration) pair; `note_dependency_view`).
+    view_keys: HashSet<u64>,
 }
+
+/// W0-A counters (relaxed atomics, bumped only when enabled): dependency
+/// views requested (one per edge), views actually built, and
+/// `Artifact::file` conversions.
+static VIEW_EDGES: AtomicU64 = AtomicU64::new(0);
+static VIEW_CONSTRUCTIONS: AtomicU64 = AtomicU64::new(0);
+static ARTIFACT_FILES: AtomicU64 = AtomicU64::new(0);
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 
@@ -202,6 +225,86 @@ pub fn record_span() {
     });
 }
 
+/// W0-A: the number of targets one `plan_targets` call planned. `outer`
+/// is the phase-2 call of `plan_build`; every other call is a phase-1
+/// `plan_pending` flush (a `config_setting` with Starlark `flag_values`
+/// keys), whose batch sizes bound how much work a parallel compute (P3)
+/// could overlap (docs/PERF_LAYER1.md).
+pub fn record_batch(outer: bool, targets: u64) {
+    if !enabled() {
+        return;
+    }
+    with_state(|state| {
+        if outer {
+            state.phase2_batch += targets;
+        } else {
+            state.flush_batches.push(targets);
+        }
+    });
+}
+
+/// W0-A: one dependency-view request (`Engine::plan_dependency_view`,
+/// one per dependency edge of a planned target or aspect application),
+/// keyed by what a view memo would key it by (the requested label and the
+/// edge configuration). `constructed` is false when a memo answered the
+/// request without building the view (W1a); today every request builds.
+/// The report compares edges, constructions and distinct keys.
+pub fn note_dependency_view<K: Hash + ?Sized>(key: &K, constructed: bool) {
+    if !enabled() {
+        return;
+    }
+    VIEW_EDGES.fetch_add(1, Ordering::Relaxed);
+    if constructed {
+        VIEW_CONSTRUCTIONS.fetch_add(1, Ordering::Relaxed);
+    }
+    // A fixed-key SipHash: the distinct count needs only a stable hash
+    // per process (a 64-bit collision merely undercounts by one).
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    let hash = hasher.finish();
+    with_state(|state| {
+        state.view_keys.insert(hash);
+    });
+}
+
+/// W0-A: one `Artifact::file` conversion (a File value rebuilt from an
+/// artifact, R3: label parsing dominates it). One relaxed increment when
+/// enabled; one atomic load otherwise.
+pub fn note_artifact_file() {
+    if enabled() {
+        ARTIFACT_FILES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Nearest-rank percentile (`pct` in 0..=100) of an ascending slice; 0
+/// for an empty one. The median is `percentile(sorted, 50)` (the lower
+/// middle element for an even count).
+pub fn percentile(sorted: &[u64], pct: u64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (pct.min(100) as usize * sorted.len()).div_ceil(100).max(1);
+    sorted[rank - 1]
+}
+
+/// The `PERF-STAGE flush-batch` line for the given per-flush target counts
+/// (flush order) and the phase-2 batch. Pure: unit-tested.
+pub fn flush_batch_line(batches: &[u64], phase2: u64) -> String {
+    let mut sorted = batches.to_vec();
+    sorted.sort_unstable();
+    format!(
+        "PERF-STAGE flush-batch flushes={} planned={} empty={} min={} median={} p90={} max={} phase2={}",
+        sorted.len(),
+        sorted.iter().sum::<u64>(),
+        sorted.iter().filter(|batch| **batch == 0).count(),
+        sorted.first().copied().unwrap_or(0),
+        percentile(&sorted, 50),
+        percentile(&sorted, 90),
+        sorted.last().copied().unwrap_or(0),
+        phase2
+    )
+}
+
 /// Longest dependency-chain sum of per-target compute times (µs) over
 /// `edges` (target -> its dependencies, by plan index), plus the chain
 /// itself (dependency-first). Pure: unit-tested without an engine.
@@ -270,13 +373,16 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
     if !enabled() || REPORTED.set(()).is_err() {
         return;
     }
-    let (records, classes, span_us) = {
+    let (records, classes, span_us, flush_batches, phase2_batch, view_keys) = {
         let mut binding = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
         let state = binding.get_or_insert_with(State::default);
         (
             std::mem::take(&mut state.records),
             std::mem::take(&mut state.classes),
             state.span_us.take(),
+            std::mem::take(&mut state.flush_batches),
+            std::mem::take(&mut state.phase2_batch),
+            std::mem::take(&mut state.view_keys).len(),
         )
     };
     let class_name = |id: u32| -> &str {
@@ -357,6 +463,16 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
         "PERF-STAGE total plan_span {:.3}s covered={:.1}%",
         span_us as f64 / 1e6,
         coverage
+    );
+    // W0-A: phase-1 flush batch sizes (targets per plan_pending flush)
+    // and the dependency-view / Artifact::file work counters.
+    eprintln!("{}", flush_batch_line(&flush_batches, phase2_batch));
+    eprintln!(
+        "PERF-STAGE views edges={} constructed={} distinct={} artifact_file={}",
+        VIEW_EDGES.load(Ordering::Relaxed),
+        VIEW_CONSTRUCTIONS.load(Ordering::Relaxed),
+        view_keys,
+        ARTIFACT_FILES.load(Ordering::Relaxed)
     );
     // Per-rule-class stage totals, ranked by total time (top 15).
     let mut ranked: Vec<(u32, [u64; 3])> = class_totals.into_iter().collect();
@@ -467,6 +583,34 @@ mod tests {
             assert_eq!(stages.first(), Some(&PlanStage::Prepare));
             assert_eq!(stages.last(), Some(&PlanStage::Commit));
         }
+    }
+
+    #[test]
+    fn percentile_is_nearest_rank() {
+        assert_eq!(percentile(&[], 50), 0);
+        assert_eq!(percentile(&[7], 0), 7);
+        assert_eq!(percentile(&[7], 100), 7);
+        let sorted: Vec<u64> = (1..=10).collect();
+        assert_eq!(percentile(&sorted, 50), 5);
+        assert_eq!(percentile(&sorted, 90), 9);
+        assert_eq!(percentile(&sorted, 91), 10);
+        assert_eq!(percentile(&sorted, 100), 10);
+        assert_eq!(percentile(&sorted, 0), 1);
+        // Odd count: the true middle.
+        assert_eq!(percentile(&[1, 2, 3], 50), 2);
+    }
+
+    #[test]
+    fn flush_batch_line_summarizes_unsorted_batches() {
+        let line = flush_batch_line(&[3, 0, 40, 8, 1], 1200);
+        assert_eq!(
+            line,
+            "PERF-STAGE flush-batch flushes=5 planned=52 empty=1 min=0 median=3 p90=40 max=40 phase2=1200"
+        );
+        assert_eq!(
+            flush_batch_line(&[], 7),
+            "PERF-STAGE flush-batch flushes=0 planned=0 empty=0 min=0 median=0 p90=0 max=0 phase2=7"
+        );
     }
 
     #[test]
