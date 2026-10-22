@@ -1,0 +1,215 @@
+{
+ "schema": "repo-cache-friendly-paths-receipt/v1",
+ "fixture": "repo_cache_friendly_paths/workspace",
+ "purpose": "Recorded-input paths of repository rules and module extensions are RepoCacheFriendlyPath keys (RepoRecordedInput.java:325-405, toRepoCacheFriendlyPath StarlarkBaseExternalContext.java:1656-1704), never host paths into the native repository store: byte-for-byte genuine keys, cache-location-independent identities, and a reader re-fetched when the repository it read changes.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "--batch --ignore_all_rc_files --output_user_root=<private per case>"
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "MODULE.bazel": "50aa0097a40572d2e2315257a60e3a2f2a4b239ab03e46249a0a943a590a0a60",
+  "data.bzl": "a254722e99bf4ec6600aba7eb25cf7cdc66098cb747a37e95e335be606848dcc",
+  "defs.bzl": "184bf3581b104daca71c10cff94f5cbb27f56d1e0004b50361178ebd9e0ee3d0",
+  "ws.txt": "ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b"
+ },
+ "genuine_key_findings": [
+  "Repository rule @@+reader+reader (marker file external/@+reader+reader.marker): every path it read or watched in repository @data is keyed @@+data_repo+data//<path> \u2014 ctx.read(path), ctx.read(Label) (the label's file path, not the label), ctx.watch(missing path) ENOENT, path.readdir() (FILE ... DIR then DIRENTS), ctx.watch_tree (FILE ... DIR then DIRTREE), ctx.template(path) \u2014 and the workspace file @@//ws.txt; plus REPO_MAPPING:,data +data_repo+data.",
+  "Module extension //:defs.bzl%ext records the same keys in MODULE.bazel.lock recordedInputs.",
+  "After the data repository's rule changes tpl.txt (hello -> bye), @@+reader+reader is re-fetched: out.txt = 'bye x' (its FILE:@@+data_repo+data//tpl.txt digest changed)."
+ ],
+ "native": {
+  "before": {
+   "binary": "target/debug/bazel-rs (fe93cc1 recorded inputs, before review i20 item 4)",
+   "sha256": "8a98f0e144ee8f611d1a233a16e70804839d338f64f49f670c7f1f67b91b2f42",
+   "reader_recorded": {
+    "version": 1,
+    "templates": [
+     {
+      "source": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/tpl.txt",
+      "sha256": "bcfd0ecb645cbb65aaa52c407f04c627d19edbf8886fc7678d23aae80e6353e2"
+     }
+    ],
+    "files": [
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/file.txt",
+      "kind": "file",
+      "state": "file:6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+     },
+     {
+      "path": "@@+data_repo+data//:label.txt",
+      "kind": "file",
+      "state": "file:360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/missing.txt",
+      "kind": "file",
+      "state": "missing"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/dir",
+      "kind": "file",
+      "state": "directory"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/dir",
+      "kind": "dirents",
+      "state": "dirents:2db332c3c075c459832bd6c5a01cfa5bd1d1fc3c2a7ebd1fc1864c0861bfd51f"
+     },
+     {
+      "path": "@@//ws.txt",
+      "kind": "file",
+      "state": "file:ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/tree",
+      "kind": "file",
+      "state": "directory"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/tree",
+      "kind": "dirtree",
+      "state": "dirtree:feb16a7470bce2fedb6a8082baa01100fdaf274fb109d7bddf6696cd5e0f59fd"
+     },
+     {
+      "path": "/tmp/opencode/i20h-scratch/friendly-capture/cache-before/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/tpl.txt",
+      "kind": "file",
+      "state": "file:bcfd0ecb645cbb65aaa52c407f04c627d19edbf8886fc7678d23aae80e6353e2"
+     }
+    ]
+   },
+   "reader_out_txt": "hello x\n",
+   "reader_out_txt_after_data_change": "hello x\n",
+   "lockfile_recorded_inputs_equal_genuine": true,
+   "lockfile_off_cache_inside_vs_outside_workspace": {
+    "trees_equal": false,
+    "specs_equal": false,
+    "differing_trees": 4,
+    "differing_specs": 2
+   }
+  },
+  "after": {
+   "binary": "target/debug/bazel-rs (this change)",
+   "sha256": "d92a2c8c1dc341560cc0a2abc6ea6807e3f7c6db8cd3c3fde63aa30e34eacd19",
+   "reader_recorded": {
+    "version": 2,
+    "templates": [
+     {
+      "source": "@@+data_repo+data//tpl.txt",
+      "sha256": "bcfd0ecb645cbb65aaa52c407f04c627d19edbf8886fc7678d23aae80e6353e2"
+     }
+    ],
+    "files": [
+     {
+      "path": "@@+data_repo+data//file.txt",
+      "kind": "file",
+      "state": "file:6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f"
+     },
+     {
+      "path": "@@+data_repo+data//label.txt",
+      "kind": "file",
+      "state": "file:360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433"
+     },
+     {
+      "path": "@@+data_repo+data//missing.txt",
+      "kind": "file",
+      "state": "missing"
+     },
+     {
+      "path": "@@+data_repo+data//dir",
+      "kind": "file",
+      "state": "directory"
+     },
+     {
+      "path": "@@+data_repo+data//dir",
+      "kind": "dirents",
+      "state": "dirents:2db332c3c075c459832bd6c5a01cfa5bd1d1fc3c2a7ebd1fc1864c0861bfd51f"
+     },
+     {
+      "path": "@@//ws.txt",
+      "kind": "file",
+      "state": "file:ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b"
+     },
+     {
+      "path": "@@+data_repo+data//tree",
+      "kind": "file",
+      "state": "directory"
+     },
+     {
+      "path": "@@+data_repo+data//tree",
+      "kind": "dirtree",
+      "state": "dirtree:feb16a7470bce2fedb6a8082baa01100fdaf274fb109d7bddf6696cd5e0f59fd"
+     },
+     {
+      "path": "@@+data_repo+data//tpl.txt",
+      "kind": "file",
+      "state": "file:bcfd0ecb645cbb65aaa52c407f04c627d19edbf8886fc7678d23aae80e6353e2"
+     }
+    ]
+   },
+   "reader_out_txt": "hello x\n",
+   "reader_out_txt_after_data_change": "bye x\n",
+   "lockfile_recorded_inputs_equal_genuine": true,
+   "lockfile_off_cache_inside_vs_outside_workspace": {
+    "trees_equal": true,
+    "specs_equal": true,
+    "differing_trees": 0,
+    "differing_specs": 0
+   }
+  }
+ },
+ "genuine": {
+  "cold": {
+   "marker_lines": [
+    "REPO_MAPPING:,data +data_repo+data",
+    "FILE:@@+data_repo+data//file.txt 6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+    "FILE:@@+data_repo+data//label.txt 360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433",
+    "FILE:@@+data_repo+data//missing.txt ENOENT",
+    "FILE:@@+data_repo+data//dir DIR",
+    "DIRENTS:@@+data_repo+data//dir a40a6316add28f8893569e81fa8dfed2924010b09af2d6815f3afbd05b16f1c6",
+    "FILE:@@//ws.txt ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b",
+    "FILE:@@+data_repo+data//tree DIR",
+    "DIRTREE:@@+data_repo+data//tree a0c67e31dde42fd08cf0b1b8e3b50a6018f3a937437d34cbfa21ed2d48a704ca",
+    "FILE:@@+data_repo+data//tpl.txt bcfd0ecb645cbb65aaa52c407f04c627d19edbf8886fc7678d23aae80e6353e2"
+   ],
+   "out_txt": "hello x\n",
+   "lockfile_recorded_inputs": [
+    "REPO_MAPPING:,data +data_repo+data",
+    "FILE:@@+data_repo+data//file.txt 6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+    "FILE:@@+data_repo+data//label.txt 360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433",
+    "FILE:@@+data_repo+data//missing.txt ENOENT",
+    "FILE:@@+data_repo+data//dir DIR",
+    "DIRENTS:@@+data_repo+data//dir a40a6316add28f8893569e81fa8dfed2924010b09af2d6815f3afbd05b16f1c6",
+    "FILE:@@//ws.txt ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b"
+   ]
+  },
+  "after_data_change": {
+   "marker_lines": [
+    "REPO_MAPPING:,data +data_repo+data",
+    "FILE:@@+data_repo+data//file.txt 6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+    "FILE:@@+data_repo+data//label.txt 360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433",
+    "FILE:@@+data_repo+data//missing.txt ENOENT",
+    "FILE:@@+data_repo+data//dir DIR",
+    "DIRENTS:@@+data_repo+data//dir a40a6316add28f8893569e81fa8dfed2924010b09af2d6815f3afbd05b16f1c6",
+    "FILE:@@//ws.txt ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b",
+    "FILE:@@+data_repo+data//tree DIR",
+    "DIRTREE:@@+data_repo+data//tree a0c67e31dde42fd08cf0b1b8e3b50a6018f3a937437d34cbfa21ed2d48a704ca",
+    "FILE:@@+data_repo+data//tpl.txt b9208de7e2a135937f1e04f8cb6721e6de689a454d17560ab2fe778b3aaf7e03"
+   ],
+   "out_txt": "bye x\n"
+  }
+ },
+ "verdicts": {
+  "probe_paths": "MATCH after (the reader's 9 file probes and its template probe equal the genuine marker keys byte-for-byte, in marker order); before: 8 of 10 were host paths into the repository store, label.txt a canonical label",
+  "lockfile_recorded_inputs": "MATCH before and after",
+  "refetch_after_data_change": "MATCH after (bye x); before STALE (hello x: absolute probes into the old content-addressed data tree still validated)",
+  "cache_location_independence": "after: trees and specs identical with the cache inside vs outside the workspace (--lockfile_mode=off); before: 4 trees and 2 specs differed"
+ },
+ "known_divergences": [
+  "Probe VALUES are the native store's own states (file:<sha256>, missing, directory, dirents:/dirtree:<native digest>) where a marker records <sha256>, ENOENT, DIR and Bazel's digests; MODULE.bazel.lock (the genuine-visible surface) values match byte-for-byte.",
+  "REPO_MAPPING inputs of repository rules are not native probes (pre-existing; recorded for extensions in MODULE.bazel.lock).",
+  "The native identity record (ExecutionInputs, hashed into the content identity, not a probe) keeps label reads and label templates as canonical labels: cache-location-independent, and changing them would re-key every repository's identity."
+ ],
+ "scratch_removed": true
+}

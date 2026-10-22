@@ -69,7 +69,11 @@ MEC = bzlmod/ModuleExtensionContext.java, SP = StarlarkPath.java).
   `watch(Label)` records the canonical label. Recorded files, directory entries
   and host facilities (`execute`, `which`, `download`) are part of the
   extension's provenance (`extension_inputs`, version 2); downloads and
-  working-directory reads are not inputs (as in Bazel).
+  working-directory reads are not inputs (as in Bazel). Watched paths are
+  spelled as their RepoCacheFriendlyPath (`@@//rel`, `@@NAME//rel` for a path
+  in external repository NAME), never as host paths into the repository store,
+  so generated repositories' specifications do not depend on the cache
+  location (review i20; docs/REPOSITORY_RULES.md).
 * **Labels** resolve like repository_ctx: the package must exist
   (RepositoryUtils.getRootedPathFromLabel); the file need not.
 * **Identifying string**: checksum errors read `Checksum error in module

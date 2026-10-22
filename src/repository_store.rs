@@ -856,9 +856,14 @@ where
     // Identical content from another specification (or this one) needs no
     // republication: the tree and its inventory already match ours, AND the
     // persisted manifest already carries this format's specification digest
-    // and recorded probes — a manifest written before those fields existed
-    // (an older binary's publication) must be upgraded once, or no later
-    // invocation could ever validate-and-reuse it through the pointer.
+    // and exactly this execution's recorded probes — a manifest written
+    // before those fields existed (an older binary's publication), or whose
+    // probes an older binary spelled differently (review i20: version-1
+    // probes into the store, which are never trusted), must be upgraded
+    // once, or no later invocation could ever validate-and-reuse it through
+    // the pointer and the rule would re-execute on every run. Equal
+    // identities record equal probes otherwise (the identity covers the
+    // observations they are derived from), so this republishes nothing else.
     // Only the specification pointer below records this specification's claim.
     if !(read_stable(&manifest_path)
         .ok()
@@ -867,7 +872,7 @@ where
             existing.identity == identity
                 && content_view(&existing.files) == content_view(&manifest.files)
                 && existing.spec.is_some()
-                && existing.recorded.is_some()
+                && existing.recorded == manifest.recorded
         })
         && verify_snapshot(&destination, &manifest.files, verify_mode())
             .is_ok_and(|matched| matched))
@@ -2330,6 +2335,40 @@ mod tests {
                 (MANIFEST_FORMAT, PROFILE)
             );
         }
+        no_stages(cache.path());
+    }
+
+    /// Review i20: an execution that keeps the publication's identity but
+    /// records probes other than the manifest's (an older binary's spelling,
+    /// which the warm path no longer trusts) upgrades the manifest once, so
+    /// the next warm call reuses instead of re-executing on every run.
+    #[test]
+    fn changed_recorded_probes_upgrade_the_manifest_once() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        const UPGRADED: &[u8] = br#"{"version":2}"#;
+        let run = |execute: bool| {
+            materialize(
+                cache.path(),
+                "test-key",
+                b"spec",
+                b"",
+                |_, recorded| Ok(recorded == UPGRADED),
+                |stage| {
+                    assert!(execute, "upgraded probes must be reused");
+                    write(stage).map(|inputs| Executed {
+                        inputs,
+                        recorded: UPGRADED.to_vec(),
+                    })
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(run(true), (tree.clone(), Publication::Executed));
+        let manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(manifest.recorded.as_deref(), Some(UPGRADED));
+        assert_eq!(run(false), (tree.clone(), Publication::Reused));
         no_stages(cache.path());
     }
 

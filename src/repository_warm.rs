@@ -48,6 +48,15 @@ struct WatchedProbe {
 /// never enter the content identity; they exist so a later invocation can
 /// reobserve the same inputs and decide reuse (Bazel's dependency dirty
 /// checking) without executing the rule.
+///
+/// Version 2 (review i20): every probe path is a RepoCacheFriendlyPath
+/// (RepoRecordedInput.java:325-405) — `@@//rel`, `@@NAME//rel` or an
+/// absolute path outside every repository, label reads included, exactly
+/// the key a Bazel marker file records — or `stage:rel` inside the
+/// publication itself. Version 1 recorded label reads as canonical labels
+/// and paths into other repositories as host paths ([`resolve_v1`]); it is
+/// still revalidated as written, except that a probe into the repository
+/// store is never trusted ([`unchanged`]).
 #[derive(Serialize, Deserialize)]
 struct RecordedInputs {
     version: u8,
@@ -278,25 +287,39 @@ pub(crate) fn record(
     inputs: &crate::repository_ctx::ExecutionInputs,
     watch_names: &[String],
 ) -> Result<Vec<u8>, String> {
+    // A label read's probe is its file's RepoCacheFriendlyPath (Bazel
+    // watches the label's path, `@@repo//pkg/name`); the identity keeps the
+    // canonical label (ExecutionInputs), so no publication is rekeyed.
+    let probe = |text: &str, label: bool| -> Result<String, String> {
+        if !label {
+            return Ok(text.to_owned());
+        }
+        let label = Label::parse_canonical(text).map_err(|error| error.to_string())?;
+        Ok(crate::lockfile_extensions::FriendlyPath::of_label(&label).to_string())
+    };
     let recorded = RecordedInputs {
-        version: 1,
+        version: 2,
         templates: inputs
             .templates
             .iter()
-            .map(|template| TemplateProbe {
-                source: template.source.clone(),
-                sha256: sha256(&template.bytes),
+            .map(|template| {
+                Ok(TemplateProbe {
+                    source: probe(&template.source, template.label)?,
+                    sha256: sha256(&template.bytes),
+                })
             })
-            .collect(),
+            .collect::<Result<_, String>>()?,
         files: inputs
             .files
             .iter()
-            .map(|file| FileProbe {
-                path: file.path.clone(),
-                kind: file.kind.to_owned(),
-                state: file.state.clone(),
+            .map(|file| {
+                Ok(FileProbe {
+                    path: probe(&file.path, file.label)?,
+                    kind: file.kind.to_owned(),
+                    state: file.state.clone(),
+                })
             })
-            .collect(),
+            .collect::<Result<_, String>>()?,
         watched_env: inputs.watched_env.as_ref().map(|watched| WatchedProbe {
             sha256: watched.sha256.clone(),
             names: watch_names.to_vec(),
@@ -317,8 +340,39 @@ pub(crate) fn unchanged(
 ) -> Result<bool, String> {
     let recorded: RecordedInputs = serde_json::from_slice(recorded)
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
-    if recorded.version != 1 {
-        return Ok(false);
+    let resolve = match recorded.version {
+        1 => resolve_v1,
+        2 => resolve_friendly,
+        _ => return Ok(false),
+    };
+    if recorded.version == 1 {
+        // Version 1 spelled paths into other repositories as host paths into
+        // their content-addressed store trees, which are never rewritten: such
+        // a probe cannot observe that the repository was fetched anew (a
+        // stale reuse Bazel's `@@repo//path` key never allows), so it is
+        // never trusted — the rule runs once more and records version 2.
+        let source_cache = repositories.source_cache_path()?;
+        let stores = [
+            source_cache.to_path_buf(),
+            std::fs::canonicalize(source_cache).unwrap_or_else(|_| source_cache.to_path_buf()),
+        ];
+        let in_store = |recorded: &str| {
+            let path = match recorded.strip_prefix("@@//") {
+                Some(relative) => workspace.join(relative),
+                None if Path::new(recorded).is_absolute() => PathBuf::from(recorded),
+                None => return false,
+            };
+            stores.iter().any(|store| path.starts_with(store))
+        };
+        if recorded
+            .templates
+            .iter()
+            .map(|template| &template.source)
+            .chain(recorded.files.iter().map(|file| &file.path))
+            .any(|recorded| in_store(recorded))
+        {
+            return Ok(false);
+        }
     }
     if let Some(watched) = &recorded.watched_env {
         // RepositoryEnvironmentValue re-checks: reobserve exactly the recorded
@@ -359,11 +413,47 @@ pub(crate) fn unchanged(
     Ok(true)
 }
 
-/// Resolve one recorded input spelling to a current path: a stage-relative
-/// template (inside the published tree itself), `@@//rel` in the workspace, a
-/// canonical `@@repo//pkg:file` label (demanded like the original read), or an
-/// absolute host path (RepoCacheFriendlyPath's reverse mapping).
-fn resolve(
+/// Resolve one version-2 recorded spelling to a current path: a
+/// stage-relative template (inside the published tree itself) or a
+/// RepoCacheFriendlyPath (RepoCacheFriendlyPath.getRootedPath,
+/// RepoRecordedInput.java:379-399): `@@//rel` in the workspace,
+/// `@@NAME//rel` under repository NAME's root (demanded like the original
+/// read), an absolute host path as is.
+fn resolve_friendly(
+    repositories: &RepositorySet,
+    workspace: &Path,
+    tree: &Path,
+    recorded: &str,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(relative) = recorded.strip_prefix("stage:") {
+        return Ok(safe_child(tree, relative));
+    }
+    if let Some(rest) = recorded.strip_prefix("@@") {
+        let Some((name, relative)) = rest.split_once("//") else {
+            return Ok(None);
+        };
+        let root = if name.is_empty() {
+            workspace.to_path_buf()
+        } else {
+            repositories.root(name)?.to_path_buf()
+        };
+        return Ok(if relative.is_empty() {
+            Some(root)
+        } else {
+            safe_child(&root, relative)
+        });
+    }
+    if Path::new(recorded).is_absolute() {
+        return Ok(Some(PathBuf::from(recorded)));
+    }
+    Ok(None)
+}
+
+/// Resolve one version-1 recorded input spelling to a current path: a
+/// stage-relative template (inside the published tree itself), `@@//rel` in
+/// the workspace, a canonical `@@repo//pkg:file` label (demanded like the
+/// original read), or an absolute host path.
+fn resolve_v1(
     repositories: &RepositorySet,
     workspace: &Path,
     tree: &Path,

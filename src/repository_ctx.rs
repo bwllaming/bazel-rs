@@ -78,19 +78,33 @@ pub struct ExecutionInputs {
 
 #[derive(Debug, Serialize)]
 pub struct TemplateInput {
+    /// A canonical label for label templates, `stage:<relative>` inside the
+    /// repository directory, otherwise the RepoCacheFriendlyPath (see
+    /// [`FileInput::path`]).
     pub source: String,
     pub bytes: Vec<u8>,
+    /// `source` is a canonical label (never part of an identity).
+    #[serde(skip)]
+    pub label: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 pub struct FileInput {
-    /// `@@//relative` inside the main workspace, a canonical label for label
-    /// reads, otherwise the absolute host path (RepoCacheFriendlyPath).
+    /// A canonical label for label reads, otherwise the path's
+    /// RepoCacheFriendlyPath (RepoRecordedInput.java:325-405) as
+    /// toRepoCacheFriendlyPath forms it: `@@//relative` in the main
+    /// workspace, `@@NAME//relative` in external repository NAME (natively:
+    /// under its materialized root, RepositorySet::friendly_repository), the
+    /// absolute host path elsewhere — never a cache-location-dependent path
+    /// into the repository store (review i20).
     pub path: String,
     /// `file` or `dirents` (RepoRecordedInput.File / Dirents).
     pub kind: &'static str,
     /// `missing`, `directory`, `other`, `file:<sha256>` or `dirents:<sha256>`.
     pub state: String,
+    /// `path` is a canonical label (never part of an identity).
+    #[serde(skip)]
+    pub label: bool,
 }
 
 #[derive(Default)]
@@ -1295,13 +1309,19 @@ impl Context {
         self.record(key, "file", state)
     }
 
+    /// The recorded spelling of a watched or read host path: its
+    /// RepoCacheFriendlyPath (toRepoCacheFriendlyPath, java:1656-1704) —
+    /// `@@//rel` in the workspace, `@@NAME//rel` in external repository
+    /// NAME — or the absolute path outside every repository. Paths into the
+    /// repository store used to stay absolute (or `@@//<cache>/...` with the
+    /// cache inside the workspace), so recorded inputs, and with them the
+    /// identities of repositories reading other repositories' files,
+    /// depended on the cache location (review i20).
     fn friendly(&self, path: &[u8]) -> String {
-        let workspace = self.workspace.as_os_str().as_bytes();
-        match path
-            .strip_prefix(workspace)
-            .filter(|rest| rest.is_empty() || rest.starts_with(b"/"))
-        {
-            Some(rest) => format!("@@//{}", display(rest.strip_prefix(b"/").unwrap_or(rest))),
+        match self.repositories.friendly_repository(&path_buf(path)) {
+            Some((name, relative)) => {
+                format!("@@{name}//{}", display(relative.as_os_str().as_bytes()))
+            }
             None => display(path),
         }
     }
@@ -1325,31 +1345,11 @@ impl Context {
         }
     }
 
-    /// RepoCacheFriendlyPath of a watched host path (`watch_key` admitted it):
-    /// `@@//rel` in the workspace, `@@REPO//rel` in an external repository.
-    fn bazel_friendly(&self, friendly: &str, path: &[u8]) -> Option<String> {
-        if friendly.starts_with("@@//") {
-            return Some(friendly.to_owned());
-        }
-        let host = path_buf(path);
-        let mut best: Option<(usize, String)> = None;
-        for (name, root) in self.repositories.materialized_roots() {
-            if name.is_empty() {
-                continue;
-            }
-            let root = fs::canonicalize(&root).unwrap_or(root);
-            if let Ok(rest) = host.strip_prefix(&root)
-                && best
-                    .as_ref()
-                    .is_none_or(|(len, _)| root.as_os_str().len() > *len)
-            {
-                best = Some((
-                    root.as_os_str().len(),
-                    format!("@@{name}//{}", rest.to_string_lossy()),
-                ));
-            }
-        }
-        best.map(|(_, path)| path)
+    /// The lockfile key of a watched host path (`watch_key` admitted it and
+    /// formed `friendly`): its RepoCacheFriendlyPath, None for a path in no
+    /// repository.
+    fn bazel_friendly(friendly: &str) -> Option<String> {
+        friendly.starts_with("@@").then(|| friendly.to_owned())
     }
 
     /// A file observation of a watched host path, for the lockfile.
@@ -1358,7 +1358,7 @@ impl Context {
             return;
         }
         match (
-            self.bazel_friendly(friendly, path),
+            Self::bazel_friendly(friendly),
             crate::lockfile_extensions::file_marker_value(state),
         ) {
             (Some(bazel), Ok(value)) => {
@@ -1391,13 +1391,26 @@ impl Context {
                 (Err(error), _) | (_, Err(error)) => self.bazel_unsupported(error),
             }
         }
-        self.record(canonical, "file", state)
+        self.record_input(FileInput {
+            path: canonical,
+            kind: "file",
+            state,
+            label: true,
+        })
     }
 
     fn record(&self, path: String, kind: &'static str, state: String) -> anyhow::Result<()> {
+        self.record_input(FileInput {
+            path,
+            kind,
+            state,
+            label: false,
+        })
+    }
+
+    fn record_input(&self, input: FileInput) -> anyhow::Result<()> {
         let mut current = self.state.borrow_mut();
         let files = &mut current.inputs.files;
-        let input = FileInput { path, kind, state };
         if !files.contains(&input) {
             files.push(input);
         }
@@ -2960,6 +2973,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
         let output = context.path_of(path, "template", "path")?;
         let replacements = string_dict(substitutions, "substitutions")?;
         let watch = ShouldWatch::parse(watch_template)?;
+        let label = unpack_label(template).is_some();
         let (source, mut bytes) = context.read_input(
             template,
             "template",
@@ -2973,6 +2987,7 @@ fn repository_methods(builder: &mut MethodsBuilder) {
             state.inputs.templates.push(TemplateInput {
                 source,
                 bytes: bytes.clone(),
+                label,
             });
         }
         for (key, value) in replacements {
@@ -3368,7 +3383,7 @@ fn path_methods(builder: &mut MethodsBuilder) {
                 hash.extend_from_slice(&name);
                 hash.push(0);
             }
-            if let Some(bazel) = context.bazel_friendly(&key, &path.bytes) {
+            if let Some(bazel) = Context::bazel_friendly(&key) {
                 context.record_bazel(crate::lockfile_extensions::RecordedInput::dirents(
                     &bazel,
                     crate::lockfile_extensions::dirents_marker_value(&bazel_names),

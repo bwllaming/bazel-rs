@@ -1,0 +1,12 @@
+module(name = "friendly_paths")
+
+data_repo = use_repo_rule("//:data.bzl", "data_repo")
+
+data_repo(name = "data")
+
+reader = use_repo_rule("//:defs.bzl", "reader")
+
+reader(name = "reader")
+
+ext = use_extension("//:defs.bzl", "ext")
+use_repo(ext, "from_ext")

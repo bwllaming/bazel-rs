@@ -433,6 +433,17 @@ identities are cache-path-dependent by design; user-visible output is
 deterministic. (The earlier trees/<run-hash> finding for warm *shared*
 caches was the N61 fix; nothing here reopens it.)
 
+**Correction (review i20, item 4):** the recorded-probe half of this
+diagnosis was wrong about Bazel. Genuine RepoRecordedInput keys a path in
+an external repository as `@@NAME//path` (RepoCacheFriendlyPath,
+toRepoCacheFriendlyPath — never the absolute output-base path; genuine
+capture in tests/fixtures/repo_cache_friendly_paths/reference_receipt.json).
+Native now records the same keys, so specifications and identities no longer
+depend on the cache location through recorded inputs (docs/REPOSITORY_RULES.md).
+What remains cache-dependent is file *content* that embeds absolute paths
+(the `go.env` GOROOT above), as in Bazel, whose `external/` contents embed
+the output base likewise.
+
 ### Diagnostics kept
 
 `BAZEL_RS_DEBUG_PROVENANCE=1` (hidden, off by default) prints each

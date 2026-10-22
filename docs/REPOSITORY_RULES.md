@@ -230,13 +230,32 @@ the published location (relative symlinks into it are replanted, below).
   skipped for `auto`.
 
 Watched files, directory listings and Label `read()` calls outside the
-repository directory are recorded in the execution inputs as `@@//relative`
-(main workspace), the canonical Label, or the absolute host path, with a content
-digest (`file:<sha256>`, `directory`, `missing`, `dirents:<sha256>`). Label
-templates add no such file input: every template read (any `watch_template`
-mode) is already recorded with its source and full bytes, which keys its content
-and preserves pre-N21 identities. Inputs identify the publication only; they
-never allow skipping execution.
+repository directory are recorded in the execution inputs as their
+RepoCacheFriendlyPath (RepoRecordedInput.java:325-405, formed by
+toRepoCacheFriendlyPath, SBEC:1656-1704) — `@@//relative` in the main
+workspace, `@@NAME//relative` in external repository NAME (the longest
+materialized root containing the path: native repositories live in the
+repository store under the cache directory, by default inside the workspace),
+the absolute host path elsewhere — or the canonical Label of a Label read, with
+a content digest (`file:<sha256>`, `directory`, `missing`, `dirents:<sha256>`).
+Label templates add no such file input: every template read (any
+`watch_template` mode) is already recorded with its source and full bytes, which
+keys its content and preserves pre-N21 identities. Inputs identify the
+publication only; they never allow skipping execution.
+
+The recorded probes the warm path revalidates (version 2) spell every path,
+Label reads included, exactly as the key of a Bazel marker file (`@@REPO//path`;
+genuine capture: tests/fixtures/repo_cache_friendly_paths/reference_receipt.json)
+and resolve it through the repository's *current* root. Before review i20 a path
+into another repository was recorded as a host path into that repository's
+content-addressed store tree, which is never rewritten: identities depended on
+the cache location (go_deps cold-identity variance), and a reader kept being
+reused after the repository it read was fetched anew (Bazel re-fetches it).
+Version-1 probes into the store are therefore never trusted: such a repository
+executes once more and records version 2 — also when its output keeps the
+publication's identity, since an execution whose recorded probes differ from
+the manifest's republishes it (otherwise the stale probes would re-execute the
+rule on every run).
 
 ### Host access
 

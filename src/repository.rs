@@ -828,6 +828,48 @@ impl RepositorySet {
         roots
     }
 
+    /// The repository of a host path for RepoCacheFriendlyPath
+    /// (RepoRecordedInput.java:325-405, formed by toRepoCacheFriendlyPath,
+    /// StarlarkBaseExternalContext.java:1656-1704): the repository whose
+    /// materialized root is the longest one containing `path` (the main
+    /// repository is `""`) and `path` relative to that root. Bazel's
+    /// external repositories all live under `<output_base>/external`,
+    /// outside the workspace; native roots are the repository store under
+    /// the cache directory — by default inside the workspace — and
+    /// local_path_override directories, so the most specific root names
+    /// the repository. Roots match as materialized or canonicalized
+    /// (memoized like `link_policy`); equally long roots (repositories
+    /// sharing one content-addressed tree) resolve to the smallest name.
+    pub(crate) fn friendly_repository(&self, path: &Path) -> Option<(String, PathBuf)> {
+        let roots = self.materialized_roots();
+        let mut memo = self
+            .state
+            .link_canonical
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut best: Option<(usize, String, PathBuf)> = None;
+        for (name, root) in roots {
+            let canonical = match memo.get(&root) {
+                Some(canonical) => Some(canonical.clone()),
+                None => std::fs::canonicalize(&root).ok().inspect(|canonical| {
+                    memo.insert(root.clone(), canonical.clone());
+                }),
+            };
+            for candidate in std::iter::once(root).chain(canonical) {
+                let Ok(relative) = path.strip_prefix(&candidate) else {
+                    continue;
+                };
+                let length = candidate.as_os_str().len();
+                if best.as_ref().is_none_or(|(longest, smallest, _)| {
+                    length > *longest || (length == *longest && name < *smallest)
+                }) {
+                    best = Some((length, name.clone(), relative.to_path_buf()));
+                }
+            }
+        }
+        best.map(|(_, name, relative)| (name, relative))
+    }
+
     /// Host prefixes no shorter materialized root may claim for links: the
     /// repository store (stale trees, private stages and trash) and, with the
     /// CLI layout `--cache-dir/repositories`, the whole `--cache-dir` root
