@@ -1316,7 +1316,10 @@ impl Context {
     /// repository store used to stay absolute (or `@@//<cache>/...` with the
     /// cache inside the workspace), so recorded inputs, and with them the
     /// identities of repositories reading other repositories' files,
-    /// depended on the cache location (review i20).
+    /// depended on the cache location (review i20). A store path no
+    /// repository root contains is still absolute — never `@@//<cache>/...`,
+    /// with the cache inside the workspace as outside it
+    /// (`RepositorySet::friendly_repository`).
     fn friendly(&self, path: &[u8]) -> String {
         match self.repositories.friendly_repository(&path_buf(path)) {
             Some((name, relative)) => {

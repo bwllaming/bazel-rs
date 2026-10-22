@@ -51,6 +51,11 @@ impl Workspace {
 
     /// Fetch @reader and the extension's repository into `cache`.
     fn query(&self, cache: &Path, extra: &[&str]) {
+        self.query_stderr(cache, extra);
+    }
+
+    /// [`Self::query`], returning its stderr.
+    fn query_stderr(&self, cache: &Path, extra: &[&str]) -> String {
         let output = Command::new("timeout")
             .args([
                 "120s",
@@ -64,18 +69,121 @@ impl Workspace {
             .current_dir(self.path())
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        stderr
     }
 
     fn change_data_repository(&self) {
-        let path = self.path().join("data.bzl");
-        let text = fs::read_to_string(&path).unwrap();
-        fs::write(path, text.replace("hello {NAME}", "bye {NAME}")).unwrap();
+        self.edit("data.bzl", "hello {NAME}", "bye {NAME}");
     }
+
+    /// Change data/file.txt, which the module extension reads.
+    fn change_data_file(&self) {
+        self.edit(
+            "data.bzl",
+            r#"ctx.file("file.txt", "data\n")"#,
+            r#"ctx.file("file.txt", "changed\n")"#,
+        );
+    }
+
+    /// Make every evaluation of the module extension print a marker.
+    fn announce_extension_evaluations(&self) {
+        self.edit(
+            "defs.bzl",
+            "def _ext(module_ctx):\n",
+            "def _ext(module_ctx):\n    print(\"EXTENSION EVALUATED\")\n",
+        );
+    }
+
+    fn edit(&self, name: &str, from: &str, to: &str) {
+        let path = self.path().join(name);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains(from), "{name}: {from}");
+        fs::write(path, text.replace(from, to)).unwrap();
+    }
+}
+
+/// How many evaluations of the module extension a query announced
+/// ([`Workspace::announce_extension_evaluations`]).
+fn evaluations(stderr: &str) -> usize {
+    stderr.matches("EXTENSION EVALUATED").count()
+}
+
+/// The module extension's recorded inputs in the workspace lockfile.
+fn lockfile_inputs(ws: &Workspace) -> Value {
+    let lock: Value =
+        serde_json::from_slice(&fs::read(ws.path().join("MODULE.bazel.lock")).unwrap()).unwrap();
+    lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"].clone()
+}
+
+#[test]
+fn store_keys_in_the_lockfile_re_evaluate_the_extension_once() {
+    // Before review i20 a module extension's read of another repository's
+    // file was keyed in MODULE.bazel.lock as a path into that repository's
+    // content-addressed store tree: with the default cache inside the
+    // workspace `@@//bazel-rs-out/repositories/direct/trees/<id>/...`
+    // (reference_receipt.json, native.before, cache inside the workspace;
+    // ~/code's hidden lockfile keeps 11 such keys). Store trees are never
+    // rewritten, so those keys kept validating after the repository was
+    // fetched anew and the extension stayed stale. Such a key is outdated:
+    // exactly one re-evaluation records `@@NAME//path` keys with the new
+    // values, and nothing re-evaluates after that.
+    let ws = Workspace::new();
+    ws.announce_extension_evaluations();
+    let cache = ws.path().join("bazel-rs-out");
+    assert_eq!(evaluations(&ws.query_stderr(&cache, &[])), 1);
+    let data = listing(&store(&cache).join("trees"))
+        .into_iter()
+        .find(|identity| {
+            store(&cache)
+                .join("trees")
+                .join(identity)
+                .join("tpl.txt")
+                .exists()
+        })
+        .unwrap();
+    // The pre-i20 spelling of every key but the label read's (label reads
+    // were keyed by the label's path already).
+    let old = format!("@@//bazel-rs-out/repositories/direct/trees/{data}/");
+    let lock_path = ws.path().join("MODULE.bazel.lock");
+    let mut lock: Value = serde_json::from_slice(&fs::read(&lock_path).unwrap()).unwrap();
+    let inputs = lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"]
+        .as_array_mut()
+        .unwrap();
+    for input in inputs.iter_mut() {
+        let text = input.as_str().unwrap();
+        if !text.contains("//label.txt ") {
+            *input = text.replace("@@+data_repo+data//", &old).into();
+        }
+    }
+    assert_eq!(
+        inputs
+            .iter()
+            .filter(|input| input.as_str().unwrap().contains(&old))
+            .count(),
+        4
+    );
+    fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
+
+    // The data repository changes a file the extension read: re-fetched
+    // into a new tree, while the old tree the seeded keys name is intact.
+    ws.change_data_file();
+    let stderr = ws.query_stderr(&cache, &[]);
+    assert_eq!(evaluations(&stderr), 1, "{stderr}");
+    let settled = fs::read_to_string(&lock_path).unwrap();
+    assert!(!settled.contains("bazel-rs-out"), "{settled}");
+    let inputs = lockfile_inputs(&ws);
+    // sha256("changed\n")
+    let changed = Value::from(
+        "FILE:@@+data_repo+data//file.txt 7f8b1dfc466b6249f06cbe55c9174df2578e7754da793fded244ef5cba2a38f1",
+    );
+    assert!(inputs.as_array().unwrap().contains(&changed), "{inputs}");
+
+    // Stable: no further evaluation, the lockfile is left as it is.
+    let stderr = ws.query_stderr(&cache, &[]);
+    assert_eq!(evaluations(&stderr), 0, "{stderr}");
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), settled);
 }
 
 #[test]

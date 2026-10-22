@@ -73,7 +73,13 @@ MEC = bzlmod/ModuleExtensionContext.java, SP = StarlarkPath.java).
   spelled as their RepoCacheFriendlyPath (`@@//rel`, `@@NAME//rel` for a path
   in external repository NAME), never as host paths into the repository store,
   so generated repositories' specifications do not depend on the cache
-  location (review i20; docs/REPOSITORY_RULES.md).
+  location (review i20; docs/REPOSITORY_RULES.md). A store path that no
+  repository root contains is never keyed to the workspace either (absolute,
+  with the cache inside the workspace as outside it), and a MODULE.bazel.lock
+  or hidden-lockfile key that names the store through the workspace
+  (`@@//bazel-rs-out/repositories/...`) or absolutely — what bazel-rs wrote
+  before review i20 — is outdated (`is a path into the native repository
+  store`): the extension re-evaluates once and records `@@NAME//path` keys.
 * **Labels** resolve like repository_ctx: the package must exist
   (RepositoryUtils.getRootedPathFromLabel); the file need not.
 * **Identifying string**: checksum errors read `Checksum error in module

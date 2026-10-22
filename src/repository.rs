@@ -840,34 +840,66 @@ impl RepositorySet {
     /// the repository. Roots match as materialized or canonicalized
     /// (memoized like `link_policy`); equally long roots (repositories
     /// sharing one content-addressed tree) resolve to the smallest name.
+    ///
+    /// A path in the repository store ([`Self::in_repository_store`]) is
+    /// never keyed to the main repository (review i20): one that no
+    /// materialized root contains (a store directory, a tree no repository
+    /// of this invocation names) is None — spelled absolute — with the
+    /// cache inside the workspace exactly as with the cache outside it, and
+    /// never an `@@//<cache>/...` key, which the lockfile check treats as
+    /// outdated (`LockInputProbe`).
     pub(crate) fn friendly_repository(&self, path: &Path) -> Option<(String, PathBuf)> {
         let roots = self.materialized_roots();
-        let mut memo = self
-            .state
-            .link_canonical
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut best: Option<(usize, String, PathBuf)> = None;
-        for (name, root) in roots {
-            let canonical = match memo.get(&root) {
-                Some(canonical) => Some(canonical.clone()),
-                None => std::fs::canonicalize(&root).ok().inspect(|canonical| {
-                    memo.insert(root.clone(), canonical.clone());
-                }),
-            };
-            for candidate in std::iter::once(root).chain(canonical) {
-                let Ok(relative) = path.strip_prefix(&candidate) else {
-                    continue;
-                };
-                let length = candidate.as_os_str().len();
-                if best.as_ref().is_none_or(|(longest, smallest, _)| {
-                    length > *longest || (length == *longest && name < *smallest)
-                }) {
-                    best = Some((length, name.clone(), relative.to_path_buf()));
-                }
-            }
+        let found = {
+            let mut memo = self
+                .state
+                .link_canonical
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            longest_root(
+                roots,
+                |root| match memo.get(root) {
+                    Some(canonical) => Some(canonical.clone()),
+                    None => std::fs::canonicalize(root).ok().inspect(|canonical| {
+                        memo.insert(root.to_path_buf(), canonical.clone());
+                    }),
+                },
+                path,
+            )
+        };
+        found.filter(|(name, _)| !(name.is_empty() && self.in_repository_store(path)))
+    }
+
+    /// Whether `path` lies in the native repository store
+    /// ([`Self::source_cache_path`]: content-addressed trees, their
+    /// manifests and stages, module extension working directories) —
+    /// spelled through the store path, its canonical form or, for a
+    /// workspace-relative store, the workspace root as given. Lexical: the
+    /// path itself is not resolved.
+    pub(crate) fn in_repository_store(&self, path: &Path) -> bool {
+        let Ok(store) = self.source_cache_path() else {
+            return false;
+        };
+        if path.starts_with(store)
+            || (self.state.source_cache.is_relative()
+                && path.starts_with(self.state.root.join(&self.state.source_cache)))
+        {
+            return true;
         }
-        best.map(|(_, name, relative)| (name, relative))
+        let canonical = {
+            let mut memo = self
+                .state
+                .link_canonical
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match memo.get(store) {
+                Some(canonical) => Some(canonical.clone()),
+                None => std::fs::canonicalize(store).ok().inspect(|canonical| {
+                    memo.insert(store.to_path_buf(), canonical.clone());
+                }),
+            }
+        };
+        canonical.is_some_and(|canonical| path.starts_with(canonical))
     }
 
     /// Host prefixes no shorter materialized root may claim for links: the
@@ -2452,6 +2484,33 @@ fn facts_repr(members: &[(String, crate::lockfile::Json)]) -> Result<String, Str
     })
 }
 
+/// The core of [`RepositorySet::friendly_repository`] over explicit roots:
+/// the name of the longest root containing `path` — each root tried as
+/// given and as `canonical` resolves it — and `path` relative to that root.
+/// Equally long roots resolve to the smallest name.
+fn longest_root(
+    roots: impl IntoIterator<Item = (String, PathBuf)>,
+    mut canonical: impl FnMut(&Path) -> Option<PathBuf>,
+    path: &Path,
+) -> Option<(String, PathBuf)> {
+    let mut best: Option<(usize, String, PathBuf)> = None;
+    for (name, root) in roots {
+        let resolved = canonical(&root);
+        for candidate in std::iter::once(root).chain(resolved) {
+            let Ok(relative) = path.strip_prefix(&candidate) else {
+                continue;
+            };
+            let length = candidate.as_os_str().len();
+            if best.as_ref().is_none_or(|(longest, smallest, _)| {
+                length > *longest || (length == *longest && name < *smallest)
+            }) {
+                best = Some((length, name.clone(), relative.to_path_buf()));
+            }
+        }
+    }
+    best.map(|(_, name, relative)| (name, relative))
+}
+
 /// Current values of recorded inputs (RepoRecordedInput.getValue).
 struct LockInputProbe<'a>(&'a RepositorySet);
 
@@ -2466,10 +2525,38 @@ impl LockInputProbe<'_> {
             Some(repository) => self.0.root(repository)?.join(&path.path),
         })
     }
+
+    /// Why a workspace-relative or absolute key naming the repository store
+    /// is outdated (review i20). Before keys were RepoCacheFriendlyPaths, a
+    /// module extension's read of another repository's file was keyed as a
+    /// path into that repository's content-addressed store tree —
+    /// `@@//bazel-rs-out/repositories/...` with the default cache inside the
+    /// workspace, absolute otherwise. Store trees are never rewritten, so
+    /// such a key kept validating after the repository was fetched anew and
+    /// the extension stayed stale. Re-evaluating once records `@@NAME//path`
+    /// keys instead, and since `friendly_repository` never keys a store path
+    /// to the workspace, a re-evaluation never records this kind again.
+    /// Keys of a named repository resolve through its current root and are
+    /// never affected.
+    fn store_key(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Option<String> {
+        let host = match path.repository.as_deref() {
+            None => PathBuf::from(&path.path),
+            Some("") => self.0.main_root().join(&path.path),
+            Some(_) => return None,
+        };
+        self.0.in_repository_store(&host).then(|| {
+            format!(
+                "{path} is a path into the native repository store (recorded by an older bazel-rs)"
+            )
+        })
+    }
 }
 
 impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
     fn file(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Result<String, String> {
+        if let Some(reason) = self.store_key(path) {
+            return Err(reason);
+        }
         let host = self
             .host_path(path)
             .map_err(|error| format!("failed to stat {path}: {error}"))?;
@@ -2502,6 +2589,9 @@ impl crate::lockfile_extensions::InputProbe for LockInputProbe<'_> {
 
     fn dirents(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Result<String, String> {
         use std::os::unix::ffi::OsStrExt as _;
+        if let Some(reason) = self.store_key(path) {
+            return Err(reason);
+        }
         let host = self.host_path(path)?;
         let names = std::fs::read_dir(&host)
             .and_then(|entries| {
@@ -3392,6 +3482,81 @@ mod tests {
             assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
             let trees = f.0.join("bazel-rs-out/repositories/direct/trees");
             assert!(!trees.exists() || std::fs::read_dir(trees).unwrap().next().is_none());
+        }
+    }
+
+    /// Review i20: a path in the repository store is never keyed to the
+    /// main repository — the cache inside the workspace (the default
+    /// layout) behaves like a cache outside it — and a lockfile key naming
+    /// the store through the workspace or absolutely is outdated, whether
+    /// the workspace is spelled as given (here through a symlink) or
+    /// canonically. Other workspace paths, the cache directory outside the
+    /// store included, keep their `@@//` keys and current values.
+    #[cfg(unix)]
+    #[test]
+    fn store_paths_never_key_to_the_workspace_and_store_lock_keys_are_outdated() {
+        use crate::lockfile_extensions::{FriendlyPath, InputProbe as _};
+        let f = Fixture::new();
+        let workspace = f.0.join("ws");
+        let store = workspace.join("bazel-rs-out/repositories");
+        f.write(
+            "ws/bazel-rs-out/repositories/direct/trees/abc/file.txt",
+            "old",
+        );
+        f.write("ws/src/file.txt", "source");
+        std::os::unix::fs::symlink(&workspace, f.0.join("link")).unwrap();
+        let key = |repository: Option<&str>, path: &str| FriendlyPath {
+            repository: repository.map(str::to_owned),
+            path: path.to_owned(),
+        };
+        for root in [workspace.clone(), f.0.join("link")] {
+            let repos = RepositorySet::new(root.clone());
+            for spelled in [
+                root.join("bazel-rs-out/repositories/direct/trees/abc/file.txt"),
+                store.join("direct/trees/abc/file.txt"),
+                store.join("direct/trees"),
+            ] {
+                assert!(repos.in_repository_store(&spelled), "{spelled:?}");
+                assert_eq!(repos.friendly_repository(&spelled), None, "{spelled:?}");
+            }
+            for (spelled, relative) in [
+                (root.join("src/file.txt"), "src/file.txt"),
+                (workspace.join("src/file.txt"), "src/file.txt"),
+                (
+                    root.join("bazel-rs-out/actions/x"),
+                    "bazel-rs-out/actions/x",
+                ),
+            ] {
+                assert!(!repos.in_repository_store(&spelled), "{spelled:?}");
+                assert_eq!(
+                    repos.friendly_repository(&spelled),
+                    Some((String::new(), PathBuf::from(relative)))
+                );
+            }
+            let probe = LockInputProbe(&repos);
+            for stale in [
+                key(
+                    Some(""),
+                    "bazel-rs-out/repositories/direct/trees/abc/file.txt",
+                ),
+                key(
+                    None,
+                    store.join("direct/trees/abc/file.txt").to_str().unwrap(),
+                ),
+                key(Some(""), "bazel-rs-out/repositories/direct/trees/abc"),
+            ] {
+                let reason = probe.file(&stale).unwrap_err();
+                assert!(reason.contains("native repository store"), "{reason}");
+                assert_eq!(probe.dirents(&stale).unwrap_err(), reason);
+            }
+            assert_eq!(
+                probe.file(&key(Some(""), "src/file.txt")).unwrap(),
+                format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(b"source"))
+            );
+            assert_eq!(
+                probe.file(&key(Some(""), "src/missing.txt")).unwrap(),
+                "ENOENT"
+            );
         }
     }
 
