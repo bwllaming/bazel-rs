@@ -115,7 +115,7 @@ impl Configurations {
         };
         // The top-level configuration is never an exec configuration
         // (`is exec configuration` is internal), so its CPU descriptor is
-        // the host CPU (`k8`, NATIVE_CPU) and cannot be invalid.
+        // its `--cpu`, which the caller validated ([`validate_top`]).
         let top_mnemonic =
             mnemonic(&top, &top).expect("internal error: top-level output path mnemonic");
         configurations.mnemonics.insert(id, top_mnemonic);
@@ -278,6 +278,15 @@ impl Configurations {
     }
 }
 
+/// Whether the top-level configuration has a valid output path mnemonic: a
+/// `--cpu` containing `/` is Bazel's InvalidMnemonicException
+/// (`CPU/Platform descriptor 'a/b' is invalid as part of a path: must not
+/// contain /`; paired capture pre_platforms_flags/cpu_flag_slash). Checked
+/// before [`Configurations::new`].
+pub fn validate_top(top: &Configuration) -> Result<(), String> {
+    mnemonic(top, top).map(|_| ())
+}
+
 /// `bazel-out/<mnemonic>/bin`.
 pub fn output_root(mnemonic: &str) -> String {
     format!("bazel-out/{mnemonic}/bin")
@@ -310,18 +319,18 @@ const DEFAULT_PLATFORM_NAMES: [&str; 5] = [
 /// true, CoreOptions.java:182-194; no `--experimental_override_platform_cpu_name`)
 /// gives the platform's name unless it is a default name
 /// (PlatformOptions.platformIsDefault), then the CPU. Target configurations
-/// use the CPU (`cpu` explicit, which the native profile does not model).
+/// use the CPU (`cpu` explicit).
 fn cpu_descriptor(configuration: &Configuration) -> (&str, bool) {
     let native = &configuration.native;
+    // `--cpu` (the command line's, a Starlark transition's (N18c), or the
+    // exec configuration's `--host_cpu`) is the descriptor itself, as in
+    // Bazel (`arm-fastbuild`, `ppc-opt-exec`); the host CPU is `k8`.
+    let cpu = native.cpu.as_deref().unwrap_or(NATIVE_CPU);
     if !native.is_exec {
-        // A `--cpu` a Starlark transition set (N18c) is the descriptor
-        // itself, as in Bazel (`arm-fastbuild`); the host CPU is `k8`.
-        return (native.cpu.as_deref().unwrap_or(NATIVE_CPU), false);
+        return (cpu, false);
     }
     match native.platforms.as_slice() {
-        [platform] if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) => {
-            (NATIVE_CPU, true)
-        }
+        [platform] if DEFAULT_PLATFORM_NAMES.contains(&platform.name.as_str()) => (cpu, true),
         [platform] => (platform.name.as_str(), true),
         // Not marked explicit, so the ST- hash covers `platforms`.
         _ => ("multi-platform", false),
@@ -391,8 +400,9 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
 ///   `host_action_env` propagate (:231-235, 259), like
 ///   `incompatible_strict_action_env` (:203-207) and TestOptions (cloned,
 ///   FunctionTransitionUtil.java:199-207);
-/// * `strip` = `always` (CppOptions, :291-348); `force_pic` is not
-///   propagated, so it is the default;
+/// * `cpu` = `host_cpu`, which propagates (`_core_options`, :225, 241);
+/// * `strip` = `always` (CppOptions, :291-348); `force_pic` and
+///   `crosstool_top` are not propagated, so they are the defaults;
 /// * `--define` is carried (`experimental_exclude_defines_from_exec_config`
 ///   is false, FunctionTransitionUtil.java:210-223);
 /// * `java_runtime_version`/`java_language_version` become
@@ -443,8 +453,12 @@ pub fn exec_transition(
         // never reaches here (ExecutionTransitionFactory.java:192-197).
         no_config: false,
         // `cpu` = the parent's `--host_cpu` (builtin_exec_platforms.bzl:225),
-        // which is not modelled: the host CPU default.
-        cpu: None,
+        // which propagates (:241).
+        cpu: from.native.host_cpu.clone(),
+        host_cpu: from.native.host_cpu.clone(),
+        // Not in CppOptions' propagate list (builtin_exec_platforms.bzl:291-348):
+        // the default.
+        crosstool_top: defaults.crosstool_top,
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275):
         // the CoreOptions default (CoreOptions.java:566-578).
         collect_code_coverage: defaults.collect_code_coverage,
@@ -485,7 +499,7 @@ pub fn no_config() -> Configuration {
 
 /// Options whose value is explicit in the mnemonic
 /// (markAsExplicitInOutputPathFor, OutputPathMnemonicComputer.java:187-198;
-/// `cpu` is the native profile's host `k8` unless a transition set it).
+/// `cpu` is the host `k8` unless `--cpu` or a transition set it).
 const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix", "cpu"];
 
 /// The native options in their `//command_line_option:NAME=VALUE` hash form
@@ -510,16 +524,6 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     options.insert(
         "collect_code_coverage",
         format!("={}", native.collect_code_coverage),
-    );
-    options.insert(
-        "cpu",
-        format!(
-            "={}",
-            native
-                .cpu
-                .as_deref()
-                .unwrap_or(crate::configuration::host_cpu())
-        ),
     );
     options.insert(
         "platform_suffix",
@@ -903,6 +907,67 @@ mod tests {
         assert_eq!(default.native.compilation_mode, "opt");
         assert!(!default.native.incompatible_auto_exec_groups);
         assert_eq!(mnemonic(&default, &default), Ok("exec-opt-exec".to_owned()));
+    }
+
+    /// `_core_options` (builtin_exec_platforms.bzl:221-229): the exec
+    /// configuration's `--cpu` is the parent's `--host_cpu`, which
+    /// propagates; `--crosstool_top` is not propagated (the default). The
+    /// CPU names target roots and exec roots of default-named platforms
+    /// (paired captures cpu_arm_set, exec_cpu_arm, exec_host_cpu_ppc and
+    /// cpu_flag_slash in tests/fixtures/pre_platforms_flags).
+    #[test]
+    fn exec_transition_takes_the_host_cpu_and_resets_crosstool_top() {
+        let none = BTreeSet::new();
+        let host = label("@@platforms//host:host");
+        let top = parsed(&["--cpu=arm", "--crosstool_top=//pkg:t"]);
+        let mut configurations = Configurations::new(top.clone());
+        assert_eq!(
+            configurations.output_root(configurations.top()),
+            "bazel-out/arm-fastbuild/bin"
+        );
+        let exec = configurations
+            .intern_exec(configurations.top(), host.clone(), &none)
+            .unwrap();
+        let native = &configurations.get(exec).native;
+        assert_eq!(
+            (native.cpu.as_deref(), native.host_cpu.as_deref()),
+            (None, None)
+        );
+        assert_eq!(native.crosstool_top, None);
+        assert_eq!(configurations.mnemonic(exec), "k8-opt-exec");
+        // The top-level --crosstool_top and --cpu leave the exec
+        // configuration of the defaults unchanged.
+        assert_eq!(
+            exec,
+            exec_transition(&Configuration::default(), host.clone(), &none).id
+        );
+        let top = parsed(&["--host_cpu=ppc"]);
+        let mut configurations = Configurations::new(top.clone());
+        assert_eq!(
+            configurations.output_root(configurations.top()),
+            "bazel-out/k8-fastbuild/bin"
+        );
+        let exec = configurations
+            .intern_exec(configurations.top(), host.clone(), &none)
+            .unwrap();
+        let native = &configurations.get(exec).native;
+        assert_eq!(native.cpu.as_deref(), Some("ppc"));
+        assert_eq!(native.host_cpu(), "ppc");
+        assert_eq!(configurations.mnemonic(exec), "ppc-opt-exec");
+        // A non-default platform name still names the exec root.
+        let named = configurations
+            .intern_exec(configurations.top(), label("//p:linux"), &none)
+            .unwrap();
+        assert_eq!(configurations.mnemonic(named), "linux-opt-exec");
+        // A `--cpu` with a separator is no output directory.
+        assert_eq!(
+            validate_top(&parsed(&["--cpu=a/b"])),
+            Err(
+                "CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /"
+                    .to_owned()
+            )
+        );
+        assert_eq!(validate_top(&top), Ok(()));
     }
 
     /// N28b: `_java_options` (builtin_exec_platforms.bzl:350-385): the exec

@@ -536,10 +536,11 @@ fn run() -> Result<(), String> {
             warn(&warning);
         }
         let starlark = starlark?;
-        engine.set_configuration(bazel_rs::configuration::Configuration::new(
-            native.native,
-            starlark,
-        ));
+        let top = bazel_rs::configuration::Configuration::new(native.native, starlark);
+        // A `--cpu` that is not a valid output directory component is
+        // Bazel's InvalidMnemonicException for the top-level configuration.
+        bazel_rs::config_registry::validate_top(&top)?;
+        engine.set_configuration(top);
     }
     // TargetPattern.Parser's relativeDirectory is the working directory below
     // the workspace root, whether or not it is a package

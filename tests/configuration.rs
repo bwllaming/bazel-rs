@@ -256,8 +256,8 @@ fn values_match_modelled_options_across_configurations() {
             "bazel-rs: While parsing option --define=novalue: Variable definitions must be in the form of a 'name=value' assignment",
         ),
         (
-            &["--cpu=k8"][..],
-            "bazel-rs: unsupported option \"--cpu=k8\"; options are never silently ignored",
+            &["--copt=-O2"][..],
+            "bazel-rs: unsupported option \"--copt=-O2\"; options are never silently ignored",
         ),
     ] {
         let mut command = vec!["build"];

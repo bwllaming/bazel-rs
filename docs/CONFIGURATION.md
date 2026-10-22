@@ -43,6 +43,9 @@ Modelled options, with Bazel's defaults and converters:
 | `--[no]use_target_platform_for_tests` | `false` | BooleanConverter; Bazel's `WARNING: Option 'use_target_platform_for_tests' is deprecated: ...` once per invocation; selectable in `config_setting(values)`; a `query` option (CoreOptions); not carried by the exec transition; part of the identity only when true (docs/TEST_FLAGS.md) | `CoreOptions.java:1110-1123`, `common/options/OptionsParserImpl.java:336-369` |
 | `--ios_sdk_version`, `--watchos_sdk_version`, `--tvos_sdk_version`, `--macos_sdk_version` | `null` | DottedVersionConverter (Bazel's `Dotted version components must all start with the form …` text), stored as given; `config_setting(values)` compares the string (`DottedVersion.Option.equals`); part of the identity only when set; copied to exec configurations; not `query` options (N40, docs/RC_OPTIONS.md) | `rules/apple/AppleCommandLineOptions.java:59-100`, `DottedVersion.java:128-139, 190-258`, `builtin_exec_platforms.bzl:170-176` |
 | `--extra_toolchains` | `[]` | repeatable comma list of target patterns (empty values kept, an empty value adds nothing); duplicates keep the last copy; part of the identity only when non-empty; not a `query` option (docs/TOOLCHAINS.md) | `PlatformOptions.java:98-116, 164-201`, `common/options/Converters.java:253-287` |
+| `--cpu` | `""` (the host CPU, `k8`) | AutoCpuConverter: empty is the host CPU, anything else as given; the CPU part of target output roots (`--cpu=arm`: `arm-fastbuild`; a `/` is Bazel's `CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /`); the exec configuration's is the parent's `--host_cpu`; selectable in `config_setting(values)` (deprecated, below); a `query` option (CoreOptions); part of the identity only when not the host CPU | `CoreOptions.java:279-292`, `AutoCpuConverter.java:28-71`, `OutputPathMnemonicComputer.java:247-258`, `builtin_exec_platforms.bzl:225` |
+| `--host_cpu` | `""` (the host CPU) | AutoCpuConverter; propagated to exec configurations, whose `--cpu` (and so the CPU part of default-named exec platforms' roots, `ppc-opt-exec`) it is; selectable (deprecated); a `query` option; part of the identity only when not the host CPU | `CoreOptions.java:387-394`, `builtin_exec_platforms.bzl:225, 241` |
+| `--crosstool_top` | `@bazel_tools//tools/cpp:toolchain` | LabelConverter (`//` prefixed unless `/`/`@`, main repository mapping; empty is the invalid label `//`; an unknown apparent repository is kept); a NO_OP option only `config_setting(values)` reads (deprecated, below); not carried by the exec transition; not a `query` option (CppOptions: `ARG :: Unrecognized option: ARG`); part of the identity only when not the default | `rules/cpp/CppOptions.java:102-111`, `CoreOptionConverters.java:129-140, 331-361` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
 give the default configuration, exactly like the unset options (both become
@@ -68,12 +71,12 @@ and `--=v`) — while `Expected value after ARG` and converter failures
 converted with the main repository mapping. Every other option keeps the
 existing `unsupported option ...; options are never silently ignored` error.
 `query` accepts and validates the modelled CoreOptions (`-c`, `--[no]stamp`,
-`--define`; `runtime/commands/QueryCommand.java:59-67`, which does not add the
+`--define`, `--cpu`, `--host_cpu`, ...; `runtime/commands/QueryCommand.java:59-67`, which does not add the
 configuration fragments' options, `runtime/BlazeCommandUtils.java:74-98`) and
 ignores them (query is configuration-independent); `--strip` and
 `--force_pic` stay unsupported for `query`, and `--platforms`/`--host_platform`
 are Bazel's `ARG :: Unrecognized option: ARG` (query registers no
-PlatformOptions; docs/PLATFORMS.md). A
+PlatformOptions; docs/PLATFORMS.md), like `--crosstool_top` (CppOptions). A
 workspace-root `platform_mappings` file (read by Bazel by default) fails the
 build explicitly: platform mappings are not modelled.
 
@@ -210,9 +213,10 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
 * **Mnemonics** (`OutputPathMnemonicComputer.computeMnemonic`,
   `analysis/config/OutputPathMnemonicComputer.java:174-245`):
   `{cpu}-{compilation_mode}[-{platform_suffix}][-ST-{12 hex}]`. The CPU
-  descriptor of target configurations is Bazel's `--cpu`, `k8`
-  (`CoreOptions.java:279-282`, `AutoCpuConverter.java:52`; D1 closed in N41); exec
-  configurations use their platform (below). `compilation_mode` and
+  descriptor of target configurations is Bazel's `--cpu`, `k8` by default
+  (`CoreOptions.java:279-282`, `AutoCpuConverter.java:52`; D1 closed in N41;
+  `--cpu=arm` gives `arm-fastbuild`); exec configurations use their platform
+  (below). `compilation_mode` and
   `platform_suffix` are explicit in the path, every other option (native or
   Starlark) that differs from the baseline — the top-level configuration — enters the
   `ST-` hash (`computeNameFragmentWithDiff`, `:286-318`: sorted
@@ -376,7 +380,9 @@ default true, `CoreOptions.java:182-194`; no
 it is one of `host`, `host_platform`, `target_platform`, `default_host`,
 `default_target` (`PlatformOptions.platformIsDefault`,
 `analysis/PlatformOptions.java:43-50`), then the CPU (`k8` on both since
-N41; natively `rust` before) (`OutputPathMnemonicComputer.handlePlatformCpuDescriptor` /
+N41; natively `rust` before; the exec configuration's `--cpu` is the parent's
+`--host_cpu`, so `--host_cpu=ppc` gives `ppc-opt-exec`, paired capture
+pre_platforms_flags/exec_host_cpu_ppc) (`OutputPathMnemonicComputer.handlePlatformCpuDescriptor` /
 `computePlatformName`, `analysis/config/OutputPathMnemonicComputer.java:247-282`).
 `platforms` is then marked explicit in the output path, so it never enters
 the `ST-` hash; the baseline (`BuildConfigurationFunction.getBaselineOptions`,
@@ -509,8 +515,9 @@ configuration.` (`:247-262`).
    JavaOptions version strings `java_runtime_version`,
    `java_language_version`, `tool_java_runtime_version` and
    `tool_java_language_version` (N28b), `cpu` and `collect_code_coverage`
-   (N47; which only a transition sets natively; `--cpu` and
-   `--collect_code_coverage` stay unsupported command-line options); `define` (never writable in Bazel) and `copt`
+   (N47; `--collect_code_coverage` stays an unsupported command-line option,
+   `--cpu` is one since the pre-platforms flags change; `host_cpu` and
+   `crosstool_top` are command-line and `config_setting` options only); `define` (never writable in Bazel) and `copt`
    (always its default natively, `--copt` being unsupported) may only be
    read.
 3. The implementation is called as `impl(settings, attr)`
@@ -759,7 +766,9 @@ Starlark settings `//go/config:{static,race,msan,pure,debug,linkmode,tags,pgopro
 `//go/toolchain:sdk_version`. No other native option (`features`, `cpu`,
 `crosstool_top`, `fission`, `extra_toolchains`, ...) is read or written on
 the go_library path (protobuf's `dist.bzl` and apple_support's transitions
-write `cpu`/`platforms`, already modelled, and are not on it).
+write `cpu`/`platforms`, already modelled, and are not on it; protobuf's
+`build_defs` config_settings select on `cpu` and `crosstool_top`, matched
+natively since the pre-platforms flags change, below).
 
 `--collect_code_coverage` (CoreOptions.collectCodeCoverage,
 `analysis/config/CoreOptions.java:566-578`) is a modelled transition option:
@@ -994,8 +1003,28 @@ first-seen order (`:169-258`). For each entry, `checkOptionValue` (`:420-482`):
 * names that are not a Bazel 9.3 fragment option (after `oldName` mapping;
   INTERNAL options excluded, `BuildOptionDetails.java:56-84`): `unknown
   option: 'X'`;
+* the deprecated pre-platforms flags `cpu`, `host_cpu` and `crosstool_top`
+  (`DEPRECATED_PRE_PLATFORMS_FLAGS`, `:95-97`; the name as written) of a
+  **main-repository** `config_setting` first warn (`:440-447`, a rule
+  warning at the rule's location): `WARNING: LOC: in config_setting rule
+  //p:s: select() on cpu is deprecated. Use platform constraints instead:
+  https://bazel.build/docs/configurable-attributes#platforms.` — once per
+  setting and flag even when analyzed in several configurations (Skyframe's
+  EmittedEventState), before any error of the rule (Skyframe reports
+  warnings at once and replays errors, `SkyFunctionEnvironment.java:816-837`),
+  also when the value then fails to convert. External repositories'
+  settings (`@protobuf//build_defs:config_android-legacy-default-crosstool`)
+  never warn. Values convert like the options (OptionsParser with a null
+  conversion context): `cpu`/`host_cpu` through AutoCpuConverter (`""` is
+  the host CPU, so `{"cpu": ""}` matches by default), `crosstool_top`
+  through `Label.parseCanonical` after the `//` prefix — relative to neither
+  the setting's package nor its repository mapping: `:t` is `//:t`,
+  `//external:android/crosstool` in `@protobuf` is the main repository's
+  label, and `@ext//:t` names the canonical repository `ext`, so it never
+  matches `--crosstool_top=@ext//:t` (`@@ext+//:t` does). Paired capture:
+  `tests/fixtures/pre_platforms_flags` (41 genuine 9.3.0 cases);
 * converter failures: `While parsing option --X=V: MESSAGE`;
-* real Bazel options that are not modelled (for example `cpu`, test options):
+* real Bazel options that are not modelled (for example `copt`, test options):
   explicit `select() on build option 'X' is not implemented in the native
   profile` — never a guessed match;
 * `optionMatches` (`:507-579`): single values by equality; `--define` as a
@@ -1267,8 +1296,8 @@ documented divergences:
   dict of dicts, `ctx.split_attr`, N18d), `config.none()` and
   `analysis_test_transition`, `transition.and_then`, `--flag_alias`, Starlark
   transitions on native options outside the modelled ones (writing
-  `copt` or any other unmodelled option; `--cpu` and `--copt` on the command
-  line; `select()` on `cpu`),
+  `copt` or any other unmodelled option, also `host_cpu` and `crosstool_top`;
+  `--copt` on the command line; `select()` on `copt`),
   `--flag_alias`,
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
   platform mappings, every other build option, `cquery`/`config` commands.

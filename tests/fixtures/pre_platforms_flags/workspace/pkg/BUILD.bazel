@@ -1,0 +1,164 @@
+load(":defs.bzl", "matched", "probe", "probes")
+
+package(default_visibility = ["//visibility:public"])
+
+# --crosstool_top (CppOptions, LabelConverter, default
+# @bazel_tools//tools/cpp:toolchain): config_setting converts the expected
+# value with a null conversion context (Label.parseCanonical).
+config_setting(
+    name = "crosstool_default",
+    values = {"crosstool_top": "@bazel_tools//tools/cpp:toolchain"},
+)
+
+config_setting(
+    name = "crosstool_canonical",
+    values = {"crosstool_top": "@@bazel_tools//tools/cpp:toolchain"},
+)
+
+config_setting(
+    name = "crosstool_custom",
+    values = {"crosstool_top": "//pkg:my_crosstool"},
+)
+
+config_setting(
+    name = "crosstool_relative",
+    values = {"crosstool_top": "pkg:my_crosstool"},
+)
+
+config_setting(
+    name = "crosstool_colon",
+    values = {"crosstool_top": ":my_crosstool"},
+)
+
+config_setting(
+    name = "crosstool_ext_apparent",
+    values = {"crosstool_top": "@ext//:my_crosstool"},
+)
+
+config_setting(
+    name = "crosstool_ext_canonical",
+    values = {"crosstool_top": "@@ext+//:my_crosstool"},
+)
+
+# --cpu and --host_cpu (CoreOptions, AutoCpuConverter: "" is the host CPU).
+config_setting(
+    name = "cpu_k8",
+    values = {"cpu": "k8"},
+)
+
+config_setting(
+    name = "cpu_arm",
+    values = {"cpu": "arm"},
+)
+
+config_setting(
+    name = "cpu_empty",
+    values = {"cpu": ""},
+)
+
+config_setting(
+    name = "host_cpu_k8",
+    values = {"host_cpu": "k8"},
+)
+
+config_setting(
+    name = "host_cpu_ppc",
+    values = {"host_cpu": "ppc"},
+)
+
+# Two deprecated flags in one config_setting: one warning each, in order.
+config_setting(
+    name = "mixed",
+    values = {
+        "compilation_mode": "fastbuild",
+        "cpu": "k8",
+        "crosstool_top": "@bazel_tools//tools/cpp:toolchain",
+    },
+)
+
+# Conversion errors: the warning comes first.
+config_setting(
+    name = "crosstool_bad",
+    values = {"crosstool_top": "a:b:c"},
+)
+
+config_setting(
+    name = "crosstool_empty",
+    values = {"crosstool_top": ""},
+)
+
+config_setting(
+    name = "error_then_cpu",
+    values = {
+        "compilation_mode": "fast",
+        "cpu": "k8",
+    },
+)
+
+probes([
+    "crosstool_default",
+    "crosstool_canonical",
+    "crosstool_custom",
+    "crosstool_relative",
+    "crosstool_colon",
+    "crosstool_ext_apparent",
+    "crosstool_ext_canonical",
+    "cpu_k8",
+    "cpu_arm",
+    "cpu_empty",
+    "host_cpu_k8",
+    "host_cpu_ppc",
+    "mixed",
+    "crosstool_bad",
+    "crosstool_empty",
+    "error_then_cpu",
+])
+
+# Every valid main-repository setting at once (one warning per setting).
+probe(
+    name = "all",
+    matches = matched([
+        ":crosstool_default",
+        ":crosstool_canonical",
+        ":crosstool_custom",
+        ":crosstool_relative",
+        ":crosstool_colon",
+        ":crosstool_ext_apparent",
+        ":crosstool_ext_canonical",
+        ":cpu_k8",
+        ":cpu_arm",
+        ":cpu_empty",
+        ":host_cpu_k8",
+        ":host_cpu_ppc",
+    ]),
+)
+
+# External config_settings (like @protobuf//build_defs's): no warning.
+probe(
+    name = "ext_conditions",
+    matches = matched([
+        "@ext//:android_legacy",
+        "@ext//:crosstool_default",
+        "@ext//:crosstool_main_custom",
+        "@ext//:cpu_k8",
+        "@ext//:cpu_win32",
+        "@ext//:host_cpu_k8",
+    ]),
+)
+
+# The exec configuration's --cpu is the parent's --host_cpu.
+probe(
+    name = "exec_cpu",
+    matches = matched([":cpu_k8"]),
+    tool = ":tool_cpu",
+)
+
+probe(
+    name = "tool_cpu",
+    matches = matched([
+        ":cpu_k8",
+        ":cpu_arm",
+        ":host_cpu_k8",
+        ":host_cpu_ppc",
+    ]),
+)

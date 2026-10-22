@@ -39,6 +39,14 @@ pub enum OptionKind {
     /// DottedVersionConverter (build/lib/rules/apple/DottedVersionConverter.java:21-36),
     /// default null.
     DottedVersion,
+    /// CoreOptionConverters.LabelConverter (build/lib/analysis/config/CoreOptionConverters.java:129-140):
+    /// convertOptionsLabel without a default for an empty input (`//`, an
+    /// invalid label).
+    OptionsLabel,
+    /// AutoCpuConverter (build/lib/analysis/config/AutoCpuConverter.java:28-71):
+    /// an empty input is this host's CPU ([`host_cpu`]), anything else the
+    /// value as given.
+    AutoCpu,
 }
 
 /// One modelled native option (an `@Option` of a FragmentOptions class).
@@ -290,7 +298,58 @@ pub const OPTIONS: &[OptionDef] = &[
         source: "build/lib/rules/apple/AppleCommandLineOptions.java:92-100",
         deprecation: None,
     },
+    // ConfigSetting.DEPRECATED_PRE_PLATFORMS_FLAGS (rules/config/ConfigSetting.java:95-97):
+    // selectable in `config_setting(values)` with Bazel's main-repository
+    // deprecation warning (crate::config_setting). `--cpu` names the output
+    // directory of target configurations (crate::config_registry); the exec
+    // transition sets it to `--host_cpu` (builtin_exec_platforms.bzl:225).
+    OptionDef {
+        name: "cpu",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::AutoCpu,
+        default: "",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/analysis/config/CoreOptions.java:279-292",
+        deprecation: None,
+    },
+    OptionDef {
+        name: "host_cpu",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::AutoCpu,
+        default: "",
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/analysis/config/CoreOptions.java:387-394",
+        deprecation: None,
+    },
+    // A NO_OP option in Bazel 9.3: nothing but `config_setting` reads it.
+    OptionDef {
+        name: "crosstool_top",
+        old_name: None,
+        abbrev: None,
+        kind: OptionKind::OptionsLabel,
+        default: DEFAULT_CROSSTOOL_TOP,
+        allow_multiple: false,
+        non_configurable: false,
+        source: "build/lib/rules/cpp/CppOptions.java:102-111",
+        deprecation: None,
+    },
 ];
+
+/// The `--crosstool_top` default (rules/cpp/CppOptions.java:102-111).
+pub const DEFAULT_CROSSTOOL_TOP: &str = "@bazel_tools//tools/cpp:toolchain";
+
+/// The label of [`DEFAULT_CROSSTOOL_TOP`].
+pub fn default_crosstool_top() -> Label {
+    Label {
+        repository: "bazel_tools".into(),
+        package: "tools/cpp".into(),
+        name: "toolchain".into(),
+    }
+}
 
 /// `--collect_code_coverage` (CoreOptions.java:566-578): a boolean option
 /// that only a Starlark transition sets natively (N47), so not in
@@ -543,6 +602,12 @@ pub fn convert(
         OptionKind::String => Ok(OptionValue::String(input.to_owned())),
         OptionKind::DottedVersion => validate_dotted_version(input)
             .map(|()| OptionValue::DottedVersion(Some(input.to_owned()))),
+        OptionKind::OptionsLabel => label(input).map(OptionValue::Label),
+        OptionKind::AutoCpu => Ok(OptionValue::String(if input.is_empty() {
+            host_cpu().to_owned()
+        } else {
+            input.to_owned()
+        })),
     }
 }
 
@@ -622,11 +687,29 @@ pub struct NativeOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub incompatible_auto_exec_groups: bool,
     /// CoreOptions.cpu (`--cpu`, CoreOptions.java:279-292; AutoCpuConverter
-    /// gives the host CPU for the default ""): `None` is the host CPU, a
-    /// value only a Starlark transition can set natively (the command-line
-    /// option stays unsupported). Omitted from the identity when unset.
+    /// gives the host CPU for the default ""): `None` is the host CPU. Set
+    /// on the command line or by a Starlark transition; the exec transition
+    /// sets it to `--host_cpu` (builtin_exec_platforms.bzl:225). Omitted
+    /// from the identity when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu: Option<String>,
+    /// CoreOptions.hostCpu (`--host_cpu`, CoreOptions.java:387-394;
+    /// AutoCpuConverter): `None` is the host CPU. Propagated by the exec
+    /// transition (builtin_exec_platforms.bzl:241). Omitted from the
+    /// identity when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_cpu: Option<String>,
+    /// CppOptions.crosstoolTop (`--crosstool_top`, CppOptions.java:102-111;
+    /// LabelConverter), a NO_OP option only `config_setting(values)` reads:
+    /// `None` is the default [`DEFAULT_CROSSTOOL_TOP`]. Not propagated by
+    /// the exec transition (builtin_exec_platforms.bzl:291-348), so exec
+    /// configurations have the default. Omitted from the identity when
+    /// unset.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_optional_label"
+    )]
+    pub crosstool_top: Option<Label>,
     /// CoreOptions.collectCodeCoverage (`--collect_code_coverage`,
     /// analysis/config/CoreOptions.java:566-578, default false): a value
     /// only a Starlark transition sets natively (N47: rules_go's
@@ -792,6 +875,16 @@ fn serialize_label<S: serde::Serializer>(label: &Label, s: S) -> Result<S::Ok, S
     s.serialize_str(&crate::rule_declarations::canonical_form(label))
 }
 
+fn serialize_optional_label<S: serde::Serializer>(
+    label: &Option<Label>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    match label {
+        Some(label) => serialize_label(label, s),
+        None => s.serialize_none(),
+    }
+}
+
 /// The label of [`DEFAULT_HOST_PLATFORM`].
 pub fn default_host_platform() -> Label {
     Label {
@@ -819,6 +912,8 @@ impl Default for NativeOptions {
             java: JavaVersions::default(),
             no_config: false,
             cpu: None,
+            host_cpu: None,
+            crosstool_top: None,
             collect_code_coverage: false,
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
@@ -880,8 +975,25 @@ impl NativeOptions {
             name if self.apple_sdk_versions.get(name).is_some() => {
                 OptionValue::DottedVersion(self.apple_sdk_versions.get(name).cloned().flatten())
             }
+            "cpu" => OptionValue::String(self.cpu().to_owned()),
+            "host_cpu" => OptionValue::String(self.host_cpu().to_owned()),
+            "crosstool_top" => OptionValue::Label(
+                self.crosstool_top
+                    .clone()
+                    .unwrap_or_else(default_crosstool_top),
+            ),
             _ => return None,
         })
+    }
+
+    /// CoreOptions.cpu after AutoCpuConverter: the host CPU when unset.
+    pub fn cpu(&self) -> &str {
+        self.cpu.as_deref().unwrap_or(host_cpu())
+    }
+
+    /// CoreOptions.hostCpu after AutoCpuConverter: the host CPU when unset.
+    pub fn host_cpu(&self) -> &str {
+        self.host_cpu.as_deref().unwrap_or(host_cpu())
     }
 }
 
@@ -1204,7 +1316,9 @@ impl CommandLineOptions {
             // B1/query_platforms_mac: `--platforms=//:mac :: Unrecognized
             // option: --platforms=//:mac`). Nor JavaOptions (paired capture
             // N28 A2/query_jrv: `--java_runtime_version=remotejdk_11 ::
-            // Unrecognized option: --java_runtime_version=remotejdk_11`).
+            // Unrecognized option: --java_runtime_version=remotejdk_11`), nor
+            // CppOptions' `--crosstool_top` (tests/fixtures/pre_platforms_flags
+            // query_crosstool_top).
             const JAVA_VERSIONS: [&str; 4] = [
                 "java_runtime_version",
                 "java_language_version",
@@ -1218,6 +1332,7 @@ impl CommandLineOptions {
                     "host_platform",
                     "experimental_host_platform",
                     "extra_toolchains",
+                    "crosstool_top",
                 ]
                 .contains(&name)
                     || JAVA_VERSIONS.contains(&name)
@@ -1330,7 +1445,10 @@ impl CommandLineOptions {
             return Ok(Parsed::NotModelled);
         };
         // Non-label values convert in the first parsing round already.
-        if !matches!(option.kind, OptionKind::LabelList | OptionKind::Label) {
+        if !matches!(
+            option.kind,
+            OptionKind::LabelList | OptionKind::Label | OptionKind::OptionsLabel
+        ) {
             convert(option, &value, &|_| unreachable!("no labels"))
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
         }
@@ -1372,11 +1490,15 @@ impl CommandLineOptions {
             labels(text).or_else(|error| deferred_unknown_repository(text).ok_or(error))
         };
         for (option, form, value) in &self.entries {
-            let parser: &LabelParser<'_> = if matches!(option.name, "platforms" | "host_platform") {
-                &platform_labels
-            } else {
-                labels
-            };
+            // `--crosstool_top` keeps an unresolvable repository too: the
+            // NO_OP option is never resolved (paired capture
+            // pre_platforms_flags/crosstool_flag_unknown_repo succeeds).
+            let parser: &LabelParser<'_> =
+                if matches!(option.name, "platforms" | "host_platform" | "crosstool_top") {
+                    &platform_labels
+                } else {
+                    labels
+                };
             let converted = convert(option, value, parser)
                 .map_err(|error| format!("While parsing option {form}: {error}"))?;
             match (option.name, converted) {
@@ -1413,6 +1535,17 @@ impl CommandLineOptions {
                         .apple_sdk_versions
                         .slot(name)
                         .expect("an Apple SDK version option") = version;
+                }
+                // The host CPU and the default label are the unset values,
+                // so spelling a default keeps the default configuration.
+                ("cpu", OptionValue::String(value)) => {
+                    native.cpu = (value != host_cpu()).then_some(value)
+                }
+                ("host_cpu", OptionValue::String(value)) => {
+                    native.host_cpu = (value != host_cpu()).then_some(value)
+                }
+                ("crosstool_top", OptionValue::Label(label)) => {
+                    native.crosstool_top = (label != default_crosstool_top()).then_some(label)
                 }
                 _ => unreachable!("converter shape of {}", option.name),
             }
@@ -1680,7 +1813,7 @@ mod tests {
             );
         }
         assert!(matches!(
-            options.parse("--cpu=k8", None),
+            options.parse("--copt=-O2", None),
             Ok(Parsed::NotModelled)
         ));
         assert!(matches!(options.parse("-k", None), Ok(Parsed::NotModelled)));
@@ -2101,6 +2234,115 @@ mod tests {
         assert_eq!(
             parsed(&["--nohost_action_env"]).unwrap_err(),
             "--nohost_action_env :: Illegal use of 'no' prefix on non-boolean option: --nohost_action_env"
+        );
+    }
+
+    /// `--cpu`/`--host_cpu` (CoreOptions, AutoCpuConverter) and
+    /// `--crosstool_top` (CppOptions, LabelConverter): the defaults spelled
+    /// explicitly keep the default identity; other values are part of it;
+    /// `query` accepts only the CoreOptions (paired captures query_cpu,
+    /// query_crosstool_top in tests/fixtures/pre_platforms_flags).
+    #[test]
+    fn pre_platforms_flags_parse_and_enter_the_identity_when_set() {
+        let default = Configuration::default();
+        for args in [
+            &["--cpu=k8"][..],
+            &["--cpu="][..],
+            &["--host_cpu", "k8"][..],
+            &["--host_cpu="][..],
+            &["--crosstool_top=@bazel_tools//tools/cpp:toolchain"][..],
+            &["--crosstool_top", "@@bazel_tools//tools/cpp:toolchain"][..],
+            &["--cpu=arm", "--cpu=k8"][..],
+        ] {
+            assert_eq!(parsed(args).unwrap().id, default.id, "{args:?}");
+        }
+        assert_eq!(
+            default.native.value("cpu"),
+            Some(OptionValue::String(host_cpu().into()))
+        );
+        assert_eq!(
+            default.native.value("host_cpu"),
+            Some(OptionValue::String(host_cpu().into()))
+        );
+        assert_eq!(
+            default.native.value("crosstool_top"),
+            Some(OptionValue::Label(default_crosstool_top()))
+        );
+        assert_eq!(
+            parse_canonical_option_label(DEFAULT_CROSSTOOL_TOP),
+            Ok(default_crosstool_top())
+        );
+        let set = parsed(&[
+            "--cpu=arm",
+            "--host_cpu",
+            "ppc",
+            "--crosstool_top=pkg:my_crosstool",
+        ])
+        .unwrap();
+        assert_eq!(set.native.cpu.as_deref(), Some("arm"));
+        assert_eq!(set.native.host_cpu(), "ppc");
+        assert_eq!(
+            set.native.value("crosstool_top"),
+            Some(OptionValue::Label(
+                Label::parse_canonical("//pkg:my_crosstool").unwrap()
+            ))
+        );
+        assert_eq!(
+            String::from_utf8(canonical_serialization(&set.native, &set.starlark, false)).unwrap(),
+            r#"{"version":1,"native":{"compilation_mode":"fastbuild","stamp":false,"define":[],"strip":"sometimes","force_pic":false,"platforms":["@@bazel_tools//tools:host_platform"],"host_platform":"@@bazel_tools//tools:host_platform","cpu":"arm","host_cpu":"ppc","crosstool_top":"//pkg:my_crosstool"},"starlark":[]}"#
+        );
+        for args in [
+            &["--cpu=arm"][..],
+            &["--host_cpu=ppc"][..],
+            &["--crosstool_top=//pkg:my_crosstool"][..],
+        ] {
+            assert_ne!(parsed(args).unwrap().id, default.id, "{args:?}");
+        }
+        // LabelConverter has no default for an empty value.
+        assert_eq!(
+            parsed(&["--crosstool_top="]).unwrap_err(),
+            "While parsing option --crosstool_top=: invalid target name '': empty target name"
+        );
+        assert_eq!(
+            parsed(&["--crosstool_top=a:b:c"]).unwrap_err(),
+            "While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'"
+        );
+        for arg in ["--nocpu", "--nocrosstool_top"] {
+            assert_eq!(
+                parsed(&[arg]).unwrap_err(),
+                format!("{arg} :: Illegal use of 'no' prefix on non-boolean option: {arg}")
+            );
+        }
+        // An apparent repository the main repository does not see is kept.
+        let mut options = CommandLineOptions::default();
+        options.parse("--crosstool_top=@nope//:x", None).unwrap();
+        let configuration = options
+            .configuration(&|text| {
+                if text.starts_with("@nope") {
+                    Err("unknown apparent repository @nope".into())
+                } else {
+                    canonical(text)
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            configuration
+                .native
+                .value("crosstool_top")
+                .unwrap()
+                .to_string(),
+            "@@[unknown repo 'nope' requested from @@]//:x"
+        );
+        let mut query = CommandLineOptions::for_query();
+        for arg in ["--cpu=arm", "--host_cpu=ppc"] {
+            assert!(
+                matches!(query.parse(arg, None), Ok(Parsed::Consumed(false))),
+                "{arg}"
+            );
+        }
+        assert_eq!(
+            query.parse("--crosstool_top=//pkg:t", None).err().unwrap(),
+            "--crosstool_top=//pkg:t :: Unrecognized option: --crosstool_top=//pkg:t"
         );
     }
 

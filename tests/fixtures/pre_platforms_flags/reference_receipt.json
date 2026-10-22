@@ -1,0 +1,1159 @@
+{
+ "schema": "pre-platforms-flags-reference-receipt/v1",
+ "fixture": "pre_platforms_flags",
+ "purpose": "config_setting(values) on the deprecated pre-platforms flags cpu, host_cpu and crosstool_top (ConfigSetting.DEPRECATED_PRE_PLATFORMS_FLAGS, rules/config/ConfigSetting.java:95-97, 420-482): value conversion through AutoCpuConverter and the LabelConverter with a null conversion context, the main-repository-only deprecation warning and its position, conversion errors, the --cpu/--host_cpu/--crosstool_top command-line options (output roots, exec transition, query). Motivation: @protobuf//build_defs:config_android-legacy-default-crosstool (values = {crosstool_top: //external:android/crosstool}) blocked every analysis depending on @protobuf//:protoc.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no [--show_result=1000 for build] <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; default registry (bcr.bazel.build); one fresh copy of the fixture workspace per case (platforms extracted from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "387073aaa8e66d5d42dbb3b6aae7d7670fb8a5c3cd6abb675b6bc897f3eb8935",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/crosstool-capture.py, crosstool-receipt.py (not committed)",
+  "sha256": {
+   "crosstool-capture.py": "95dbf0b369fe5c89a7014107ad03b855b03e86238949bb2c216c370c8c321fac",
+   "crosstool-receipt.py": "c82faf84f3eac136a666fe3c32c20d9d0159a2a1c13d1de39abd1f3a845ce3a3"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "db15c900992e22b511516459f24d3c827ad28237cc23cd13a1418819bdff9338",
+  "ext/BUILD.bazel": "116bdbf1faa95df145b5fb145fe0f7d0761d6fdc7b12778eae32f401134e3426",
+  "ext/MODULE.bazel": "a02af1c154e0a4d866238124b22f169605295dbb70eb61b801587e01ea01d40c",
+  "ext/defs.bzl": "6e03cda795ae21048b1c4f098e611ad450579c6a4bff3387f836e7364fcbfe5e",
+  "pkg/BUILD.bazel": "43966e062db8b0d0642cdb28866be5a33fe55d776e4c8f3f31d32202dd796e85",
+  "pkg/defs.bzl": "6e03cda795ae21048b1c4f098e611ad450579c6a4bff3387f836e7364fcbfe5e"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Native stdout/outputs paths are below the action output root (`.../outputs/`).",
+ "comparison (tests/pre_platforms_flags.rs, live)": "success equal (genuine exit 0 <=> native exit 0); WARNING lines equal per config_setting (each setting's warnings in order; Skyframe evaluates different config_settings in parallel, so their relative order is not deterministic in Bazel) and other warnings in order; every warning before the first error; Bazel's first ERROR message (an external repository's location reduced to its BUILD file name) ends a native stderr line; built outputs (path below bazel-out -> contents) equal; query stdout equal.",
+ "genuine_key_findings": [
+  "Main-repository config_setting on cpu/host_cpu/crosstool_top: `WARNING: <WS>/pkg/BUILD.bazel:L:C: in config_setting rule //pkg:NAME: select() on FLAG is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.`, once per setting and flag (also when analyzed in the target and the exec configuration), before `INFO: Analyzed target`.",
+  "External config_settings (@ext//:..., like @protobuf//build_defs's) never warn; a main-repository setting selected from @ext warns (ext_p_main).",
+  "The warning precedes the rule's errors even when the failing entry comes first (error_then_cpu): Skyframe reports warnings at once and replays errors after the function (SkyFunctionEnvironment.java:816-837, Event.storeForReplay).",
+  "crosstool_top values: `@bazel_tools//tools/cpp:toolchain` and `@@...` match the default; `pkg:t` is `//pkg:t`; `:t` is `//:t` (not the setting's package); `//pkg:t` in @ext names the MAIN repository; `@ext//:t` names canonical repo `ext` and never matches --crosstool_top=@ext//:t (`@@ext+//:t` does): Label.parseCanonical (null conversion context).",
+  "cpu: `{\"cpu\": \"\"}` matches by default (AutoCpuConverter: empty is the host CPU k8); --cpu=arm builds into bazel-out/arm-fastbuild; --cpu=k8 and --cpu= are the default configuration; --cpu=a/b: `ERROR: CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /` (exit 2).",
+  "Exec configuration: --cpu = the parent's --host_cpu (k8-opt-exec by default and with --cpu=arm; ppc-opt-exec with --host_cpu=ppc).",
+  "Conversion errors: `While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'`, `--crosstool_top=: invalid target name '': empty target name` (command line exit 2; config_setting attribute error exit 1); --crosstool_top=@nope//:x is accepted (NO_OP option, never resolved).",
+  "query accepts --cpu/--host_cpu (CoreOptions); `--crosstool_top=... :: Unrecognized option: ...` (exit 2)."
+ ],
+ "known_divergences": [
+  "Exit codes of command-line errors: genuine 2, native 1 (native's single error channel); success/failure always agrees.",
+  "Native prints its own result format (`LABEL\\tPATH` on stdout, `bazel-rs: N actions executed ...`) and no INFO lines. Native analysis warnings (these and every other analysis warning, engine-wide and pre-existing) are printed once the build returns, so they keep their order relative to errors and to the loading-phase pattern warning, but an executed action's logs precede them, while genuine reports them during analysis; the fixture's actions print nothing, and under --nobuild nothing executes.",
+  "External repository locations: genuine `<OB>/external/ext+/BUILD.bazel:37:15`, native the local_path_override directory `<WS>/ext/BUILD.bazel:37:15` (line and column equal).",
+  "The relative order of warnings from different config_settings (all_default, all_set, exec_host_cpu_ppc) differs: genuine's is Skyframe's parallel evaluation order, native's the deterministic analysis order.",
+  "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case."
+ ],
+ "counts": {
+  "MATCH": 41
+ },
+ "scratch_removed": true,
+ "cases": {
+  "crosstool_default": {
+   "argv": [
+    "build",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.665,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_default (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_default up-to-date:\n  bazel-bin/pkg/p_crosstool_default.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "crosstool_default\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.422,
+    "stdout": "//pkg:p_crosstool_default\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "crosstool_default\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_canonical": {
+   "argv": [
+    "build",
+    "//pkg:p_crosstool_canonical"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.671,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_canonical (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_canonical up-to-date:\n  bazel-bin/pkg/p_crosstool_canonical.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_canonical.txt": "crosstool_canonical\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.34,
+    "stdout": "//pkg:p_crosstool_canonical\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_canonical.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_canonical.txt": "crosstool_canonical\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_custom_unset": {
+   "argv": [
+    "build",
+    "//pkg:p_crosstool_custom"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.537,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_custom (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_custom up-to-date:\n  bazel-bin/pkg/p_crosstool_custom.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt": "!crosstool_custom\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.351,
+    "stdout": "//pkg:p_crosstool_custom\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt": "!crosstool_custom\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_custom_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=//pkg:my_crosstool",
+    "//pkg:p_crosstool_custom"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 13.342,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_custom (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_custom up-to-date:\n  bazel-bin/pkg/p_crosstool_custom.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt": "crosstool_custom\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.323,
+    "stdout": "//pkg:p_crosstool_custom\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_custom.txt": "crosstool_custom\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_default_when_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=//pkg:my_crosstool",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.475,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_default (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_default up-to-date:\n  bazel-bin/pkg/p_crosstool_default.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "!crosstool_default\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.352,
+    "stdout": "//pkg:p_crosstool_default\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "!crosstool_default\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_relative_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=pkg:my_crosstool",
+    "//pkg:p_crosstool_relative"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.551,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_relative (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_relative up-to-date:\n  bazel-bin/pkg/p_crosstool_relative.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_relative.txt": "crosstool_relative\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.345,
+    "stdout": "//pkg:p_crosstool_relative\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_relative.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_relative.txt": "crosstool_relative\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_colon_root": {
+   "argv": [
+    "build",
+    "--crosstool_top=//:my_crosstool",
+    "//pkg:p_crosstool_colon"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.453,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_colon (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_colon up-to-date:\n  bazel-bin/pkg/p_crosstool_colon.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_colon.txt": "crosstool_colon\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.337,
+    "stdout": "//pkg:p_crosstool_colon\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_colon.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_colon.txt": "crosstool_colon\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_ext_apparent_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=@ext//:my_crosstool",
+    "//pkg:p_crosstool_ext_apparent"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.617,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_ext_apparent (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_ext_apparent up-to-date:\n  bazel-bin/pkg/p_crosstool_ext_apparent.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_apparent.txt": "!crosstool_ext_apparent\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.374,
+    "stdout": "//pkg:p_crosstool_ext_apparent\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_apparent.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_apparent.txt": "!crosstool_ext_apparent\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_ext_canonical_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=@ext//:my_crosstool",
+    "//pkg:p_crosstool_ext_canonical"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.509,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_ext_canonical (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_ext_canonical up-to-date:\n  bazel-bin/pkg/p_crosstool_ext_canonical.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_canonical.txt": "crosstool_ext_canonical\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.325,
+    "stdout": "//pkg:p_crosstool_ext_canonical\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_canonical.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_ext_canonical.txt": "crosstool_ext_canonical\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_explicit_default": {
+   "argv": [
+    "build",
+    "--crosstool_top=@bazel_tools//tools/cpp:toolchain",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.34,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_default (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_default up-to-date:\n  bazel-bin/pkg/p_crosstool_default.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "crosstool_default\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.338,
+    "stdout": "//pkg:p_crosstool_default\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "crosstool_default\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_flag_empty": {
+   "argv": [
+    "build",
+    "--crosstool_top=",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.224,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --crosstool_top=: invalid target name '': empty target name\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.024,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: While parsing option --crosstool_top=: invalid target name '': empty target name\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": false,
+   "warnings_same_order": true
+  },
+  "crosstool_flag_bad": {
+   "argv": [
+    "build",
+    "--crosstool_top=a:b:c",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.259,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.022,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": false,
+   "warnings_same_order": true
+  },
+  "crosstool_flag_unknown_repo": {
+   "argv": [
+    "build",
+    "--crosstool_top=@nope//:x",
+    "//pkg:p_crosstool_default"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.572,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_crosstool_default (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_crosstool_default up-to-date:\n  bazel-bin/pkg/p_crosstool_default.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "!crosstool_default\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.323,
+    "stdout": "//pkg:p_crosstool_default\tbazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_crosstool_default.txt": "!crosstool_default\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_k8": {
+   "argv": [
+    "build",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.543,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_k8 (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_k8 up-to-date:\n  bazel-bin/pkg/p_cpu_k8.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.311,
+    "stdout": "//pkg:p_cpu_k8\tbazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_arm_unset": {
+   "argv": [
+    "build",
+    "//pkg:p_cpu_arm"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.497,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_arm (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_arm up-to-date:\n  bazel-bin/pkg/p_cpu_arm.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_arm.txt": "!cpu_arm\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.317,
+    "stdout": "//pkg:p_cpu_arm\tbazel-out/k8-fastbuild/bin/pkg/p_cpu_arm.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_arm.txt": "!cpu_arm\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_arm_set": {
+   "argv": [
+    "build",
+    "--cpu=arm",
+    "//pkg:p_cpu_arm"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.435,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_arm (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_arm up-to-date:\n  bazel-bin/pkg/p_cpu_arm.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/p_cpu_arm.txt": "cpu_arm\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.31,
+    "stdout": "//pkg:p_cpu_arm\tbazel-out/arm-fastbuild/bin/pkg/p_cpu_arm.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/p_cpu_arm.txt": "cpu_arm\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_k8_when_arm": {
+   "argv": [
+    "build",
+    "--cpu=arm",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.66,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_k8 (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_k8 up-to-date:\n  bazel-bin/pkg/p_cpu_k8.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/p_cpu_k8.txt": "!cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.309,
+    "stdout": "//pkg:p_cpu_k8\tbazel-out/arm-fastbuild/bin/pkg/p_cpu_k8.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/p_cpu_k8.txt": "!cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_empty": {
+   "argv": [
+    "build",
+    "//pkg:p_cpu_empty"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.714,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_empty (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_empty up-to-date:\n  bazel-bin/pkg/p_cpu_empty.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_empty.txt": "cpu_empty\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.309,
+    "stdout": "//pkg:p_cpu_empty\tbazel-out/k8-fastbuild/bin/pkg/p_cpu_empty.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_empty.txt": "cpu_empty\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_flag_k8": {
+   "argv": [
+    "build",
+    "--cpu=k8",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.676,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_k8 (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_k8 up-to-date:\n  bazel-bin/pkg/p_cpu_k8.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.298,
+    "stdout": "//pkg:p_cpu_k8\tbazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_flag_empty": {
+   "argv": [
+    "build",
+    "--cpu=",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.757,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_cpu_k8 (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_cpu_k8 up-to-date:\n  bazel-bin/pkg/p_cpu_k8.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.323,
+    "stdout": "//pkg:p_cpu_k8\tbazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_cpu_k8.txt": "cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "cpu_flag_slash": {
+   "argv": [
+    "build",
+    "--cpu=a/b",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 14.884,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.022,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": false,
+   "warnings_same_order": true
+  },
+  "host_cpu_k8": {
+   "argv": [
+    "build",
+    "//pkg:p_host_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.501,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_host_cpu_k8 (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_host_cpu_k8 up-to-date:\n  bazel-bin/pkg/p_host_cpu_k8.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_k8.txt": "host_cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.296,
+    "stdout": "//pkg:p_host_cpu_k8\tbazel-out/k8-fastbuild/bin/pkg/p_host_cpu_k8.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_k8.txt": "host_cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "host_cpu_ppc_unset": {
+   "argv": [
+    "build",
+    "//pkg:p_host_cpu_ppc"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.114,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_host_cpu_ppc (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_host_cpu_ppc up-to-date:\n  bazel-bin/pkg/p_host_cpu_ppc.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt": "!host_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.31,
+    "stdout": "//pkg:p_host_cpu_ppc\tbazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt": "!host_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "host_cpu_ppc_set": {
+   "argv": [
+    "build",
+    "--host_cpu=ppc",
+    "//pkg:p_host_cpu_ppc"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.117,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_host_cpu_ppc (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_host_cpu_ppc up-to-date:\n  bazel-bin/pkg/p_host_cpu_ppc.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt": "host_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.344,
+    "stdout": "//pkg:p_host_cpu_ppc\tbazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_host_cpu_ppc.txt": "host_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "mixed": {
+   "argv": [
+    "build",
+    "//pkg:p_mixed"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.671,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_mixed (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_mixed up-to-date:\n  bazel-bin/pkg/p_mixed.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_mixed.txt": "mixed\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.327,
+    "stdout": "//pkg:p_mixed\tbazel-out/k8-fastbuild/bin/pkg/p_mixed.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_mixed.txt": "mixed\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_bad": {
+   "argv": [
+    "build",
+    "//pkg:p_crosstool_bad"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.573,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:80:15: in config_setting rule //pkg:crosstool_bad: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nERROR: <WS>/pkg/BUILD.bazel:80:15: in values attribute of config_setting rule //pkg:crosstool_bad: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\nERROR: <WS>/pkg/BUILD.bazel:80:15: Analysis of target '//pkg:crosstool_bad' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_crosstool_bad\nERROR: Analysis of target '//pkg:p_crosstool_bad' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.339,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:80:15: in config_setting rule //pkg:crosstool_bad: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: <WS>/pkg/BUILD.bazel:80:15: in values attribute of config_setting rule //pkg:crosstool_bad: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\n<WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_crosstool_bad\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "crosstool_empty": {
+   "argv": [
+    "build",
+    "//pkg:p_crosstool_empty"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.621,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:85:15: in config_setting rule //pkg:crosstool_empty: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nERROR: <WS>/pkg/BUILD.bazel:85:15: in values attribute of config_setting rule //pkg:crosstool_empty: error while parsing configuration settings: While parsing option --crosstool_top=: invalid target name '': empty target name\nERROR: <WS>/pkg/BUILD.bazel:85:15: Analysis of target '//pkg:crosstool_empty' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_crosstool_empty\nERROR: Analysis of target '//pkg:p_crosstool_empty' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.319,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:85:15: in config_setting rule //pkg:crosstool_empty: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: <WS>/pkg/BUILD.bazel:85:15: in values attribute of config_setting rule //pkg:crosstool_empty: error while parsing configuration settings: While parsing option --crosstool_top=: invalid target name '': empty target name\n<WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_crosstool_empty\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "error_then_cpu": {
+   "argv": [
+    "build",
+    "//pkg:p_error_then_cpu"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.91,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:90:15: in config_setting rule //pkg:error_then_cpu: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nERROR: <WS>/pkg/BUILD.bazel:90:15: in values attribute of config_setting rule //pkg:error_then_cpu: error while parsing configuration settings: While parsing option --compilation_mode=fast: Not a valid compilation mode: 'fast' (should be fastbuild, dbg or opt)\nERROR: <WS>/pkg/BUILD.bazel:90:15: Analysis of target '//pkg:error_then_cpu' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_error_then_cpu\nERROR: Analysis of target '//pkg:p_error_then_cpu' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.308,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:90:15: in config_setting rule //pkg:error_then_cpu: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: <WS>/pkg/BUILD.bazel:90:15: in values attribute of config_setting rule //pkg:error_then_cpu: error while parsing configuration settings: While parsing option --compilation_mode=fast: Not a valid compilation mode: 'fast' (should be fastbuild, dbg or opt)\n<WS>/pkg/BUILD.bazel:98:7: errors encountered resolving select() keys for //pkg:p_error_then_cpu\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "all_default": {
+   "argv": [
+    "build",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.794,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:all (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:all up-to-date:\n  bazel-bin/pkg/all.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "crosstool_default\ncrosstool_canonical\n!crosstool_custom\n!crosstool_relative\n!crosstool_colon\n!crosstool_ext_apparent\n!crosstool_ext_canonical\ncpu_k8\n!cpu_arm\ncpu_empty\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.307,
+    "stdout": "//pkg:all\tbazel-out/k8-fastbuild/bin/pkg/all.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "crosstool_default\ncrosstool_canonical\n!crosstool_custom\n!crosstool_relative\n!crosstool_colon\n!crosstool_ext_apparent\n!crosstool_ext_canonical\ncpu_k8\n!cpu_arm\ncpu_empty\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": false
+  },
+  "all_set": {
+   "argv": [
+    "build",
+    "--cpu=arm",
+    "--host_cpu=ppc",
+    "--crosstool_top=//pkg:my_crosstool",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.647,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:all (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:all up-to-date:\n  bazel-bin/pkg/all.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/all.txt": "!crosstool_default\n!crosstool_canonical\ncrosstool_custom\ncrosstool_relative\n!crosstool_colon\n!crosstool_ext_apparent\n!crosstool_ext_canonical\n!cpu_k8\ncpu_arm\n!cpu_empty\n!host_cpu_k8\nhost_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.374,
+    "stdout": "//pkg:all\tbazel-out/arm-fastbuild/bin/pkg/all.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nWARNING: <WS>/pkg/BUILD.bazel:8:15: in config_setting rule //pkg:crosstool_default: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:13:15: in config_setting rule //pkg:crosstool_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:18:15: in config_setting rule //pkg:crosstool_custom: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:23:15: in config_setting rule //pkg:crosstool_relative: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:28:15: in config_setting rule //pkg:crosstool_colon: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:33:15: in config_setting rule //pkg:crosstool_ext_apparent: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:38:15: in config_setting rule //pkg:crosstool_ext_canonical: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:54:15: in config_setting rule //pkg:cpu_empty: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/all.txt": "!crosstool_default\n!crosstool_canonical\ncrosstool_custom\ncrosstool_relative\n!crosstool_colon\n!crosstool_ext_apparent\n!crosstool_ext_canonical\n!cpu_k8\ncpu_arm\n!cpu_empty\n!host_cpu_k8\nhost_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": false
+  },
+  "ext_conditions": {
+   "argv": [
+    "build",
+    "//pkg:ext_conditions"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.097,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:ext_conditions (6 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:ext_conditions up-to-date:\n  bazel-bin/pkg/ext_conditions.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/ext_conditions.txt": "!android_legacy\ncrosstool_default\n!crosstool_main_custom\ncpu_k8\n!cpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.332,
+    "stdout": "//pkg:ext_conditions\tbazel-out/k8-fastbuild/bin/pkg/ext_conditions.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/ext_conditions.txt": "!android_legacy\ncrosstool_default\n!crosstool_main_custom\ncpu_k8\n!cpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "ext_conditions_set": {
+   "argv": [
+    "build",
+    "--crosstool_top=//pkg:my_crosstool",
+    "--cpu=win32",
+    "//pkg:ext_conditions"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.495,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:ext_conditions (6 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:ext_conditions up-to-date:\n  bazel-bin/pkg/ext_conditions.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/win32-fastbuild/bin/pkg/ext_conditions.txt": "!android_legacy\n!crosstool_default\ncrosstool_main_custom\n!cpu_k8\ncpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.321,
+    "stdout": "//pkg:ext_conditions\tbazel-out/win32-fastbuild/bin/pkg/ext_conditions.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/win32-fastbuild/bin/pkg/ext_conditions.txt": "!android_legacy\n!crosstool_default\ncrosstool_main_custom\n!cpu_k8\ncpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "ext_p_all": {
+   "argv": [
+    "build",
+    "@ext//:p_all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.471,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target @@ext+//:p_all (5 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget @@ext+//:p_all up-to-date:\n  bazel-bin/external/ext+/p_all.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/p_all.txt": "!android_legacy\ncrosstool_default\n!crosstool_main_custom\ncpu_k8\n!cpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.3,
+    "stdout": "@@ext+//:p_all\tbazel-out/k8-fastbuild/bin/external/ext+/p_all.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/p_all.txt": "!android_legacy\ncrosstool_default\n!crosstool_main_custom\ncpu_k8\n!cpu_win32\nhost_cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "ext_p_bad": {
+   "argv": [
+    "build",
+    "@ext//:p_bad"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.468,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <OB>/external/ext+/BUILD.bazel:37:15: in values attribute of config_setting rule @@ext+//:crosstool_bad: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\nERROR: <OB>/external/ext+/BUILD.bazel:37:15: Analysis of target '@@ext+//:crosstool_bad' (config: a7a71fd) failed\nERROR: <OB>/external/ext+/BUILD.bazel:54:6: errors encountered resolving select() keys for @@ext+//:p_bad\nERROR: Analysis of target '@@ext+//:p_bad' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.341,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/ext/BUILD.bazel:37:15: in values attribute of config_setting rule @@ext+//:crosstool_bad: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'\n<WS>/ext/BUILD.bazel:54:6: errors encountered resolving select() keys for @@ext+//:p_bad\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "ext_p_main": {
+   "argv": [
+    "build",
+    "@ext//:p_main"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.529,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target @@ext+//:p_main (6 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget @@ext+//:p_main up-to-date:\n  bazel-bin/external/ext+/p_main.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/p_main.txt": "cpu_k8\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.345,
+    "stdout": "@@ext+//:p_main\tbazel-out/k8-fastbuild/bin/external/ext+/p_main.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/p_main.txt": "cpu_k8\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "exec_default": {
+   "argv": [
+    "build",
+    "//pkg:exec_cpu"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.749,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:exec_cpu (5 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exec_cpu up-to-date:\n  bazel-bin/pkg/exec_cpu.txt\n  bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt": "cpu_k8\ntool=bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt": "cpu_k8\n!cpu_arm\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.799,
+    "stdout": "//pkg:exec_cpu\tbazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt\n//pkg:exec_cpu\tbazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt": "cpu_k8\ntool=bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt": "cpu_k8\n!cpu_arm\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "exec_cpu_arm": {
+   "argv": [
+    "build",
+    "--cpu=arm",
+    "//pkg:exec_cpu"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.72,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:exec_cpu (5 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exec_cpu up-to-date:\n  bazel-bin/pkg/exec_cpu.txt\n  bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/exec_cpu.txt": "!cpu_k8\ntool=bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt": "cpu_k8\n!cpu_arm\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.931,
+    "stdout": "//pkg:exec_cpu\tbazel-out/arm-fastbuild/bin/pkg/exec_cpu.txt\n//pkg:exec_cpu\tbazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 1 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/arm-fastbuild/bin/pkg/exec_cpu.txt": "!cpu_k8\ntool=bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/tool_cpu.txt": "cpu_k8\n!cpu_arm\nhost_cpu_k8\n!host_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "exec_host_cpu_ppc": {
+   "argv": [
+    "build",
+    "--host_cpu=ppc",
+    "//pkg:exec_cpu"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.575,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:exec_cpu (5 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exec_cpu up-to-date:\n  bazel-bin/pkg/exec_cpu.txt\n  bazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt": "cpu_k8\ntool=bazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt": "!cpu_k8\n!cpu_arm\n!host_cpu_k8\nhost_cpu_ppc\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.881,
+    "stdout": "//pkg:exec_cpu\tbazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt\n//pkg:exec_cpu\tbazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:44:15: in config_setting rule //pkg:cpu_k8: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:49:15: in config_setting rule //pkg:cpu_arm: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:59:15: in config_setting rule //pkg:host_cpu_k8: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:64:15: in config_setting rule //pkg:host_cpu_ppc: select() on host_cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/exec_cpu.txt": "cpu_k8\ntool=bazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt\n",
+     "bazel-out/ppc-opt-exec/bin/pkg/tool_cpu.txt": "!cpu_k8\n!cpu_arm\n!host_cpu_k8\nhost_cpu_ppc\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": false
+  },
+  "nobuild_mixed": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:p_mixed"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.305,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nINFO: Analyzed target //pkg:p_mixed (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.315,
+    "stdout": "//pkg:p_mixed\tbazel-out/k8-fastbuild/bin/pkg/p_mixed.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on cpu is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nWARNING: <WS>/pkg/BUILD.bazel:70:15: in config_setting rule //pkg:mixed: select() on crosstool_top is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_mixed.txt": null
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "query_cpu": {
+   "argv": [
+    "query",
+    "--cpu=arm",
+    "--host_cpu=ppc",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 7.899,
+    "stdout": "//pkg:p_cpu_k8\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.318,
+    "stdout": "//pkg:p_cpu_k8\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true,
+   "warnings_same_order": true
+  },
+  "query_crosstool_top": {
+   "argv": [
+    "query",
+    "--crosstool_top=//pkg:my_crosstool",
+    "//pkg:p_cpu_k8"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.268,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --crosstool_top=//pkg:my_crosstool :: Unrecognized option: --crosstool_top=//pkg:my_crosstool\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.005,
+    "stdout": "",
+    "stderr": "bazel-rs: --crosstool_top=//pkg:my_crosstool :: Unrecognized option: --crosstool_top=//pkg:my_crosstool\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": false,
+   "warnings_same_order": true
+  }
+ }
+}

@@ -78,7 +78,13 @@ fn option_label(name: &str) -> Label {
 /// the configuration's target platform (resolved by crate::engine when
 /// `constraint_values` is non-empty: the rule then uses toolchain resolution,
 /// ConfigRuleClasses.java:196-201); `package_labels` parses labels in the
-/// `config_setting`'s package context.
+/// `config_setting`'s package context. Rule warnings (`in config_setting
+/// rule L: ...`, EventHandlingErrorReporter.java:76-79) are appended to
+/// `warnings` in report order, also when the analysis fails: Skyframe
+/// reports warnings at once but replays errors after the function
+/// (SkyFunctionEnvironment.java:816-837, Event.storeForReplay), so they
+/// precede every error of the rule.
+#[allow(clippy::too_many_arguments)] // RuleContext's inputs plus its warning sink
 pub fn analyze(
     label: &Label,
     target: &NativeTarget,
@@ -87,6 +93,7 @@ pub fn analyze(
     constraints: &[ConstraintPrerequisite],
     target_platform: Option<&crate::platforms::PlatformInfo>,
     package_labels: &LabelParser<'_>,
+    warnings: &mut Vec<String>,
 ) -> Result<ConfigMatching, String> {
     let shown = crate::rule_declarations::canonical_form(label);
     // getSettings (ConfigSetting.java:169-258): values entries, then
@@ -111,7 +118,7 @@ pub fn analyze(
     // diffNativeFlags (ConfigSetting.java:403-417): every entry is checked.
     let mut native = MatchResult::Match;
     for (name, expected) in &settings {
-        let result = match check_option_value(configuration, name, expected) {
+        let result = match check_option_value(label, configuration, name, expected, warnings) {
             Ok(result) => result,
             Err(error) => {
                 errors.push(format!(
@@ -381,12 +388,15 @@ fn user_defined_flags(
     (result, specified_values.into_iter().collect())
 }
 
-/// ConfigSetting.checkOptionValue (ConfigSetting.java:420-482). `Err` is the
-/// attribute error message (after the rule-context prefix).
+/// ConfigSetting.checkOptionValue (ConfigSetting.java:420-482) of the
+/// config_setting `label`. `Err` is the attribute error message (after the
+/// rule-context prefix); rule warnings are appended to `warnings`.
 fn check_option_value(
+    label: &Label,
     configuration: &Configuration,
     name: &str,
     expected: &str,
+    warnings: &mut Vec<String>,
 ) -> Result<MatchResult, String> {
     // --incompatible_disable_select_on defaults to empty (CoreOptions.java:111-119).
     if configuration::fragment_option(name) == Some(true) {
@@ -398,14 +408,24 @@ fn check_option_value(
         }
         return Err(message);
     }
+    // :440-447: a main-repository config_setting on `cpu`, `host_cpu` or
+    // `crosstool_top` (the name as written) warns before its value is
+    // converted (RuleContext.ruleWarning at the rule's location); external
+    // repositories' (@protobuf's) never do.
+    if DEPRECATED_PRE_PLATFORMS_FLAGS.contains(&name) && label.repository.is_empty() {
+        warnings.push(format!(
+            "in config_setting rule {}: select() on {name} is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms.",
+            crate::rule_declarations::canonical_form(label)
+        ));
+    }
     let canonical = configuration::canonical_name(name);
     if configuration::fragment_option(canonical).is_none() {
         return Err(format!("{PARSE_ERROR_MESSAGE}unknown option: '{name}'"));
     }
     let Some(option) = configuration::option(canonical) else {
         // A real Bazel option whose value the native profile does not model
-        // (including test options, which trimming may hide, :452-461, and the
-        // deprecated --cpu family's warnings, :440-447): never guess a match.
+        // (including test options, which trimming may hide, :452-461):
+        // never guess a match.
         return Err(format!(
             "select() on build option '{name}' is not implemented in the native profile (modelled options: {})",
             configuration::OPTIONS
@@ -545,6 +565,7 @@ mod tests {
             &[],
             None,
             &|_| unreachable!("no labels"),
+            &mut Vec::new(),
         )
         .unwrap()
         .result
@@ -675,6 +696,7 @@ mod tests {
                 &[],
                 None,
                 &|_| unreachable!("no labels"),
+                &mut Vec::new(),
             )
             .unwrap_err()
         };
@@ -690,10 +712,166 @@ mod tests {
             error(&[("compilation_mode", "fast"), ("stamp", "maybe")]),
             "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --compilation_mode=fast: Not a valid compilation mode: 'fast' (should be fastbuild, dbg or opt)\nin values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --stamp=maybe: 'maybe' is not a boolean"
         );
+        // A real option the native profile does not model is never guessed.
         assert!(
-            error(&[("cpu", "k8")]).contains(
-                "select() on build option 'cpu' is not implemented in the native profile"
+            error(&[("copt", "-O2")]).starts_with(
+                "in values attribute of config_setting rule //c:x: select() on build option 'copt' is not implemented in the native profile (modelled options: compilation_mode, "
             )
+        );
+        // Label conversion errors of `crosstool_top` (Label.parseCanonical
+        // texts; paired captures crosstool_bad/crosstool_empty).
+        assert_eq!(
+            error(&[("crosstool_top", "a:b:c")]),
+            "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'"
+        );
+        assert_eq!(
+            error(&[("crosstool_top", "")]),
+            "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --crosstool_top=: invalid target name '': empty target name"
+        );
+    }
+
+    /// The deprecated pre-platforms flags (ConfigSetting.java:95-97,
+    /// 440-447): matched through their converters (AutoCpuConverter; the
+    /// LabelConverter with a null conversion context, Label.parseCanonical),
+    /// with a rule warning for main-repository config_settings only (paired
+    /// captures: tests/fixtures/pre_platforms_flags).
+    #[test]
+    fn pre_platforms_flags_match_and_warn_in_the_main_repository() {
+        let run = |label: &str, values: &[(&str, &str)], args: &[&str]| {
+            let mut warnings = Vec::new();
+            let result = analyze(
+                &Label::parse_canonical(label).unwrap(),
+                &target(values, &[]),
+                &configuration(args),
+                &[],
+                &[],
+                None,
+                &|_| unreachable!("no labels"),
+                &mut warnings,
+            )
+            .map(|matching| matching.result);
+            (result, warnings)
+        };
+        let warning = |label: &str, name: &str| {
+            format!(
+                "in config_setting rule {label}: select() on {name} is deprecated. Use platform constraints instead: https://bazel.build/docs/configurable-attributes#platforms."
+            )
+        };
+        let host = configuration::host_cpu();
+        // The defaults: the host CPU ("" converts to it) and
+        // @bazel_tools//tools/cpp:toolchain (`@bazel_tools` is canonical).
+        for values in [
+            &[("cpu", host)][..],
+            &[("cpu", "")][..],
+            &[("host_cpu", host)][..],
+            &[("host_cpu", "")][..],
+            &[("crosstool_top", "@bazel_tools//tools/cpp:toolchain")][..],
+            &[("crosstool_top", "@@bazel_tools//tools/cpp:toolchain")][..],
+        ] {
+            let (result, warnings) = run("//c:x", values, &[]);
+            assert_eq!(result, Ok(MatchResult::Match), "{values:?}");
+            assert_eq!(warnings, [warning("//c:x", values[0].0)], "{values:?}");
+        }
+        // Command-line values; diffs want the expected value and got the
+        // configured one.
+        assert_eq!(
+            run("//c:x", &[("cpu", "arm")], &["--cpu=arm"]).0,
+            Ok(MatchResult::Match)
+        );
+        assert_eq!(
+            run("//c:x", &[("cpu", host)], &["--cpu=arm"]).0,
+            Ok(MatchResult::NoMatch(vec![Diff {
+                what: option_label("cpu"),
+                got: "arm".into(),
+                want: host.into(),
+            }]))
+        );
+        assert_eq!(
+            run("//c:x", &[("host_cpu", "ppc")], &["--host_cpu", "ppc"]).0,
+            Ok(MatchResult::Match)
+        );
+        assert_eq!(
+            run("//c:x", &[("cpu", "ppc")], &["--host_cpu", "ppc"]).0,
+            Ok(MatchResult::NoMatch(vec![Diff {
+                what: option_label("cpu"),
+                got: host.into(),
+                want: "ppc".into(),
+            }]))
+        );
+        // Expected labels get `//` unless they start with `/` or `@` and are
+        // parsed canonically: relative to neither the config_setting's
+        // package nor its repository's mapping.
+        let custom = ["--crosstool_top=//pkg:t"];
+        for (expected, matched) in [
+            ("//pkg:t", true),
+            ("pkg:t", true),
+            (":t", false),
+            ("@@//pkg:t", true),
+            ("@//pkg:t", true),
+            ("@bazel_tools//tools/cpp:toolchain", false),
+        ] {
+            let (result, _) = run("//c:x", &[("crosstool_top", expected)], &custom);
+            assert_eq!(
+                matches!(result, Ok(MatchResult::Match)),
+                matched,
+                "{expected}: {result:?}"
+            );
+        }
+        assert_eq!(
+            run(
+                "//c:x",
+                &[("crosstool_top", "//external:android/crosstool")],
+                &[]
+            )
+            .0,
+            Ok(MatchResult::NoMatch(vec![Diff {
+                what: option_label("crosstool_top"),
+                got: "@@bazel_tools//tools/cpp:toolchain".into(),
+                want: "//external:android/crosstool".into(),
+            }]))
+        );
+        let ext = ["--crosstool_top=@@ext+//:t"];
+        assert!(matches!(
+            run("//c:x", &[("crosstool_top", "@ext//:t")], &ext).0,
+            Ok(MatchResult::NoMatch(_))
+        ));
+        assert_eq!(
+            run("//c:x", &[("crosstool_top", "@@ext+//:t")], &ext).0,
+            Ok(MatchResult::Match)
+        );
+        // External repositories' config_settings (like @protobuf's) never
+        // warn; several flags warn in `values` order, before any error.
+        let (result, warnings) = run(
+            "@@protobuf+//build_defs:x",
+            &[
+                ("crosstool_top", "//external:android/crosstool"),
+                ("cpu", "win32"),
+            ],
+            &[],
+        );
+        assert!(matches!(result, Ok(MatchResult::NoMatch(_))));
+        assert!(warnings.is_empty());
+        let (result, warnings) = run(
+            "//c:x",
+            &[
+                ("compilation_mode", "fast"),
+                ("cpu", host),
+                ("crosstool_top", "a:b:c"),
+                ("host_cpu", host),
+            ],
+            &[],
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --compilation_mode=fast: Not a valid compilation mode: 'fast' (should be fastbuild, dbg or opt)\nin values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --crosstool_top=a:b:c: invalid target name 'b:c': target names may not contain ':'"
+        );
+        assert_eq!(
+            warnings,
+            [
+                warning("//c:x", "cpu"),
+                warning("//c:x", "crosstool_top"),
+                warning("//c:x", "host_cpu")
+            ]
         );
     }
 
@@ -729,16 +907,25 @@ mod tests {
             "flag_values".into(),
             AttrValue::LabelKeyedStringDict(vec![("//f:x".into(), "1".into())]),
         );
-        analyze(&label, &target, configuration, flags, &[], None, &|text| {
-            let text = text.strip_prefix(':').unwrap_or(text);
-            if text.starts_with("//") || text.starts_with("@@") {
-                Label::parse_canonical(text)
-            } else if text.contains(':') {
-                Err("bad label".into())
-            } else {
-                Label::parse_canonical(&format!("//c:{text}"))
-            }
-        })
+        analyze(
+            &label,
+            &target,
+            configuration,
+            flags,
+            &[],
+            None,
+            &|text| {
+                let text = text.strip_prefix(':').unwrap_or(text);
+                if text.starts_with("//") || text.starts_with("@@") {
+                    Label::parse_canonical(text)
+                } else if text.contains(':') {
+                    Err("bad label".into())
+                } else {
+                    Label::parse_canonical(&format!("//c:{text}"))
+                }
+            },
+            &mut Vec::new(),
+        )
     }
 
     #[test]
@@ -896,6 +1083,7 @@ mod tests {
                 constraints,
                 Some(&platform),
                 &|_| unreachable!("no labels"),
+                &mut Vec::new(),
             )
         };
         let matched = run(&[prerequisite(&linux)]).unwrap();
@@ -962,6 +1150,7 @@ mod tests {
             &[],
             None,
             &|_| unreachable!("no labels"),
+            &mut Vec::new(),
         )
         .unwrap();
         assert_eq!(

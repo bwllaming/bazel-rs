@@ -3501,7 +3501,8 @@ impl Engine {
             (RuleKind::Native("config_setting"), Some(native)) => {
                 let repositories = self.repositories.clone();
                 let context = rule.label.clone();
-                let run = |configuration: &Configuration, platform: Option<&PlatformInfo>| {
+                let mut warnings = Vec::new();
+                let mut run = |configuration: &Configuration, platform: Option<&PlatformInfo>| {
                     crate::config_setting::analyze(
                         &rule.label,
                         native,
@@ -3510,6 +3511,7 @@ impl Engine {
                         &constraint_prerequisites,
                         platform,
                         &|text| repositories.parse(text, &context.repository, &context.package),
+                        &mut warnings,
                     )
                 };
                 let mut result = run(&configuration, target_platform.as_deref());
@@ -3518,6 +3520,15 @@ impl Engine {
                 {
                     let platform = self.target_platform(config, configured, plan)?;
                     result = run(&configuration, Some(&platform));
+                }
+                // Rule warnings precede the rule's errors; an identical
+                // warning (another configuration, the retry above) is
+                // reported once (EmittedEventState.addWarning).
+                for warning in warnings {
+                    let warning = located(rule.location.as_deref(), warning);
+                    if !self.warnings.contains(&warning) {
+                        self.warnings.push(warning);
+                    }
                 }
                 Some(result.map_err(|error| located_lines(rule.location.as_deref(), &error))?)
             }
