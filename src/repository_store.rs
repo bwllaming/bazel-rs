@@ -922,6 +922,7 @@ where
     let started = std::time::Instant::now();
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
+        let _tainted = crate::observed_fs::tainted_section();
         execute(stage.path())
     };
     crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {

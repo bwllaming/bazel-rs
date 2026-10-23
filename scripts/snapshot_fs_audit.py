@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """strace audit of the analysis-snapshot recording (PLAN-L2 §1b item 2, L2-W3).
 
-Runs bazel-rs under `strace -f -y -e trace=%file,getdents64` with
+Runs bazel-rs under `strace -f -y -e trace=%file,getdents64,%process` with
 BAZEL_RS_SNAPSHOT=record and BAZEL_RS_SNAPSHOT_DUMP, takes the recording window
 from the marker stats crate::observed_fs makes when it opens and closes
 (/.bazel-rs-snapshot-marker/window-{open,close}), and checks that every path a
@@ -10,9 +10,18 @@ of process/system paths — is covered by the recorded set:
 
   * the path itself was observed (OBS), is an integrity entry or a repository
     root / manifest (INT, REPO) — a READ also covers its open/fstat;
-  * it is an ancestor of a CANON-recorded path (realpath(3) readlinks every
-    prefix) or the directory of a READDIR (getdents64 on it);
+  * it is on the resolution chain of a CANON-recorded path (realpath(3)
+    readlinks every prefix, through link targets; simulated now) or an
+    ancestor of its result;
+  * it is a listed directory: getdents64 on an fd whose openat path (the
+    logical one; strace -y shows the resolved one) has a READDIR record;
   * it lies inside a verified repository root (the integrity walk).
+
+Not audited: calls of a thread between the tainted-section markers
+(/.bazel-rs-snapshot-marker/tainted-{begin,end}: a repository rule or module
+extension executing, which taints the run), and every call of a process that
+execs inside the window (processes such executions start; threads are joined
+to their process through the traced clone calls).
 
 Default: a copy of tests/fixtures/snapshot_audit/workspace (plus the symlinks the
 fixture needs) built twice with `build --nobuild //...` (the first run warms the
@@ -37,6 +46,12 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'snapshot_audit' / 'workspace'
 MARKER_OPEN = '/.bazel-rs-snapshot-marker/window-open'
 MARKER_CLOSE = '/.bazel-rs-snapshot-marker/window-close'
+# Bracket, on the executing thread, a repository rule or module extension
+# executing (crate::observed_fs::tainted_section): the run is tainted, its
+# accesses need no record. Processes started inside the window (they execve)
+# belong to such executions too.
+MARKER_TAINTED_BEGIN = '/.bazel-rs-snapshot-marker/tainted-begin'
+MARKER_TAINTED_END = '/.bazel-rs-snapshot-marker/tainted-end'
 
 # Process and system paths that are no inputs of planning: /proc, /sys (cgroup
 # CPU quota for available_parallelism), /dev, the window markers, and the host
@@ -47,7 +62,10 @@ IGNORED_EXACT = {'/proc', '/sys', '/dev', '/etc/ld.so.cache', '/etc/localtime',
                  '/etc/hostname', '/etc/passwd'}
 
 CALL = re.compile(r'^(?:\[pid\s+)?(\d+)\]?\s+([a-z0-9_]+)\((.*)$')
-RESUMED = re.compile(r'^(?:\[pid\s+)?(\d+)\]?\s+<\.\.\. ([a-z0-9_]+) resumed>')
+UNFINISHED = re.compile(r'^(?:\[pid\s+)?(\d+)\]?\s+([a-z0-9_]+)\((.*) <unfinished \.\.\.>$')
+RESUMED = re.compile(r'^(?:\[pid\s+)?(\d+)\]?\s+<\.\.\. ([a-z0-9_]+) resumed>(.*)$')
+RETURN = re.compile(r'\)\s+=\s+(-?\d+)(?:<([^>]*)>)?(?:\s+\w+)?(?:\s+\(.*\))?\s*$')
+FD_ARG = re.compile(r'^\s*(\d+)<')
 
 
 def unescape_dump(token):
@@ -125,16 +143,34 @@ def strace_strings(args):
     return strings, fds
 
 
-def parse_strace(log, cwd):
-    """(index, syscall, [paths]) per traced call, in log order."""
-    events = []
-    for index, line in enumerate(log.splitlines()):
-        if RESUMED.match(line):
+def complete_calls(log):
+    """(tid, syscall, argument text with the result, line) per call; a call
+    strace split into `<unfinished ...>` and `<... resumed>` is joined."""
+    pending = {}
+    for line in log.splitlines():
+        m = UNFINISHED.match(line)
+        if m:
+            pending[int(m.group(1))] = (m.group(2), m.group(3), line)
+            continue
+        m = RESUMED.match(line)
+        if m:
+            tid, name = int(m.group(1)), m.group(2)
+            if tid in pending and pending[tid][0] == name:
+                _, args, first = pending.pop(tid)
+                yield tid, name, args + m.group(3), first.strip() + ' ' + line.strip()
             continue
         m = CALL.match(line)
-        if not m:
-            continue
-        name, args = m.group(2), m.group(3)
+        if m:
+            yield int(m.group(1)), m.group(2), m.group(3), line
+
+
+def parse_strace(log, cwd):
+    """(tid, syscall, [paths], line, result) per traced call, in log order;
+    `result` is (return value, fd path annotation) or None."""
+    events = []
+    for tid, name, args, line in complete_calls(log):
+        ret = RETURN.search(args)
+        result = (int(ret.group(1)), ret.group(2)) if ret else None
         strings, fds = strace_strings(args)
         paths = []
         if name == 'getdents64':
@@ -156,12 +192,42 @@ def parse_strace(log, cwd):
                 if not second.startswith('/'):
                     second = os.path.join(cwd, second)
                 paths.append(('path', os.path.normpath(second)))
-        events.append((index, name, paths, line))
+        events.append((tid, name, paths, line, result))
     return events
+
+
+def realpath_chain(path):
+    """The paths realpath(3) readlinks resolving `path`, simulated now."""
+    visited = set()
+    pending = [c for c in path.split('/') if c]
+    resolved = '/'
+    hops = 0
+    while pending:
+        component = pending.pop(0)
+        if component == '.':
+            continue
+        if component == '..':
+            resolved = os.path.dirname(resolved) or '/'
+            continue
+        candidate = os.path.join(resolved, component)
+        visited.add(candidate)
+        try:
+            target = os.readlink(candidate)
+        except OSError:
+            resolved = candidate
+            continue
+        hops += 1
+        if hops > 40:
+            break
+        if target.startswith('/'):
+            resolved = '/'
+        pending = [c for c in target.split('/') if c] + pending
+    return visited
 
 
 def load_dump(path):
     observed, canon_targets, readdirs, roots = set(), set(), set(), []
+    canonicalized = set()
     for line in Path(path).read_text().splitlines():
         parts = line.split(' ')
         if parts[0] == 'OBS':
@@ -169,6 +235,7 @@ def load_dump(path):
             observed.add(p)
             if parts[2] == 'CANON':
                 canon_targets.add(p)
+                canonicalized.add(p)
                 if parts[3].startswith('path:'):
                     canon_targets.add(unescape_dump(parts[3][5:]))
             if parts[2].startswith('READDIR'):
@@ -186,13 +253,13 @@ def load_dump(path):
         p = Path(target)
         for parent in [p] + list(p.parents):
             ancestors.add(str(parent))
-    return observed, ancestors, readdirs, roots
+    return observed, ancestors, readdirs, roots, canonicalized
 
 
 def audit(log, dump, cwd, cache, extra_ignored):
     events = parse_strace(log, cwd)
     start = end = None
-    for i, (_, _, paths, _) in enumerate(events):
+    for i, (_, _, paths, _, _) in enumerate(events):
         for _, p in paths:
             if p == MARKER_OPEN and start is None:
                 start = i
@@ -200,12 +267,47 @@ def audit(log, dump, cwd, cache, extra_ignored):
                 end = i
     if start is None or end is None:
         return None, ['window markers not found in the trace (is BAZEL_RS_SNAPSHOT=record set?)']
-    observed, ancestors, readdirs, roots = load_dump(dump)
+    observed, ancestors, readdirs, roots, canonicalized = load_dump(dump)
+    # realpath(3) readlinks every prefix of the path it resolves, through
+    # link targets: a CANON record covers that whole chain.
+    for path in canonicalized:
+        ancestors |= realpath_chain(path)
     ignored = [str(Path(cache).resolve())] + [str(Path(p).resolve()) for p in extra_ignored]
+    # Process tree (strace -f with %process): threads join their process,
+    # and a process that execs inside the window was started by a repository
+    # rule or extension execution (tainted, never recorded).
+    process = {}
+    started = set()
+    for i, (tid, name, _, line, result) in enumerate(events):
+        pid = process.setdefault(tid, tid)
+        if name in ('clone', 'clone3', 'fork', 'vfork') and result and result[0] > 0:
+            child = result[0]
+            process[child] = pid if 'CLONE_THREAD' in line else child
+        elif name == 'execve' and start < i < end:
+            started.add(pid)
+    opened = {}
+    depth = {}
     unrecorded = {}
     touched = 0
-    for _, name, paths, line in events[start + 1:end]:
+    for tid, name, paths, line, result in events[start + 1:end]:
+        pid = process.get(tid, tid)
+        if pid in started:
+            continue
+        markers = [p for _, p in paths if p in (MARKER_TAINTED_BEGIN, MARKER_TAINTED_END)]
+        if markers:
+            depth[tid] = depth.get(tid, 0) + (1 if markers[0] == MARKER_TAINTED_BEGIN else -1)
+            continue
+        if depth.get(tid, 0) > 0:
+            continue
+        if name in ('openat', 'open', 'openat2') and result and result[0] >= 0 and paths:
+            # getdents64 shows the fd's resolved path; remember what was opened.
+            opened[(pid, result[0])] = paths[0][1]
         for kind, p in paths:
+            if kind == 'dir':
+                fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
+                logical = opened.get((pid, int(fd.group(1)))) if fd else None
+                if logical is not None:
+                    p = logical
             if p in IGNORED_EXACT or p.startswith(IGNORED_PREFIXES):
                 continue
             if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
@@ -240,7 +342,7 @@ def run(binary, workspace, cache, args, dump, log, tmp):
     }
     for d in ('home', 'tmp'):
         (tmp / d).mkdir(parents=True, exist_ok=True)
-    argv = ['strace', '-f', '-y', '-qq', '-s', '4096', '-e', 'trace=%file,getdents64', '-o', str(log),
+    argv = ['strace', '-f', '-y', '-qq', '-s', '4096', '-e', 'trace=%file,getdents64,%process', '-o', str(log),
             str(binary), '--ignore_all_rc_files', f'--cache-dir={cache}'] + args
     proc = subprocess.run(argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=3600)

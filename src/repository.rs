@@ -1463,11 +1463,13 @@ impl RepositorySet {
                         format!("{}%{}", group.label, group.symbol)
                     });
                     let facts = lock.as_ref().map(|lock| lock.facts.clone()).unwrap_or_default();
+                    let tainted = crate::observed_fs::tainted_section();
                     let mut execution = crate::extension_ctx::execute(
                         Arc::new(self.clone()), &definition, &loaded.functions, &group.label,
                         &group.symbol, &group.prefix, &group.participants,
                         group.root_has_non_dev_dependency, facts,
                     )?;
+                    drop(tainted);
                     let recorded = std::mem::take(&mut execution.repositories);
                     (recorded, execution.metadata.clone(), Some(execution))
                 }

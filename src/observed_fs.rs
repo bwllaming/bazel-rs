@@ -51,6 +51,12 @@ pub const RACY_MARGIN_NS: i64 = 2_000_000_000;
 /// can bracket the window (scripts/snapshot_fs_audit.py). They never exist.
 pub const MARKER_OPEN: &str = "/.bazel-rs-snapshot-marker/window-open";
 pub const MARKER_CLOSE: &str = "/.bazel-rs-snapshot-marker/window-close";
+/// Marker paths bracketing, on the executing thread, work whose filesystem
+/// accesses need no record because it taints the run anyway (a repository
+/// rule or module extension executing, [`tainted_section`]): the syscall
+/// audit skips that thread's calls between them.
+pub const MARKER_TAINTED_BEGIN: &str = "/.bazel-rs-snapshot-marker/tainted-begin";
+pub const MARKER_TAINTED_END: &str = "/.bazel-rs-snapshot-marker/tainted-end";
 
 const SHARDS: usize = 64;
 /// Distinct details kept per taint kind (the dump lists them all; the
@@ -990,6 +996,27 @@ pub fn taint(kind: Taint, detail: impl FnOnce() -> String) {
 pub fn taint_after_window(kind: Taint, detail: impl FnOnce() -> String) {
     if let Some(recorder) = RECORDER.get() {
         recorder.taint(kind, detail());
+    }
+}
+
+/// While recording, brackets work that taints the run (see
+/// [`MARKER_TAINTED_BEGIN`]) until the guard drops; nothing otherwise.
+pub fn tainted_section() -> TaintedSection {
+    let active = recording();
+    if active {
+        let _ = fs::symlink_metadata(MARKER_TAINTED_BEGIN);
+    }
+    TaintedSection(active)
+}
+
+/// The guard of [`tainted_section`].
+pub struct TaintedSection(bool);
+
+impl Drop for TaintedSection {
+    fn drop(&mut self) {
+        if self.0 {
+            let _ = fs::symlink_metadata(MARKER_TAINTED_END);
+        }
     }
 }
 

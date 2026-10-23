@@ -108,14 +108,20 @@ stderr). Any other value of the variable is reported and ignored.
    Allowlisted storage modules record what they verify through the semantic
    hooks (`repository_tree`, `note_read`, `taint`).
 2. **Syscall audit** (`scripts/snapshot_fs_audit.py`): runs bazel-rs under
-   `strace -f -y -e trace=%file,getdents64` in record mode; the window is
-   bracketed by stats of `/.bazel-rs-snapshot-marker/window-{open,close}`.
-   Every path touched inside the window outside the cache dir must be covered
-   by the dump (an observation, an ancestor of a canonicalized path, a listed
+   `strace -f -y -e trace=%file,getdents64,%process` in record mode; the
+   window is bracketed by stats of
+   `/.bazel-rs-snapshot-marker/window-{open,close}`. Every path touched inside
+   the window outside the cache dir must be covered by the dump (an
+   observation, a step of a canonicalized path's resolution, a listed
    directory, or a path inside a verified repository tree); `/proc`, `/sys`,
-   `/dev` and the workspace status's host facts are exempt. Without arguments
-   it audits a copy of `tests/fixtures/snapshot_audit/workspace`;
-   `--workspace DIR --cache DIR -- ARGS` audits any workspace.
+   `/dev` and the workspace status's host facts are exempt, and so is work
+   that taints the run anyway: a repository rule or module extension
+   executing is bracketed on its thread by
+   `/.bazel-rs-snapshot-marker/tainted-{begin,end}`
+   (`observed_fs::tainted_section`), and processes started inside the window
+   are skipped with all their threads. Without arguments it audits a copy of
+   `tests/fixtures/snapshot_audit/workspace`; `--workspace DIR --cache DIR --
+   ARGS` audits any workspace.
 
 Shadow verification and the determinism gate (layers 3 and 4) come with the
 snapshot store itself.
