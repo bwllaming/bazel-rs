@@ -4,6 +4,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -127,6 +128,7 @@ impl Fixture {
     fn query(&self, flags: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.temp.path().join("home"))
             .env("TMPDIR", self.temp.path())

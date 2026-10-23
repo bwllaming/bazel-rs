@@ -5,6 +5,7 @@
 //! values keyed, and option diagnostics. Expected environments follow the
 //! paired genuine Bazel 9.3 capture (tests/fixtures/action_env).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -85,7 +86,8 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
-            .env_clear();
+            .env_clear()
+            .envs(verifier_environment());
         if !client.iter().any(|(name, _)| *name == "PATH") {
             command.env("PATH", "/usr/bin:/bin");
         }

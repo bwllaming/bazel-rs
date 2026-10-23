@@ -2,6 +2,7 @@
 //! deferred unresolvable repositories (also inside select() branches) and
 //! N46's implicit-outputs template check.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -19,6 +20,7 @@ fn run(root: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(root.join("ws"))
         .env_clear()
+        .envs(verifier_environment())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
         .output()

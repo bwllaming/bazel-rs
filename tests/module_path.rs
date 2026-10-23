@@ -2,6 +2,7 @@
 //! root module and a local_path_override module through module_ctx.path/read,
 //! returns extension_metadata, and its generated repository feeds a genrule.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -73,6 +74,7 @@ go_sdk = module_extension(_impl, tag_classes={'download': tag_class({'version': 
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))

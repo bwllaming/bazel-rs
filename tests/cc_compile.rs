@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -189,6 +190,7 @@ impl Workspace {
             .args(args)
             .current_dir(&self.root)
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
             .env("TMPDIR", self.root.join("tmp"))

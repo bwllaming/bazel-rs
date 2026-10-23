@@ -7,8 +7,11 @@
 //! tests/fixtures/artifact_identity/reference_receipt.json. Every build runs
 //! with `BAZEL_RS_VERIFY_ARTIFACTS=1` (no File re-registered with a different
 //! Artifact; until W1d it also re-ran the former provider-file walk after
-//! each commit and asserted every File it reached was registered).
+//! each commit and asserted every File it reached was registered) and
+//! `BAZEL_RS_VERIFY_VIEWS=1` (every memoized dependency view is rebuilt on
+//! each later edge and compared).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -58,10 +61,12 @@ impl Workspace {
             .args(args)
             .current_dir(self.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.path())
             .env("TMPDIR", self.path().join("tmp"))
             .env("BAZEL_RS_VERIFY_ARTIFACTS", "1")
+            .env("BAZEL_RS_VERIFY_VIEWS", "1")
             .envs(env.iter().copied())
             .output()
             .unwrap();

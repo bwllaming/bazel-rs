@@ -1,6 +1,7 @@
 //! Real CLI/module callback -> checksummed local HTTP -> JSON -> generated
 //! repository -> consumer bytes. No N2/passthrough rule or public network.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -127,6 +128,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))

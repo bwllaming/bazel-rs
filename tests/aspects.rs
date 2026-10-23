@@ -42,6 +42,7 @@ impl Workspace {
             .args(flags)
             .args(targets)
             .current_dir(self.path())
+            .env("BAZEL_RS_VERIFY_VIEWS", "1")
             .output()
             .unwrap()
     }
@@ -53,6 +54,7 @@ impl Workspace {
             .arg("--cache-dir=cache")
             .args(arguments)
             .current_dir(self.path())
+            .env("BAZEL_RS_VERIFY_VIEWS", "1")
             .output()
             .unwrap()
     }

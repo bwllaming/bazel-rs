@@ -63,6 +63,10 @@ impl Fixture {
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(args)
             .current_dir(self.0.path())
+            // The client environment is what these tests pin (the names
+            // repository_ctx.os.environ / module_ctx.os.environ list), so
+            // BAZEL_RS_VERIFY_* variables are not forwarded here
+            // (tests/support/verify_env.rs).
             .env_clear()
             .env("PATH", "/usr/bin:/bin");
         for key in [A, B, UNUSED, "?"] {

@@ -1,6 +1,7 @@
 //! Genuine archive/registry inputs, private counted HTTP, and the Cargo-built CLI.
 //! Download policy is not a registry-metadata, Git, or general network prohibition.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use base64::Engine;
 use bazel_rs::{materializer, patch_inputs::LocalPatchPlan, registry::Registry};
 use serde_json::{Map, Value, json};
@@ -262,6 +263,7 @@ impl Fixture {
     fn invoke(&self, args: &[String], cache: &str) -> Output {
         Command::new("timeout")
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.temp.path().join("home"))
             .env("XDG_CONFIG_HOME", self.temp.path().join("home"))

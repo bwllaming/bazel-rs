@@ -5,6 +5,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -192,6 +193,7 @@ impl Workspace {
             .args(args)
             .current_dir(self.path().join(cwd))
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.path())
             .env("CLIENT_X", "1")

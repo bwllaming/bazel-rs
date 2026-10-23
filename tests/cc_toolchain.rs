@@ -18,6 +18,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -137,6 +138,7 @@ impl Workspace {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
@@ -373,6 +375,7 @@ fn stamped_build_info_translates_the_workspace_status() {
             .arg("//bi:stamped")
             .current_dir(ws.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", ws.0.path().join("home"))
             .env("TMPDIR", ws.0.path().join("tmp"))

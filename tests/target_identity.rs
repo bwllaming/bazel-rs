@@ -327,6 +327,7 @@ impl Workspace {
             .arg("--ignore_all_rc_files")
             .args(args)
             .current_dir(&self.0)
+            .env("BAZEL_RS_VERIFY_VIEWS", "1")
             .output()
             .unwrap()
     }

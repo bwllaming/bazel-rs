@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 // Scripts the CLI executes are never written through a descriptor of this
 // multi-threaded, spawning test process (ETXTBSY race).
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -236,6 +237,7 @@ shell = rule(_shell, attrs = {"src": attr.label(allow_single_file = True)})
             .args(args)
             .current_dir(self.0.join("ws"))
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.join("home"))
             .env("N41_MARK", "client-env");

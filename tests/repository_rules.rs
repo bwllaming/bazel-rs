@@ -55,6 +55,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("LC_ALL", "C");
         for (name, value) in environment {
             command.env(name, value);
@@ -378,6 +379,7 @@ fn cache_corruption_is_repaired_and_concurrent_cli_publication_is_complete() {
 }
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 
 /// A fake tool the CLI under test executes; never `fs::write`n here, because a
 /// process another test thread spawns meanwhile would inherit the descriptor

@@ -2,6 +2,7 @@
 //! (N42): `--action_env` values are not `$(VAR)`s
 //! (ConfigurationMakeVariableContext has no action-environment source).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::process::Command;
 
@@ -35,6 +36,7 @@ fn action_env_is_not_a_make_variable_source() {
         ])
         .current_dir(&ws)
         .env_clear()
+        .envs(verifier_environment())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", dir.path())
         .env("N53_VAR", "client")
@@ -96,6 +98,7 @@ use = rule(_use, attrs = {"deps": attr.label_list(), "text": attr.string()})
             .args(["build", "--host_platform=//p:host", target])
             .current_dir(&ws)
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", dir.path())
             .output()

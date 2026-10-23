@@ -2,6 +2,7 @@
 //! patterns against the native language-module globals (cc_common,
 //! apple_common, py_internal, ...). Local fixtures only; no analysis-time C++.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -185,6 +186,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))

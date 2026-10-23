@@ -3,6 +3,7 @@
 //! runs with an exact environment (no inherited proxy variables), a private
 //! HOME and no BAZELRC; proxies are local test servers only.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -56,6 +57,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.ws())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("LC_ALL", "C");

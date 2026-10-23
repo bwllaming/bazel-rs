@@ -3,6 +3,7 @@
 //! and .bzl loads through symlinks (N26). The http_archive scenario runs the
 //! embedded @bazel_tools http.bzl against a private loopback HTTP listener.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -120,6 +121,7 @@ impl Fixture {
         );
         Command::new("/usr/bin/timeout")
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("LC_ALL", "C")

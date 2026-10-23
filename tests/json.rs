@@ -3,6 +3,7 @@
 //! Native depth/resource and MAIN File configuration are declared scope limits,
 //! not JVM stack/RSS/performance, external File, or nondefault UTF16 parity claims.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,7 @@ impl Workspace {
         fs::create_dir_all(&tmp).unwrap();
         let output = Command::new("timeout")
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", home)
             .env("TMPDIR", tmp)

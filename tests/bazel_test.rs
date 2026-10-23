@@ -5,6 +5,7 @@
 //! targets (docs/TEST_COMMAND.md). The fixture constants are shared verbatim
 //! with the paired capture (artifacts/bazel_test-capture.py extracts them).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -243,6 +244,7 @@ impl Workspace {
             .args(args)
             .current_dir(self.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.path())
             .env("INHERIT_ME", "inherited")

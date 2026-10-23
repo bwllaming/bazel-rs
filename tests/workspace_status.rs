@@ -12,6 +12,7 @@
 //! volatile change never rebuilds a consumer; a stable change does) —
 //! docs/WORKSPACE_STATUS.md.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -60,6 +61,7 @@ fn build(ws: &Path, target: &str, extra: &[&str], cache: &str, epoch: Option<&st
         .arg(target)
         .current_dir(ws)
         .env_clear()
+        .envs(verifier_environment())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", ws)
         .env("LC_ALL", "C");
@@ -252,6 +254,7 @@ fn a_failing_script_fails_even_without_a_status_consumer() {
         ])
         .current_dir(ws.path())
         .env_clear()
+        .envs(verifier_environment())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", ws.path())
         .env("LC_ALL", "C")

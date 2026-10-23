@@ -2,6 +2,7 @@
 //! NATIVE_BOUNDARY negatives preserve eager rejection: no invalid Label is
 //! constructed and no getter is reached. All fixtures are offline/local.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))

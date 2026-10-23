@@ -6,6 +6,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -109,6 +110,7 @@ impl Fixture {
     fn query(&self, mode: &str, query: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.temp.path().join("home"))
             .env("TMPDIR", self.temp.path())
@@ -229,6 +231,7 @@ fn eager_lockfile_path_fails_loudly_on_a_bad_extension_label() {
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", f.temp.path().join("home"))
             .env("TMPDIR", f.temp.path())

@@ -8,6 +8,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -50,6 +51,7 @@ impl Fixture {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path())
             .arg("--ignore_all_rc_files")

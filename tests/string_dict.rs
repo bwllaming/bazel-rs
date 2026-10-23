@@ -2,6 +2,7 @@
 //! a compile dependency. Outputs deliberately join keys/values, never JSON-sort.
 //! NATIVE_PROFILE and INTENTIONAL_DIVERGENCE cases are not reference parity claims.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/verify_env.rs");
 use bazel_rs::label::Label;
 use std::collections::BTreeMap;
 use std::fs;
@@ -36,6 +37,7 @@ impl Fixture {
             .args(args)
             .current_dir(self.0.path())
             .env_clear()
+            .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
