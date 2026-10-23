@@ -66,6 +66,13 @@ const DIAGNOSTIC_ENV: &[&str] = &[
     "BAZEL_RS_DUMP_ACTIONS",
     "BAZEL_RS_LOADING_JITTER",
     "BAZEL_RS_LOADING_NO_DEMAND",
+    // Integration-20 (taint TestHook, crate::snapshot::record): the
+    // analysis self-checks of the memoized dependency views and the
+    // artifact index (they only ever fail a command), and the persistent
+    // digest table's switch (`off` bypasses it; every digest is the same).
+    "BAZEL_RS_VERIFY_VIEWS",
+    "BAZEL_RS_VERIFY_ARTIFACTS",
+    "BAZEL_RS_DIGEST_MEMO",
 ];
 const DIAGNOSTIC_ENV_PREFIXES: &[&str] = &["BAZEL_RS_DEBUG_"];
 

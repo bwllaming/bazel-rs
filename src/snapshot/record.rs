@@ -34,6 +34,20 @@ pub const MODE_VAR: &str = "BAZEL_RS_SNAPSHOT";
 /// Where the text dump goes (nothing is written without it).
 pub const DUMP_VAR: &str = "BAZEL_RS_SNAPSHOT_DUMP";
 
+/// Test and debug hooks (besides every `BAZEL_RS_DEBUG_*`): a run with one
+/// of them set is never saved (PLAN-L2 §1a, taint TestHook). Loading-order
+/// jitter and the no-demand switch, the analysis self-checks of the
+/// memoized dependency views and of the artifact index, and the persistent
+/// digest table's switch (integration-20; tests/observed_fs_discipline.rs
+/// lists them as diagnostic environment).
+pub const TEST_HOOKS: &[&str] = &[
+    "BAZEL_RS_LOADING_JITTER",
+    "BAZEL_RS_LOADING_NO_DEMAND",
+    "BAZEL_RS_VERIFY_VIEWS",
+    "BAZEL_RS_VERIFY_ARTIFACTS",
+    "BAZEL_RS_DIGEST_MEMO",
+];
+
 /// One command's recording; reports when finished or dropped.
 pub struct Session {
     command: String,
@@ -70,10 +84,7 @@ pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
     // PLAN-L2 §1a: runs with a test or debug hook are never saved.
     for (name, _) in std::env::vars_os() {
         let name = name.to_string_lossy();
-        if name == "BAZEL_RS_LOADING_JITTER"
-            || name == "BAZEL_RS_LOADING_NO_DEMAND"
-            || name.starts_with("BAZEL_RS_DEBUG_")
-        {
+        if TEST_HOOKS.contains(&name.as_ref()) || name.starts_with("BAZEL_RS_DEBUG_") {
             observed_fs::taint(Taint::TestHook, || name.into_owned());
         }
     }

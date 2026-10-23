@@ -411,6 +411,9 @@ struct Body {
 impl Body {
     fn read(path: &Path) -> Self {
         let start = Instant::now();
+        // snapshot-unrecorded: the table's own file (<cache>/digests), no
+        // input of planning (a record only spares reading a file whose
+        // digest the caller records).
         let (bytes, count, outcome) = match fs::read(path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 (Vec::new(), 0, Loaded::Absent)
@@ -567,6 +570,8 @@ impl Table {
     pub fn area(&self, path: &Path) -> Area {
         let root = match self.root.get() {
             Some(root) => root,
+            // snapshot-unrecorded: the table's own cache root (it classifies
+            // the paths of the table's records), no input of planning.
             None => match fs::canonicalize(&self.cache) {
                 // Until the cache exists nothing below it is known.
                 Err(_) => return Area::Transient,
@@ -664,6 +669,8 @@ impl Table {
         let error =
             |what: &str, error: io::Error| format!("{what} {}: {error}", self.directory.display());
         fs::create_dir_all(&self.directory).map_err(|e| error("cannot create", e))?;
+        // snapshot-unrecorded: the table's own lock file, written when the
+        // command ends.
         let lock = OpenOptions::new()
             .read(true)
             .write(true)
@@ -789,6 +796,8 @@ fn evict(body: Vec<u8>, limit: usize) -> Vec<u8> {
 }
 
 fn remove_stale_temporaries(directory: &Path) {
+    // snapshot-unrecorded: the table's own directory (<cache>/digests),
+    // cleaned when the command saves.
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
@@ -798,6 +807,7 @@ fn remove_stale_temporaries(directory: &Path) {
             .as_bytes()
             .starts_with(TEMPORARY_PREFIX.as_bytes())
             && entry
+                // snapshot-unrecorded: a temporary of the table's directory.
                 .metadata()
                 .and_then(|metadata| metadata.modified())
                 .ok()
@@ -980,10 +990,14 @@ fn file_sha256_in(
         return Ok(sha256);
     }
     let start = now();
+    // snapshot-unrecorded: a file of a repository tree the caller verifies
+    // and records whole (materializer::tree_matches,
+    // builtin_tools::verified_warm: REPO + INTEGRITY), as for a table hit.
     let mut file = File::open(path)?;
     let sha256 = hash(&mut file)?;
     count_hashed(user, metadata.size());
     if let (Some(table), Some(key)) = (table, key)
+        // snapshot-unrecorded: the fstat of the file opened above.
         && let Ok(after) = file.metadata()
         && Key::of(&after, false) == Some(key)
         && settled(&after, start, false)
@@ -1068,6 +1082,9 @@ pub(crate) fn opened_sha256_in(
     if let (Some(table), Some(key)) = (table, key)
         && settled(metadata, start, false)
         && file
+            // snapshot-unrecorded: the fstat of the caller's open file; the
+            // caller records the answer (repository_ctx:
+            // observed_fs::note_read_digest with `metadata`).
             .metadata()
             .is_ok_and(|after| Key::of(&after, false) == Some(key))
     {
@@ -1101,14 +1118,22 @@ fn path_sha256_in<E>(
     hash: impl FnOnce() -> Result<Vec<u8>, E>,
     now: impl Fn() -> SystemTime,
 ) -> Result<Vec<u8>, E> {
+    // The files of a tree a repository rule watches while it executes
+    // (repository_ctx::file_sha256 for watch_tree: a tainted or replayed
+    // section of the snapshot window); the warm revalidation inside the
+    // window opens them itself and records READs
+    // (repository_ctx::observed_tree_digest).
     if let Some(table) = table
+        // snapshot-unrecorded: a watched tree's file (above).
         && let Ok(file) = File::open(path)
+        // snapshot-unrecorded: its fstat.
         && let Ok(metadata) = file.metadata()
         && metadata.is_file()
         && let Ok((sha256, _)) = opened_sha256_in(Some(table), &file, &metadata, path, user, now)
     {
         return Ok(sha256.to_vec());
     }
+    // snapshot-unrecorded: a watched tree's file (above).
     let size = fs::metadata(path)
         .ok()
         .filter(fs::Metadata::is_file)

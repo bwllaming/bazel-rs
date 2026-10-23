@@ -43,8 +43,12 @@ impl Fixture {
             .env_remove("BAZEL_RS_DUMP_ACTIONS")
             .env_remove("BAZEL_RS_SNAPSHOT")
             .env_remove("BAZEL_RS_SNAPSHOT_DUMP")
-            .env_remove("BAZEL_RS_LOADING_JITTER")
             .current_dir(self.0.path());
+        // Test hooks taint a record-mode run (never saved); a test sets the
+        // ones it exercises (the gate may export BAZEL_RS_VERIFY_*).
+        for hook in bazel_rs::snapshot::record::TEST_HOOKS {
+            command.env_remove(hook);
+        }
         for (name, value) in env {
             command.env(name, value);
         }

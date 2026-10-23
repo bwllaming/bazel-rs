@@ -364,7 +364,8 @@ pub(crate) fn unchanged(
         let source_cache = repositories.source_cache_path()?;
         let stores = [
             source_cache.to_path_buf(),
-            std::fs::canonicalize(source_cache).unwrap_or_else(|_| source_cache.to_path_buf()),
+            crate::observed_fs::canonicalize(source_cache)
+                .unwrap_or_else(|_| source_cache.to_path_buf()),
         ];
         let in_store = |recorded: &str| {
             let path = match recorded.strip_prefix("@@//") {

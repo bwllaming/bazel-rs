@@ -1061,9 +1061,11 @@ impl RepositorySet {
                 roots,
                 |root| match memo.get(root) {
                     Some(canonical) => Some(canonical.clone()),
-                    None => std::fs::canonicalize(root).ok().inspect(|canonical| {
-                        memo.insert(root.to_path_buf(), canonical.clone());
-                    }),
+                    None => crate::observed_fs::canonicalize(root)
+                        .ok()
+                        .inspect(|canonical| {
+                            memo.insert(root.to_path_buf(), canonical.clone());
+                        }),
                 },
                 path,
             )
@@ -1095,9 +1097,11 @@ impl RepositorySet {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match memo.get(store) {
                 Some(canonical) => Some(canonical.clone()),
-                None => std::fs::canonicalize(store).ok().inspect(|canonical| {
-                    memo.insert(store.to_path_buf(), canonical.clone());
-                }),
+                None => crate::observed_fs::canonicalize(store)
+                    .ok()
+                    .inspect(|canonical| {
+                        memo.insert(store.to_path_buf(), canonical.clone());
+                    }),
             }
         };
         canonical.is_some_and(|canonical| path.starts_with(canonical))

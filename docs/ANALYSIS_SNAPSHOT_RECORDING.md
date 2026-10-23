@@ -68,7 +68,9 @@ Semantic records complete the filesystem ones:
   `transform_info_file`), a `map_each` over a tree artifact, errors (planning
   failed or reported errors, or the command failed), Unstable, and test/debug
   hooks (`BAZEL_RS_LOADING_JITTER`, `BAZEL_RS_LOADING_NO_DEMAND`,
-  `BAZEL_RS_DEBUG_*`).
+  `BAZEL_RS_DEBUG_*`; integration-20 adds the analysis self-checks
+  `BAZEL_RS_VERIFY_VIEWS` / `BAZEL_RS_VERIFY_ARTIFACTS` and the persistent
+  digest table's switch `BAZEL_RS_DIGEST_MEMO`: `snapshot::record::TEST_HOOKS`).
 
 ## Local repository rules (L2-W4R, PLAN-L2 update 1 §(a), §(b))
 
@@ -256,6 +258,9 @@ stderr). Any other value of the variable is reported and ignored.
    hook, or the use carries a `// snapshot-unrecorded: <reason>` comment.
    Allowlisted storage modules record what they verify through the semantic
    hooks (`repository_tree`, `note_read`, `taint`).
+   `digest_memo` is not on the allowlist: only its own table files (and the
+   hashing it does for callers that record the answer themselves) carry
+   `snapshot-unrecorded:` comments.
 2. **Syscall audit** (`scripts/snapshot_fs_audit.py`): runs bazel-rs under
    `strace -f -y -e trace=%file,getdents64,%process` in record mode; the
    window is bracketed by stats of
