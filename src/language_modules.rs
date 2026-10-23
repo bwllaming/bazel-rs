@@ -110,6 +110,17 @@ pub(crate) enum Behavior {
     PyMergeGeneratedInits,
     /// PyBuiltins.getLabelRepoRunfilesPath (rules/python/PyBuiltins.java:120-128).
     PyLabelRepoRunfilesPath,
+    /// `_is_tool_configuration(ctx)` (builtins_bzl/common/python/py_internal.bzl:73-74):
+    /// `ctx.configuration.is_tool_configuration()`.
+    PyIsToolConfiguration,
+    /// `_get_legacy_external_runfiles(*args, **kwargs)` (py_internal.bzl:58-59):
+    /// `False`.
+    PyLegacyExternalRunfiles,
+    /// PyBuiltins.isBzlmodEnabled (rules/python/PyBuiltins.java:66-74): `True`.
+    PyIsBzlmodEnabled,
+    /// `_make_runfiles_respect_legacy_external_runfiles(_ctx, runfiles)`
+    /// (py_internal.bzl:86-87): `runfiles`.
+    PyRespectLegacyExternalRunfiles,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -1008,6 +1019,56 @@ fn call<'v>(
             let label = py_label_argument(args, heap, qualified)?;
             Ok(heap.alloc(package_runfiles_path(&label)))
         }
+        Behavior::PyIsToolConfiguration => {
+            // The `def`'s one parameter, then its body
+            // `ctx.configuration.is_tool_configuration()`: the field and the
+            // method of whatever value was passed, as Starlark evaluates them
+            // (BuildConfigurationValue.isToolConfiguration = isExecConfiguration,
+            // analysis/config/BuildConfigurationValue.java:750-758).
+            let bound = bind_styled(style, name, &[param("ctx", true, true, true)], args, heap)?;
+            let ctx = bound[0].expect("required parameter");
+            let configuration = ctx.get_attr_error("configuration", heap)?;
+            let method = configuration.get_attr_error("is_tool_configuration", heap)?;
+            eval.eval_function(method, &[], &[])
+        }
+        Behavior::PyLegacyExternalRunfiles => {
+            // `*args, **kwargs`: any arguments (their unpacking still fails
+            // at the call, like any call's).
+            args.positions(heap)?.for_each(drop);
+            args.names_map()?;
+            Ok(Value::new_bool(false))
+        }
+        Behavior::PyIsBzlmodEnabled => {
+            // `_is_bzlmod_enabled(*args, **kwargs)` forwards to the Java
+            // method: its StarlarkRuleContext parameter (type `ctx`).
+            const FUNCTION: &str = "is_bzlmod_enabled";
+            let check = |value: Value<'v>| {
+                if value.get_type() == "ctx" {
+                    Ok(())
+                } else {
+                    Err(type_error(FUNCTION, "ctx", value, "ctx"))
+                }
+            };
+            py_unbound_argument(args, heap, FUNCTION, "ctx", check)?.ok_or_else(|| {
+                failure(format!(
+                    "{qualified}() without a ctx: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.isBzlmodEnabled), which the native profile reports instead"
+                ))
+            })?;
+            Ok(Value::new_bool(true))
+        }
+        Behavior::PyRespectLegacyExternalRunfiles => {
+            let bound = bind_styled(
+                style,
+                name,
+                &[
+                    param("_ctx", true, true, true),
+                    param("runfiles", true, true, true),
+                ],
+                args,
+                heap,
+            )?;
+            Ok(bound[1].expect("required parameter"))
+        }
         Behavior::CcInternalExports => {
             bind_styled(style, name, &[], args, heap)?;
             crate::cc_common::internal_exports(eval)
@@ -1614,6 +1675,12 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                     Behavior::PyMergeGeneratedInits
                 }
                 "get_label_repo_runfiles_path" => Behavior::PyLabelRepoRunfilesPath,
+                "is_tool_configuration" => Behavior::PyIsToolConfiguration,
+                "get_legacy_external_runfiles" => Behavior::PyLegacyExternalRunfiles,
+                "is_bzlmod_enabled" => Behavior::PyIsBzlmodEnabled,
+                "make_runfiles_respect_legacy_external_runfiles" => {
+                    Behavior::PyRespectLegacyExternalRunfiles
+                }
                 _ => unimplemented,
             };
             (
@@ -1663,6 +1730,27 @@ fn py_label_argument<'v>(
             .and_then(|text| crate::label::Label::parse_canonical(&text).ok())
             .ok_or_else(|| type_error(FUNCTION, "label", value, "Label"))
     };
+    py_unbound_argument(args, heap, FUNCTION, "label", check)?.ok_or_else(|| {
+        failure(format!(
+            "{qualified}() without a label: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.getLabelRepoRunfilesPath), which the native profile reports instead"
+        ))
+    })
+}
+
+/// The one `@Param(positional = true, named = true, defaultValue =
+/// "unbound")` of a PyBuiltins method (rules/python/PyBuiltins.java), bound
+/// in BuiltinFunction's order (net/starlark/java/eval/BuiltinFunction.java
+/// :308-445): the positional value's type (`check`), then named arguments
+/// (unknown keyword, type, duplicate), then the surplus positional count.
+/// `None`: no argument, so the `unbound` default would reach the Java
+/// method (each caller names its declared divergence).
+fn py_unbound_argument<'v, T>(
+    args: &Arguments<'v, '_>,
+    heap: Heap<'v>,
+    function: &str,
+    parameter: &str,
+    check: impl Fn(Value<'v>) -> starlark::Result<T>,
+) -> starlark::Result<Option<T>> {
     let positional: Vec<Value<'v>> = args.positions(heap)?.collect();
     let mut bound = match positional.first() {
         Some(value) => Some(check(*value)?),
@@ -1670,30 +1758,26 @@ fn py_label_argument<'v>(
     };
     for (name, value) in args.names_map()?.iter() {
         let name = name.as_str();
-        if name != "label" {
+        if name != parameter {
             return Err(failure(format!(
-                "{FUNCTION}() got unexpected keyword argument '{name}'{}",
-                crate::native_rules::did_you_mean(name, &["label"])
+                "{function}() got unexpected keyword argument '{name}'{}",
+                crate::native_rules::did_you_mean(name, &[parameter])
             )));
         }
-        let label = check(*value)?;
-        if bound.replace(label).is_some() {
+        let value = check(*value)?;
+        if bound.replace(value).is_some() {
             return Err(failure(format!(
-                "{FUNCTION}() got multiple values for argument 'label'"
+                "{function}() got multiple values for argument '{parameter}'"
             )));
         }
     }
     if positional.len() > 1 {
         return Err(failure(format!(
-            "{FUNCTION}() accepts no more than 1 positional argument but got {}",
+            "{function}() accepts no more than 1 positional argument but got {}",
             positional.len()
         )));
     }
-    bound.ok_or_else(|| {
-        failure(format!(
-            "{qualified}() without a label: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.getLabelRepoRunfilesPath), which the native profile reports instead"
-        ))
-    })
+    Ok(bound)
 }
 
 /// PackageIdentifier.getRunfilesPath (cmdline/PackageIdentifier.java): the

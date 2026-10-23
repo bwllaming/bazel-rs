@@ -51,7 +51,7 @@ Struct members that Bazel defines with `def` have type `function`, and their
 compare equal by definition, so re-allocated copies, such as those in
 `apple_toolchain()`, behave like Bazel's single objects.
 
-Two `py_internal` functions are implemented; the others fail explicitly:
+Six `py_internal` functions are implemented; the others fail explicitly:
 
 - `merge_runfiles_with_generated_inits_empty_files_supplier(ctx=, runfiles=)`
   (docs/RUNFILES_TREES.md).
@@ -68,6 +68,21 @@ Two `py_internal` functions are implemented; the others fail explicitly:
   is an explicit error. Paired capture `tests/fixtures/py_label_runfiles_path`
   (8 genuine 9.3.0 cases: 7 MATCH, the crash a declared divergence), replayed
   by `tests/py_label_runfiles_path.rs`.
+- The ctx helpers on rules_python 1.7.0's py_binary path (`_is_tool_config`,
+  `_create_zip_file`, `_create_providers`):
+  `is_tool_configuration(ctx)` is the `def`'s body
+  `ctx.configuration.is_tool_configuration()` evaluated on the argument (the
+  exec configuration test, BuildConfigurationValue.isToolConfiguration; any
+  value with that field and method works, as in Bazel);
+  `get_legacy_external_runfiles(*args, **kwargs)` is `False`;
+  `is_bzlmod_enabled(ctx)` (PyBuiltins.isBzlmodEnabled, a `ctx` parameter) is
+  `True`; `make_runfiles_respect_legacy_external_runfiles(_ctx, runfiles)`
+  returns `runfiles`. Binding errors are the `def`'s StarlarkFunction texts
+  and is_bzlmod_enabled's BuiltinFunction texts; is_bzlmod_enabled() without
+  an argument crashes Bazel 9.3 like get_label_repo_runfiles_path() (an
+  explicit native error). Paired capture `tests/fixtures/py_internal_ctx`
+  (17 genuine 9.3.0 cases: 16 MATCH, the crash a declared divergence),
+  replayed by `tests/py_internal_ctx.rs`.
 
 ### `cc_common.internal_DO_NOT_USE()` and the private-API check
 

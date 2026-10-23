@@ -1,0 +1,43 @@
+load(":defs.bzl", "bad", "leaf", "probe")
+
+leaf(name = "leaf")
+
+probe(
+    name = "probe",
+    data = ["data.txt"],
+    deps = [":leaf"],
+    exec_deps = [
+        ":leaf",
+        ":tool_probe",
+    ],
+)
+
+# Analyzed in the exec configuration below.
+probe(
+    name = "tool_probe",
+    deps = [":leaf"],
+    exec_deps = [":leaf"],
+)
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+    )
+    for mode in [
+        "tool_missing",
+        "tool_two",
+        "tool_unknown_keyword",
+        "tool_duplicate",
+        "tool_none",
+        "tool_no_method",
+        "bzlmod_none",
+        "bzlmod_label",
+        "bzlmod_two",
+        "bzlmod_unknown_keyword",
+        "bzlmod_duplicate",
+        "bzlmod_missing",
+        "respect_missing",
+        "respect_three",
+    ]
+]

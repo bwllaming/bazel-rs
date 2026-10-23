@@ -1,0 +1,460 @@
+{
+ "schema": "py-internal-ctx-reference-receipt/v1",
+ "fixture": "py_internal_ctx",
+ "purpose": "py_internal's ctx helpers on rules_python 1.7.0's py_binary path (builtins_bzl/common/python/py_internal.bzl, rules/python/PyBuiltins.java): `_is_tool_configuration(ctx)` = `ctx.configuration.is_tool_configuration()` (BuildConfigurationValue.isToolConfiguration = isExecConfiguration, analysis/config/BuildConfigurationValue.java:750-758; a duck-typed `def`), `_get_legacy_external_runfiles(*args, **kwargs)` = False, `is_bzlmod_enabled(ctx)` = True (PyBuiltins.java:66-74, a StarlarkRuleContext parameter), `_make_runfiles_respect_legacy_external_runfiles(_ctx, runfiles)` = runfiles; with the `def` and BuiltinFunction binding errors. py_internal is available in the main repository's tools/build_defs/python (BazelRuleClassProvider). Motivation: `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `analysis of @@rules_pkg+//pkg/private/tar:build_tar: ... error: py_internal.is_tool_configuration is not implemented in the native profile (analysis-time Python API)` (rules_python python/private/py_executable.bzl:1628 `_is_tool_config`, then :809 get_legacy_external_runfiles and :837 is_bzlmod_enabled in `_create_zip_file`, :1685 make_runfiles_respect_legacy_external_runfiles).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "46f551b53f848bc2036e0bf1f4f6cfd44e9cb05dc4da8391274021b242fd4ddd",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pnext-capture.py, pnext-receipt.py (not committed)",
+  "sha256": {
+   "pnext-capture.py": "26028ab19145169cb5b3e1c59d4f2e8143c5cb94fac6ee67fb1f8124a0486251",
+   "pnext-receipt.py": "93d09849dca6682a8f4e5b0265b27c1ac273b762c0407dbb2fcfe8a7f2a43e3b"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "60afd61e5a5aafb4818aba28e6ec2c5ca682a3360ba82ac65664b3091bb946e7",
+  "tools/build_defs/python/BUILD.bazel": "f23639cdaa1dd2b0783325723c7e70270bfab493cc18ba6084e7a398b1144e12",
+  "tools/build_defs/python/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+  "tools/build_defs/python/defs.bzl": "b0d6d2b2f7054ef52edb09bbe093d94cdfb275652d1425b8569a53875d77765e"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/py_internal_ctx.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "is_tool_configuration: False for a target in the target configuration (positional or named ctx, type bool), True for an exec dependency (`cfg = \"exec\"`) and for every dependency of an exec-configured target (its deps and exec deps); any value with `.configuration.is_tool_configuration()` works (a struct returns its callable's result, \"duck\").",
+  "get_legacy_external_runfiles returns False for any arguments (none, ctx, `1, 2, x = 3`); is_bzlmod_enabled returns True (positional or named ctx); make_runfiles_respect_legacy_external_runfiles returns its second argument unchanged (the same runfiles object, or any value by name).",
+  "Errors of the `def` wrappers are StarlarkFunction's (`Error: _is_tool_configuration() missing 1 required positional argument: ctx`, `accepts no more than 1 positional argument but got 2`, `got unexpected keyword argument: ctxx (did you mean 'ctx'?)`, `got multiple values for parameter 'ctx'`; `'NoneType' value has no field or method 'configuration'`, `'int' value has no field or method 'is_tool_configuration'`; `_make_runfiles_respect_legacy_external_runfiles() missing 1 required positional argument: runfiles` / `accepts no more than 2 positional arguments but got 3`); is_bzlmod_enabled's are BuiltinFunction's (`Error in is_bzlmod_enabled: in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'NoneType', want 'ctx'` (also Label), `accepts no more than 1 positional argument but got 2`, `got unexpected keyword argument 'ctxx' (did you mean 'ctx'?)`, `got multiple values for argument 'ctx'`).",
+  "is_bzlmod_enabled() without an argument crashes Bazel 9.3 (FATAL, exit 37, IllegalArgumentException: argument type mismatch; the `unbound` default reaches PyBuiltins.isBzlmodEnabled)."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and Starlark errors in its own traceback format without the @_builtins wrapper frame (the messages are Bazel's).",
+  "Declared divergence bad_bzlmod_missing: see the case.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 16,
+  "DECLARED_DIVERGENCE": 1
+ },
+ "scratch_removed": true,
+ "cases": {
+  "probe": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.372,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:probe (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:probe up-to-date:\n  bazel-bin/tools/build_defs/python/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      "is_tool=False\nis_tool_named=False\ntype=bool\nexec_deps=[(True, []), (True, [True, True])]\ndeps=[(False, [])]\nduck=\"duck\"\nlegacy=False\nlegacy_none=False\nlegacy_any=False\nbzlmod=True\nbzlmod_named=True\nrespect_same=True\nrespect_files=[\"tools/build_defs/python/data.txt\"]\nrespect_named=\"any\"\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.957,
+    "stdout": "//tools/build_defs/python:probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      "is_tool=False\nis_tool_named=False\ntype=bool\nexec_deps=[(True, []), (True, [True, True])]\ndeps=[(False, [])]\nduck=\"duck\"\nlegacy=False\nlegacy_none=False\nlegacy_any=False\nbzlmod=True\nbzlmod_named=True\nrespect_same=True\nrespect_files=[\"tools/build_defs/python/data.txt\"]\nrespect_named=\"any\"\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "tool_probe": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:tool_probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.693,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:tool_probe (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:tool_probe up-to-date:\n  bazel-bin/tools/build_defs/python/tool_probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/tool_probe.txt": [
+      "0o555",
+      "is_tool=False\nis_tool_named=False\ntype=bool\nexec_deps=[(True, [])]\ndeps=[(False, [])]\nduck=\"duck\"\nlegacy=False\nlegacy_none=False\nlegacy_any=False\nbzlmod=True\nbzlmod_named=True\nrespect_same=True\nrespect_files=[]\nrespect_named=\"any\"\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.846,
+    "stdout": "//tools/build_defs/python:tool_probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/tool_probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/tool_probe.txt": [
+      "0o555",
+      "is_tool=False\nis_tool_named=False\ntype=bool\nexec_deps=[(True, [])]\ndeps=[(False, [])]\nduck=\"duck\"\nlegacy=False\nlegacy_none=False\nlegacy_any=False\nbzlmod=True\nbzlmod_named=True\nrespect_same=True\nrespect_files=[]\nrespect_named=\"any\"\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//tools/build_defs/python:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.341,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:probe (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.899,
+    "stdout": "//tools/build_defs/python:probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_missing"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.809,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_missing: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 68, column 13, in _bad_impl\n\t\ttool()\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 73, column 5, in _is_tool_configuration\nError: _is_tool_configuration() missing 1 required positional argument: ctx\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_missing' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_missing' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.382,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:68, in _bad_impl\n      tool()\nerror: _is_tool_configuration() missing 1 required positional argument: ctx\n  --> //tools/build_defs/python:defs.bzl:68:9\n   |\n68 |         tool()\n   |         ^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_tool_configuration() missing 1 required positional argument: ctx",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_two": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_two"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.966,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_two: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 70, column 13, in _bad_impl\n\t\ttool(ctx, ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 73, column 5, in _is_tool_configuration\nError: _is_tool_configuration() accepts no more than 1 positional argument but got 2\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_two' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_two' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.387,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_two: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:70, in _bad_impl\n      tool(ctx, ctx)\nerror: _is_tool_configuration() accepts no more than 1 positional argument but got 2\n  --> //tools/build_defs/python:defs.bzl:70:9\n   |\n70 |         tool(ctx, ctx)\n   |         ^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_tool_configuration() accepts no more than 1 positional argument but got 2",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_unknown_keyword": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_unknown_keyword"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.033,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 72, column 13, in _bad_impl\n\t\ttool(ctxx = ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 73, column 5, in _is_tool_configuration\nError: _is_tool_configuration() got unexpected keyword argument: ctxx (did you mean 'ctx'?)\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.354,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_unknown_keyword: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:72, in _bad_impl\n      tool(ctxx = ctx)\nerror: _is_tool_configuration() got unexpected keyword argument: ctxx (did you mean 'ctx'?)\n  --> //tools/build_defs/python:defs.bzl:72:9\n   |\n72 |         tool(ctxx = ctx)\n   |         ^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_tool_configuration() got unexpected keyword argument: ctxx (did you mean 'ctx'?)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_duplicate": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_duplicate"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.764,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_duplicate: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 74, column 13, in _bad_impl\n\t\ttool(ctx, ctx = ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 73, column 5, in _is_tool_configuration\nError: _is_tool_configuration() got multiple values for parameter 'ctx'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_duplicate' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_duplicate' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.378,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_duplicate: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:74, in _bad_impl\n      tool(ctx, ctx = ctx)\nerror: _is_tool_configuration() got multiple values for parameter 'ctx'\n  --> //tools/build_defs/python:defs.bzl:74:9\n   |\n74 |         tool(ctx, ctx = ctx)\n   |         ^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_tool_configuration() got multiple values for parameter 'ctx'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_none": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_none"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.846,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_none: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 76, column 13, in _bad_impl\n\t\ttool(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 74, column 15, in _is_tool_configuration\nError: 'NoneType' value has no field or method 'configuration'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_none' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.368,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:76, in _bad_impl\n      tool(None)\nerror: 'NoneType' value has no field or method 'configuration'\n  --> //tools/build_defs/python:defs.bzl:76:9\n   |\n76 |         tool(None)\n   |         ^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "'NoneType' value has no field or method 'configuration'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_tool_no_method": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_tool_no_method"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.913,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_tool_no_method: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 78, column 13, in _bad_impl\n\t\ttool(struct(configuration = 1))\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 74, column 29, in _is_tool_configuration\nError: 'int' value has no field or method 'is_tool_configuration'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_tool_no_method' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_tool_no_method' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.408,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_tool_no_method: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:78, in _bad_impl\n      tool(struct(configuration = 1))\nerror: 'int' value has no field or method 'is_tool_configuration'\n  --> //tools/build_defs/python:defs.bzl:78:9\n   |\n78 |         tool(struct(configuration = 1))\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "'int' value has no field or method 'is_tool_configuration'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_none": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_none"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.707,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_bzlmod_none: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 80, column 15, in _bad_impl\n\t\tbzlmod(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 68, column 42, in _is_bzlmod_enabled\nError in is_bzlmod_enabled: in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'NoneType', want 'ctx'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_bzlmod_none' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_bzlmod_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.4,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:80, in _bad_impl\n      bzlmod(None)\nerror: in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'NoneType', want 'ctx'\n  --> //tools/build_defs/python:defs.bzl:80:9\n   |\n80 |         bzlmod(None)\n   |         ^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'NoneType', want 'ctx'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_label": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_label"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.692,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_bzlmod_label: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 82, column 15, in _bad_impl\n\t\tbzlmod(ctx = ctx.label)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 68, column 42, in _is_bzlmod_enabled\nError in is_bzlmod_enabled: in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'Label', want 'ctx'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_bzlmod_label' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_bzlmod_label' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.361,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_label: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:82, in _bad_impl\n      bzlmod(ctx = ctx.label)\nerror: in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'Label', want 'ctx'\n  --> //tools/build_defs/python:defs.bzl:82:9\n   |\n82 |         bzlmod(ctx = ctx.label)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to is_bzlmod_enabled(), parameter 'ctx' got value of type 'Label', want 'ctx'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_two": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_two"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.482,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_bzlmod_two: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 84, column 15, in _bad_impl\n\t\tbzlmod(ctx, ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 68, column 42, in _is_bzlmod_enabled\nError in is_bzlmod_enabled: is_bzlmod_enabled() accepts no more than 1 positional argument but got 2\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_bzlmod_two' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_bzlmod_two' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.384,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_two: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:84, in _bad_impl\n      bzlmod(ctx, ctx)\nerror: is_bzlmod_enabled() accepts no more than 1 positional argument but got 2\n  --> //tools/build_defs/python:defs.bzl:84:9\n   |\n84 |         bzlmod(ctx, ctx)\n   |         ^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "is_bzlmod_enabled() accepts no more than 1 positional argument but got 2",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_unknown_keyword": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_unknown_keyword"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.03,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_bzlmod_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 86, column 15, in _bad_impl\n\t\tbzlmod(ctxx = ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 68, column 42, in _is_bzlmod_enabled\nError in is_bzlmod_enabled: is_bzlmod_enabled() got unexpected keyword argument 'ctxx' (did you mean 'ctx'?)\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_bzlmod_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_bzlmod_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.404,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_unknown_keyword: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:86, in _bad_impl\n      bzlmod(ctxx = ctx)\nerror: is_bzlmod_enabled() got unexpected keyword argument 'ctxx' (did you mean 'ctx'?)\n  --> //tools/build_defs/python:defs.bzl:86:9\n   |\n86 |         bzlmod(ctxx = ctx)\n   |         ^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "is_bzlmod_enabled() got unexpected keyword argument 'ctxx' (did you mean 'ctx'?)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_duplicate": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_duplicate"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.587,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_bzlmod_duplicate: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 88, column 15, in _bad_impl\n\t\tbzlmod(ctx, ctx = ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 68, column 42, in _is_bzlmod_enabled\nError in is_bzlmod_enabled: is_bzlmod_enabled() got multiple values for argument 'ctx'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_bzlmod_duplicate' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_bzlmod_duplicate' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.366,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_duplicate: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:88, in _bad_impl\n      bzlmod(ctx, ctx = ctx)\nerror: is_bzlmod_enabled() got multiple values for argument 'ctx'\n  --> //tools/build_defs/python:defs.bzl:88:9\n   |\n88 |         bzlmod(ctx, ctx = ctx)\n   |         ^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "is_bzlmod_enabled() got multiple values for argument 'ctx'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_bzlmod_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_bzlmod_missing"
+   ],
+   "genuine": {
+    "exit": 37,
+    "seconds": 8.556,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_bzlmod_missing, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_bzlmod_missing, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//tools/build_defs/python:bad_bzlmod_missing)\n\tat <starlark>.is_bzlmod_enabled(<builtin>:0)\n\tat <starlark>._is_bzlmod_enabled(/virtual_builtins_bzl/common/python/py_internal.bzl:68)\n\tat <starlark>._bad_impl(<WS>/tools/build_defs/python/defs.bzl:90)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public boolean com.google.devtools.build.lib.rules.python.PyBuiltins.isBzlmodEnabled(com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[<unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:304)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:238)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat com.google.devtools.build.lib.analysis.starlark.StarlarkRuleConfiguredTargetUtil.evalRule(StarlarkRuleConfiguredTargetUtil.java:86)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createRule(ConfiguredTargetFactory.java:460)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createConfiguredTarget(ConfiguredTargetFactory.java:240)\n\tat com.google.devtools.build.lib.skyframe.SkyframeBuildView.createConfiguredTarget(SkyframeBuildView.java:1398)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.createConfiguredTarget(ConfiguredTargetFunction.java:453)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.compute(ConfiguredTargetFunction.java:371)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.391,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_bzlmod_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:90, in _bad_impl\n      bzlmod()\nerror: py_internal.is_bzlmod_enabled() without a ctx: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.isBzlmodEnabled), which the native profile reports instead\n  --> //tools/build_defs/python:defs.bzl:90:9\n   |\n90 |         bzlmod()\n   |         ^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "declared_divergence": "genuine Bazel 9.3 crashes (FATAL, exit 37): the parameter's `unbound` default reaches PyBuiltins.isBzlmodEnabled(StarlarkRuleContext) (IllegalArgumentException, argument type mismatch); the native profile reports an explicit error instead",
+   "native_message": "py_internal.is_bzlmod_enabled() without a ctx: genuine Bazel 9.3 crashes on it",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "bad_respect_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_respect_missing"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.537,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_respect_missing: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 92, column 16, in _bad_impl\n\t\trespect(ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 86, column 5, in _make_runfiles_respect_legacy_external_runfiles\nError: _make_runfiles_respect_legacy_external_runfiles() missing 1 required positional argument: runfiles\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_respect_missing' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_respect_missing' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.38,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_respect_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:92, in _bad_impl\n      respect(ctx)\nerror: _make_runfiles_respect_legacy_external_runfiles() missing 1 required positional argument: runfiles\n  --> //tools/build_defs/python:defs.bzl:92:9\n   |\n92 |         respect(ctx)\n   |         ^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_make_runfiles_respect_legacy_external_runfiles() missing 1 required positional argument: runfiles",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_respect_three": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_respect_three"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.487,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: in bad rule //tools/build_defs/python:bad_respect_three: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 94, column 16, in _bad_impl\n\t\trespect(ctx, ctx, ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 86, column 5, in _make_runfiles_respect_legacy_external_runfiles\nError: _make_runfiles_respect_legacy_external_runfiles() accepts no more than 2 positional arguments but got 3\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:23:8: Analysis of target '//tools/build_defs/python:bad_respect_three' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_respect_three' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.374,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_respect_three: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:94, in _bad_impl\n      respect(ctx, ctx, ctx)\nerror: _make_runfiles_respect_legacy_external_runfiles() accepts no more than 2 positional arguments but got 3\n  --> //tools/build_defs/python:defs.bzl:94:9\n   |\n94 |         respect(ctx, ctx, ctx)\n   |         ^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_make_runfiles_respect_legacy_external_runfiles() accepts no more than 2 positional arguments but got 3",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}
