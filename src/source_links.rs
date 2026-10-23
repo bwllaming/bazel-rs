@@ -73,8 +73,11 @@ pub fn resolve_in_root(root: &Path, relative: &Path) -> Result<Resolution, Strin
 /// link and fetches the target repository — so the resolution does not
 /// depend on the order of demands. A tree no root of the invocation names
 /// is verified against its manifest on its first crossing (memoized per
-/// repository set) and recorded as a REPO of the analysis snapshot. Stages,
-/// trash and every other store path stay blocked.
+/// repository set) and recorded as a REPO of the analysis snapshot; a tree
+/// the invocation materialized is recorded by its owner (a reused
+/// publication as a REPO, a local repository's tree as a replay record,
+/// whose observations stay validated one by one). Stages, trash and every
+/// other store path stay blocked.
 #[derive(Clone)]
 pub struct StoreTrees {
     /// The canonical repository store.
@@ -93,29 +96,40 @@ impl StoreTrees {
         path.starts_with(&self.root)
     }
 
-    /// The published tree containing `path`, when it may anchor a link: one
-    /// of `materialized` (its owner verified it in this invocation) or a
-    /// tree that passes its first-crossing verification.
+    /// The published tree containing `path` when it anchors a link instead
+    /// of `owner`, the longest materialized root containing `path`: a tree
+    /// deeper than `owner` that is one of `materialized` (its owner verified
+    /// it in this invocation) or passes its first-crossing verification.
+    /// When `owner` already is the containing tree (a link within one store
+    /// tree), nothing is checked: the lexical test needs no I/O.
     pub fn anchor<'a>(
         &self,
         path: &Path,
+        owner: Option<&Path>,
         mut materialized: impl Iterator<Item = &'a Path>,
     ) -> Option<PathBuf> {
-        let tree = crate::repository_store::published_tree(&self.root, path)?;
-        if !materialized.any(|root| root == tree.root) {
-            let mut verified = self
-                .verified
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let accepted = *verified
-                .entry(tree.root.clone())
-                .or_insert_with(|| crate::repository_store::verify_published_tree(&tree).is_ok());
-            if !accepted {
-                return None;
-            }
+        let tree = crate::repository_store::store_tree_of(&self.root, path)?;
+        if owner.is_some_and(|owner| owner.components().count() >= tree.root.components().count())
+            || !crate::repository_store::is_published(&tree)
+        {
+            return None;
         }
-        // REPO + INTEGRITY of the analysis snapshot (once per root).
-        observed_fs::repository_tree(tree.kind, &tree.id, &tree.root, Some(&tree.manifest));
+        if materialized.any(|root| root == tree.root) {
+            return Some(tree.root);
+        }
+        let accepted = *self
+            .verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(tree.root.clone())
+            .or_insert_with(|| crate::repository_store::verify_published_tree(&tree).is_ok());
+        if !accepted {
+            return None;
+        }
+        // REPO + INTEGRITY of the analysis snapshot (once per root; the
+        // owner's record replaces it if the repository is materialized
+        // later in the run).
+        observed_fs::crossed_tree(tree.kind, &tree.id, &tree.root, &tree.manifest);
         Some(tree.root)
     }
 }
@@ -180,9 +194,7 @@ impl LinkPolicy {
             .chain(std::iter::once(start_root))
             .filter(|root| real.starts_with(root))
             .max_by_key(|root| root.components().count());
-        if let Some(tree) = self.store_tree(start_root, real)
-            && owner.is_none_or(|root| root.components().count() < tree.components().count())
-        {
+        if let Some(tree) = self.store_tree(start_root, real, owner) {
             return Some(tree);
         }
         match owner {
@@ -200,11 +212,12 @@ impl LinkPolicy {
         }
     }
 
-    /// The published store tree containing `path` that may anchor a link
-    /// from `start_root` ([`StoreTrees::anchor`]).
-    fn store_tree(&self, start_root: &Path, path: &Path) -> Option<PathBuf> {
+    /// The published store tree containing `path` that anchors a link from
+    /// `start_root` instead of `owner` ([`StoreTrees::anchor`]).
+    fn store_tree(&self, start_root: &Path, path: &Path, owner: Option<&Path>) -> Option<PathBuf> {
         self.store.as_ref()?.anchor(
             path,
+            owner,
             self.others
                 .iter()
                 .map(|(_, root)| root.as_path())
@@ -359,12 +372,12 @@ fn resolve_across_inner(
         if let Some(store) = store
             && let Some(tree) = store.anchor(
                 path,
+                found.map(PathBuf::as_path),
                 candidates
                     .iter()
                     .map(PathBuf::as_path)
                     .chain(std::iter::once(origin.as_path())),
             )
-            && found.is_none_or(|found| found.components().count() < tree.components().count())
         {
             return Some(tree);
         }

@@ -2,6 +2,9 @@
 //! replay instead of tainting the analysis snapshot, their output is
 //! collected per execution without changing what stderr shows, and links
 //! into published store trees resolve the same in every loading order.
+//! Per-tree validation still checks what a verified tree's links reach, and
+//! the record mode names store trees a link reaches that no repository of
+//! the run has as its root.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
@@ -432,5 +435,226 @@ r = repository_rule(_impl, local = True, attrs = {"value": attr.string(default =
             .read_dir()
             .unwrap()
             .any(|_| true)
+    );
+}
+
+/// The mismatch count of the record mode's `validation dry-run [POLICY]`
+/// line.
+fn validation_mismatches(lines: &[&str], policy: &str) -> usize {
+    let prefix = format!("validation dry-run [{policy}]: ");
+    let line = lines
+        .iter()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("no {prefix:?} line in {lines:#?}"));
+    let (head, _) = line
+        .rsplit_once(" mismatch(es)")
+        .unwrap_or_else(|| panic!("{line}"));
+    head.rsplit(' ').next().unwrap().parse().unwrap()
+}
+
+/// Per-tree validation (the default policy) still validates what a verified
+/// tree's symlinks read (review item 1). A non-local generated repository
+/// links a host directory (`ctx.symlink("/host/x", "inc")`) and globs
+/// through the link; the glob walker records the host listing (READDIR,
+/// STAT, CANON, the BUILD lookups) under the logical path inside the
+/// verified tree. A local repository with an internal link besides its host
+/// link (whose tree a link crossing used to record as a REPO) does the
+/// same. A header added to each host directory after the window — by an
+/// action of the same build, before the record mode validates — must be a
+/// mismatch, i.e. a miss, never a stale hit; with nothing added, the same
+/// recording validates cleanly.
+#[test]
+fn per_tree_validation_sees_host_files_added_behind_tree_symlinks() {
+    let f = Fixture::new();
+    let host = tempfile::Builder::new()
+        .prefix("host-dirs-")
+        .tempdir_in("/tmp/opencode")
+        .unwrap();
+    let host = fs::canonicalize(host.path()).unwrap();
+    for dir in ["x/sub", "y/sub"] {
+        fs::create_dir_all(host.join(dir)).unwrap();
+    }
+    for file in ["x/a.h", "x/sub/b.h", "y/c.h", "y/sub/d.h"] {
+        fs::write(host.join(file), file).unwrap();
+    }
+    let (x, y) = (host.join("x"), host.join("y"));
+    f.file(
+        "MODULE.bazel",
+        &format!(
+            "module(name='main')\ng = use_repo_rule('//:repo.bzl', 'g')\nl = use_repo_rule('//:repo.bzl', 'l')\ng(name = 'gen', host = {:?})\nl(name = 'lgen', host = {:?})\n",
+            x.display().to_string(),
+            y.display().to_string()
+        ),
+    );
+    f.file(
+        "repo.bzl",
+        r#"def _gen(ctx):
+    ctx.symlink(ctx.attr.host, "inc")
+    ctx.file("BUILD.bazel", "filegroup(name = 'hdrs', srcs = glob(['inc/**']), visibility = ['//visibility:public'])\n")
+
+g = repository_rule(_gen, attrs = {"host": attr.string()})
+
+def _local(ctx):
+    ctx.file("data/v.txt", "v")
+    ctx.symlink("data", "alias")
+    ctx.symlink(ctx.attr.host, "inc")
+    ctx.file("BUILD.bazel", "filegroup(name = 'hdrs', srcs = glob(['alias/**', 'inc/**']), visibility = ['//visibility:public'])\n")
+
+l = repository_rule(_local, local = True, attrs = {"host": attr.string()})
+"#,
+    );
+    f.file(
+        "BUILD.bazel",
+        &format!(
+            "genrule(name = 'list', srcs = ['@gen//:hdrs', '@lgen//:hdrs'], outs = ['list.txt'], cmd = 'ls $(SRCS) > $@')\ngenrule(name = 'add', outs = ['add.txt'], cmd = 'touch {0}/new.h {1}/sub/new.h && echo added > $@')\n",
+            x.display(),
+            y.display()
+        ),
+    );
+    // Cold: `gen` executes and publishes; the next runs reuse (verify) it.
+    let cold = f.run_env(&[], &["build", "--nobuild", "//:list"]);
+    assert!(cold.status.success(), "{}", stderr(&cold));
+    let record = [
+        ("BAZEL_RS_SNAPSHOT", "record"),
+        ("BAZEL_RS_SNAPSHOT_COMPARE", "1"),
+    ];
+    // Planning lists the host directories through the links; `add` then
+    // adds a header to each before the record mode validates.
+    let added = f.run_env(&record, &["build", "//:list", "//:add"]);
+    let text = stderr(&added);
+    assert!(added.status.success(), "{text}");
+    assert!(x.join("new.h").exists() && y.join("sub/new.h").exists());
+    let lines = snapshot_lines(&text);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("replay dry-run: 1/1 matching")),
+        "{text}"
+    );
+    let changed: Vec<&&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("validation: READDIR") && line.contains("listing changed"))
+        .collect();
+    for (tree, listed) in [
+        ("gen", "/inc: listing changed"),
+        ("lgen", "/inc/sub: listing changed"),
+    ] {
+        assert!(
+            changed.iter().any(|line| line.ends_with(listed)),
+            "{tree}: {changed:#?}\n{text}"
+        );
+    }
+    assert!(validation_mismatches(&lines, "per-tree") >= 2, "{text}");
+    assert!(validation_mismatches(&lines, "full") >= 2, "{text}");
+    // Nothing changes during this run (`add` is an action-cache hit): the
+    // recording validates cleanly under both policies.
+    let unchanged = f.run_env(&record, &["build", "//:list", "//:add"]);
+    let text = stderr(&unchanged);
+    assert!(unchanged.status.success(), "{text}");
+    let lines = snapshot_lines(&text);
+    assert_eq!(validation_mismatches(&lines, "per-tree"), 0, "{text}");
+    assert_eq!(validation_mismatches(&lines, "full"), 0, "{text}");
+}
+
+/// The stale-tree caveat of the store-tree link anchors (review item 7): a
+/// reused repository can hold a link into an older tree of its target
+/// repository (here `dep` republished with other BUILD bytes while the
+/// linked file kept its digest, so `linker` is reused). The link resolves
+/// to that old, verified tree — Bazel would read the current repository —
+/// in a hit and a miss alike; the record mode names such trees once the run
+/// is otherwise clean.
+#[test]
+fn record_mode_names_store_trees_a_link_reaches_but_no_repository_roots() {
+    let f = Fixture::new();
+    let module = |value: &str| {
+        format!(
+            "module(name='main')\nd = use_repo_rule('//:repo.bzl', 'd')\nk = use_repo_rule('//:repo.bzl', 'k')\nd(name = 'dep', value = '{value}')\nk(name = 'linker')\n"
+        )
+    };
+    f.file("MODULE.bazel", &module("one"));
+    f.file(
+        "repo.bzl",
+        r##"def _dep(ctx):
+    ctx.file("BUILD.bazel", "# %s\nexports_files(['defs.bzl'])\n" % ctx.attr.value)
+    ctx.file("defs.bzl", "VALUE = 'from-dep'\n")
+
+d = repository_rule(_dep, attrs = {"value": attr.string()})
+
+def _linker(ctx):
+    ctx.symlink(Label("@dep//:defs.bzl"), "linked.bzl")
+    ctx.file("BUILD.bazel", "load(':linked.bzl', 'VALUE')\ngenrule(name = 'g', outs = ['g.txt'], cmd = 'echo %s > $@' % VALUE, visibility = ['//visibility:public'])\n")
+
+k = repository_rule(_linker)
+"##,
+    );
+    f.file(
+        "BUILD.bazel",
+        "genrule(name = 'x', srcs = ['@linker//:g', '@dep//:defs.bzl'], outs = ['x.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    let record = [("BAZEL_RS_SNAPSHOT", "record")];
+    let build = ["build", "--nobuild", "//:x"];
+    let anchors = |lines: &[&str]| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|line| line.starts_with("link anchors: "))
+            .map(|line| (*line).to_owned())
+            .collect()
+    };
+    let cold = f.run_env(&record, &build);
+    let text = stderr(&cold);
+    assert!(cold.status.success(), "{text}");
+    assert_eq!(
+        anchors(&snapshot_lines(&text)),
+        Vec::<String>::new(),
+        "{text}"
+    );
+    let trees = |f: &Fixture| -> Vec<String> {
+        let mut trees: Vec<String> =
+            fs::read_dir(f.0.path().join("cache/repositories/direct/trees"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+        trees.sort();
+        trees
+    };
+    let before = trees(&f);
+    // `dep` republishes (a new tree; the run executed it, so nothing is
+    // named), `linker` is reused with its link into the old tree.
+    f.file("MODULE.bazel", &module("two"));
+    let changed = f.run_env(&record, &build);
+    let text = stderr(&changed);
+    assert!(changed.status.success(), "{text}");
+    assert_eq!(
+        anchors(&snapshot_lines(&text)),
+        Vec::<String>::new(),
+        "{text}"
+    );
+    let old = trees(&f)
+        .into_iter()
+        .find(|tree| {
+            before.contains(tree) && {
+                let linked =
+                    f.0.path()
+                        .join("cache/repositories/direct/trees")
+                        .join(tree)
+                        .join("defs.bzl");
+                linked.exists()
+            }
+        })
+        .expect("dep's old tree");
+    let warm = f.run_env(&record, &build);
+    let text = stderr(&warm);
+    assert!(warm.status.success(), "{text}");
+    let lines = snapshot_lines(&text);
+    assert!(
+        lines.iter().any(|line| line.contains("eligible=yes")),
+        "{text}"
+    );
+    let named = anchors(&lines);
+    assert_eq!(named.len(), 1, "{text}");
+    assert!(
+        named[0].starts_with("link anchors: 1 store tree(s)") && named[0].ends_with(&old),
+        "{text}"
     );
 }

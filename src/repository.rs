@@ -510,6 +510,9 @@ impl RepositorySet {
         execution: crate::repository_store::LocalExecution,
         observed: Option<LocalObservation>,
     ) {
+        // Replayed, never a REPO (also when a link crossed into the tree
+        // before this execution).
+        crate::observed_fs::local_tree(root);
         let Some(observed) = observed else {
             return;
         };

@@ -419,8 +419,10 @@ pub fn summary(
         entry.1 += repository.entries.len();
         integrity_racy += repository.entries.iter().filter(|entry| entry.racy).count();
     }
+    let (inside, below_links) =
+        crate::snapshot::validate::observations_inside_verified_trees(recording);
     lines.push(format!(
-        "repositories: {} verified trees ({}), {} integrity entries (racy {integrity_racy}); {} observations inside verified trees",
+        "repositories: {} verified trees ({}), {} integrity entries (racy {integrity_racy}); {inside} observations inside verified trees ({below_links} at or below a tree's symlinks)",
         recording.repositories.len(),
         kinds
             .iter()
@@ -428,8 +430,32 @@ pub fn summary(
             .collect::<Vec<_>>()
             .join(", "),
         kinds.values().map(|(_, entries)| entries).sum::<usize>(),
-        crate::snapshot::validate::observations_inside_verified_trees(recording),
     ));
+    // A link crossed into a store tree no repository of the run has as its
+    // root: an older publication of the target repository (or one whose
+    // repository the run never demanded). It resolves to that verified
+    // tree, where Bazel would read the repository's current contents (a
+    // hit and a miss agree). A repository the run executed or published may
+    // root a tree without a REPO record, so such runs report nothing.
+    if !recording.crossed.is_empty()
+        && !recording
+            .taints
+            .contains_key(&Taint::RepositoryRuleExecuted)
+        && !recording
+            .taints
+            .contains_key(&Taint::RepositoryMaterialized)
+    {
+        lines.push(format!(
+            "link anchors: {} store tree(s) a link crossed into never became a repository root in this run (stale links into older publications?): {}",
+            recording.crossed.len(),
+            recording
+                .crossed
+                .iter()
+                .map(|root| escape(root.as_os_str()))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
     if recording.taints.is_empty() {
         lines.push("taints: none".to_owned());
     }

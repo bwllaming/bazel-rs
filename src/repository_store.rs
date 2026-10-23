@@ -1758,6 +1758,19 @@ pub struct PublishedTree {
 /// manifest file (PLAN-L2 update 1 §(c): such a tree is a link anchor in
 /// any order).
 pub fn published_tree(store: &Path, path: &Path) -> Option<PublishedTree> {
+    store_tree_of(store, path).filter(is_published)
+}
+
+/// Whether `tree` ([`store_tree_of`]) is published: a directory with a
+/// regular manifest file (two lstats).
+pub fn is_published(tree: &PublishedTree) -> bool {
+    fs::symlink_metadata(&tree.root).is_ok_and(|metadata| metadata.is_dir())
+        && fs::symlink_metadata(&tree.manifest).is_ok_and(|metadata| metadata.is_file())
+}
+
+/// The store tree `path` lexically lies in, published or not (no I/O; see
+/// [`published_tree`]): its area, identity, root and manifest path.
+pub fn store_tree_of(store: &Path, path: &Path) -> Option<PublishedTree> {
     let rest = path.strip_prefix(store).ok()?;
     let mut parts = rest.components().map(|component| match component {
         Component::Normal(part) => part.to_str(),
@@ -1792,9 +1805,7 @@ pub fn published_tree(store: &Path, path: &Path) -> Option<PublishedTree> {
         "git" => store.join("git/manifests").join(format!("{id}.json")),
         _ => area.join(format!("{id}.json")),
     };
-    let published = fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir())
-        && fs::symlink_metadata(&manifest).is_ok_and(|metadata| metadata.is_file());
-    published.then(|| PublishedTree {
+    Some(PublishedTree {
         kind,
         id: id.to_owned(),
         root,

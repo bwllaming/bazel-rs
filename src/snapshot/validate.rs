@@ -26,9 +26,12 @@
 //!
 //! Policy (PLAN-L2 update 1, decision (1)): by default a hit validates per
 //! tree ([`Policy::PerTree`]: the observations outside verified repository
-//! trees, plus each tree's root and manifest — a content-addressed tree
-//! whose root and manifest are unchanged stands for everything inside it,
-//! like Bazel trusting repository markers); the existing
+//! trees and those at or below a symlink of a tree, plus each tree's root
+//! and manifest — a content-addressed tree whose root and manifest are
+//! unchanged stands for everything inside it, like Bazel trusting
+//! repository markers, but not for what its links reach: the glob walker and
+//! the BUILD lookups record a host directory listed through a tree's link
+//! under the logical path inside the tree); the existing
 //! `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` switch selects
 //! every INTEGRITY entry too ([`Policy::Full`]). Below
 //! [`SINGLE_THREAD_CHECKS`] checks one thread runs them (thread start-up
@@ -335,33 +338,65 @@ fn verified_roots(recording: &Recording) -> Vec<&Path> {
     roots
 }
 
+/// The symlinks of the verified repository trees (their INTEGRITY entries
+/// of kind symlink below the root, or a root that is a link), sorted. The
+/// integrity walk never descends into a link, so no two of them nest (as
+/// the trees themselves do not).
+fn tree_links(recording: &Recording) -> Vec<&Path> {
+    let mut links: Vec<&Path> = recording
+        .repositories
+        .iter()
+        .flat_map(|repository| {
+            repository.entries.iter().filter(|entry| {
+                matches!(entry.state, Ok((FileKind::Symlink, _)))
+                    && entry.path.starts_with(&repository.root)
+            })
+        })
+        .map(|entry| entry.path.as_path())
+        .collect();
+    links.sort();
+    links
+}
+
 /// Whether `path` lies inside (or is) one of the sorted, non-nested `roots`.
 fn inside(roots: &[&Path], path: &Path) -> bool {
     let at = roots.partition_point(|root| *root <= path);
     at > 0 && path.starts_with(roots[at - 1])
 }
 
-/// How many observations lie inside verified repository trees.
-pub fn observations_inside_verified_trees(recording: &Recording) -> usize {
+/// How many observations lie inside verified repository trees, and how many
+/// of those at or below a symlink of their tree (which the per-tree policy
+/// validates too).
+pub fn observations_inside_verified_trees(recording: &Recording) -> (usize, usize) {
     let roots = verified_roots(recording);
-    recording
-        .observations
-        .iter()
-        .filter(|(path, _)| inside(&roots, path))
-        .count()
+    let links = tree_links(recording);
+    let mut counts = (0, 0);
+    for (path, _) in &recording.observations {
+        if inside(&roots, path) {
+            counts.0 += 1;
+            counts.1 += usize::from(inside(&links, path));
+        }
+    }
+    counts
 }
 
 /// The recording a per-tree summary policy would validate (PLAN-L2 §7 "when
-/// to escalate": repository tree checks above 20 ms on a hit): observations
-/// outside the verified repository trees only — a content-addressed tree
-/// whose root and manifest are unchanged stands for everything recorded
-/// inside it — and per tree only the root and manifest integrity entries.
+/// to escalate": repository tree checks above 20 ms on a hit): the
+/// observations outside the verified repository trees — a content-addressed
+/// tree whose root and manifest are unchanged stands for everything
+/// recorded inside it — and those at or below a symlink of a verified tree:
+/// the tree fixes the link, not what it reaches (the glob walker lists a
+/// host directory through a link, and `glob::is_subpackage` stats its BUILD
+/// files, under the logical path inside the tree; a header added to that
+/// host directory must be a miss) — plus per tree only the root and
+/// manifest integrity entries.
 pub fn per_tree_summary(recording: &Recording) -> Recording {
     let roots = verified_roots(recording);
+    let links = tree_links(recording);
     let mut summary = recording.clone();
     summary
         .observations
-        .retain(|(path, _)| !inside(&roots, path));
+        .retain(|(path, _)| !inside(&roots, path) || inside(&links, path));
     for repository in &mut summary.repositories {
         let root = repository.root.clone();
         let manifest = repository.manifest.clone();
@@ -378,8 +413,9 @@ pub fn per_tree_summary(recording: &Recording) -> Recording {
 /// Which checks a hit runs (see the module docs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Policy {
-    /// Observations outside verified trees, plus each tree's root and
-    /// manifest (the default).
+    /// Observations outside verified trees or at or below a tree's
+    /// symlinks, plus each tree's root and manifest (the default,
+    /// [`per_tree_summary`]).
     PerTree,
     /// Every observation and every INTEGRITY entry (`--verify_repo_tampering`
     /// / `BAZEL_RS_VERIFY_REPOS=full`).
@@ -651,6 +687,7 @@ mod tests {
             ],
             env: Vec::new(),
             repositories: Vec::new(),
+            crossed: Vec::new(),
             taints: BTreeMap::new(),
         };
         let report = dry_run(&recording, 4);
@@ -670,53 +707,83 @@ mod tests {
     #[test]
     fn per_tree_summary_keeps_outside_observations_and_tree_heads() {
         use crate::observed_fs::{FileKind, IntegrityEntry, RepositoryRecord};
-        let entry = |path: &str| IntegrityEntry {
+        let entry = |path: &str, kind: FileKind| IntegrityEntry {
             path: path.into(),
-            state: Ok((FileKind::File, StatKey::default())),
+            state: Ok((kind, StatKey::default())),
             racy: false,
         };
+        let stat = |path: &str| (path.into(), observation(Op::Stat, Outcome::Error(2)));
         let recording = Recording {
             observations: vec![
                 (
                     "/c/trees/a".into(),
                     observation(Op::Canon, Outcome::Error(2)),
                 ),
-                (
-                    "/c/trees/a/BUILD".into(),
-                    observation(Op::Stat, Outcome::Error(2)),
-                ),
-                (
-                    "/c/trees/ab/x".into(),
-                    observation(Op::Stat, Outcome::Error(2)),
-                ),
-                ("/ws/BUILD".into(), observation(Op::Stat, Outcome::Error(2))),
+                stat("/c/trees/a/BUILD"),
+                // Read through the tree's links: a host directory listed
+                // (and its BUILD looked up) under the logical path.
+                stat("/c/trees/a/inc"),
+                stat("/c/trees/a/inc/sub/BUILD"),
+                stat("/c/trees/a/include"),
+                stat("/c/trees/a/lib/link"),
+                stat("/c/trees/a/lib/linked"),
+                stat("/c/trees/ab/x"),
+                // A tree whose root is a link: everything below it.
+                stat("/c/trees/r/BUILD"),
+                stat("/ws/BUILD"),
             ],
-            repositories: vec![RepositoryRecord {
-                kind: "registry",
-                name: "a".into(),
-                root: "/c/trees/a".into(),
-                manifest: Some("/c/trees/a.json".into()),
-                entries: vec![
-                    entry("/c/trees/a.json"),
-                    entry("/c/trees/a"),
-                    entry("/c/trees/a/BUILD"),
-                ],
-            }],
+            repositories: vec![
+                RepositoryRecord {
+                    kind: "registry",
+                    name: "a".into(),
+                    root: "/c/trees/a".into(),
+                    manifest: Some("/c/trees/a.json".into()),
+                    entries: vec![
+                        entry("/c/trees/a.json", FileKind::File),
+                        entry("/c/trees/a", FileKind::Dir),
+                        entry("/c/trees/a/BUILD", FileKind::File),
+                        entry("/c/trees/a/inc", FileKind::Symlink),
+                        entry("/c/trees/a/lib", FileKind::Dir),
+                        entry("/c/trees/a/lib/link", FileKind::Symlink),
+                    ],
+                },
+                RepositoryRecord {
+                    kind: "direct",
+                    name: "r".into(),
+                    root: "/c/trees/r".into(),
+                    manifest: Some("/c/manifests/r.json".into()),
+                    entries: vec![
+                        entry("/c/manifests/r.json", FileKind::Symlink),
+                        entry("/c/trees/r", FileKind::Symlink),
+                    ],
+                },
+            ],
             ..Recording::default()
         };
-        assert_eq!(observations_inside_verified_trees(&recording), 2);
+        assert_eq!(observations_inside_verified_trees(&recording), (8, 4));
         let summary = per_tree_summary(&recording);
         let kept: Vec<_> = summary
             .observations
             .iter()
             .map(|(path, _)| path.to_str().unwrap())
             .collect();
-        assert_eq!(kept, ["/c/trees/ab/x", "/ws/BUILD"]);
+        assert_eq!(
+            kept,
+            [
+                "/c/trees/a/inc",
+                "/c/trees/a/inc/sub/BUILD",
+                "/c/trees/a/lib/link",
+                "/c/trees/ab/x",
+                "/c/trees/r/BUILD",
+                "/ws/BUILD"
+            ]
+        );
         let entries: Vec<_> = summary.repositories[0]
             .entries
             .iter()
             .map(|entry| entry.path.to_str().unwrap())
             .collect();
         assert_eq!(entries, ["/c/trees/a.json", "/c/trees/a"]);
+        assert_eq!(Policy::Full.select(&recording).observations.len(), 10);
     }
 }

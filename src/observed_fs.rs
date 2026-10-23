@@ -30,7 +30,7 @@
 //! its observations.
 
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -421,6 +421,20 @@ pub struct TaintRecord {
 
 type Shard = Mutex<HashMap<PathBuf, Vec<Observation>>>;
 
+/// Who recorded a repository root (see [`repository_tree`],
+/// [`crossed_tree`], [`local_tree`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Claim {
+    /// The repository that owns the tree verified it (a reused
+    /// publication): its REPO record is final.
+    Owner,
+    /// A link crossed into a published tree no root of the invocation
+    /// named yet: its REPO record stands until an owner claims the tree.
+    Crossing,
+    /// A local repository rule published the tree: replayed, never a REPO.
+    Local,
+}
+
 /// The process-global recorder of one window.
 pub struct Recorder {
     window_start_ns: i64,
@@ -429,7 +443,7 @@ pub struct Recorder {
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
     fixed_env: BTreeSet<OsString>,
     repositories: Mutex<Vec<RepositoryRecord>>,
-    repository_roots: Mutex<HashSet<PathBuf>>,
+    repository_roots: Mutex<HashMap<PathBuf, Claim>>,
     taints: Mutex<BTreeMap<Taint, TaintRecord>>,
     window: Mutex<Option<Duration>>,
 }
@@ -443,6 +457,9 @@ pub struct Recording {
     pub observations: Vec<(PathBuf, Observation)>,
     pub env: Vec<(OsString, EnvObservation)>,
     pub repositories: Vec<RepositoryRecord>,
+    /// The roots of `repositories` only a link crossing recorded: no
+    /// repository of the run claimed them (sorted).
+    pub crossed: Vec<PathBuf>,
     pub taints: BTreeMap<Taint, TaintRecord>,
 }
 
@@ -752,6 +769,12 @@ impl Recorder {
         observations.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.op.cmp(&y.op)));
         let mut repositories = lock(&self.repositories).clone();
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
+        let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
+            .iter()
+            .filter(|(_, claim)| **claim == Claim::Crossing)
+            .map(|(root, _)| root.clone())
+            .collect();
+        crossed.sort();
         Recording {
             window_start_ns: self.window_start_ns,
             window: *lock(&self.window),
@@ -761,8 +784,101 @@ impl Recorder {
                 .map(|(name, observation)| (name.clone(), observation.clone()))
                 .collect(),
             repositories,
+            crossed,
             taints: lock(&self.taints).clone(),
         }
+    }
+
+    /// The REPO + INTEGRITY record of `root`: the lstat key of every entry
+    /// below it (and of the manifest), walked now.
+    fn walk_tree(
+        &self,
+        kind: &'static str,
+        name: &str,
+        root: &Path,
+        manifest: Option<&Path>,
+    ) -> RepositoryRecord {
+        let start = self.window_start_ns;
+        let entry = |path: PathBuf, state: &io::Result<fs::Metadata>| {
+            let state = match state {
+                Ok(metadata) => Ok((FileKind::of(metadata.file_type()), StatKey::of(metadata))),
+                Err(error) => Err(errno(error)),
+            };
+            let racy = matches!(&state, Ok((_, key)) if key.racy(start));
+            IntegrityEntry { path, state, racy }
+        };
+        let mut entries = Vec::new();
+        if let Some(manifest) = manifest {
+            entries.push(entry(
+                manifest.to_path_buf(),
+                &fs::symlink_metadata(manifest),
+            ));
+        }
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            let state = fs::symlink_metadata(&path);
+            let directory = state.as_ref().is_ok_and(|metadata| metadata.is_dir());
+            entries.push(entry(path.clone(), &state));
+            if !directory {
+                continue;
+            }
+            match fs::read_dir(&path) {
+                Ok(children) => {
+                    for child in children {
+                        match child {
+                            Ok(child) => pending.push(child.path()),
+                            Err(error) => self.taint(
+                                Taint::Unstable,
+                                format!("INTEGRITY {}: {error}", escape(path.as_os_str())),
+                            ),
+                        }
+                    }
+                }
+                Err(error) => self.taint(
+                    Taint::Unstable,
+                    format!("INTEGRITY {}: {error}", escape(path.as_os_str())),
+                ),
+            }
+        }
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        RepositoryRecord {
+            kind,
+            name: name.to_owned(),
+            root: root.to_path_buf(),
+            manifest: manifest.map(Path::to_path_buf),
+            entries,
+        }
+    }
+
+    /// Record `root` for `claim` (see [`Claim`]): an owner's record
+    /// replaces a crossing's (walked again: the owner may have refreshed
+    /// the manifest), so the recording does not depend on whether the link
+    /// or the repository came first; a local claim drops a crossing's. The
+    /// walk runs unlocked; a claim superseded meanwhile records nothing.
+    fn claim_tree(
+        &self,
+        claim: Claim,
+        kind: &'static str,
+        name: &str,
+        root: &Path,
+        manifest: Option<&Path>,
+    ) {
+        {
+            let mut roots = lock(&self.repository_roots);
+            match (roots.get(root), claim) {
+                (None, _) | (Some(Claim::Crossing), Claim::Owner | Claim::Local) => {}
+                (Some(_), _) => return,
+            }
+            roots.insert(root.to_path_buf(), claim);
+        }
+        let record = (claim != Claim::Local).then(|| self.walk_tree(kind, name, root, manifest));
+        let roots = lock(&self.repository_roots);
+        if roots.get(root) != Some(&claim) {
+            return;
+        }
+        let mut repositories = lock(&self.repositories);
+        repositories.retain(|repository| repository.root != root);
+        repositories.extend(record);
     }
 }
 
@@ -1032,67 +1148,36 @@ impl Drop for TaintedSection {
     }
 }
 
-/// Record a repository tree the run verified (REPO + INTEGRITY): the lstat
-/// key of every entry below `root` (and of the manifest), walked now. Call
-/// it after the tree's own verification (and fingerprint refresh)
-/// succeeded; once per root and window.
+/// Record a repository tree the run verified as a repository's root (REPO +
+/// INTEGRITY): the lstat key of every entry below `root` (and of the
+/// manifest), walked now. Call it after the tree's own verification (and
+/// fingerprint refresh) succeeded; once per root and window (it replaces a
+/// [`crossed_tree`] record of the same root).
 pub fn repository_tree(kind: &'static str, name: &str, root: &Path, manifest: Option<&Path>) {
-    let Some(recorder) = active() else {
-        return;
-    };
-    if !lock(&recorder.repository_roots).insert(root.to_path_buf()) {
-        return;
+    if let Some(recorder) = active() {
+        recorder.claim_tree(Claim::Owner, kind, name, root, manifest);
     }
-    let start = recorder.window_start_ns;
-    let entry = |path: PathBuf, state: &io::Result<fs::Metadata>| {
-        let state = match state {
-            Ok(metadata) => Ok((FileKind::of(metadata.file_type()), StatKey::of(metadata))),
-            Err(error) => Err(errno(error)),
-        };
-        let racy = matches!(&state, Ok((_, key)) if key.racy(start));
-        IntegrityEntry { path, state, racy }
-    };
-    let mut entries = Vec::new();
-    if let Some(manifest) = manifest {
-        entries.push(entry(
-            manifest.to_path_buf(),
-            &fs::symlink_metadata(manifest),
-        ));
+}
+
+/// Record a published store tree a symlink crossed into before any
+/// repository of the run claimed it (crate::source_links::StoreTrees), named
+/// by its identity: [`repository_tree`] or [`local_tree`] replace it when
+/// the repository is materialized later in the run; otherwise it stays in
+/// [`Recording::crossed`] (a link into a tree no repository of the run has
+/// as its root, e.g. an older publication).
+pub fn crossed_tree(kind: &'static str, id: &str, root: &Path, manifest: &Path) {
+    if let Some(recorder) = active() {
+        recorder.claim_tree(Claim::Crossing, kind, id, root, Some(manifest));
     }
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(path) = pending.pop() {
-        let state = fs::symlink_metadata(&path);
-        let directory = state.as_ref().is_ok_and(|metadata| metadata.is_dir());
-        entries.push(entry(path.clone(), &state));
-        if !directory {
-            continue;
-        }
-        match fs::read_dir(&path) {
-            Ok(children) => {
-                for child in children {
-                    match child {
-                        Ok(child) => pending.push(child.path()),
-                        Err(error) => recorder.taint(
-                            Taint::Unstable,
-                            format!("INTEGRITY {}: {error}", escape(path.as_os_str())),
-                        ),
-                    }
-                }
-            }
-            Err(error) => recorder.taint(
-                Taint::Unstable,
-                format!("INTEGRITY {}: {error}", escape(path.as_os_str())),
-            ),
-        }
+}
+
+/// A local repository rule published (or kept) the tree at `root`: it is
+/// replayed, never a REPO — a link that crossed into it earlier in the run
+/// loses its record, so the recording is the same in either order.
+pub fn local_tree(root: &Path) {
+    if let Some(recorder) = active() {
+        recorder.claim_tree(Claim::Local, "direct", "", root, None);
     }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
-    lock(&recorder.repositories).push(RepositoryRecord {
-        kind,
-        name: name.to_owned(),
-        root: root.to_path_buf(),
-        manifest: manifest.map(Path::to_path_buf),
-        entries,
-    });
 }
 
 // ---- text helpers ----------------------------------------------------------
