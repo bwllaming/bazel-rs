@@ -1,0 +1,806 @@
+{
+ "schema": "w1b-artifact-identity-receipt/v1",
+ "fixture": "artifact_identity",
+ "purpose": "Programs the pre-W1b legality machinery (provider-file walk, known_file gates, per-target available maps) rejected and genuine Bazel 9.3 accepts: a File reachable only through a closure as an input and as a declare_file sibling, provider payloads with range/200-deep/cyclic/bound-method values, a workspace status file in DefaultInfo without an action; plus regression rows (three-hop provider file, forwarded DefaultInfo, generated tool runfile), the declared-output conflict (both fail, texts differ) and the analysis-bound payloads Bazel keeps and the native profile rejects explicitly.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "--batch --ignore_all_rc_files --output_user_root=<scratch> build --noshow_progress --color=no --curses=no --show_result=100"
+ },
+ "native": {
+  "binary": "bazel-rs release build (cargo build --locked --release)",
+  "sha256": "9b2d34832612580d4e4a6fb17077e5ac3265e6a524f4e78095c7e3cc5a835365",
+  "commit": "86228ee671507aee46c7f5cfb6515e3feb1abb78"
+ },
+ "base_native": {
+  "binary": "bazel-rs release build of 6bebe72 (pre-W1b base)",
+  "sha256": "b1d76919d8ba829a87da20361073f61219d7ad4ed8064d1997956602f9c5acdb"
+ },
+ "capture_script": {
+  "path": "/tmp/opencode/perf-research/w1b-capture.py (scratch, not in the repo)",
+  "sha256": "e612c45e27224bc7f881aa26b947f1f70f77200b47a1fd08de5de1629b86a9cc"
+ },
+ "fixture_tree_sha256": [
+  "bc44559a471b2e75ba76470bb82a997dd487405c68f8d76d402b340d692eede8",
+  2
+ ],
+ "verdicts": {
+  "EXACT": "both succeed; per target equal root-relative output paths (bazel-bin -> bazel-out/k8-fastbuild/bin) and bytes",
+  "EXACT_PATHS": "both succeed; equal output paths (contents are timestamps)",
+  "EXIT_EQUAL": "both succeed (--nobuild: genuine prints no results; native reports planned paths)",
+  "BOTH_FAIL": "both fail (error texts recorded, not compared)",
+  "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message (unsupported provider payload ...: providers are frozen with their analysis)",
+  "MISMATCH": "anything else"
+ },
+ "scenarios": {
+  "three_hops": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:use"
+    ],
+    "exit": 0,
+    "seconds": 10.57,
+    "outputs": {
+     "//pkg:use": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/use.txt",
+       "sha256": "878dcb717b6a902ed87cfd139c29e54bd66dcdc0e8cb254df10613e3a91021c1",
+       "text": "leaf:leaf\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:use"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:use": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/use.txt",
+       "sha256": "878dcb717b6a902ed87cfd139c29e54bd66dcdc0e8cb254df10613e3a91021c1",
+       "text": "leaf:leaf\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:use"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:use": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/use.txt",
+       "sha256": "878dcb717b6a902ed87cfd139c29e54bd66dcdc0e8cb254df10613e3a91021c1",
+       "text": "leaf:leaf\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "verdict": "EXACT",
+   "base_verdict": "EXACT"
+  },
+  "closure_and_sibling": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:via_closure"
+    ],
+    "exit": 0,
+    "seconds": 8.36,
+    "outputs": {
+     "//pkg:via_closure": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_closure.txt",
+       "sha256": "15e030adc63f2108e73345ef99fb417dbfe416a197654879103890a57944d401",
+       "text": "hidden:closure\n"
+      },
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_closure.sibling",
+       "sha256": "82f5438c6d0314da42b28751ef54b4fea89d4a4f2aa6a1ba8d9f590cd43d7260",
+       "text": "sibling of closure.hidden\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:via_closure"
+    ],
+    "exit": 0,
+    "seconds": 0.03,
+    "outputs": {
+     "//pkg:via_closure": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_closure.txt",
+       "sha256": "15e030adc63f2108e73345ef99fb417dbfe416a197654879103890a57944d401",
+       "text": "hidden:closure\n"
+      },
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_closure.sibling",
+       "sha256": "82f5438c6d0314da42b28751ef54b4fea89d4a4f2aa6a1ba8d9f590cd43d7260",
+       "text": "sibling of closure.hidden\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:via_closure"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:via_closure: Traceback (most recent call last):"
+    ]
+   },
+   "verdict": "EXACT",
+   "base_verdict": "MISMATCH"
+  },
+  "range_payload": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:via_range"
+    ],
+    "exit": 0,
+    "seconds": 8.38,
+    "outputs": {
+     "//pkg:via_range": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_range.txt",
+       "sha256": "f9e71e125430b988254b047c93bb90fbc0f6c1a1d01d1e4037c8e4c2a2876d05",
+       "text": "hidden:closure_range\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:via_range"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:via_range": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_range.txt",
+       "sha256": "f9e71e125430b988254b047c93bb90fbc0f6c1a1d01d1e4037c8e4c2a2876d05",
+       "text": "hidden:closure_range\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:via_range"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:closure_range: unsupported provider payload type range"
+    ]
+   },
+   "verdict": "EXACT",
+   "base_verdict": "MISMATCH"
+  },
+  "deep_payload": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:via_deep"
+    ],
+    "exit": 0,
+    "seconds": 8.29,
+    "outputs": {
+     "//pkg:via_deep": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_deep.txt",
+       "sha256": "83dab5b571934d4ef0e70792ebea1b79f81877d7233c7a8dbcf530555afc3aa6",
+       "text": "hidden:closure_deep\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:via_deep"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:via_deep": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_deep.txt",
+       "sha256": "83dab5b571934d4ef0e70792ebea1b79f81877d7233c7a8dbcf530555afc3aa6",
+       "text": "hidden:closure_deep\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:via_deep"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:closure_deep: provider payload exceeds nesting depth limit 128"
+    ]
+   },
+   "verdict": "EXACT",
+   "base_verdict": "MISMATCH"
+  },
+  "cyclic_payload": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:via_cyclic"
+    ],
+    "exit": 0,
+    "seconds": 8.56,
+    "outputs": {
+     "//pkg:via_cyclic": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_cyclic.txt",
+       "sha256": "d23f31a9c163115f06ed7c6b020928f7895d120eed1304bac137eb0e798ea268",
+       "text": "hidden:closure_cyclic\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:via_cyclic"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:via_cyclic": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_cyclic.txt",
+       "sha256": "d23f31a9c163115f06ed7c6b020928f7895d120eed1304bac137eb0e798ea268",
+       "text": "hidden:closure_cyclic\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:via_cyclic"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:closure_cyclic: cycle in provider payload"
+    ]
+   },
+   "verdict": "EXACT",
+   "base_verdict": "MISMATCH"
+  },
+  "bound_method_payload": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:via_method"
+    ],
+    "exit": 0,
+    "seconds": 7.99,
+    "outputs": {
+     "//pkg:via_method": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_method.txt",
+       "sha256": "06298c6e831bb50bc2caa5f9ffbfb2cb9e5299bde7419712c4f9ffb4edfc7835",
+       "text": "hidden:closure_method\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:via_method"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:via_method": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/via_method.txt",
+       "sha256": "06298c6e831bb50bc2caa5f9ffbfb2cb9e5299bde7419712c4f9ffb4edfc7835",
+       "text": "hidden:closure_method\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:via_method"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:closure_method: unsupported provider payload type builtin_function_or_method"
+    ]
+   },
+   "verdict": "EXACT",
+   "base_verdict": "MISMATCH"
+  },
+  "forwarded_default_info": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:fwd",
+     "//pkg:cat_fwd"
+    ],
+    "exit": 0,
+    "seconds": 8.22,
+    "outputs": {
+     "//pkg:cat_fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/cat_fwd.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ],
+     "//pkg:fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/gen_data.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:fwd",
+     "//pkg:cat_fwd"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:cat_fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/cat_fwd.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ],
+     "//pkg:fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/gen_data.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:fwd",
+     "//pkg:cat_fwd"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:cat_fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/cat_fwd.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ],
+     "//pkg:fwd": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/gen_data.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "verdict": "EXACT",
+   "base_verdict": "EXACT"
+  },
+  "status_in_default_info": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:status"
+    ],
+    "exit": 0,
+    "seconds": 8.13,
+    "outputs": {
+     "//pkg:status": [
+      {
+       "path": "bazel-out/volatile-status.txt",
+       "sha256": "cbbb23901bc01c0385d7ff51c55b1096ebbf59a0e44a6b843c36462f14bbccdd",
+       "text": "BUILD_TIMESTAMP 1792720497\nFORMATTED_DATE 2026 Oct 23 01 54 57 Fri\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:status"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:status": [
+      {
+       "path": "bazel-out/volatile-status.txt",
+       "sha256": "cbbb23901bc01c0385d7ff51c55b1096ebbf59a0e44a6b843c36462f14bbccdd",
+       "text": "BUILD_TIMESTAMP 1792720497\nFORMATTED_DATE 2026 Oct 23 01 54 57 Fri\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:status"
+    ],
+    "exit": 1,
+    "seconds": 0.02,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: //pkg:status: DefaultInfo file has no artifact: bazel-out/volatile-status.txt"
+    ]
+   },
+   "verdict": "EXACT_PATHS",
+   "base_verdict": "MISMATCH"
+  },
+  "status_in_default_info_nobuild": {
+   "genuine": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status"
+    ],
+    "exit": 0,
+    "seconds": 8.11,
+    "outputs": {},
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status"
+    ],
+    "exit": 0,
+    "seconds": 0.01,
+    "outputs": {
+     "//pkg:status": [
+      {
+       "path": "bazel-out/volatile-status.txt",
+       "sha256": null,
+       "text": null
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: //pkg:status: DefaultInfo file has no artifact: bazel-out/volatile-status.txt"
+    ]
+   },
+   "verdict": "EXIT_EQUAL",
+   "base_verdict": "MISMATCH"
+  },
+  "declared_output_conflict": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:second"
+    ],
+    "exit": 1,
+    "seconds": 8.26,
+    "outputs": {},
+    "errors": [
+     "ERROR: file 'pkg/same.txt' is generated by these conflicting actions:",
+     "ERROR: command succeeded, but not all targets were analyzed",
+     "ERROR: Build did NOT complete successfully"
+    ]
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:second"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: overlapping output paths: bazel-out/k8-fastbuild/bin/pkg/same.txt from //pkg:first conflicts with bazel-out/k8-fastbuild/bin/pkg/same.txt from //pkg:second"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:second"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:second: Traceback (most recent call last):"
+    ]
+   },
+   "verdict": "BOTH_FAIL",
+   "base_verdict": "BOTH_FAIL"
+  },
+  "generated_tool_runfile": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:run_tool"
+    ],
+    "exit": 0,
+    "seconds": 8.59,
+    "outputs": {
+     "//pkg:run_tool": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/run_tool.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:run_tool"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:run_tool": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/run_tool.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:run_tool"
+    ],
+    "exit": 0,
+    "seconds": 0.02,
+    "outputs": {
+     "//pkg:run_tool": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/run_tool.txt",
+       "sha256": "dcabfef27e0c1ff0007f166352ec54acaeef0c2a10bf9e72ba529e9b22d1222a",
+       "text": "generated data\n"
+      }
+     ]
+    },
+    "errors": []
+   },
+   "verdict": "EXACT",
+   "base_verdict": "EXACT"
+  },
+  "analysis_bound_ctx": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:bound_ctx"
+    ],
+    "exit": 0,
+    "seconds": 8.23,
+    "outputs": {},
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:bound_ctx"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_ctx: unsupported provider payload type ctx"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:bound_ctx"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_ctx: unsupported provider payload type ctx"
+    ]
+   },
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "base_verdict": "EXPECTED_NATIVE_GAP"
+  },
+  "analysis_bound_actions": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:bound_actions"
+    ],
+    "exit": 0,
+    "seconds": 8.19,
+    "outputs": {},
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:bound_actions"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_actions: unsupported provider payload type actions"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:bound_actions"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_actions: unsupported provider payload type actions"
+    ]
+   },
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "base_verdict": "EXPECTED_NATIVE_GAP"
+  },
+  "analysis_bound_args": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:bound_args"
+    ],
+    "exit": 0,
+    "seconds": 8.29,
+    "outputs": {},
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:bound_args"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_args: unsupported provider payload type Args"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:bound_args"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_args: unsupported provider payload type Args"
+    ]
+   },
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "base_verdict": "EXPECTED_NATIVE_GAP"
+  },
+  "analysis_bound_closure": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:bound_closure"
+    ],
+    "exit": 0,
+    "seconds": 8.21,
+    "outputs": {},
+    "errors": []
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:bound_closure"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_closure: unsupported provider payload: Value of type `bazel_rs::analysis_ctx::values::RuleCtx<'_>` cannot be frozen"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:bound_closure"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: analysis of //pkg:bound_closure: cannot freeze analysis providers: FreezeError { err_msg: \"Value of type `bazel_rs::analysis_ctx::values::RuleCtx<'_>` cannot be frozen\", contexts: [] }"
+    ]
+   },
+   "verdict": "EXPECTED_NATIVE_GAP",
+   "base_verdict": "MISMATCH"
+  }
+ },
+ "counts": {
+  "EXACT": 8,
+  "EXACT_PATHS": 1,
+  "EXIT_EQUAL": 1,
+  "BOTH_FAIL": 1,
+  "EXPECTED_NATIVE_GAP": 4
+ },
+ "scratch_removed": true
+}
