@@ -337,8 +337,9 @@ fn file_reachable_only_through_a_provider_closure_is_an_input() {
     // Bazel imposes no input restriction: the closure's File is the
     // producer's Artifact, so the consumer's action depends on the
     // producer's write action, which runs although the producer's own
-    // files to build are empty (tests/fixtures/provider_payload_files
-    // receipt: genuine Bazel 9.3 builds the same program).
+    // files to build are empty (genuine Bazel 9.3 builds the same program
+    // shape: tests/fixtures/artifact_identity/reference_receipt.json row
+    // `closure_and_sibling`).
     ok(&ws.build(&[":consumer"]));
     assert_eq!(ws.read("out.txt").as_deref(), Some("hidden"));
 }

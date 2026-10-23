@@ -143,7 +143,12 @@ Since N63 they are real generated artifacts — passing them as action inputs
 works (the N54 receipt `tests/fixtures/workspace_status/reference_receipt.json`
 recorded the old explicit failure; `tests/fixtures/workspace_status2/` is the
 current evidence). The producer is the system workspace-status action, so an
-action consuming a status file depends on it in the execution graph.
+action consuming a status file depends on it in the execution graph. A
+status file resolves wherever a File can reach — an action input, DefaultInfo,
+a runfiles tree, an output group, an aspect's outputs — whichever other
+targets the build has, under `build` and `--nobuild` alike (the lookup that
+reaches it registers the status files; `tests/artifact_identity.rs`
+`status_*`, paired rows in `tests/fixtures/artifact_identity/reference_receipt.json`).
 
 ## C++ build info (`_build_info_files`)
 
