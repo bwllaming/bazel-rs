@@ -81,6 +81,11 @@ pub struct Report {
     /// entries (summed over the threads).
     pub observation_time: Duration,
     pub integrity_time: Duration,
+    /// Wall time of the phases: building the work list, the filesystem
+    /// checks (all threads), the environment checks.
+    pub setup_time: Duration,
+    pub checks_time: Duration,
+    pub env_time: Duration,
 }
 
 #[derive(Default)]
@@ -430,101 +435,128 @@ pub fn threads_for(recording: &Recording) -> usize {
     }
 }
 
+impl Tally {
+    /// Check one observation or integrity entry (see [`dry_run`]); a
+    /// repository with a changed or racy entry joins `stale`.
+    fn check(&mut self, stale: &mut BTreeSet<usize>, item: &Work<'_>) {
+        let began = Instant::now();
+        match item {
+            Work::Observation(path, observation) => {
+                self.observations += 1;
+                match check(path, observation) {
+                    Ok(Checked::Plain) => {}
+                    Ok(Checked::Stat) => self.trusted_by_stat += 1,
+                    Ok(Checked::Content { refresh }) => {
+                        self.content_checks += 1;
+                        self.refreshable += usize::from(refresh);
+                        if self.content_checked.len() < EXAMPLES {
+                            self.content_checked.push(format!(
+                                "{} {}",
+                                observation.op.name(),
+                                escape(path.as_os_str())
+                            ));
+                        }
+                    }
+                    Err(text) => self.mismatch(text),
+                }
+                self.observation_time += began.elapsed();
+            }
+            Work::Integrity(repository, entry) => {
+                self.integrity += 1;
+                if let Err(text) = check_integrity(entry) {
+                    // A racy entry only sends its tree to the verification;
+                    // a changed one too (which repairs or confirms it):
+                    // neither is a mismatch of the snapshot by itself.
+                    if stale.insert(*repository) && !entry.racy {
+                        self.examples.push(text);
+                    }
+                }
+                self.integrity_time += began.elapsed();
+            }
+        }
+    }
+}
+
 /// Validate every observation of `recording` against the current
 /// filesystem and environment on `threads` scoped threads (never stops
-/// early; see the module docs). One thread runs inline.
+/// early; see the module docs). One thread runs inline, in place: no work
+/// list is built (an allocation in a large, fragmented heap can cost
+/// milliseconds — the record mode runs this at the end of a full analysis).
 pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     let started = Instant::now();
     let threads = threads.max(1);
-    let mut work: Vec<Work<'_>> = recording
-        .observations
-        .iter()
-        .map(|(path, observation)| Work::Observation(path, observation))
-        .collect();
-    for (index, repository) in recording.repositories.iter().enumerate() {
-        work.extend(
-            repository
-                .entries
+    let items = || {
+        let integrity =
+            recording
+                .repositories
                 .iter()
-                .map(|entry| Work::Integrity(index, entry)),
-        );
-    }
-    let cursor = AtomicUsize::new(0);
-    let tallies = Mutex::new(Vec::new());
-    let stale_repositories = Mutex::new(BTreeSet::new());
-    let worker = || {
+                .enumerate()
+                .flat_map(|(index, repository)| {
+                    repository
+                        .entries
+                        .iter()
+                        .map(move |entry| Work::Integrity(index, entry))
+                });
+        recording
+            .observations
+            .iter()
+            .map(|(path, observation)| Work::Observation(path, observation))
+            .chain(integrity)
+    };
+    let mut tallies = Vec::new();
+    let mut stale_repositories = BTreeSet::new();
+    let (setup_time, checks_time) = if threads == 1 {
+        let setup_time = started.elapsed();
+        let checks_started = Instant::now();
         let mut tally = Tally::default();
-        let mut stale = BTreeSet::new();
-        loop {
-            let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
-            if start >= work.len() {
-                break;
-            }
-            for item in &work[start..(start + BLOCK).min(work.len())] {
-                let began = Instant::now();
-                match item {
-                    Work::Observation(path, observation) => {
-                        tally.observations += 1;
-                        match check(path, observation) {
-                            Ok(Checked::Plain) => {}
-                            Ok(Checked::Stat) => tally.trusted_by_stat += 1,
-                            Ok(Checked::Content { refresh }) => {
-                                tally.content_checks += 1;
-                                tally.refreshable += usize::from(refresh);
-                                if tally.content_checked.len() < EXAMPLES {
-                                    tally.content_checked.push(format!(
-                                        "{} {}",
-                                        observation.op.name(),
-                                        escape(path.as_os_str())
-                                    ));
-                                }
-                            }
-                            Err(text) => tally.mismatch(text),
-                        }
-                        tally.observation_time += began.elapsed();
-                    }
-                    Work::Integrity(repository, entry) => {
-                        tally.integrity += 1;
-                        if let Err(text) = check_integrity(entry) {
-                            // A racy entry only sends its tree to the
-                            // verification; a changed one too (which
-                            // repairs or confirms it): neither is a
-                            // mismatch of the snapshot by itself.
-                            if stale.insert(*repository) && !entry.racy {
-                                tally.examples.push(text);
-                            }
-                        }
-                        tally.integrity_time += began.elapsed();
-                    }
+        for item in items() {
+            tally.check(&mut stale_repositories, &item);
+        }
+        let checks_time = checks_started.elapsed();
+        tallies.push(tally);
+        (setup_time, checks_time)
+    } else {
+        let work: Vec<Work<'_>> = items().collect();
+        let setup_time = started.elapsed();
+        let checks_started = Instant::now();
+        let cursor = AtomicUsize::new(0);
+        let shared = Mutex::new((Vec::new(), BTreeSet::new()));
+        let worker = || {
+            let mut tally = Tally::default();
+            let mut stale = BTreeSet::new();
+            loop {
+                let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
+                if start >= work.len() {
+                    break;
+                }
+                for item in &work[start..(start + BLOCK).min(work.len())] {
+                    tally.check(&mut stale, item);
                 }
             }
-        }
-        tallies
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(tally);
-        stale_repositories
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(stale);
-    };
-    if threads == 1 {
-        worker();
-    } else {
+            let mut shared = shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            shared.0.push(tally);
+            shared.1.extend(stale);
+        };
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 scope.spawn(worker);
             }
         });
-    }
+        let checks_time = checks_started.elapsed();
+        (tallies, stale_repositories) = shared
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (setup_time, checks_time)
+    };
     let mut report = Report {
         threads,
+        setup_time,
+        checks_time,
         ..Report::default()
     };
-    for tally in tallies
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-    {
+    for tally in tallies {
         report.observations += tally.observations;
         report.trusted_by_stat += tally.trusted_by_stat;
         report.content_checks += tally.content_checks;
@@ -540,10 +572,8 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     report.examples.truncate(EXAMPLES);
     report.content_checked.sort();
     report.content_checked.truncate(EXAMPLES);
-    report.repositories_to_verify = stale_repositories
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len();
+    report.repositories_to_verify = stale_repositories.len();
+    let env_started = Instant::now();
     for (name, observation) in &recording.env {
         if observation.fixed {
             continue;
@@ -560,6 +590,7 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
             }
         }
     }
+    report.env_time = env_started.elapsed();
     report.elapsed = started.elapsed();
     report
 }

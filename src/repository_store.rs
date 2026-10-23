@@ -863,10 +863,9 @@ where
         stage_key,
         spec_key,
         provenance,
-        Some(&validate),
+        Probe::Warm(&validate),
         execute,
     )
-    .map(|(root, publication, _)| (root, publication))
 }
 
 /// A local repository rule's execution (PLAN-L2 update 1 §(a)): the digests
@@ -901,11 +900,60 @@ where
     F: FnOnce(&Path) -> Result<Executed, String>,
     P: FnOnce() -> Result<Vec<u8>, String>,
 {
-    let (root, _, execution) =
-        materialize_inner(cache, stage_key, spec_key, provenance, None, execute)?;
+    let mut execution = None;
+    let (root, _) = materialize_inner(
+        cache,
+        stage_key,
+        spec_key,
+        provenance,
+        Probe::Local(&mut execution),
+        execute,
+    )?;
     let execution =
         execution.ok_or("internal error: a local repository execution without digests")?;
     Ok((root, execution))
+}
+
+/// What replaying a local repository rule reproduced: the two digests a
+/// [`LocalExecution`] records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replayed {
+    pub inputs_digest: [u8; 32],
+    pub snapshot_digest: [u8; 32],
+}
+
+/// Replay a local repository rule (crate::snapshot::replay, PLAN-L2 update
+/// 1 §(a)): `execute` runs in the very stage directory, under the same stage
+/// lock, as [`materialize_local`] uses for `stage_key` — an execution may
+/// observe its working directory (`java -XshowSettings:properties` prints
+/// `user.dir`) — and the digests of its identity inputs and tree are taken
+/// exactly as a full run would. Nothing is published, no pointer or
+/// manifest is touched, and the stage is deleted afterwards.
+pub fn replay_local<F>(cache: &Path, stage_key: &str, execute: F) -> Result<Replayed, String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+{
+    ensure_directory(cache)?;
+    let direct = cache.join("direct");
+    let locks = direct.join("locks");
+    let stages = direct.join("stages");
+    for path in [&direct, &locks, &stages] {
+        ensure_directory(path)?;
+    }
+    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
+    let _stage_guard = lock_stage(&locks, &slug)?;
+    let stage = fresh_stage(&stages, &slug)?;
+    let executed = execute(stage.path())?;
+    let (_, encoded_snapshot) = stage_content(stage.path())?;
+    let replayed = Replayed {
+        inputs_digest: Sha256::digest(&executed.inputs).into(),
+        snapshot_digest: Sha256::digest(&encoded_snapshot).into(),
+    };
+    // A callback may have created read-only directories.
+    crate::repository_ctx::remove_tree(stage.path())
+        .map_err(|e| format!("cannot remove the replay stage of {stage_key}: {e}"))?;
+    drop(stage);
+    Ok(replayed)
 }
 
 /// The stage lock of `slug`: the stage pathname `stages/<slug>` exists only
@@ -954,15 +1002,25 @@ fn stage_content(stage: &Path) -> Result<(BTreeMap<String, Entry>, Vec<u8>), Str
 /// A warm probe's recorded-input check (`try_reuse`).
 type Validate<'a> = &'a dyn Fn(&Path, &[u8]) -> Result<bool, String>;
 
-/// [`materialize_lazy`]; without `validate`, [`materialize_local`].
+/// How [`materialize_inner`] treats an existing publication.
+enum Probe<'a> {
+    /// [`materialize_lazy`]: the warm probe's recorded-input check may
+    /// reuse it.
+    Warm(Validate<'a>),
+    /// [`materialize_local`]: never reused; the execution's runtime
+    /// identity parts are reported here.
+    Local(&'a mut Option<LocalExecution>),
+}
+
+/// [`materialize_lazy`] or [`materialize_local`] (see [`Probe`]).
 fn materialize_inner<F, P>(
     cache: &Path,
     stage_key: &str,
     spec_key: &str,
     provenance: P,
-    validate: Option<Validate<'_>>,
+    mut probe: Probe<'_>,
     execute: F,
-) -> Result<(PathBuf, Publication, Option<LocalExecution>), String>
+) -> Result<(PathBuf, Publication), String>
 where
     F: FnOnce(&Path) -> Result<Executed, String>,
     P: FnOnce() -> Result<Vec<u8>, String>,
@@ -980,15 +1038,15 @@ where
     // The pointer is published by atomic rename; an unlocked reader sees
     // either the old or the new publication, never a partial one. The warm
     // check is the shared `try_reuse` probe (worker-safe); a local rule
-    // (no `validate`) never reuses.
+    // never reuses.
     let call_start = timing::enabled().then(std::time::Instant::now);
-    if let Some(validate) = validate
-        && let Some(destination) = try_reuse(cache, spec_key, validate)?
+    if let Probe::Warm(validate) = &probe
+        && let Some(destination) = try_reuse(cache, spec_key, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
-        return Ok((destination, Publication::Reused, None));
+        return Ok((destination, Publication::Reused));
     }
     // A failing or absent validation falls through to execution, exactly
     // like Bazel refetching when a watched dependency changed. Only now —
@@ -1003,13 +1061,13 @@ where
     // A concurrent publisher may have won while this process waited on
     // the stage lock: re-probe before executing (sequential semantics
     // unchanged; the pre-lock probe stays the fast path).
-    if let Some(validate) = validate
-        && let Some(destination) = try_reuse(cache, spec_key, validate)?
+    if let Probe::Warm(validate) = &probe
+        && let Some(destination) = try_reuse(cache, spec_key, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
-        return Ok((destination, Publication::Reused, None));
+        return Ok((destination, Publication::Reused));
     }
     let stage = fresh_stage(&stages, &slug)?;
     let started = std::time::Instant::now();
@@ -1018,7 +1076,8 @@ where
         let _tainted = crate::observed_fs::tainted_section();
         execute(stage.path())
     };
-    if validate.is_some() {
+    // A local rule's execution is recorded for replay by the caller instead.
+    if let Probe::Warm(_) = &probe {
         crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
             format!(
                 "{stage_key} ({:.1} ms)",
@@ -1028,13 +1087,6 @@ where
     }
     let executed = executed?;
     let (files, encoded_snapshot) = stage_content(stage.path())?;
-    // A local execution's runtime identity parts, for its replay record.
-    let local_digests = validate.is_none().then(|| {
-        (
-            <[u8; 32]>::from(Sha256::digest(&executed.inputs)),
-            <[u8; 32]>::from(Sha256::digest(&encoded_snapshot)),
-        )
-    });
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
@@ -1055,6 +1107,14 @@ where
         recorded: Some(executed.recorded),
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+    // A local execution's runtime identity parts, for its replay record.
+    if let Probe::Local(execution) = &mut probe {
+        **execution = Some(LocalExecution {
+            inputs_digest: Sha256::digest(&executed.inputs).into(),
+            snapshot_digest: Sha256::digest(&encoded_snapshot).into(),
+            identity: identity.clone(),
+        });
+    }
 
     // Recheck parents after the callback, before touching persistent entries.
     for path in [&trees, &manifests, &locks, &stages, &specs] {
@@ -1149,54 +1209,7 @@ where
     }
     // This call ran the repository rule even when the tree it produced
     // already existed under the same content identity.
-    let local = local_digests.map(|(inputs_digest, snapshot_digest)| LocalExecution {
-        inputs_digest,
-        snapshot_digest,
-        identity,
-    });
-    Ok((destination, Publication::Executed, local))
-}
-
-/// What replaying a local repository rule reproduced: the two digests a
-/// [`LocalExecution`] records.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Replayed {
-    pub inputs_digest: [u8; 32],
-    pub snapshot_digest: [u8; 32],
-}
-
-/// Replay a local repository rule (crate::snapshot::replay, PLAN-L2 update
-/// 1 §(a)): `execute` runs in the very stage directory, under the same stage
-/// lock, as [`materialize_local`] uses for `stage_key` — an execution may
-/// observe its working directory (`java -XshowSettings:properties` prints
-/// `user.dir`) — and the digests of its identity inputs and tree are taken
-/// exactly as a full run would. Nothing is published, no pointer or
-/// manifest is touched, and the stage is deleted afterwards.
-pub fn replay_local<F>(cache: &Path, stage_key: &str, execute: F) -> Result<Replayed, String>
-where
-    F: FnOnce(&Path) -> Result<Executed, String>,
-{
-    ensure_directory(cache)?;
-    let direct = cache.join("direct");
-    let locks = direct.join("locks");
-    let stages = direct.join("stages");
-    for path in [&direct, &locks, &stages] {
-        ensure_directory(path)?;
-    }
-    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
-    let _stage_guard = lock_stage(&locks, &slug)?;
-    let stage = fresh_stage(&stages, &slug)?;
-    let executed = execute(stage.path())?;
-    let (_, encoded_snapshot) = stage_content(stage.path())?;
-    let replayed = Replayed {
-        inputs_digest: Sha256::digest(&executed.inputs).into(),
-        snapshot_digest: Sha256::digest(&encoded_snapshot).into(),
-    };
-    // A callback may have created read-only directories.
-    crate::repository_ctx::remove_tree(stage.path())
-        .map_err(|e| format!("cannot remove the replay stage of {stage_key}: {e}"))?;
-    drop(stage);
-    Ok(replayed)
+    Ok((destination, Publication::Executed))
 }
 
 /// A pointer file's exact bytes for `identity` (kept canonical for equality).

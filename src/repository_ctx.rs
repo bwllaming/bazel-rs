@@ -180,10 +180,14 @@ mod values {
         pub environment: RefCell<Watch>,
         /// A repository rule's printed output in order — print(), the
         /// `execute(quiet=False)` echo and the reproducibility DEBUG lines —
-        /// written to stderr when the execution ends ([`execute`]), or kept
-        /// by a replay ([`execute_captured`]). Module extensions print
-        /// directly and leave it empty.
+        /// collected for its replay record while it is printed as it
+        /// happens ([`execute`]), or only collected by a replay
+        /// ([`execute_captured`]). Module extensions print and collect
+        /// nothing here.
         pub output: RefCell<Vec<u8>>,
+        /// Print what the execution prints as it happens (false: a replay,
+        /// which never prints).
+        pub live: bool,
         /// Set when the execution reads `repository_ctx.os.environ`.
         pub environ_read: Arc<std::sync::atomic::AtomicBool>,
     }
@@ -1297,8 +1301,38 @@ impl Context {
             state: RefCell::new(State::default()),
             environment: RefCell::new(Watch::default()),
             output: RefCell::default(),
+            live: true,
             environ_read: Arc::default(),
         })
+    }
+
+    /// One line a repository rule execution prints (`print()`, the
+    /// reproducibility DEBUG lines): to stderr as it happens — exactly the
+    /// evaluator's default handler's `eprintln!` — unless this is a
+    /// captured replay, and into the execution's output record.
+    fn print_line(&self, text: &str) {
+        if self.live {
+            eprintln!("{text}");
+        }
+        if self.kind == Kind::Repository {
+            let mut output = self.output.borrow_mut();
+            output.extend_from_slice(text.as_bytes());
+            output.push(b'\n');
+        }
+    }
+
+    /// `execute(quiet=False)`'s echo of the captured output (Bazel prints
+    /// it to its stderr, StarlarkExecutionResult.java:205-207), recorded
+    /// like [`Self::print_line`].
+    fn echo(&self, stdout: &[u8], stderr: &[u8]) {
+        if self.live {
+            crate::repository_process::echo(stdout, stderr);
+        }
+        if self.kind == Kind::Repository {
+            let mut output = self.output.borrow_mut();
+            output.extend_from_slice(stdout);
+            output.extend_from_slice(stderr);
+        }
     }
 
     /// Use `client` for downloads (tests: a private trust root).
@@ -3006,15 +3040,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             ),
             crate::repository_process::Outcome::Completed(return_code, stdout, stderr) => {
                 if !quiet {
-                    if context.kind == Kind::Repository {
-                        // In program order with print() and the DEBUG lines
-                        // (the execution's output buffer).
-                        let mut output = context.output.borrow_mut();
-                        output.extend_from_slice(&stdout);
-                        output.extend_from_slice(&stderr);
-                    } else {
-                        crate::repository_process::echo(&stdout, &stderr);
-                    }
+                    context.echo(&stdout, &stderr);
                 }
                 Ok(ExecResult {
                     return_code,
@@ -3923,8 +3949,8 @@ pub struct ExecutedRepository {
     pub watch_names: Vec<String>,
     /// Everything the execution printed, in order: print(), the
     /// `execute(quiet=False)` echo and the reproducibility DEBUG lines.
-    /// [`execute`] has already written it to stderr; [`execute_captured`]
-    /// has not.
+    /// [`execute`] wrote it to stderr as it happened; [`execute_captured`]
+    /// did not.
     pub output: Vec<u8>,
     /// The execution read `repository_ctx.os.environ`. With
     /// `inputs.host_facilities` (`execute`, `which`, downloads) these are a
@@ -3933,16 +3959,12 @@ pub struct ExecutedRepository {
     pub environ_read: bool,
 }
 
-/// A repository rule execution's print handler: lines join its output
-/// buffer, in program order with the other printers (`eprintln!` of the
-/// same text otherwise, the evaluator's default handler).
-struct BufferedPrints<'a>(&'a RefCell<Vec<u8>>);
+/// A repository rule execution's print handler ([`Context::print_line`]).
+struct CollectedPrints<'a>(&'a Context);
 
-impl starlark::PrintHandler for BufferedPrints<'_> {
+impl starlark::PrintHandler for CollectedPrints<'_> {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        let mut output = self.0.borrow_mut();
-        output.extend_from_slice(text.as_bytes());
-        output.push(b'\n');
+        self.0.print_line(text);
         Ok(())
     }
 }
@@ -3951,11 +3973,13 @@ impl starlark::PrintHandler for BufferedPrints<'_> {
 /// partial files there; callers must not publish them. Frozen owners remain live
 /// throughout evaluation, including transitive/private helper functions.
 ///
-/// What the rule prints is collected in a per-execution buffer and written
-/// to stderr in one piece when the execution ends, successful or not
-/// (PLAN-L2 update 1 §(b)): execution is synchronous on the coordinator, so
-/// its position in the stream and the bytes are those of printing as it
-/// went; the bytes are also returned ([`ExecutedRepository::output`]).
+/// What the rule prints reaches stderr as it happens, exactly as before
+/// (print(), the `execute(quiet=False)` echo, the reproducibility DEBUG
+/// lines), and is also collected per execution (PLAN-L2 update 1 §(b)):
+/// the bytes are returned ([`ExecutedRepository::output`], successful
+/// executions) for the replay record. Printing as it happens keeps every
+/// position in the stream, also around nested executions (a repository a
+/// rule demands while it runs prints in the middle of its output).
 pub fn execute(
     repositories: Arc<RepositorySet>,
     definition: &RuleDefinition,
@@ -4016,8 +4040,7 @@ fn execute_with(
     stage: &Path,
     live: bool,
 ) -> Result<ExecutedRepository, String> {
-    let mut output = Vec::new();
-    let mut run = || -> anyhow::Result<ExecutedRepository> {
+    let run = || -> anyhow::Result<ExecutedRepository> {
         ensure!(
             canonical_name.is_ascii() && original_name.is_ascii(),
             "repository names must be ASCII"
@@ -4038,6 +4061,7 @@ fn execute_with(
             state: RefCell::new(State::default()),
             environment: RefCell::new(Watch::default()),
             output: RefCell::default(),
+            live,
             environ_read: Arc::default(),
         };
         let evaluated = Module::with_temp_heap(|module| -> anyhow::Result<()> {
@@ -4067,7 +4091,7 @@ fn execute_with(
                 heap.access_owned_frozen_value(function);
             }
             let implementation = heap.access_owned_frozen_value(&definition.implementation);
-            let prints = BufferedPrints(&context.output);
+            let prints = CollectedPrints(&context);
             let mut eval = Evaluator::new(&module);
             // Bazel has no heap or step limit for repository rules; only the
             // call-stack depth is bounded (Starlark forbids recursion).
@@ -4108,48 +4132,34 @@ fn execute_with(
                 && let Some(message) =
                     resolved_event(definition, attr_value, result, canonical_name, heap)?
             {
-                let mut output = context.output.borrow_mut();
-                let _ = writeln!(output, "DEBUG: {message}");
-                let _ = writeln!(
-                    output,
+                context.print_line(&format!("DEBUG: {message}"));
+                context.print_line(&format!(
                     "DEBUG: {}",
                     rule_definition_information(definition, canonical_name)
-                );
+                ));
             }
             Ok(())
         });
-        // What the callback printed, also when it failed.
-        output = context.output.take();
         evaluated?;
         replant_symlinks(&context.stage)?;
         let environ_read = context
             .environ_read
             .load(std::sync::atomic::Ordering::Relaxed);
+        let output = context.output.take();
         let (inputs, watch_names) = context.finish_with_names()?;
         Ok(ExecutedRepository {
             inputs,
             watch_names,
-            output: Vec::new(),
+            output,
             environ_read,
         })
     };
-    let result = run();
-    if live && !output.is_empty() {
-        let mut stderr = std::io::stderr().lock();
-        let _ = stderr.write_all(&output);
-        let _ = stderr.flush();
-    }
-    result
-        .map(|mut executed| {
-            executed.output = output;
-            executed
-        })
-        .map_err(|error| {
-            format!(
-                "repository {canonical_name} ({}): {error:#}",
-                definition.identity
-            )
-        })
+    run().map_err(|error| {
+        format!(
+            "repository {canonical_name} ({}): {error:#}",
+            definition.identity
+        )
+    })
 }
 
 #[cfg(test)]

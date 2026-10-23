@@ -226,10 +226,13 @@ fn validation_line(
     validation: &crate::snapshot::validate::Report,
 ) -> String {
     format!(
-        "validation dry-run [{}]: {} ms on {} thread(s): {} observations ({} trusted by stat, {} content checks, {} refreshable; {} ms thread time), {} env, {} integrity entries ({} ms thread time); {} mismatch(es), {} repositories to re-verify",
+        "validation dry-run [{}]: {} ms on {} thread(s) (setup {} ms, checks {} ms, env {} ms): {} observations ({} trusted by stat, {} content checks, {} refreshable; {} ms thread time), {} env, {} integrity entries ({} ms thread time); {} mismatch(es), {} repositories to re-verify",
         policy.name(),
         millis(validation.elapsed),
         validation.threads,
+        millis(validation.setup_time),
+        millis(validation.checks_time),
+        millis(validation.env_time),
         validation.observations,
         validation.trusted_by_stat,
         validation.content_checks,

@@ -138,6 +138,96 @@ r = repository_rule(_impl, local = True, attrs = {"value": attr.string(default =
     }
 }
 
+/// A local rule that demands another repository while it runs: the other
+/// rule's output appears where the demand happened, between the demanding
+/// rule's earlier and later output — printing as it happens, as before the
+/// output was collected per execution (and as Bazel's suspended fetch
+/// does) — with recording off and on.
+#[test]
+fn nested_local_rule_output_appears_where_the_demand_happened() {
+    let f = Fixture::new();
+    f.file(
+        "MODULE.bazel",
+        "module(name='main')\nouter = use_repo_rule('//:repo.bzl', 'outer')\ninner = use_repo_rule('//:repo.bzl', 'inner')\ninner(name = 'innerrepo')\nouter(name = 'outerrepo')\n",
+    );
+    f.file(
+        "repo.bzl",
+        r#"def _inner(ctx):
+    print("inner print")
+    ctx.execute(["/bin/sh", "-c", "echo inner echo"], quiet = False)
+    ctx.file("BUILD.bazel", "exports_files(['v'])\n")
+    ctx.file("v", "v")
+
+inner = repository_rule(_inner, local = True)
+
+def _outer(ctx):
+    print("outer before")
+    ctx.execute(["/bin/sh", "-c", "echo outer echo"], quiet = False)
+    ctx.read(Label("@innerrepo//:v"))
+    print("outer after")
+    ctx.file("BUILD.bazel", "exports_files(['value'])\n")
+    ctx.file("value", "v")
+
+outer = repository_rule(_outer, local = True)
+"#,
+    );
+    f.file(
+        "BUILD.bazel",
+        "genrule(name = 'copy', srcs = ['@outerrepo//:value'], outs = ['copy.txt'], cmd = 'cp $< $@')\n",
+    );
+    let expected = [
+        "outer before",
+        "outer echo",
+        "inner print",
+        "inner echo",
+        "outer after",
+    ];
+    let dump = f.0.path().join("dump.txt");
+    let dump_text = dump.display().to_string();
+    let record = [
+        ("BAZEL_RS_SNAPSHOT", "record"),
+        ("BAZEL_RS_SNAPSHOT_DUMP", dump_text.as_str()),
+    ];
+    for env in [&[][..], &record[..], &[][..]] {
+        let output = f.run_env(env, &["build", "--nobuild", "//:copy"]);
+        let text = stderr(&output);
+        assert!(output.status.success(), "{text}");
+        let printed: Vec<&str> = program_lines(&text)
+            .into_iter()
+            .filter(|line| line.starts_with("outer ") || line.starts_with("inner "))
+            .collect();
+        assert_eq!(printed, expected, "{text}");
+        if !env.is_empty() {
+            // Both rules printed: v1 taints; both replays match and print
+            // nothing (each line appears once).
+            let lines = snapshot_lines(&text);
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("taint local-repository-output")),
+                "{text}"
+            );
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.starts_with("replay dry-run: 2/2 matching")),
+                "{text}"
+            );
+            let dump = fs::read_to_string(&dump).unwrap();
+            let outputs: Vec<&str> = dump
+                .lines()
+                .filter(|line| line.starts_with("REPLAY "))
+                .filter_map(|line| line.split(' ').find(|part| part.starts_with("output:")))
+                .collect();
+            // "outer before\nouter echo\nouter after\n" and
+            // "inner print\ninner echo\n".
+            assert_eq!(outputs.len(), 2, "{dump}");
+            assert!(outputs.contains(&"output:36"), "{dump}");
+            assert!(outputs.contains(&"output:23"), "{dump}");
+        }
+    }
+}
+
 /// PLAN-L2 update 1 §(c): a repository whose BUILD loads a `.bzl` through a
 /// symlink into another repository's published store tree resolves it the
 /// same way whatever was materialized before — here the warm runs never
@@ -192,7 +282,10 @@ r = repository_rule(_gen)
         &["build", "--nobuild", "--loading_phase_threads=1", "//..."],
     );
     assert!(broad.status.success(), "{}", stderr(&broad));
-    for (threads, jitter) in [("8", ""), ("32", ""), ("8", "7"), ("32", "40"), ("1", "99")] {
+    let combinations = ["1", "8", "32"]
+        .into_iter()
+        .flat_map(|threads| ["", "7", "40", "99"].map(|jitter| (threads, jitter)));
+    for (threads, jitter) in combinations {
         let env: Vec<(&str, &str)> = if jitter.is_empty() {
             Vec::new()
         } else {

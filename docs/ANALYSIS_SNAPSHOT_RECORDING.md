@@ -96,18 +96,28 @@ definition loads of repository rules and the local executions consulted (a
 replay scope is open on their thread). It never reads MODULE.bazel, resolves
 the module graph, builds the extension catalog or materializes anything;
 anything unpinned is an error, which makes the run a miss, never a false hit.
-Definitions load optimistically from the recorded roots (read-only and
-silent); a root that a local rule publishes is confirmed by that rule's own
-replay. One thread per definition replays its records (the 36 toolchain
-configurations share one load).
+Definitions load optimistically from the recorded roots (read-only); a root
+that a local rule publishes is confirmed by that rule's own replay. One
+thread per definition replays its records (the 36 toolchain configurations
+share one load). A definition load evaluates the `.bzl` closure again with
+the loader's default print handler: a top-level `print()` in that closure
+(none on ~/code) would print during the replay — the record mode's dry run
+shows it after the build's output; the L2-W5 hit path captures fd 2 while it
+replays (or `loading` gains a print sink for definition loads).
 
 What a repository rule prints — `print()`, the `execute(quiet=False)` echo,
-the reproducibility `DEBUG:` lines — is collected per execution and written
-to stderr in one piece when the execution ends (`repository_ctx::execute`):
-execution is synchronous on the coordinator, so the bytes and their position
-in the stream are unchanged. A replay never prints (`execute_captured`). v1
-of the output protocol does not splice live output into replayed window
-bytes: a local rule that printed taints the run.
+the reproducibility `DEBUG:` lines — still reaches stderr as it happens and
+is also collected per execution (`repository_ctx::execute`,
+`ExecutedRepository::output`). Printing as it happens keeps every byte at
+its position, also when a rule demands another repository while it runs:
+the other rule's output appears between the demanding rule's earlier and
+later lines, as before and as Bazel's suspended fetch prints it (writing a
+buffer when the execution ends would move it after the nested output;
+`tests/local_repository_replay.rs`). A replay never prints
+(`execute_captured`). v1 of the output protocol does not splice live output
+into replayed window bytes: a local rule that printed taints the run
+(`local-repository-output`); W7's splicing needs per-segment offsets in the
+captured window for nested executions.
 
 The execution also notes impurity flags that never enter an identity: a read
 of `repository_ctx.os.environ` and the host facilities (`execute`, `which`,
@@ -172,8 +182,12 @@ unchanged stands for everything inside it, like Bazel trusting repository
 markers), every INTEGRITY entry under the existing `--verify_repo_tampering`
 / `BAZEL_RS_VERIFY_REPOS=full`. Settled stat keys are trusted, racy or
 changed ones re-read and compared by content. Below 4,000 checks one thread
-runs them (inline); otherwise path-sorted blocks on min(available
-parallelism, 16) scoped threads. Record-mode knobs:
+runs them inline and in place (no work list: in the large, fragmented heap
+at the end of a full analysis one allocation cost the record mode's dry run
+3–7 ms of glibc malloc housekeeping, more than the checks themselves);
+otherwise path-sorted blocks on min(available parallelism, 16) scoped
+threads. The report line splits the wall time into setup, checks and
+environment. Record-mode knobs:
 `BAZEL_RS_SNAPSHOT_THREADS` (validation threads), `BAZEL_RS_SNAPSHOT_DRY_RUNS`
 (repeat the validation and replay dry runs), `BAZEL_RS_SNAPSHOT_COMPARE=1`
 (also time the other validation policy).
@@ -243,8 +257,9 @@ snapshot store itself.
   executing (it never reuses one): a corrupted pointer of a local repository
   is repaired by the execution instead of failing the command. Unchanged
   pointers of any repository are no longer rewritten.
-* A repository rule's printed output reaches stderr when its execution ends
-  rather than as it happens (same bytes, same position in the stream).
+
+Not changed: what repository rules print reaches stderr as it happens (also
+collected per execution for the replay record).
 
 ## Not yet (L2-W5)
 
