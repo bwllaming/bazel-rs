@@ -639,14 +639,7 @@ fn worker(shared: &Arc<Shared>, index: usize) {
             ));
         }
         let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            // P2's worker guards: never fetch; a warm publication whose
-            // recorded inputs validate may be served (reuse-only).
-            let guard = crate::repository_demand::no_demand();
-            let reuse = crate::repository_demand::reuse_only();
-            let unit = crate::package::evaluate_load_unit(shared.repositories.clone(), &id);
-            drop(reuse);
-            drop(guard);
-            unit
+            worker_load(shared.repositories.clone(), &id)
         }));
         let mut state = lock(&shared.state);
         state.running -= 1;
@@ -700,6 +693,18 @@ fn worker(shared: &Arc<Shared>, index: usize) {
             shared.work.notify_all();
         }
     }
+}
+
+/// One worker's load of `id` under P2's worker guards: it never fetches,
+/// and a warm publication whose recorded inputs validate may be served
+/// (reuse-only).
+fn worker_load(repositories: Arc<RepositorySet>, id: &PackageId) -> LoadUnit {
+    let guard = crate::repository_demand::no_demand();
+    let reuse = crate::repository_demand::reuse_only();
+    let unit = crate::package::evaluate_load_unit(repositories, id);
+    drop(reuse);
+    drop(guard);
+    unit
 }
 
 /// Whether `rule` is a test (or a test-only helper) by its declaration.
@@ -763,4 +768,104 @@ pub(crate) fn rule_dependency_labels(rule: &Rule) -> Vec<Label> {
         }
     }
     labels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Invariant (b) of the prefetch overlap (docs/PARALLEL_ANALYSIS.md),
+    /// end to end through package loading: a worker's unit whose glob or
+    /// `.bzl` load follows a symlink into another live repository root (a
+    /// local_path_override module) aborts with the order-dependent
+    /// sentinel — the worker never decides the link — and the
+    /// coordinator's inline load of the same package follows it.
+    #[cfg(unix)]
+    #[test]
+    fn worker_links_into_another_live_root_abort_as_order_dependent() {
+        let dir = tempfile::Builder::new()
+            .prefix("bazel-rs-prefetch-links-")
+            .tempdir()
+            .unwrap();
+        let root = dir.path();
+        let write = |path: &str, text: &str| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "main/MODULE.bazel",
+            &format!(
+                "module(name = 'main')\nbazel_dep(name = 'lib', version = '1')\nlocal_path_override(module_name = 'lib', path = '{}')\n",
+                root.join("lib").display()
+            ),
+        );
+        write("lib/MODULE.bazel", "module(name = 'lib')\n");
+        write("lib/BUILD.bazel", "");
+        write("lib/data/x.txt", "x\n");
+        write("lib/defs.bzl", "value = 'from_lib'\n");
+        write(
+            "main/globbed/BUILD.bazel",
+            "filegroup(name = 'g', srcs = glob(['link/**']))\n",
+        );
+        std::os::unix::fs::symlink(root.join("lib/data"), root.join("main/globbed/link")).unwrap();
+        write(
+            "main/loaded/BUILD.bazel",
+            "load(':linked.bzl', 'value')\nfilegroup(name = value)\n",
+        );
+        std::os::unix::fs::symlink(
+            root.join("lib/defs.bzl"),
+            root.join("main/loaded/linked.bzl"),
+        )
+        .unwrap();
+        let repositories = Arc::new(RepositorySet::new(root.join("main")));
+        repositories.resolve_graph().unwrap();
+        for (package, target, decision) in [
+            ("globbed", "g", "glob symlink "),
+            (
+                "loaded",
+                "from_lib",
+                "load //loaded:linked.bzl through a symlink ",
+            ),
+        ] {
+            let id = PackageId {
+                repository: String::new(),
+                package: package.to_owned(),
+            };
+            let worker = {
+                let repositories = repositories.clone();
+                let id = id.clone();
+                std::thread::Builder::new()
+                    .stack_size(WORKER_STACK)
+                    .spawn(move || worker_load(repositories, &id).result.err())
+                    .unwrap()
+                    .join()
+                    .unwrap()
+            };
+            let error = worker.unwrap_or_else(|| panic!("{package}: the worker's load succeeded"));
+            assert!(
+                crate::repository_demand::is_needs_repository(&error)
+                    && error.contains(decision)
+                    && error.contains("depends on the repositories materialized so far"),
+                "{package}: {error}"
+            );
+            // The coordinator takes the decision at its demand point.
+            let inline = crate::package::evaluate_load_unit(repositories.clone(), &id);
+            let rules = inline
+                .result
+                .unwrap_or_else(|error| panic!("{package}: inline: {error}"))
+                .rules;
+            let label = Label {
+                repository: String::new(),
+                package: package.to_owned(),
+                name: target.to_owned(),
+            };
+            let rule = rules
+                .get(&label)
+                .unwrap_or_else(|| panic!("{package}: {:?}", rules.keys()));
+            if package == "globbed" {
+                assert_eq!(rule.srcs, ["//globbed:link/x.txt"], "{package}");
+            }
+        }
+    }
 }

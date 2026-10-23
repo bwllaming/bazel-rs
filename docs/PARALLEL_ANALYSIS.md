@@ -733,18 +733,34 @@ satisfied (it only reads ready slots): once the coordinator prepared the
 **Two guards made the coordinator/worker overlap safe.** P2 workers only
 ever ran while the coordinator waited; prefetch workers run beside it.
 
-- `DemandSlot::get_or_probe` publishes a worker's warm-reuse probe only
+- (a) `DemandSlot::get_or_probe` publishes a worker's warm-reuse probe only
   under the evaluator claim lock and only while no evaluator runs: the
   coordinator evaluating (fetching) the same slot can never find its
   result slot occupied (`internal repository demand error`); the probe is
-  a miss instead.
-- A link decision that depends on which repositories the invocation has
+  a miss instead. Unit tests drive each interleaving with release
+  channels: a probe that hits while the evaluator runs (started before or
+  during the evaluation) misses and the evaluator publishes; a probe that
+  hits after the evaluator published serves its value
+  (`a_probe_hit_during_an_evaluation_is_a_miss_and_the_evaluator_publishes`,
+  `a_probe_overlapping_an_evaluation_never_publishes_over_it`).
+- (b) A link decision that depends on which repositories the invocation has
   materialized so far — a glob or a `.bzl` load following a symlink into
   another live repository root (the snapshot's `CrossRepositorySymlink`
   taint), or a link the policy refuses — is never taken on a worker
   (`repository_demand::order_dependent`, `note_order_dependent`): the unit
   aborts with the sentinel and the coordinator decides at the sequential
   point. (This also closes the same order dependence for P2 workers.)
+  Tested end to end: a worker's load of a package whose glob, or whose
+  `.bzl` load, crosses into a local_path_override module outside the
+  workspace aborts as order-dependent while the coordinator's inline load
+  follows the link (`prefetch::tests::worker_links_into_another_live_root_abort_as_order_dependent`),
+  and the build is byte-identical across thread counts
+  (`tests/phase1_prefetch.rs`,
+  `links_into_another_live_root_are_the_coordinators_decisions`). A `.bzl`
+  link to a file of a module nested inside the main repository's tree
+  stays a link within the main repository (the loader resolves it in its
+  own tree, in any order); the glob walker anchors it at the nested root
+  and aborts, which is conservative.
 
 **One warm probe per repository.** Workers fan out over the packages of
 one repository at once, and each used to run the slot's warm-reuse probe
@@ -758,6 +774,11 @@ never waits — it probes on its own as before, so probe waits cannot form
 a cycle — and a wait is capped at 1 s (`PROBE_WAIT`; probes only read).
 The coordinator never probes (it evaluates). Verification volume is the
 sequential run's again (oauth2token 48.4k files at 16 workers, B2 84.3k).
+The unit tests hold every probe on a release channel instead of a sleep
+and bound each waiter's wait per thread, so no outcome races the 1 s
+bound: a waiter is served by the in-flight probe's publication or misses
+with it, a wait past its bound probes on its own, and a nested probe never
+waits (`repository_demand.rs`).
 
 **Telemetry.** With `BAZEL_RS_TIMING=1`, `PERF-PREFETCH workers= loaded=
 aborted= retried= taken= waited= wait= missed= unused=` at the end of

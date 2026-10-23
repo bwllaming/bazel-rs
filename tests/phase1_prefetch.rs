@@ -555,6 +555,72 @@ fn recorded_input_keys_name_only_roots_the_coordinator_has() {
     }
 }
 
+/// Invariant (b) of the prefetch overlap through the CLI: `//globbed`'s
+/// glob and `//loaded`'s `.bzl` load follow symlinks into a
+/// local_path_override module's root. A worker never decides such a link
+/// (its unit aborts as order-dependent, src/prefetch.rs
+/// `worker_links_into_another_live_root_abort_as_order_dependent`); the
+/// coordinator re-runs the unit at its demand point, so the build is
+/// byte-identical at every thread count.
+#[cfg(unix)]
+#[test]
+fn links_into_another_live_root_are_the_coordinators_decisions() {
+    // The module lives outside the workspace: a link into it leaves the
+    // main repository's tree.
+    let lib_ws = Workspace::new("module(name = 'lib')\n");
+    lib_ws.file("BUILD.bazel", "");
+    lib_ws.file("data/x.txt", "x\n");
+    lib_ws.file("defs.bzl", "print('lib defs')\nvalue = 'from_lib'\n");
+    let lib = lib_ws.0.clone();
+    let ws = Workspace::new(&format!(
+        "module(name = 'main')\nbazel_dep(name = 'lib', version = '1')\nlocal_path_override(module_name = 'lib', path = {})\n",
+        json_string(&lib)
+    ));
+    ws.file(
+        "globbed/BUILD.bazel",
+        "filegroup(name = 'g', srcs = glob(['link/**']), visibility = ['//visibility:public'])\n",
+    );
+    std::os::unix::fs::symlink(lib.join("data"), ws.0.join("globbed/link")).unwrap();
+    ws.file(
+        "loaded/BUILD.bazel",
+        "load(':linked.bzl', 'value')\nfilegroup(name = value, visibility = ['//visibility:public'])\n",
+    );
+    std::os::unix::fs::symlink(lib.join("defs.bzl"), ws.0.join("loaded/linked.bzl")).unwrap();
+    ws.file(
+        "app/rules.bzl",
+        "def _impl(ctx):\n    return [DefaultInfo(files = depset(ctx.files.deps))]\nr = rule(implementation = _impl, attrs = {'deps': attr.label_list(allow_files = True)})\n",
+    );
+    let many: String = (0..1000)
+        .map(|i| format!("r(name = 'f{i}', visibility = ['//visibility:public'])\n"))
+        .collect();
+    ws.file(
+        "many/BUILD.bazel",
+        &format!("load('//app:rules.bzl', 'r')\n{many}"),
+    );
+    let mut deps: Vec<String> = (0..1000).map(|i| format!("'//many:f{i}'")).collect();
+    deps.push("'//globbed:g'".to_owned());
+    deps.push("'//loaded:from_lib'".to_owned());
+    ws.file(
+        "app/BUILD.bazel",
+        &format!(
+            "load(':rules.bzl', 'r')\nr(name = 'app', deps = [{}])\n",
+            deps.join(", ")
+        ),
+    );
+    let warm = ws.run_env(&[], &["build", "--loading_phase_threads=1", "//app:app"]);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    let reference = assert_identical_across_threads(&ws, &["//app:app"]);
+    assert!(reference.status.success(), "{}", stderr(&reference));
+    let text = stderr(&reference);
+    assert_eq!(text.matches("lib defs").count(), 1, "{text}");
+    // The glob's file, read through the link.
+    let stdout = String::from_utf8_lossy(&reference.stdout).into_owned();
+    assert_eq!(
+        stdout,
+        format!("//app:app\t{}\n", lib.join("data/x.txt").display())
+    );
+}
+
 /// A JSON string literal (no serde_json dependency in the test).
 fn json_string(value: &Path) -> String {
     format!("\"{}\"", value.display())

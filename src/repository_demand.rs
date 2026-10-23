@@ -149,6 +149,24 @@ thread_local! {
 /// read, and nested probes never wait).
 const PROBE_WAIT: Duration = Duration::from_secs(1);
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: this thread's bound on a probe wait instead of
+    /// [`PROBE_WAIT`], so a test controls which side of the bound a wait
+    /// ends on instead of racing it.
+    static PROBE_WAIT_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// This thread's bound on a probe wait ([`PROBE_WAIT`]).
+fn probe_wait() -> Duration {
+    #[cfg(test)]
+    if let Some(wait) = PROBE_WAIT_OVERRIDE.with(std::cell::Cell::get) {
+        return wait;
+    }
+    PROBE_WAIT
+}
+
 /// A single demand result, allowing callers to borrow the cached value.
 ///
 /// The evaluator never runs under a lock. Recursive demand fails with a cycle
@@ -168,6 +186,10 @@ pub struct DemandSlot<T> {
     /// probe published stays invisible to [`Self::sequential`] until then
     /// (W6 review F2).
     sequential: AtomicBool,
+    /// Test instrumentation: how many top-level probers started waiting
+    /// for another thread's probe of this slot.
+    #[cfg(test)]
+    waits: std::sync::atomic::AtomicUsize,
 }
 
 /// How a top-level prober's claim on a slot's probe ended
@@ -226,6 +248,8 @@ impl<T> DemandSlot<T> {
             probing: Mutex::new(false),
             probed: Condvar::new(),
             sequential: AtomicBool::new(false),
+            #[cfg(test)]
+            waits: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -269,7 +293,9 @@ impl<T> DemandSlot<T> {
             *probing = true;
             return ProbeClaim::Owner;
         }
-        let deadline = Instant::now() + PROBE_WAIT;
+        #[cfg(test)]
+        self.waits.fetch_add(1, Ordering::SeqCst);
+        let deadline = Instant::now() + probe_wait();
         while *probing {
             let now = Instant::now();
             if now >= deadline {
@@ -872,17 +898,15 @@ mod tests {
         assert_eq!(slot.ready(), Some(&5));
     }
 
-    /// A top-level prober spawned on another thread; its probe signals
-    /// `started` and returns `outcome` after `hold`.
-    fn holding_prober(
+    /// A top-level prober spawned on another thread: its probe signals
+    /// `started`, holds until the returned worker is released (no sleeps:
+    /// the test decides when the probe ends), then returns `outcome`.
+    fn released_prober(
         slot: Arc<DemandSlot<usize>>,
         outcome: Option<usize>,
-        hold: Duration,
-    ) -> (
-        thread::JoinHandle<Result<usize, String>>,
-        mpsc::Receiver<()>,
-    ) {
+    ) -> (Worker<Result<usize, String>>, mpsc::Receiver<()>) {
         let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let handle = thread::spawn(move || {
             let _guard = no_demand();
             let _reuse = reuse_only();
@@ -890,27 +914,39 @@ mod tests {
                 7,
                 "repository:x",
                 || {
-                    let _ = started_tx.send(());
-                    thread::sleep(hold);
+                    started_tx.send(()).map_err(|error| error.to_string())?;
+                    release_rx
+                        .recv_timeout(TIMEOUT)
+                        .map_err(|error| format!("release failed: {error}"))?;
                     Ok(outcome)
                 },
                 || Ok(1),
             )
             .copied()
         });
-        (handle, started_rx)
+        (
+            Worker {
+                release: Some(release_tx),
+                handle: Some(handle),
+            },
+            started_rx,
+        )
     }
 
-    /// W6: concurrent top-level probes of one slot run once — the waiter
-    /// is served by the in-flight probe's publication without probing.
-    #[test]
-    fn concurrent_top_level_probe_waits_for_the_in_flight_probe() {
-        let slot = Arc::new(DemandSlot::new());
-        let (owner, started) =
-            holding_prober(Arc::clone(&slot), Some(5), Duration::from_millis(300));
-        started.recv_timeout(TIMEOUT).unwrap();
-        let calls = AtomicUsize::new(0);
-        let waited = {
+    /// A wait bound no passing test reaches: the wait ends when its probe
+    /// does (a broken wakeup fails the test after it, instead of hanging).
+    const UNBOUNDED: Duration = Duration::from_secs(60);
+
+    /// A top-level prober on another thread whose wait for an in-flight
+    /// probe is bounded by `wait`; probing itself counts in `calls` and
+    /// finds 9.
+    fn waiting_prober(
+        slot: Arc<DemandSlot<usize>>,
+        calls: Arc<AtomicUsize>,
+        wait: Duration,
+    ) -> thread::JoinHandle<Result<usize, String>> {
+        thread::spawn(move || {
+            PROBE_WAIT_OVERRIDE.with(|bound| bound.set(Some(wait)));
             let _guard = no_demand();
             let _reuse = reuse_only();
             slot.get_or_probe(
@@ -923,9 +959,33 @@ mod tests {
                 || Ok(1),
             )
             .copied()
-        };
-        assert_eq!(owner.join().unwrap(), Ok(5));
-        assert_eq!(waited, Ok(5));
+        })
+    }
+
+    /// Whether `count` probers started waiting on `slot` (within TIMEOUT).
+    fn waiters_arrive(slot: &DemandSlot<usize>, count: usize) -> bool {
+        let deadline = Instant::now() + TIMEOUT;
+        while slot.waits.load(Ordering::SeqCst) < count {
+            if Instant::now() > deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        true
+    }
+
+    /// W6: concurrent top-level probes of one slot run once — the waiter
+    /// is served by the in-flight probe's publication without probing.
+    #[test]
+    fn concurrent_top_level_probe_waits_for_the_in_flight_probe() {
+        let slot = Arc::new(DemandSlot::new());
+        let (owner, started) = released_prober(Arc::clone(&slot), Some(5));
+        started.recv_timeout(TIMEOUT).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let waiter = waiting_prober(Arc::clone(&slot), Arc::clone(&calls), UNBOUNDED);
+        assert!(waiters_arrive(&slot, 1));
+        assert_eq!(owner.finish().unwrap(), Ok(5));
+        assert_eq!(waiter.join().unwrap(), Ok(5));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         // The claim is released.
         assert!(!*slot.probing.lock().unwrap());
@@ -936,64 +996,144 @@ mod tests {
     #[test]
     fn waiter_of_a_missed_probe_misses_without_probing() {
         let slot = Arc::new(DemandSlot::new());
-        let (owner, started) = holding_prober(Arc::clone(&slot), None, Duration::from_millis(300));
+        let (owner, started) = released_prober(Arc::clone(&slot), None);
         started.recv_timeout(TIMEOUT).unwrap();
-        let calls = AtomicUsize::new(0);
-        let _guard = no_demand();
-        let _reuse = reuse_only();
-        let waited = slot.get_or_probe(
-            7,
-            "repository:x",
-            || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok(Some(9))
-            },
-            || Ok(1),
-        );
-        assert!(is_needs_repository(&owner.join().unwrap().unwrap_err()));
-        assert!(is_needs_repository(&waited.unwrap_err()));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let waiter = waiting_prober(Arc::clone(&slot), Arc::clone(&calls), UNBOUNDED);
+        assert!(waiters_arrive(&slot, 1));
+        assert!(is_needs_repository(&owner.finish().unwrap().unwrap_err()));
+        assert!(is_needs_repository(&waiter.join().unwrap().unwrap_err()));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(slot.ready().is_none());
+        let _guard = no_demand();
+        let _reuse = reuse_only();
         assert_eq!(
             slot.get_or_probe(7, "repository:x", || Ok(Some(9)), || Ok(1)),
             Ok(&9)
         );
     }
 
+    /// The wait is a safety valve ([`PROBE_WAIT`]): a waiter whose owner
+    /// is still probing at the bound probes on its own, and the owner then
+    /// loses the publish race and serves the waiter's value.
+    #[test]
+    fn a_probe_wait_past_its_bound_probes_on_its_own() {
+        let slot = Arc::new(DemandSlot::new());
+        let (owner, started) = released_prober(Arc::clone(&slot), Some(5));
+        started.recv_timeout(TIMEOUT).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let waiter = waiting_prober(
+            Arc::clone(&slot),
+            Arc::clone(&calls),
+            Duration::from_millis(20),
+        );
+        // The owner is held until after the waiter returned.
+        assert_eq!(waiter.join().unwrap(), Ok(9));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(slot.waits.load(Ordering::SeqCst), 1);
+        assert_eq!(owner.finish().unwrap(), Ok(9));
+        assert!(!*slot.probing.lock().unwrap());
+    }
+
     /// A probe nested in another probe never waits for a third thread's
     /// probe (no wait cycles): it probes on its own (a wait would serve the
-    /// owner's 5).
+    /// owner's 5 — or, the owner being held, time out after waiting).
     #[test]
     fn nested_probe_does_not_wait_for_an_in_flight_probe() {
         let inner = Arc::new(DemandSlot::new());
-        let (owner, started) =
-            holding_prober(Arc::clone(&inner), Some(5), Duration::from_millis(600));
+        let (owner, started) = released_prober(Arc::clone(&inner), Some(5));
         started.recv_timeout(TIMEOUT).unwrap();
         let outer: DemandSlot<usize> = DemandSlot::new();
+        let mut nested = None;
+        let result = {
+            let _guard = no_demand();
+            let _reuse = reuse_only();
+            outer
+                .get_or_probe(
+                    7,
+                    "repository:outer",
+                    || {
+                        nested = Some(
+                            inner
+                                .get_or_probe(7, "repository:x", || Ok(Some(9)), || Ok(1))
+                                .copied(),
+                        );
+                        Ok(Some(3))
+                    },
+                    || Ok(1),
+                )
+                .copied()
+        };
+        assert_eq!(result, Ok(3));
+        assert_eq!(nested, Some(Ok(9)));
+        assert_eq!(inner.waits.load(Ordering::SeqCst), 0);
+        // The owner loses the publish race and serves the nested value.
+        assert_eq!(owner.finish().unwrap(), Ok(9));
+        assert_eq!(PROBE_DEPTH.with(std::cell::Cell::get), 0);
+    }
+
+    /// Invariant (a) of the prefetch overlap (docs/PARALLEL_ANALYSIS.md):
+    /// a worker's probe that hits while the coordinator evaluates the same
+    /// slot is a miss — the sentinel, nothing published — and the
+    /// evaluator's own publication never finds the slot occupied
+    /// (`result already occupied`).
+    #[test]
+    fn a_probe_hit_during_an_evaluation_is_a_miss_and_the_evaluator_publishes() {
+        let slot = Arc::new(DemandSlot::new());
+        let (evaluator, evaluating) = blocked_worker(Arc::clone(&slot), "repository:x", 17);
+        evaluating.recv_timeout(TIMEOUT).unwrap();
+        let calls = AtomicUsize::new(0);
+        let probed = {
+            let _guard = no_demand();
+            let _reuse = reuse_only();
+            slot.get_or_probe(
+                1,
+                "repository:x",
+                || {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Some(5))
+                },
+                || Ok(1),
+            )
+            .copied()
+        };
+        assert!(is_needs_repository(&probed.unwrap_err()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(slot.ready().is_none());
+        assert_eq!(evaluator.finish().unwrap(), Ok(17));
+        assert_eq!(slot.ready(), Some(&17));
+        // A later worker demand is served the evaluator's value.
         let _guard = no_demand();
         let _reuse = reuse_only();
-        let start = Instant::now();
-        let mut nested = None;
-        let result = outer.get_or_probe(
-            7,
-            "repository:outer",
-            || {
-                nested = Some(
-                    inner
-                        .get_or_probe(7, "repository:x", || Ok(Some(9)), || Ok(1))
-                        .copied(),
-                );
-                Ok(Some(3))
-            },
-            || Ok(1),
+        assert_eq!(
+            slot.get_or_probe(1, "repository:x", || Ok(Some(5)), || Ok(1)),
+            Ok(&17)
         );
-        let elapsed = start.elapsed();
-        assert_eq!(result, Ok(&3));
-        assert_eq!(nested, Some(Ok(9)));
-        assert!(elapsed < PROBE_WAIT, "{elapsed:?}");
-        // The owner loses the publish race and serves the nested value.
-        assert_eq!(owner.join().unwrap(), Ok(9));
-        assert_eq!(PROBE_DEPTH.with(std::cell::Cell::get), 0);
+    }
+
+    /// Invariant (a), the other interleavings: a probe that started before
+    /// the evaluation and hits while it runs is a miss; a probe that hits
+    /// after the evaluator published serves the evaluator's value.
+    #[test]
+    fn a_probe_overlapping_an_evaluation_never_publishes_over_it() {
+        // The probe ends while the evaluator runs.
+        let slot = Arc::new(DemandSlot::new());
+        let (prober, probing) = released_prober(Arc::clone(&slot), Some(5));
+        probing.recv_timeout(TIMEOUT).unwrap();
+        let (evaluator, evaluating) = blocked_worker(Arc::clone(&slot), "repository:x", 17);
+        evaluating.recv_timeout(TIMEOUT).unwrap();
+        assert!(is_needs_repository(&prober.finish().unwrap().unwrap_err()));
+        assert!(slot.ready().is_none());
+        assert_eq!(evaluator.finish().unwrap(), Ok(17));
+        assert_eq!(slot.ready(), Some(&17));
+
+        // The probe ends after the evaluator published.
+        let slot = Arc::new(DemandSlot::new());
+        let (prober, probing) = released_prober(Arc::clone(&slot), Some(5));
+        probing.recv_timeout(TIMEOUT).unwrap();
+        assert_eq!(slot.get_or_try_init(1, "repository:x", || Ok(17)), Ok(&17));
+        assert_eq!(prober.finish().unwrap(), Ok(17));
+        assert_eq!(slot.ready(), Some(&17));
     }
 
     /// W6 review F2: a value a worker's probe published is the sequential
