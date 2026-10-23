@@ -34,6 +34,16 @@ starlark = "=0.14.2"
 tar = { version = "=0.4.46", default-features = false }
 tempfile = "=3.27.0"
 zip = { version = "=9.0.2", default-features = false, features = ["deflate-flate2"] }
+# Process-wide Rust allocator (feature "jemalloc", on by default): linked
+# statically with prefixed symbols, so C code keeps glibc malloc. Building it
+# needs a C compiler, make and sh (README "Global allocator").
+tikv-jemallocator = { version = "=0.7.0", optional = true }
+
+[features]
+default = ["jemalloc"]
+# `--no-default-features` builds with the system allocator (glibc malloc),
+# e.g. for heaptrack/valgrind or a host without make.
+jemalloc = ["dep:tikv-jemallocator"]
 
 [dev-dependencies]
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz", "encoder"] }

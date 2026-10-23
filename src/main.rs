@@ -2,6 +2,13 @@ use bazel_rs::{bazelrc, engine::Engine, workspace};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+// The process-wide Rust allocator: jemalloc (feature "jemalloc", on by
+// default; README "Global allocator"). No `unsafe` here: the GlobalAlloc impl
+// lives in tikv-jemallocator, so unsafe_code stays "deny".
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const HELP: &str = "bazel-rs — experimental native build engine (NOT full Bazel parity)
 
 Usage:

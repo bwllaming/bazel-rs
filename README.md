@@ -28,6 +28,30 @@ supported execution host.
 After a release build, direnv also exposes `bazel-rs` on PATH. It never installs
 a `bazel` alias or replaces the main repo's launcher.
 
+### Global allocator (jemalloc)
+
+The `bazel-rs` binary uses jemalloc as its Rust global allocator: cargo feature
+`jemalloc`, on by default, through `tikv-jemallocator` 0.7.0 (bundling a jemalloc
+5.3.1 snapshot) with jemalloc's default options. It is linked statically with
+prefixed symbols, so only Rust allocations go to jemalloc, C code keeps glibc
+malloc, and `ldd` shows no new library. Building it needs `make` and a POSIX `sh`
+in addition to the C compiler that `ring` and `blake3` already require: the
+`tikv-jemalloc-sys` build script runs jemalloc's bundled `configure` and `make`,
+which adds about 90-100 s of CPU to a clean build.
+Measured on `~/code` with `build --nobuild //src/beyondwork.ai/tools/oauth2token:all`,
+warm, median of 4 runs: wall time fell from 46.1 s to 28.0 s (−39 %), CPU time
+by the same 39 %, and peak RSS from 1386 MB to 1365 MB.
+
+To opt out, build and test with `--no-default-features`, for example
+`cargo build --locked --release --no-default-features` or
+`cargo test --locked --no-default-features`. The binary then uses the system
+allocator (glibc malloc), which heaptrack, valgrind and other `LD_PRELOAD` tools
+need; this also avoids the `make` requirement. jemalloc fixes the page size when
+it is configured, at build time. A binary that may run on an aarch64 kernel with
+64 KiB pages must therefore be built with `JEMALLOC_SYS_WITH_LG_PAGE=16`, unless
+it is built on such a host; otherwise it aborts at start-up. x86_64 is not
+affected.
+
 ## Try the native subset
 
 ```sh
