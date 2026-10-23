@@ -185,7 +185,11 @@ fn counters(line: &str) -> std::collections::BTreeMap<String, u64> {
 
 /// W0-A: a `config_setting` with a Starlark `flag_values` key flushes the
 /// pending targets from phase 1 (Engine::plan_pending); the report counts
-/// the flush's batch, and the dependency edge of `x` builds one view.
+/// the flush's batch. `x` and its dependency `y` both depend on `dep`: two
+/// edges request one view key, which W1a's memo builds once
+/// (integration-20: constructions are the distinct keys, the other request
+/// is a memo hit), and the allocation breakdown measures the memoized
+/// views.
 #[test]
 fn flush_batches_and_view_counters() {
     let ws = Workspace::new();
@@ -195,7 +199,7 @@ fn flush_batches_and_view_counters() {
     );
     ws.file(
         "BUILD",
-        "load(':defs.bzl', 'bool_flag', 'my_rule')\nbool_flag(name='flag', build_setting_default=True)\nconfig_setting(name='on', flag_values={':flag': 'true'})\nmy_rule(name='dep')\nmy_rule(name='x', deps=select({':on': [':dep'], '//conditions:default': []}))\n",
+        "load(':defs.bzl', 'bool_flag', 'my_rule')\nbool_flag(name='flag', build_setting_default=True)\nconfig_setting(name='on', flag_values={':flag': 'true'})\nmy_rule(name='dep')\nmy_rule(name='y', deps=[':dep'])\nmy_rule(name='x', deps=select({':on': [':dep', ':y'], '//conditions:default': []}))\n",
     );
     let plain = ws.run("1", false);
     assert!(
@@ -225,11 +229,22 @@ fn flush_batches_and_view_counters() {
         .find(|l| l.starts_with("PERF-STAGE views "))
         .map(counters)
         .unwrap_or_else(|| panic!("missing views row:\n{stderr}"));
-    assert!(views["edges"] >= 1, "{views:?}\n{stderr}");
-    // Every request builds its view today (no memo).
-    assert_eq!(views["constructed"], views["edges"], "{views:?}");
-    assert!(views["distinct"] >= 1 && views["distinct"] <= views["edges"]);
+    assert!(views["edges"] >= 2, "{views:?}\n{stderr}");
+    // W1a's memo builds each distinct key once; a repeated key is a hit.
+    assert_eq!(views["constructed"], views["distinct"], "{views:?}");
+    assert!(views["constructed"] < views["edges"], "{views:?}");
     assert!(views["artifact_file"] >= 1, "{views:?}");
+    let alloc = ws.run_with("1", &[("BAZEL_RS_TIMING_ALLOC", true)]);
+    assert!(alloc.status.success());
+    assert_eq!(alloc.stdout, plain.stdout);
+    let stderr = String::from_utf8_lossy(&alloc.stderr);
+    assert!(
+        stderr
+            .lines()
+            .filter_map(|l| l.strip_prefix("PERF-ALLOC "))
+            .any(|row| row.ends_with(" action_planning.views") && !row.starts_with("0 ")),
+        "{stderr}"
+    );
 }
 
 /// W0-A: `BAZEL_RS_TIMING_ALLOC=1` alone prints the retained-memory

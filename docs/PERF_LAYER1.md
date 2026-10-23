@@ -165,6 +165,12 @@ PERF-STAGE views edges=8669 constructed=8669 distinct=2181 artifact_file=9309489
   Today `constructed` equals `edges`. W1a calls
   `plan_timings::note_dependency_view(key, false)` on a memo hit.
 
+  Integration-20 (on top of perf-w1): the memo exists, so `constructed`
+  equals `distinct` (a memo hit reports `constructed=false`), and
+  `artifact_file` counts the Files computed in `Artifact::compute_file` —
+  once per Artifact, since W1a caches the File (`Artifact::file` only clones
+  it). The numbers below are W0-A's, measured before W1.
+
 The counters cover everything up to the end of phase 2, which is where the
 report is printed.
 

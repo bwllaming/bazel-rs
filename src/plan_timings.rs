@@ -21,7 +21,7 @@
 //! report, under the same switch: the batch sizes of the phase-1
 //! `plan_pending` flushes (`PERF-STAGE flush-batch`), and dependency-view
 //! requests vs. constructions vs. distinct view keys plus the number of
-//! `Artifact::file` conversions (`PERF-STAGE views`).
+//! Files computed from artifacts (`PERF-STAGE views`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -105,8 +105,8 @@ struct State {
 }
 
 /// W0-A counters (relaxed atomics, bumped only when enabled): dependency
-/// views requested (one per edge), views actually built, and
-/// `Artifact::file` conversions.
+/// views requested (one per edge), views actually built, and Files
+/// computed from artifacts (`note_artifact_file`).
 static VIEW_EDGES: AtomicU64 = AtomicU64::new(0);
 static VIEW_CONSTRUCTIONS: AtomicU64 = AtomicU64::new(0);
 static ARTIFACT_FILES: AtomicU64 = AtomicU64::new(0);
@@ -245,10 +245,11 @@ pub fn record_batch(outer: bool, targets: u64) {
 
 /// W0-A: one dependency-view request (`Engine::plan_dependency_view`,
 /// one per dependency edge of a planned target or aspect application),
-/// keyed by what a view memo would key it by (the requested label and the
-/// edge configuration). `constructed` is false when a memo answered the
-/// request without building the view (W1a); today every request builds.
-/// The report compares edges, constructions and distinct keys.
+/// keyed as the view memo keys it (the requested label and the edge
+/// configuration). `constructed` is false when W1a's memo answered the
+/// request without building the view, so constructions equal the distinct
+/// keys (integration-20). The report compares edges, constructions and
+/// distinct keys.
 pub fn note_dependency_view<K: Hash + ?Sized>(key: &K, constructed: bool) {
     if !enabled() {
         return;
@@ -267,9 +268,11 @@ pub fn note_dependency_view<K: Hash + ?Sized>(key: &K, constructed: bool) {
     });
 }
 
-/// W0-A: one `Artifact::file` conversion (a File value rebuilt from an
-/// artifact, R3: label parsing dominates it). One relaxed increment when
-/// enabled; one atomic load otherwise.
+/// W0-A: one File computed from an artifact's paths and owner (R3: label
+/// parsing dominates it) — `Artifact::compute_file`, once per Artifact since
+/// W1a caches the File (`Artifact::file` only clones it; integration-20),
+/// reported as `artifact_file=`. One relaxed increment when enabled; one
+/// atomic load otherwise.
 pub fn note_artifact_file() {
     if enabled() {
         ARTIFACT_FILES.fetch_add(1, Ordering::Relaxed);
@@ -465,7 +468,7 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
         coverage
     );
     // W0-A: phase-1 flush batch sizes (targets per plan_pending flush)
-    // and the dependency-view / Artifact::file work counters.
+    // and the dependency-view / artifact File work counters.
     eprintln!("{}", flush_batch_line(&flush_batches, phase2_batch));
     eprintln!(
         "PERF-STAGE views edges={} constructed={} distinct={} artifact_file={}",

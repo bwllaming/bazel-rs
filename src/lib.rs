@@ -148,7 +148,7 @@ pub fn perf_mark(name: &str) {
     static START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
-        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let status = proc_self_status();
         let (rss, hwm) = (
             proc_status_value(&status, "VmRSS:"),
             proc_status_value(&status, "VmHWM:"),
@@ -160,6 +160,15 @@ pub fn perf_mark(name: &str) {
             hwm
         );
     }
+}
+
+/// This process's `/proc/self/status` (empty when unreadable): telemetry of
+/// the diagnostics switches (PERF marks, the `BAZEL_RS_TIMING_ALLOC`
+/// breakdown), never an input of planning — the one reader, here in an
+/// allowlisted module of the analysis-snapshot discipline
+/// (tests/observed_fs_discipline.rs; the strace audit ignores `/proc`).
+pub(crate) fn proc_self_status() -> String {
+    std::fs::read_to_string("/proc/self/status").unwrap_or_default()
 }
 
 /// The value column of one `/proc/self/status` field (`VmRSS:`, `VmHWM:`

@@ -73,6 +73,8 @@ const DIAGNOSTIC_ENV: &[&str] = &[
     "BAZEL_RS_VERIFY_VIEWS",
     "BAZEL_RS_VERIFY_ARTIFACTS",
     "BAZEL_RS_DIGEST_MEMO",
+    // perf-w0a: the retained-memory breakdown (stderr only).
+    "BAZEL_RS_TIMING_ALLOC",
 ];
 const DIAGNOSTIC_ENV_PREFIXES: &[&str] = &["BAZEL_RS_DEBUG_"];
 

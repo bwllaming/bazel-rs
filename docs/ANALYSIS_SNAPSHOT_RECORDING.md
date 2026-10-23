@@ -78,8 +78,9 @@ Semantic records complete the filesystem ones:
   failed or reported errors, or the command failed), Unstable, and test/debug
   hooks (`BAZEL_RS_LOADING_JITTER`, `BAZEL_RS_LOADING_NO_DEMAND`,
   `BAZEL_RS_DEBUG_*`; integration-20 adds the analysis self-checks
-  `BAZEL_RS_VERIFY_VIEWS` / `BAZEL_RS_VERIFY_ARTIFACTS` and the persistent
-  digest table's switch `BAZEL_RS_DIGEST_MEMO`: `snapshot::record::TEST_HOOKS`).
+  `BAZEL_RS_VERIFY_VIEWS` / `BAZEL_RS_VERIFY_ARTIFACTS`, the persistent
+  digest table's switch `BAZEL_RS_DIGEST_MEMO` and the retained-memory
+  breakdown `BAZEL_RS_TIMING_ALLOC`: `snapshot::record::TEST_HOOKS`).
 
 ## Local repository rules (L2-W4R, PLAN-L2 update 1 §(a), §(b))
 

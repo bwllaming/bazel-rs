@@ -18,8 +18,10 @@
 //! "already counted" set of the measurement, so a shared allocation (an
 //! `Arc` pointee, a Starlark frozen heap) is counted exactly once:
 //! - Engine-native structures (`packages`, `plan`, `configured_rules`,
-//!   `configured_nodes`, every `action_planning.*` map, the per-target
-//!   toolchain/exec-group contexts and a few other `engine.*` maps) are
+//!   `configured_nodes`, every `action_planning.*` map — since perf-w1
+//!   (integration-20) with the memoized dependency views and the File each
+//!   Artifact caches —, the per-target toolchain/exec-group contexts and a
+//!   few other `engine.*` maps) are
 //!   walked by [`Footprint`] in this module:
 //!   arithmetic over capacities, `BTreeMap` nodes estimated at ~8 entries
 //!   per 11-slot node, hash tables from their capacity. An `Arc` pointee is
@@ -102,7 +104,7 @@ pub(super) fn report_if_enabled(
         return;
     }
     let started = std::time::Instant::now();
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let status = crate::proc_self_status();
     let rss_kb: u64 = crate::proc_status_value(&status, "VmRSS:")
         .parse()
         .unwrap_or(0);
@@ -220,9 +222,13 @@ fn groups<'a>(
             "action_planning.aspect_target_identities",
             &state.aspect_target_identities,
         ),
+        // W1a's memoized dependency views, after the maps whose runfiles
+        // and Target values they share (those count there).
+        ("action_planning.views", &state.views),
         ("engine.toolchain_contexts", &engine.toolchain_contexts),
         ("engine.exec_group_contexts", &engine.exec_group_contexts),
         ("engine.exec_configurations", &engine.exec_configurations),
+        ("engine.exec_transitions", &engine.exec_transitions),
         ("engine.edge_configs", &engine.edge_configs),
         ("engine.rule_delegations", &engine.rule_delegations),
         (
@@ -765,11 +771,14 @@ fields!(File {
     short_path,
     owner
 });
+// W1a: an Artifact caches its File (one Arc per artifact, shared by its
+// copies in `dry`, the declared map and the artifact index).
 fields!(Artifact {
     real,
     exec,
     producer,
-    owner
+    owner,
+    file
 });
 fields!(crate::aspects::AspectApplicationKey {
     base,
@@ -999,6 +1008,29 @@ impl Footprint for crate::starlark_types::Target {
             + self.files_depset.heap(walker)
     }
 }
+
+// Dependency views (W1a): one shared view per edge key; its runfiles and
+// Target are the planned target's own (counted with `runfiles_info` /
+// `target_identities`), its files and provider maps are the view's.
+impl Footprint for crate::analysis::DependencyTarget {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        let view: &crate::analysis::DependencyView = self;
+        walker.shared(std::ptr::from_ref(view).cast(), |walker| {
+            walker.alloc(ARC_HEADER + size_of::<crate::analysis::DependencyView>())
+                + view.heap(walker)
+        });
+        0
+    }
+}
+fields!(crate::analysis::DependencyView {
+    label,
+    files,
+    providers,
+    provider_keys,
+    runfiles,
+    rule_class,
+    identity
+});
 
 #[cfg(test)]
 mod tests {
