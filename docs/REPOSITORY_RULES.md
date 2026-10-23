@@ -257,6 +257,71 @@ publication's identity, since an execution whose recorded probes differ from
 the manifest's republishes it (otherwise the stale probes would re-execute the
 rule on every run).
 
+#### Upgrade note (review i20)
+
+The first invocation of an i20 binary on a cache written by an older bazel-rs
+re-runs, once:
+
+* every repository whose recorded probes name a path into the repository
+  store: a rule that read, watched (`ctx.watch` of a file in another
+  repository, by Label or by the path `ctx.path(Label)` returned), listed or
+  `watch_tree`d a file of *another* repository. Its inputs now name
+  `@@NAME//path` instead of a store tree, so its publication identity changes:
+  the specification pointer is rewritten and a new tree published. On ~/code
+  this is the go_deps chain — every go_repository watches `bin/fetch_repo`
+  and `bin/gazelle` of `bazel_gazelle_go_repository_tools` and `go.env` of
+  `bazel_gazelle_go_repository_cache` (gazelle `internal/go_repository.bzl`)
+  — plus go_repository_tools itself, the Go SDK download and
+  `local_config_cc`/`local_config_cc_toolchains`. The review counted ~459
+  specification pointers naming 213 such publications on ~/code's default
+  cache, ~0.9 GB of new trees. Measured on a private cache for
+  `build --nobuild //src/beyondwork.ai/{prober,pvcautoscaler,decommission}/...`:
+  221 re-executions (217 go_repository), 221 pointers rewritten, 221 new
+  trees (743 MB); 344 s against 317 s for a settled warm run. The superseded
+  trees stay on disk: the store has no garbage collection yet (removing the
+  cache directory reclaims them, at the cost of a cold run).
+* every module extension whose MODULE.bazel.lock or hidden-lockfile entry
+  keys a file by a store path — `@@//bazel-rs-out/repositories/...` with the
+  cache inside the workspace, absolute otherwise, as bazel-rs recorded them
+  before i20. Such a key is outdated (`is a path into the native repository
+  store (recorded by an older bazel-rs)`), so the extension re-evaluates once
+  and records `@@NAME//path` keys, Bazel's own (EXTENSION_CTX_SURFACE.md).
+  ~/code's hidden lockfile (`<cache-dir>/hidden-lockfiles/<sha256 of the
+  workspace path>/MODULE.bazel.lock`) holds 11 such keys — go_deps 7, go_sdk
+  1, pip 3 — so those three extensions re-evaluate once.
+
+After that a warm invocation re-runs only `local = True` repositories, which
+never reuse a publication (below; 45 on that ~/code target set, ~0.07 s
+together).
+
+Switching binaries on one cache costs a re-run every time. A pre-i20 binary
+trusts only version-1 probes, so it re-executes every repository the i20 binary
+re-recorded and flips its pointer back to the old tree (still present: nothing
+new is published); the next i20 run distrusts the store probes the old binary
+recorded and flips the pointer forward again. The go_deps chain therefore
+re-runs on every switch, in both directions (221 re-executions each way on the
+cache above; the i20 run after a round trip took 359 s against 317 s settled).
+Keep pre-i20 binaries off a migrated cache (give them their own
+`--cache-dir`). Extension entries do not flip: a pre-i20 binary resolves
+`@@NAME//path` keys through the repositories' current roots, and only an
+extension it re-evaluates for another reason records store keys again, which
+the next i20 run re-evaluates once more.
+
+Known divergence: Bazel tests the workspace before `<output_base>/external`
+(toRepoCacheFriendlyPath, SBEC:1669 then :1676), so every path inside the
+workspace is `@@//rel` — also one inside a `local_path_override` (or
+`local_repository`) directory that lies in the workspace, unless it is
+reached through `external/NAME`, as a Label path is. Native has no
+`external/` tree to tell the two apart and takes the longest materialized
+root containing the path (`RepositorySet::friendly_repository`), so a file `x`
+in the directory of module `foo` keys as `@@foo+//x` however it was reached
+(Bazel: `@@//third_party/foo/x` through the workspace path, `@@foo+//x`
+through a Label). Both keys name the same file while the override stays put
+and each implementation resolves the other's spelling (`@@//rel` through the
+workspace, `@@foo+//rel` through the repository root), so a lockfile shared
+with Bazel stays up to date across them; only a freshly recorded key's
+spelling differs.
+
 ### Host access
 
 * `ctx.which(program)` searches the absolute entries of the client `PATH` for a
