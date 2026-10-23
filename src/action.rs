@@ -57,6 +57,12 @@
 //!   of repository rules and module extensions) are lstat'ed once to
 //!   establish that they are real directories (`no_linked_ancestor`).
 //!
+//! Only bazel-rs writes these areas, so an edit made there while a command
+//! runs, after its first look, is not seen again by that command (the next
+//! one starts with empty per-process memos and re-verifies the repository
+//! trees); staging still checks the digest of every blob it links
+//! (docs/HARDLINK_STAGING.md, "Per-process memos"; across commands:
+//! docs/DIGEST_MEMO.md, "Trust").
 //! Workspace files and every other path outside the cache keep the full
 //! checks on every use. Many inputs (or tree files) are read and hashed on
 //! several threads (`try_map_ordered`, helpers from one process-wide budget
@@ -6150,6 +6156,93 @@ mod tests {
                 .unwrap_err()
                 .contains("symlink is not allowed")
         );
+    }
+
+    /// A published symlink output whose target lies in a repository tree
+    /// store (an external repository's header or directory, as
+    /// `_virtual_includes` links have): consumers read the target through
+    /// the link, its store file once per process. A target in a repository
+    /// rule's working area is read and checked on every use.
+    #[test]
+    fn symlink_outputs_into_store_trees_are_followed_and_memoized() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let create = |path: &Path, text: &str| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, text).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+        };
+        let tree = root.join("repositories/git/trees/abc");
+        let header = tree.join("pkg/hdr.h");
+        create(&header, "store\n");
+        create(&tree.join("dir/a"), "a");
+        create(&tree.join("dir/sub/b"), "b");
+        let symlink_to = |id: &str, source: &Path, target: &str| {
+            let mut link = fixture.action();
+            link.id = id.into();
+            link.command.clear();
+            link.inputs = vec![(source.to_path_buf(), target.into())];
+            link.outputs = vec![format!("out/{id}").into()];
+            link.extra.transform = Some(Transform::Symlink {
+                target: target.into(),
+                require_executable: false,
+                progress: "Creating symlink".into(),
+            });
+            link
+        };
+        let file_link = symlink_to("file-link", &header, "pkg/hdr.h");
+        let linked = execute(&fixture.cache(), &file_link).unwrap();
+        assert_eq!(fs::read_link(&linked.outputs[0]).unwrap(), header);
+        let mut tree_link = symlink_to("tree-link", &tree.join("dir"), "in/dir");
+        tree_link.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/dir")]);
+        tree_link.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree-link")]);
+        let tree_linked = execute(&fixture.cache(), &tree_link).unwrap();
+        assert_eq!(
+            fs::read_link(&tree_linked.outputs[0]).unwrap(),
+            tree.join("dir")
+        );
+        assert_eq!(
+            tree_linked.trees[&0],
+            [PathBuf::from("a"), PathBuf::from("sub/b")]
+        );
+        let mut consumer = fixture.action();
+        consumer.id = "consumer".into();
+        consumer.inputs = vec![
+            (linked.outputs[0].clone(), "x/hdr.h".into()),
+            (tree_linked.outputs[0].clone(), "x/dir".into()),
+        ];
+        consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("x/dir")]);
+        consumer.command = "cat x/hdr.h x/dir/a x/dir/sub/b > out/result".into();
+        let consumed = execute(&fixture.cache(), &consumer).unwrap();
+        assert_eq!(fs::read(&consumed.outputs[0]).unwrap(), b"store\nab");
+        // The link is a published output, its target a store file, which
+        // this process already read: following the link reads nothing.
+        assert!(!store_file(Some(&root), &linked.outputs[0]));
+        assert!(store_file(Some(&root), &header));
+        let reads = FILE_READS.with(std::cell::Cell::get);
+        let input = read_input(&linked.outputs[0], Some(&root), true).unwrap();
+        assert_eq!((input.path.as_path(), input.size), (header.as_path(), 6));
+        assert_eq!(FILE_READS.with(std::cell::Cell::get), reads);
+        assert!(execute(&fixture.cache(), &file_link).unwrap().cache_hit);
+        assert!(execute(&fixture.cache(), &consumer).unwrap().cache_hit);
+        // The same link into a repository rule's working area: its target
+        // is read again on every use, through the full ancestor walk.
+        let stage = root.join("repositories/direct/stages/slug/pkg/hdr.h");
+        create(&stage, "stage\n");
+        let staged = execute(
+            &fixture.cache(),
+            &symlink_to("stage-link", &stage, "pkg/hdr.h"),
+        )
+        .unwrap();
+        assert_eq!(fs::read_link(&staged.outputs[0]).unwrap(), stage);
+        for _ in 0..2 {
+            let (reads, walks) = (FILE_READS.with(std::cell::Cell::get), full_ancestor_walks());
+            let input = read_input(&staged.outputs[0], Some(&root), true).unwrap();
+            assert_eq!(input.path, stage);
+            assert_eq!(FILE_READS.with(std::cell::Cell::get), reads + 1);
+            assert_eq!(full_ancestor_walks(), walks + 1);
+        }
     }
 
     #[test]

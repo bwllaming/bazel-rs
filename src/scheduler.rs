@@ -751,6 +751,40 @@ mod tests {
         }
     }
 
+    /// Actions run on a pool of at most `jobs` worker threads, reused from
+    /// action to action, never on the dispatching thread.
+    #[test]
+    fn workers_are_a_pool_of_at_most_jobs_threads() {
+        for jobs in [1, 2, 3, 8] {
+            let threads = Mutex::new(std::collections::HashSet::new());
+            let worker = |_: &Path, action: &Action| {
+                threads.lock().unwrap().insert(thread::current().id());
+                success(action)
+            };
+            // Independent actions and a chain that keeps finishing and
+            // dispatching, 60 actions in all.
+            let mut graph: Vec<PlannedAction> =
+                (0..40).map(|i| node(&format!("free-{i:02}"))).collect();
+            for i in 0..20 {
+                let mut link = node(&format!("chain-{i:02}"));
+                if i > 0 {
+                    link.dependencies =
+                        vec![dependency(&format!("chain-{:02}", i - 1), 0, "input")];
+                }
+                graph.push(link);
+            }
+            let results = execute_with(Path::new("unused"), graph, jobs, &worker).unwrap();
+            assert_eq!(results.len(), 60);
+            let threads = threads.into_inner().unwrap();
+            assert!(
+                threads.len() <= jobs,
+                "{} worker threads for jobs={jobs}",
+                threads.len()
+            );
+            assert!(!threads.contains(&thread::current().id()));
+        }
+    }
+
     #[test]
     fn failed_dependency_and_queued_independent_action_never_start() {
         let fixture = Fixture::new();

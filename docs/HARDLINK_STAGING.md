@@ -89,7 +89,53 @@ mtime, ctime) avoids re-hashing a shared input for every action. Files outside
 the cache are memoized only when their timestamps are at least 2 s older than
 the start of hashing ("racy git"), so a same-size rewrite within the
 filesystem's timestamp granularity is never missed; files the cache owns are
-keyed without ctime and memoized when written.
+keyed without ctime and memoized when written. Since L2-W2 the digests also
+persist across commands (docs/DIGEST_MEMO.md).
+
+## Per-process memos (L2-W1)
+
+Within one command (one process) the executor inspects what the cache owns
+once, like Bazel's per-build file metadata, instead of once per action:
+
+* a published tree artifact (`actions/<key>/outputs/...`) is read once and
+  shared (`Arc<Tree>`) by every consumer; its producer seeds the entry when its
+  cache entry validates or when it publishes the tree, and drops or replaces
+  it whenever it publishes again;
+* a file of the content-addressed stores is read once, by path: the blobs
+  `cas/<blob>` and the files of the repository tree stores
+  `repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`
+  (registry modules, repository-rule results, Git sources, the embedded
+  `bazel_tools`). Nothing else below `repositories/`: module extensions and
+  repository rules run arbitrary code in `modextwd/` and `direct/stages/`,
+  and downloads, locks and manifests are no trees;
+* the directories of `actions/`, `cas/` and those tree stores are lstat'ed
+  once to establish that they are real directories;
+* many inputs (an SDK) or tree files are hashed on helper threads taken from
+  one process-wide budget of as many threads as cores; a call that finds it
+  exhausted hashes on its own thread, so execution never runs more than
+  `--jobs` workers plus that many helpers (and the process's few other
+  threads).
+
+The memos are bounded (256 Ki entries each, a few hundred MB at most in all;
+a memo that would exceed its cap starts over).
+
+**Trust.** These areas are written only by bazel-rs: published outputs and
+blobs are read-only and replaced only by republication, and a repository
+tree is verified when this command materializes it (before any action runs)
+and only ever replaced as a whole. An edit under
+`<cache>/{actions,cas,repositories/<tree stores>}` made while a command runs,
+after its memos took their first look, is therefore not re-detected by that
+command; the next command starts with empty per-process memos and verifies
+the repository trees again (what it takes from the persistent digest memo:
+docs/DIGEST_MEMO.md, "Trust"). Staging still verifies
+what it links: an existing blob by mode, size and digest, a new blob by a
+digest-checked copy (a file the cache owns that already has the blob's mode
+is hardlinked instead and its digest checked after linking), both through
+the stat-keyed digest memo; a copy whose bytes no longer match fails the
+action (`input ... changed while it was being staged`), and every staged
+inode is re-checked after its process ran. Execution roots (`work/`), the
+working areas of repository rules and module extensions, and every path
+outside the cache keep the full checks on every use.
 
 ## Cache keys
 
