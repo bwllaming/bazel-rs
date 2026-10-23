@@ -57,8 +57,9 @@
 //!
 //! Workspace files and every other path outside the cache keep the full
 //! checks on every use. Many inputs (or tree files) are read and hashed on
-//! several threads (`try_map_ordered`), reporting the error a sequential
-//! read reports.
+//! several threads (`try_map_ordered`, helpers from one process-wide budget
+//! of as many threads as cores), reporting the error a sequential read
+//! reports.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -1085,14 +1086,95 @@ const PARALLEL_ITEMS_PER_THREAD: usize = 32;
 /// At most this many threads map one set of items ([`try_map_ordered`]).
 const PARALLEL_THREADS: usize = 16;
 
+/// The helper threads that all [`try_map_ordered`] calls of the process
+/// share. Concurrent actions (up to `--jobs`) and nested reads (a tree input
+/// read on another call's helper) take helpers from this one budget instead
+/// of starting up to PARALLEL_THREADS each, which could add up to hundreds of
+/// threads: enough to exhaust a pids cgroup, and an action whose spawn then
+/// fails with EAGAIN fails (`retry_spawn` retries only ETXTBSY). A call that
+/// finds the budget exhausted maps on its calling thread; nothing waits for
+/// a helper.
+struct HelperBudget {
+    available: std::sync::atomic::AtomicUsize,
+}
+
+impl HelperBudget {
+    const fn new(capacity: usize) -> Self {
+        Self {
+            available: std::sync::atomic::AtomicUsize::new(capacity),
+        }
+    }
+
+    /// Up to `wanted` helpers, as many as are free now (possibly none).
+    fn take(&self, wanted: usize) -> usize {
+        let mut available = self.available.load(Ordering::Relaxed);
+        loop {
+            let granted = available.min(wanted);
+            if granted == 0 {
+                return 0;
+            }
+            match self.available.compare_exchange_weak(
+                available,
+                available - granted,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return granted,
+                Err(current) => available = current,
+            }
+        }
+    }
+
+    fn give_back(&self, count: usize) {
+        self.available.fetch_add(count, Ordering::AcqRel);
+    }
+}
+
+/// Helpers a call took from its budget and has not given back: each one is
+/// returned once its thread was joined (or could not be started), the rest
+/// when this is dropped, which [`try_map_ordered_in`] does only after its
+/// thread scope joined every helper, also when unwinding. So the threads
+/// alive at any moment never outnumber the budget.
+struct TakenHelpers<'a> {
+    budget: &'a HelperBudget,
+    count: std::cell::Cell<usize>,
+}
+
+impl TakenHelpers<'_> {
+    fn give_back(&self, count: usize) {
+        let count = count.min(self.count.get());
+        self.count.set(self.count.get() - count);
+        self.budget.give_back(count);
+    }
+}
+
+impl Drop for TakenHelpers<'_> {
+    fn drop(&mut self) {
+        self.budget.give_back(self.count.get());
+    }
+}
+
+/// The process-wide helper budget: as many helpers as the process has
+/// available cores.
+fn helper_budget() -> &'static HelperBudget {
+    static BUDGET: OnceLock<HelperBudget> = OnceLock::new();
+    BUDGET.get_or_init(|| HelperBudget::new(available_cores()))
+}
+
+fn available_cores() -> usize {
+    static CORES: OnceLock<usize> = OnceLock::new();
+    *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from))
+}
+
 /// `map` over `items`, results in `items` order. Callers consume them in
 /// order and stop at the first error, which is therefore exactly the error a
 /// sequential pass reports. Up to PARALLEL_ITEMS_PER_THREAD items run on the
 /// calling thread, also stopping at the first error; more run on up to
-/// PARALLEL_THREADS threads (the calling thread included), where items after
-/// an error are mapped too and their results discarded. Reading many inputs
-/// (an SDK, a large tree) is then bounded by the I/O and hashing throughput
-/// of several cores instead of one.
+/// PARALLEL_THREADS threads (the calling thread included, helpers taken from
+/// the process-wide [`HelperBudget`]), where items after an error are mapped
+/// too and their results discarded. Reading many inputs (an SDK, a large
+/// tree) is then bounded by the I/O and hashing throughput of several cores
+/// instead of one.
 pub(crate) fn try_map_ordered<T, R>(
     items: &[T],
     map: impl Fn(&T) -> Result<R, String> + Sync,
@@ -1101,12 +1183,28 @@ where
     T: Sync,
     R: Send,
 {
-    static CORES: OnceLock<usize> = OnceLock::new();
-    let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from));
-    let threads = (items.len() / PARALLEL_ITEMS_PER_THREAD)
+    try_map_ordered_in(helper_budget(), items, map)
+}
+
+/// [`try_map_ordered`] with helpers from `budget`.
+fn try_map_ordered_in<T, R>(
+    budget: &HelperBudget,
+    items: &[T],
+    map: impl Fn(&T) -> Result<R, String> + Sync,
+) -> Vec<Result<R, String>>
+where
+    T: Sync,
+    R: Send,
+{
+    let wanted = (items.len() / PARALLEL_ITEMS_PER_THREAD)
         .min(PARALLEL_THREADS)
-        .min(cores);
-    if threads < 2 {
+        .min(available_cores())
+        .saturating_sub(1);
+    let taken = TakenHelpers {
+        budget,
+        count: std::cell::Cell::new(if wanted == 0 { 0 } else { budget.take(wanted) }),
+    };
+    if taken.count.get() == 0 {
         let mut results = Vec::with_capacity(items.len());
         for item in items {
             let result = map(item);
@@ -1132,12 +1230,15 @@ where
     let mut slots: Vec<Option<Result<R, String>>> = (0..items.len()).map(|_| None).collect();
     std::thread::scope(|scope| {
         // A helper that cannot be started leaves its share to the others.
-        let helpers: Vec<_> = (1..threads)
+        let helpers: Vec<_> = (0..taken.count.get())
             .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
             .collect();
+        taken.give_back(taken.count.get() - helpers.len());
         let mut done = work();
         for helper in helpers {
-            match helper.join() {
+            let joined = helper.join();
+            taken.give_back(1);
+            match joined {
                 Ok(more) => done.extend(more),
                 Err(payload) => std::panic::resume_unwind(payload),
             }
@@ -5070,6 +5171,88 @@ mod tests {
             })
         });
         assert!(panicked.is_err());
+    }
+
+    /// Concurrent and nested calls take their helpers from one budget: the
+    /// threads mapping at any moment never outnumber the calling threads plus
+    /// the budget, every helper is given back (also after a panic), and an
+    /// exhausted budget maps on the calling thread, sequentially.
+    #[test]
+    fn ordered_maps_share_one_helper_budget() {
+        use std::sync::atomic::AtomicUsize;
+        const CAPACITY: usize = 3;
+        const CALLERS: usize = 6;
+        let budget = HelperBudget::new(CAPACITY);
+        let (active, peak) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let mappers = Mutex::new(HashSet::new());
+        let leaf = |&value: &usize| -> Result<usize, String> {
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            mappers.lock().unwrap().insert(std::thread::current().id());
+            std::thread::sleep(Duration::from_micros(20));
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(value)
+        };
+        // Each outer item maps 96 leaves itself (nested, like a tree input
+        // read by prepare); unbudgeted, 6 callers would map on up to
+        // 6 × 2 × 3 threads at once.
+        let inner: Vec<usize> = (0..96).collect();
+        let outer = |&chunk: &usize| -> Result<usize, String> {
+            let leaves = try_map_ordered_in(&budget, &inner, leaf);
+            Ok(chunk + leaves.into_iter().map(Result::unwrap).sum::<usize>())
+        };
+        let chunks: Vec<usize> = (0..64).collect();
+        let callers: HashSet<std::thread::ThreadId> = std::thread::scope(|scope| {
+            let calls: Vec<_> = (0..CALLERS)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let results = try_map_ordered_in(&budget, &chunks, outer);
+                        let expected: Vec<Result<usize, String>> =
+                            chunks.iter().map(|chunk| Ok(chunk + 4560)).collect();
+                        assert_eq!(results, expected);
+                        std::thread::current().id()
+                    })
+                })
+                .collect();
+            calls.into_iter().map(|call| call.join().unwrap()).collect()
+        });
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak <= CALLERS + CAPACITY, "{peak} threads mapped at once");
+        if available_cores() > 2 {
+            assert!(
+                mappers
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|id| !callers.contains(id)),
+                "no helper ever ran"
+            );
+        }
+        assert_eq!(budget.available.load(Ordering::SeqCst), CAPACITY);
+        // A panicking item gives its call's helpers back.
+        let large: Vec<usize> = (0..1000).collect();
+        let panicked = std::panic::catch_unwind(|| {
+            try_map_ordered_in(&budget, &large, |&item| {
+                assert_ne!(item, 700, "intentional panic");
+                Ok(item)
+            })
+        });
+        assert!(panicked.is_err());
+        assert_eq!(budget.available.load(Ordering::SeqCst), CAPACITY);
+        // Exhausted: everything on the calling thread, up to the first error.
+        let none = HelperBudget::new(0);
+        let caller = std::thread::current().id();
+        let results = try_map_ordered_in(&none, &large, |&item| {
+            assert_eq!(std::thread::current().id(), caller);
+            if item == 399 {
+                Err(format!("item {item}"))
+            } else {
+                Ok(item)
+            }
+        });
+        assert_eq!(results.len(), 400);
+        assert_eq!(results[399], Err("item 399".to_owned()));
+        assert_eq!(none.available.load(Ordering::SeqCst), 0);
     }
 
     #[test]
