@@ -65,9 +65,10 @@ every upgrade.
 - Or a file the executor wrote itself and made read-only (TRUSTED: a published output), and other paths
   of an inode the process hashed (a published output and its blob).
 - Only paths that recur across commands: files outside the cache root, and below it published action
-  outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and repository tree files
-  (`repositories/[<kind>/]trees/<identity>/...`); never execution roots (`work/`), stages or temporary
-  names (`.stage-*`, `.tmp-*`, `.trash-*`).
+  outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and the files of the repository tree stores
+  (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`); never execution roots
+  (`work/`), the working areas of repository rules and module extensions (`modextwd/`,
+  `direct/stages/`), stages or temporary names (`.stage-*`, `.tmp-*`, `.trash-*`).
 
 ## When it is written
 

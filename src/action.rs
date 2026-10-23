@@ -49,11 +49,13 @@
 //!   `Arc<Tree>` by every consumer, like Bazel's in-memory TreeArtifactValue;
 //!   its producer seeds the entry (cache check or publication) and replaces
 //!   or drops it whenever it publishes the tree again (`read_staged`);
-//! - a file of the cache's immutable stores (content-addressed repository
-//!   trees and blobs) is read once (`file_memo`);
-//! - cache-owned directories (below the canonical cache root, outside the
-//!   execution roots under `work/`) are lstat'ed once to establish that they
-//!   are real directories (`no_linked_ancestor`).
+//! - a file of the cache's immutable stores (the content-addressed
+//!   repository tree stores, `REPOSITORY_TREE_STORES`, and blobs) is read
+//!   once (`file_memo`);
+//! - cache-owned directories in `actions/`, `cas/` and the repository tree
+//!   stores (never the execution roots under `work/`, nor the working areas
+//!   of repository rules and module extensions) are lstat'ed once to
+//!   establish that they are real directories (`no_linked_ancestor`).
 //!
 //! Workspace files and every other path outside the cache keep the full
 //! checks on every use. Many inputs (or tree files) are read and hashed on
@@ -605,12 +607,14 @@ fn checked_path(
 /// Cache-owned directories verified by lstat to be real directories, each
 /// together with every directory between it and the cache root. They stay
 /// real directories while this process runs: the cache root is canonical,
-/// and below `actions/`, `cas/` and `repositories/` bazel-rs only creates
-/// real directories (published outputs move into place by rename;
-/// repository trees are content-addressed and only ever replaced as a whole
-/// by a tree of the same content). The execution roots under `work/` run
-/// arbitrary processes and are never remembered. Other writers racing these
-/// checks are outside the module's trust model.
+/// and below `actions/`, `cas/` and the repository tree stores
+/// ([`REPOSITORY_TREE_STORES`]) bazel-rs only creates real directories
+/// (published outputs move into place by rename; repository trees are
+/// content-addressed and only ever replaced as a whole by a tree of the same
+/// content). The execution roots under `work/` and the rest of
+/// `repositories/` (where repository rules and module extensions run
+/// arbitrary code: `modextwd/`, `direct/stages/`) are never remembered.
+/// Other writers racing these checks are outside the module's trust model.
 fn verified_directories() -> &'static RwLock<HashSet<PathBuf>> {
     static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
     MEMO.get_or_init(|| RwLock::new(HashSet::new()))
@@ -655,48 +659,104 @@ fn plain_rest<'a>(root: &[u8], path: &'a [u8]) -> Option<&'a [u8]> {
     path.strip_prefix(root)?.strip_prefix(b"/")
 }
 
-/// [`owned_no_linked_ancestor`]'s qualification of `path` below a `root`
-/// that is not [`plain`], by components.
-fn owned_area_by_components(path: &Path, root: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(root) else {
-        return false;
+/// Whether `/`-separated names include `..`.
+fn has_parent_name(names: &[u8]) -> bool {
+    names.split(|byte| *byte == b'/').any(|name| name == b"..")
+}
+
+/// The names of `path` below `root`, `/`-separated, when `path` lies
+/// strictly below `root` and every component after it is a normal name.
+fn relative_names(path: &Path, root: &Path) -> Option<Vec<u8>> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut names = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return None;
+        };
+        if !names.is_empty() {
+            names.push(b'/');
+        }
+        names.extend_from_slice(name.as_bytes());
+    }
+    (!names.is_empty()).then_some(names)
+}
+
+/// The content-addressed repository tree stores below the cache root:
+/// `<store>/<identity>/...` holds a tree that is verified when it is
+/// materialized and only ever replaced as a whole, by a tree of the same
+/// content. They are the registry module trees (crate::materializer), the
+/// results of repository rules (crate::repository_store), Git sources
+/// (crate::git_source) and the embedded `bazel_tools` (crate::builtin_tools).
+/// Nothing else below `repositories/` is such a store: module extensions and
+/// repository rules run arbitrary code in `modextwd/` and `direct/stages/`,
+/// and downloads, locks, manifests and specification pointers are no trees.
+const REPOSITORY_TREE_STORES: [&[u8]; 4] = [
+    b"repositories/trees",
+    b"repositories/direct/trees",
+    b"repositories/git/trees",
+    b"repositories/builtins/trees",
+];
+
+/// For the `/`-separated names `rest` of a path below the cache root: the
+/// names below `<identity>` when the path lies in a published tree of a
+/// repository tree store ([`REPOSITORY_TREE_STORES`]; empty for the tree's
+/// root itself; never for the stores' temporary entries `.stage-*`,
+/// `.trash-*`), else `None`.
+pub(crate) fn repository_tree_rest(rest: &[u8]) -> Option<&[u8]> {
+    let below = REPOSITORY_TREE_STORES
+        .iter()
+        .find_map(|store| rest.strip_prefix(*store)?.strip_prefix(b"/"))?;
+    let (identity, below) = match below.iter().position(|byte| *byte == b'/') {
+        Some(at) => (&below[..at], &below[at + 1..]),
+        None => (below, &below[below.len()..]),
     };
-    let mut components = relative.components();
+    (!identity.is_empty() && !identity.starts_with(b".")).then_some(below)
+}
+
+/// Whether the names `rest` (below the cache root, no `..`) lie where the
+/// directory memo may remember directories: `actions/`, `cas/` and the
+/// published repository trees.
+fn owned_area_rest(rest: &[u8]) -> bool {
     matches!(
-        components.next(),
-        Some(Component::Normal(first))
-            if matches!(first.as_bytes(), b"actions" | b"cas" | b"repositories")
-    ) && components.all(|component| matches!(component, Component::Normal(_)))
+        rest.split(|byte| *byte == b'/').next(),
+        Some(b"actions" | b"cas")
+    ) || repository_tree_rest(rest).is_some()
+}
+
+/// [`owned_no_linked_ancestor`]'s qualification of `path` below the
+/// canonical cache root `root`: in `actions/`, `cas/` or a published
+/// repository tree ([`owned_area_rest`]), spelled exactly as its normal
+/// components (no `.`, `..`, repeated or trailing separator).
+fn owned_area(path: &Path, root: &Path) -> bool {
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    if !plain(root_bytes) {
+        return owned_area_by_components(path, root);
+    }
+    // Spelled as its components: plain as well.
+    plain(bytes)
+        && plain_rest(root_bytes, bytes)
+            .is_some_and(|rest| !has_parent_name(rest) && owned_area_rest(rest))
+}
+
+/// [`owned_area`] below a `root` that is not [`plain`], by components.
+fn owned_area_by_components(path: &Path, root: &Path) -> bool {
+    relative_names(path, root).is_some_and(|names| owned_area_rest(&names))
         && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
 /// The memoized part of [`no_linked_ancestor`] for `path` below the
-/// canonical cache root `root`, in `actions/`, `cas/` or `repositories/`,
-/// spelled exactly as its normal components (no `.`, `..`, repeated or
-/// trailing separator). The root and its ancestors are real directories:
-/// the caller canonicalized the root for this action. Directories below it
-/// are lstat'ed once per process; the leaf is always inspected (or `leaf`,
-/// the caller's lstat of it, is used). `None` when the path does not qualify
-/// or anything fails, so that the full walk produces the result (and the
-/// exact error) it always did.
+/// canonical cache root `root` that qualifies ([`owned_area`]). The root and
+/// its ancestors are real directories: the caller canonicalized the root
+/// for this action. Directories below it are lstat'ed once per process; the
+/// leaf is always inspected (or `leaf`, the caller's lstat of it, is used).
+/// `None` when the path does not qualify or anything fails, so that the full
+/// walk produces the result (and the exact error) it always did.
 fn owned_no_linked_ancestor(
     path: &Path,
     root: &Path,
     leaf: Option<fs::Metadata>,
 ) -> Option<fs::Metadata> {
-    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
-    let qualifies = if plain(root_bytes) {
-        // Spelled as its components: plain as well.
-        plain(bytes)
-            && plain_rest(root_bytes, bytes).is_some_and(|rest| {
-                let mut names = rest.split(|byte| *byte == b'/');
-                matches!(names.next(), Some(b"actions" | b"cas" | b"repositories"))
-                    && names.all(|name| name != b"..")
-            })
-    } else {
-        owned_area_by_components(path, root)
-    };
-    if !qualifies {
+    if !owned_area(path, root) {
         return None;
     }
     let parent = path.parent()?;
@@ -1048,14 +1108,15 @@ fn remember_file(input: &Input) {
     );
 }
 
-/// Whether `path` is a file of a repository tree below the canonical cache
-/// root (`repositories/[<kind>/]trees/<identity>/...`: content-addressed,
-/// verified when materialized before execution, and only ever replaced as a
-/// whole by a tree of the same content) or a blob of the content-addressed
-/// store (`cas/<digest>-<mode>`, read-only and immutable), spelled exactly
-/// as its normal components. Published outputs are not: their producer can
-/// publish them again in this process. Neither are the stores' temporary
-/// entries (`.stage-*`, `.trash-*`, `.tmp-*`).
+/// Whether `path` is a file of a published repository tree below the
+/// canonical cache root (`<store>/<identity>/...` of a repository tree store,
+/// [`REPOSITORY_TREE_STORES`]: content-addressed, verified when materialized
+/// before execution, and only ever replaced as a whole by a tree of the same
+/// content) or a blob of the content-addressed store (`cas/<digest>-<mode>`,
+/// read-only and immutable), spelled exactly as its normal components.
+/// Published outputs are not: their producer can publish them again in this
+/// process. Neither are the stores' temporary entries (`.stage-*`,
+/// `.trash-*`, `.tmp-*`) nor the rest of `repositories/`.
 fn store_file(root: Option<&Path>, path: &Path) -> bool {
     let Some(root) = root else {
         return false;
@@ -1066,37 +1127,23 @@ fn store_file(root: Option<&Path>, path: &Path) -> bool {
     }
     // Spelled as its components: plain as well.
     plain(bytes)
-        && plain_rest(root_bytes, bytes).is_some_and(|rest| {
-            let names: Vec<&[u8]> = rest.split(|byte| *byte == b'/').collect();
-            !names.contains(&b"..".as_slice()) && in_store(&names)
-        })
+        && plain_rest(root_bytes, bytes)
+            .is_some_and(|rest| !has_parent_name(rest) && in_store(rest))
 }
 
-/// Whether the names below the cache root (normal components) are a
+/// Whether the names below the cache root (`/`-separated, normal) are a
 /// store file's ([`store_file`]).
-fn in_store(names: &[&[u8]]) -> bool {
-    let published = |name: &[u8]| !name.starts_with(b".");
-    match names {
-        [b"cas", blob] => published(blob),
-        [b"repositories", b"trees", identity, _, ..]
-        | [b"repositories", _, b"trees", identity, _, ..] => published(identity),
-        _ => false,
+fn in_store(rest: &[u8]) -> bool {
+    match rest.strip_prefix(b"cas/") {
+        Some(blob) => !blob.contains(&b'/') && !blob.starts_with(b"."),
+        None => repository_tree_rest(rest).is_some_and(|below| !below.is_empty()),
     }
 }
 
 /// [`store_file`] below a `root` that is not [`plain`], by components.
 fn store_file_by_components(root: &Path, path: &Path) -> bool {
-    let Ok(relative) = path.strip_prefix(root) else {
-        return false;
-    };
-    let mut names = Vec::new();
-    for component in relative.components() {
-        let Component::Normal(name) = component else {
-            return false;
-        };
-        names.push(name.as_bytes());
-    }
-    in_store(&names) && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
+    relative_names(path, root).is_some_and(|names| in_store(&names))
+        && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
 /// Digest and mode of a regular file; `root` (the canonical cache root)
@@ -5404,9 +5451,13 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"package x\n").unwrap();
         };
+        // Exactly the repository tree stores (registry modules, repository
+        // rules, Git sources, the embedded bazel_tools) and blobs.
         for path in [
             root.join("repositories/trees/abc/pkg/file.go"),
             root.join("repositories/direct/trees/def/file.go"),
+            root.join("repositories/git/trees/ghi/file.go"),
+            root.join("repositories/builtins/trees/jkl/tools/file.sh"),
             root.join("cas/0123-444"),
         ] {
             create(&path);
@@ -5417,12 +5468,20 @@ mod tests {
             assert!(again == first);
             assert_eq!((&again.path, again.size), (&path, first.size));
         }
-        // Read every time: published outputs, temporary store entries,
-        // other stores, other spellings and files outside the cache.
+        // Read every time: published outputs, temporary store entries, the
+        // working areas of repository rules and module extensions (even a
+        // `trees` directory there, e.g. an extension named "trees"), other
+        // parts of the repository cache, other spellings and files outside
+        // the cache.
         for path in [
             root.join("actions/key/outputs/file"),
             root.join("repositories/trees/.stage-x/file"),
+            root.join("repositories/direct/trees/.trash-x/tree/file"),
             root.join("repositories/modextwd/x/file"),
+            root.join("repositories/modextwd/trees/x/file"),
+            root.join("repositories/direct/stages/slug/file"),
+            root.join("repositories/downloads/trees/x/file"),
+            root.join("repositories/direct/manifests/x/file"),
             root.join("repositories/trees/abc/pkg/./file.go"),
             root.join("cas/.tmp-0123-1-2"),
             fixture.0.join("source.go"),
@@ -5466,10 +5525,21 @@ mod tests {
             "/repositories/trees/abc//file.go",
             "/repositories/trees/abc/../x/file.go",
             "/repositories/trees/abc",
+            "/repositories/trees",
             "/repositories/trees/.stage-x/file",
             "/repositories/direct/trees/def/file.go",
             "/repositories/direct/trees/def",
+            "/repositories/direct/trees/.trash-x/tree/file",
+            "/repositories/direct/stages/slug/file",
+            "/repositories/direct/stages/trees/x/file",
+            "/repositories/git/trees/ghi/sub/file",
+            "/repositories/builtins/trees/jkl/tools/file.sh",
+            "/repositories/builtins/treesx/jkl/file",
             "/repositories/modextwd/x/file",
+            "/repositories/modextwd/trees/x/file",
+            "/repositories/downloads/trees/x/file",
+            "/repositories/treesx/abc/file",
+            "/repositories",
             "/work/k/execroot/file",
             "/..",
             "/../cache/cas/x",
@@ -5513,16 +5583,8 @@ mod tests {
                         path.starts_with(root.join("actions")),
                         "in_actions {spelled}"
                     );
-                    let qualifies = plain(root.as_os_str().as_bytes())
-                        && plain(path.as_os_str().as_bytes())
-                        && plain_rest(root.as_os_str().as_bytes(), path.as_os_str().as_bytes())
-                            .is_some_and(|rest| {
-                                let mut names = rest.split(|byte| *byte == b'/');
-                                matches!(names.next(), Some(b"actions" | b"cas" | b"repositories"))
-                                    && names.all(|name| name != b"..")
-                            });
                     assert_eq!(
-                        qualifies,
+                        owned_area(path, root),
                         owned_area_by_components(path, root),
                         "owned area {spelled}"
                     );
@@ -5605,6 +5667,107 @@ mod tests {
                 .contains("symlink is not allowed")
         );
         assert!(!directory_verified(&tree.join("link")));
+        // The working areas of repository rules and module extensions are
+        // never remembered (not even a `trees` directory there, e.g. of an
+        // extension named "trees"): a directory there that becomes a link
+        // between two checks is rejected by the second.
+        for area in [
+            "repositories/modextwd/trees/x",
+            "repositories/modextwd/ext",
+            "repositories/direct/stages/slug",
+        ] {
+            let directory = root.join(area);
+            fs::create_dir_all(directory.join("d")).unwrap();
+            fs::write(directory.join("d/file"), b"x").unwrap();
+            let before = full_ancestor_walks();
+            assert!(
+                no_linked_ancestor(&directory.join("d/file"), Some(&root))
+                    .unwrap()
+                    .is_file()
+            );
+            assert_eq!(full_ancestor_walks(), before + 1, "{area}");
+            assert!(!directory_verified(&directory.join("d")), "{area}");
+            fs::rename(directory.join("d"), directory.join("moved")).unwrap();
+            symlink(directory.join("moved"), directory.join("d")).unwrap();
+            let error = no_linked_ancestor(&directory.join("d/file"), Some(&root)).unwrap_err();
+            assert!(error.contains("symlink is not allowed"), "{area}: {error}");
+        }
+        // Every repository tree store is remembered like the registry's: an
+        // edit there is not seen again by this process (its trees are
+        // replaced only as a whole, by bazel-rs), only by the next one,
+        // whose memo starts empty.
+        for store in [
+            "repositories/direct/trees/y",
+            "repositories/git/trees/y",
+            "repositories/builtins/trees/y",
+        ] {
+            let directory = root.join(store);
+            fs::create_dir_all(directory.join("d")).unwrap();
+            fs::write(directory.join("d/file"), b"x").unwrap();
+            let file = directory.join("d/file");
+            let before = full_ancestor_walks();
+            assert!(no_linked_ancestor(&file, Some(&root)).unwrap().is_file());
+            assert_eq!(full_ancestor_walks(), before, "{store}");
+            assert!(directory_verified(&directory.join("d")), "{store}");
+            fs::rename(directory.join("d"), directory.join("moved")).unwrap();
+            symlink(directory.join("moved"), directory.join("d")).unwrap();
+            assert!(no_linked_ancestor(&file, Some(&root)).is_ok(), "{store}");
+            verified_directories().write().unwrap().clear();
+            assert!(
+                no_linked_ancestor(&file, Some(&root))
+                    .unwrap_err()
+                    .contains("symlink is not allowed"),
+                "{store}"
+            );
+        }
+    }
+
+    /// The trusted areas of the cache, exactly: published outputs and blobs
+    /// (directories), blobs and the repository tree stores (files).
+    #[test]
+    fn trusted_cache_areas_are_exactly_the_stores() {
+        let root = Path::new("/cache");
+        for (relative, owned, stored) in [
+            ("actions/k/outputs/file", true, false),
+            ("cas/0123-444", true, true),
+            ("cas/.tmp-0123-1-2", true, false),
+            ("repositories/trees/abc/file", true, true),
+            ("repositories/trees/abc", true, false),
+            ("repositories/direct/trees/def/sub/file", true, true),
+            ("repositories/git/trees/ghi/file", true, true),
+            ("repositories/builtins/trees/jkl/tools/file.sh", true, true),
+            ("repositories/trees/.stage-x/file", false, false),
+            ("repositories/git/trees/.stage-x/file", false, false),
+            ("repositories/direct/trees/.trash-x/tree/file", false, false),
+            ("repositories/direct/stages/slug/file", false, false),
+            ("repositories/direct/stages/trees/x/file", false, false),
+            ("repositories/modextwd/trees/x/file", false, false),
+            ("repositories/modextwd/ext/file", false, false),
+            ("repositories/downloads/trees/x/file", false, false),
+            ("repositories/download_ids/sha256/x", false, false),
+            ("repositories/direct/manifests/x.json", false, false),
+            ("repositories/locks/x", false, false),
+            // A tree's manifest, next to it: its directories are the store's.
+            ("repositories/trees/abc.json", true, false),
+            ("repositories/trees", false, false),
+            ("repositories", false, false),
+            ("work/k/execroot/file", false, false),
+            ("digests/v1.dmemo", false, false),
+        ] {
+            let path = root.join(relative);
+            assert_eq!(owned_area(&path, root), owned, "owned area {relative}");
+            assert_eq!(
+                store_file(Some(root), &path),
+                stored,
+                "store file {relative}"
+            );
+            let tree = repository_tree_rest(relative.as_bytes());
+            assert_eq!(
+                tree.is_some(),
+                owned && relative.starts_with("repositories/"),
+                "{relative}"
+            );
+        }
     }
 
     #[test]

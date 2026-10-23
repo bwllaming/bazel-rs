@@ -44,8 +44,10 @@
 //! file the executor wrote itself and made read-only (trusted). Only paths
 //! that recur across processes are recorded: files outside the cache, and
 //! below it published action outputs (`actions/...`), store blobs
-//! (`cas/<blob>`) and repository trees (`repositories/[<kind>/]trees/<id>/...`);
-//! never execution roots (`work/`), stages or temporary names.
+//! (`cas/<blob>`) and the files of the repository tree stores
+//! (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<id>/...`);
+//! never execution roots (`work/`), the working areas of repository rules
+//! and extensions (`modextwd/`, `direct/stages/`), stages or temporary names.
 //!
 //! The table is saved only when this process hashed files whose digests it
 //! did not hold yet: under the fs2 lock `v1.lock` the current file is read
@@ -485,8 +487,9 @@ impl Table {
     }
 
     /// Whether `path` recurs across processes: outside the cache root, or
-    /// below it a published action output, a store blob or a repository
-    /// tree file, spelled as normal components.
+    /// below it a published action output, a store blob or a file of a
+    /// repository tree store (crate::action::repository_tree_rest), spelled
+    /// as normal components.
     fn recurring(&self, path: &Path) -> bool {
         let root = match self.root.get() {
             Some(root) => root,
@@ -514,9 +517,10 @@ impl Table {
         match names.as_slice() {
             [b"actions", key, _, ..] => published(key),
             [b"cas", blob] => published(blob),
-            [b"repositories", b"trees", identity, _, ..]
-            | [b"repositories", _, b"trees", identity, _, ..] => published(identity),
-            _ => false,
+            // Files of the repository tree stores only, never the working
+            // areas of repository rules and extensions next to them.
+            _ => crate::action::repository_tree_rest(&names.join(&b'/'))
+                .is_some_and(|below| !below.is_empty()),
         }
     }
 
@@ -1234,13 +1238,17 @@ mod tests {
             "cas/0123-444",
             "repositories/trees/abc/BUILD.bazel",
             "repositories/direct/trees/abc/sub/file",
+            "repositories/git/trees/abc/file",
             "repositories/builtins/trees/id/tools/x.sh",
         ];
         let ignored = [
             "work/k1-1-0/execroot/out",
             "cas/.tmp-0123-1-2",
             "repositories/trees/.stage-x/file",
+            "repositories/direct/trees/.trash-x/tree/file",
             "repositories/direct/stages/slug/file",
+            "repositories/modextwd/trees/x/file",
+            "repositories/downloads/trees/x/file",
             "repositories/trees/abc.json",
             "actions/k1",
             "locks/k1.lock",
