@@ -42,6 +42,16 @@ wrong digest and never a failure. The header carries no binary identity on purpo
 of file bytes by stat key) does not depend on the binary, and an identity would force a full re-hash after
 every upgrade.
 
+The format version (also in the file names, `v<version>.dmemo`, so that binaries of two versions keep
+their own tables) must be bumped with any narrowing of the trusted areas or of what a record may vouch
+for (a stronger key, a stricter rule for what is recorded or trusted): a record does not say which rule
+admitted it, so the records an older binary wrote under the broader rule would otherwise stay trusted.
+`Table::lookup` also re-checks the one rule a path shows: a birth-time (OWNED) key counts only for a blob
+or a published output. That voids the records written before L2-W1 (995d70b) narrowed the recorded areas
+from any `repositories/<kind>/trees/<identity>/` to the four tree stores, and before the tree stores' files
+were keyed by change time (both while the format was unreleased; unit test
+`birth_time_keys_count_only_for_blobs_and_published_outputs`).
+
 ## Keys
 
 - Files outside the cache and the files of the repository tree stores

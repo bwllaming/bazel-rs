@@ -89,6 +89,17 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAGIC: [u8; 8] = *b"BZRSDMEM";
+/// The format version, also in the file names (`v<VERSION>.dmemo`). Any
+/// narrowing of the trusted areas or of what a record may vouch for (a
+/// stronger key, a stricter rule for what is recorded or trusted) must bump
+/// it: a record does not say which rule admitted it, so the records an
+/// older binary wrote under the broader rule would otherwise stay trusted.
+/// [`Table::lookup`] also re-checks the one rule a path shows — birth-time
+/// (OWNED) keys count only for [`Area::Owned`] paths — which voids the
+/// records written before L2-W1 (995d70b) narrowed the recorded areas from
+/// any `repositories/<kind>/trees/<id>/` to the four tree stores, and before
+/// the tree stores' files were keyed by change time (both while the format
+/// was unreleased).
 const VERSION: u32 = 1;
 const HEADER_BYTES: usize = 32;
 const RECORD_BYTES: usize = 88;
@@ -521,11 +532,13 @@ impl Table {
     }
 
     /// The SHA-256 recorded for `path` in exactly the state `key`. A
-    /// repository tree file is never answered by a birth-time key
-    /// ([`Area::Tree`]; records of one written before the tree stores were
-    /// keyed by change time are ignored).
+    /// birth-time key (`owned`, no change time) is answered only for an
+    /// [`Area::Owned`] path: records of other paths by such keys — written
+    /// under earlier, broader rules (any `repositories/<kind>/trees/<id>/`
+    /// before L2-W1; repository tree files before they were keyed by change
+    /// time) — must not stay trusted (see [`VERSION`]).
     pub fn lookup(&self, path: &Path, key: &Key) -> Option<[u8; 32]> {
-        if key.owned && self.area(path) == Area::Tree {
+        if key.owned && self.area(path) != Area::Owned {
             STATS.misses.fetch_add(1, Ordering::Relaxed);
             return None;
         }
@@ -593,14 +606,16 @@ impl Table {
     /// that the executor wrote it and made it read-only, or that it is
     /// another path of an inode recorded so; trusted records never cause a
     /// save by themselves. Paths that do not recur ([`Area::Transient`]), a
-    /// repository tree file by a birth-time key or as trusted
-    /// ([`Area::Tree`]), records the loaded file already holds and anything
-    /// beyond the record limit are ignored.
+    /// birth-time key of any path but an [`Area::Owned`] one, a trusted
+    /// repository tree file ([`Area::Tree`]), records the loaded file
+    /// already holds and anything beyond the record limit are ignored.
     pub fn remember(&self, path: &Path, key: Key, sha256: [u8; 32], trusted: bool) {
-        match self.area(path) {
-            Area::Transient => return,
-            Area::Tree if key.owned || trusted => return,
-            Area::Outside | Area::Owned | Area::Tree => {}
+        let area = self.area(path);
+        if area == Area::Transient
+            || (key.owned && area != Area::Owned)
+            || (trusted && area == Area::Tree)
+        {
+            return;
         }
         let hash = path_hash(path);
         if self.body().find(hash, &key) == Some(sha256) {
@@ -1250,13 +1265,20 @@ mod tests {
         assert_eq!(&table[32..], &record);
         assert_eq!(validate(&table), Some(1));
         assert_eq!(validate(&encode_table(&[])), Some(0));
+        // A version bump renames the files (binaries of two versions keep
+        // their own tables instead of replacing each other's).
+        assert_eq!(TABLE_NAME, format!("v{VERSION}.dmemo"));
+        assert_eq!(LOCK_NAME, format!("v{VERSION}.lock"));
+        assert_eq!(TEMPORARY_PREFIX, format!(".v{VERSION}.dmemo."));
     }
 
     #[test]
     fn saved_records_are_found_by_path_and_exact_key_only() {
         let cache = temp();
         let outside = temp();
-        let (a, b) = (outside.path().join("a"), outside.path().join("b"));
+        // An external file, and a blob by its birth time.
+        let a = outside.path().join("a");
+        let b = fs::canonicalize(cache.path()).unwrap().join("cas/0123-444");
         let writer = Table::new(cache.path());
         writer.remember(&a, key(2), sha(1), false);
         writer.remember(&b, key(3), sha(2), true);
@@ -1431,6 +1453,51 @@ mod tests {
         assert_eq!(reader.lookup(&tree_file, &owned), None);
         assert_eq!(reader.lookup(&tree_file, &external), Some(sha(6)));
         assert_eq!(reader.lookup(&blob, &owned), Some(sha(7)));
+    }
+
+    /// Records written under earlier, broader rules — 46c2d6b recorded the
+    /// executor's birth-time keys for any `repositories/<kind>/trees/<id>/`
+    /// path, 46c2d6b..8a532e7 for the tree stores' files — never answer: a
+    /// birth-time key counts only for blobs and published outputs.
+    #[test]
+    fn birth_time_keys_count_only_for_blobs_and_published_outputs() {
+        let cache = temp();
+        let root = fs::canonicalize(cache.path()).unwrap();
+        let owned = key(1);
+        let valid = [
+            root.join("cas/0123-444"),
+            root.join("actions/k1/outputs/out"),
+        ];
+        let stale = [
+            root.join("repositories/modextwd/trees/x/file"),
+            root.join("repositories/downloads/trees/x/file"),
+            root.join("repositories/direct/stages/slug/file"),
+            root.join("repositories/trees/abc/BUILD.bazel"),
+            root.join("repositories/git/trees/abc/file"),
+            root.join("work/k1-1-0/execroot/out"),
+            outside_path().to_path_buf(),
+        ];
+        let paths: Vec<&PathBuf> = valid.iter().chain(&stale).collect();
+        let records: Vec<(&Path, Key, [u8; 32], u32)> = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.as_path(), owned, sha(index as u8), TRUSTED))
+            .collect();
+        write_records(cache.path(), &records);
+        let reader = Table::new(cache.path());
+        assert_eq!(reader.loaded().1, valid.len() + stale.len());
+        for (index, path) in valid.iter().enumerate() {
+            assert_eq!(reader.lookup(path, &owned), Some(sha(index as u8)));
+        }
+        for path in &stale {
+            assert_eq!(reader.lookup(path, &owned), None, "{}", path.display());
+        }
+        // Nor are such records made any more.
+        for path in &stale {
+            reader.remember(path, key(3), sha(9), false);
+            reader.remember(path, key(3), sha(9), true);
+        }
+        assert_eq!(reader.save().unwrap(), Saved::Nothing);
     }
 
     #[test]
@@ -1669,7 +1736,10 @@ mod tests {
         assert!(!cache.path().join(DIRECTORY).exists());
         // Trusted records alone (an output published again by every build)
         // never cause a write...
-        first.remember(&outside.path().join("published"), key(1), sha(8), true);
+        let published = fs::canonicalize(cache.path())
+            .unwrap()
+            .join("actions/k1/outputs/published");
+        first.remember(&published, key(1), sha(8), true);
         assert_eq!(first.save().unwrap(), Saved::Nothing);
         assert!(!cache.path().join(DIRECTORY).exists());
         // ...they ride along with a hashed one.
@@ -1815,19 +1885,25 @@ mod tests {
         assert_eq!(merged.lookup(&path("changes"), &changed), Some(sha(5)));
         assert_eq!(merged.lookup(&path("changes"), &older), None);
         assert_eq!(merged.lookup(&path("changes"), &key(2)), None);
-        // An owned and an external record of one path are separate slots.
+        // An owned and an external record of one path (a published output,
+        // the only kind of path both can occur for) are separate slots.
+        let output = fs::canonicalize(cache.path())
+            .unwrap()
+            .join("actions/k1/outputs/out");
         let owned = Key {
             owned: true,
             ..key(0)
         };
-        merged.remember(&path("shared"), owned, sha(7), true);
+        merged.remember(&output, key(0), sha(6), false);
+        merged.remember(&output, owned, sha(7), true);
         merged.remember(&path("new"), key(8), sha(8), false);
         merged.save().unwrap();
         let both = Table::new(cache.path());
+        assert_eq!(both.lookup(&output, &key(0)), Some(sha(6)));
+        assert_eq!(both.lookup(&output, &owned), Some(sha(7)));
         assert_eq!(both.lookup(&path("shared"), &key(0)), Some(sha(1)));
-        assert_eq!(both.lookup(&path("shared"), &owned), Some(sha(7)));
         let saved = records(cache.path());
-        assert_eq!(saved.len(), 6);
+        assert_eq!(saved.len(), 7);
         assert!(
             saved
                 .windows(2)
