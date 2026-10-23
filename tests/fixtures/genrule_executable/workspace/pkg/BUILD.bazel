@@ -113,3 +113,13 @@ single_file_tool(
     name = "single_file_plain_output",
     tool = ":plain.sh",
 )
+
+# `run` of an executable genrule: no runfiles support, so the program runs
+# in the client's working directory (RunCommand.constructCommandLine).
+genrule(
+    name = "env_probe",
+    srcs = ["env_probe.sh"],
+    outs = ["env_probe.out.sh"],
+    cmd = "cp $< $@",
+    executable = True,
+)

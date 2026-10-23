@@ -200,7 +200,11 @@ match the target platform (docs/PLATFORMS.md).
   without runfiles support — `dep[DefaultInfo].files_to_run.executable`,
   `ctx.executable` of an `attr.label(executable = True)`, genrule `tools`,
   `$(location)`/`$(execpath)`, Starlark action tools — and `bazel run` runs
-  it without a runfiles tree (Rule.isExecutable, RunCommand.java:1191-1207).
+  it without a runfiles tree (Rule.isExecutable, RunCommand.java:1191-1207)
+  in the client's working directory (RunCommand.constructCommandLine
+  :876-884; the workspace root or a subdirectory) with BUILD_WORKSPACE_DIRECTORY,
+  BUILD_WORKING_DIRECTORY, BUILD_EXECROOT and BUILD_ID and no RUNFILES_*
+  variables.
   Several outputs are Bazel's attribute error `in executable attribute of
   genrule rule L: if genrules produce executables, they are allowed only one
   output. ...` (with the missing-`cmd` error when `cmd` is missing too).
@@ -208,7 +212,7 @@ match the target platform (docs/PLATFORMS.md).
   `allow_single_file` executable attribute the genrule, its output file and
   a non-executable genrule's output file are all their single file
   (FileConfiguredTarget.createFilesToRunProvider). Paired capture
-  `tests/fixtures/genrule_executable` (19 genuine 9.3.0 cases: 18 MATCH, one
+  `tests/fixtures/genrule_executable` (21 genuine 9.3.0 cases: 20 MATCH, one
   declared pre-existing divergence — a non-executable prerequisite of a
   Starlark `executable` attribute is reported as `analysis of L: in tool
   attribute of ...` without the rule location and without Bazel's trailing

@@ -11,29 +11,31 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "3ffd08b0816a7ad40c7a3893e8cb4d62bebe4942e619835e350cad7d74768bbb",
+  "sha256": "5f477410431c9d9263979e161df2ec09818f6e800754fff27423c0145e5e28b5",
   "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets and run arguments>"
  },
  "script": {
   "path": "/tmp/opencode/perf-research/genrule-executable-capture.py, genrule-executable-receipt.py (not committed)",
   "sha256": {
-   "genrule-executable-capture.py": "ceb4637a49d990533418628c2b4630a18d879b85799438864aa30a224cb988fc",
-   "genrule-executable-receipt.py": "6b6e098e21a711336f003b5b02c3fc08f2c31389fff4b885b1870685dc815b5e"
+   "genrule-executable-capture.py": "1737586db65c7f6ff06f9dc6488b9f84a6176fbaa3817d262db1d9e576021c0e",
+   "genrule-executable-receipt.py": "ead4aad82358f3572da07aafc24c9f1a96e40c566b1372c71f6eb1ac27589403"
   }
  },
  "fixture_files_sha256": {
   "MODULE.bazel": "aa561b852173fe3f3da21a7fd43623c631b7122cbcfa06c469e172409110adf4",
-  "pkg/BUILD.bazel": "d4210f5581345c70ecdcf280fc1742b85469e4210e788949f4471e8c884f0bcd",
+  "pkg/BUILD.bazel": "69db9e6ebe6ca952e0e9d6f0e3c216e4eb8a2fdb7e1dc870b14fa21c48777cbb",
   "pkg/defs.bzl": "9dca9d5300d5b00b1396c4b87b19f345ace9a70a3da04b3215747f728b6bd137",
+  "pkg/env_probe.sh": "7d710c432d2346524fa4829bf1c710c0bb8978ca17cf916736bb8027acccd2e4",
   "pkg/tool.sh": "9b29e2a32fe285184d481b5cdcaf3a566b8a662fce3c1ddf156f0e64592fd191"
  },
  "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
- "comparison (tests/genrule_executable.rs, live)": "MATCH: success equal; WARNING lines equal in order; Bazel's first ERROR message ends a native stderr line; built top-level outputs (path below bazel-out -> [mode, contents]) equal; `run` stdout (the program's output) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "comparison (tests/genrule_executable.rs, live)": "MATCH: success equal; WARNING lines equal in order; Bazel's first ERROR message ends a native stderr line; built top-level outputs (path below bazel-out -> [mode, contents]) equal; `run` stdout (the program's output, the workspace path as <WS>) equal, run from the case's `cwd` below the workspace when given. DECLARED_DIVERGENCE: native fails with the recorded message.",
  "genuine_key_findings": [
   "An executable genrule's single output is files_to_run.executable (also through ctx.executable and run_shell tools, in the exec configuration as a genrule tool); a non-executable genrule has none (`None`).",
   "`bazel run` of an executable genrule runs its output without a runfiles tree (`INFO: Running command line: bazel-bin/pkg/exe.sh <args omitted>`); a non-executable genrule is `Cannot run target //pkg:plain: Not executable` (exit 2).",
   "Several outputs: `in executable attribute of genrule rule //pkg:two: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs`, followed by the missing-cmd attribute error when `cmd` is missing too.",
   "Outputs are 0555 on both sides (unchanged by executable = True).",
+  "`bazel run` of an executable genrule (no runfiles support) runs the program in the client's working directory (RunCommand.constructCommandLine, :876-884: the runfiles directory only with runfiles support): pwd is the workspace root, or <WS>/pkg when run from pkg/ (case cwd); BUILD_WORKSPACE_DIRECTORY is the workspace, BUILD_WORKING_DIRECTORY the client's directory, BUILD_EXECROOT and BUILD_ID are set (makeMutableRunEnvironment, :853-860), no RUNFILES_DIR/RUNFILES_MANIFEST_FILE/TEST_SRCDIR. (The capture does not set RUNFILES_* in the client: in --batch, RunCommand.exec :297-303 puts the whole client environment back over the run environment, so ENV_VARIABLES_TO_CLEAR_UNCONDITIONALLY does not apply there; the native profile clears them like a server-mode run.)",
   "In an attr.label(allow_single_file = True, executable = True, cfg = 'exec') attribute (build_stack_rules_proto's protoc toolchain rule, `tool = \":protoc.exe\"`), ctx.executable.tool and ctx.file.tool are the same file for an executable genrule's output file, for the genrule itself, and for a non-executable genrule's output file (every file target's FilesToRunProvider is its artifact, FileConfiguredTarget.createFilesToRunProvider)."
  ],
  "known_divergences": [
@@ -43,7 +45,7 @@
   "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case."
  ],
  "counts": {
-  "MATCH": 18,
+  "MATCH": 20,
   "DECLARED_DIVERGENCE": 1
  },
  "scratch_removed": true,
@@ -55,7 +57,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 10.374,
+    "seconds": 9.209,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:exe (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exe up-to-date:\n  bazel-bin/pkg/exe.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -67,7 +69,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.4,
+    "seconds": 0.418,
     "stdout": "//pkg:exe\tbazel-out/k8-fastbuild/bin/pkg/exe.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -87,7 +89,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.561,
+    "seconds": 8.42,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:plain (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:plain up-to-date:\n  bazel-bin/pkg/plain.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -99,7 +101,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.338,
+    "seconds": 0.383,
     "stdout": "//pkg:plain\tbazel-out/k8-fastbuild/bin/pkg/plain.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -119,7 +121,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.471,
+    "seconds": 9.445,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:selected (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:selected up-to-date:\n  bazel-bin/pkg/selected.exe\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -131,7 +133,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.33,
+    "seconds": 0.338,
     "stdout": "//pkg:selected\tbazel-out/k8-fastbuild/bin/pkg/selected.exe\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -151,7 +153,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.442,
+    "seconds": 8.601,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use up-to-date:\n  bazel-bin/pkg/use.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
     "outputs": {
@@ -163,7 +165,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 2.835,
+    "seconds": 2.867,
     "stdout": "//pkg:use\tbazel-out/k8-fastbuild/bin/pkg/use.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -183,7 +185,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.529,
+    "seconds": 8.599,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use_execpath (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use_execpath up-to-date:\n  bazel-bin/pkg/use_execpath.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
     "outputs": {
@@ -195,7 +197,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.898,
+    "seconds": 1.957,
     "stdout": "//pkg:use_execpath\tbazel-out/k8-fastbuild/bin/pkg/use_execpath.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -215,7 +217,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.405,
+    "seconds": 8.502,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (6 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -227,7 +229,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.9,
+    "seconds": 1.916,
     "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -247,14 +249,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.338,
+    "seconds": 8.599,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:62:6: in tool attribute of probe rule //pkg:probe_output_file: generated file '//pkg:selected.exe' is misplaced here (expected no files)\nERROR: <WS>/pkg/BUILD.bazel:62:6: Analysis of target '//pkg:probe_output_file' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:probe_output_file' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 1.916,
+    "seconds": 1.896,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:62:6: in tool attribute of probe rule //pkg:probe_output_file: generated file '//pkg:selected.exe' is misplaced here (expected no files)\n",
     "outputs": null
@@ -270,7 +272,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.395,
+    "seconds": 8.443,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:run_exe (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:run_exe up-to-date:\n  bazel-bin/pkg/run_exe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
     "outputs": {
@@ -282,7 +284,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.921,
+    "seconds": 1.909,
     "stdout": "//pkg:run_exe\tbazel-out/k8-fastbuild/bin/pkg/run_exe.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -302,14 +304,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.342,
+    "seconds": 8.846,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:73:6: in tool attribute of probe rule //pkg:probe_plain_tool: //pkg:plain does not refer to a valid executable target\nERROR: <WS>/pkg/BUILD.bazel:73:6: in probe rule //pkg:probe_plain_tool: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 11, column 66, in _probe_impl\n\t\tlines.append(\"ctx.executable.tool=\" + ctx.executable.tool.short_path)\nError: 'NoneType' value has no field or method 'short_path'\nERROR: <WS>/pkg/BUILD.bazel:73:6: Analysis of target '//pkg:probe_plain_tool' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:probe_plain_tool' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 1.919,
+    "seconds": 1.852,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:probe_plain_tool: in tool attribute of probe rule //pkg:probe_plain_tool: //pkg:plain does not refer to a valid executable target\n",
     "outputs": null
@@ -326,14 +328,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.844,
+    "seconds": 8.667,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:79:8: in executable attribute of genrule rule //pkg:two: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs\nERROR: <WS>/pkg/BUILD.bazel:79:8: Analysis of target '//pkg:two' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:two' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.324,
+    "seconds": 0.326,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:79:8: in executable attribute of genrule rule //pkg:two: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs\n",
     "outputs": null
@@ -349,14 +351,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.4,
+    "seconds": 8.523,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:89:8: in executable attribute of genrule rule //pkg:two_without_cmd: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs\nERROR: <WS>/pkg/BUILD.bazel:89:8: in cmd attribute of genrule rule //pkg:two_without_cmd: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.\nERROR: <WS>/pkg/BUILD.bazel:89:8: Analysis of target '//pkg:two_without_cmd' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:two_without_cmd' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.352,
+    "seconds": 0.329,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:89:8: in executable attribute of genrule rule //pkg:two_without_cmd: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs\n<WS>/pkg/BUILD.bazel:89:8: in cmd attribute of genrule rule //pkg:two_without_cmd: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms.\n",
     "outputs": null
@@ -374,14 +376,14 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.657,
+    "seconds": 8.445,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 12 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
     "outputs": {}
    },
    "native": {
     "exit": 0,
-    "seconds": 1.918,
+    "seconds": 1.93,
     "stdout": "//pkg:exe\tbazel-out/k8-fastbuild/bin/pkg/exe.sh\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -401,7 +403,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.677,
+    "seconds": 8.621,
     "stdout": "tool ran: a b\n",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:exe (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exe up-to-date:\n  bazel-bin/pkg/exe.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: Running command line: bazel-bin/pkg/exe.sh <args omitted>\n",
     "outputs": {
@@ -413,7 +415,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.342,
+    "seconds": 0.336,
     "stdout": "tool ran: a b\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:exe\t<CACHE>/actions/d20460f068ba339ecb92bf6e9c31430357b6e9d18836475e6f772c80e027cda2/outputs/bazel-out/k8-fastbuild/bin/pkg/exe.sh\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/d20460f068ba339ecb92bf6e9c31430357b6e9d18836475e6f772c80e027cda2/outputs/bazel-out/k8-fastbuild/bin/pkg/exe.sh <args omitted>\n",
     "outputs": null
@@ -428,7 +430,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.562,
+    "seconds": 8.521,
     "stdout": "tool ran: \n",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:selected (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:selected up-to-date:\n  bazel-bin/pkg/selected.exe\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: Running command line: bazel-bin/pkg/selected.exe\n",
     "outputs": {
@@ -440,7 +442,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.332,
+    "seconds": 0.356,
     "stdout": "tool ran: \n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:selected\t<CACHE>/actions/901952b117eeec01c851d89d27035c61e3a8c759963e1b066048bf8aff5eac02/outputs/bazel-out/k8-fastbuild/bin/pkg/selected.exe\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/901952b117eeec01c851d89d27035c61e3a8c759963e1b066048bf8aff5eac02/outputs/bazel-out/k8-fastbuild/bin/pkg/selected.exe\n",
     "outputs": null
@@ -455,14 +457,14 @@
    ],
    "genuine": {
     "exit": 2,
-    "seconds": 8.407,
+    "seconds": 7.962,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Cannot run target //pkg:plain: Not executable\nINFO: Elapsed time: 7.486s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\nERROR: Build failed. Not running target\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: Cannot run target //pkg:plain: Not executable\nINFO: Elapsed time: 7.112s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\nERROR: Build failed. Not running target\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.323,
+    "seconds": 0.326,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: Cannot run target //pkg:plain: Not executable\n",
     "outputs": null
@@ -479,7 +481,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.566,
+    "seconds": 8.535,
     "stdout": "tool ran: x\n",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:exe.sh (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:exe.sh up-to-date:\n  bazel-bin/pkg/exe.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: Running command line: bazel-bin/pkg/exe.sh <args omitted>\n",
     "outputs": {
@@ -491,7 +493,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.353,
+    "seconds": 0.347,
     "stdout": "tool ran: x\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:exe.sh\t<CACHE>/actions/d20460f068ba339ecb92bf6e9c31430357b6e9d18836475e6f772c80e027cda2/outputs/bazel-out/k8-fastbuild/bin/pkg/exe.sh\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/d20460f068ba339ecb92bf6e9c31430357b6e9d18836475e6f772c80e027cda2/outputs/bazel-out/k8-fastbuild/bin/pkg/exe.sh <args omitted>\n",
     "outputs": null
@@ -506,7 +508,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.49,
+    "seconds": 8.436,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:single_file_output (6 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nTarget //pkg:single_file_output up-to-date:\n  bazel-bin/pkg/single_file_output.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -518,7 +520,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.892,
+    "seconds": 2.031,
     "stdout": "//pkg:single_file_output\tbazel-out/k8-fastbuild/bin/pkg/single_file_output.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -538,7 +540,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.584,
+    "seconds": 8.623,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:single_file_rule (6 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:single_file_rule up-to-date:\n  bazel-bin/pkg/single_file_rule.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -550,7 +552,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.899,
+    "seconds": 2.001,
     "stdout": "//pkg:single_file_rule\tbazel-out/k8-fastbuild/bin/pkg/single_file_rule.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -570,7 +572,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.343,
+    "seconds": 8.501,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:single_file_plain_output (6 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:single_file_plain_output up-to-date:\n  bazel-bin/pkg/single_file_plain_output.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -582,7 +584,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 1.939,
+    "seconds": 2.051,
     "stdout": "//pkg:single_file_plain_output\tbazel-out/k8-fastbuild/bin/pkg/single_file_plain_output.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -591,6 +593,57 @@
       "ctx.executable.tool=pkg/plain.sh\nctx.file.tool=pkg/plain.sh\n"
      ]
     }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "run_env_probe": {
+   "argv": [
+    "run",
+    "//pkg:env_probe",
+    "x"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.623,
+    "stdout": "pwd=<WS>\nBUILD_WORKSPACE_DIRECTORY=<WS>\nBUILD_WORKING_DIRECTORY=<WS>\nBUILD_EXECROOT=set\nBUILD_ID=set\nRUNFILES_DIR=unset\nRUNFILES_MANIFEST_FILE=unset\nTEST_SRCDIR=unset\nargs=x\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:env_probe (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:env_probe up-to-date:\n  bazel-bin/pkg/env_probe.out.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: Running command line: bazel-bin/pkg/env_probe.out.sh <args omitted>\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/env_probe.out.sh": [
+      "0o555",
+      "#!/bin/sh\necho \"pwd=$(pwd)\"\necho \"BUILD_WORKSPACE_DIRECTORY=$BUILD_WORKSPACE_DIRECTORY\"\necho \"BUILD_WORKING_DIRECTORY=$BUILD_WORKING_DIRECTORY\"\necho \"BUILD_EXECROOT=${BUILD_EXECROOT:+set}\"\necho \"BUILD_ID=${BUILD_ID:+set}\"\necho \"RUNFILES_DIR=${RUNFILES_DIR-unset}\"\necho \"RUNFILES_MANIFEST_FILE=${RUNFILES_MANIFEST_FILE-unset}\"\necho \"TEST_SRCDIR=${TEST_SRCDIR-unset}\"\necho \"args=$*\"\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.359,
+    "stdout": "pwd=<WS>\nBUILD_WORKSPACE_DIRECTORY=<WS>\nBUILD_WORKING_DIRECTORY=<WS>\nBUILD_EXECROOT=set\nBUILD_ID=set\nRUNFILES_DIR=unset\nRUNFILES_MANIFEST_FILE=unset\nTEST_SRCDIR=unset\nargs=x\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:env_probe\t<CACHE>/actions/c29f63f88b0937915dcd409801c74c6f9730099b3c7e535b2d7ccd0738d3e62f/outputs/bazel-out/k8-fastbuild/bin/pkg/env_probe.out.sh\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/c29f63f88b0937915dcd409801c74c6f9730099b3c7e535b2d7ccd0738d3e62f/outputs/bazel-out/k8-fastbuild/bin/pkg/env_probe.out.sh <args omitted>\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "run_env_probe_subdir": {
+   "argv": [
+    "run",
+    "//pkg:env_probe"
+   ],
+   "cwd": "pkg",
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.492,
+    "stdout": "pwd=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_EXECROOT=set\nBUILD_ID=set\nRUNFILES_DIR=unset\nRUNFILES_MANIFEST_FILE=unset\nTEST_SRCDIR=unset\nargs=\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:env_probe (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:env_probe up-to-date:\n  ../bazel-bin/pkg/env_probe.out.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\nINFO: Running command line: ../bazel-bin/pkg/env_probe.out.sh\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.329,
+    "stdout": "pwd=<WS>/pkg\nBUILD_WORKSPACE_DIRECTORY=<WS>\nBUILD_WORKING_DIRECTORY=<WS>/pkg\nBUILD_EXECROOT=set\nBUILD_ID=set\nRUNFILES_DIR=unset\nRUNFILES_MANIFEST_FILE=unset\nTEST_SRCDIR=unset\nargs=\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:env_probe\t<CACHE>/actions/c29f63f88b0937915dcd409801c74c6f9730099b3c7e535b2d7ccd0738d3e62f/outputs/bazel-out/k8-fastbuild/bin/pkg/env_probe.out.sh\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/c29f63f88b0937915dcd409801c74c6f9730099b3c7e535b2d7ccd0738d3e62f/outputs/bazel-out/k8-fastbuild/bin/pkg/env_probe.out.sh\n",
+    "outputs": null
    },
    "verdict": "MATCH",
    "exit_code_equal": true

@@ -58,7 +58,14 @@ const GROUPS: &[(&str, &[&str])] = &[
     ("errors", &["two", "two_without_cmd"]),
     (
         "run",
-        &["run_exe", "run_selected", "run_plain", "run_output_file"],
+        &[
+            "run_exe",
+            "run_selected",
+            "run_plain",
+            "run_output_file",
+            "run_env_probe",
+            "run_env_probe_subdir",
+        ],
     ),
     (
         "single_file",
@@ -93,36 +100,41 @@ impl Workspace {
         self.0.path()
     }
 
-    /// `ARGV[0] --experimental-builtin-modules --registry=... ARGV[1..]`.
-    fn run(&self, argv: &[String]) -> Output {
+    /// `ARGV[0] --experimental-builtin-modules --registry=... ARGV[1..]`,
+    /// from `cwd` below the workspace.
+    fn run(&self, argv: &[String], cwd: &str) -> Output {
         let registry = format!(
             "--registry=file://{}/tests/fixtures/builtin_modules/registry",
             manifest().display()
         );
+        let cache = format!(
+            "--cache-dir={}",
+            self.path().join("private-cache").display()
+        );
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
-            .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
+            .args(["--ignore_all_rc_files", &cache])
             .arg(&argv[0])
             .args(["--experimental-builtin-modules", &registry])
             .args(&argv[1..])
-            .current_dir(self.path())
+            .current_dir(self.path().join(cwd))
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {argv:?}");
         output
     }
 
-    /// Native stderr with the workspace path as `<WS>`, like the receipt.
-    fn stderr(&self, output: &Output) -> String {
-        let mut stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    /// Native output with the workspace path as `<WS>`, like the receipt.
+    fn normalize(&self, bytes: &[u8]) -> String {
+        let mut text = String::from_utf8_lossy(bytes).into_owned();
         let mut paths = vec![self.path().display().to_string()];
         if let Ok(real) = fs::canonicalize(self.path()) {
             paths.push(real.display().to_string());
         }
         for path in paths {
-            stderr = stderr.replace(&path, "<WS>");
+            text = text.replace(&path, "<WS>");
         }
-        stderr
+        text
     }
 }
 
@@ -213,8 +225,8 @@ fn check(name: &str, case: &Value) {
     let genuine = &case["genuine"];
     let genuine_stderr = genuine["stderr"].as_str().unwrap();
     let ws = Workspace::new();
-    let output = ws.run(&argv);
-    let stderr = ws.stderr(&output);
+    let output = ws.run(&argv, case["cwd"].as_str().unwrap_or(""));
+    let stderr = ws.normalize(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(!stderr.contains("panicked"), "{name}: {stderr}");
     if case["verdict"] == "DECLARED_DIVERGENCE" {
@@ -253,9 +265,14 @@ fn check(name: &str, case: &Value) {
             .collect();
         assert_eq!(outputs(&stdout), expected, "{name}: {stderr}");
     }
-    // `run`: the program's own output.
+    // `run`: the program's own output (its working directory and
+    // environment for the env_probe cases).
     if argv[0] == "run" && succeeded {
-        assert_eq!(stdout, genuine["stdout"].as_str().unwrap(), "{name}");
+        assert_eq!(
+            ws.normalize(&output.stdout),
+            genuine["stdout"].as_str().unwrap(),
+            "{name}"
+        );
     }
 }
 
@@ -340,7 +357,8 @@ fn executable_genrules_have_one_output() {
 }
 
 /// `bazel run` of executable genrules, output files and a non-executable
-/// genrule.
+/// genrule; without runfiles support the program runs in the client's
+/// working directory (also below the workspace root).
 #[test]
 fn run_executes_the_genrule_output() {
     check_group("run");
