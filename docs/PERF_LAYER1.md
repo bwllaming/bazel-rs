@@ -19,7 +19,10 @@ The stage timers themselves (M5) are described in docs/PARALLEL_ANALYSIS.md,
 | `BAZEL_RS_DUMP_ACTIONS=1` | full identity of every planned action (`ACTION …`) | none |
 
 With none of them set, stdout and stderr are byte-identical to a build
-without the instruments. `BAZEL_RS_TIMING_ALLOC` works with or without
+without the instruments. `BAZEL_RS_TIMING` and `BAZEL_RS_TIMING_ALLOC` are
+on when set to anything but empty or `0` (`=0` turns them off;
+integration-20 — `BAZEL_RS_TIMING` used to count as on whenever it was
+set). `BAZEL_RS_TIMING_ALLOC` works with or without
 `BAZEL_RS_TIMING`. It walks every planning structure, which takes about
 0.4 s on oauth2token and 0.9 s on B2, and allocates its own bookkeeping.
 Timings and VmHWM from a run with the breakdown on are therefore not
@@ -32,6 +35,9 @@ The workspace is `~/code`, which is read-only (see
 the user's default lockfile mode (update mode) with a private native
 lockfile. Never use `--lockfile_mode=off`: it re-downloads registry files
 and re-runs module extensions on every run, about 10.7 s of network wait.
+`ab_bench.py` refuses to run without `--lockfile-seed` unless
+`--lockfile-mode off` is passed explicitly (integration-20; it used to fall
+back to `--lockfile_mode=off` silently).
 
 ```sh
 B=/tmp/opencode/<you>-ab; mkdir -p $B

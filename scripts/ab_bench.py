@@ -8,7 +8,8 @@ target sets and how to read the output.
 
 usage: ab_bench.py --a BIN_A --b BIN_B --cache-a DIR --cache-b DIR --out OUTDIR
                    [--mode nobuild|build] [--warmups W] [--runs N]
-                   [--lockfile-seed LOCKFILE] [--lockfile-dir DIR] [--extra-env K=V ...]
+                   (--lockfile-seed LOCKFILE [--lockfile-dir DIR] | --lockfile-mode off)
+                   [--extra-env K=V ...]
                    [--extra-env-a K=V ...] [--extra-env-b K=V ...]
                    [--extra-arg ARG ...] [--sides ab|a|b] [--timeout S]
                    [--workspace DIR] [--compare-only] TARGET...
@@ -20,12 +21,15 @@ private HOME and TMPDIR:
         --experimental-builtin-modules <lockfile flags> --remote_cache=
         --noremote_upload_local_results [EXTRA_ARG...] TARGET...
 
-with BAZEL_RS_DUMP_ACTIONS=1 and BAZEL_RS_TIMING=1. Lockfile flags:
-  - without --lockfile-seed: --lockfile_mode=off;
+with BAZEL_RS_DUMP_ACTIONS=1 and BAZEL_RS_TIMING=1. Lockfile flags (one of
+the two is required; there is no silent default):
   - with --lockfile-seed (the update-mode recipe): the seed is copied ONCE
     to DIR/lock-a and DIR/lock-b (DIR = --lockfile-dir, default OUTDIR), and
     each side passes --lockfile_mode=update --native-lockfile=DIR/lock-<side>.
     The workspace's own lockfile is never written.
+  - with an explicit --lockfile-mode off: --lockfile_mode=off (it re-fetches
+    registry files and re-evaluates module extensions on every run, ~10 s of
+    network wait on ~/code: not the user's default, see docs/PERF_LAYER1.md).
 
 The sides run interleaved (a0 b0 a1 b1 ...): W warm-up runs, then N measured
 runs, W+N in total. With the default W=0, `--runs N` behaves exactly like the
@@ -243,14 +247,33 @@ def run_one(bin_, cache, out, args, extra_env, tag, workspace, timeout):
             'maxrss_kb': usage.ru_maxrss, 'argv': argv}
 
 
+def lockfile_mode_problem(args):
+    """Why the lockfile flags cannot run (None when they can): the update-mode
+    recipe needs --lockfile-seed; --lockfile_mode=off only with an explicit
+    --lockfile-mode off, never as a silent default."""
+    mode = getattr(args, 'lockfile_mode', None)
+    if args.lockfile_seed:
+        if mode == 'off':
+            return '--lockfile-seed and --lockfile-mode off contradict each other'
+        return None
+    if mode == 'off':
+        return None
+    if mode == 'update':
+        return '--lockfile-mode update needs --lockfile-seed (a private copy of the workspace lockfile)'
+    return ('pass --lockfile-seed <private copy of the workspace lockfile> (the update-mode recipe, '
+            "the user's default) or an explicit --lockfile-mode off")
+
+
 def side_args(args, out, side):
     if args.lockfile_seed:
         lock = Path(args.lockfile_dir or out) / f'lock-{side}'
         if not lock.exists():
             lock.write_bytes(Path(args.lockfile_seed).read_bytes())
         lockfile = ['--lockfile_mode=update', f'--native-lockfile={lock}']
-    else:
+    elif getattr(args, 'lockfile_mode', None) == 'off':
         lockfile = ['--lockfile_mode=off']
+    else:
+        raise ValueError(lockfile_mode_problem(args))
     return ((['--nobuild'] if args.mode == 'nobuild' else []) + ['--experimental-builtin-modules']
             + lockfile + ['--remote_cache=', '--noremote_upload_local_results']
             + args.extra_arg + args.targets)
@@ -392,7 +415,11 @@ def main(argv=None):
     ap.add_argument('--extra-arg', action='append', default=[])
     ap.add_argument('--lockfile-seed', default=None,
                     help='update-mode recipe: copy this lockfile once to OUT/lock-{a,b} and pass '
-                         '--lockfile_mode=update --native-lockfile=OUT/lock-<side> (default: --lockfile_mode=off)')
+                         '--lockfile_mode=update --native-lockfile=OUT/lock-<side> (required unless '
+                         '--lockfile-mode off)')
+    ap.add_argument('--lockfile-mode', default=None, choices=['update', 'off'],
+                    help="'update' (needs --lockfile-seed) or an explicit 'off' (--lockfile_mode=off, "
+                         'without a seed); never chosen silently')
     ap.add_argument('--lockfile-dir', default=None,
                     help='where lock-{a,b} live (default: OUT); share one across target sets so each side '
                          'keeps one private lockfile')
@@ -417,7 +444,8 @@ def main(argv=None):
               'binaries': {side: {'path': getattr(args, side), 'sha256': sha(getattr(args, side))}
                            for side in sides if getattr(args, side)},
               'lockfile_seed': {'path': args.lockfile_seed, 'sha256': sha(args.lockfile_seed)}
-              if args.lockfile_seed else None}
+              if args.lockfile_seed else None,
+              'lockfile_mode': 'update' if args.lockfile_seed else args.lockfile_mode}
 
     if args.compare_only:
         previous = out / 'report.json'
@@ -432,6 +460,9 @@ def main(argv=None):
     else:
         if not args.targets:
             sys.exit('no targets')
+        lockfile_problem = lockfile_mode_problem(args)
+        if lockfile_problem:
+            sys.exit(lockfile_problem)
         for side in sides:
             if not getattr(args, side):
                 sys.exit(f'--{side} is required')

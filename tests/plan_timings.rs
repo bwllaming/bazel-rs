@@ -45,6 +45,16 @@ impl Workspace {
 
     /// `switches`: each (variable, set) pair is set to `1` or removed.
     fn run_with(&self, threads: &str, switches: &[(&str, bool)]) -> Output {
+        let values: Vec<(&str, &str)> = switches
+            .iter()
+            .filter(|(_, set)| *set)
+            .map(|(name, _)| (*name, "1"))
+            .collect();
+        self.run_values(threads, &values)
+    }
+
+    /// Each (variable, value) pair is set; the other switches are removed.
+    fn run_values(&self, threads: &str, values: &[(&str, &str)]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         command
             .arg("--ignore_all_rc_files")
@@ -59,10 +69,8 @@ impl Workspace {
             .env_remove("BAZEL_RS_TIMING_MODULES")
             .env_remove("BAZEL_RS_TIMING_ALLOC")
             .current_dir(&self.0);
-        for (name, set) in switches {
-            if *set {
-                command.env(name, "1");
-            }
+        for (name, value) in values {
+            command.env(name, value);
         }
         command.output().unwrap()
     }
@@ -321,4 +329,42 @@ fn allocation_report_is_opt_in_and_stderr_only() {
     let stderr = String::from_utf8_lossy(&both.stderr);
     assert!(stderr.contains("PERF-STAGE total prepare "), "{stderr}");
     assert!(stderr.contains("PERF-ALLOC-SUMMARY "), "{stderr}");
+}
+
+/// Integration-20 (W0-A review fix 7): `=0` (or empty) turns the
+/// diagnostics switches off — `BAZEL_RS_TIMING` like
+/// `BAZEL_RS_TIMING_ALLOC` (crate::diagnostic_switch) — and any other value
+/// turns them on.
+#[test]
+fn timing_switches_set_to_zero_are_off() {
+    let ws = Workspace::new();
+    let plain = ws.run("1", false);
+    assert!(plain.status.success());
+    for value in ["0", ""] {
+        let off = ws.run_values(
+            "1",
+            &[("BAZEL_RS_TIMING", value), ("BAZEL_RS_TIMING_ALLOC", value)],
+        );
+        assert!(off.status.success());
+        assert_eq!(off.stdout, plain.stdout);
+        let stderr = String::from_utf8_lossy(&off.stderr);
+        assert!(!stderr.contains("PERF"), "{value:?}: {stderr}");
+    }
+    let on = ws.run_values(
+        "1",
+        &[("BAZEL_RS_TIMING", "yes"), ("BAZEL_RS_TIMING_ALLOC", "yes")],
+    );
+    assert!(on.status.success());
+    let stderr = String::from_utf8_lossy(&on.stderr);
+    for prefix in [
+        "PERF ",
+        "PERF-STAGE total prepare ",
+        "PERF-REPO ",
+        "PERF-ALLOC-SUMMARY ",
+    ] {
+        assert!(
+            stderr.lines().any(|line| line.starts_with(prefix)),
+            "missing {prefix}: {stderr}"
+        );
+    }
 }

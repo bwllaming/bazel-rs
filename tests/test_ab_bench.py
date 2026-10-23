@@ -175,6 +175,35 @@ class CompareOnlyTests(unittest.TestCase):
             self.assertEqual(report["runs"]["b"][0]["wall"], 4.0)
             self.assertTrue(report["canary_unchanged"])
 
+    def test_lockfile_mode_is_never_off_by_default(self):
+        # Integration-20 (W0-A review fix 7): without a seed, only an
+        # explicit --lockfile-mode off runs with --lockfile_mode=off.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            caches = self.caches(out)
+            common = ["--workspace", str(out / "ws"), "--a", "/bin/false", "--b", "/bin/false",
+                      "--cache-a", caches["a"], "--cache-b", caches["b"], "--out", str(out / "out")]
+            for extra, needle in (([], "--lockfile-mode off"),
+                                  (["--lockfile-mode", "update"], "needs --lockfile-seed"),
+                                  (["--lockfile-seed", str(out / "seed"), "--lockfile-mode", "off"],
+                                   "contradict")):
+                with self.assertRaises(SystemExit) as refused:
+                    ab.main(common + extra + ["//:x"])
+                self.assertIn(needle, str(refused.exception.code))
+            self.assertFalse((out / "out").exists())
+            explicit = ab.argparse.Namespace(lockfile_seed=None, lockfile_mode="off", lockfile_dir=None,
+                                             mode="nobuild", extra_arg=[], targets=["//:x"])
+            self.assertIn("--lockfile_mode=off", ab.side_args(explicit, out, "a"))
+            silent = ab.argparse.Namespace(lockfile_seed=None, lockfile_mode=None, lockfile_dir=None,
+                                           mode="nobuild", extra_arg=[], targets=["//:x"])
+            with self.assertRaises(ValueError):
+                ab.side_args(silent, out, "a")
+            (out / "seed").write_text("seed")
+            seeded = ab.argparse.Namespace(lockfile_seed=str(out / "seed"), lockfile_mode=None,
+                                           lockfile_dir=None, mode="build", extra_arg=[], targets=["//:x"])
+            self.assertIn("--lockfile_mode=update", ab.side_args(seeded, out, "b"))
+            self.assertEqual((out / "lock-b").read_text(), "seed")
+
     def test_refuses_caches_inside_the_workspace(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

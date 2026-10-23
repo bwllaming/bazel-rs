@@ -83,13 +83,11 @@ use crate::package::{Generator, MacroOwner, Package, Rule};
 use crate::starlark_types::File;
 use crate::visibility::Visibility;
 
-/// `BAZEL_RS_TIMING_ALLOC` set to anything but empty or `0`.
+/// `BAZEL_RS_TIMING_ALLOC` set to anything but empty or `0`
+/// ([`crate::diagnostic_switch`], the rule of `BAZEL_RS_TIMING` too).
 pub(super) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("BAZEL_RS_TIMING_ALLOC")
-            .is_some_and(|value| !value.is_empty() && value != "0")
-    })
+    *ENABLED.get_or_init(|| crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING_ALLOC")))
 }
 
 /// The engine hook (end of phase 2 in `plan_build`): a no-op unless

@@ -121,7 +121,7 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
 
 pub fn enabled() -> bool {
-    *ENABLED.get_or_init(|| std::env::var_os("BAZEL_RS_TIMING").is_some())
+    *ENABLED.get_or_init(|| crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")))
 }
 
 fn now_us() -> u64 {

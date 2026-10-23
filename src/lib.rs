@@ -147,7 +147,7 @@ pub fn perf_mark(name: &str) {
     }
     static START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
-    if std::env::var_os("BAZEL_RS_TIMING").is_some() {
+    if diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
         let status = proc_self_status();
         let (rss, hwm) = (
             proc_status_value(&status, "VmRSS:"),
@@ -160,6 +160,16 @@ pub fn perf_mark(name: &str) {
             hwm
         );
     }
+}
+
+/// Whether a diagnostics switch the caller read (`BAZEL_RS_TIMING`,
+/// `BAZEL_RS_TIMING_ALLOC`) is on: set to anything but empty or `0`, so
+/// `=0` turns a switch off (integration-20: `BAZEL_RS_TIMING` used to count
+/// as on whenever it was set; its readers — the PERF marks, the stage
+/// report, PERF-REPO and PERF-DMEMO — and the allocation breakdown now
+/// share this rule).
+pub fn diagnostic_switch(value: Option<std::ffi::OsString>) -> bool {
+    value.is_some_and(|value| !value.is_empty() && value != "0")
 }
 
 /// This process's `/proc/self/status` (empty when unreadable): telemetry of
@@ -190,5 +200,15 @@ mod perf_mark_tests {
         assert_eq!(super::proc_status_value(status, "VmRSS:"), "102400");
         assert_eq!(super::proc_status_value(status, "VmHWM:"), "204800");
         assert_eq!(super::proc_status_value(status, "VmSwap:"), "");
+    }
+
+    #[test]
+    fn diagnostic_switches_are_off_when_unset_empty_or_zero() {
+        use super::diagnostic_switch;
+        assert!(!diagnostic_switch(None));
+        assert!(!diagnostic_switch(Some("".into())));
+        assert!(!diagnostic_switch(Some("0".into())));
+        assert!(diagnostic_switch(Some("1".into())));
+        assert!(diagnostic_switch(Some("yes".into())));
     }
 }

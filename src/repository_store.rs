@@ -205,7 +205,7 @@ pub mod timing {
     pub fn enabled() -> bool {
         INIT.call_once(|| {
             ENABLED.store(
-                std::env::var_os("BAZEL_RS_TIMING").is_some(),
+                crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")),
                 Ordering::Relaxed,
             );
         });
