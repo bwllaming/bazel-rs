@@ -1287,6 +1287,21 @@ struct CustomPrepared {
 /// MiB is comfortable.
 const LOADING_WORKER_STACK: usize = 16 << 20;
 
+/// The `BAZEL_RS_LOADING_JITTER` roll of unit `index` on worker `worker`
+/// (P2's pattern-loading workers and crate::prefetch's alike).
+pub(crate) fn loading_jitter_roll(index: u64, worker: u64) -> u64 {
+    splitmix64(index << 32 ^ worker)
+}
+
+/// The `BAZEL_RS_LOADING_JITTER` hidden test hook's bound in milliseconds
+/// (0: off).
+pub(crate) fn loading_jitter_millis() -> u64 {
+    std::env::var("BAZEL_RS_LOADING_JITTER")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
 /// `splitmix64`: reproducible pseudo-random worker jitter (no rand
 /// dependency).
 fn splitmix64(mut state: u64) -> u64 {
@@ -1437,6 +1452,14 @@ pub struct Engine {
     /// M5: nesting depth of `analyze_key` (plan_timings::PlanStage::Analyze
     /// outermost attribution); untouched unless BAZEL_RS_TIMING=1.
     analyze_depth: usize,
+    /// Phase-1 package prefetch (crate::prefetch): background workers
+    /// loading the packages analysis is about to demand, alive during a
+    /// build's phase-1 analysis when `loading_phase_threads` > 1. Units are
+    /// committed by `load_package` at the sequential demand point.
+    prefetch: Option<crate::prefetch::Prefetcher>,
+    /// The rules whose labels phase-1 prefetch already queued (lookups
+    /// only).
+    prefetch_followed: HashSet<Label>,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -1616,6 +1639,8 @@ impl Engine {
                 .map(usize::from)
                 .unwrap_or(1),
             analyze_depth: 0,
+            prefetch: None,
+            prefetch_followed: HashSet::new(),
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -1934,8 +1959,31 @@ impl Engine {
             return Err(message);
         }
         if !self.packages.contains_key(package) {
-            let unit = self.load_package_attempt(package);
-            return self.commit_load_unit(package, unit);
+            // Phase-1 prefetch (crate::prefetch): a unit a background
+            // worker loaded is committed here, at the sequential demand
+            // point, exactly like an inline load; a sentinel unit re-runs
+            // inline in `commit_load_unit` (P2).
+            let prefetched = self
+                .prefetch
+                .as_ref()
+                .and_then(|prefetch| prefetch.take(package));
+            let inline = prefetched.as_ref().is_none_or(|unit| {
+                unit.result
+                    .as_ref()
+                    .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error))
+            });
+            let unit = match prefetched {
+                Some(unit) => unit,
+                None => self.load_package_attempt(package),
+            };
+            let result = self.commit_load_unit(package, unit);
+            // An inline load may have prepared an extension group or
+            // materialized a root a worker's unit was blocked on.
+            if inline && let Some(prefetch) = &self.prefetch {
+                let repositories = &self.repositories;
+                prefetch.retry(|blocked| repositories.sentinel_ready(blocked));
+            }
+            return result;
         }
         Ok(())
     }
@@ -2055,10 +2103,7 @@ impl Engine {
         let repositories = &repositories;
         // Hidden test hook (review §5): reproducible per-package jitter
         // shuffles worker completion order without changing results.
-        let jitter_millis: u64 = std::env::var("BAZEL_RS_LOADING_JITTER")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
+        let jitter_millis = loading_jitter_millis();
         std::thread::scope(|scope| {
             let mut handles = Vec::new();
             for worker in 0..workers {
@@ -2074,7 +2119,7 @@ impl Engine {
                             };
                             if jitter_millis > 0 {
                                 let bound = jitter_millis + 1;
-                                let roll = splitmix64((index as u64) << 32 ^ worker as u64);
+                                let roll = loading_jitter_roll(index as u64, worker as u64);
                                 std::thread::sleep(std::time::Duration::from_millis(roll % bound));
                             }
                             // Workers never fetch (review §1.2): asking for
@@ -2161,6 +2206,11 @@ impl Engine {
         // Every rule of a package shares its load graph's functions.
         if let Some(custom) = rules.values().find_map(|rule| rule.custom.as_ref()) {
             self.loaded_functions.register(&custom.top_level_functions);
+        }
+        // Phase-1 prefetch: a committed package is never loaded again; the
+        // targets wanted of it are followed.
+        if let Some(prefetch) = &self.prefetch {
+            prefetch.committed(package, &rules);
         }
         self.packages.insert(package.to_owned(), rules);
         Ok(())
@@ -3051,6 +3101,7 @@ impl Engine {
         if configured.contains_key(&key) {
             return Ok(());
         }
+        self.prefetch_rule(&rule);
         if let Some(start) = active.iter().position(|active| *active == key) {
             return Err(self.cycle_error(&rule, &active[..start], &active[start..]));
         }
@@ -5985,7 +6036,7 @@ impl Engine {
         let forced = key.forced_exec.then(|| host_info.clone()).filter(|forced| {
             forced.label == target.label || exec.iter().any(|exec| exec.label == forced.label)
         });
-        crate::toolchains::resolve(
+        let resolved = crate::toolchains::resolve(
             &types,
             requested,
             crate::toolchains::Platforms {
@@ -5995,8 +6046,19 @@ impl Engine {
             },
             &registered,
         )
-        .map(Some)
-        .map_err(|message| self.toolchain_error(rule, config, "", &message))
+        .map_err(|message| self.toolchain_error(rule, config, "", &message))?;
+        // Phase-1 prefetch: the selected implementations are analyzed after
+        // the rule's attribute dependencies.
+        if self.prefetch.is_some() {
+            for label in resolved.resolved_labels() {
+                if self.prefetch_followed.insert(label.clone())
+                    && let Some(prefetch) = &self.prefetch
+                {
+                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1);
+                }
+            }
+        }
+        Ok(Some(resolved))
     }
 
     /// RegisteredToolchainsCycleReporter.maybeReportCycle
@@ -6188,6 +6250,7 @@ impl Engine {
         {
             patterns.extend(labels.into_iter().map(|label| (repository.clone(), label)));
         }
+        self.prefetch_toolchain_patterns(&patterns);
         let labels = self.expand_toolchain_patterns(&patterns)?;
         // configureRegisteredToolchains (:174-215).
         let mut declared = Vec::new();
@@ -6240,6 +6303,42 @@ impl Engine {
             }
         }
         Ok(Arc::new(RegisteredToolchains { toolchains }))
+    }
+
+    /// Phase-1 prefetch (crate::prefetch) of the registered toolchain
+    /// packages: each pattern's package, in registration order, at the
+    /// front of the queue — they are what `expand_toolchain_patterns`
+    /// loads next. `/...` patterns are left to the sequential expansion
+    /// (their package discovery needs the repository root), and nothing
+    /// after a pattern the expansion rejects is queued. The labels resolve
+    /// under the no-demand guard: a hint never prepares a repository.
+    fn prefetch_toolchain_patterns(&self, patterns: &[(String, String)]) {
+        let Some(prefetch) = &self.prefetch else {
+            return;
+        };
+        let guard = crate::repository_demand::no_demand();
+        let mut targets = Vec::new();
+        for (repository, pattern) in patterns {
+            if pattern.starts_with('-') {
+                break;
+            }
+            let all = match pattern.rsplit_once(':') {
+                Some((base, "all")) => {
+                    if base == "..." || base.ends_with("/...") {
+                        continue;
+                    }
+                    true
+                }
+                Some((_, "*" | "all-targets")) => break,
+                _ => false,
+            };
+            if let Ok(label) = self.repositories.parse(pattern, repository, "") {
+                let name = (!all).then(|| label.name.clone());
+                targets.push((label.package_id(), name));
+            }
+        }
+        drop(guard);
+        prefetch.submit_targets(targets, 0);
     }
 
     /// TargetPatternUtil.expandTargetPatterns (skyframe/TargetPatternUtil.java:44-87)
@@ -10349,6 +10448,145 @@ impl Engine {
         crate::feature_flags::value_of(providers.get(crate::feature_flags::PROVIDER_ID)?.value())
     }
 
+    /// Phase 1 of `plan_build`: the requested targets, then the top-level
+    /// aspects' own attribute dependencies, analyzed in order.
+    fn analyze_requested(
+        &mut self,
+        labels: &[Label],
+        top: ConfigId,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
+        for label in labels {
+            // A requested non-alias rule is first keyed in the untrimmed
+            // top-level configuration, then in its test-trimmed one
+            // (TestTrimmingTransitionFactory.create,
+            // analysis/test/TestTrimmingTransitionFactory.java:92-135:
+            // aliases may point to tests and are not trimmed).
+            self.requested_trimmed_root = match self.target(label) {
+                Ok(Target::Rule(rule))
+                    if !forwards(&rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
+                {
+                    Some(ConfiguredTargetKey::new(rule.label.clone(), top))
+                }
+                _ => None,
+            };
+            let analyzed = self.analyze(label, top, &mut Vec::new(), configured, plan);
+            self.requested_trimmed_root = None;
+            analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
+                // BuildView: `Analysis of target 'L' failed; build
+                // aborted: MESSAGE` for the requested target.
+                Some((_, message)) => format!(
+                    "Analysis of target '{}' failed; build aborted: {message}",
+                    crate::rule_declarations::canonical_form(label)
+                ),
+                None => error,
+            })?;
+        }
+        // N58: the top-level aspects' own attribute dependencies are
+        // analyzed like any dependency (AspectFunction's AspectValue
+        // depends on the aspect's implicit attributes), validated from the
+        // aspect's `.bzl` package.
+        for identity in self.effective_aspects() {
+            let Some(definition) = self.aspect_definition(&identity, false)? else {
+                return Err(format!("Aspect '{identity}' is unknown"));
+            };
+            if definition.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                continue;
+            }
+            let authority = crate::label::PackageId {
+                repository: definition.definition_label.repository.clone(),
+                package: definition.definition_label.package.clone(),
+            };
+            for (_, spec) in &definition.declaration.attrs {
+                let labels = match &spec.default {
+                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+                    _ => Vec::new(),
+                };
+                for text in labels {
+                    let dependency = self.repositories.parse(
+                        &text,
+                        &definition.definition_label.repository,
+                        &definition.definition_label.package,
+                    )?;
+                    self.analyze(&dependency, top, &mut Vec::new(), configured, plan)?;
+                    if let Target::Rule(dep_rule) = self.target(&dependency)? {
+                        self.visible(&dep_rule.visibility, &authority, None)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Start phase-1 package prefetch (crate::prefetch) for a build's
+    /// analysis: with more than one loading thread, outside the analysis
+    /// snapshot's recording and replay, once the module graph is resolved
+    /// (workers never resolve it). The packages loaded so far (the target
+    /// patterns') settle it and seed its queue.
+    fn start_prefetch(&mut self, labels: &[Label]) {
+        self.stop_prefetch();
+        if self.loading_phase_threads <= 1
+            || !self.repositories.prefetch_allowed()
+            || crate::observed_fs::recording()
+            // The inline-fallback test hook loads every package itself.
+            || std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND").is_some()
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_PREFETCH").is_some()
+        {
+            return;
+        }
+        let Some(prefetch) = crate::prefetch::Prefetcher::start(
+            self.repositories.clone(),
+            self.loading_phase_threads,
+            self.packages
+                .iter()
+                .map(|(id, package)| (id.clone(), package.rules.clone())),
+            loading_jitter_millis(),
+        ) else {
+            return;
+        };
+        // The requested targets' own dependencies come first.
+        for label in labels {
+            let Some(package) = self.packages.get(&label.package_id()) else {
+                continue;
+            };
+            let rule = match package.get(label) {
+                Some(rule) => Some(rule),
+                None => self.generated.get(label).and_then(|(owner, _)| {
+                    self.packages
+                        .get(&owner.package_id())
+                        .and_then(|package| package.get(owner))
+                }),
+            };
+            if let Some(rule) = rule {
+                prefetch.submit_rule(rule);
+            }
+        }
+        self.prefetch = Some(prefetch);
+        self.prefetch_followed.clear();
+    }
+
+    /// Stop phase-1 prefetch: workers finish their current unit; units
+    /// nobody demanded are dropped unreported.
+    fn stop_prefetch(&mut self) {
+        if let Some(prefetch) = self.prefetch.take() {
+            prefetch.shutdown();
+        }
+        self.prefetch_followed = HashSet::new();
+    }
+
+    /// Phase-1 prefetch: the first analysis of `rule` queues the targets
+    /// it names (what analysis demands next).
+    fn prefetch_rule(&mut self, rule: &Rule) {
+        if let Some(prefetch) = &self.prefetch
+            && !self.prefetch_followed.contains(&rule.label)
+        {
+            self.prefetch_followed.insert(rule.label.clone());
+            prefetch.submit_rule(rule);
+        }
+    }
+
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
@@ -10404,72 +10642,12 @@ impl Engine {
             self.platform_info(&target, top, &mut configured, &mut plan)
                 .map_err(|error| error.target_text())?;
         }
-        for label in labels {
-            // A requested non-alias rule is first keyed in the untrimmed
-            // top-level configuration, then in its test-trimmed one
-            // (TestTrimmingTransitionFactory.create,
-            // analysis/test/TestTrimmingTransitionFactory.java:92-135:
-            // aliases may point to tests and are not trimmed).
-            self.requested_trimmed_root = match self.target(label) {
-                Ok(Target::Rule(rule))
-                    if !forwards(&rule) && !matches!(rule.kind, RuleKind::PackageGroup(_)) =>
-                {
-                    Some(ConfiguredTargetKey::new(rule.label.clone(), top))
-                }
-                _ => None,
-            };
-            let analyzed = self.analyze(label, top, &mut Vec::new(), &mut configured, &mut plan);
-            self.requested_trimmed_root = None;
-            analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
-                // BuildView: `Analysis of target 'L' failed; build
-                // aborted: MESSAGE` for the requested target.
-                Some((_, message)) => format!(
-                    "Analysis of target '{}' failed; build aborted: {message}",
-                    crate::rule_declarations::canonical_form(label)
-                ),
-                None => error,
-            })?;
-        }
-        // N58: the top-level aspects' own attribute dependencies are
-        // analyzed like any dependency (AspectFunction's AspectValue
-        // depends on the aspect's implicit attributes), validated from the
-        // aspect's `.bzl` package.
-        for identity in self.effective_aspects() {
-            let Some(definition) = self.aspect_definition(&identity, false)? else {
-                return Err(format!("Aspect '{identity}' is unknown"));
-            };
-            if definition.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
-                continue;
-            }
-            let authority = crate::label::PackageId {
-                repository: definition.definition_label.repository.clone(),
-                package: definition.definition_label.package.clone(),
-            };
-            for (_, spec) in &definition.declaration.attrs {
-                let labels = match &spec.default {
-                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
-                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
-                    _ => Vec::new(),
-                };
-                for text in labels {
-                    let dependency = self.repositories.parse(
-                        &text,
-                        &definition.definition_label.repository,
-                        &definition.definition_label.package,
-                    )?;
-                    self.analyze(
-                        &dependency,
-                        top,
-                        &mut Vec::new(),
-                        &mut configured,
-                        &mut plan,
-                    )?;
-                    if let Target::Rule(dep_rule) = self.target(&dependency)? {
-                        self.visible(&dep_rule.visibility, &authority, None)?;
-                    }
-                }
-            }
-        }
+        // Phase-1 prefetch (crate::prefetch) runs while the requested
+        // targets are analyzed, and stops with phase 1 however it ends.
+        self.start_prefetch(labels);
+        let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan);
+        self.stop_prefetch();
+        analyzed?;
         crate::perf_mark("plan.phase1_analysis_done");
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).

@@ -51,6 +51,11 @@ struct RepositoryState {
     /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
     /// every package that loads them (BzlLoadValue; crate::loading).
     build_bzl: crate::loading::BzlCache,
+    /// The `.bzl` modules definition loads evaluated (repository rule and
+    /// module extension definitions and their loads; crate::loading, W6).
+    definition_bzl: crate::loading::DefinitionBzlCache,
+    /// The module-phase `.bzl` globals (immutable), built on first use.
+    module_globals: OnceLock<starlark::environment::Globals>,
     /// The BUILD-file and BUILD-phase `.bzl` globals (immutable), built on
     /// first use.
     build_globals: OnceLock<(
@@ -416,6 +421,8 @@ impl RepositorySet {
                 ignored: std::sync::Mutex::default(),
                 link_canonical: std::sync::Mutex::default(),
                 build_bzl: crate::loading::BzlCache::default(),
+                definition_bzl: crate::loading::DefinitionBzlCache::default(),
+                module_globals: OnceLock::new(),
                 build_globals: OnceLock::new(),
                 pinned: None,
                 replay: crate::snapshot::replay::global(),
@@ -474,6 +481,85 @@ impl RepositorySet {
 
     fn pinned_tables(&self) -> Option<&crate::snapshot::replay::PinnedTables> {
         self.state.pinned.as_deref()
+    }
+
+    /// Whether phase-1 package prefetch (crate::prefetch) may run against
+    /// this set: never for a pinned (replaying) set or one that records for
+    /// replay — their root/mapping capture must see exactly the sequential
+    /// demands.
+    pub(crate) fn prefetch_allowed(&self) -> bool {
+        self.state.pinned.is_none()
+            && self.state.replay.is_none()
+            // Workers never resolve the module graph (a lazily resolving
+            // worker could fetch outside the guard).
+            && self.state.resolved.get().is_some_and(Result::is_ok)
+    }
+
+    /// Whether the demand a no-demand sentinel (`error`, see
+    /// crate::repository_demand::NEEDS_REPOSITORY) was blocked on has been
+    /// satisfied since: its slot holds a value now (a group the
+    /// coordinator prepared, a root it materialized). Reads ready slots
+    /// only — never evaluates anything. `false` when the blocking demand
+    /// cannot be identified (crate::prefetch then leaves the package to
+    /// the sequential path).
+    pub(crate) fn sentinel_ready(&self, error: &str) -> bool {
+        let Some(start) = error.find(crate::repository_demand::NEEDS_REPOSITORY) else {
+            return false;
+        };
+        let rest = &error[start + crate::repository_demand::NEEDS_REPOSITORY.len()..];
+        let Some(rest) = rest.strip_prefix(": ") else {
+            return false;
+        };
+        let Some((subject, _)) = rest.split_once(" is unfetched") else {
+            return false;
+        };
+        if let Some(repository) = subject.strip_prefix("repository @@") {
+            // A module repository's materialization slot (guarded_root_slot).
+            return self
+                .state
+                .registry_roots
+                .get()
+                .and_then(|roots| roots.get(repository))
+                .is_some_and(|slot| slot.get().is_some());
+        }
+        let Some((_, key)) = subject
+            .strip_prefix("runtime ")
+            .and_then(|rest| rest.split_once(':'))
+        else {
+            return false;
+        };
+        let Some(Ok(runtime)) = self.state.direct.get() else {
+            return false;
+        };
+        if let Some(id) = key.strip_prefix("prepare:ordinary:") {
+            return runtime
+                .ordinary
+                .get(id)
+                .is_some_and(|slot| slot.ready().is_some());
+        }
+        if let Some(id) = key.strip_prefix("prepare:") {
+            return runtime
+                .groups
+                .get(id)
+                .is_some_and(|slot| slot.ready().is_some());
+        }
+        let Some(canonical) = key.strip_prefix("repository:") else {
+            return false;
+        };
+        if let Some(slot) = runtime.roots.get(canonical) {
+            return slot.ready().is_some();
+        }
+        let Some((prefix, name)) = canonical.rsplit_once('+') else {
+            return false;
+        };
+        runtime
+            .catalog
+            .ordinary_routes
+            .get(prefix)
+            .and_then(|id| runtime.ordinary.get(id))
+            .and_then(|slot| slot.ready())
+            .and_then(|prepared| prepared.repositories.get(name))
+            .is_some_and(|repository| repository.root.ready().is_some())
     }
 
     /// Whether this set records local executions for replay (the record
@@ -590,6 +676,31 @@ impl RepositorySet {
     /// The invocation's cache of BUILD-phase `.bzl` modules (crate::loading).
     pub(crate) fn build_bzl_cache(&self) -> &crate::loading::BzlCache {
         &self.state.build_bzl
+    }
+
+    /// The invocation's cache of definition `.bzl` modules (crate::loading,
+    /// W6).
+    pub(crate) fn definition_bzl_cache(&self) -> &crate::loading::DefinitionBzlCache {
+        &self.state.definition_bzl
+    }
+
+    /// Whether definition loads may share the definition `.bzl` cache: not
+    /// while root and mapping results are pinned or captured for the
+    /// analysis snapshot's replay records (a reused module would skip the
+    /// lookups the capture expects).
+    pub(crate) fn definition_cache_allowed(&self) -> bool {
+        self.state.pinned.is_none()
+            && self.state.replay.is_none()
+            // The uncached loader, for A/B checks of the cache.
+            && std::env::var_os("BAZEL_RS_DEBUG_NO_DEFINITION_CACHE").is_none()
+    }
+
+    /// The module-phase `.bzl` globals (crate::package::module_bzl_globals),
+    /// built once per repository set.
+    pub(crate) fn module_globals(&self) -> &starlark::environment::Globals {
+        self.state
+            .module_globals
+            .get_or_init(crate::package::module_bzl_globals)
     }
 
     /// The repository's ignored subdirectories (`IgnoredSubdirectoriesValue`),
@@ -1462,11 +1573,11 @@ impl RepositorySet {
             // roots and mappings (crate::snapshot::replay).
             let pinning = self.replay_scope();
             let label = self.parse(text, &group.owner, "")?;
-            let loaded = loading::load_definition_in(
+            let loaded = loading::load_shared_definition_module_in(
                 Arc::new(self.clone()),
                 &label,
                 symbol,
-                &crate::package::module_bzl_globals(),
+                true,
             )?;
             drop(pinning);
             let definition = repository_rule::unpack(&loaded.value)
@@ -1755,9 +1866,8 @@ impl RepositorySet {
                 }
             }
             let pinning = self.replay_scope();
-            let loaded = loading::load_module_extension_in(
-                Arc::new(self.clone()), &group.label, &group.symbol,
-                &crate::package::module_bzl_globals(),
+            let loaded = loading::load_shared_definition_module_in(
+                Arc::new(self.clone()), &group.label, &group.symbol, false,
             )?;
             drop(pinning);
             let mut preparation_budget = crate::repository_budget::HostBudget::unbounded();
@@ -2720,11 +2830,11 @@ impl RepositorySet {
                 // A local rule's replay loads it the same way from pinned
                 // roots and mappings (crate::snapshot::replay).
                 let pinning = self.replay_scope();
-                let loaded = loading::load_module_extension_in(
+                let loaded = loading::load_shared_definition_module_in(
                     Arc::new(self.clone()),
                     &label,
                     &rule,
-                    &crate::package::module_bzl_globals(),
+                    false,
                 )?;
                 drop(pinning);
                 let definition = repository_rule::unpack(&loaded.value)

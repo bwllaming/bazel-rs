@@ -567,6 +567,14 @@ impl Walker<'_> {
                         *symlink_issue = Some(SymlinkIssue::InfiniteExpansion(chain.clone()));
                     }
                     let Some(anchor) = self.links.anchor(self.canonical_root, &real) else {
+                        // A later materialization could own the target: a
+                        // worker leaves the decision to the coordinator.
+                        if crate::repository_demand::no_demand_active() {
+                            return Err(crate::repository_demand::order_dependent(&format!(
+                                "glob symlink {}",
+                                entry.path().display()
+                            )));
+                        }
                         return Err(format!(
                             "glob symlink {} resolves to {}, outside its repository root {} (native glob follows links only within the repository, into repositories materialized in this invocation, or for repository-rule-generated repositories into host paths outside the repository store)",
                             entry.path().display(),
@@ -584,6 +592,15 @@ impl Walker<'_> {
                     if let Some(taint) =
                         self.links.hop_taint(self.canonical_root, &anchor, host_hop)
                     {
+                        // Whether that root is materialized depends on the
+                        // run: a worker leaves the decision to the
+                        // coordinator.
+                        if crate::repository_demand::no_demand_active() {
+                            return Err(crate::repository_demand::order_dependent(&format!(
+                                "glob symlink {}",
+                                entry.path().display()
+                            )));
+                        }
                         crate::observed_fs::taint(taint, || {
                             format!("glob link {} -> {}", logical.display(), real.display())
                         });

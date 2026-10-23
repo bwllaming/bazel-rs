@@ -601,3 +601,134 @@ with timing: stdout identical, stderr identical modulo `PERF` lines
 and one pre-existing thread-dependent lockfile line (present at base
 too), exit 0; stage counts identical, values run-dependent as expected.
 
+
+## Phase-1 prefetch (W6, `src/prefetch.rs`)
+
+P2 parallelized only the packages a target pattern names. On a warm
+build most packages are loaded *during* phase-1 analysis — the registered
+toolchain packages (oauth2token: 151 packages, 2.4 s of 3.3 s of loading,
+the 15,185-file `@zig_config` BUILD alone 0.76–0.89 s) and the
+dependency packages of the requested targets — one at a time, on the
+coordinator. W6 loads them ahead of demand on a background pool while the
+coordinator analyzes.
+
+**Pool.** `Engine::plan_build` starts a `Prefetcher` for phase 1 when
+`--loading_phase_threads` > 1 (at most 16 workers; 16 MiB stacks), the
+module graph is already resolved, and neither the analysis-snapshot
+recording nor a pinned (replaying) repository set is active
+(`RepositorySet::prefetch_allowed`, `observed_fs::recording`); the
+`BAZEL_RS_LOADING_NO_DEMAND` test hook and `BAZEL_RS_DEBUG_NO_PREFETCH`
+switch it off. It stops when phase 1 ends, however it ends: workers finish
+the unit they are loading, every unit nobody demanded is dropped
+unreported. `--loading_phase_threads=1` is exactly the sequential engine.
+
+**Workers** are P2 workers: `package::evaluate_load_unit` under the
+no-demand + reuse-only guards (a repository that needs fetching, a module
+extension group that is not prepared, a module root only the coordinator
+materializes, a local repository rule: the unit aborts with the
+`NEEDS_REPOSITORY` sentinel), their own Starlark heaps, print events
+buffered in the unit, `.bzl` single-flight through the shared cache (N62).
+`BAZEL_RS_LOADING_JITTER` delays each unit as for P2.
+
+**Commit at the demand point.** Nothing a worker produces is reported.
+`Engine::load_package` takes the package's unit from the prefetcher
+(waiting if a worker is loading it; loading it itself if no worker started
+it) and commits it through `commit_load_unit` — the sequential path's
+commit, at the sequential point: BUILD lines, `.bzl` lines and hit markers
+replayed in the unit's DFS order, `validate_output_directory`, generated
+inserts, `packages.insert`, the error of a failed unit. A sentinel unit is
+re-run inline there (P2). So prints, errors, warnings and the commit order
+are the sequential engine's whatever the workers did; a speculative unit
+that fails (a select() branch not taken, the implementation of a
+toolchain resolution never selects) never surfaces.
+
+**What is queued** (target-directed, like a loading-phase transitive
+closure; hints only — a wrong guess costs a wasted load, never output):
+
+- the registered toolchain patterns' packages, in registration order, as
+  soon as `compute_registered_toolchains` knows them (`:all` follows every
+  non-test rule, an explicit label its rule; `/...` patterns stay
+  sequential: discovery needs the root). The pattern labels resolve under
+  the no-demand guard, so a hint never prepares a repository;
+- the labels of every rule the coordinator analyzes for the first time
+  (`analyze_key` → `Engine::prefetch_rule`) and of the requested targets;
+- the implementations toolchain resolution selects (`resolve_toolchains`):
+  they are analyzed after the rule's attribute dependencies;
+- recursively, up to 12 hops: a finished (or committed) package follows
+  the labels of the targets wanted of it — native label attributes and
+  select() keys/branches (`NativeTarget::input_labels`), a Starlark rule's
+  label attributes, built-ins and select() labels, `package_metadata`
+  (NODEP attributes such as a `toolchain`'s implementation are not
+  followed: loading every registered implementation would probe
+  repositories no build of this platform needs).
+
+Lower depth first; a package reached again at a smaller depth moves up.
+
+**Retry.** A sentinel unit remembers the demand it was blocked on (the
+`prepare:ordinary:<group>` / `repository:<name>` / module-root text of the
+sentinel). After every inline load, `Prefetcher::retry` queues again the
+aborted units whose demand `RepositorySet::sentinel_ready` now finds
+satisfied (it only reads ready slots): once the coordinator prepared the
+`go_deps` extension group, every go_deps package loads on the workers.
+
+**Two guards made the coordinator/worker overlap safe.** P2 workers only
+ever ran while the coordinator waited; prefetch workers run beside it.
+
+- `DemandSlot::get_or_probe` publishes a worker's warm-reuse probe only
+  under the evaluator claim lock and only while no evaluator runs: the
+  coordinator evaluating (fetching) the same slot can never find its
+  result slot occupied (`internal repository demand error`); the probe is
+  a miss instead.
+- A link decision that depends on which repositories the invocation has
+  materialized so far — a glob or a `.bzl` load following a symlink into
+  another live repository root (the snapshot's `CrossRepositorySymlink`
+  taint), or a link the policy refuses — is never taken on a worker
+  (`repository_demand::order_dependent`, `note_order_dependent`): the unit
+  aborts with the sentinel and the coordinator decides at the sequential
+  point. (This also closes the same order dependence for P2 workers.)
+
+**Telemetry.** With `BAZEL_RS_TIMING=1`, `PERF-PREFETCH workers= loaded=
+aborted= retried= taken= waited= missed= unused=` at the end of phase 1.
+
+**Determinism evidence.** `tests/phase1_prefetch.rs`: toolchain packages
+(`:all` and explicit labels), a dependency chain with BUILD and `.bzl`
+prints, a select() branch not taken and an unselected toolchain
+implementation that both fail to load, the first analysis error among two
+failing chains, and registry-module toolchain packages that need the
+sentinel retry (cold, then warm) — byte-identical stdout/stderr/exit at
+threads 1/2/8/32 and 8/32 with jitter; P2's `tests/parallel_loading.rs`
+unchanged.
+
+### Definition `.bzl` modules evaluated once per invocation
+
+What the workers cannot take over is coordinator-only: preparing a module
+extension group (the extension's `.bzl` graph, the lockfile entry, the
+repository rules of its `generatedRepoSpecs`), materializing module roots,
+re-running local repository rules. Group preparation was the largest part
+of it (oauth2token: 21 groups, 1.07 s on the coordinator), and most of
+that was the same `.bzl` files evaluated again: every group preparation
+and every repository rule definition load ran a fresh loader over its
+whole graph (`@bazel_tools//tools/build_defs/repo:utils.bzl` 52 times,
+`rules_rust`'s `known_shas.bzl` 6 times; 1,607 evaluations of 703
+labels).
+
+`crate::loading::DefinitionBzlCache` (one per repository set) keeps every
+successfully evaluated definition module (module-phase globals, Latin-1
+char model, provenance capture): the frozen module, its functions and
+loads, its source provenance, the mapping records of its load statements
+and of its top-level evaluation, and its top-level print lines. The
+definition loads of the extension machinery
+(`load_shared_definition_module_in`: direct groups, ordinary groups,
+lockfile repository rule definitions) reuse it: a reused module replays,
+at the same DFS positions, exactly what a fresh loader records and prints
+— its source and load-statement records when it is entered, its loads,
+then its evaluation's records, functions and print lines — so the
+`LoadedDefinition` (identities, spec keys, lockfile inputs) and stderr are
+the uncached loader's. Failures are not cached (the next load evaluates
+again, as before). The cache is off while root/mapping results are pinned
+or captured for the analysis snapshot's replay records, and with the
+`BAZEL_RS_DEBUG_NO_DEFINITION_CACHE` switch, which
+`tests/definition_bzl_cache.rs` uses as its A/B reference (two extensions
+of one `.bzl`, a repository rule shared by both and by a
+`use_repo_rule`, top-level prints, cold and warm lockfile). oauth2token:
+881 evaluations instead of 1,607, peak RSS −150 MB.

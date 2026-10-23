@@ -39,6 +39,18 @@ pub fn is_parallel_bzl_cycle(error: &str) -> bool {
     error.contains(PARALLEL_BZL_CYCLE)
 }
 
+/// The no-demand sentinel for a decision that depends on which
+/// repositories the invocation has materialized so far — a symlink a glob
+/// or a `.bzl` load follows into another repository's root (or that the
+/// link policy refuses): the sequential engine takes it at its own demand
+/// point, so a worker (no-demand mode) aborts its unit instead and the
+/// coordinator re-runs it inline there (W6 phase-1 prefetch; P2).
+pub fn order_dependent(what: &str) -> String {
+    format!(
+        "{NEEDS_REPOSITORY}: {what} depends on the repositories materialized so far and this thread does not decide it"
+    )
+}
+
 /// Whether either inline-rerun sentinel aborted a load unit: the
 /// coordinator re-runs the unit inline at its commit slot (fetching
 /// allowed, waits uncontended) and reproduces the sequential output.
@@ -49,6 +61,25 @@ pub fn is_inline_rerun_sentinel(error: &str) -> bool {
 thread_local! {
     /// Depth of the no-demand guard on this thread (0: fetching allowed).
     static NO_DEMAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Set when this no-demand thread took a materialization-order-dependent
+    /// link decision ([`note_order_dependent`]).
+    static ORDER_DEPENDENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Record that a link resolution on this thread depended on the
+/// repositories materialized so far (a hop into another repository's root,
+/// or a refusal a later materialization could lift); only no-demand
+/// threads record it ([`take_order_dependent`], [`order_dependent`]).
+pub fn note_order_dependent() {
+    if no_demand_active() {
+        ORDER_DEPENDENT.with(|flag| flag.set(true));
+    }
+}
+
+/// Whether this thread recorded an order-dependent link decision since the
+/// last call (clearing the record).
+pub fn take_order_dependent() -> bool {
+    ORDER_DEPENDENT.with(|flag| flag.replace(false))
 }
 
 /// Whether this thread runs in no-demand mode (it must not fetch).
@@ -193,8 +224,26 @@ impl<T> DemandSlot<T> {
             Some(value) => {
                 // Publish for all later demands; a concurrent publisher
                 // (another worker probing the same repo, or the
-                // coordinator fetching) wins and we serve its value.
+                // coordinator fetching) wins and we serve its value. The
+                // publication happens under the evaluator claim lock and
+                // only while no evaluator runs: the coordinator may
+                // evaluate this slot while a worker probes it (phase-1
+                // prefetch runs workers beside the coordinator,
+                // crate::prefetch), and its own publication must never
+                // find the slot occupied. A probe that loses to a running
+                // evaluator is a miss: the evaluator's result stands.
+                let running = match self.running.lock() {
+                    Ok(running) => running,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if running.is_some() && self.ready.get().is_none() {
+                    drop(running);
+                    return Err(format!(
+                        "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
+                    ));
+                }
                 let _ = self.ready.set(Ok(value));
+                drop(running);
                 self.ready
                     .get()
                     .expect("just published or concurrently published")

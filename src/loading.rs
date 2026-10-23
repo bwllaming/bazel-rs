@@ -454,12 +454,40 @@ pub fn load_module_extension_in(
     load_frozen_export_in(repositories, label, symbol, globals, false)
 }
 
+/// [`load_definition_in`] (`public_only`) or [`load_module_extension_in`]
+/// with the module-phase globals, sharing the repository set's
+/// [`DefinitionBzlCache`] (W6): a module another definition load of the
+/// invocation evaluated is replayed — its records, functions and print
+/// lines at the same DFS positions — instead of read, parsed and
+/// evaluated again. The result is the one a fresh loader returns.
+pub(crate) fn load_shared_definition_module_in(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    public_only: bool,
+) -> Result<LoadedDefinition, String> {
+    let globals = repositories.module_globals().clone();
+    let shared = repositories.definition_cache_allowed();
+    load_frozen_export_with(repositories, label, symbol, &globals, public_only, shared)
+}
+
 fn load_frozen_export_in(
     repositories: Arc<RepositorySet>,
     label: &Label,
     symbol: &str,
     globals: &Globals,
     public_only: bool,
+) -> Result<LoadedDefinition, String> {
+    load_frozen_export_with(repositories, label, symbol, globals, public_only, false)
+}
+
+fn load_frozen_export_with(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+    symbol: &str,
+    globals: &Globals,
+    public_only: bool,
+    shared_definitions: bool,
 ) -> Result<LoadedDefinition, String> {
     if public_only && symbol.starts_with('_') {
         return Err(format!(
@@ -478,6 +506,7 @@ fn load_frozen_export_in(
         return Err(format!("load {label} requires a .bzl suffix"));
     }
     let mut loader = Loader::new(repositories, globals, true);
+    loader.definitions = shared_definitions;
     loader.load(label.clone())?;
     let module = loader
         .cache
@@ -829,6 +858,67 @@ impl BzlCache {
     }
 }
 
+/// One `.bzl` module a definition load (a repository rule's or a module
+/// extension's defining file and its loads: module globals, the Latin-1
+/// char model, provenance capture) evaluated: exactly what a fresh
+/// definition loader records for it, replayed at the same DFS positions
+/// when a later definition load of the invocation reaches the module (W6).
+struct CachedDefinitionBzl {
+    module: FrozenModule,
+    visibility: BzlVisibility,
+    /// Its own retained top-level functions, in name order.
+    functions: Vec<OwnedFrozenValue>,
+    /// Its direct loads in load-statement order.
+    loads: Vec<Label>,
+    source: SourceProvenance,
+    /// The repository mapping records of its load statements (taken when
+    /// it is entered) and of its top-level evaluation (when it finishes).
+    enter_mappings: Vec<RecordedRepoMapping>,
+    eval_mappings: Vec<RecordedRepoMapping>,
+    /// Its top-level `print()` lines: printed again at every reuse, as a
+    /// fresh definition loader prints them on every load.
+    prints: Vec<String>,
+}
+
+/// The definition `.bzl` modules a repository set (one invocation)
+/// evaluated, by label (W6): every module extension group preparation and
+/// repository rule definition load used to evaluate its whole `.bzl`
+/// graph afresh (`@bazel_tools//tools/build_defs/repo:utils.bzl` 52 times
+/// on ~/code's oauth2token build). Only successes are kept; a failing
+/// module is evaluated again by the next load, as before. Lookups only:
+/// never iterated.
+#[derive(Default)]
+pub(crate) struct DefinitionBzlCache {
+    modules: std::sync::Mutex<HashMap<Label, Arc<CachedDefinitionBzl>>>,
+}
+
+impl std::fmt::Debug for DefinitionBzlCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let count = self.modules.lock().map_or(0, |modules| modules.len());
+        f.debug_struct("DefinitionBzlCache")
+            .field("modules", &count)
+            .finish()
+    }
+}
+
+impl DefinitionBzlCache {
+    fn get(&self, label: &Label) -> Option<Arc<CachedDefinitionBzl>> {
+        self.modules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(label)
+            .cloned()
+    }
+
+    fn insert(&self, label: Label, module: CachedDefinitionBzl) {
+        self.modules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(label)
+            .or_insert_with(|| Arc::new(module));
+    }
+}
+
 /// Buffered stderr output of one package load unit (review §1.4 and the
 /// P2 follow-up): BUILD-file `print()` lines, `.bzl` top-level lines of
 /// the modules this unit evaluates, and — in DFS position — a marker for
@@ -889,10 +979,16 @@ impl starlark::PrintHandler for LoadPrints {
 /// failure, preserving evaluation order.
 struct ModulePrints {
     lines: RefCell<Vec<String>>,
+    /// Also print each line immediately (a definition load records the
+    /// lines its module cache replays, and prints them as it always did).
+    echo: bool,
 }
 
 impl starlark::PrintHandler for ModulePrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
+        if self.echo {
+            eprintln!("{text}");
+        }
         self.lines.borrow_mut().push(text.to_owned());
         Ok(())
     }
@@ -1100,6 +1196,13 @@ struct Loader<'a> {
     /// the coordinator at the unit's commit (review §1.4). `None` for
     /// definition loads outside the BUILD phase, which print immediately.
     prints: Option<&'a LoadPrints>,
+    /// Reuse and publish modules in the repository set's
+    /// [`DefinitionBzlCache`] (definition loads of the repository and
+    /// module-extension machinery, W6).
+    definitions: bool,
+    /// The load-statement mapping records of entered, not yet finished
+    /// modules (for the definition cache).
+    entered_mappings: HashMap<Label, Vec<RecordedRepoMapping>>,
 }
 
 enum Work {
@@ -1110,6 +1213,8 @@ enum Work {
     /// A cached failure, after its stored loads were visited: emit the
     /// module's hit marker, then fail with the stored error.
     FailCached(Label, Arc<CachedFailure>),
+    /// A module of the definition cache, after its loads were visited.
+    ReuseDefinition(Label, Arc<CachedDefinitionBzl>),
 }
 
 impl<'a> Loader<'a> {
@@ -1130,6 +1235,8 @@ impl<'a> Loader<'a> {
             load_graph: HashMap::new(),
             repo_mappings: Vec::new(),
             prints: None,
+            definitions: false,
+            entered_mappings: HashMap::new(),
         }
     }
 
@@ -1198,11 +1305,34 @@ impl<'a> Loader<'a> {
                     // A miss only reads and parses here: parsing creates no
                     // identity, so it needs no single-flight guard (review
                     // §1.3); the evaluation in Work::Finish takes it.
+                    if self.definitions
+                        && let Some(cached) = self.repositories.definition_bzl_cache().get(&label)
+                    {
+                        // Exactly what entering it records (its source and
+                        // its load statements' mapping records), then its
+                        // loads, then its evaluation's records at reuse.
+                        crate::loading::module_timings::record_hit();
+                        self.sources
+                            .insert(label.to_string(), cached.source.clone());
+                        self.repo_mappings
+                            .extend(cached.enter_mappings.iter().cloned());
+                        self.load_graph.insert(label.clone(), cached.loads.clone());
+                        active.push(label.clone());
+                        let loads = cached.loads.clone();
+                        work.push(Work::ReuseDefinition(label, cached));
+                        work.extend(loads.into_iter().rev().map(Work::Enter));
+                        continue;
+                    }
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
                         let enter_started = std::time::Instant::now();
+                        let recorded = self.repo_mappings.len();
                         let (path, ast, dependencies) = self
                             .enter_module(&label)
                             .or_else(|error| self.failed(&label, error, Vec::new(), Vec::new()))?;
+                        if self.definitions {
+                            self.entered_mappings
+                                .insert(label.clone(), self.repo_mappings[recorded..].to_vec());
+                        }
                         crate::loading::module_timings::record_enter(
                             &label.to_string(),
                             enter_started.elapsed().as_secs_f64(),
@@ -1242,8 +1372,24 @@ impl<'a> Loader<'a> {
                     let finished = active.pop();
                     debug_assert_eq!(finished.as_ref(), Some(&label));
                 }
+                Work::ReuseDefinition(label, cached) => {
+                    // A fresh definition load prints the module's lines
+                    // when it evaluates it, here.
+                    for line in &cached.prints {
+                        eprintln!("{line}");
+                    }
+                    self.repo_mappings
+                        .extend(cached.eval_mappings.iter().cloned());
+                    self.functions.extend(cached.functions.iter().cloned());
+                    self.cache.insert(label.clone(), cached.module.clone());
+                    self.visibilities
+                        .insert(label.clone(), cached.visibility.clone());
+                    let finished = active.pop();
+                    debug_assert_eq!(finished.as_ref(), Some(&label));
+                }
                 Work::Finish(label, path, ast, loads) => {
                     let own_functions = self.functions.len();
+                    let own_mappings = self.repo_mappings.len();
                     // Per-label single-flight with in-flight waiting
                     // (review §1.3, N62): claim the label and evaluate, or
                     // wait for the owner and recheck — a concurrent
@@ -1334,6 +1480,25 @@ impl<'a> Loader<'a> {
                             self.failed(&label, error, prints, loads.clone())?
                         }
                     };
+                    if self.definitions
+                        && let Some(source) = self.sources.get(&label.to_string())
+                    {
+                        let enter_mappings =
+                            self.entered_mappings.remove(&label).unwrap_or_default();
+                        self.repositories.definition_bzl_cache().insert(
+                            label.clone(),
+                            CachedDefinitionBzl {
+                                module: frozen.clone(),
+                                visibility: visibility.clone(),
+                                functions: self.functions[own_functions..].to_vec(),
+                                loads: loads.clone(),
+                                source: source.clone(),
+                                enter_mappings,
+                                eval_mappings: self.repo_mappings[own_mappings..].to_vec(),
+                                prints: prints.clone(),
+                            },
+                        );
+                    }
                     if self.shared {
                         self.repositories.build_bzl_cache().insert(
                             label.clone(),
@@ -1501,6 +1666,7 @@ impl<'a> Loader<'a> {
         let file_loader = ReturnFileLoader { modules: &modules };
         let buffered = ModulePrints {
             lines: RefCell::new(Vec::new()),
+            echo: self.prints.is_none(),
         };
         let evaluated = Module::with_temp_heap(|module| {
             let visibility = {
@@ -1515,7 +1681,7 @@ impl<'a> Loader<'a> {
                 eval.set_max_callstack_size(128)
                     .map_err(|e| e.to_string())?;
                 eval.set_loader(&file_loader);
-                if self.prints.is_some() {
+                if self.prints.is_some() || self.definitions {
                     eval.set_print_handler(&buffered);
                 }
                 // Repository/extension definitions evaluate in the
@@ -1688,8 +1854,18 @@ impl<'a> Loader<'a> {
             };
             if metadata.file_type().is_symlink() || linked.is_some() {
                 let policy = self.repositories.link_policy(&label.repository);
-                match crate::source_links::resolve_with_policy(root, Path::new(&relative), &policy)
-                {
+                crate::repository_demand::take_order_dependent();
+                let resolution =
+                    crate::source_links::resolve_with_policy(root, Path::new(&relative), &policy);
+                // A link decision that depends on the repositories
+                // materialized so far is the sequential engine's to take
+                // (a worker aborts; crate::repository_demand::order_dependent).
+                if crate::repository_demand::take_order_dependent() {
+                    return Err(crate::repository_demand::order_dependent(&format!(
+                        "load {label} through a symlink"
+                    )));
+                }
+                match resolution {
                     Err(error) if error.starts_with("circular symlinks detected") => {
                         return Err(error);
                     }

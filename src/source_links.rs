@@ -420,6 +420,9 @@ fn resolve_across_inner(
             return false;
         };
         if let Some(taint) = policy.hop_taint(&origin, &next, host) {
+            // Whether that root is materialized depends on the run: a
+            // worker leaves the decision to the coordinator.
+            crate::repository_demand::note_order_dependent();
             observed_fs::taint(taint, || {
                 format!("{shown} in {} -> {}", origin.display(), absolute.display())
             });
@@ -454,6 +457,8 @@ fn resolve_across_inner(
                     if observed_fs::metadata(&absolute).is_err() {
                         return Ok(Resolution::Missing(absolute));
                     }
+                    // A later materialization could own the target.
+                    crate::repository_demand::note_order_dependent();
                     return Err(format!(
                         "source symlink path {shown} resolves outside its repository root {} (native source resolution follows links only into repositories materialized in this invocation)",
                         outside.display()
@@ -518,6 +523,8 @@ fn resolve_across_inner(
                         if observed_fs::metadata(&joined).is_err() {
                             return Ok(Resolution::Missing(joined));
                         }
+                        // A later materialization could own the target.
+                        crate::repository_demand::note_order_dependent();
                         return Err(format!(
                             "source symlink {} points outside its repository root to {} (native source resolution follows links only into repositories materialized in this invocation)",
                             path.display(),

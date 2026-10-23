@@ -81,6 +81,7 @@ pub mod patching;
 pub mod plan_timings;
 mod platform_providers;
 pub mod platforms;
+mod prefetch;
 pub mod providers;
 pub mod query_language;
 pub mod rc_options;
