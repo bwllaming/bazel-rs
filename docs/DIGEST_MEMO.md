@@ -103,3 +103,26 @@ Stat-mode fingerprints in their manifests (`repository_store::verify_snapshot_at
   lookups (hits in the file, hits among this process's new records, misses), records remembered and what
   the save wrote; files and bytes actually hashed per consumer, with the time spent in registry and
   `bazel_tools` tree checks, and `repository_store`'s warm-check phases.
+
+## Measurements (~/code 14bd7e2, lockfile c7a0c3df…, update mode, private caches; L2-W2)
+
+Shared, loaded machine (overlayfs, 48-CPU quota): indicative, interleaved where it matters.
+
+- Table on ~/code after `oauth2token/...` and B2: 24,780 records, 2,180,672 bytes; loaded by a fresh
+  process in 1.6–2.7 ms. The first run that builds it saved 24,652 records in 8 ms; a no-op build writes
+  nothing.
+- `build //src/beyondwork.ai/tools/oauth2token/...` (689 cache hits), execution tail
+  (`PERF execute.end − plan.end`, no action dump): base 6bebe72 3.68–4.65 s, after L2-W1 0.45–0.51 s, after
+  L2-W2 0.25–0.32 s. A warm build hashes one file (the volatile status) instead of 9,250 action files
+  (952 MB); `strace -c` of the tail (build − `--nobuild`): openat 72,329 (base) → 11,117 (W1) → 1,762,
+  statx 1,189,977 → 45,624 → 36,819. Peak RSS 1,400–1,418 MB (base) → 1,381–1,385 MB.
+- Repository checks per warm run (serial sums; B2 = `--nobuild` prober/pvcautoscaler/decommission):
+  | | without the table (`BAZEL_RS_DIGEST_MEMO=off`) | with it |
+  |---|---|---|
+  | registry trees (34) | 15,012 files, 337.6 MB hashed, 2.68 s | 0 hashed, 0.49 s (lstat walk; 0.09 s for oauth2token's 32) |
+  | `bazel_tools` | 421 files, 73.3 MB, 0.16 s | 0 hashed, 0.007 s |
+  | recorded inputs (`recorded_check`, 352 repositories) | 884 files, 3.55 GB hashed, 2.47 s | 0 hashed, 0.010 s |
+- Remaining tail (critical path, TEMP trace): scheduler validation ~70 ms (first main-thread allocations
+  after planning pay the allocator debt the analysis left), the SDK `builder` action ~55 ms (5,975
+  inputs: lstat-bound, overlayfs path lookups serialize), the `stdlib` actions ~25–35 ms, and a chain of
+  ~36 small actions ~75 ms.
