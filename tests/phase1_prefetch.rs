@@ -7,8 +7,9 @@
 //! prints exactly once in sequential order, the first analysis error in
 //! sequential order, speculative loads (a select() branch not taken, the
 //! implementation of a toolchain resolution never selects) that fail
-//! without surfacing, and the sentinel retry path (a registry module root
-//! only the coordinator materializes).
+//! without surfacing, the sentinel retry path (a registry module root
+//! only the coordinator materializes), and a top-level aspect's `.bzl` a
+//! worker evaluated first (one print, one char model; review F1).
 
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
@@ -265,6 +266,168 @@ fn first_analysis_error_wins_with_prefetch() {
     assert!(text.contains("d3 stops first"), "{text}");
     assert!(!text.contains("e2 must not surface"), "{text}");
     assert!(!text.contains("e2 BUILD"), "{text}");
+}
+
+/// The `--aspects` workspace of W6 review F1: `//app:app` names
+/// `//tools:unused` only on a select() branch not taken (the prefetch
+/// follows every branch, the build never commits `//tools` for it), many
+/// targets keep the coordinator analyzing while a worker loads `//tools`,
+/// and the top-level aspect is defined in that package's `lint.bzl` — a
+/// module with a top-level print and a non-ASCII string its aspect writes
+/// into an action output. With `dep`, the aspect's implicit `_dep` names
+/// `//tools:unused`, so the build commits `//tools` after the aspect load.
+fn aspect_workspace(dep: bool) -> Workspace {
+    let ws = Workspace::new("module(name = 'main')\n");
+    ws.file(
+        "app/rules.bzl",
+        "def _impl(ctx):\n    return [DefaultInfo()]\nr = rule(implementation = _impl, attrs = {'srcs': attr.label_list(allow_files = True)})\n",
+    );
+    ws.file(
+        "app/BUILD.bazel",
+        "load(':rules.bzl', 'r')\nconfig_setting(name = 'never', values = {'cpu': 'nonexistent'})\nr(name = 'app', srcs = select({':never': ['//tools:unused'], '//conditions:default': []}))\n",
+    );
+    let many: String = (0..1500).map(|i| format!("r(name = 'f{i}')\n")).collect();
+    ws.file(
+        "many/BUILD.bazel",
+        &format!("load('//app:rules.bzl', 'r')\n{many}"),
+    );
+    ws.file(
+        "tools/BUILD.bazel",
+        "load(':lint.bzl', 'lint_macro')\nlint_macro(name = 'unused')\n",
+    );
+    let attrs = if dep {
+        ", attrs = {'_dep': attr.label(default = '//tools:unused')}"
+    } else {
+        ""
+    };
+    ws.file(
+        "tools/lint.bzl",
+        &format!(
+            r#"NAME = "é"
+print("lint.bzl loaded, len(NAME) = %d" % len(NAME))
+
+def _impl(target, ctx):
+    if ctx.label.name != "app":
+        return []
+    out = ctx.actions.declare_file(ctx.label.name + ".lint.txt")
+    ctx.actions.write(out, NAME + "\n")
+    return [OutputGroupInfo(lint = depset([out]))]
+
+lint = aspect(implementation = _impl{attrs})
+
+def lint_macro(name):
+    native.filegroup(name = name, visibility = ["//visibility:public"])
+"#
+        ),
+    );
+    ws
+}
+
+/// The genuine Bazel 9.3.0 capture of [`aspect_workspace`]
+/// (tests/fixtures/phase1_prefetch/aspect_reference_receipt.json).
+fn aspect_receipt() -> serde_json::Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/phase1_prefetch/aspect_reference_receipt.json");
+    serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+}
+
+/// W6 review F1 (reproduced on d707764): a prefetch worker loading
+/// `//tools` for the select() branch not taken evaluated `lint.bzl` first,
+/// and the coordinator's `--aspects` load then hit the shared `.bzl` cache
+/// without a print sink: the module's print was lost (printed only if the
+/// build committed `//tools` later), and the aspect's strings depended on
+/// who evaluated the module first — the definition loader's Latin-1 char
+/// model (`len(NAME) = 2`, the action output `c3 83 c2 a9`) at threads 1,
+/// the BUILD loader's at 8 or 32 (the receipt's `native_before_review_f1`).
+/// Now the aspect load is a BUILD-phase load like every reader of the
+/// shared cache: the line prints once, at the aspect load, and the
+/// aspect's strings are the analysis model's at every thread count.
+/// Genuine Bazel 9.3.0 prints the line once too — `DEBUG: <WS>/tools/
+/// lint.bzl:2:6: lint.bzl loaded, len(NAME) = 2`: its strings are the
+/// Latin-1 chars of the UTF-8 bytes, so `len` counts bytes, the analysis
+/// model's documented `len` divergence (docs/STRING_METHODS.md) — and the
+/// aspect's action writes the same bytes, `c3 a9 0a`.
+#[test]
+fn aspect_bzl_prints_once_in_the_build_char_model_whoever_loads_it_first() {
+    use sha2::Digest;
+    let receipt = aspect_receipt();
+    for dep in [false, true] {
+        let ws = aspect_workspace(dep);
+        let variant = format!("dep={dep}");
+        // The receipt was captured on exactly this fixture.
+        let files = receipt["fixture_files_sha256"][&variant]
+            .as_object()
+            .unwrap();
+        assert_eq!(files.len(), 6);
+        for (name, sha256) in files {
+            let bytes = fs::read(ws.0.join(name)).unwrap();
+            assert_eq!(
+                format!("{:x}", sha2::Sha256::digest(&bytes)),
+                sha256.as_str().unwrap(),
+                "{variant}: {name}"
+            );
+        }
+        let genuine = &receipt["genuine"][&variant]["build"];
+        let args = [
+            "--aspects=//tools:lint.bzl%lint",
+            "--output_groups=lint",
+            "//app:app",
+            "//many:all",
+        ];
+        let warm = ws.run_env(
+            &[],
+            &[
+                "build",
+                "--loading_phase_threads=1",
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+            ],
+        );
+        assert!(warm.status.success(), "{variant}: {}", stderr(&warm));
+        let reference = assert_identical_across_threads(&ws, &args);
+        assert!(
+            reference.status.success(),
+            "{variant}: {}",
+            stderr(&reference)
+        );
+        let text = stderr(&reference);
+        // Printed once, like genuine's one DEBUG line (the analysis model's
+        // `len` divergence aside).
+        let genuine_lines = genuine["lint_lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|line| line.as_str().unwrap().contains("lint.bzl loaded"))
+            .count();
+        assert_eq!(genuine_lines, 1);
+        assert_eq!(
+            text.matches("lint.bzl loaded").count(),
+            genuine_lines,
+            "{variant}: {text}"
+        );
+        assert!(
+            text.contains("lint.bzl loaded, len(NAME) = 1\n"),
+            "{variant}: {text}"
+        );
+        // The aspect's action output: genuine's bytes.
+        let stdout = String::from_utf8_lossy(&reference.stdout).into_owned();
+        let (_, path) = stdout
+            .lines()
+            .find_map(|line| line.split_once('\t'))
+            .unwrap_or_else(|| panic!("{variant}: {stdout}"));
+        let written: Vec<String> = fs::read(path)
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        assert_eq!(
+            written.join(" "),
+            genuine["output_bytes"].as_str().unwrap(),
+            "{variant}: {path}"
+        );
+    }
 }
 
 /// A JSON string literal (no serde_json dependency in the test).

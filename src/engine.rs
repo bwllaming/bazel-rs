@@ -1876,13 +1876,25 @@ impl Engine {
             .repositories
             .parse(extension, "", "")
             .map_err(|error| format!("Invalid aspect '{identity}': {error}"))?;
+        // A BUILD-phase load of the shared `.bzl` cache (its invariant, W6
+        // review F1): a phase-1 prefetch worker may have evaluated the
+        // module already, for a package the build may never commit. The
+        // load's print events replay here like a load unit's at its commit
+        // — the lines of a module it evaluated, or the stored lines of a
+        // cache hit not emitted yet — also when the load fails, so the
+        // lines print once, at this sequential point, whoever evaluated the
+        // module first.
+        let prints = crate::loading::LoadPrints::default();
         let loaded = crate::loading::load_shared_definition_any_in(
             self.repositories.clone(),
             &label,
             name,
-            &crate::package::bzl_globals(),
+            &self.repositories.build_phase_globals().1,
             !allow_private,
-        )?;
+            &prints,
+        );
+        self.emit_load_prints(prints.take());
+        let loaded = loaded?;
         let Some(aspect) = crate::rule_declarations::Aspect::from_value(loaded.value.value())
         else {
             return Err(format!("{name} from {label} is not an aspect"));

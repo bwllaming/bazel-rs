@@ -527,31 +527,42 @@ fn load_frozen_export_with(
     })
 }
 
-/// [`load_definition_in`] over the repository set's shared `.bzl` cache: a
-/// module some BUILD file already loaded is not evaluated again, and a
-/// module loaded here first is published for later BUILD files (one
-/// BzlLoadValue per label, like Bazel's Skyframe).
-pub fn load_shared_definition_in(
+/// [`load_shared_definition_any_in`] of a public export.
+#[cfg(test)]
+pub(crate) fn load_shared_definition_in(
     repositories: Arc<RepositorySet>,
     label: &Label,
     symbol: &str,
     globals: &Globals,
+    prints: &LoadPrints,
 ) -> Result<LoadedDefinition, String> {
-    load_shared_definition_any_in(repositories, label, symbol, globals, true)
+    load_shared_definition_any_in(repositories, label, symbol, globals, true, prints)
 }
 
-/// [`load_shared_definition_in`] for identities whose private (underscore)
+/// An export of a BUILD-phase `.bzl` module (an aspect's defining file)
+/// over the repository set's shared `.bzl` cache: a module some BUILD file
+/// already loaded is not evaluated again, and a module loaded here first
+/// is published for later BUILD files (one BzlLoadValue per label, like
+/// Bazel's Skyframe). The load is a BUILD-phase load like a package's (the
+/// [`BzlCache`] invariant): BUILD-phase globals, the analysis char model,
+/// and its print events — the lines of the modules it evaluates, a hit
+/// marker for every module the cache serves — into `prints`, which the
+/// caller replays like a load unit's (`Engine::emit_load_prints`). No
+/// source provenance or repository mapping records are captured.
+///
+/// `public_only` false is for identities whose private (underscore)
 /// top-level binding is legal at the reference site: an `attr(aspects=...)`
 /// list may name a private aspect of the same `.bzl` file
 /// (`_go_cc_aspect` of rules_go's binary.bzl), which Bazel resolves from
 /// the aspect value the rule class captured — never a load() — so the
 /// identity re-load here reads the binding at any visibility (N58 on N57).
-pub fn load_shared_definition_any_in(
+pub(crate) fn load_shared_definition_any_in(
     repositories: Arc<RepositorySet>,
     label: &Label,
     symbol: &str,
     globals: &Globals,
     public_only: bool,
+    prints: &LoadPrints,
 ) -> Result<LoadedDefinition, String> {
     if public_only && symbol.starts_with('_') {
         return Err(format!(
@@ -569,8 +580,7 @@ pub fn load_shared_definition_any_in(
     if !label.name.ends_with(".bzl") {
         return Err(format!("load {label} requires a .bzl suffix"));
     }
-    let mut loader = Loader::new(repositories, globals, true);
-    loader.shared = true;
+    let mut loader = Loader::shared_build_phase(repositories, globals, prints);
     loader.load(label.clone()).map_err(|error| {
         // A parallel wait-cycle abort escaping a definition load has no
         // commit unit above it to re-run inline: it is a genuine
@@ -668,9 +678,8 @@ fn load_build_file_modules(
     if labels.is_empty() {
         return Ok(LoadedModules::default());
     }
-    let mut loader = Loader::new(repositories, globals, false);
+    let mut loader = Loader::shared_build_phase(repositories, globals, prints);
     loader.shared = shared;
-    loader.prints = Some(prints);
     for label in labels.iter().cloned() {
         loader.load(label)?;
     }
@@ -742,8 +751,8 @@ struct CachedBzl {
     /// Its direct loads in load-statement order (`dependencies`).
     loads: Vec<Label>,
     /// The module's buffered top-level `print()` lines, in evaluation
-    /// order (empty when a definition load outside the BUILD phase
-    /// evaluated it and already emitted them; review §1.4).
+    /// order: the coordinator emits them once, at the first commit or
+    /// aspect load that reaches the module (review §1.4, W6 review F1).
     prints: Vec<String>,
 }
 
@@ -770,6 +779,18 @@ type CachedResult = Result<Arc<CachedBzl>, Arc<CachedFailure>>;
 /// The `.bzl` modules a repository set (one invocation) has evaluated for
 /// BUILD files, by canonical label. Lookups and inserts take the lock
 /// briefly; it is never held while evaluating. Lookups only: never iterated.
+///
+/// Invariant (W6 review F1): whichever thread evaluates a label first — a
+/// prefetch or pattern-loading worker, or the coordinator — the entry is
+/// the same, and so is what the coordinator prints. Every reader and
+/// publisher is a BUILD-phase loader ([`Loader::shared_build_phase`]):
+/// BUILD-phase globals, the analysis char model (never the Latin-1 model
+/// of repository and extension definitions), and print events buffered
+/// into a sink — the lines of the modules it evaluated and a hit marker
+/// for every module the cache served — that the coordinator replays at
+/// its sequential point (a load unit's commit, an aspect definition
+/// load), emitting a module's lines once, at the first point that reaches
+/// it. No reader prints a module's lines itself or skips a hit's.
 pub(crate) struct BzlCache {
     /// Process-unique instance id: the flight registry keys claims by
     /// (cache instance, label), so independent caches never couple.
@@ -1240,6 +1261,22 @@ impl<'a> Loader<'a> {
         }
     }
 
+    /// A BUILD-phase loader over the repository set's shared [`BzlCache`]
+    /// (its invariant): `globals` are the BUILD-phase `.bzl` globals,
+    /// modules evaluate in the analysis char model without provenance
+    /// capture, and every print event goes to `prints`. Callers that must
+    /// not share the cache (a private load) clear `shared` afterwards.
+    fn shared_build_phase(
+        repositories: Arc<RepositorySet>,
+        globals: &'a Globals,
+        prints: &'a LoadPrints,
+    ) -> Self {
+        let mut loader = Self::new(repositories, globals, false);
+        loader.shared = true;
+        loader.prints = Some(prints);
+        loader
+    }
+
     /// A shared-cache hit for `label`: schedule its reuse (loads visited
     /// exactly as if evaluated here). False on a miss or when this loader
     /// does not share the cache.
@@ -1281,6 +1318,11 @@ impl<'a> Loader<'a> {
     }
 
     fn load(&mut self, label: Label) -> Result<(), String> {
+        // The shared cache's invariant: one char model, one print sink.
+        debug_assert!(
+            !self.shared || (!self.provenance_capture && self.prints.is_some()),
+            "a shared .bzl cache loader must be a BUILD-phase loader"
+        );
         // Explicit DFS frames avoid exhausting the Rust stack on deep graphs.
         let mut work = vec![Work::Enter(label)];
         let mut active = Vec::new();
@@ -3521,7 +3563,8 @@ lambda_mapper = lambda value: value
             },
             other => panic!("uncontended claim must be owned: {other:?}"),
         };
-        let error = load_shared_definition_in(repositories, &label, "value", &globals)
+        let prints = LoadPrints::default();
+        let error = load_shared_definition_in(repositories, &label, "value", &globals, &prints)
             .expect_err("re-entrant demand must fail");
         assert!(error.contains("load cycle"), "{error}");
         assert!(error.contains("self.bzl"), "{error}");
@@ -3529,5 +3572,58 @@ lambda_mapper = lambda value: value
             !error.contains(crate::repository_demand::PARALLEL_BZL_CYCLE),
             "the raw sentinel must not reach the user: {error:?}"
         );
+    }
+
+    /// W6 review F1: an aspect definition load is a BUILD-phase load over
+    /// the shared cache whichever load reaches the module first. Evaluated
+    /// by the aspect load, the module's lines are print events of its sink
+    /// (never stderr directly) and its strings are in the analysis char
+    /// model; served from the cache after a BUILD unit (a prefetch worker)
+    /// published it, the sink holds the hit marker that replays the stored
+    /// lines — and the value is the same.
+    #[test]
+    fn shared_definition_loads_are_build_phase_loads_whoever_evaluates_first() {
+        let temp = Temp::new();
+        temp.file("MODULE.bazel", "module(name = 'main')\n");
+        temp.file("tools/BUILD", "");
+        temp.file(
+            "tools/lint.bzl",
+            "NAME = '\u{e9}'\nprint('len %d' % len(NAME))\nlength = len(NAME)\n",
+        );
+        let globals = crate::package::bzl_globals();
+        let label = Label::parse_canonical("//tools:lint.bzl").unwrap();
+        let line = || LoadPrintEvent::Module {
+            label: label.clone(),
+            line: "len 1".to_owned(),
+        };
+
+        // The aspect load evaluates the module.
+        let first = Arc::new(RepositorySet::new(temp.0.clone()));
+        let prints = LoadPrints::default();
+        let loaded =
+            load_shared_definition_in(first.clone(), &label, "length", &globals, &prints).unwrap();
+        assert_eq!(loaded.value.value().unpack_i32(), Some(1));
+        assert!(loaded.sources.is_empty() && loaded.repo_mappings.is_empty());
+        assert_eq!(prints.take(), vec![line()]);
+        assert_eq!(first.build_bzl_cache().prints(&label), vec!["len 1"]);
+
+        // A BUILD unit (a worker's) evaluates and publishes it first.
+        let second = Arc::new(RepositorySet::new(temp.0.clone()));
+        let unit = LoadPrints::default();
+        load_build_modules_in(
+            second.clone(),
+            &root_package(),
+            &parse("load('//tools:lint.bzl', 'length')\n"),
+            &globals,
+            &unit,
+        )
+        .unwrap();
+        assert_eq!(unit.take(), vec![line()]);
+        let prints = LoadPrints::default();
+        let loaded =
+            load_shared_definition_in(second.clone(), &label, "length", &globals, &prints).unwrap();
+        assert_eq!(loaded.value.value().unpack_i32(), Some(1));
+        assert_eq!(prints.take(), vec![LoadPrintEvent::Cached(label.clone())]);
+        assert_eq!(second.build_bzl_cache().prints(&label), vec!["len 1"]);
     }
 }

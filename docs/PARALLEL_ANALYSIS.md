@@ -637,10 +637,42 @@ it) and commits it through `commit_load_unit` — the sequential path's
 commit, at the sequential point: BUILD lines, `.bzl` lines and hit markers
 replayed in the unit's DFS order, `validate_output_directory`, generated
 inserts, `packages.insert`, the error of a failed unit. A sentinel unit is
-re-run inline there (P2). So prints, errors, warnings and the commit order
-are the sequential engine's whatever the workers did; a speculative unit
-that fails (a select() branch not taken, the implementation of a
-toolchain resolution never selects) never surfaces.
+re-run inline there (P2). So the commit order, and every print, error and
+warning a unit carries, is the sequential engine's; a speculative unit that
+fails (a select() branch not taken, the implementation of a toolchain
+resolution never selects) never surfaces.
+
+A worker's work does not stay inside its unit, though: the units it loads —
+also the ones the build never commits — publish shared state the
+coordinator reads later. Each such reader keeps one invariant, so that what
+it computes and prints does not depend on whether, or when, a worker got
+there first:
+
+- **The shared BUILD-phase `.bzl` cache** (`loading::BzlCache`; review F1 of
+  d707764). Every loader that reads or publishes it is a BUILD-phase loader
+  (`Loader::shared_build_phase`): BUILD-phase globals, the analysis char
+  model, and print events into a sink — the lines of the modules it
+  evaluated and a hit marker for every module the cache served. The
+  coordinator replays each sink at its sequential point
+  (`Engine::emit_load_prints`), so a module's lines print once, at the first
+  commit or aspect load that reaches the module, read from the cache entry
+  when a worker evaluated it. The coordinator's readers are the package load
+  units and the aspect definition loads (`Engine::aspect_definition`:
+  `--aspects`, `attr(aspects = ...)`). The aspect load used to be a definition
+  load over the same cache: the Latin-1 char model, lines printed straight to
+  stderr, nothing replayed on a hit. When a worker had published the module
+  for a package the build never commits (`//tools`, reached only through a
+  select() branch not taken), the aspect's top-level print was lost. The
+  module's strings depended on who evaluated it first: with `NAME = "é"`,
+  `len(NAME)` was 2 and the aspect's action wrote `c3 83 c2 a9` at threads 1,
+  but `len(NAME)` was 1 and the action wrote `c3 a9` at threads 8.
+  Genuine Bazel 9.3.0 prints the line once (`len(NAME) = 2`: its strings are
+  bytes, the analysis model's documented `len` divergence, STRING_METHODS.md)
+  and writes `c3 a9`. Now every thread count prints the line once with
+  `len(NAME) = 1` and writes `c3 a9` — an intended change at threads 1,
+  whose action bytes now match genuine's (`tests/phase1_prefetch.rs`,
+  `aspect_bzl_prints_once_in_the_build_char_model_whoever_loads_it_first`;
+  genuine receipt `tests/fixtures/phase1_prefetch/aspect_reference_receipt.json`).
 
 **What is queued** (target-directed, like a loading-phase transitive
 closure; hints only — a wrong guess costs a wasted load, never output):
@@ -716,10 +748,12 @@ loading).
 (`:all` and explicit labels), a dependency chain with BUILD and `.bzl`
 prints, a select() branch not taken and an unselected toolchain
 implementation that both fail to load, the first analysis error among two
-failing chains, and registry-module toolchain packages that need the
-sentinel retry (cold, then warm) — byte-identical stdout/stderr/exit at
-threads 1/2/8/32 and 8/32 with jitter; P2's `tests/parallel_loading.rs`
-unchanged.
+failing chains, registry-module toolchain packages that need the
+sentinel retry (cold, then warm), and a top-level aspect whose `.bzl` a
+worker evaluates first for a package reached only through a select()
+branch not taken (with and without the build committing that package
+later) — byte-identical stdout/stderr/exit at threads 1/2/8/32 and 8/32
+with jitter; P2's `tests/parallel_loading.rs` unchanged.
 
 ### Definition `.bzl` modules evaluated once per invocation
 

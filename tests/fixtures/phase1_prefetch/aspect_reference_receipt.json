@@ -1,0 +1,188 @@
+{
+ "schema": "phase1-prefetch-aspect-receipt/v1",
+ "fixture": "tests/phase1_prefetch.rs aspect_workspace(dep) (both variants)",
+ "purpose": "W6 review F1: a top-level --aspects .bzl that a phase-1 prefetch worker may evaluate first (for //tools, reached only through a select() branch not taken) prints its top-level line once and keeps one char model at every --loading_phase_threads.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "flags": "--batch --ignore_all_rc_files --output_user_root=<private scratch>"
+ },
+ "argv": [
+  "build",
+  "--aspects=//tools:lint.bzl%lint",
+  "--output_groups=lint",
+  "//app:app",
+  "//many:all"
+ ],
+ "capture": "/tmp/opencode/perf-research/w6f-aspect-capture.py (scratch root removed afterwards; private HOME/TMPDIR, LANG=C.UTF-8)",
+ "fixture_files_sha256": {
+  "dep=false": {
+   "MODULE.bazel": "96f4190c5643aa807ccbc92fd2c4ea3c67d88796e00f12910a1d5a8a1ef1fa7b",
+   "app/BUILD.bazel": "a894c962352fc712e8c0cc4e9a2f86a529f8d7b9616cb7b238f5784c53911a9a",
+   "app/rules.bzl": "1002e1cbc100e9cf572b047bb6dc2174f2607338afcc984af64c2bbd4afdbfee",
+   "many/BUILD.bazel": "3b6ab4a848f5d2545e70ce9d1e5e3ec9052a20a9631334807e44821f08f9e38c",
+   "tools/BUILD.bazel": "1662d488239ccc3c68dc27f6c733235a69f3549c132e2241a41fc174403c930f",
+   "tools/lint.bzl": "0fa6203b35324ae66a461b7e99b8db8a852918b6fef05926ad084105b174647d"
+  },
+  "dep=true": {
+   "MODULE.bazel": "96f4190c5643aa807ccbc92fd2c4ea3c67d88796e00f12910a1d5a8a1ef1fa7b",
+   "app/BUILD.bazel": "a894c962352fc712e8c0cc4e9a2f86a529f8d7b9616cb7b238f5784c53911a9a",
+   "app/rules.bzl": "1002e1cbc100e9cf572b047bb6dc2174f2607338afcc984af64c2bbd4afdbfee",
+   "many/BUILD.bazel": "3b6ab4a848f5d2545e70ce9d1e5e3ec9052a20a9631334807e44821f08f9e38c",
+   "tools/BUILD.bazel": "1662d488239ccc3c68dc27f6c733235a69f3549c132e2241a41fc174403c930f",
+   "tools/lint.bzl": "6b0a1fac15de507d523b12e10df61b3dfe959b0d8df62de6ae31d250342d6339"
+  }
+ },
+ "genuine": {
+  "dep=false": {
+   "build": {
+    "exit": 0,
+    "lint_lines": [
+     "DEBUG: <WS>/tools/lint.bzl:2:6: lint.bzl loaded, len(NAME) = 2",
+     "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+    ],
+    "output_bytes": "c3 a9 0a"
+   },
+   "nobuild": {
+    "exit": 0,
+    "lint_lines": [
+     "DEBUG: <WS>/tools/lint.bzl:2:6: lint.bzl loaded, len(NAME) = 2"
+    ],
+    "output_bytes": null
+   }
+  },
+  "dep=true": {
+   "build": {
+    "exit": 0,
+    "lint_lines": [
+     "DEBUG: <WS>/tools/lint.bzl:2:6: lint.bzl loaded, len(NAME) = 2",
+     "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+    ],
+    "output_bytes": "c3 a9 0a"
+   },
+   "nobuild": {
+    "exit": 0,
+    "lint_lines": [
+     "DEBUG: <WS>/tools/lint.bzl:2:6: lint.bzl loaded, len(NAME) = 2"
+    ],
+    "output_bytes": null
+   }
+  }
+ },
+ "native_before_review_f1": {
+  "binary": "debug build of 0c2ef0e",
+  "runs": {
+   "dep=false": {
+    "t1": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 2",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 83 c2 a9 0a"
+    },
+    "t8": {
+     "exit": 0,
+     "lint_lines": [
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t32": {
+     "exit": 0,
+     "lint_lines": [
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    }
+   },
+   "dep=true": {
+    "t1": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 2",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 83 c2 a9 0a"
+    },
+    "t8": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t32": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    }
+   }
+  }
+ },
+ "native_after_review_f1": {
+  "runs": {
+   "dep=false": {
+    "t1": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t8": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t32": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    }
+   },
+   "dep=true": {
+    "t1": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t8": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    },
+    "t32": {
+     "exit": 0,
+     "lint_lines": [
+      "lint.bzl loaded, len(NAME) = 1",
+      "Aspect //tools:lint.bzl%lint of //app:app up-to-date:"
+     ],
+     "output_bytes": "c3 a9 0a"
+    }
+   }
+  }
+ },
+ "known_divergences": [
+  "len(NAME) of NAME = \"é\": genuine 2 (Bazel strings are the Latin-1 chars of the UTF-8 bytes), native 1 (the analysis char model counts characters; docs/STRING_METHODS.md, Known divergences)",
+  "print() line: genuine prefixes `DEBUG: <WS>/tools/lint.bzl:2:6: `, native prints the bare line (pre-existing, every print)"
+ ],
+ "scratch_removed": true
+}
