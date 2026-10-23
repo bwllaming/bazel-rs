@@ -1,0 +1,50 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# strip_include_prefix relative to the package: lib/include/stripped/api.h
+# is included as "stripped/api.h" through
+# bazel-bin/lib/_virtual_includes/stripped/stripped/api.h.
+cc_library(
+    name = "stripped",
+    srcs = ["src/stripped.c"],
+    hdrs = ["include/stripped/api.h"],
+    strip_include_prefix = "include",
+)
+
+# include_prefix alone strips the package: lib/prefixed.h is
+# "vendor/prefixed/prefixed.h".
+cc_library(
+    name = "prefixed",
+    srcs = ["prefixed.c"],
+    hdrs = ["prefixed.h"],
+    include_prefix = "vendor/prefixed",
+)
+
+# A header-only library with a repository-absolute strip prefix plus an
+# include prefix, and a textual header (the strip prefix applies to it too).
+cc_library(
+    name = "both",
+    hdrs = ["include/both/both.h"],
+    strip_include_prefix = "/lib/include",
+    include_prefix = "pre",
+    textual_hdrs = ["include/both/both.inc"],
+)
+
+# A textual header outside the strip prefix stays at its own path
+# (must_use_strip_prefix = False); the public header gets a virtual path.
+cc_library(
+    name = "textual_outside",
+    hdrs = ["include/stripped/api.h"],
+    strip_include_prefix = "include",
+    textual_hdrs = ["prefixed.h"],
+)
+
+# The same header public and textual: two identical symlink actions for one
+# virtual header.
+cc_library(
+    name = "hdr_and_textual",
+    hdrs = ["include/stripped/api.h"],
+    strip_include_prefix = "include",
+    textual_hdrs = ["include/stripped/api.h"],
+)

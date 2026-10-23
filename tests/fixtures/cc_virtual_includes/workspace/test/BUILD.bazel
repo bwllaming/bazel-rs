@@ -1,0 +1,163 @@
+load(":defs.bzl", "probe")
+
+exports_files(["v.h"])
+
+# Paths are relative to the artifact root (the bin directory of the target's
+# configuration by default), not to the package.
+probe(
+    name = "outside",
+    path = "elsewhere/shared.txt",
+)
+
+probe(
+    name = "in_package",
+    path = "test/in_package/shared.txt",
+)
+
+probe(
+    name = "normalized",
+    path = "test/./sub2/../normalized.txt",
+)
+
+probe(
+    name = "external_path",
+    path = "external/somerepo/x.txt",
+)
+
+# A path below a subpackage: no package-boundary check.
+probe(
+    name = "cross",
+    path = "test/sub/cross.txt",
+)
+
+probe(
+    name = "bin_dir",
+    mode = "bin_dir",
+    path = "test/bin_dir.txt",
+)
+
+probe(
+    name = "genfiles_dir",
+    mode = "genfiles_dir",
+    path = "test/genfiles_dir.txt",
+)
+
+probe(
+    name = "file_root",
+    mode = "file_root",
+    path = "test/file_root.txt",
+)
+
+probe(
+    name = "twice",
+    mode = "twice",
+    path = "test/twice.txt",
+)
+
+probe(
+    name = "alias",
+    mode = "declare_file_alias",
+    package_name = "alias.txt",
+    path = "test/alias.txt",
+)
+
+probe(
+    name = "symlink",
+    mode = "symlink",
+    path = "test/_virtual_includes/symlink/v.h",
+    src = "v.h",
+)
+
+probe(
+    name = "symlink_exec_root",
+    mode = "symlink",
+    path = "test/_virtual_includes/symlink_exec_root/v.h",
+    src = "v.h",
+    use_exec_root = True,
+)
+
+# Two targets sharing one artifact: identical actions are shared, different
+# ones conflict.
+probe(
+    name = "share_a",
+    content = "same\n",
+    path = "shared/same.txt",
+)
+
+probe(
+    name = "share_c",
+    content = "c\n",
+    path = "shared/diff.txt",
+)
+
+# One rule writing one artifact twice: identical actions are shared,
+# different ones conflict (//test:two_writes).
+probe(
+    name = "same_writes",
+    mode = "same_writes",
+    path = "test/same_writes.txt",
+)
+
+# Misuse.
+probe(
+    name = "orphan",
+    mode = "orphan",
+    path = "test/orphan.txt",
+)
+
+probe(
+    name = "two_writes",
+    mode = "two_writes",
+    path = "test/two_writes.txt",
+)
+
+probe(
+    name = "named",
+    mode = "named",
+    path = "test/named.txt",
+)
+
+probe(
+    name = "int_path",
+    mode = "int_path",
+)
+
+probe(
+    name = "too_many",
+    mode = "too_many",
+    path = "test/too_many.txt",
+)
+
+probe(
+    name = "root_string",
+    mode = "root_string",
+    path = "test/root_string.txt",
+)
+
+probe(
+    name = "root_none",
+    mode = "root_none",
+    path = "test/root_none.txt",
+)
+
+probe(
+    name = "source_root",
+    mode = "source_root",
+    path = "test/source_root.txt",
+    src = "v.h",
+)
+
+probe(
+    name = "uplevel",
+    path = "../up.txt",
+)
+
+probe(
+    name = "absolute",
+    path = "/abs.txt",
+)
+
+probe(
+    name = "empty",
+    path = "",
+)

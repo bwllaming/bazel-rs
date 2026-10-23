@@ -159,6 +159,11 @@ mod owned {
         /// (crate::config_registry::ConfiguredTargetKey::action_owner).
         pub action_owner: String,
         pub declared: RefCell<Vec<File>>,
+        /// The exec paths of the declared outputs that are shareable
+        /// artifacts (`ctx.actions.declare_shareable_artifact`): below an
+        /// artifact root, not the package, so the package-relative output
+        /// checks never apply to them.
+        pub shareable: RefCell<BTreeSet<String>>,
         pub actions: RefCell<Vec<RegisteredAction>>,
         pub active: Arc<AtomicBool>,
         pub top_level_functions: std::sync::Arc<[OwnedFrozenValue]>,
@@ -259,6 +264,49 @@ impl Context {
         Ok(file)
     }
 
+    /// A shareable artifact (StarlarkActionFactory.createShareableArtifact,
+    /// analysis/starlark/StarlarkActionFactory.java:1267-1276 over
+    /// RuleContext.getShareableArtifact :711-713 and
+    /// CachingAnalysisEnvironment.getDerivedArtifact :262-267): `path` is
+    /// relative to the artifact root `root` (the exec path of a derived
+    /// root), not to the package, and normalized like PathFragment.create.
+    /// The rule owns it; the same path declared twice (or the same exec
+    /// path declared with `declare_file`) is the same artifact
+    /// (dedupAndTrackArtifactAndOrigin :241-259).
+    pub(crate) fn declare_shareable(&self, root: &str, path: &str) -> anyhow::Result<File> {
+        self.sync_default_executable();
+        let relative = shareable_relative_path(path)?;
+        let file = File {
+            is_directory: false,
+            path: if relative.is_empty() {
+                root.to_owned()
+            } else {
+                format!("{root}/{relative}")
+            },
+            short_path: runfiles_path(&relative),
+            owner: self.label.to_string(),
+            is_source: false,
+        };
+        let mut declared = self.declared.borrow_mut();
+        // As for declare_kind: an output path another target already
+        // produces is the commit's `overlapping output paths` conflict
+        // (crate::engine register_output; W1b).
+        if !declared.contains(&file) {
+            declared.push(file.clone());
+            // A package-relative declaration of the same exec path is the
+            // same artifact; only a fresh shareable declaration skips the
+            // package checks.
+            self.shareable.borrow_mut().insert(file.path.clone());
+        }
+        Ok(file)
+    }
+
+    /// Whether a declared output is a shareable artifact
+    /// ([`Context::declare_shareable`]).
+    pub(crate) fn is_shareable(&self, file: &File) -> bool {
+        self.shareable.borrow().contains(&file.path)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn register(
         &self,
@@ -315,6 +363,9 @@ impl Context {
         let declared = self.declared.borrow();
         let mut seen = BTreeSet::new();
         let mut actions = self.actions.borrow_mut();
+        // The first output that already has a generating action of this
+        // target (checked once the action is built).
+        let mut generated = None;
         for output in &outputs {
             ensure!(
                 !output.is_source
@@ -329,11 +380,13 @@ impl Context {
                 "duplicate action output {}",
                 output.path
             );
-            ensure!(
-                !actions.iter().any(|action| action.outputs.contains(output)),
-                "output {} has more than one generating action",
-                output.path
-            );
+            if generated.is_none()
+                && let Some(index) = actions
+                    .iter()
+                    .position(|action| action.outputs.contains(output))
+            {
+                generated = Some((index, output.clone()));
+            }
         }
         // Inputs are Artifacts, whatever path the File took to reach this
         // implementation (a dependency, a provider field, a closure; Bazel
@@ -377,7 +430,7 @@ impl Context {
         crate::action::validate_structure(&action).map_err(anyhow::Error::msg)?;
         action.inputs.clear();
         action.extra.tree_inputs.clear();
-        actions.push(RegisteredAction {
+        let registered = RegisteredAction {
             action,
             inputs,
             outputs,
@@ -385,9 +438,50 @@ impl Context {
             exec_group,
             runfiles_trees,
             build_info,
-        });
+        };
+        if let Some((index, output)) = generated {
+            // Actions.assignOwnersAndThrowIfConflict over one target's
+            // actions (actions/Actions.java): an output generated twice is
+            // fine when the two actions can be shared (Actions.canBeShared:
+            // same mnemonic, key, inputs and outputs; the progress message
+            // is not keyed), so the second registration is the first;
+            // otherwise ActionConflictException's message
+            // (actions/MutableActionGraph.java), whose further lines name
+            // JVM action classes and keys.
+            match (sharing_key(&actions[index]), sharing_key(&registered)) {
+                (Some(first), Some(second)) if first == second => return Ok(()),
+                _ => bail!(
+                    "file '{}' is generated by these conflicting actions:\nLabel: {}",
+                    crate::runfiles::root_relative(&output),
+                    self.label
+                ),
+            }
+        }
+        actions.push(registered);
         Ok(())
     }
+}
+
+/// The identity of an action for Actions.canBeShared: everything but the
+/// owner-numbered id and the progress message. Actions completed at
+/// execution or planning time (deferred command lines, build-info
+/// callbacks) and tool runfiles trees are never compared: they conflict.
+fn sharing_key(registered: &RegisteredAction) -> Option<String> {
+    if registered.deferred.is_some()
+        || registered.build_info.is_some()
+        || !registered.runfiles_trees.is_empty()
+    {
+        return None;
+    }
+    let mut action = registered.action.clone();
+    action.id.clear();
+    if let Some(Transform::Symlink { progress, .. }) = action.extra.transform.as_mut() {
+        progress.clear();
+    }
+    Some(format!(
+        "{action:?}|{:?}|{:?}|{}",
+        registered.inputs, registered.outputs, registered.exec_group
+    ))
 }
 
 /// One action registration (crate::analysis_runtime::Context::register_action).
@@ -899,6 +993,62 @@ fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyho
         .into_owned())
 }
 
+/// The root-relative path of a shareable artifact: PathFragment.create's
+/// normalization (crate::ignored::normalize_path_fragment), then
+/// ArtifactFactory.validatePath (actions/ArtifactFactory.java:303-324). An
+/// absolute path or one with uplevel references fails a Preconditions check
+/// there, which genuine Bazel 9.3 does not catch (an internal
+/// IllegalArgumentException crashes the server); natively an explicit error.
+fn shareable_relative_path(path: &str) -> anyhow::Result<String> {
+    let normalized = crate::ignored::normalize_path_fragment(path);
+    ensure!(
+        !normalized.starts_with('/'),
+        "declare_shareable_artifact('{path}'): the path must be relative to the artifact root (Bazel 9.3 fails with an internal IllegalArgumentException)"
+    );
+    ensure!(
+        !normalized.split('/').any(|segment| segment == ".."),
+        "declare_shareable_artifact('{path}'): the path must not contain uplevel references (Bazel 9.3 fails with an internal IllegalArgumentException)"
+    );
+    ensure!(
+        !normalized.is_empty(),
+        "declare_shareable_artifact('{path}'): the path names the artifact root itself, which cannot be an output of the native profile"
+    );
+    Ok(normalized)
+}
+
+/// Artifact.getRunfilesPath (actions/Artifact.java:636-662) of a derived
+/// artifact under the legacy (non-sibling) layout: `external/<repo>/...`
+/// is `../<repo>/...`.
+fn runfiles_path(relative: &str) -> String {
+    match relative.strip_prefix("external") {
+        Some("") => "..".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("..{rest}"),
+        _ => relative.to_owned(),
+    }
+}
+
+/// An explicit `artifact_root` of declare_shareable_artifact: a derived
+/// root (`ctx.bin_dir`, `ctx.genfiles_dir` or a generated File's `root`).
+/// Genuine Bazel 9.3 casts the value to ArtifactRoot without a check (a
+/// ClassCastException for any other value) and fails validatePath's
+/// Preconditions for a source root (IllegalArgumentException); both crash
+/// the server, natively they are explicit errors.
+fn shareable_artifact_root(path: &str, value: Value<'_>) -> anyhow::Result<String> {
+    if let Some(root) = crate::ctx_surface::Root::from_value(value) {
+        return Ok(root.path.clone());
+    }
+    match crate::starlark_types::file_root(value) {
+        Some((root, false)) => Ok(root.to_owned()),
+        Some((_, true)) => bail!(
+            "declare_shareable_artifact('{path}'): artifact_root is a source root; a shareable artifact needs a derived root (Bazel 9.3 fails with an internal IllegalArgumentException)"
+        ),
+        None => bail!(
+            "declare_shareable_artifact('{path}'): artifact_root must be a root, not '{}' (Bazel 9.3 fails with an internal ClassCastException)",
+            value.get_type()
+        ),
+    }
+}
+
 #[starlark_module]
 fn action_methods(builder: &mut MethodsBuilder) {
     fn args<'v>(this: Value<'v>, eval: &mut Evaluator<'v, '_, '_>) -> anyhow::Result<Value<'v>> {
@@ -927,6 +1077,31 @@ fn action_methods(builder: &mut MethodsBuilder) {
         let context = action_receiver(this, eval, false)?;
         let name = declared_name(context, filename, sibling)?;
         Ok(alloc_file(eval.heap(), context.declare_kind(&name, true)?))
+    }
+    /// StarlarkActionFactory.createShareableArtifact (:1267-1276;
+    /// StarlarkActionFactoryApi.java:1142-1151: `path` and `artifact_root`
+    /// are positional-only, `artifact_root` defaults to unbound): restricted
+    /// to the internal Starlark API allowlist
+    /// (BuiltinRestriction.failIfCalledOutsideDefaultAllowlist, first), then
+    /// a derived artifact `path` below `artifact_root` (default: the bin
+    /// directory of the target's configuration, RuleContext.getBinDirectory
+    /// :319-321) owned by the rule (Context::declare_shareable).
+    fn declare_shareable_artifact<'v>(
+        this: Value<'v>,
+        #[starlark(require = pos)] path: &str,
+        #[starlark(require = pos)] artifact_root: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        crate::subrule_fragments::private_api(eval).map_err(|e| anyhow!("{e}"))?;
+        let context = action_receiver(this, eval, false)?;
+        let root = match artifact_root {
+            None => context.output_root.clone(),
+            Some(value) => shareable_artifact_root(path, value)?,
+        };
+        Ok(alloc_file(
+            eval.heap(),
+            context.declare_shareable(&root, path)?,
+        ))
     }
     /// StarlarkActionFactory.declareSymlink (:194-225): unresolved symlink
     /// artifacts are not modelled (explicit).
@@ -1279,6 +1454,12 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
     /// StarlarkActionFactory.symlink (:254-354) with target_file: the output
     /// observes the target's bytes and permission bits. target_path needs an
     /// unresolved symlink output (declare_symlink), which is unsupported.
+    /// `use_exec_root_for_source` (undocumented, default unbound) is
+    /// restricted to the internal API allowlist whenever it is passed
+    /// (:270-275); genuine links a source target through the execution
+    /// root then (SymlinkAction.toArtifact :110-122), which the native
+    /// profile has no persistent counterpart of: its symlink names the
+    /// source file itself, the same file the execution root's entry is.
     fn symlink<'v>(
         this: Value<'v>,
         #[starlark(require = named)] output: Value<'v>,
@@ -1287,9 +1468,19 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named, default = NoneType)] target_type: Value<'v>,
         #[starlark(require = named, default = false)] is_executable: bool,
         #[starlark(require = named)] progress_message: Option<Value<'v>>,
+        #[starlark(require = named)] use_exec_root_for_source: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let context = action_receiver(this, eval, false)?;
+        if let Some(value) = use_exec_root_for_source {
+            crate::subrule_fragments::private_api(eval).map_err(|e| anyhow!("{e}"))?;
+            // `(Boolean) useExecRootForSourceObject`, unchecked.
+            ensure!(
+                value.unpack_bool().is_some(),
+                "symlink(): use_exec_root_for_source must be a bool, not '{}' (Bazel 9.3 fails with an internal ClassCastException)",
+                value.get_type()
+            );
+        }
         if target_file.is_none() == target_path.is_none() {
             bail!("Exactly one of \"target_file\" or \"target_path\" is required");
         }
@@ -1711,6 +1902,7 @@ mod tests {
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
+            shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),
@@ -1721,6 +1913,100 @@ mod tests {
             runfiles: Default::default(),
             exec_groups: Default::default(),
         }
+    }
+
+    #[test]
+    fn shareable_paths_normalize_like_path_fragments_and_reject_misuse() {
+        assert_eq!(shareable_relative_path("a/./b//c/").unwrap(), "a/b/c");
+        assert_eq!(shareable_relative_path("a/b/../c").unwrap(), "a/c");
+        for (path, error) in [
+            ("../up", "uplevel references"),
+            ("a/../../up", "uplevel references"),
+            ("/abs", "relative to the artifact root"),
+            ("", "the artifact root itself"),
+            ("a/..", "the artifact root itself"),
+        ] {
+            let message = shareable_relative_path(path).unwrap_err().to_string();
+            assert!(message.contains(error), "{path}: {message}");
+        }
+        assert_eq!(runfiles_path("external/repo/x.h"), "../repo/x.h");
+        assert_eq!(runfiles_path("external"), "..");
+        assert_eq!(runfiles_path("externalx/y"), "externalx/y");
+        assert_eq!(runfiles_path("pkg/x.h"), "pkg/x.h");
+    }
+
+    #[test]
+    fn shareable_artifacts_are_root_relative_deduplicated_and_shared() {
+        let context = write_context();
+        let root = crate::label::GENERATED_EXEC_ROOT;
+        Module::with_temp_heap(|module| {
+            module.set("a", alloc_actions(module.heap(), context.scope.root()));
+            let globals = crate::package::bzl_globals();
+            let mut eval = Evaluator::new(&module);
+            eval.extra = Some(&context);
+            eval.eval_module(
+                AstModule::parse(
+                    "shareable.star",
+                    r#"
+x = a.declare_shareable_artifact('elsewhere/x.txt')
+y = a.declare_shareable_artifact('elsewhere/./sub/../x.txt')
+(x == y and x.short_path == 'elsewhere/x.txt') or fail(x)
+a.write(x, 'same')
+a.write(y, 'same')
+e = a.declare_shareable_artifact('external/repo/e.h')
+e.short_path == '../repo/e.h' or fail(e.short_path)
+f = a.declare_file('f.txt')
+g = a.declare_shareable_artifact('f.txt')
+f == g or fail(g)
+a.write(g, 'f')
+"#
+                    .into(),
+                    &Dialect::Standard,
+                )
+                .unwrap(),
+                &globals,
+            )
+            .unwrap();
+            // A different action on a generated output is a conflict.
+            let error = eval
+                .eval_module(
+                    AstModule::parse(
+                        "conflict.star",
+                        "a.write(x, 'other')".into(),
+                        &Dialect::Standard,
+                    )
+                    .unwrap(),
+                    &globals,
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(
+                    "file 'elsewhere/x.txt' is generated by these conflicting actions:\nLabel: //:target"
+                ),
+                "{error}"
+            );
+        });
+        let declared = context.declared.borrow();
+        let paths = declared
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                format!("{root}/elsewhere/x.txt"),
+                format!("{root}/external/repo/e.h"),
+                format!("{root}/f.txt"),
+            ]
+        );
+        // The package-relative declaration came first: only the fresh
+        // shareable declarations skip the package checks.
+        assert!(context.is_shareable(&declared[0]));
+        assert!(context.is_shareable(&declared[1]));
+        assert!(!context.is_shareable(&declared[2]));
+        // The identical second write is the first (shared).
+        assert_eq!(context.actions.borrow().len(), 2);
     }
 
     #[test]
@@ -1915,6 +2201,7 @@ r=rule(implementation=_rule,subrules=[S])
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
             declared: RefCell::new(Vec::new()),
+            shareable: RefCell::new(BTreeSet::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
             top_level_functions: Default::default(),

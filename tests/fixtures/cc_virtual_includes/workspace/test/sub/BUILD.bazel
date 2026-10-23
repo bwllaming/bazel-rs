@@ -1,0 +1,15 @@
+load("//test:defs.bzl", "probe")
+
+# The other half of //test:share_a (identical action) and //test:share_c
+# (different content).
+probe(
+    name = "share_b",
+    content = "same\n",
+    path = "shared/same.txt",
+)
+
+probe(
+    name = "share_d",
+    content = "d\n",
+    path = "shared/diff.txt",
+)

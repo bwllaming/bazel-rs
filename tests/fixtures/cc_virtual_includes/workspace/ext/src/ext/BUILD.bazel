@@ -1,0 +1,12 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# The @protobuf//src/google/protobuf shape: a repository-absolute
+# strip_include_prefix in an external repository. ext.h is "ext/ext.h"
+# through bazel-bin/external/ext+/src/ext/_virtual_includes/ext/ext/ext.h.
+cc_library(
+    name = "ext",
+    srcs = ["ext.c"],
+    hdrs = ["ext.h"],
+    strip_include_prefix = "/src",
+    visibility = ["//visibility:public"],
+)

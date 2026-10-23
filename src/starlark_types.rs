@@ -275,6 +275,11 @@ pub(crate) enum TargetKind {
     Alias(String, Box<TargetKind>),
 }
 
+/// The exec path of a File's `root` value and whether it is a source root.
+pub(crate) fn file_root(value: Value<'_>) -> Option<(&str, bool)> {
+    FileRoot::from_value(value).map(|root| (root.path.as_str(), root.is_source))
+}
+
 starlark_simple_value!(File);
 starlark_simple_value!(FileRoot);
 starlark_simple_value!(LabelValue);

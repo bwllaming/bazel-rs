@@ -106,7 +106,12 @@ Bazel's action failures by the expanded progress message (`Creating symlink
 %{output} failed: ...`; `%{label}`, `%{output}`, `%{input}` are expanded,
 `AbstractAction.java:380-400`).
 `target_path` needs an unresolved symlink output: `declare_symlink` fails
-explicitly (unresolved symlink artifacts are not modelled).
+explicitly (unresolved symlink artifacts are not modelled). The undocumented
+`use_exec_root_for_source` (rules_cc's virtual includes) is restricted to the
+internal Starlark API allowlist whenever it is passed; `True` links a source
+file itself, as the native profile has no persistent execution root
+(docs/SHAREABLE_ARTIFACTS.md, which also covers `declare_shareable_artifact`
+and the shared actions of one target).
 
 ## expand_template and template_dict
 

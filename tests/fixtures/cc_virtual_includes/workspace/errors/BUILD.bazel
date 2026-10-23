@@ -1,0 +1,27 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# rules_cc's own checks in _compute_public_headers, before any artifact is
+# declared.
+cc_library(
+    name = "not_under",
+    hdrs = ["x.h"],
+    strip_include_prefix = "include",
+)
+
+cc_library(
+    name = "uplevel_include_prefix",
+    hdrs = ["x.h"],
+    include_prefix = "../up",
+)
+
+cc_library(
+    name = "absolute_include_prefix",
+    hdrs = ["x.h"],
+    include_prefix = "/abs",
+)
+
+cc_library(
+    name = "uplevel_strip",
+    hdrs = ["x.h"],
+    strip_include_prefix = "../x",
+)

@@ -1,0 +1,18 @@
+load(":defs.bzl", "denied")
+
+denied(
+    name = "declare",
+    mode = "declare",
+)
+
+# Parameter checks come before the allowlist check.
+denied(
+    name = "int_path",
+    mode = "int_path",
+)
+
+denied(
+    name = "symlink",
+    mode = "symlink",
+    src = "//test:v.h",
+)
