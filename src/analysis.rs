@@ -16,7 +16,7 @@ use starlark::values::{FrozenHeapName, Heap, OwnedFrozenValue, Value};
 use crate::custom_rule::{AttrKind, AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
-use crate::starlark_types::{Depset, File, Target, alloc_file, alloc_shared_target, alloc_target};
+use crate::starlark_types::{File, Target, alloc_file, alloc_shared_target, alloc_target};
 
 /// What a consumer sees of one dependency edge's configured target.
 #[derive(Clone, Debug)]
@@ -272,22 +272,26 @@ const BUILTIN_DEPENDENCY_ATTRIBUTES: [(&str, bool); 4] = [
 /// prerequisites and contribute nothing. `aspect_hints` prerequisites are
 /// not analyzed by the native profile (aspect machinery), so that walk
 /// finds no entries.
+///
+/// Returns the prerequisites' non-empty `_validation` sets in that order
+/// (crate::output_group_info::validation_member), not their files: the
+/// caller composes them into one node (output_group_info::add_transitive,
+/// W1c), whose `to_list` is the first-occurrence order of their flattened
+/// files.
 fn transitive_validation(
     rule: &Rule,
     invocation: &crate::custom_rule::CustomInvocation,
     dependencies: &BTreeMap<String, DependencyTarget>,
     repositories: &RepositorySet,
-) -> Vec<File> {
-    let mut files = Vec::new();
-    let mut seen = BTreeSet::new();
+) -> Vec<Arc<crate::starlark_types::DepsetNode>> {
+    let mut members = Vec::new();
     let mut collect = |target: &DependencyTarget| {
-        let Some(info) = target.providers.get(crate::output_group_info::PROVIDER_ID) else {
-            return;
-        };
-        for file in crate::output_group_info::validation_files(info.value()) {
-            if seen.insert(file.clone()) {
-                files.push(file);
-            }
+        if let Some(group) = target
+            .providers
+            .get(crate::output_group_info::PROVIDER_ID)
+            .and_then(|info| crate::output_group_info::validation(info.value()))
+        {
+            members.push(crate::output_group_info::validation_member(group));
         }
     };
     for (name, tool) in BUILTIN_DEPENDENCY_ATTRIBUTES {
@@ -350,7 +354,7 @@ fn transitive_validation(
             collect(target);
         }
     }
-    files
+    members
 }
 
 /// Whether `spec`'s `cfg` is a Starlark (non analysis-test) transition.
@@ -2304,20 +2308,18 @@ fn analyze_inner(
                 // (collectTransitiveValidationOutputGroups, :397-430): through
                 // label attributes that are not implicit (`$`-prefixed), not
                 // tool dependencies (`cfg = "exec"`/no-config transitions) and
-                // not `skip_validations`, merged into the target's own group.
-                let collected =
-                    transitive_validation(rule, invocation, dependencies, &repositories);
-                if !collected.is_empty() {
-                    crate::output_group_info::add_group(
-                        &mut groups,
-                        crate::output_group_info::VALIDATION,
-                        Depset::from_files(collected),
-                    );
-                }
+                // not `skip_validations`, merged into the target's own group
+                // as ONE composed node (W1c: the prerequisites' sets, never
+                // their files).
+                crate::output_group_info::add_transitive(
+                    &mut groups,
+                    crate::output_group_info::VALIDATION,
+                    transitive_validation(rule, invocation, dependencies, &repositories),
+                );
             }
             let merged = crate::output_group_info::merged(
                 groups,
-                target_runfiles.default_runfiles().all_artifacts(),
+                target_runfiles.default_runfiles().all_artifacts_depset(),
             );
             custom.insert(
                 crate::output_group_info::PROVIDER_ID.to_owned(),

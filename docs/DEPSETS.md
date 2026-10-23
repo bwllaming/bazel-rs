@@ -172,6 +172,14 @@ very depset the rule returned in DefaultInfo, and an alias shares its
 actual's (`rules/AliasConfiguredTarget.java:205-213`); natively each Target
 value builds its own depset from its files.
 
+Only Starlark's `depset()` (and the native runfiles sets) checks the DAG
+depth limit (`depset exceeds DAG depth limit 1024`;
+Bazel: `Depset.java:540-545`, `--nested_set_depth_limit` 3500). The
+framework's output-group compositions — `_validation`, HIDDEN_TOP_LEVEL and
+the aspect merge of output groups (`Depset::compose_framework`, W1c) — never
+do, as Bazel's NestedSetBuilder has no limit; a deep `_validation` group
+still fails a Starlark `depset(transitive = [...])` past 1024 levels.
+
 ## Traversal
 
 NestedSet.toList (`NestedSet.java:485-498, 604-627`) walks each node's

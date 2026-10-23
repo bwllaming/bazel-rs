@@ -342,3 +342,196 @@ fn file_reachable_only_through_a_provider_closure_is_an_input() {
     ok(&ws.build(&[":consumer"]));
     assert_eq!(ws.read("out.txt").as_deref(), Some("hidden"));
 }
+
+const COMPOSED: &str = r#"
+def _val(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".validated")
+    ctx.actions.write(out, "validated:" + ctx.label.name)
+    return [DefaultInfo(files = depset([out])), OutputGroupInfo(_validation = depset([out]))]
+
+val = rule(implementation = _val)
+
+def _val_out(ctx):
+    ctx.actions.write(ctx.outputs.out, "vout")
+    validated = ctx.actions.declare_file(ctx.label.name + ".validated")
+    ctx.actions.write(validated, "validated:" + ctx.label.name)
+    return [
+        DefaultInfo(files = depset([ctx.outputs.out])),
+        OutputGroupInfo(_validation = depset([validated])),
+    ]
+
+val_out = rule(implementation = _val_out, outputs = {"out": "%{name}.out"})
+
+def _collect(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.write(out, "collect")
+    groups = {}
+    if ctx.attr.own:
+        mine = ctx.actions.declare_file(ctx.label.name + ".mine")
+        ctx.actions.write(mine, "mine")
+        groups["_validation"] = depset([mine])
+    elif ctx.attr.empty_own:
+        groups["_validation"] = depset()
+    if ctx.attr.forward:
+        groups["_validation"] = ctx.attr.forward[OutputGroupInfo]._validation
+    return [DefaultInfo(files = depset([out])), OutputGroupInfo(**groups)]
+
+collect = rule(implementation = _collect, attrs = {
+    "z_first": attr.label_list(allow_files = True),
+    "a_second": attr.label(),
+    "forward": attr.label(),
+    "own": attr.bool(),
+    "empty_own": attr.bool(),
+})
+
+def _show(ctx):
+    for target in ctx.attr.targets:
+        names = [f.basename for f in target[OutputGroupInfo]._validation.to_list()]
+        print("ORDER %s %s" % (target.label.name, ",".join(names)))
+    return []
+
+show = rule(implementation = _show, attrs = {"targets": attr.label_list(allow_files = True)})
+
+def _same(ctx):
+    left = ctx.attr.left[OutputGroupInfo]._validation
+    right = ctx.attr.right[OutputGroupInfo]._validation
+    if (left == right) != ctx.attr.expect:
+        fail("%s vs %s: == is %s" % (ctx.attr.left.label, ctx.attr.right.label, left == right))
+    return []
+
+same = rule(implementation = _same, attrs = {
+    "left": attr.label(allow_files = True),
+    "right": attr.label(),
+    "expect": attr.bool(),
+})
+
+def _link(ctx):
+    mine = ctx.actions.declare_file(ctx.label.name + ".validated")
+    ctx.actions.write(mine, ctx.label.name)
+    return [DefaultInfo(files = depset([mine])), OutputGroupInfo(_validation = depset([mine]))]
+
+link = rule(implementation = _link, attrs = {"dep": attr.label()})
+"#;
+
+const COMPOSED_BUILD: &str = "load(':defs.bzl', 'val', 'val_out', 'collect', 'show', 'same')\n\
+     val(name = 'leaf')\n\
+     val(name = 'other')\n\
+     val_out(name = 'vout')\n\
+     collect(name = 'single', z_first = [':leaf'])\n\
+     collect(name = 'single_empty_own', z_first = [':leaf'], empty_own = True)\n\
+     collect(name = 'forwarding', a_second = ':leaf', forward = ':leaf')\n\
+     collect(name = 'own_first', own = True, z_first = [':other', ':leaf'], a_second = ':single')\n\
+     collect(name = 'top', z_first = [':own_first', ':vout.out'], a_second = ':other')\n\
+     genrule(name = 'gen', srcs = [':own_first', ':leaf'], outs = ['gen.txt'], cmd = 'echo > $@')\n\
+     filegroup(name = 'fg', srcs = [':leaf'])\n\
+     show(name = 'show', targets = [':single', ':own_first', ':top', ':gen', ':fg', ':vout.out'])\n\
+     same(name = 'same_single', left = ':single', right = ':leaf', expect = True)\n\
+     same(name = 'same_empty_own', left = ':single_empty_own', right = ':leaf', expect = True)\n\
+     same(name = 'same_forwarding', left = ':forwarding', right = ':leaf', expect = True)\n\
+     same(name = 'same_native', left = ':fg', right = ':leaf', expect = True)\n\
+     same(name = 'same_output_file', left = ':vout.out', right = ':vout', expect = True)\n\
+     same(name = 'new_own_first', left = ':own_first', right = ':other', expect = False)\n\
+     same(name = 'new_gen', left = ':gen', right = ':own_first', expect = False)\n";
+
+#[test]
+fn validation_groups_compose_in_collection_order_and_reuse_a_lone_set() {
+    let ws = Workspace::new(COMPOSED, COMPOSED_BUILD);
+    // RuleConfiguredTargetBuilder's one stable-order `_validation` builder
+    // (W1c composes the prerequisites' sets instead of flattening them): the
+    // own group first, then the attributes in class order, each set's
+    // first occurrences; native rules (genrule, filegroup) and output-file
+    // targets (the generating rule's group) alike.
+    let text = ok(&ws.build_with(&["--nobuild"], &[":show"]));
+    let orders = text
+        .lines()
+        .filter_map(|line| line.split_once("ORDER ").map(|(_, rest)| rest.trim()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        orders,
+        [
+            "single leaf.validated",
+            "own_first own_first.mine,other.validated,leaf.validated",
+            "top own_first.mine,other.validated,leaf.validated,vout.validated",
+            "gen own_first.mine,other.validated,leaf.validated",
+            "fg leaf.validated",
+            "vout.out vout.validated",
+        ],
+        "{text}"
+    );
+    // NestedSetBuilder.buildInternal (:181-202): a group of exactly one
+    // contributed stable-order set (an empty own group does not count; a
+    // forwarded own group is that set) IS that set, as an output-file
+    // target's group is its generating rule's; an own group plus a
+    // contributor, or two contributors, is a new set.
+    ok(&ws.build_with(
+        &["--nobuild"],
+        &[
+            ":same_single",
+            ":same_empty_own",
+            ":same_forwarding",
+            ":same_native",
+            ":same_output_file",
+            ":new_own_first",
+            ":new_gen",
+        ],
+    ));
+    // The composed sets build: every validation output of `top` runs with
+    // it, also through the ValidateTarget aspect, which promotes the set
+    // (`_validation_top_level`).
+    for flags in [&[][..], &["--experimental_use_validation_aspect"][..]] {
+        let ws = Workspace::new(COMPOSED, COMPOSED_BUILD);
+        ok(&ws.build_with(flags, &[":top"]));
+        for (name, text) in [
+            ("own_first.mine", "mine"),
+            ("other.validated", "validated:other"),
+            ("leaf.validated", "validated:leaf"),
+            ("vout.validated", "validated:vout"),
+        ] {
+            assert_eq!(ws.read(name).as_deref(), Some(text), "{flags:?} {name}");
+        }
+    }
+}
+
+#[test]
+fn validation_and_hidden_groups_deeper_than_the_depset_limit_compose() {
+    // A `_validation` set 1,023 levels deep (Starlark's depset() allows
+    // 1,024), also the transitive files of the target's runfiles, then 20
+    // targets that each add their own validation output to their
+    // predecessor's group: each composed group is one level deeper (1,043
+    // at the top) and the HIDDEN_TOP_LEVEL group over the 1,024-deep
+    // runfiles artifacts 1,025, past the depset() limit, which framework
+    // compositions never check (Bazel's NestedSetBuilder has none).
+    let ws = Workspace::new(
+        &format!(
+            "{COMPOSED}\n\
+             def _deep(ctx):\n    \
+                 a = ctx.actions.declare_file(ctx.label.name + '.a.validated')\n    \
+                 b = ctx.actions.declare_file(ctx.label.name + '.b.validated')\n    \
+                 ctx.actions.write(a, 'a')\n    \
+                 ctx.actions.write(b, 'b')\n    \
+                 d = depset([a])\n    \
+                 for i in range(1022):\n        \
+                     d = depset([b if i % 2 == 0 else a], transitive = [d])\n    \
+                 return [DefaultInfo(files = depset([a]), runfiles = ctx.runfiles(transitive_files = d)),\n            \
+                         OutputGroupInfo(_validation = d)]\n\
+             deep = rule(implementation = _deep)\n\
+             def _count(ctx):\n    \
+                 print('COUNT', len(ctx.attr.dep[OutputGroupInfo]._validation.to_list()),\n          \
+                       len(ctx.attr.deep[OutputGroupInfo]._hidden_top_level_INTERNAL_.to_list()))\n    \
+                 return []\n\
+             count = rule(implementation = _count, attrs = {{'dep': attr.label(), 'deep': attr.label()}})\n\
+             def links(count, first):\n    \
+                 for index in range(count):\n        \
+                     link(name = 'c%d' % index, dep = ':c%d' % (index - 1) if index else first)\n"
+        ),
+        "load(':defs.bzl', 'count', 'deep', 'links')\n\
+         deep(name = 'deep')\n\
+         links(20, ':deep')\n\
+         count(name = 'count', dep = ':c19', deep = ':deep')\n\
+         filegroup(name = 'fg', srcs = [':c19'])\n",
+    );
+    let text = ok(&ws.build(&[":count", ":fg"]));
+    assert!(text.contains("COUNT 22 2"), "{text}");
+    assert_eq!(ws.read("deep.b.validated").as_deref(), Some("b"));
+    assert_eq!(ws.read("c19.validated").as_deref(), Some("c19"));
+}

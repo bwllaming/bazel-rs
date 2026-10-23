@@ -1146,14 +1146,46 @@ impl fmt::Display for Depset {
     }
 }
 
+/// The DAG depth limit of [`Depset::compose`] (Starlark's `depset()` and the
+/// native compositions that keep checking it).
+const MAX_DEPTH: usize = 1024;
+
 impl Depset {
     pub(crate) fn compose(
         direct: Vec<Item>,
         children: Vec<Arc<DepsetNode>>,
         order: Order,
-        mut element_type: Option<ItemType>,
+        element_type: Option<ItemType>,
     ) -> anyhow::Result<Self> {
-        const MAX_DEPTH: usize = 1024;
+        Self::compose_bounded(direct, children, order, element_type, Some(MAX_DEPTH))
+    }
+
+    /// A framework composition (W1c, PLAN-L1 §2.3): an output group of
+    /// sets the framework adds to it (RuleConfiguredTargetBuilder.
+    /// addOutputGroup over a stable-order NestedSetBuilder, :636-656) or the
+    /// runfiles' all-artifacts set (Runfiles.getAllArtifacts, :425-440). It
+    /// type- and order-checks like [`Depset::compose`] and reuses a lone
+    /// child the same way, but never checks the depth: Bazel's
+    /// NestedSetBuilder has no limit, only Starlark's `depset()` checks one
+    /// (collect/nestedset/Depset.java:540-545). A chain of targets that
+    /// each compose their prerequisites' `_validation` sets grows one level
+    /// per target.
+    pub(crate) fn compose_framework(
+        direct: Vec<Item>,
+        children: Vec<Arc<DepsetNode>>,
+        order: Order,
+        element_type: Option<ItemType>,
+    ) -> anyhow::Result<Self> {
+        Self::compose_bounded(direct, children, order, element_type, None)
+    }
+
+    fn compose_bounded(
+        direct: Vec<Item>,
+        children: Vec<Arc<DepsetNode>>,
+        order: Order,
+        mut element_type: Option<ItemType>,
+        max_depth: Option<usize>,
+    ) -> anyhow::Result<Self> {
         let mut merge_type = |kind: ItemType| -> anyhow::Result<()> {
             if let Some(expected) = element_type {
                 // Depset.checkType (collect/nestedset/Depset.java:181-193).
@@ -1195,8 +1227,10 @@ impl Depset {
             return Ok(Self { node });
         }
         let depth = children.iter().map(|child| child.depth).max().unwrap_or(0) + 1;
-        if depth > MAX_DEPTH {
-            bail!("depset exceeds DAG depth limit {MAX_DEPTH}");
+        if let Some(limit) = max_depth
+            && depth > limit
+        {
+            bail!("depset exceeds DAG depth limit {limit}");
         }
         Ok(Self {
             node: Arc::new(DepsetNode {
@@ -1989,7 +2023,7 @@ impl<'v> StarlarkValue<'v> for TargetValue {
         {
             return Ok(heap.alloc(crate::output_group_info::merged(
                 Vec::new(),
-                self.0.runfiles.default_runfiles().all_artifacts(),
+                self.0.runfiles.default_runfiles().all_artifacts_depset(),
             )));
         }
         let provider = self.0.providers.get(&identity).ok_or_else(|| {

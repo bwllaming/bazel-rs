@@ -21,9 +21,10 @@ use starlark::values::{
 };
 use std::fmt;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::starlark_types::{Depset, File, Item, ItemType};
+use crate::starlark_types::{Depset, DepsetNode, File, Item, ItemType, Order};
 
 /// The provider key (crate::rule_declarations::OUTPUT_GROUP_INFO_ID).
 pub(crate) const PROVIDER_ID: &str = crate::rule_declarations::OUTPUT_GROUP_INFO_ID;
@@ -162,17 +163,14 @@ pub(crate) const VALIDATION_TRANSITIVE: &str = "_validation_transitive";
 /// The OutputGroupInfo of a configured rule target
 /// (RuleConfiguredTargetBuilder.build): the groups of the returned
 /// OutputGroupInfo (addStarlarkDeclaredProvider, :543-552) plus the
-/// HIDDEN_TOP_LEVEL group of the default runfiles' artifacts (:155-173), in
-/// the builders' sorted order; a group named twice merges its sets.
+/// HIDDEN_TOP_LEVEL group of the default runfiles' artifacts (:155-173,
+/// crate::runfiles::Runfiles::all_artifacts_depset), in the builders'
+/// sorted order; a group named twice merges its sets.
 pub(crate) fn merged(
     mut groups: Vec<(String, Depset)>,
-    hidden_top_level: Vec<File>,
+    hidden_top_level: Depset,
 ) -> OutputGroupInfo {
-    add_group(
-        &mut groups,
-        HIDDEN_TOP_LEVEL,
-        Depset::from_files(hidden_top_level),
-    );
+    add_group(&mut groups, HIDDEN_TOP_LEVEL, hidden_top_level);
     groups.sort_by(|a, b| a.0.cmp(&b.0));
     OutputGroupInfo {
         id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
@@ -181,10 +179,11 @@ pub(crate) fn merged(
 }
 
 /// RuleConfiguredTargetBuilder.addOutputGroup: a repeated group's sets are
-/// merged.
+/// merged (a framework composition, never depth-checked:
+/// [`Depset::compose_framework`]).
 pub(crate) fn add_group(groups: &mut Vec<(String, Depset)>, name: &str, files: Depset) {
     if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == name) {
-        *existing = Depset::compose(
+        *existing = Depset::compose_framework(
             vec![],
             vec![existing.node.clone(), files.node],
             crate::starlark_types::Order::Default,
@@ -196,19 +195,113 @@ pub(crate) fn add_group(groups: &mut Vec<(String, Depset)>, name: &str, files: D
     }
 }
 
+/// The non-empty `_validation` group of an OutputGroupInfo instance
+/// (`getOutputGroup(VALIDATION)` with RuleConfiguredTargetBuilder's
+/// `!validationArtifacts.isEmpty()` filter, :418-423).
+pub(crate) fn validation(value: Value<'_>) -> Option<&Depset> {
+    groups(value)?
+        .iter()
+        .find(|(name, _)| name == VALIDATION)
+        .map(|(_, depset)| depset)
+        .filter(|depset| !depset.node.empty)
+}
+
+/// A prerequisite's `_validation` set as a member of a composed group
+/// ([`compose_validation`]): the set's own node, except that a topological
+/// set — nested in a stable-order set it walks unreversed, but its own
+/// `to_list` is reversed — joins as its `to_list` in a fresh stable-order
+/// set, keeping the order each prerequisite's flattened group gave before
+/// W1c (crate::starlark_types::Depset::flatten).
+pub(crate) fn validation_member(depset: &Depset) -> Arc<DepsetNode> {
+    if depset.node.order == Order::Topological {
+        Depset::from_files(depset_files(depset)).node
+    } else {
+        Arc::clone(&depset.node)
+    }
+}
+
+/// RuleConfiguredTargetBuilder's `_validation` group of collected
+/// prerequisite sets (collectTransitiveValidationOutputGroups, :397-425,
+/// each consumed by addOutputGroup into ONE stable-order NestedSetBuilder,
+/// :636-656) as one composed node over `members`
+/// ([`validation_member`]s in collection order), without flattening them
+/// (W1c, PLAN-L1 §2.3). The builder skips empty sets and deduplicates the
+/// others by identity (NestedSetBuilder.addTransitive, :143-155, 297-302);
+/// a single member is the group itself (buildInternal, :181-202 — the
+/// [`Depset::compose_framework`] reuse of a lone same-order child). `to_list`
+/// walks the members left to right keeping first occurrences: the order of
+/// the flat first-occurrence list collected before. `None` when every
+/// member is empty.
+pub(crate) fn compose_validation(members: Vec<Arc<DepsetNode>>) -> Option<Depset> {
+    let mut seen = std::collections::HashSet::new();
+    let members: Vec<_> = members
+        .into_iter()
+        .filter(|member| !member.empty && seen.insert(Arc::as_ptr(member)))
+        .collect();
+    if members.is_empty() {
+        return None;
+    }
+    Some(
+        Depset::compose_framework(vec![], members, Order::Default, Some(ItemType::File))
+            .expect("File sets compose in the default order"),
+    )
+}
+
+/// A target's non-empty `_validation` group as the set its consumers share
+/// (W1c): the group itself when it is stable-order — what Bazel shares
+/// (OutputFileConfiguredTarget.java:109-118) and what a builder holding
+/// only that set returns (ValidateTarget.java:69-76 over
+/// NestedSetBuilder.buildInternal, :181-202) — else a stable-order set over
+/// its [`validation_member`], whose `to_list` and repr are those of the
+/// flattened stable-order copy every consumer received before W1c.
+pub(crate) fn shared_validation(group: &Depset) -> Depset {
+    compose_validation(vec![validation_member(group)]).unwrap_or_else(|| group.clone())
+}
+
+/// RuleConfiguredTargetBuilder.addOutputGroup of each collected set
+/// (`members`, [`validation_member`]s) into group `name`: ONE composed node
+/// `[own?, member, ...]` — the target's own group first, as the builder's
+/// first transitive set (addStarlarkDeclaredProvider runs before
+/// propagateTransitiveValidationOutputGroups) — or, without an own group,
+/// [`compose_validation`] of the members. No member: unchanged.
+pub(crate) fn add_transitive(
+    groups: &mut Vec<(String, Depset)>,
+    name: &str,
+    members: Vec<Arc<DepsetNode>>,
+) {
+    if members.iter().all(|member| member.empty) {
+        return;
+    }
+    match groups.iter_mut().find(|(group, _)| group == name) {
+        Some((_, own)) => {
+            let mut all = Vec::with_capacity(members.len() + 1);
+            all.push(Arc::clone(&own.node));
+            all.extend(members);
+            if let Some(composed) = compose_validation(all) {
+                *own = composed;
+            }
+        }
+        None => {
+            if let Some(composed) = compose_validation(members) {
+                groups.push((name.to_owned(), composed));
+            }
+        }
+    }
+}
+
 /// The frozen framework OutputGroupInfo of a native rule target: the
 /// HIDDEN_TOP_LEVEL group of its default runfiles' artifacts plus the
 /// `_validation` group RuleConfiguredTargetBuilder propagated from its
 /// dependencies (propagateTransitiveValidationOutputGroups, :175-176,
 /// 366-388), for its provider map.
 pub(crate) fn freeze(
-    hidden_top_level: Vec<File>,
-    validation: Vec<File>,
+    hidden_top_level: Depset,
+    validation: Option<Depset>,
 ) -> Result<starlark::values::OwnedFrozenValue, String> {
     starlark::environment::Module::with_temp_heap(|module| {
         let mut groups = Vec::new();
-        if !validation.is_empty() {
-            groups.push((VALIDATION.to_owned(), Depset::from_files(validation)));
+        if let Some(validation) = validation {
+            groups.push((VALIDATION.to_owned(), validation));
         }
         let info = merged(groups, hidden_top_level);
         module.set("__info", module.heap().alloc(info));
@@ -222,15 +315,15 @@ pub(crate) fn freeze(
 
 /// The frozen OutputGroupInfo of an output-file target
 /// (OutputFileConfiguredTarget.java:109-118): a single `_validation` group
-/// with the generating rule's validation outputs, present only when they are
-/// non-empty (the provider is absent otherwise).
+/// with the generating rule's validation outputs (its group, shared), present
+/// only when they are non-empty (the provider is absent otherwise).
 pub(crate) fn freeze_validation(
-    validation: Vec<File>,
+    validation: Depset,
 ) -> Result<starlark::values::OwnedFrozenValue, String> {
     starlark::environment::Module::with_temp_heap(|module| {
         let info = OutputGroupInfo {
             id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
-            groups: vec![(VALIDATION.to_owned(), Depset::from_files(validation))],
+            groups: vec![(VALIDATION.to_owned(), validation)],
         };
         module.set("__info", module.heap().alloc(info));
         module
@@ -283,17 +376,15 @@ pub(crate) fn frozen_of_groups(
 
 /// The frozen OutputGroupInfo the native ValidateTarget aspect returns
 /// (rules/core/ValidateTarget.java:69-76): a single `_validation_top_level`
-/// group with the promoted validation outputs.
+/// group with the promoted validation outputs (the target's `_validation`
+/// set added to the aspect's group builder, [`compose_validation`]).
 pub(crate) fn freeze_validation_top_level(
-    validation: Vec<File>,
+    validation: Depset,
 ) -> Result<starlark::values::OwnedFrozenValue, String> {
     starlark::environment::Module::with_temp_heap(|module| {
         let info = OutputGroupInfo {
             id: NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
-            groups: vec![(
-                VALIDATION_TOP_LEVEL.to_owned(),
-                Depset::from_files(validation),
-            )],
+            groups: vec![(VALIDATION_TOP_LEVEL.to_owned(), validation)],
         };
         module.set("__info", module.heap().alloc(info));
         module
@@ -302,19 +393,6 @@ pub(crate) fn freeze_validation_top_level(
             .get("__info")
             .map_err(|error| error.to_string())
     })
-}
-
-/// The Files of an instance's `_validation` group (empty when the instance
-/// has none).
-pub(crate) fn validation_files(value: Value<'_>) -> Vec<File> {
-    groups(value)
-        .and_then(|groups| {
-            groups
-                .iter()
-                .find(|(name, _)| name == VALIDATION)
-                .map(|(_, depset)| depset_files(depset))
-        })
-        .unwrap_or_default()
 }
 
 /// The output-group half of a build request's TopLevelArtifactContext
@@ -487,5 +565,208 @@ impl<'v> StarlarkValue<'v> for OutputGroupInfo {
         PROVIDER_ID.hash(hasher);
         self.id.hash(hasher);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn file(name: &str) -> File {
+        File {
+            path: format!("bazel-out/k8-fastbuild/bin/{name}"),
+            short_path: name.to_owned(),
+            owner: "//p:r".to_owned(),
+            is_source: false,
+            is_directory: false,
+        }
+    }
+
+    fn set(direct: &[&str], children: &[&Depset], order: Order) -> Depset {
+        Depset::compose(
+            direct.iter().map(|name| Item::File(file(name))).collect(),
+            children
+                .iter()
+                .map(|child| Arc::clone(&child.node))
+                .collect(),
+            order,
+            Some(ItemType::File),
+        )
+        .unwrap()
+    }
+
+    fn names(depset: &Depset) -> Vec<String> {
+        depset_files(depset)
+            .into_iter()
+            .map(|file| file.short_path)
+            .collect()
+    }
+
+    /// The pre-W1c `_validation` group: every non-empty prerequisite group
+    /// flattened (its own `to_list`), the first occurrences collected into a
+    /// fresh stable-order set and merged into the own group.
+    fn flattened(own: Option<&Depset>, groups: &[&Depset]) -> Option<Depset> {
+        let mut files = Vec::new();
+        let mut seen = BTreeSet::new();
+        for group in groups {
+            for file in depset_files(group) {
+                if seen.insert(file.clone()) {
+                    files.push(file);
+                }
+            }
+        }
+        let mut out = own
+            .map(|own| vec![(VALIDATION.to_owned(), own.clone())])
+            .unwrap_or_default();
+        if !files.is_empty() {
+            add_group(&mut out, VALIDATION, Depset::from_files(files));
+        }
+        out.pop().map(|(_, group)| group)
+    }
+
+    /// The W1c group: the prerequisites' sets composed into one node.
+    fn composed(own: Option<&Depset>, groups: &[&Depset]) -> Option<Depset> {
+        let mut out = own
+            .map(|own| vec![(VALIDATION.to_owned(), own.clone())])
+            .unwrap_or_default();
+        let members = groups
+            .iter()
+            .filter(|group| !group.node.empty)
+            .map(|group| validation_member(group))
+            .collect();
+        add_transitive(&mut out, VALIDATION, members);
+        out.pop().map(|(_, group)| group)
+    }
+
+    #[test]
+    fn composed_validation_keeps_the_flattened_to_list_and_repr() {
+        let shared = set(&["s1", "s2"], &[], Order::Default);
+        let topo_inner = set(&["t2", "s2"], &[&shared], Order::Topological);
+        let topo = set(&["t1"], &[&topo_inner], Order::Topological);
+        let pre = set(&["p1", "s1"], &[&shared], Order::Preorder);
+        let post = set(&["q1"], &[&shared], Order::Postorder);
+        let mixed = set(&["d1"], &[&pre, &topo, &post], Order::Default);
+        let empty = set(&[], &[], Order::Default);
+        let owns = [
+            None,
+            Some(empty.clone()),
+            Some(set(&["o1", "s2"], &[], Order::Default)),
+            Some(topo.clone()),
+            Some(pre.clone()),
+            Some(shared.clone()),
+        ];
+        let member_lists: Vec<Vec<&Depset>> = vec![
+            vec![],
+            vec![&empty],
+            vec![&shared],
+            vec![&topo],
+            vec![&pre],
+            vec![&post],
+            vec![&pre, &post],
+            vec![&mixed, &shared, &topo],
+            vec![&topo, &topo],
+            vec![&shared, &pre, &shared],
+            vec![&topo_inner, &topo, &mixed, &post, &pre],
+        ];
+        for own in &owns {
+            for members in &member_lists {
+                let before = flattened(own.as_ref(), members);
+                let after = composed(own.as_ref(), members);
+                let context = format!("own {own:?} members {members:?}");
+                assert_eq!(before.is_some(), after.is_some(), "{context}");
+                let (Some(before), Some(after)) = (before, after) else {
+                    continue;
+                };
+                assert_eq!(names(&before), names(&after), "{context}");
+                assert_eq!(before.to_string(), after.to_string(), "{context}");
+                assert_eq!(before.node.order, after.node.order, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_lone_stable_order_contributor_is_reused() {
+        // NestedSetBuilder.buildInternal (:181-202): one distinct non-empty
+        // stable-order transitive set and no direct element is that set.
+        let leaf = set(&["leaf"], &[], Order::Default);
+        let other = set(&["other"], &[], Order::Default);
+        let empty = set(&[], &[], Order::Default);
+        let reused = composed(None, &[&leaf]).unwrap();
+        assert!(Arc::ptr_eq(&reused.node, &leaf.node));
+        // An empty own group and repeated members do not count.
+        let reused = composed(Some(&empty), &[&leaf, &leaf]).unwrap();
+        assert!(Arc::ptr_eq(&reused.node, &leaf.node));
+        // A rule forwarding its dependency's group as its own.
+        let reused = composed(Some(&leaf), &[&leaf]).unwrap();
+        assert!(Arc::ptr_eq(&reused.node, &leaf.node));
+        // An own group plus a contributor, or two contributors: one new
+        // node over both, own first.
+        let both = composed(Some(&other), &[&leaf]).unwrap();
+        assert!(!Arc::ptr_eq(&both.node, &leaf.node) && !Arc::ptr_eq(&both.node, &other.node));
+        assert_eq!(names(&both), ["other", "leaf"]);
+        assert_eq!(both.node.children.len(), 2);
+        assert!(both.node.direct.is_empty());
+        let both = composed(None, &[&leaf, &other]).unwrap();
+        assert_eq!(names(&both), ["leaf", "other"]);
+        // A lone set of another order joins a stable-order set (same
+        // to_list, stable-order repr); a topological one as its to_list.
+        let pre = set(&["p1"], &[&leaf], Order::Preorder);
+        let wrapped = composed(None, &[&pre]).unwrap();
+        assert_eq!(wrapped.node.order, Order::Default);
+        assert!(Arc::ptr_eq(&wrapped.node.children[0], &pre.node));
+        assert_eq!(names(&wrapped), names(&pre));
+        let topo = set(&["t1"], &[&leaf], Order::Topological);
+        let wrapped = composed(None, &[&topo]).unwrap();
+        assert_eq!(wrapped.node.order, Order::Default);
+        assert_eq!(names(&wrapped), ["t1", "leaf"]);
+        assert_eq!(names(&wrapped), names(&topo));
+    }
+
+    #[test]
+    fn shared_validation_is_the_group_when_stable_order() {
+        let leaf = set(&["a", "b"], &[], Order::Default);
+        assert!(Arc::ptr_eq(&shared_validation(&leaf).node, &leaf.node));
+        for order in [Order::Preorder, Order::Postorder, Order::Topological] {
+            let group = set(&["x"], &[&leaf], order);
+            let shared = shared_validation(&group);
+            assert_eq!(shared.node.order, Order::Default);
+            assert_eq!(names(&shared), names(&group), "{order:?}");
+            assert_eq!(
+                shared.to_string(),
+                Depset::from_files(depset_files(&group)).to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn framework_compositions_never_check_the_depth() {
+        // A chain of 1,100 targets, each with its own validation output and
+        // its predecessor's group: one level per target, beyond Starlark's
+        // depset() limit (1024), without a panic.
+        let mut group = set(&["v0"], &[], Order::Default);
+        for index in 1..1100 {
+            let own = set(&[&format!("v{index}")], &[], Order::Default);
+            group = composed(Some(&own), &[&group]).unwrap();
+        }
+        assert!(group.node.depth > 1024, "{}", group.node.depth);
+        let expected = (0..1100)
+            .rev()
+            .map(|index| format!("v{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(names(&group), expected);
+        // Merging deep groups (mergeOutputGroupProviders, the
+        // HIDDEN_TOP_LEVEL merge) composes without a depth check too.
+        let merged_sets = merge_group_sets(&[
+            vec![(VALIDATION.to_owned(), group.clone())],
+            vec![(VALIDATION.to_owned(), set(&["extra"], &[], Order::Default))],
+        ])
+        .unwrap();
+        assert_eq!(names(&merged_sets[0].1).len(), 1101);
+        let own_hidden = set(&["hidden"], &[], Order::Default);
+        let info = merged(vec![(HIDDEN_TOP_LEVEL.to_owned(), own_hidden)], group);
+        assert_eq!(info.groups.len(), 1);
+        assert_eq!(names(&info.groups[0].1).len(), 1101);
+        assert_eq!(names(&info.groups[0].1)[0], "hidden");
     }
 }

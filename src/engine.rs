@@ -186,11 +186,13 @@ struct ActionPlanning {
     /// carry theirs in custom_providers), built once per configured target
     /// (the end of an alias chain) so every dependent sees one instance.
     native_output_groups: BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
-    /// The `_validation` files RuleConfiguredTargetBuilder propagated to
-    /// each native rule target from its attribute prerequisites
+    /// The `_validation` set RuleConfiguredTargetBuilder propagated to each
+    /// native rule target from its attribute prerequisites: one node
+    /// composed of theirs (crate::output_group_info::compose_validation,
+    /// W1c), present only when non-empty
     /// (analysis::transitive_validation is the Starlark-rule path; custom
     /// rules' groups live in their providers).
-    validation: BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
+    validation: BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
     done: usize,
     /// The client environment inherited action variables resolve against,
     /// read once per build on first need (crate::action_env).
@@ -444,7 +446,7 @@ struct PlanState<'a> {
     pub declared: &'a mut Declared,
     pub native_output_groups:
         &'a mut BTreeMap<ConfiguredTargetKey, starlark::values::OwnedFrozenValue>,
-    pub validation: &'a mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+    pub validation: &'a mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
     pub target_identities:
         &'a mut BTreeMap<TargetIdentityKey, std::sync::Arc<crate::starlark_types::Target>>,
     pub aspect_providers: &'a mut BTreeMap<
@@ -7411,30 +7413,34 @@ impl Engine {
         Ok(self.rule_delegations.get(&key).cloned().unwrap_or(key))
     }
 
-    /// The `_validation` files of the configured target `key` as planned: a
-    /// Starlark rule's merged OutputGroupInfo (an alias's forwarded copy;
-    /// the requested key of a rule transition resolves to its owner's), or
-    /// a native rule's propagated memo. The OutputGroupInfo every other
-    /// target collected from this one (RuleConfiguredTargetBuilder.
-    /// collectTransitiveValidationOutputGroups).
+    /// The `_validation` set of the configured target `key` as planned: a
+    /// Starlark rule's merged OutputGroupInfo group (an alias's forwarded
+    /// copy; the requested key of a rule transition resolves to its
+    /// owner's), or a native rule's propagated memo — the set itself, never
+    /// its files (W1c), as the stable-order set a consumer shares
+    /// (crate::output_group_info::shared_validation); `None` when empty.
+    /// The OutputGroupInfo every other target collected from this one
+    /// (RuleConfiguredTargetBuilder.collectTransitiveValidationOutputGroups).
     fn planned_validation(
         &self,
         custom_providers: &BTreeMap<
             ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         >,
-        validation: &BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
+        validation: &BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         key: &ConfiguredTargetKey,
-    ) -> Vec<crate::starlark_types::File> {
+    ) -> Option<crate::starlark_types::Depset> {
         let key = self.rule_delegations.get(key).unwrap_or(key);
-        if let Some(files) = validation.get(key) {
-            return files.clone();
+        if let Some(set) = validation.get(key) {
+            return Some(set.clone());
         }
         custom_providers
             .get(key)
             .and_then(|providers| providers.get(crate::output_group_info::PROVIDER_ID))
-            .map(|info| crate::output_group_info::validation_files(info.value()))
-            .unwrap_or_default()
+            .and_then(|info| {
+                crate::output_group_info::validation(info.value())
+                    .map(crate::output_group_info::shared_validation)
+            })
     }
 
     /// The Files of configured target `key`'s output group `group`
@@ -7449,12 +7455,15 @@ impl Engine {
             ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         >,
-        validation: &BTreeMap<ConfiguredTargetKey, Vec<crate::starlark_types::File>>,
+        validation: &BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         key: &ConfiguredTargetKey,
         group: &str,
     ) -> Vec<crate::starlark_types::File> {
         if group == crate::output_group_info::VALIDATION {
-            return self.planned_validation(custom_providers, validation, key);
+            return self
+                .planned_validation(custom_providers, validation, key)
+                .map(|set| crate::output_group_info::depset_files(&set))
+                .unwrap_or_default();
         }
         let key = self.rule_delegations.get(key).unwrap_or(key);
         custom_providers
@@ -7867,7 +7876,7 @@ impl Engine {
             ConfiguredTargetKey,
             starlark::values::OwnedFrozenValue,
         >,
-        validation: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        validation: &mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         target_identities: &mut BTreeMap<
             TargetIdentityKey,
             std::sync::Arc<crate::starlark_types::Target>,
@@ -7938,7 +7947,7 @@ impl Engine {
             ConfiguredTargetKey,
             starlark::values::OwnedFrozenValue,
         >,
-        validation: &mut BTreeMap<ConfiguredTargetKey, Vec<File>>,
+        validation: &mut BTreeMap<ConfiguredTargetKey, crate::starlark_types::Depset>,
         target_identities: &mut BTreeMap<
             TargetIdentityKey,
             std::sync::Arc<crate::starlark_types::Target>,
@@ -7979,13 +7988,14 @@ impl Engine {
         // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
         // the `_validation` group propagated from its prerequisites
         // (Self::planned_validation; a Starlark rule carries its group in
-        // its providers already), built once per configured target.
+        // its providers already), built once per configured target, both
+        // composed of the existing sets (W1c).
         if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
             let value = match native_output_groups.get(&actual_key) {
                 Some(value) => value.clone(),
                 None => {
                     let value = crate::output_group_info::freeze(
-                        runfiles.default_runfiles().all_artifacts(),
+                        runfiles.default_runfiles().all_artifacts_depset(),
                         self.planned_validation(custom_providers, validation, &actual_key),
                     )?;
                     native_output_groups.insert(actual_key.clone(), value.clone());
@@ -7995,16 +8005,15 @@ impl Engine {
             providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
         }
         // An output-file target's OutputGroupInfo is its generating rule's
-        // `_validation` group (OutputFileConfiguredTarget.java:109-118, the
-        // configuration follows the generating rule's transition,
-        // Self::artifacts), present only when non-empty.
+        // `_validation` group, the set itself (OutputFileConfiguredTarget.
+        // java:109-118; the configuration follows the generating rule's
+        // transition, Self::artifacts), present only when non-empty.
         if let Target::Output(generating, _) = &target {
             let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
-            let files = self.planned_validation(custom_providers, validation, &owner);
-            if !files.is_empty() {
+            if let Some(set) = self.planned_validation(custom_providers, validation, &owner) {
                 providers.insert(
                     crate::output_group_info::PROVIDER_ID.to_owned(),
-                    crate::output_group_info::freeze_validation(files)?,
+                    crate::output_group_info::freeze_validation(set)?,
                 );
             }
         }
@@ -8314,18 +8323,21 @@ impl Engine {
         }
         let merged_target = crate::aspects::merged_dependency(base, &base_aspect_maps)?;
         // The native ValidateTarget (rules/core/ValidateTarget.java:60-77):
-        // promotes the (merged) base target's `_validation` outputs to
-        // `_validation_top_level`; not applicable when there are none.
+        // promotes the (merged) base target's `_validation` set to
+        // `_validation_top_level` (the set itself, W1c); not applicable
+        // when it is empty.
         if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
-            let validations = merged_target
+            let Some(validations) = merged_target
                 .providers
                 .get(crate::output_group_info::PROVIDER_ID)
-                .map(|value| crate::output_group_info::validation_files(value.value()))
-                .unwrap_or_default();
-            if validations.is_empty() {
+                .and_then(|value| {
+                    crate::output_group_info::validation(value.value())
+                        .map(crate::output_group_info::shared_validation)
+                })
+            else {
                 // ConfiguredAspect.NonApplicableAspect: no providers.
                 return Ok(BTreeMap::new());
-            }
+            };
             let info = crate::output_group_info::freeze_validation_top_level(validations)?;
             return Ok(BTreeMap::from([(
                 crate::output_group_info::PROVIDER_ID.to_owned(),
@@ -9693,13 +9705,13 @@ impl Engine {
         // RuleConfiguredTargetBuilder.propagateTransitiveValidationOutputGroups
         // (:175-176, 294-296, 360-430): the native-rule collection of this
         // target's attribute prerequisites' `_validation` groups (the
-        // Starlark-rule path is analysis::transitive_validation). Implicit
-        // `$` attributes and tool dependencies (exec/no-config edges: genrule
-        // `tools`, `package_metadata`) never contribute; every dependency was
-        // planned before its dependent (analysis postorder).
+        // Starlark-rule path is analysis::transitive_validation), composed
+        // into one node of their sets (W1c). Implicit `$` attributes and tool
+        // dependencies (exec/no-config edges: genrule `tools`,
+        // `package_metadata`) never contribute; every dependency was planned
+        // before its dependent (analysis postorder).
         {
-            let mut collected = Vec::new();
-            let mut seen = BTreeSet::new();
+            let mut members = Vec::new();
             let edges = self.rule_edges(rule);
             // Rule-class attribute order (AbstractAttributeMapper.
             // getAttributeNames over RuleClass.getAttributes): the built-in
@@ -9720,14 +9732,12 @@ impl Engine {
                     continue;
                 };
                 let dep_key = ConfiguredTargetKey::new(label, config);
-                for file in self.planned_validation(custom_providers, validation, &dep_key) {
-                    if seen.insert(file.clone()) {
-                        collected.push(file);
-                    }
+                if let Some(set) = self.planned_validation(custom_providers, validation, &dep_key) {
+                    members.push(set.node);
                 }
             }
-            if !collected.is_empty() {
-                validation.insert(key.clone(), collected);
+            if let Some(set) = crate::output_group_info::compose_validation(members) {
+                validation.insert(key.clone(), set);
             }
         }
         // A native rule's source inputs join the index here (W1b

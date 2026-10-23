@@ -224,6 +224,33 @@ impl Runfiles {
         .collect()
     }
 
+    /// Runfiles.getAllArtifacts (Runfiles.java:425-440) as a set, for the
+    /// HIDDEN_TOP_LEVEL output group (W1c, PLAN-L1 §2.3): a stable-order
+    /// composition of the artifacts set with the symlink and root symlink
+    /// targets as direct elements, so its `to_list` is [`Self::all_artifacts`]
+    /// without flattening the artifacts (a default-order node walks its
+    /// children, each by its own layout, before its direct elements; the
+    /// artifacts set is postorder, never reversed). Empty runfiles give the
+    /// empty stable-order set.
+    pub(crate) fn all_artifacts_depset(&self) -> Depset {
+        if self.is_empty() {
+            return Depset::from_files(Vec::new());
+        }
+        let direct = self
+            .symlink_entries(false)
+            .into_iter()
+            .chain(self.symlink_entries(true))
+            .map(|(_, file)| Item::File(file))
+            .collect();
+        Depset::compose_framework(
+            direct,
+            vec![Arc::clone(&self.artifacts)],
+            Order::Default,
+            Some(ItemType::File),
+        )
+        .expect("a File set composes with File elements in the default order")
+    }
+
     /// Runfiles.getAllArtifacts (Runfiles.java:422-438): artifacts, then the
     /// symlink and root symlink targets, deduplicated.
     pub fn all_artifacts(&self) -> Vec<File> {
@@ -1980,6 +2007,71 @@ mod tests {
         // Runfiles.EMPTY is one identity; built empty runfiles are new ones.
         assert!(Runfiles::empty().same(&Runfiles::empty()));
         assert!(!Runfiles::empty().same(&RunfilesBuilder::default().build().unwrap()));
+    }
+
+    #[test]
+    fn all_artifacts_set_composes_the_artifacts_and_lists_like_all_artifacts() {
+        let names = |files: Vec<File>| {
+            files
+                .into_iter()
+                .map(|file| file.short_path)
+                .collect::<Vec<_>>()
+        };
+        let set_names = |runfiles: &Runfiles| {
+            names(crate::output_group_info::depset_files(
+                &runfiles.all_artifacts_depset(),
+            ))
+        };
+        // Runfiles.getAllArtifacts of EMPTY: the empty stable-order set.
+        let empty = Runfiles::empty().all_artifacts_depset();
+        assert!(empty.node.empty && empty.node.order == Order::Default);
+        let (a, b, c) = (
+            file("pkg/a", "//pkg:a"),
+            file("pkg/b", "//pkg:b"),
+            file("pkg/c", "//pkg:c"),
+        );
+        let mut inner = RunfilesBuilder::default();
+        inner.add_artifact(b.clone()).add_artifact(a.clone());
+        let inner = inner.build().unwrap();
+        // Artifacts only (a merged dependency first, compile order): the
+        // set reuses the artifacts node as its one child.
+        let mut outer = RunfilesBuilder::default();
+        outer
+            .merge(&inner)
+            .add_artifact(c.clone())
+            .add_artifact(a.clone());
+        let outer = outer.build().unwrap();
+        let set = outer.all_artifacts_depset();
+        assert!(Arc::ptr_eq(&set.node.children[0], &outer.artifacts));
+        assert!(set.node.direct.is_empty());
+        assert_eq!(set_names(&outer), names(outer.all_artifacts()));
+        assert_eq!(set_names(&outer), ["pkg/b", "pkg/a", "pkg/c"]);
+        // Symlink and root symlink targets follow the artifacts, each once.
+        let mut linked = RunfilesBuilder::default();
+        linked.merge(&outer);
+        linked.symlinks = vec![
+            Item::Symlink(symlink_entry("x/one".to_owned(), file("pkg/d", "//pkg:d"))),
+            Item::Symlink(symlink_entry("x/two".to_owned(), a.clone())),
+        ];
+        linked.root_symlinks = vec![
+            Item::Symlink(symlink_entry("root/e".to_owned(), file("pkg/e", "//pkg:e"))),
+            Item::Symlink(symlink_entry("root/d".to_owned(), file("pkg/d", "//pkg:d"))),
+        ];
+        let linked = linked.build().unwrap();
+        assert_eq!(set_names(&linked), names(linked.all_artifacts()));
+        assert_eq!(
+            set_names(&linked),
+            ["pkg/b", "pkg/a", "pkg/c", "pkg/d", "pkg/e"]
+        );
+        // Symlinks only.
+        let only = RunfilesBuilder {
+            root_symlinks: vec![Item::Symlink(symlink_entry("r".to_owned(), c.clone()))],
+            ..RunfilesBuilder::default()
+        }
+        .build()
+        .unwrap();
+        assert_eq!(set_names(&only), ["pkg/c"]);
+        assert_eq!(set_names(&only), names(only.all_artifacts()));
     }
 
     #[test]

@@ -83,6 +83,30 @@ single `_validation` group holding the generating rule's validation outputs
 generated-file prerequisites and `bazel build //:x.out` runs the generating
 rule's validation actions.
 
+The group is built like Bazel's one stable-order `NestedSetBuilder` per
+output group (`addOutputGroup`, RuleConfiguredTargetBuilder.java:636-656):
+one set composed of the target's own group (first) and each collected
+prerequisite set, never their flattened files (W1c,
+`output_group_info::add_transitive`/`compose_validation`; native rules store
+the composed set, `engine::planned_validation`). Its `to_list()` is the own
+group's elements, then each prerequisite set's, first occurrences only.
+Empty sets are skipped and repeated ones count once, so a group of exactly
+one contributed stable-order set — a lone contributing prerequisite, a
+forwarded `dep[OutputGroupInfo]._validation` — IS that set
+(NestedSetBuilder.buildInternal, :181-202): `t[OutputGroupInfo]._validation
+== dep[OutputGroupInfo]._validation` is True as in genuine Bazel 9.3 (the
+native profile answered False before W1c; `tests/output_group_info.rs`
+`validation_groups_compose_in_collection_order_and_reuse_a_lone_set`, whose
+ORDER lines and identity checks genuine 9.3.0 reproduces). An output-file
+target shares its generating rule's set and the ValidateTarget aspect
+promotes the set itself. A topological prerequisite group (Bazel would walk
+it unreversed inside the stable-order set) joins as its own `to_list()`,
+keeping the order the native profile always reported. These compositions,
+like the HIDDEN_TOP_LEVEL group over the default runfiles' artifacts
+(`Runfiles::all_artifacts_depset`, Runfiles.getAllArtifacts
+:425-440), never check Starlark's `depset()` depth limit: each target in a
+chain adds one level.
+
 ## Command-line selection
 
 `--output_groups` (BuildRequestOptions.java:160-177, comma-separated,
