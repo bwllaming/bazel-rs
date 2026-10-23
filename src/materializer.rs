@@ -1075,6 +1075,104 @@ mod tests {
         Registry::LocalPath(registry)
     }
 
+    /// A registry tree is a link anchor in any order (crate::source_links
+    /// StoreTrees): a crossing into one the invocation did not materialize
+    /// verifies it against its manifest (`<store>/trees/<id>.json`,
+    /// repository_store::verify_published_tree) — the kind, digest and link
+    /// target of exactly the recorded entries, never modes.
+    #[test]
+    #[cfg(unix)]
+    fn published_registry_trees_verify_against_their_manifest() {
+        use crate::repository_store::{published_tree, verify_published_tree};
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let registry = root_registry(temp.path());
+        let mut archive = tar::Builder::new(Vec::new());
+        for (name, kind, link, bytes) in [
+            (
+                "pkg/BUILD.bazel",
+                b'0',
+                "",
+                b"exports_files(['data'])\n".as_slice(),
+            ),
+            ("pkg/data", b'0', "", b"original"),
+            ("pkg/sub/inner", b'0', "", b"inner"),
+            ("pkg/link", b'2', "data", b""),
+            ("pkg/sublink", b'2', "sub", b""),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_mode(0o644);
+            header.set_size(bytes.len() as u64);
+            header.set_entry_type(tar::EntryType::new(kind));
+            header.as_mut_bytes()[..name.len()].copy_from_slice(name.as_bytes());
+            header.as_mut_bytes()[157..157 + link.len()].copy_from_slice(link.as_bytes());
+            header.set_cksum();
+            archive.append(&header, bytes).unwrap();
+        }
+        let archive = archive.into_inner().unwrap();
+        fs::write(temp.path().join("source.tar"), &archive).unwrap();
+        let source = json!({
+            "url": reqwest::Url::from_file_path(temp.path().join("source.tar")).unwrap().as_str(),
+            "integrity": sri(&archive),
+            "strip_prefix": "pkg",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cache = temp.path().join("cache");
+        let module = b"module(name='dep',version='1')\n";
+        let materialize = || materialize(&registry, "dep", "1", module, &source, &cache).unwrap();
+        let root = materialize();
+        let store = fs::canonicalize(&cache).unwrap();
+        let tree = published_tree(&store, &root.join("sub/inner")).unwrap();
+        assert_eq!(tree.kind, "registry");
+        assert_eq!(tree.root, root);
+        assert_eq!(tree.manifest, root.with_extension("json"));
+        verify_published_tree(&tree).unwrap();
+        // Modes are no content: still the manifest's tree.
+        fs::set_permissions(root.join("data"), fs::Permissions::from_mode(0o600)).unwrap();
+        verify_published_tree(&tree).unwrap();
+        // What each tamper does to the tree.
+        type Tamper = (&'static str, fn(&Path));
+        let tampers: [Tamper; 6] = [
+            ("edited file", |root| {
+                fs::write(root.join("data"), b"tampered").unwrap()
+            }),
+            ("retargeted link", |root| {
+                fs::remove_file(root.join("link")).unwrap();
+                symlink("BUILD.bazel", root.join("link")).unwrap();
+            }),
+            ("link replaced by its referent", |root| {
+                fs::remove_file(root.join("link")).unwrap();
+                fs::write(root.join("link"), b"original").unwrap();
+            }),
+            ("extra file", |root| {
+                fs::write(root.join("sub/extra"), b"").unwrap()
+            }),
+            ("missing file", |root| {
+                fs::remove_file(root.join("sub/inner")).unwrap()
+            }),
+            ("file replaced by a directory", |root| {
+                fs::remove_file(root.join("data")).unwrap();
+                fs::create_dir(root.join("data")).unwrap();
+            }),
+        ];
+        for (name, tamper) in tampers {
+            tamper(&root);
+            let error = verify_published_tree(&tree).unwrap_err();
+            assert!(
+                error.contains("does not match its manifest"),
+                "{name}: {error}"
+            );
+            // A warm materialization repairs the tree from the verified blob.
+            assert_eq!(materialize(), root);
+            verify_published_tree(&tree).unwrap();
+        }
+        // Without its manifest the tree is no publication (no anchor).
+        fs::remove_file(&tree.manifest).unwrap();
+        assert!(published_tree(&store, &root.join("data")).is_none());
+    }
+
     #[test]
     fn documentary_source_metadata_is_inert_but_retained_in_tree_identity() {
         let temp = tempfile::Builder::new()

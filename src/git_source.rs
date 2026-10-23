@@ -1670,6 +1670,77 @@ mod tests {
         }
     }
 
+    /// A Git tree is a link anchor in any order (crate::source_links
+    /// StoreTrees): a crossing into one the invocation did not materialize
+    /// verifies it against its manifest (`git/manifests/<id>.json`, whose
+    /// `kind` is "Directory", "File" or {"Symlink": {"target"}};
+    /// repository_store::verify_published_tree) — the kind, digest and link
+    /// target of exactly the recorded entries, never modes.
+    #[test]
+    #[cfg(unix)]
+    fn published_git_trees_verify_against_their_manifest() {
+        use crate::repository_store::{published_tree, verify_published_tree};
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let mut fixture = Fixture::new("");
+        fs::create_dir(fixture.origin.join("sub")).unwrap();
+        fs::write(fixture.origin.join("sub/inner"), b"inner\n").unwrap();
+        symlink("data", fixture.origin.join("link")).unwrap();
+        fixture.commit();
+        let tree = fixture.tree();
+        let store = fs::canonicalize(&fixture.cache).unwrap();
+        let published = published_tree(&store, &tree.root.join("sub/inner")).unwrap();
+        assert_eq!(published.kind, "git");
+        assert_eq!(published.root, tree.root);
+        assert_eq!(
+            published.manifest,
+            fs::canonicalize(fixture.manifest(&tree)).unwrap()
+        );
+        verify_published_tree(&published).unwrap();
+        // Modes are no content: still the manifest's tree.
+        fs::set_permissions(tree.root.join("run"), fs::Permissions::from_mode(0o644)).unwrap();
+        verify_published_tree(&published).unwrap();
+        // What each tamper does to the tree.
+        type Tamper = (&'static str, fn(&Path));
+        let tampers: [Tamper; 6] = [
+            ("edited file", |root| {
+                fs::write(root.join("data"), b"tampered").unwrap()
+            }),
+            ("retargeted link", |root| {
+                fs::remove_file(root.join("link")).unwrap();
+                symlink("run", root.join("link")).unwrap();
+            }),
+            ("link replaced by its referent", |root| {
+                fs::remove_file(root.join("link")).unwrap();
+                fs::write(root.join("link"), b"original\n").unwrap();
+            }),
+            ("extra file", |root| {
+                fs::write(root.join("sub/extra"), b"").unwrap()
+            }),
+            ("missing file", |root| {
+                fs::remove_file(root.join("sub/inner")).unwrap()
+            }),
+            ("directory replaced by a file", |root| {
+                fs::remove_file(root.join("sub/inner")).unwrap();
+                fs::remove_dir(root.join("sub")).unwrap();
+                fs::write(root.join("sub"), b"").unwrap();
+            }),
+        ];
+        for (name, tamper) in tampers {
+            tamper(&tree.root);
+            let error = verify_published_tree(&published).unwrap_err();
+            assert!(
+                error.contains("does not match its manifest"),
+                "{name}: {error}"
+            );
+            // A warm materialization repairs the tree from the origin.
+            assert_eq!(fixture.tree(), tree);
+            verify_published_tree(&published).unwrap();
+        }
+        // Without its manifest the tree is no publication (no anchor).
+        fs::remove_file(&published.manifest).unwrap();
+        assert!(published_tree(&store, &tree.root.join("data")).is_none());
+    }
+
     #[test]
     #[cfg(unix)]
     fn rejects_unsafe_targets_without_callback_or_publication() {

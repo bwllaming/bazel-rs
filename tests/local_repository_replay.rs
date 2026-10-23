@@ -2,9 +2,10 @@
 //! replay instead of tainting the analysis snapshot, their output is
 //! collected per execution without changing what stderr shows, and links
 //! into published store trees resolve the same in every loading order.
-//! Per-tree validation still checks what a verified tree's links reach, and
-//! the record mode names store trees a link reaches that no repository of
-//! the run has as its root.
+//! Per-tree validation still checks what a verified tree's links reach, the
+//! record mode names store trees a link reaches that no repository of the
+//! run has as its root, and it records the same inputs in every loading
+//! order.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
@@ -554,6 +555,201 @@ l = repository_rule(_local, local = True, attrs = {"host": attr.string()})
     let lines = snapshot_lines(&text);
     assert_eq!(validation_mismatches(&lines, "per-tree"), 0, "{text}");
     assert_eq!(validation_mismatches(&lines, "full"), 0, "{text}");
+}
+
+/// The comparable part of a record-mode dump: every observation, environment
+/// digest, repository and integrity entry (without the `racy` flags, which
+/// depend on how long ago a file was written), the replay records' names,
+/// outcomes and flags, the pinned tables, and every taint but the test
+/// hook's.
+fn recorded_inputs(dump: &str) -> Vec<String> {
+    dump.lines()
+        .filter_map(|line| {
+            let kind = line.split(' ').next()?;
+            match kind {
+                "OBS" | "ENV" | "REPO" | "INT" => {
+                    Some(line.strip_suffix(" racy").unwrap_or(line).to_owned())
+                }
+                "ROOT" | "MAPPING" => Some(line.to_owned()),
+                "TAINT" if !line.starts_with("TAINT test-hook ") => Some(line.to_owned()),
+                "REPLAY" => Some(
+                    line.split(' ')
+                        .filter(|part| {
+                            !part.starts_with("recorded:") && !part.starts_with("replay:")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// PLAN-L2 §1b determinism (review item 6): the record mode observes the
+/// same inputs — every observation, environment digest, verified tree and
+/// integrity entry, the replay records and their pinned tables, every taint
+/// but the test hook's — at 1, 8 or 32 loading threads under worker jitter,
+/// and never an Unstable one. The workspace has globs through subpackage
+/// boundaries, a `.bzl` chain, a `.bazelignore`d package, a generated
+/// repository globbing a host directory through a link, a local repository
+/// with an internal and a host link (replayed), and a repository loading a
+/// `.bzl` through a link into another repository's store tree.
+#[test]
+fn record_mode_observes_the_same_inputs_in_every_loading_order() {
+    let f = Fixture::new();
+    let host = tempfile::Builder::new()
+        .prefix("host-dirs-")
+        .tempdir_in("/tmp/opencode")
+        .unwrap();
+    let host = fs::canonicalize(host.path()).unwrap();
+    fs::create_dir_all(host.join("sub")).unwrap();
+    fs::write(host.join("a.h"), "a").unwrap();
+    fs::write(host.join("sub/b.h"), "b").unwrap();
+    f.file(
+        "MODULE.bazel",
+        &format!(
+            "module(name='main')\ng = use_repo_rule('//:repo.bzl', 'g')\nl = use_repo_rule('//:repo.bzl', 'l')\nd = use_repo_rule('//:repo.bzl', 'd')\nk = use_repo_rule('//:repo.bzl', 'k')\ng(name = 'gen', host = {0:?})\nl(name = 'lgen', host = {0:?})\nd(name = 'dep')\nk(name = 'linker')\n",
+            host.display().to_string()
+        ),
+    );
+    f.file(
+        "repo.bzl",
+        r#"def _gen(ctx):
+    ctx.symlink(ctx.attr.host, "inc")
+    ctx.file("BUILD.bazel", "filegroup(name = 'hdrs', srcs = glob(['inc/**']), visibility = ['//visibility:public'])\n")
+
+g = repository_rule(_gen, attrs = {"host": attr.string()})
+
+def _local(ctx):
+    ctx.file("data/v.txt", "v")
+    ctx.symlink("data", "alias")
+    ctx.symlink(ctx.attr.host, "inc")
+    ctx.file("BUILD.bazel", "filegroup(name = 'files', srcs = glob(['alias/**', 'inc/**']), visibility = ['//visibility:public'])\n")
+
+l = repository_rule(_local, local = True, attrs = {"host": attr.string()})
+
+def _dep(ctx):
+    ctx.file("BUILD.bazel", "genrule(name = 'd', outs = ['d.txt'], cmd = 'echo d > $@', visibility = ['//visibility:public'])\n")
+    ctx.file("defs.bzl", "VALUE = 'from-dep'\n")
+
+d = repository_rule(_dep)
+
+def _linker(ctx):
+    ctx.symlink(Label("@dep//:defs.bzl"), "linked.bzl")
+    ctx.file("BUILD.bazel", "load(':linked.bzl', 'VALUE')\ngenrule(name = 'g', outs = ['g.txt'], cmd = 'echo %s > $@' % VALUE, visibility = ['//visibility:public'])\n")
+
+k = repository_rule(_linker)
+"#,
+    );
+    f.file(".bazelignore", "ignored\n");
+    f.file("ignored/BUILD.bazel", "fail('ignored')\n");
+    f.file("BUILD.bazel", "");
+    f.file("tools/BUILD.bazel", "");
+    f.file(
+        "tools/defs.bzl",
+        "load(':helpers.bzl', 'SUFFIX')\n\ndef files(name):\n    native.filegroup(name = name, srcs = native.glob(['**/*' + SUFFIX]))\n",
+    );
+    f.file("tools/helpers.bzl", "SUFFIX = '.txt'\n");
+    for package in 0..6 {
+        // p0 loads through the link into `dep`'s tree while p3 demands
+        // `dep` itself: which comes first depends on the loading order.
+        let load = match package {
+            0 => "load('@linker//:linked.bzl', 'VALUE')\n",
+            3 => "load('@dep//:defs.bzl', 'VALUE')\n",
+            _ => "",
+        };
+        f.file(
+            &format!("p{package}/BUILD.bazel"),
+            &format!(
+                "load('//tools:defs.bzl', 'files')\n{load}files(name = 'files')\ngenrule(name = 'x', srcs = [':files', '@gen//:hdrs', '@lgen//:files', '@linker//:g', '@dep//:d'], outs = ['x{package}.out'], cmd = 'cat $(SRCS) > $@')\n"
+            ),
+        );
+        f.file(&format!("p{package}/data/a.txt"), "a");
+        f.file(&format!("p{package}/data/deeper/b.txt"), "b");
+        f.file(&format!("p{package}/data/skip.go"), "package x");
+        f.file(
+            &format!("p{package}/sub/BUILD.bazel"),
+            "exports_files(['c.txt'])\n",
+        );
+        f.file(&format!("p{package}/sub/c.txt"), "c");
+    }
+    let build = ["build", "--nobuild", "//..."];
+    // Cold, then warm once the publications' stat fingerprints settled (a
+    // warm reuse refreshes a manifest whose entries were racy).
+    let cold = f.run_env(&[], &build);
+    assert!(cold.status.success(), "{}", stderr(&cold));
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    let warm = f.run_env(&[], &build);
+    assert!(warm.status.success(), "{}", stderr(&warm));
+    // Outside the workspace: creating it must not change what is observed.
+    let dumps = tempfile::Builder::new()
+        .prefix("dumps-")
+        .tempdir_in("/tmp/opencode")
+        .unwrap();
+    let dump = dumps.path().join("dump.txt");
+    let dump_text = dump.display().to_string();
+    let record = |threads: &str, jitter: &str| {
+        let mut env = vec![
+            ("BAZEL_RS_SNAPSHOT", "record"),
+            ("BAZEL_RS_SNAPSHOT_DUMP", dump_text.as_str()),
+        ];
+        if !jitter.is_empty() {
+            env.push(("BAZEL_RS_LOADING_JITTER", jitter));
+        }
+        let threads = format!("--loading_phase_threads={threads}");
+        let run = f.run_env(&env, &["build", "--nobuild", &threads, "//..."]);
+        let text = stderr(&run);
+        assert!(run.status.success(), "{threads} jitter={jitter}: {text}");
+        let dump = fs::read_to_string(&dump).unwrap();
+        assert!(
+            !dump.lines().any(|line| line.starts_with("TAINT unstable ")),
+            "{threads} jitter={jitter}: {dump}"
+        );
+        (recorded_inputs(&dump), text)
+    };
+    let (reference, text) = record("1", "");
+    let lines = snapshot_lines(&text);
+    assert!(
+        lines.iter().any(|line| line.contains("eligible=yes")),
+        "{text}"
+    );
+    assert!(
+        reference
+            .iter()
+            .any(|line| line.starts_with("REPLAY +l+lgen match ")),
+        "{reference:#?}"
+    );
+    // `dep`'s tree is recorded once, by its owner (whether or not the link
+    // crossed into it first), and every tree has a repository.
+    let repos: Vec<&String> = reference
+        .iter()
+        .filter(|line| line.starts_with("REPO "))
+        .collect();
+    assert_eq!(repos.len(), 3, "{repos:#?}");
+    assert!(
+        !lines.iter().any(|line| line.starts_with("link anchors:")),
+        "{text}"
+    );
+    for threads in ["1", "8", "32"] {
+        for jitter in ["", "7", "40", "99"] {
+            let (recorded, _) = record(threads, jitter);
+            if recorded != reference {
+                let only = |a: &[String], b: &[String]| -> Vec<String> {
+                    a.iter()
+                        .filter(|line| !b.contains(line))
+                        .take(20)
+                        .cloned()
+                        .collect()
+                };
+                panic!(
+                    "threads={threads} jitter={jitter}: the recording differs\nonly in the reference: {:#?}\nonly here: {:#?}",
+                    only(&reference, &recorded),
+                    only(&recorded, &reference)
+                );
+            }
+        }
+    }
 }
 
 /// The stale-tree caveat of the store-tree link anchors (review item 7): a
