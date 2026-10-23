@@ -266,7 +266,7 @@ impl fmt::Display for RunEnvironmentInfo {
 /// CR/LF/TAB have short escapes; remaining ASCII bytes below 32 use lowercase
 /// hex. DEL and all non-ASCII UTF-8 (including non-ASCII controls) stay literal.
 /// This is deliberately provider-local, not a change to primitive Starlark repr.
-fn write_quoted(f: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
+pub(crate) fn write_quoted(f: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
     f.write_str("\"")?;
     let mut start = 0;
     for (index, byte) in value.bytes().enumerate() {

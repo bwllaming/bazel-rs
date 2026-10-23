@@ -42,6 +42,7 @@ pub mod digest_memo;
 pub mod download_proxy;
 pub mod engine;
 mod exec_groups;
+mod execution_info;
 pub mod extension_calls;
 pub mod extension_ctx;
 mod extension_download;

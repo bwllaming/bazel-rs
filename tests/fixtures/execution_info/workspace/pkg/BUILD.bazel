@@ -1,0 +1,86 @@
+load(
+    ":defs.bzl",
+    "advertises",
+    "bad",
+    "consumer",
+    "needs",
+    "plain",
+    "probe",
+    "program",
+    "provider_rule",
+    "requirements_setting",
+    "returns_loaded",
+    "with_execution_info_test",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+provider_rule(name = "dep")
+
+plain(name = "plain")
+
+returns_loaded(name = "loaded")
+
+probe(
+    name = "probe",
+    dep = ":dep",
+    loaded = ":loaded",
+    plain = ":plain",
+)
+
+# Like rules_python's //tools/precompiler:precompiler.
+requirements_setting(
+    name = "execution_requirements",
+    build_setting_default = [
+        "no-remote=1",
+        "requires-fixture=a=b",
+        " ",
+    ],
+)
+
+program(
+    name = "program",
+    execution_requirements = ":execution_requirements",
+    main = "tool.sh",
+)
+
+consumer(
+    name = "consumer",
+    program = ":program",
+)
+
+needs(
+    name = "needs_ok",
+    dep = ":dep",
+)
+
+needs(
+    name = "needs_missing",
+    dep = ":plain",
+)
+
+advertises(name = "advertises")
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+    )
+    for mode in [
+        "list",
+        "none",
+        "int_key",
+        "int_value",
+        "group_int",
+        "group_none",
+        "unknown_keyword",
+        "three",
+        "three_bad_type",
+        "duplicate",
+        "duplicate_bad_type",
+        "unknown_field",
+        "set_field",
+    ]
+]
+
+with_execution_info_test(name = "with_execution_info_test")

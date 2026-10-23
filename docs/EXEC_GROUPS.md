@@ -223,7 +223,8 @@ analyzed since N25d5, docs/CC_TOOLCHAIN.md.
   NullPointerException (AutoValue_StarlarkExecGroupCollection); natively an
   explicit failure.
 * Exec groups of aspects (aspects are not analyzed), `exec_group` of
-  `testing.ExecutionInfo`, genrule/native-rule exec groups, and the
+  `testing.ExecutionInfo` (a test rule returning one fails explicitly,
+  docs/CC_COMMON_LOADING.md), genrule/native-rule exec groups, and the
   action-execution side of N23d (below).
 
 ## Merge with N23d (done in integration-13)

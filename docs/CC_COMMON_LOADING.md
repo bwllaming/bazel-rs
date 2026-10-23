@@ -190,8 +190,9 @@ these report `Provider`. They compare and hash by key and are
 valid `attr.label(providers=[...])` requirements under `builtin:NAME`.
 `@_builtins` Starlark providers use `@@_builtins//:FILE%NAME`. Calling them
 fails explicitly, except `platform_common.ToolchainInfo(**kwargs)`, which
-constructs a ToolchainInfo (docs/TOOLCHAINS.md). `TemplateVariableInfo` remains the existing native
-implementation.
+constructs a ToolchainInfo (docs/TOOLCHAINS.md), and
+`testing.ExecutionInfo(requirements = {}, exec_group = "test")` (below).
+`TemplateVariableInfo` remains the existing native implementation.
 
 - `config_common.toolchain_type(name, *, mandatory=True)` is implemented
   (`ConfigStarlarkCommon.toolchainType`). A string name is resolved with the
@@ -213,6 +214,42 @@ implementation.
   - Bazel also prints the same text as a rule warning for the TestEnvironment
     case. The native analysis has no warning channel, so it prints nothing.
   - The flag does not take part in equality, which matches `NativeInfo`.
+- `testing.ExecutionInfo(requirements = {}, exec_group = "test")` constructs
+  the NativeInfo of `ExecutionInfo.ExecutionInfoProvider.constructor`
+  (analysis/test/ExecutionInfo.java, src/execution_info.rs).
+  - Binding follows Java Starlark's BuiltinFunction: both parameters are
+    positional or named; types are checked as arguments bind, so a type error
+    comes before the surplus-positional count and before a duplicate
+    (`in call to ExecutionInfo(), parameter 'requirements' got value of type
+    'list', want 'dict'`, `ExecutionInfo() accepts no more than 2 positional
+    arguments but got 3`, `ExecutionInfo() got multiple values for argument
+    'requirements'`, unknown keywords with SpellChecker's hint); then
+    `Dict.cast`: `got dict<int, string> for 'requirements', want
+    dict<string, string>`.
+  - The instance has type `ExecutionInfo`, `dir` `["exec_group",
+    "requirements"]` and NativeInfo's repr `struct(exec_group = "test",
+    requirements = {...})` (insertion order). Every `requirements` access is a
+    fresh mutable dict. Instances compare and hash by content (map equality
+    ignores order); setting a field is `cannot set .requirements field of
+    ExecutionInfo value`.
+  - Rules return it and read it from dependencies
+    (`dep[testing.ExecutionInfo]`, `in`, `attr.label(providers = [...])`);
+    rules_python's `py_interpreter_program` (its precompiler) and
+    `precompile.bzl` pass the requirements to an action.
+  - A rule advertising it in `provides` must return it: like every key other
+    than DefaultInfo and OutputGroupInfo (which every rule target has),
+    checkDeclaredProviders looks it up on the built target (`rule advertised
+    the 'ExecutionInfo' provider, but this provider was not among those
+    returned`).
+  - Bazel reads it only for test rules: their test action's execution
+    requirements and exec group (RuleConfiguredTargetBuilder.initializeTestProvider,
+    TestTargetProperties). The native test action does not model them, so a
+    test rule returning it fails explicitly (`testing.ExecutionInfo returned
+    by a test rule is not implemented in the native profile ...`); rules_cc,
+    rules_python and rules_java return it from tests only for Apple targets.
+  - Paired capture `tests/fixtures/execution_info` (22 genuine 9.3.0 cases:
+    21 MATCH, the test rule a declared divergence), replayed by
+    `tests/execution_info.rs`.
 
 ## Top-level builtins
 

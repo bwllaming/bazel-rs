@@ -574,6 +574,7 @@ pub fn provider_identity(value: Value<'_>) -> Option<String> {
             crate::platform_providers::PLATFORM_ID,
             crate::toolchain_info::PROVIDER_ID,
             crate::feature_flags::PROVIDER_ID,
+            crate::execution_info::PROVIDER_ID,
         ]
         .contains(&id.as_str())
     {
@@ -604,6 +605,9 @@ pub fn instance_identity(value: Value<'_>) -> Option<String> {
     }
     if crate::feature_flags::is_instance(value) {
         return Some(crate::feature_flags::PROVIDER_ID.to_owned());
+    }
+    if crate::execution_info::is_instance(value) {
+        return Some(crate::execution_info::PROVIDER_ID.to_owned());
     }
     Some(ProviderInstance::from_value(value)?.identity.clone())
 }

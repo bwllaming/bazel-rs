@@ -649,6 +649,11 @@ impl<'v> StarlarkValue<'v> for BuiltinProvider {
         if self.owner == "platform_common" && self.name == "ToolchainInfo" {
             return crate::toolchain_info::construct(args, eval);
         }
+        // ExecutionInfo.ExecutionInfoProvider.constructor
+        // (analysis/test/ExecutionInfo.java:75-86).
+        if self.owner == "testing" && self.name == "ExecutionInfo" {
+            return crate::execution_info::construct(args, eval);
+        }
         Err(failure(format!(
             "{}.{} {NOT_IMPLEMENTED} ({})",
             self.owner,
@@ -1848,9 +1853,10 @@ t = platform_common.ToolchainInfo(z = [1], a = "x", m = None)
                 "coverage_common.instrumented_files_info(None)",
                 "in call to instrumented_files_info(), parameter 'ctx' got value of type 'NoneType', want 'ctx'",
             ),
+            // ExecutionInfoProvider.constructor (crate::execution_info).
             (
-                "testing.ExecutionInfo({})",
-                "testing.ExecutionInfo is not implemented in the native profile (analysis-time testing API)",
+                "testing.ExecutionInfo([])",
+                "in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'",
             ),
             (
                 "testing.analysis_test(name = 'x', implementation = len)",

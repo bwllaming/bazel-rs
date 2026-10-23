@@ -2241,6 +2241,13 @@ fn analyze_inner(
                     "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
                 );
             }
+            // RuleConfiguredTargetBuilder.initializeTestProvider (:470-498):
+            // a test's ExecutionInfo is its test action's requirements and
+            // exec group (TestTargetProperties.java:115-118), not modelled.
+            ensure!(
+                !kind.test || !custom.contains_key(crate::execution_info::PROVIDER_ID),
+                "testing.ExecutionInfo returned by a test rule is not implemented in the native profile (the test action's execution requirements and exec group)"
+            );
             // parseDefaultProviderFields/addSimpleProviders (:359-490).
             let (files, target_runfiles) = crate::runfiles::configure_target(
                 returned_default.unwrap_or_default(),
@@ -2266,11 +2273,18 @@ fn analyze_inner(
                 target_runfiles.run.inherited = inherited;
             }
             // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
-            // iterates getStarlarkProviders() only: built-in provider keys
-            // (DefaultInfo, OutputGroupInfo, ...) are never checked (:141).
+            // looks each advertised key up on the built target: DefaultInfo
+            // and OutputGroupInfo are always there (AbstractConfiguredTarget.java:209,
+            // RuleConfiguredTargetBuilder.build), any other key (built-in
+            // ones such as testing.ExecutionInfo too) must be returned.
             for provider in &invocation.declaration.provides {
                 ensure!(
-                    provider.id.starts_with("builtin:") || custom.contains_key(&provider.id),
+                    [
+                        crate::providers::DEFAULT_INFO_PROVIDER_ID,
+                        crate::output_group_info::PROVIDER_ID,
+                    ]
+                    .contains(&provider.id.as_str())
+                        || custom.contains_key(&provider.id),
                     "rule advertised the '{}' provider, but this provider was not among those returned",
                     provider.display_name
                 );
