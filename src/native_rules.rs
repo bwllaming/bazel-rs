@@ -752,6 +752,23 @@ fn type_error(ty: NativeType, value: Value<'_>, what: &str) -> String {
     expected(&format!("value of type '{}'", ty.name()), value, what)
 }
 
+/// What a converted value is, for its conversion error (`element 3 of
+/// attribute 'srcs'`): formatted only when an error is reported.
+#[derive(Clone, Copy)]
+enum What<'a> {
+    Plain(&'a str),
+    Element(usize, &'a str),
+}
+
+impl std::fmt::Display for What<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            What::Plain(what) => f.write_str(what),
+            What::Element(index, what) => write!(f, "element {index} of {what}"),
+        }
+    }
+}
+
 impl Converter<'_> {
     fn charge(&mut self, text: &str) -> anyhow::Result<()> {
         self.budget.node().map_err(anyhow::Error::msg)?;
@@ -763,7 +780,7 @@ impl Converter<'_> {
     /// text when its apparent repository is not visible: like Bazel's
     /// `@@[unknown repo ...]` labels that error only when used, resolution is
     /// then retried (and fails) during analysis.
-    fn label(&mut self, value: Value<'_>, what: &str) -> anyhow::Result<String> {
+    fn label(&mut self, value: Value<'_>, what: What<'_>) -> anyhow::Result<String> {
         if let Some((repository, package, name)) = crate::starlark_types::label_parts(value) {
             for part in [repository, package, name] {
                 self.charge(part)?;
@@ -776,34 +793,61 @@ impl Converter<'_> {
             .to_string());
         }
         let Some(text) = value.unpack_str() else {
-            bail!("{}", type_error(NativeType::String, value, what));
+            bail!(
+                "{}",
+                type_error(NativeType::String, value, &what.to_string())
+            );
         };
         self.charge(text)?;
-        crate::bazel_label::Parts::parse(text)
-            .map_err(|error| anyhow!("invalid label '{text}' in {what}: {error}"))?;
-        let bound = match self.repositories.resolution_size_bound(
-            text,
-            &self.package.repository,
-            &self.package.package,
-        ) {
-            Ok(bound) => bound,
-            Err(error) if deferred(text, &error) => return Ok(text.to_owned()),
-            Err(error) => bail!("invalid label '{text}' in {what}: {error}"),
-        };
-        self.budget.bytes(bound).map_err(anyhow::Error::msg)?;
-        match self
-            .repositories
-            .parse(text, &self.package.repository, &self.package.package)
-        {
-            Ok(label) => Ok(label.to_string()),
-            Err(error) if deferred(text, &error) => Ok(text.to_owned()),
-            Err(error) => bail!("invalid label '{text}' in {what}: {error}"),
+        // The resolution is a function of the text in this package
+        // (memoized while the package evaluates); the budget is charged
+        // on every use.
+        let converted = crate::label::converted_label(self.package, text, || {
+            if let Err(error) = crate::bazel_label::Parts::parse(text) {
+                return crate::label::ConvertedLabel::Invalid(error.to_string());
+            }
+            let bound = match self.repositories.resolution_size_bound(
+                text,
+                &self.package.repository,
+                &self.package.package,
+            ) {
+                Ok(bound) => bound,
+                Err(error) => return crate::label::ConvertedLabel::Unbounded(error),
+            };
+            crate::label::ConvertedLabel::Bound(
+                bound,
+                self.repositories
+                    .parse(text, &self.package.repository, &self.package.package)
+                    .map(|label| label.to_string()),
+            )
+        });
+        match converted {
+            crate::label::ConvertedLabel::Invalid(error) => {
+                bail!("invalid label '{text}' in {what}: {error}")
+            }
+            crate::label::ConvertedLabel::Unbounded(error) if deferred(text, &error) => {
+                Ok(text.to_owned())
+            }
+            crate::label::ConvertedLabel::Unbounded(error) => {
+                bail!("invalid label '{text}' in {what}: {error}")
+            }
+            crate::label::ConvertedLabel::Bound(bound, resolved) => {
+                self.budget.bytes(bound).map_err(anyhow::Error::msg)?;
+                match resolved {
+                    Ok(canonical) => Ok(canonical),
+                    Err(error) if deferred(text, &error) => Ok(text.to_owned()),
+                    Err(error) => bail!("invalid label '{text}' in {what}: {error}"),
+                }
+            }
         }
     }
 
-    fn string(&mut self, value: Value<'_>, what: &str) -> anyhow::Result<String> {
+    fn string(&mut self, value: Value<'_>, what: What<'_>) -> anyhow::Result<String> {
         let Some(text) = value.unpack_str() else {
-            bail!("{}", type_error(NativeType::String, value, what));
+            bail!(
+                "{}",
+                type_error(NativeType::String, value, &what.to_string())
+            );
         };
         self.charge(text)?;
         Ok(text.to_owned())
@@ -852,7 +896,7 @@ impl Converter<'_> {
         what: &str,
     ) -> anyhow::Result<AttrValue> {
         Ok(match ty {
-            NativeType::String => AttrValue::String(self.string(value, what)?),
+            NativeType::String => AttrValue::String(self.string(value, What::Plain(what))?),
             // BooleanType.convert (packages/Type.java:411-429).
             NativeType::Bool => AttrValue::Bool(match value.unpack_bool() {
                 Some(value) => value,
@@ -879,7 +923,7 @@ impl Converter<'_> {
                 },
             }),
             NativeType::Label | NativeType::NodepLabel => {
-                AttrValue::Label(Some(self.label(value, what)?))
+                AttrValue::Label(Some(self.label(value, What::Plain(what))?))
             }
             NativeType::StringList | NativeType::OutputList | NativeType::License => {
                 // LicenseType.convert delegates to STRING_LIST.convert
@@ -892,7 +936,7 @@ impl Converter<'_> {
                 let items = self.sequence(shape, value, what)?;
                 let mut values = Vec::with_capacity(items.len());
                 for (index, item) in items.iter().enumerate() {
-                    values.push(self.string(*item, &format!("element {index} of {what}"))?);
+                    values.push(self.string(*item, What::Element(index, what))?);
                 }
                 if ty == NativeType::License {
                     parse_license(&values)?;
@@ -907,7 +951,7 @@ impl Converter<'_> {
                 let items = self.sequence(ty, value, what)?;
                 let mut values = Vec::with_capacity(items.len());
                 for (index, item) in items.iter().enumerate() {
-                    values.push(self.label(*item, &format!("element {index} of {what}"))?);
+                    values.push(self.label(*item, What::Element(index, what))?);
                 }
                 AttrValue::Labels(values)
             }
@@ -916,8 +960,8 @@ impl Converter<'_> {
                     .ok_or_else(|| anyhow!("{}", type_error(ty, value, what)))?;
                 let mut entries: Vec<(String, String)> = Vec::new();
                 for (key, item) in dict.iter() {
-                    let key = self.string(key, "dict key element")?;
-                    let item = self.string(item, "dict value element")?;
+                    let key = self.string(key, What::Plain("dict key element"))?;
+                    let item = self.string(item, What::Plain("dict value element"))?;
                     entries.retain(|(seen, _)| *seen != key);
                     entries.push((key, item));
                 }
@@ -928,15 +972,12 @@ impl Converter<'_> {
                     .ok_or_else(|| anyhow!("{}", type_error(ty, value, what)))?;
                 let mut entries: Vec<(String, Vec<String>)> = Vec::new();
                 for (key, item) in dict.iter() {
-                    let key = self.string(key, "dict key element")?;
+                    let key = self.string(key, What::Plain("dict key element"))?;
                     let items = self.sequence(NativeType::LabelList, item, "dict value element")?;
                     let mut labels = Vec::with_capacity(items.len());
                     for (index, element) in items.iter().enumerate() {
                         labels.push(
-                            self.label(
-                                *element,
-                                &format!("element {index} of dict value element"),
-                            )?,
+                            self.label(*element, What::Element(index, "dict value element"))?,
                         );
                     }
                     entries.retain(|(seen, _)| *seen != key);
@@ -951,8 +992,8 @@ impl Converter<'_> {
                 let mut entries: Vec<(String, String)> = Vec::new();
                 let mut originals: Vec<(String, Vec<String>)> = Vec::new();
                 for (key, item) in dict.iter() {
-                    let label = self.label(key, "dict key element")?;
-                    let item = self.string(item, "dict value element")?;
+                    let label = self.label(key, What::Plain("dict key element"))?;
+                    let item = self.string(item, What::Plain("dict value element"))?;
                     match originals.iter_mut().find(|(seen, _)| *seen == label) {
                         Some((_, keys)) => keys.push(key.to_repr()),
                         None => originals.push((label.clone(), vec![key.to_repr()])),
@@ -1122,7 +1163,7 @@ fn convert_select(
                 for (key, value) in branches {
                     let key = match key.unpack_str() {
                         Some(DEFAULT_CONDITION) => DEFAULT_CONDITION.to_owned(),
-                        _ => converter.label(key, what)?,
+                        _ => converter.label(key, What::Plain(what))?,
                     };
                     let shown = Label::parse_canonical(&key)
                         .map(|label| crate::rule_declarations::canonical_form(&label))
@@ -1348,7 +1389,7 @@ pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
 
 fn collect_labels(value: &AttrValue, labels: &mut Vec<Label>) {
     let mut push = |text: &str| {
-        if let Ok(label) = Label::parse_canonical(text) {
+        if let Ok(label) = Label::parse_canonical_memo(text) {
             labels.push(label);
         }
     };

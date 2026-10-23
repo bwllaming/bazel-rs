@@ -475,7 +475,14 @@ fn run() -> Result<(), String> {
     // --embed_label is validated by its converter before anything runs
     // (WorkspaceStatusAction.OneLineStringConverter :216-233).
     bazel_rs::workspace_status::validate_embed_label(&workspace_status.embed_label)?;
-    let mut engine = Engine::with_repositories(repositories.clone());
+    // W7: the engine (and the repository set it shares) is never torn
+    // down: the process exits when the command ends, and every write
+    // that must outlive it — the lockfile (`LockfileWriter`), the digest
+    // memo (`digest_memo::finish`), the snapshot recording, test logs —
+    // is explicit. Freeing the analysis state node by node only delays
+    // the exit.
+    let mut engine = std::mem::ManuallyDrop::new(Engine::with_repositories(repositories.clone()));
+    engine.set_skip_teardown(true);
     engine.set_runfiles_options(runfiles_options);
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build);

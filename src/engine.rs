@@ -1460,6 +1460,10 @@ pub struct Engine {
     /// The rules whose labels phase-1 prefetch already queued (lookups
     /// only).
     prefetch_followed: HashSet<Label>,
+    /// W7: the process exits when the command ends (the CLI sets it):
+    /// state a finished command never reads again is left to the OS
+    /// instead of being torn down (`set_skip_teardown`).
+    skip_teardown: bool,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -1641,6 +1645,7 @@ impl Engine {
             analyze_depth: 0,
             prefetch: None,
             prefetch_followed: HashSet::new(),
+            skip_teardown: false,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -1726,6 +1731,13 @@ impl Engine {
     /// Whether later builds execute (see `set_execute_build`).
     pub fn execute_build(&self) -> bool {
         self.execute_build
+    }
+
+    /// W7: the process exits when this command ends (the CLI, never a
+    /// library user that keeps building): a `--nobuild` build leaves its
+    /// analysis and planning maps to the OS instead of tearing them down.
+    pub fn set_skip_teardown(&mut self, skip: bool) {
+        self.skip_teardown = skip;
     }
 
     /// The one workspace status computation of this invocation (N63
@@ -3502,7 +3514,7 @@ impl Engine {
                 self.validate_prerequisite(
                     &rule,
                     &dependency,
-                    &describe_with_aliases(&[], &dependency, "target"),
+                    &|| describe_with_aliases(&[], &dependency, "target"),
                     skip_testonly,
                 )?;
                 self.analyze(&dependency, dep_config, active, configured, plan)?;
@@ -3512,12 +3524,13 @@ impl Engine {
             // describe and validate the edge (AliasProvider.describeTargetWithAliases).
             self.analyze(&dependency, dep_config, active, configured, plan)?;
             let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
-            let description = describe_with_aliases(&chain, &actual, "target");
+            // Formatted only for a reported error.
+            let description = || describe_with_aliases(&chain, &actual, "target");
             if !visible {
                 let is_source = matches!(self.target(&actual)?, Target::Source(_));
                 return Err(visibility_error(
                     &rule,
-                    &description,
+                    &description(),
                     is_source,
                     visible_from,
                 ));
@@ -3593,13 +3606,14 @@ impl Engine {
             let dependency = self.resolve_rule_src(&rule, condition)?;
             let (_, actual) = self.alias_chain(configured, config, &dependency);
             if let Target::Rule(dep) = self.target(&actual)? {
-                let description = describe_with_aliases(&[], &actual, "target");
+                // Formatted only for a reported error.
+                let description = || describe_with_aliases(&[], &actual, "target");
                 if !self.visible(
                     &dep.visibility,
                     &rule_authority(&dep),
                     Some(&requesting_package),
                 )? {
-                    return Err(visibility_error(&rule, &description, false, None));
+                    return Err(visibility_error(&rule, &description(), false, None));
                 }
                 self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
             }
@@ -5243,9 +5257,10 @@ impl Engine {
                     Some(&requesting_package),
                 )?,
             };
-            let description = describe_with_aliases(&chain, &actual, "target");
+            // Formatted only for a reported error.
+            let description = || describe_with_aliases(&chain, &actual, "target");
             if !visible {
-                errors.push(visibility_message(rule, &description, is_source, None));
+                errors.push(visibility_message(rule, &description(), is_source, None));
             }
             if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                 errors.push(error);
@@ -5366,9 +5381,10 @@ impl Engine {
                         Some(&requesting_package),
                     )?,
                 };
-                let description = describe_with_aliases(&chain, &actual, "target");
+                // Formatted only for a reported error.
+                let description = || describe_with_aliases(&chain, &actual, "target");
                 if !visible {
-                    errors.push(visibility_message(rule, &description, is_source, None));
+                    errors.push(visibility_message(rule, &description(), is_source, None));
                 }
                 if let Some(error) = self.prerequisite_error(rule, &actual, &description, false)? {
                     errors.push(error);
@@ -7124,7 +7140,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         dependency: &Label,
-        description: &str,
+        description: &dyn Fn() -> String,
         skip_testonly: bool,
     ) -> Result<(), String> {
         // A RuleContext.ruleError at the consuming rule's location.
@@ -7220,7 +7236,7 @@ impl Engine {
         &mut self,
         rule: &Rule,
         dependency: &Label,
-        description: &str,
+        description: &dyn Fn() -> String,
         skip_testonly: bool,
     ) -> Result<Option<String>, String> {
         let (generating, output) = match self.target(dependency)? {
@@ -7228,9 +7244,9 @@ impl Engine {
             Target::Output(dep, _) => (dep, true),
             Target::Source(_) => return Ok(None),
         };
-        let shown = crate::rule_declarations::canonical_form(&rule.label);
-        let shown_dependency = crate::rule_declarations::canonical_form(dependency);
-        let prefix = format!("in {} rule {shown}: ", rule.rule_class_name());
+        // The texts are formatted only for a reported error or warning.
+        let shown = || crate::rule_declarations::canonical_form(&rule.label);
+        let prefix = || format!("in {} rule {}: ", rule.rule_class_name(), shown());
         let args = &self.packages[&rule.label.package_id()].args;
         let dependency_args = &self.packages[&generating.label.package_id()].args;
         // Output files of testonly rules are only checked with
@@ -7242,7 +7258,10 @@ impl Engine {
             && !rule.is_test_only(args))
         .then(|| {
             format!(
-                "{prefix}non-test target '{shown}' depends on testonly {description} and doesn't have testonly attribute set"
+                "{}non-test target '{}' depends on testonly {} and doesn't have testonly attribute set",
+                prefix(),
+                shown(),
+                description()
             )
         });
         // validate() runs the testonly check, then the deprecation check, for
@@ -7252,14 +7271,19 @@ impl Engine {
             && rule.label.package_id() != generating.label.package_id()
             && let Some(warning) = generating.deprecation_warning(dependency_args)
         {
+            let shown_dependency = crate::rule_declarations::canonical_form(dependency);
             let message = if output {
                 format!(
-                    "{prefix}target '{shown}' depends on the output file {shown_dependency} of a deprecated rule {}': {warning}",
+                    "{}target '{}' depends on the output file {shown_dependency} of a deprecated rule {}': {warning}",
+                    prefix(),
+                    shown(),
                     crate::rule_declarations::canonical_form(&generating.label)
                 )
             } else {
                 format!(
-                    "{prefix}target '{shown}' depends on deprecated target '{shown_dependency}': {warning}"
+                    "{}target '{}' depends on deprecated target '{shown_dependency}': {warning}",
+                    prefix(),
+                    shown()
                 )
             };
             // Skyframe reports an identical warning event once
@@ -10797,7 +10821,15 @@ impl Engine {
             client_environment,
             status_client_environment,
             mut workspace_status,
-            ..
+            provider_keys,
+            delegations,
+            native_output_groups,
+            done: _,
+            repositories,
+            aspect_providers,
+            aspect_target_identities,
+            target_identities,
+            views,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status
@@ -11300,7 +11332,39 @@ impl Engine {
         if !errors.is_empty() {
             return Err(errors.join("\n"));
         }
-        Ok((nodes, requested, aspect_reports, target_result_labels.len()))
+        let built = (nodes, requested, aspect_reports, target_result_labels.len());
+        if self.skip_teardown && !self.execute_build {
+            // W7: the process exits right after this --nobuild command
+            // (`set_skip_teardown`); the analysis and planning maps are
+            // left to the OS instead of being torn down one node at a
+            // time. An executing build drops them before execution.
+            std::mem::forget((
+                plan,
+                configured,
+                forwarded,
+                top_level_aspects,
+                (dry, runfiles_info, artifact_index, declared, source_inputs),
+                (runfiles_nodes, custom_providers, validation, producers),
+                (
+                    client_environment,
+                    status_client_environment,
+                    workspace_status,
+                ),
+                (
+                    provider_keys,
+                    delegations,
+                    native_output_groups,
+                    repositories,
+                ),
+                (
+                    aspect_providers,
+                    aspect_target_identities,
+                    target_identities,
+                    views,
+                ),
+            ));
+        }
+        Ok(built)
     }
 }
 

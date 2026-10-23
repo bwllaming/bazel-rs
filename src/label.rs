@@ -16,6 +16,96 @@ use std::path::PathBuf;
 
 use crate::bazel_label::Parts;
 
+thread_local! {
+    /// [`Label::parse_canonical_memo`]'s results while a package evaluates
+    /// on this thread (`None` otherwise).
+    static CANONICAL_MEMO: std::cell::RefCell<Option<std::collections::HashMap<String, Result<Label, String>>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The native-rule converter's label resolutions while a package
+    /// evaluates on this thread, by (package context, text)
+    /// ([`converted_label`]).
+    static CONVERTED_MEMO: std::cell::RefCell<Option<std::collections::HashMap<(PackageId, String), ConvertedLabel>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The context-pure outcome of resolving a native rule attribute's label
+/// text in a package (crate::native_rules' converter): everything but the
+/// per-rule budget charges, which the converter repeats on every use.
+#[derive(Clone, Debug)]
+pub(crate) enum ConvertedLabel {
+    /// The text is not a label (`Parts::parse`'s error).
+    Invalid(String),
+    /// Its resolution size bound failed (an unresolvable apparent
+    /// repository or another error).
+    Unbounded(String),
+    /// Its size bound and its resolution: the canonical text, or the
+    /// resolution error.
+    Bound(usize, Result<String, String>),
+}
+
+/// The memoized [`ConvertedLabel`] of `text` in `package`, computed by
+/// `compute` on a miss (memoized only inside a [`PackageParseMemo`] scope).
+pub(crate) fn converted_label(
+    package: &PackageId,
+    text: &str,
+    compute: impl FnOnce() -> ConvertedLabel,
+) -> ConvertedLabel {
+    let key = (package.clone(), text.to_owned());
+    if let Some(cached) = CONVERTED_MEMO.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .and_then(|memo| memo.get(&key).cloned())
+    }) {
+        return cached;
+    }
+    let converted = compute();
+    CONVERTED_MEMO.with(|memo| {
+        if let Some(memo) = memo.borrow_mut().as_mut() {
+            memo.insert(key, converted.clone());
+        }
+    });
+    converted
+}
+
+/// RAII scope of one package evaluation on this thread: canonical label
+/// texts parse once ([`Label::parse_canonical_memo`]). Scopes nest; the
+/// outermost one owns the memo.
+pub(crate) struct PackageParseMemo {
+    owner: bool,
+}
+
+/// Open a [`PackageParseMemo`] scope on this thread.
+pub(crate) fn package_parse_memo() -> PackageParseMemo {
+    CANONICAL_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        let owner = memo.is_none();
+        if owner {
+            *memo = Some(std::collections::HashMap::new());
+            CONVERTED_MEMO.with(|converted| {
+                *converted.borrow_mut() = Some(std::collections::HashMap::new());
+            });
+        }
+        PackageParseMemo { owner }
+    })
+}
+
+impl Drop for PackageParseMemo {
+    fn drop(&mut self) {
+        if self.owner {
+            let _ = CANONICAL_MEMO.try_with(|memo| {
+                if let Ok(mut memo) = memo.try_borrow_mut() {
+                    *memo = None;
+                }
+            });
+            let _ = CONVERTED_MEMO.try_with(|memo| {
+                if let Ok(mut memo) = memo.try_borrow_mut() {
+                    *memo = None;
+                }
+            });
+        }
+    }
+}
+
 /// Generated-file root of the default configuration
 /// (crate::config_registry::Configurations::output_root).
 pub(crate) const GENERATED_EXEC_ROOT: &str = "bazel-out/k8-fastbuild/bin";
@@ -100,6 +190,28 @@ impl Label {
             ));
         }
         Self::parse_in_with(input, "", "", &BTreeMap::new(), true)
+    }
+
+    /// [`Self::parse_canonical`], memoized while a package evaluates on
+    /// this thread ([`PackageParseMemo`]): a BUILD file names the same
+    /// files again and again (a toolchain's filegroups list one 15,185-file
+    /// tree in overlapping slices), and each name was parsed and validated
+    /// up to four times. The result is the uncached one.
+    pub(crate) fn parse_canonical_memo(input: &str) -> Result<Self, String> {
+        if let Some(cached) = CANONICAL_MEMO.with(|memo| {
+            memo.borrow()
+                .as_ref()
+                .and_then(|memo| memo.get(input).cloned())
+        }) {
+            return cached;
+        }
+        let parsed = Self::parse_canonical(input);
+        CANONICAL_MEMO.with(|memo| {
+            if let Some(memo) = memo.borrow_mut().as_mut() {
+                memo.insert(input.to_owned(), parsed.clone());
+            }
+        });
+        parsed
     }
 
     /// Allocation-free upper bound for a resolved label's formatted payload.
@@ -460,6 +572,70 @@ pub(crate) fn is_valid_package_name(package: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_parse_memo_returns_the_uncached_results_and_ends_with_its_scope() {
+        let texts = [
+            "@@r+//p:a",
+            "//p:b",
+            "@@r+//p:a",
+            "p:c",
+            "@@bad repo//p:a",
+            "//p:b",
+        ];
+        let outside: Vec<_> = texts
+            .iter()
+            .map(|text| Label::parse_canonical(text))
+            .collect();
+        {
+            let _outer = package_parse_memo();
+            {
+                // A nested scope shares the outer memo and leaves it open.
+                let _inner = package_parse_memo();
+                let inside: Vec<_> = texts
+                    .iter()
+                    .map(|text| Label::parse_canonical_memo(text))
+                    .collect();
+                assert_eq!(inside, outside);
+            }
+            assert!(CANONICAL_MEMO.with(|memo| memo.borrow().is_some()));
+            let again: Vec<_> = texts
+                .iter()
+                .map(|text| Label::parse_canonical_memo(text))
+                .collect();
+            assert_eq!(again, outside);
+            let package = PackageId {
+                repository: "r+".to_owned(),
+                package: "p".to_owned(),
+            };
+            let mut computed = 0;
+            for _ in 0..3 {
+                let converted = converted_label(&package, "x", || {
+                    computed += 1;
+                    ConvertedLabel::Bound(7, Ok("@@r+//p:x".to_owned()))
+                });
+                assert!(
+                    matches!(converted, ConvertedLabel::Bound(7, Ok(text)) if text == "@@r+//p:x")
+                );
+            }
+            assert_eq!(computed, 1, "memoized inside the scope");
+        }
+        assert!(CANONICAL_MEMO.with(|memo| memo.borrow().is_none()));
+        assert!(CONVERTED_MEMO.with(|memo| memo.borrow().is_none()));
+        // Outside a scope nothing is kept.
+        let mut computed = 0;
+        for _ in 0..2 {
+            let package = PackageId {
+                repository: String::new(),
+                package: String::new(),
+            };
+            converted_label(&package, "x", || {
+                computed += 1;
+                ConvertedLabel::Invalid("no".to_owned())
+            });
+        }
+        assert_eq!(computed, 2);
+    }
 
     #[test]
     fn resolution_reservation_includes_mapping_and_relative_package_expansion() {

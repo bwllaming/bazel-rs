@@ -32,17 +32,21 @@ enum PathType {
 }
 
 /// The location map (buildLocationMap, :393-485): the files of each label
-/// (Label.toString), a set per label (mapGet).
+/// (Label.toString), a set per label (mapGet). The set is kept as the
+/// files in insertion order; a later file with an exec path already in
+/// the set is a duplicate, dropped when the entry is read ([`apply`]) —
+/// most entries are never read, and a dependency's file list can hold
+/// thousands of files (a language SDK).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocationMap(BTreeMap<String, Vec<File>>);
 
 impl LocationMap {
     /// mapGet(map, label).addAll(files): an entry exists even when empty.
     pub(crate) fn add(&mut self, label: &str, files: impl IntoIterator<Item = File>) {
-        let entry = self.0.entry(label.to_owned()).or_default();
-        for file in files {
-            if !entry.iter().any(|seen| seen.path == file.path) {
-                entry.push(file);
+        match self.0.get_mut(label) {
+            Some(entry) => entry.extend(files),
+            None => {
+                self.0.insert(label.to_owned(), files.into_iter().collect());
             }
         }
     }
@@ -130,8 +134,11 @@ pub(crate) fn apply(
             "label '{label}' in {function_name} expression is not a declared prerequisite of this rule"
         )));
     };
+    // The set of the label's files: the first file per exec path.
+    let mut seen = std::collections::HashSet::new();
     let paths = files
         .iter()
+        .filter(|file| seen.insert(file.path.as_str()))
         .map(|file| callable(&path(file, path_type)))
         .collect::<BTreeSet<_>>();
     if paths.is_empty() {
@@ -245,6 +252,33 @@ mod tests {
         );
         assert!(apply("location", ":a", false, &parse, &map) == Some(Ok("pkg/a".into())));
         assert!(apply("nope", ":a", true, &parse, &map).is_none());
+    }
+
+    #[test]
+    fn a_label_entry_keeps_the_first_file_of_each_exec_path() {
+        let root = Label::parse_canonical("//pkg:g").unwrap();
+        let mut map = LocationMap::default();
+        // The same exec path added again (another attribute, the written
+        // and the actual label of one dependency) with another short path:
+        // the first file stands, as with the eager set it replaces.
+        map.add("//pkg:a", [file("bazel-out/bin/pkg/a", "pkg/a")]);
+        map.add(
+            "//pkg:a",
+            [
+                file("bazel-out/bin/pkg/a", "other/a"),
+                file("bazel-out/bin/pkg/b", "pkg/b"),
+            ],
+        );
+        let mapping = BTreeMap::new();
+        let parse = |arg: &str| Label::parse_in(arg, &root.repository, &root.package, &mapping);
+        assert_eq!(
+            apply("rootpaths", ":a", true, &parse, &map),
+            Some(Ok("pkg/a pkg/b".to_owned()))
+        );
+        assert_eq!(
+            apply("execpaths", ":a", true, &parse, &map),
+            Some(Ok("bazel-out/bin/pkg/a bazel-out/bin/pkg/b".to_owned()))
+        );
     }
 
     #[test]

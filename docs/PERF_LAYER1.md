@@ -453,3 +453,40 @@ What is left:
 A heap profiler run, or an allocation-counting allocator behind a cargo
 feature, would separate the two. The breakdown answers the question "what
 does the engine still hold". It does not show what the allocator holds.
+
+## W7: exit without teardown, and the quick fixes
+
+R3c measured 0.86 s (oauth2token, 1.68 s on B2) after the last useful
+work: post-plan drops of the planning maps and, at exit, `drop Engine` and
+`drop Arc<RepositorySet>` (millions of nodes freed one by one).
+
+- **Exit.** `main.rs` keeps the `Engine` in a `ManuallyDrop` and marks it
+  `set_skip_teardown(true)`; the engine and the repository set it shares
+  are never torn down. Every write that must outlive the command is
+  explicit and unchanged: the lockfile (`LockfileWriter`'s drop, still a
+  plain local), `digest_memo::finish`, the snapshot recording's `finish`,
+  test logs; the phase-1 prefetcher is stopped when phase 1 ends. A
+  `--nobuild` build also forgets its analysis and planning maps at the end
+  of `plan_build` (an executing build drops them before execution, so the
+  execution phase's memory is unchanged). Library users (tests building
+  several times with one engine) never set the flag.
+- **`LocationMap::add`** (location_expander.rs) deduplicated each label's
+  files with a linear scan per file — quadratic for a dependency with
+  thousands of files (the Go SDK's `srcs`). The entry now keeps the files
+  in insertion order and `apply` drops later files of an exec path already
+  seen when the entry is read (first wins, as before; most entries are
+  never read).
+- **Labels of a package parse once per evaluation** (label.rs
+  `PackageParseMemo`): the native-rule converter's resolution of a label
+  text in its package and `parse_canonical` of the canonical texts
+  (`input_labels`, `declare`'s validation) are memoized while a package
+  evaluates on its thread; per-use budget charges are kept. `declare` no
+  longer collects a rule's same-package inputs when the rule has no
+  outputs (they are only checked against its outputs), nor clones the
+  input labels for it; `duplicate_label_errors` uses a hash set.
+  @zig_config's BUILD: 0.55–0.63 s → 0.44 s.
+- **Eager error texts**: `prerequisite_error`/`validate_prerequisite` take
+  the edge description as a closure and format the rule and dependency
+  names only for a reported error or warning; the native converter's
+  `element N of ATTR` description (`native_rules::What`) is formatted only
+  in an error.

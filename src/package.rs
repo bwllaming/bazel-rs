@@ -404,12 +404,17 @@ pub(crate) fn register_custom<'v>(
     let index = context.rules.borrow().len();
     // Rule.getLabels (packages/Rule.java:438-442): every non-output, non-nodep
     // label, select() keys and branches included.
-    let inputs = declaration
-        .configurable_labels
-        .iter()
-        .chain(&declaration.builtin.target.input_labels)
-        .cloned()
-        .collect();
+    // Only checked against the rule's outputs (`declare`).
+    let inputs = if outs.is_empty() {
+        Vec::new()
+    } else {
+        declaration
+            .configurable_labels
+            .iter()
+            .chain(&declaration.builtin.target.input_labels)
+            .cloned()
+            .collect()
+    };
     let site = TargetSite {
         callee: declaration.rule_class.clone(),
         kind: format!("{} rule", declaration.rule_class),
@@ -504,7 +509,7 @@ impl Declarations {
             (if src.starts_with('@') && !src.starts_with("@@") {
                 Label::validate_syntax(src, &self.package)
             } else {
-                Label::parse_canonical(src).map(|_| ())
+                Label::parse_canonical_memo(src).map(|_| ())
             })
             .map_err(|e| anyhow!("invalid srcs entry {src:?} in {label}: {e}"))?;
         }
@@ -529,13 +534,21 @@ impl Declarations {
         // TargetRecorder.addRule (packages/TargetRecorder.java:425-436): the
         // conflict is thrown at the declaring call (RuleFactory.java:325-326,
         // StarlarkRuleClassFunctions.java:1896-1897), so evaluation stops here.
-        let inputs = srcs
-            .iter()
-            .filter_map(|text| Label::parse_canonical(text).ok())
-            .chain(site.inputs.iter().cloned())
-            .filter(|input| input.package_id() == label.package_id())
-            .map(|input| input.name)
-            .collect::<Vec<_>>();
+        // The same-package inputs only matter against the rule's own
+        // outputs (an input that is also an output): none to collect for a
+        // rule without outputs (a filegroup of thousands of files).
+        let inputs = if outs.is_empty() {
+            Vec::new()
+        } else {
+            srcs.iter()
+                .filter_map(|text| Label::parse_canonical_memo(text).ok())
+                .chain(site.inputs.iter().cloned())
+                .filter(|input| {
+                    input.repository == label.repository && input.package == label.package
+                })
+                .map(|input| input.name)
+                .collect::<Vec<_>>()
+        };
         self.recorder
             .borrow_mut()
             .record_rule(name, &site.kind, site.location.as_deref(), &outs, &inputs)
@@ -1242,7 +1255,12 @@ fn declare_native<'v>(
         callee: class.name.to_owned(),
         kind: format!("{} rule", class.name),
         location,
-        inputs: target.input_labels.clone(),
+        // Only checked against the rule's outputs (`declare`).
+        inputs: if outs.is_empty() {
+            Vec::new()
+        } else {
+            target.input_labels.clone()
+        },
     };
     context.declare(&instance.name, kind, srcs, outs, cmd, visibility, site)?;
     let mut rules = context.rules.borrow_mut();
@@ -2236,6 +2254,8 @@ fn evaluate_at(
         glob_symlink_issue: RefCell::new(None),
         globs: RefCell::default(),
     };
+    // Canonical label texts parse once per package evaluation.
+    let parse_memo = crate::label::package_parse_memo();
     let evaluated = Module::with_temp_heap(|module| {
         let mut evaluator = Evaluator::new(&module);
         evaluator.extra = Some(&declarations);
@@ -2256,6 +2276,7 @@ fn evaluate_at(
             )))
             .map_err(|e| format!("cannot freeze BUILD module: {e:?}"))
     });
+    drop(parse_memo);
     let timing_frozen = std::time::Instant::now();
     let package_display_for_timing = if package.repository.is_empty() {
         package.package.clone()
@@ -2480,7 +2501,8 @@ fn duplicate_label_errors(rule: &Rule) -> Vec<String> {
     for (name, lists) in checked {
         let mut duplicates: Vec<&String> = Vec::new();
         for list in lists {
-            let mut seen = BTreeSet::new();
+            // Membership only (the duplicates keep list order).
+            let mut seen = std::collections::HashSet::with_capacity(list.len());
             for label in list {
                 if !seen.insert(label) && !duplicates.contains(&label) {
                     duplicates.push(label);
