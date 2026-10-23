@@ -1,0 +1,25 @@
+load(":defs.bzl", "args_twice", "run_twice", "tool")
+
+tool(name = "tool")
+
+# Two identical spawns (only the progress message differs): shared.
+run_twice(
+    name = "shell_same",
+    mode = "shell",
+)
+
+# The same with an executable that has runfiles.
+run_twice(
+    name = "tool_same",
+    mode = "tool_same",
+    tool = ":tool",
+)
+
+# Different arguments: a conflict.
+run_twice(
+    name = "tool_diff",
+    mode = "tool_diff",
+    tool = ":tool",
+)
+
+args_twice(name = "args_same")

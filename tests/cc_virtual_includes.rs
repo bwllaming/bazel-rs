@@ -102,6 +102,16 @@ const GROUPS: &[(&str, bool, &[&str])] = &[
             "misuse_empty",
         ],
     ),
+    (
+        "sharing",
+        false,
+        &[
+            "share_shell_same",
+            "share_tool_same",
+            "share_tool_diff",
+            "share_args_same",
+        ],
+    ),
 ];
 
 fn manifest() -> &'static Path {
@@ -598,4 +608,13 @@ fn argument_and_allowlist_errors_match() {
 #[test]
 fn bazel_crashes_are_explicit_errors() {
     check_group("bazel_crashes");
+}
+
+/// Actions.canBeShared within one target for any output: identical spawns
+/// are shared, differing ones conflict, and equal registrations with a part
+/// the native comparison does not cover (tool runfiles trees, contents
+/// expanding tree artifacts) are explicit errors (declared divergences).
+#[test]
+fn identical_actions_share_and_uncompared_parts_are_explicit() {
+    check_group("sharing");
 }
