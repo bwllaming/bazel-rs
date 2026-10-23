@@ -248,6 +248,26 @@ stderr). Any other value of the variable is reported and ignored.
 Shadow verification and the determinism gate (layers 3 and 4) come with the
 snapshot store itself.
 
+## Measured on ~/code (L2-W4R, warm, update-mode recipe)
+
+| | oauth2token:all `--nobuild` | oauth2token/... build | B2 `--nobuild` |
+|---|---|---|---|
+| eligible | unless-pruned | unless-pruned | unless-pruned |
+| remaining taint | build-info ×8 (0 planned of 689) | build-info ×8 (0 of 691) | build-info ×12 (0 of 3,615) |
+| replay dry run | 45/45 in every run (4 runs + 1 under strace) | 45/45 (2 runs) | 45/45 (3 runs + 1 under strace) |
+| replay wall / CPU | 119–153 ms / 103–172 ms + 50–80 ms in `java` | 133–137 ms / 105–115 ms + 70 ms | 112–134 ms / 102–119 ms + 60–70 ms |
+| validation [per-tree], 1 thread | 1.5–2.7 ms (613 obs + 220 entries) | 2.5–2.7 ms | 7.1–8.6 ms (2,206 obs + 596 entries) |
+| syscall audit (window / replay) | 29,757 / 2,730 touches, 0 unrecorded | — | 139,268 / 2,727, 0 unrecorded |
+
+The critical path of a replay is `local_jdk`: its definition load (the
+rules_java/rules_cc `.bzl` closure, 57–75 ms) plus its execution (`java`,
+47–69 ms); the other 44 replay
+in 0.2–1.6 ms each next to it (the 37 `_toolchain_config` repositories share
+one 3–9 ms load). No local rule printed. Every build-info registration is
+`@bazel_tools//tools/build_defs/build_info:cc_build_info`, pruned by the plan
+(none of their outputs is a planned action): L2-W4 decides that taint on the
+saved plan, after which these runs report `eligible=yes`.
+
 ## Behaviour changes of L2-W4R (outside record mode)
 
 * A `.bzl`, source or glob symlink into a published store tree resolves even
