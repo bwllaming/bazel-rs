@@ -81,7 +81,19 @@
    },
    "reader_out_txt": "hello x\n",
    "reader_out_txt_after_data_change": "hello x\n",
-   "lockfile_recorded_inputs_equal_genuine": true,
+   "lockfile_recorded_inputs_equal_genuine": {
+    "cache_outside_workspace": true,
+    "cache_inside_workspace": false
+   },
+   "lockfile_recorded_inputs_cache_inside_workspace": [
+    "REPO_MAPPING:,data +data_repo+data",
+    "FILE:@@//bazel-rs-out/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/file.txt 6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+    "FILE:@@+data_repo+data//label.txt 360e179ff44cfddab4ee7748a89f8beb88bf59982bed71c0abf242571c733433",
+    "FILE:@@//bazel-rs-out/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/missing.txt ENOENT",
+    "FILE:@@//bazel-rs-out/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/dir DIR",
+    "DIRENTS:@@//bazel-rs-out/repositories/direct/trees/6469249a0c99dfa595cc096dd07d800af7205d539ec27d75ff52e22b4545e23c/dir a40a6316add28f8893569e81fa8dfed2924010b09af2d6815f3afbd05b16f1c6",
+    "FILE:@@//ws.txt ae960e18d3634cd924e2b196fe5c8c3b9057e599e4ab74172849421f9598964b"
+   ],
    "lockfile_off_cache_inside_vs_outside_workspace": {
     "trees_equal": false,
     "specs_equal": false,
@@ -150,7 +162,10 @@
    },
    "reader_out_txt": "hello x\n",
    "reader_out_txt_after_data_change": "bye x\n",
-   "lockfile_recorded_inputs_equal_genuine": true,
+   "lockfile_recorded_inputs_equal_genuine": {
+    "cache_outside_workspace": true,
+    "cache_inside_workspace": true
+   },
    "lockfile_off_cache_inside_vs_outside_workspace": {
     "trees_equal": true,
     "specs_equal": true,
@@ -202,9 +217,38 @@
  },
  "verdicts": {
   "probe_paths": "MATCH after (the reader's 9 file probes and its template probe equal the genuine marker keys byte-for-byte, in marker order); before: 8 of 10 were host paths into the repository store, label.txt a canonical label",
-  "lockfile_recorded_inputs": "MATCH before and after",
+  "lockfile_recorded_inputs": "MATCH after, with the cache outside and inside the workspace. Before: MATCH only with the cache outside the workspace (the original capture's layout); with the cache inside it (the default layout, ~/code's) 4 of the 7 keys named the data repository's store tree (`@@//bazel-rs-out/repositories/direct/trees/<id>/...`), which kept validating against that never-rewritten tree",
   "refetch_after_data_change": "MATCH after (bye x); before STALE (hello x: absolute probes into the old content-addressed data tree still validated)",
   "cache_location_independence": "after: trees and specs identical with the cache inside vs outside the workspace (--lockfile_mode=off); before: 4 trees and 2 specs differed"
+ },
+ "lockfile_layout_capture": {
+  "purpose": "Review i20 follow-up (item 3): the module extension's MODULE.bazel.lock recordedInputs per cache layout, compared with genuine.cold.lockfile_recorded_inputs; native.before's lockfile claim holds only for the cache outside the workspace.",
+  "script": "/tmp/opencode/perf-research/i20h-capture_inside_lockfile.py",
+  "layouts": {
+   "cache_outside_workspace": "--cache-dir=<private scratch directory outside the workspace>",
+   "cache_inside_workspace": "--cache-dir=<workspace>/bazel-rs-out"
+  },
+  "binaries": {
+   "before": {
+    "binary": "base-6bebe72-bazel-rs (fe93cc1 + PERF-STAGE timers, release: the recorded-input code of native.before)",
+    "sha256": "b1d76919d8ba829a87da20361073f61219d7ad4ed8064d1997956602f9c5acdb"
+   },
+   "after": {
+    "binary": "target/debug/bazel-rs at 232e0da (review i20 follow-up items 1-2)",
+    "sha256": "44b7250998693ea66c5828f6ba064cb33fd365017756c93de232fd4cfa0dfb78"
+   }
+  },
+  "keys_naming_the_store": {
+   "before": {
+    "cache_outside_workspace": 0,
+    "cache_inside_workspace": 4
+   },
+   "after": {
+    "cache_outside_workspace": 0,
+    "cache_inside_workspace": 0
+   }
+  },
+  "scratch_removed": true
  },
  "known_divergences": [
   "Probe VALUES are the native store's own states (file:<sha256>, missing, directory, dirents:/dirtree:<native digest>) where a marker records <sha256>, ENOENT, DIR and Bazel's digests; MODULE.bazel.lock (the genuine-visible surface) values match byte-for-byte.",

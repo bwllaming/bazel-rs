@@ -110,6 +110,51 @@ fn evaluations(stderr: &str) -> usize {
     stderr.matches("EXTENSION EVALUATED").count()
 }
 
+/// What bazel-rs before review i20 recorded in place of the module
+/// extension's lockfile `inputs` with the cache inside the workspace: every
+/// key in the data repository a path into its store tree `data` — except
+/// the label read's, keyed by the label's path already.
+fn pre_i20_keys(inputs: &Value, data: &str) -> Value {
+    let old = format!("@@//bazel-rs-out/repositories/direct/trees/{data}/");
+    inputs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|input| {
+            let text = input.as_str().unwrap();
+            if text.contains("//label.txt ") {
+                text.to_owned()
+            } else {
+                text.replace("@@+data_repo+data//", &old)
+            }
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+#[test]
+fn the_seeded_store_keys_are_what_the_pre_i20_binary_recorded() {
+    // `store_keys_in_the_lockfile_re_evaluate_the_extension_once` seeds
+    // `pre_i20_keys`: exactly the lockfile the pre-i20 binary wrote with the
+    // cache inside the workspace (reference_receipt.json, native.before) —
+    // which, unlike with the cache outside it, was not genuine's.
+    let receipt = receipt();
+    let before = &receipt["native"]["before"];
+    let recorded = &before["lockfile_recorded_inputs_cache_inside_workspace"];
+    let genuine = &receipt["genuine"]["cold"]["lockfile_recorded_inputs"];
+    let data = recorded[1].as_str().unwrap()
+        ["FILE:@@//bazel-rs-out/repositories/direct/trees/".len()..]
+        .split_once('/')
+        .unwrap()
+        .0;
+    assert_eq!(&pre_i20_keys(genuine, data), recorded);
+    assert_ne!(recorded, genuine);
+    assert_eq!(
+        before["lockfile_recorded_inputs_equal_genuine"],
+        serde_json::json!({"cache_outside_workspace": true, "cache_inside_workspace": false})
+    );
+}
+
 /// The module extension's recorded inputs in the workspace lockfile.
 fn lockfile_inputs(ws: &Workspace) -> Value {
     let lock: Value =
@@ -143,24 +188,16 @@ fn store_keys_in_the_lockfile_re_evaluate_the_extension_once() {
                 .exists()
         })
         .unwrap();
-    // The pre-i20 spelling of every key but the label read's (label reads
-    // were keyed by the label's path already).
-    let old = format!("@@//bazel-rs-out/repositories/direct/trees/{data}/");
     let lock_path = ws.path().join("MODULE.bazel.lock");
     let mut lock: Value = serde_json::from_slice(&fs::read(&lock_path).unwrap()).unwrap();
-    let inputs = lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"]
-        .as_array_mut()
-        .unwrap();
-    for input in inputs.iter_mut() {
-        let text = input.as_str().unwrap();
-        if !text.contains("//label.txt ") {
-            *input = text.replace("@@+data_repo+data//", &old).into();
-        }
-    }
+    let inputs = &mut lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"];
+    *inputs = pre_i20_keys(inputs, &data);
     assert_eq!(
         inputs
+            .as_array()
+            .unwrap()
             .iter()
-            .filter(|input| input.as_str().unwrap().contains(&old))
+            .filter(|input| input.as_str().unwrap().contains("bazel-rs-out"))
             .count(),
         4
     );
@@ -314,13 +351,11 @@ fn reader(cache: &Path) -> (String, Value) {
 
 #[test]
 fn recorded_input_paths_are_genuine_repo_cache_friendly_keys() {
+    // Both cache layouts: outside every workspace, and inside the workspace
+    // (`<workspace>/bazel-rs-out`, the default layout and ~/code's), where
+    // the store also lies under the main repository's root — the layout in
+    // which the pre-i20 lockfile keys were not genuine's (receipt).
     let receipt = receipt();
-    let ws = Workspace::new();
-    let outside = outside_cache();
-    let cache = outside.path().join("cache");
-    ws.query(&cache, &[]);
-    let (_, recorded) = reader(&cache);
-    assert_eq!(recorded["version"], 2);
     // The genuine marker keys of @@+reader+reader, in recording order (the
     // native probes do not model REPO_MAPPING lines).
     let genuine: Vec<&str> = receipt["genuine"]["cold"]["marker_lines"]
@@ -334,24 +369,35 @@ fn recorded_input_paths_are_genuine_repo_cache_friendly_keys() {
             key.split_once(':').unwrap().1
         })
         .collect();
-    let native: Vec<&str> = recorded["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|file| file["path"].as_str().unwrap())
-        .collect();
-    assert_eq!(native, genuine);
-    assert_eq!(
-        recorded["templates"][0]["source"].as_str(),
-        Some("@@+data_repo+data//tpl.txt")
-    );
-    // The module extension's inputs in MODULE.bazel.lock equal genuine's.
-    let lock: Value =
-        serde_json::from_slice(&fs::read(ws.path().join("MODULE.bazel.lock")).unwrap()).unwrap();
-    assert_eq!(
-        lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"],
-        receipt["genuine"]["cold"]["lockfile_recorded_inputs"]
-    );
+    for inside in [false, true] {
+        let ws = Workspace::new();
+        let outside = outside_cache();
+        let cache = if inside {
+            ws.path().join("bazel-rs-out")
+        } else {
+            outside.path().join("cache")
+        };
+        ws.query(&cache, &[]);
+        let (_, recorded) = reader(&cache);
+        assert_eq!(recorded["version"], 2);
+        let native: Vec<&str> = recorded["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|file| file["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(native, genuine, "cache inside the workspace: {inside}");
+        assert_eq!(
+            recorded["templates"][0]["source"].as_str(),
+            Some("@@+data_repo+data//tpl.txt")
+        );
+        // The module extension's inputs in MODULE.bazel.lock equal genuine's.
+        assert_eq!(
+            lockfile_inputs(&ws),
+            receipt["genuine"]["cold"]["lockfile_recorded_inputs"],
+            "cache inside the workspace: {inside}"
+        );
+    }
 }
 
 #[test]

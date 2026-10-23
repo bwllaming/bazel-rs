@@ -3485,6 +3485,139 @@ mod tests {
         }
     }
 
+    /// [`longest_root`] over literal roots, `canonical` mapping some of them.
+    fn longest(
+        roots: &[(&str, &str)],
+        canonical: &[(&str, &str)],
+        path: &str,
+    ) -> Option<(String, String)> {
+        let canonical: BTreeMap<PathBuf, PathBuf> = canonical
+            .iter()
+            .map(|(root, resolved)| (PathBuf::from(root), PathBuf::from(resolved)))
+            .collect();
+        longest_root(
+            roots
+                .iter()
+                .map(|(name, root)| ((*name).to_owned(), PathBuf::from(root))),
+            |root| canonical.get(root).cloned(),
+            Path::new(path),
+        )
+        .map(|(name, relative)| (name, relative.to_str().unwrap().to_owned()))
+    }
+
+    /// Review i20: RepoCacheFriendlyPath's repository is the longest root
+    /// containing the path. Nested roots name the innermost repository;
+    /// equally long roots (repositories sharing one content-addressed tree)
+    /// the smallest name in any order; a root matches as given or resolved,
+    /// the longer candidate winning; prefixes match whole components.
+    #[test]
+    fn longest_root_takes_nested_roots_ties_and_canonical_roots() {
+        let some = |name: &str, relative: &str| Some((name.to_owned(), relative.to_owned()));
+        let nested = [
+            ("", "/ws"),
+            ("outer+", "/ws/vendor/outer"),
+            ("inner+", "/ws/vendor/outer/inner"),
+        ];
+        let mut reversed = nested;
+        reversed.reverse();
+        for roots in [nested, reversed] {
+            let at = |path| longest(&roots, &[], path);
+            assert_eq!(
+                at("/ws/vendor/outer/inner/x/y.txt"),
+                some("inner+", "x/y.txt")
+            );
+            assert_eq!(at("/ws/vendor/outer/z.txt"), some("outer+", "z.txt"));
+            assert_eq!(at("/ws/vendor/outer"), some("outer+", ""));
+            assert_eq!(
+                at("/ws/vendor/outer-sibling/z.txt"),
+                some("", "vendor/outer-sibling/z.txt")
+            );
+            assert_eq!(at("/elsewhere/x"), None);
+        }
+        // Ties: one tree, three repositories.
+        let tied = [
+            ("b", "/store/tree"),
+            ("a", "/store/tree"),
+            ("c", "/store/tree"),
+        ];
+        let mut reversed = tied;
+        reversed.reverse();
+        for roots in [tied, reversed] {
+            assert_eq!(longest(&roots, &[], "/store/tree/f"), some("a", "f"));
+        }
+        // Canonical: a root given through a symlink matches both spellings.
+        let linked = [("", "/ws"), ("linked+", "/ws/link")];
+        let resolved = [("/ws/link", "/real/dir")];
+        assert_eq!(
+            longest(&linked, &resolved, "/real/dir/f"),
+            some("linked+", "f")
+        );
+        assert_eq!(
+            longest(&linked, &resolved, "/ws/link/f"),
+            some("linked+", "f")
+        );
+        assert_eq!(longest(&linked, &[], "/real/dir/f"), None);
+        // The longer candidate wins: a short root resolving inside a longer
+        // one, and a tie between one root's canonical form and another root.
+        let roots = [("short", "/l"), ("long", "/very/long")];
+        let resolved = [("/l", "/very/long/real/root")];
+        assert_eq!(
+            longest(&roots, &resolved, "/very/long/real/root/f"),
+            some("short", "f")
+        );
+        assert_eq!(
+            longest(&roots, &resolved, "/very/long/f"),
+            some("long", "f")
+        );
+        let roots = [("b", "/x/y"), ("a", "/link")];
+        let resolved = [("/link", "/x/y")];
+        assert_eq!(longest(&roots, &resolved, "/x/y/f"), some("a", "f"));
+    }
+
+    /// friendly_repository over a resolved graph: local_path_override roots
+    /// nested inside each other and inside the workspace name the innermost
+    /// repository (genuine checks the workspace first: the documented
+    /// divergence in docs/REPOSITORY_RULES.md), with the workspace given as
+    /// is or through a symlink, paths spelled raw or canonically.
+    #[cfg(unix)]
+    #[test]
+    fn friendly_repository_names_the_innermost_materialized_root() {
+        let f = Fixture::new();
+        f.write(
+            "main/MODULE.bazel",
+            "module(name='main')\nbazel_dep(name='outer',version='1')\nlocal_path_override(module_name='outer',path='vendor/outer')\nbazel_dep(name='inner',version='1')\nlocal_path_override(module_name='inner',path='vendor/outer/inner')\n",
+        );
+        f.write("main/vendor/outer/MODULE.bazel", "module(name='outer')\n");
+        f.write(
+            "main/vendor/outer/inner/MODULE.bazel",
+            "module(name='inner')\n",
+        );
+        std::os::unix::fs::symlink(f.0.join("main"), f.0.join("link")).unwrap();
+        let main = std::fs::canonicalize(f.0.join("main")).unwrap();
+        for root in [f.0.join("main"), f.0.join("link")] {
+            let repos = RepositorySet::new(root.clone());
+            repos.resolve_graph().unwrap();
+            let at = |path: PathBuf| {
+                repos
+                    .friendly_repository(&path)
+                    .map(|(name, relative)| (name, relative.to_str().unwrap().to_owned()))
+            };
+            let some = |name: &str, relative: &str| Some((name.to_owned(), relative.to_owned()));
+            assert_eq!(
+                at(main.join("vendor/outer/inner/x.txt")),
+                some("inner+", "x.txt")
+            );
+            assert_eq!(at(main.join("vendor/outer/y.txt")), some("outer+", "y.txt"));
+            assert_eq!(
+                at(main.join("vendor/outer-sibling/z")),
+                some("", "vendor/outer-sibling/z")
+            );
+            assert_eq!(at(root.join("src/a")), some("", "src/a"));
+            assert_eq!(at(main.join("src/a")), some("", "src/a"));
+            assert_eq!(at(f.0.join("elsewhere/a")), None);
+        }
+    }
+
     /// Review i20: a path in the repository store is never keyed to the
     /// main repository — the cache inside the workspace (the default
     /// layout) behaves like a cache outside it — and a lockfile key naming
