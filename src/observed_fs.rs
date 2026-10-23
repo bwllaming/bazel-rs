@@ -35,7 +35,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -374,6 +374,10 @@ pub enum Taint {
     /// An Args expansion over a tree artifact calls a Starlark `map_each`
     /// at execution time.
     MapEach,
+    /// The `--workspace_status_command` wrote to stderr while planning
+    /// computed the status: a snapshot hit replays the window's stderr and
+    /// computes the status again (L2-W5), so it would print twice.
+    WorkspaceStatusStderr,
     /// Planning failed, reported errors, or the command failed.
     Errors,
     /// An observation changed during the window.
@@ -396,6 +400,7 @@ impl Taint {
             Self::CrossRepositorySymlink => "cross-repository-symlink",
             Self::BuildInfo => "build-info-callback",
             Self::MapEach => "map-each-deferred",
+            Self::WorkspaceStatusStderr => "workspace-status-stderr",
             Self::Errors => "errors",
             Self::Unstable => "unstable",
             Self::TestHook => "test-hook",
@@ -820,6 +825,61 @@ impl Recorder {
         }
         observations.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.op.cmp(&y.op)));
         let mut repositories = lock(&self.repositories).clone();
+        repositories.sort_by(|a, b| a.root.cmp(&b.root));
+        let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
+            .iter()
+            .filter(|(_, claim)| **claim == Claim::Crossing)
+            .map(|(root, _)| root.clone())
+            .collect();
+        crossed.sort();
+        Recording {
+            window_start_ns: self.window_start_ns,
+            window: *lock(&self.window),
+            observations,
+            env: lock(&self.env)
+                .iter()
+                .map(|(name, observation)| (name.clone(), observation.clone()))
+                .collect(),
+            repositories,
+            crossed,
+            taints: lock(&self.taints).clone(),
+            plan_registered: lock(&self.plan_registered).clone(),
+        }
+    }
+
+    /// The taints recorded so far.
+    pub fn taints(&self) -> BTreeMap<Taint, TaintRecord> {
+        lock(&self.taints).clone()
+    }
+
+    /// Everything recorded so far, sorted, moved out of the recorder (no
+    /// copy of the paths: the analysis snapshot's save after the window
+    /// closed, crate::snapshot::save; later calls see only what was recorded
+    /// afterwards).
+    pub fn take(&self) -> Recording {
+        let mut observations = Vec::new();
+        for shard in &self.shards {
+            let entries = std::mem::take(&mut *lock(shard));
+            for (path, mut list) in entries {
+                // The last observation of the path takes it (sorted below).
+                let last = list.pop();
+                for observation in list {
+                    observations.push((path.clone(), observation));
+                }
+                if let Some(observation) = last {
+                    observations.push((path, observation));
+                }
+            }
+        }
+        // By the paths' bytes (`Path::cmp` parses components; consumers need
+        // a deterministic order with a path's observations together).
+        observations.sort_by(|(a, x), (b, y)| {
+            a.as_os_str()
+                .as_bytes()
+                .cmp(b.as_os_str().as_bytes())
+                .then_with(|| x.op.cmp(&y.op))
+        });
+        let mut repositories = std::mem::take(&mut *lock(&self.repositories));
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
         let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
             .iter()
@@ -1298,8 +1358,8 @@ fn escape_str(text: &str) -> String {
 /// diagnostics only appear when `BAZEL_RS_SNAPSHOT` is set; the prefix lets
 /// exact-stderr checks drop them (like `PERF` lines).
 pub fn diag(line: &str) {
-    let mut stderr = io::stderr().lock();
-    let _ = writeln!(stderr, "bazel-rs-snapshot: {line}");
+    // The diagnostics stream: outside a stderr capture (crate::snapshot::diag).
+    crate::snapshot::diag::line(&format!("bazel-rs-snapshot: {line}"));
 }
 
 #[cfg(test)]

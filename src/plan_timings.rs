@@ -456,28 +456,31 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
         PlanStage::ConfigConditions,
     ] {
         let (us, count) = stage_totals.get(&stage).copied().unwrap_or((0, 0));
-        eprintln!(
+        crate::snapshot::diag::line_fmt(format_args!(
             "PERF-STAGE total {} {:.3}s count={}",
             stage.name(),
             us as f64 / 1e6,
             count
-        );
+        ));
     }
-    eprintln!(
+    crate::snapshot::diag::line_fmt(format_args!(
         "PERF-STAGE total plan_span {:.3}s covered={:.1}%",
         span_us as f64 / 1e6,
         coverage
-    );
+    ));
     // W0-A: phase-1 flush batch sizes (targets per plan_pending flush)
     // and the dependency-view / artifact File work counters.
-    eprintln!("{}", flush_batch_line(&flush_batches, phase2_batch));
-    eprintln!(
+    crate::snapshot::diag::line_fmt(format_args!(
+        "{}",
+        flush_batch_line(&flush_batches, phase2_batch)
+    ));
+    crate::snapshot::diag::line_fmt(format_args!(
         "PERF-STAGE views edges={} constructed={} distinct={} artifact_file={}",
         VIEW_EDGES.load(Ordering::Relaxed),
         VIEW_CONSTRUCTIONS.load(Ordering::Relaxed),
         view_keys,
         ARTIFACT_FILES.load(Ordering::Relaxed)
-    );
+    ));
     // Per-rule-class stage totals, ranked by total time (top 15).
     let mut ranked: Vec<(u32, [u64; 3])> = class_totals.into_iter().collect();
     ranked.sort_by_key(|(_, t)| std::cmp::Reverse(t[0] + t[1] + t[2]));
@@ -488,31 +491,31 @@ pub fn report(labels: &[String], edges: &HashMap<u64, Vec<u64>>) {
         } else {
             0.0
         };
-        eprintln!(
+        crate::snapshot::diag::line_fmt(format_args!(
             "PERF-STAGE class {:>5.1}% prepare={:.3}s compute={:.3}s commit={:.3}s {}",
             pct,
             *prepare as f64 / 1e6,
             *compute as f64 / 1e6,
             *commit as f64 / 1e6,
             class_name(*id)
-        );
+        ));
     }
     // Critical path: longest dep chain's summed compute times.
     if !compute_us.is_empty() {
         let (total_us, chain) = critical_path(&compute_us, edges);
-        eprintln!(
+        crate::snapshot::diag::line_fmt(format_args!(
             "PERF-STAGE critical-path compute={:.3}s len={}",
             total_us as f64 / 1e6,
             chain.len()
-        );
+        ));
         for index in &chain {
             let label = labels.get(*index as usize).map_or("?", String::as_str);
-            eprintln!(
+            crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-STAGE critical-path-node index={} compute={:.3}s {}",
                 index,
                 compute_us.get(index).copied().unwrap_or(0) as f64 / 1e6,
                 label
-            );
+            ));
         }
     }
 }

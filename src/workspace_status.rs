@@ -261,12 +261,45 @@ pub fn validate_embed_label(embed_label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Run the workspace status command and compute both status files.
+/// Run the workspace status command and compute both status files. The
+/// script's stderr is the build's stderr (:113-119): written to stderr
+/// here. Non-empty, it keeps the analysis snapshot from being saved
+/// (crate::snapshot: a hit would print it a second time, at another place).
 pub(crate) fn compute(
     options: &WorkspaceStatusOptions,
     workspace: &std::path::Path,
     client_env: &std::collections::BTreeMap<String, std::ffi::OsString>,
     now_millis: i64,
+) -> Result<WorkspaceStatus, WorkspaceStatusError> {
+    let (status, stderr) = compute_quiet(options, workspace, client_env, now_millis);
+    if !stderr.is_empty() {
+        let _ = std::io::stderr().write_all(&stderr);
+        crate::observed_fs::taint(crate::observed_fs::Taint::WorkspaceStatusStderr, || {
+            format!("{} bytes", stderr.len())
+        });
+    }
+    status
+}
+
+/// [`compute`] without printing: the status and the script's stderr (an
+/// analysis snapshot hit computes the status before anything prints).
+pub(crate) fn compute_quiet(
+    options: &WorkspaceStatusOptions,
+    workspace: &std::path::Path,
+    client_env: &std::collections::BTreeMap<String, std::ffi::OsString>,
+    now_millis: i64,
+) -> (Result<WorkspaceStatus, WorkspaceStatusError>, Vec<u8>) {
+    let mut stderr = Vec::new();
+    let status = compute_into(options, workspace, client_env, now_millis, &mut stderr);
+    (status, stderr)
+}
+
+fn compute_into(
+    options: &WorkspaceStatusOptions,
+    workspace: &std::path::Path,
+    client_env: &std::collections::BTreeMap<String, std::ffi::OsString>,
+    now_millis: i64,
+    stderr: &mut Vec<u8>,
 ) -> Result<WorkspaceStatus, WorkspaceStatusError> {
     validate_embed_label(&options.embed_label).map_err(WorkspaceStatusError)?;
     let mut script_output = String::new();
@@ -281,8 +314,7 @@ pub(crate) fn compute(
             .stdin(Stdio::null());
         let output = crate::spawn_lock::output(&mut command)
             .map_err(|error| WorkspaceStatusError(format!("exec failed: {error}")))?;
-        // The script's stderr is the build's stderr (:113-119).
-        let _ = std::io::stderr().write_all(&output.stderr);
+        stderr.extend_from_slice(&output.stderr);
         if !output.status.success() {
             // TerminationStatus.toString (:230-238): a signal death reads
             // `Process terminated by signal N`, a normal non-zero exit

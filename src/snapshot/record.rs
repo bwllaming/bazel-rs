@@ -29,8 +29,8 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::PathBuf;
 
-/// The mode variable; `record` is the only mode W3 implements.
-pub const MODE_VAR: &str = "BAZEL_RS_SNAPSHOT";
+/// The mode variable (crate::snapshot::Mode): `record` here.
+pub const MODE_VAR: &str = crate::snapshot::MODE_VAR;
 /// Where the text dump goes (nothing is written without it).
 pub const DUMP_VAR: &str = "BAZEL_RS_SNAPSHOT_DUMP";
 
@@ -50,11 +50,14 @@ pub const TEST_HOOKS: &[&str] = &[
     "BAZEL_RS_TIMING_ALLOC",
 ];
 
-/// Whether this process records (`BAZEL_RS_SNAPSHOT=record` opened the
-/// window; open or closed).
+/// Whether this process runs the record mode (`BAZEL_RS_SNAPSHOT=record`
+/// opened the window; open or closed). `BAZEL_RS_SNAPSHOT=on` records
+/// too (crate::snapshot::save) but has no report.
 pub fn active() -> bool {
-    observed_fs::recorder().is_some()
+    RECORD_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+static RECORD_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The planned request's encoding as the record mode measured it
 /// (crate::snapshot::codec::hand_over): its sizes and times, or why it
@@ -90,12 +93,8 @@ pub struct Session {
 /// which environment names an option fixes (not validated against the
 /// process environment).
 pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
-    let mode = std::env::var_os(MODE_VAR)?;
-    if mode != "record" {
-        observed_fs::diag(&format!(
-            "ignoring {MODE_VAR}={}: only `record` is implemented",
-            escape(&mode)
-        ));
+    // Other values: crate::snapshot::Mode::from_env reports them.
+    if std::env::var_os(MODE_VAR)? != "record" {
         return None;
     }
     let fixed: BTreeSet<OsString> = repo_env
@@ -108,6 +107,7 @@ pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
     if !observed_fs::open_window(fixed) {
         return None;
     }
+    RECORD_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
     // Local repository rules executed in the window become replay records
     // (crate::snapshot::replay), replayed as a dry run in the report.
     crate::snapshot::replay::install();

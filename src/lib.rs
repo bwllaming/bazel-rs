@@ -156,12 +156,14 @@ pub fn perf_mark(name: &str) {
             proc_status_value(&status, "VmRSS:"),
             proc_status_value(&status, "VmHWM:"),
         );
-        eprintln!(
+        // The diagnostics stream: never part of what an analysis snapshot
+        // captures of planning's stderr (crate::snapshot::diag).
+        snapshot::diag::line_fmt(format_args!(
             "PERF {:>9.3}s rss={}kB {name} hwm={}kB",
             start.elapsed().as_secs_f64(),
             rss,
             hwm
-        );
+        ));
     }
 }
 

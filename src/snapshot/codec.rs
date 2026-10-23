@@ -142,15 +142,35 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
     let start = Instant::now();
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
-    let chunks = request
-        .nodes
-        .chunks(CHUNK)
-        .map(|chunk| {
-            postcard::to_stdvec(chunk).map_err(|error| {
-                EncodeError::NotSerializable(not_serializable_reason(chunk, error))
-            })
+    let encode_chunk = |chunk: &[PlannedAction]| {
+        postcard::to_stdvec(chunk)
+            .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(chunk, error)))
+    };
+    let parts: Vec<&[PlannedAction]> = request.nodes.chunks(CHUNK).collect();
+    // Chunks encode independently (the same bytes on any thread): a large
+    // plan encodes them on scoped threads (the analysis snapshot's save,
+    // L2-W5, encodes on the main thread before execution).
+    let encoded: Vec<Result<Vec<u8>, EncodeError>> = if parts.len() > 1 {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = parts
+                .iter()
+                .map(|chunk| scope.spawn(move || encode_chunk(chunk)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle.join().unwrap_or_else(|_| {
+                        Err(EncodeError::NotSerializable(
+                            "the planned actions: the encoder panicked".to_owned(),
+                        ))
+                    })
+                })
+                .collect()
         })
-        .collect::<Result<Vec<_>, _>>()?;
+    } else {
+        parts.iter().map(|chunk| encode_chunk(chunk)).collect()
+    };
+    let chunks = encoded.into_iter().collect::<Result<Vec<_>, _>>()?;
     let sections = 1 + chunks.len();
     let mut bytes = Vec::with_capacity(
         16 + 12 * sections + meta.len() + chunks.iter().map(Vec::len).sum::<usize>(),
@@ -441,7 +461,7 @@ pub fn hand_over(request: PlannedRequest) -> Result<PlannedRequest, String> {
 /// `PERF-PLAN ...` on stderr under `BAZEL_RS_TIMING` (like PERF-REPO).
 fn perf_line(text: &str) {
     if crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
-        eprintln!("PERF-PLAN {text}");
+        crate::snapshot::diag::line(&format!("PERF-PLAN {text}"));
     }
 }
 

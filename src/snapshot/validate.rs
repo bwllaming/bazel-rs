@@ -38,7 +38,8 @@
 //! dominates otherwise).
 
 use crate::observed_fs::{
-    FileKind, IntegrityEntry, Observation, Op, Outcome, Recording, StatKey, escape, listing_digest,
+    FileKind, IntegrityEntry, Observation, Op, Outcome, Recording, RepositoryRecord, StatKey,
+    escape, listing_digest,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -119,8 +120,9 @@ enum Checked {
     Plain,
     /// Trusted by an unchanged, settled stat key.
     Stat,
-    /// Re-read and compared; `refresh`: the key is settled now.
-    Content { refresh: bool },
+    /// Re-read and compared; `refresh`: the key is settled now (`key`, the
+    /// key a store refreshes the observation to).
+    Content { refresh: bool, key: StatKey },
 }
 
 enum Work<'a> {
@@ -241,6 +243,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
             }
             Ok(Checked::Content {
                 refresh: !current.racy(start),
+                key: current,
             })
         }
         (Op::ReadDir(_), Outcome::Error(code)) => match fs::read_dir(path) {
@@ -297,6 +300,7 @@ fn check(path: &Path, observation: &Observation) -> Result<Checked, String> {
             }
             Ok(Checked::Content {
                 refresh: !current.racy(start),
+                key: current,
             })
         }
         (op, outcome) => Err(format!(
@@ -393,21 +397,125 @@ pub fn observations_inside_verified_trees(recording: &Recording) -> (usize, usiz
 pub fn per_tree_summary(recording: &Recording) -> Recording {
     let roots = verified_roots(recording);
     let links = tree_links(recording);
-    let mut summary = recording.clone();
-    summary
+    let observations = recording
         .observations
-        .retain(|(path, _)| !inside(&roots, path) || inside(&links, path));
-    for repository in &mut summary.repositories {
-        let root = repository.root.clone();
-        let manifest = repository.manifest.clone();
-        repository.entries.retain(|entry| {
-            entry.path == root
-                || manifest
-                    .as_ref()
-                    .is_some_and(|manifest| entry.path == *manifest)
-        });
+        .iter()
+        .filter(|(path, _)| !inside(&roots, path) || inside(&links, path))
+        .cloned()
+        .collect();
+    let repositories = recording
+        .repositories
+        .iter()
+        .map(|repository| RepositoryRecord {
+            kind: repository.kind,
+            name: repository.name.clone(),
+            root: repository.root.clone(),
+            manifest: repository.manifest.clone(),
+            entries: repository
+                .entries
+                .iter()
+                .filter(|entry| is_head(repository, entry))
+                .cloned()
+                .collect(),
+        })
+        .collect();
+    Recording {
+        window_start_ns: recording.window_start_ns,
+        window: recording.window,
+        observations,
+        env: recording.env.clone(),
+        repositories,
+        crossed: recording.crossed.clone(),
+        taints: recording.taints.clone(),
+        plan_registered: recording.plan_registered.clone(),
     }
-    summary
+}
+
+/// A tree's root or manifest entry (what the per-tree policy validates).
+fn is_head(repository: &RepositoryRecord, entry: &IntegrityEntry) -> bool {
+    entry.path == repository.root
+        || repository
+            .manifest
+            .as_ref()
+            .is_some_and(|manifest| entry.path == *manifest)
+}
+
+/// Path order on raw bytes with `/` before every other byte: the order of
+/// `Path::cmp` for normalized absolute paths, without parsing components
+/// (a large recording's selection compares paths a few hundred thousand
+/// times).
+pub(crate) fn path_order(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let key = |byte: u8| if byte == b'/' { 0 } else { u16::from(byte) + 1 };
+    let at = mismatch(a, b);
+    match (a.get(at), b.get(at)) {
+        (Some(x), Some(y)) => key(*x).cmp(&key(*y)),
+        _ => a.len().cmp(&b.len()),
+    }
+}
+
+/// The length of the common prefix of `a` and `b`, eight bytes at a time
+/// (recorded paths share long prefixes: the cache, a tree's root).
+fn mismatch(a: &[u8], b: &[u8]) -> usize {
+    let length = a.len().min(b.len());
+    let mut at = 0;
+    while at + 8 <= length {
+        let x = u64::from_le_bytes(a[at..at + 8].try_into().expect("8 bytes"));
+        let y = u64::from_le_bytes(b[at..at + 8].try_into().expect("8 bytes"));
+        if x != y {
+            return at + ((x ^ y).trailing_zeros() / 8) as usize;
+        }
+        at += 8;
+    }
+    while at < length && a[at] == b[at] {
+        at += 1;
+    }
+    at
+}
+
+/// [`inside`] over raw bytes sorted by [`path_order`]: the greatest root
+/// not after `path` contains it, if any does (roots never nest).
+fn inside_bytes(roots: &[&[u8]], path: &[u8]) -> bool {
+    let at = roots.partition_point(|root| path_order(root, path) != std::cmp::Ordering::Greater);
+    at > 0 && {
+        let root = roots[at - 1];
+        path.starts_with(root) && (path.len() == root.len() || path[root.len()] == b'/')
+    }
+}
+
+/// [`per_tree_summary`] of an owned recording, without copying it.
+fn per_tree_summary_owned(mut recording: Recording) -> Recording {
+    fn sorted_bytes(paths: Vec<&Path>) -> Vec<&[u8]> {
+        let mut paths: Vec<&[u8]> = paths
+            .into_iter()
+            .map(|path| path.as_os_str().as_bytes())
+            .collect();
+        paths.sort_by(|a, b| path_order(a, b));
+        paths
+    }
+    let keep: Vec<bool> = {
+        let roots = sorted_bytes(verified_roots(&recording));
+        let links = sorted_bytes(tree_links(&recording));
+        recording
+            .observations
+            .iter()
+            .map(|(path, _)| {
+                let path = path.as_os_str().as_bytes();
+                !inside_bytes(&roots, path) || inside_bytes(&links, path)
+            })
+            .collect()
+    };
+    let mut keep = keep.into_iter();
+    recording
+        .observations
+        .retain(|_| keep.next().unwrap_or(true));
+    for repository in &mut recording.repositories {
+        let entries = std::mem::take(&mut repository.entries);
+        repository.entries = entries
+            .into_iter()
+            .filter(|entry| is_head(repository, entry))
+            .collect();
+    }
+    recording
 }
 
 /// Which checks a hit runs (see the module docs).
@@ -446,6 +554,14 @@ impl Policy {
             Self::Full => recording.clone(),
         }
     }
+
+    /// [`Policy::select`] of an owned recording (no copy).
+    pub fn select_owned(self, recording: Recording) -> Recording {
+        match self {
+            Self::PerTree => per_tree_summary_owned(recording),
+            Self::Full => recording,
+        }
+    }
 }
 
 /// Below this many checks (observations plus integrity entries) a
@@ -482,7 +598,7 @@ impl Tally {
                 match check(path, observation) {
                     Ok(Checked::Plain) => {}
                     Ok(Checked::Stat) => self.trusted_by_stat += 1,
-                    Ok(Checked::Content { refresh }) => {
+                    Ok(Checked::Content { refresh, .. }) => {
                         self.content_checks += 1;
                         self.refreshable += usize::from(refresh);
                         if self.content_checked.len() < EXAMPLES {
@@ -629,6 +745,256 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     report.env_time = env_started.elapsed();
     report.elapsed = started.elapsed();
     report
+}
+
+// ---- the hit's validation (L2-W5) ------------------------------------------
+
+/// A key a hit's validation settled: the snapshot can be rewritten with it
+/// (crate::snapshot::hit), so later hits trust it by stat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refresh {
+    /// `recording.observations[index]` (a READ or READDIR content check
+    /// matched, and the file is settled now).
+    Observation { index: usize, key: StatKey },
+    /// `recording.repositories[tree].entries[entry]`, a racy entry whose
+    /// tree verified against its manifest and is settled now.
+    Integrity {
+        tree: usize,
+        entry: usize,
+        key: StatKey,
+    },
+}
+
+/// What a successful hit validation did.
+#[derive(Clone, Debug, Default)]
+pub struct Validated {
+    /// Observations, environment variables and integrity entries checked.
+    pub checks: usize,
+    /// READ / READDIR observations re-read (racy or changed key).
+    pub content_checks: usize,
+    /// Repository trees verified against their manifests (a racy entry).
+    pub trees_verified: usize,
+    pub refresh: Vec<Refresh>,
+    pub threads: usize,
+    pub elapsed: Duration,
+}
+
+enum Item {
+    Observation(usize),
+    Integrity(usize, usize),
+}
+
+/// One check of a hit: `Ok(refresh)` or the mismatch.
+fn check_for_hit(
+    recording: &Recording,
+    item: &Item,
+    verified: &Mutex<BTreeSet<usize>>,
+    tally: &mut Validated,
+) -> Result<Option<Refresh>, String> {
+    match *item {
+        Item::Observation(index) => {
+            let (path, observation) = &recording.observations[index];
+            match check(path, observation)? {
+                Checked::Plain | Checked::Stat => Ok(None),
+                Checked::Content { refresh, key } => {
+                    tally.content_checks += 1;
+                    Ok(refresh.then_some(Refresh::Observation { index, key }))
+                }
+            }
+        }
+        Item::Integrity(tree, entry_index) => {
+            let repository = &recording.repositories[tree];
+            let entry = &repository.entries[entry_index];
+            let got = match fs::symlink_metadata(&entry.path) {
+                Ok(metadata) => Ok((FileKind::of(metadata.file_type()), StatKey::of(&metadata))),
+                Err(error) => Err(errno(&error)),
+            };
+            if got != entry.state {
+                return Err(format!(
+                    "INTEGRITY {}: lstat changed (repository {})",
+                    escape(entry.path.as_os_str()),
+                    repository.name
+                ));
+            }
+            if !entry.racy {
+                return Ok(None);
+            }
+            // Recorded within the racy window: the tree's content decides
+            // (once per tree), then the unchanged key may be settled now.
+            let start = now_ns();
+            let already = verified
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&tree);
+            if !already {
+                let manifest = repository.manifest.clone().ok_or_else(|| {
+                    format!(
+                        "INTEGRITY {}: racy entry of a tree without a manifest",
+                        escape(entry.path.as_os_str())
+                    )
+                })?;
+                let id = repository
+                    .root
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                crate::repository_store::verify_published_tree(
+                    &crate::repository_store::PublishedTree {
+                        kind: repository.kind,
+                        id,
+                        root: repository.root.clone(),
+                        manifest,
+                    },
+                )
+                .map_err(|error| format!("repository {}: {error}", repository.name))?;
+                verified
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(tree);
+                tally.trees_verified += 1;
+            }
+            Ok(match got {
+                Ok((_, key)) if !key.racy(start) => Some(Refresh::Integrity {
+                    tree,
+                    entry: entry_index,
+                    key,
+                }),
+                _ => None,
+            })
+        }
+    }
+}
+
+/// Validate a snapshot's INPUTS for a hit (PLAN-L2 §1c): every check of
+/// [`dry_run`], stopping at the first mismatch, which is the error (the
+/// reason a hit missed). A changed integrity entry misses (the full
+/// analysis repairs or re-verifies its tree); a racy one verifies its tree
+/// against its manifest. Below [`SINGLE_THREAD_CHECKS`] checks one thread
+/// runs them in path order; otherwise min(available parallelism, 16)
+/// threads stop at the first mismatch any of them finds (the earliest of
+/// those in path order is reported).
+pub fn validate_for_hit(recording: &Recording) -> Result<Validated, String> {
+    let started = Instant::now();
+    let mut validated = Validated::default();
+    for (name, observation) in &recording.env {
+        if observation.fixed {
+            continue;
+        }
+        validated.checks += 1;
+        let digest = std::env::var_os(name)
+            .map(|value| -> [u8; 32] { Sha256::digest(value.as_bytes()).into() });
+        if digest != observation.digest {
+            return Err(format!("ENV {}: value changed", escape(name)));
+        }
+    }
+    let items: Vec<Item> = (0..recording.observations.len())
+        .map(Item::Observation)
+        .chain(
+            recording
+                .repositories
+                .iter()
+                .enumerate()
+                .flat_map(|(tree, repository)| {
+                    (0..repository.entries.len()).map(move |entry| Item::Integrity(tree, entry))
+                }),
+        )
+        .collect();
+    let threads = threads_for(recording);
+    validated.threads = threads;
+    validated.checks += items.len();
+    let verified = Mutex::new(BTreeSet::new());
+    if threads <= 1 {
+        for item in &items {
+            if let Some(refresh) = check_for_hit(recording, item, &verified, &mut validated)? {
+                validated.refresh.push(refresh);
+            }
+        }
+    } else {
+        let cursor = AtomicUsize::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let results: Mutex<Vec<(usize, Result<Validated, String>)>> = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    let mut tally = Validated::default();
+                    let mut outcome = Ok(());
+                    'blocks: while !failed.load(Ordering::Relaxed) {
+                        let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
+                        if start >= items.len() {
+                            break;
+                        }
+                        for (offset, item) in items[start..(start + BLOCK).min(items.len())]
+                            .iter()
+                            .enumerate()
+                        {
+                            match check_for_hit(recording, item, &verified, &mut tally) {
+                                Ok(Some(refresh)) => tally.refresh.push(refresh),
+                                Ok(None) => {}
+                                Err(error) => {
+                                    failed.store(true, Ordering::Relaxed);
+                                    outcome = Err((start + offset, error));
+                                    break 'blocks;
+                                }
+                            }
+                        }
+                    }
+                    let entry = match outcome {
+                        Ok(()) => (usize::MAX, Ok(tally)),
+                        Err((index, error)) => (index, Err(error)),
+                    };
+                    results
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(entry);
+                });
+            }
+        });
+        let mut results = results
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        results.sort_by_key(|(index, _)| *index);
+        for (_, result) in results {
+            let tally = result?;
+            validated.content_checks += tally.content_checks;
+            validated.trees_verified += tally.trees_verified;
+            validated.refresh.extend(tally.refresh);
+        }
+    }
+    validated.elapsed = started.elapsed();
+    Ok(validated)
+}
+
+/// Apply settled keys to the recording (a racy observation or entry that a
+/// hit's content check confirmed becomes trusted by stat).
+pub fn apply_refresh(recording: &mut Recording, refresh: &[Refresh]) {
+    for refresh in refresh {
+        match *refresh {
+            Refresh::Observation { index, key } => {
+                if let Some((_, observation)) = recording.observations.get_mut(index) {
+                    match &mut observation.outcome {
+                        Outcome::Read { key: old, racy, .. }
+                        | Outcome::Listing { key: old, racy, .. } => {
+                            *old = key;
+                            *racy = false;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Refresh::Integrity { tree, entry, key } => {
+                if let Some(entry) = recording
+                    .repositories
+                    .get_mut(tree)
+                    .and_then(|repository| repository.entries.get_mut(entry))
+                {
+                    if let Ok((_, old)) = &mut entry.state {
+                        *old = key;
+                    }
+                    entry.racy = false;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -786,5 +1152,201 @@ mod tests {
             .collect();
         assert_eq!(entries, ["/c/trees/a.json", "/c/trees/a"]);
         assert_eq!(Policy::Full.select(&recording).observations.len(), 10);
+        // The owned selection (the save's) selects the same.
+        let owned = Policy::PerTree.select_owned(recording.clone());
+        assert_eq!(owned.observations, summary.observations);
+        assert_eq!(owned.repositories, summary.repositories);
+        assert_eq!(
+            Policy::Full.select_owned(recording.clone()).observations,
+            recording.observations
+        );
+    }
+
+    /// A hit's validation: racy reads are compared by content (a fresh file
+    /// is not settled, so nothing is refreshed), and the first change of a
+    /// read, a variable or an integrity entry is the miss's reason.
+    #[test]
+    fn a_hit_validation_compares_racy_reads_and_names_the_first_change() {
+        use crate::observed_fs::{EnvObservation, IntegrityEntry, RepositoryRecord};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("BUILD"), b"x").unwrap();
+        fs::create_dir(root.join("tree")).unwrap();
+        let sha: [u8; 32] = Sha256::digest(b"x").into();
+        let tree_state = Ok((FileKind::Dir, key(&root.join("tree"))));
+        let recording = Recording {
+            observations: vec![(
+                root.join("BUILD"),
+                observation(
+                    Op::Read,
+                    Outcome::Read {
+                        sha256: sha,
+                        key: key(&root.join("BUILD")),
+                        racy: true,
+                    },
+                ),
+            )],
+            env: vec![(
+                "BAZEL_RS_SURELY_UNSET_W5".into(),
+                EnvObservation {
+                    digest: None,
+                    fixed: false,
+                },
+            )],
+            repositories: vec![RepositoryRecord {
+                kind: "direct",
+                name: "r".into(),
+                root: root.join("tree"),
+                manifest: None,
+                entries: vec![IntegrityEntry {
+                    path: root.join("tree"),
+                    state: tree_state,
+                    racy: false,
+                }],
+            }],
+            ..Recording::default()
+        };
+        let validated = validate_for_hit(&recording).unwrap();
+        assert_eq!(validated.checks, 3);
+        assert_eq!(validated.content_checks, 1);
+        assert!(validated.refresh.is_empty(), "{:?}", validated.refresh);
+        fs::write(root.join("BUILD"), b"y").unwrap();
+        let error = validate_for_hit(&recording).unwrap_err();
+        assert!(error.contains("content changed"), "{error}");
+        fs::write(root.join("BUILD"), b"x").unwrap();
+        // A changed entry (a change within the timestamp granularity keeps
+        // the key: such an entry is recorded as racy, see below).
+        let mut changed = recording.clone();
+        if let Ok((_, key)) = &mut changed.repositories[0].entries[0].state {
+            key.size += 1;
+        }
+        let error = validate_for_hit(&changed).unwrap_err();
+        assert!(
+            error.starts_with("INTEGRITY ") && error.contains("(repository r)"),
+            "{error}"
+        );
+        // A racy entry of a tree without a manifest cannot be verified.
+        let mut racy = recording.clone();
+        racy.repositories[0].entries[0].racy = true;
+        let error = validate_for_hit(&racy).unwrap_err();
+        assert!(error.contains("without a manifest"), "{error}");
+        let mut changed = recording.clone();
+        changed.env[0].1.digest = Some([0; 32]);
+        let error = validate_for_hit(&changed).unwrap_err();
+        assert_eq!(error, "ENV BAZEL_RS_SURELY_UNSET_W5: value changed");
+    }
+
+    /// The byte order agrees with `Path::cmp` on normalized absolute paths,
+    /// and the byte containment test with [`inside`].
+    #[test]
+    fn the_byte_path_order_is_the_component_order() {
+        let paths = [
+            "/a",
+            "/a/b",
+            "/a-c",
+            "/a.b",
+            "/a/b/c",
+            "/a0",
+            "/ab",
+            "/a/\u{e9}",
+            "/b",
+            "/a/b-c",
+            "/a/b/",
+        ];
+        for a in paths {
+            for b in paths {
+                let (pa, pb) = (Path::new(a), Path::new(b));
+                if a.ends_with('/') || b.ends_with('/') {
+                    continue;
+                }
+                assert_eq!(
+                    path_order(a.as_bytes(), b.as_bytes()),
+                    pa.cmp(pb),
+                    "{a} vs {b}"
+                );
+            }
+        }
+        let mut roots: Vec<&[u8]> = vec![b"/c/trees/a", b"/c/trees/a-x", b"/c/trees/b"];
+        roots.sort_by(|a, b| path_order(a, b));
+        let paths: Vec<&Path> = roots
+            .iter()
+            .map(|root| Path::new(std::ffi::OsStr::from_bytes(root)))
+            .collect();
+        for path in [
+            "/c/trees/a",
+            "/c/trees/a/f",
+            "/c/trees/a-x/f",
+            "/c/trees/ab",
+            "/c/trees",
+            "/c/trees/b/x/y",
+            "/d",
+        ] {
+            assert_eq!(
+                inside_bytes(&roots, path.as_bytes()),
+                inside(&paths, Path::new(path)),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn refreshed_keys_settle_their_records() {
+        use crate::observed_fs::{IntegrityEntry, RepositoryRecord};
+        let fresh = StatKey {
+            ino: 9,
+            ..StatKey::default()
+        };
+        let mut recording = Recording {
+            observations: vec![(
+                "/a".into(),
+                observation(
+                    Op::Read,
+                    Outcome::Read {
+                        sha256: [1; 32],
+                        key: StatKey::default(),
+                        racy: true,
+                    },
+                ),
+            )],
+            repositories: vec![RepositoryRecord {
+                kind: "registry",
+                name: "r".into(),
+                root: "/t".into(),
+                manifest: None,
+                entries: vec![IntegrityEntry {
+                    path: "/t".into(),
+                    state: Ok((FileKind::Dir, StatKey::default())),
+                    racy: true,
+                }],
+            }],
+            ..Recording::default()
+        };
+        apply_refresh(
+            &mut recording,
+            &[
+                Refresh::Observation {
+                    index: 0,
+                    key: fresh,
+                },
+                Refresh::Integrity {
+                    tree: 0,
+                    entry: 0,
+                    key: fresh,
+                },
+            ],
+        );
+        assert_eq!(
+            recording.observations[0].1.outcome,
+            Outcome::Read {
+                sha256: [1; 32],
+                key: fresh,
+                racy: false
+            }
+        );
+        assert_eq!(
+            recording.repositories[0].entries[0].state,
+            Ok((FileKind::Dir, fresh))
+        );
+        assert!(!recording.repositories[0].entries[0].racy);
     }
 }

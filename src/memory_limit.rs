@@ -313,21 +313,28 @@ fn start_watchdog(cap_mb: u64) {
                 let Some(rss) = rss_bytes() else {
                     continue; // no /proc (non-Linux): no watchdog enforcement
                 };
+                // The watchdog's lines are diagnostics: never part of what
+                // an analysis snapshot captures of planning's stderr
+                // (crate::snapshot::diag).
                 if rss > cap_bytes {
-                    eprintln!("bazel-rs: memory limit of {cap_mb} MB exceeded (killed)");
+                    crate::snapshot::diag::line_fmt(format_args!(
+                        "bazel-rs: memory limit of {cap_mb} MB exceeded (killed)"
+                    ));
                     // Stop new work first, then SIGKILL every live child
                     // group so spawned actions/tests do not outlive the
-                    // kill as orphans, then exit with Bazel's OOM code.
+                    // kill as orphans, then exit with Bazel's OOM code
+                    // (after forwarding what a stderr capture still holds).
                     STOP_REQUESTED.store(true, Ordering::SeqCst);
                     kill_live_groups();
+                    crate::snapshot::capture::restore_for_exit();
                     std::process::exit(LIMIT_EXIT_CODE);
                 }
                 if !warned && rss > warn_at {
                     warned = true;
-                    eprintln!(
+                    crate::snapshot::diag::line_fmt(format_args!(
                         "bazel-rs: warning: memory usage {} MB exceeds 75% of the {cap_mb} MB limit",
                         rss / (1024 * 1024)
-                    );
+                    ));
                 }
             }
         })

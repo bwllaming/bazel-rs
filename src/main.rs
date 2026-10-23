@@ -413,9 +413,150 @@ fn run() -> Result<(), String> {
         &allowed_yanked_flags,
     )?;
     // The analysis-snapshot check point (PLAN-L2 §1a): everything above is
-    // bootstrap (part of the snapshot key); with BAZEL_RS_SNAPSHOT=record the
-    // recording window opens here and closes at the end of planning.
-    let mut snapshot_recording = bazel_rs::snapshot::record::start(&command, &rc_options.repo_env);
+    // bootstrap (part of the snapshot key G). With BAZEL_RS_SNAPSHOT=record
+    // the recording window opens here and closes at the end of planning;
+    // with BAZEL_RS_SNAPSHOT=on (build, test, run) a snapshot whose inputs
+    // are all unchanged is a hit — what planning printed is replayed and
+    // the saved plan executes — and a miss records and captures this full
+    // analysis to save it (crate::snapshot).
+    let mut snapshot = bazel_rs::snapshot::Scope::default();
+    match bazel_rs::snapshot::Mode::from_env() {
+        bazel_rs::snapshot::Mode::Record => {
+            snapshot.record = bazel_rs::snapshot::record::start(&command, &rc_options.repo_env);
+        }
+        bazel_rs::snapshot::Mode::On if builds(&command) => {
+            let targets = if command == "run" {
+                &rest[..rest.len().min(1)]
+            } else {
+                &rest[..]
+            };
+            let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or(path.to_path_buf());
+            let (key_root, key_cache) = (canonical(&root), canonical(&cache));
+            let key_relative_directory = relative_directory(&root, &cwd).ok();
+            let allow_yanked = std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS").ok();
+            match key_relative_directory {
+                None => {}
+                Some(key_relative_directory) => {
+                    match bazel_rs::snapshot::check(bazel_rs::snapshot::CheckInputs {
+                        key: bazel_rs::snapshot::key::Inputs {
+                            command: &command,
+                            workspace: &key_root,
+                            cache: &key_cache,
+                            cwd: &cwd,
+                            relative_directory: &key_relative_directory,
+                            current_package: &current_package,
+                            startup: &line.startup_args,
+                            options: &options.priority,
+                            targets,
+                            allow_yanked: allow_yanked.as_deref(),
+                            full_validation: bazel_rs::repository_store::verify_mode()
+                                == bazel_rs::repository_store::VerifyMode::Full,
+                        },
+                        cache: &cache,
+                        repo_env: &rc_options.repo_env,
+                        replay: bazel_rs::snapshot::hit::ReplayInputs {
+                            options: resolver_options.clone(),
+                            environment: repository_environment.clone(),
+                            downloads_enabled: repository_downloads_enabled,
+                        },
+                        workspace_status: workspace_status.clone(),
+                        workspace: &root,
+                    }) {
+                        bazel_rs::snapshot::Checked::Hit(hit) => {
+                            // The saved plan executes exactly like a planned
+                            // one; first what planning printed.
+                            bazel_rs::perf_mark("snapshot.hit");
+                            let hit = *hit;
+                            {
+                                use std::io::Write as _;
+                                let mut stderr = std::io::stderr().lock();
+                                let _ = stderr
+                                    .write_all(&hit.window_stderr)
+                                    .and_then(|()| stderr.flush());
+                            }
+                            let mut request = hit.request;
+                            let planned = Planned {
+                                diagnostics: request.take_diagnostics(),
+                                status: bazel_rs::request::StatusSource::Planned(hit.status),
+                                request: Ok(request),
+                            };
+                            let snapshot = bazel_rs::snapshot::Scope {
+                                hit: Some(hit.session),
+                                ..bazel_rs::snapshot::Scope::default()
+                            };
+                            let loading_threads = loading_threads_for_report(
+                                &command,
+                                loading_phase_threads,
+                                &query_options,
+                                memory_limit_mb,
+                            );
+                            return match command.as_str() {
+                                "test" => test_tail(
+                                    planned,
+                                    Vec::new(),
+                                    TestTail {
+                                        cache: &cache,
+                                        jobs,
+                                        root: &root,
+                                        runfiles: runfiles_options,
+                                        options: &test_options,
+                                        remote_enabled,
+                                        snapshot,
+                                    },
+                                ),
+                                "run" => {
+                                    let label = match &planned.request {
+                                        Ok(bazel_rs::request::PlannedRequest {
+                                            command:
+                                                bazel_rs::request::RequestCommand::Run { label, .. },
+                                            ..
+                                        }) => label.clone(),
+                                        _ => {
+                                            return Err(
+                                            "internal error: the snapshot of `run` holds no run target"
+                                                .to_owned(),
+                                        );
+                                        }
+                                    };
+                                    run_tail(
+                                        planned,
+                                        &label,
+                                        RunTail {
+                                            residue: &rest[1..],
+                                            cache: &cache,
+                                            jobs,
+                                            root: &root,
+                                            cwd: &cwd,
+                                            runfiles: runfiles_options,
+                                            options: &run_options,
+                                            remote_enabled,
+                                            test: &test_options,
+                                            snapshot,
+                                        },
+                                    )
+                                }
+                                _ => build_tail(
+                                    planned,
+                                    BuildTail {
+                                        cache: &cache,
+                                        jobs,
+                                        action_dump: action_dump.as_deref(),
+                                        show_result,
+                                        remote_enabled,
+                                        loading_threads,
+                                        memory_limit_mb,
+                                        snapshot,
+                                    },
+                                ),
+                            };
+                        }
+                        bazel_rs::snapshot::Checked::Miss(save) => snapshot.save = save,
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
     let session = bazel_rs::registry_session::SessionHandle::new(
         bazel_rs::registry_session::RegistrySession::open(
             &root,
@@ -436,9 +577,7 @@ fn run() -> Result<(), String> {
         ),
     );
     resolver_options.registry_session = session.clone();
-    if let Some(recording) = &mut snapshot_recording {
-        recording.set_registry_session(session.clone());
-    }
+    snapshot.set_registry_session(session.clone());
     let _lockfile_writer = LockfileWriter(session);
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
@@ -593,14 +732,12 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("I/O error: {e}"))?;
         if outcome.exit_code != 0 {
             bazel_rs::loading::module_timings::report();
-            drop(snapshot_recording);
+            drop(snapshot);
             bazel_rs::digest_memo::finish();
             std::process::exit(outcome.exit_code);
         }
         bazel_rs::memory_limit::report_peak(memory_limit_mb);
-        if let Some(recording) = snapshot_recording {
-            recording.finish();
-        }
+        snapshot.finish();
         return Ok(());
     }
     if command == "test" {
@@ -608,14 +745,16 @@ fn run() -> Result<(), String> {
             engine,
             patterns: &rest,
             relative_directory: &relative_directory,
-            cache: &cache,
-            jobs,
-            root: &root,
-            runfiles: runfiles_options,
-            options: &test_options,
-            remote_enabled,
             lockfile_gate: &lockfile_gate,
-            snapshot: snapshot_recording,
+            tail: TestTail {
+                cache: &cache,
+                jobs,
+                root: &root,
+                runfiles: runfiles_options,
+                options: &test_options,
+                remote_enabled,
+                snapshot,
+            },
         });
     }
     bazel_rs::perf_mark("select.start");
@@ -641,46 +780,96 @@ fn run() -> Result<(), String> {
             engine,
             labels,
             pattern: &rest[0],
-            residue: &rest[1..],
-            cache: &cache,
-            jobs,
-            root: &root,
-            cwd: &cwd,
-            runfiles: runfiles_options,
-            options: &run_options,
-            remote_enabled,
-            test: &test_options,
-            snapshot: snapshot_recording,
+            tail: RunTail {
+                residue: &rest[1..],
+                cache: &cache,
+                jobs,
+                root: &root,
+                cwd: &cwd,
+                runfiles: runfiles_options,
+                options: &run_options,
+                remote_enabled,
+                test: &test_options,
+                snapshot,
+            },
         });
     }
     // Plan -> PlannedRequest -> hand-over -> finalize -> execute (L2-W4).
     let planned = plan_request(
         std::mem::ManuallyDrop::into_inner(engine),
         bazel_rs::engine::RequestSpec::build(&labels),
+        &mut snapshot,
     );
+    build_tail(
+        planned,
+        BuildTail {
+            cache: &cache,
+            jobs,
+            action_dump: action_dump.as_deref(),
+            show_result,
+            remote_enabled,
+            loading_threads: loading_threads_for_report(
+                &command,
+                loading_phase_threads,
+                &query_options,
+                memory_limit_mb,
+            ),
+            memory_limit_mb,
+            snapshot,
+        },
+    )
+}
+
+/// What the end of `build` reads besides the planned request.
+struct BuildTail<'a> {
+    cache: &'a Path,
+    jobs: usize,
+    action_dump: Option<&'a Path>,
+    show_result: usize,
+    remote_enabled: bool,
+    /// The effective loading-thread count, for the repository timing report.
+    loading_threads: usize,
+    memory_limit_mb: Option<u64>,
+    snapshot: bazel_rs::snapshot::Scope,
+}
+
+/// `build` after planning, on a full analysis and on a snapshot hit alike:
+/// finalize, execute, report.
+fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
+    let BuildTail {
+        cache,
+        jobs,
+        action_dump,
+        show_result,
+        remote_enabled,
+        loading_threads,
+        memory_limit_mb,
+        snapshot,
+    } = tail;
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
             planned.status,
             &bazel_rs::request::ExecuteOptions {
-                cache: &cache,
+                cache,
                 jobs,
-                action_dump: action_dump.as_deref(),
+                action_dump,
             },
         )
     });
     // After analysis and execution (review i20): repositories demanded while
     // analyzing — most of a build's — are counted too, which a report
     // printed after target-pattern selection missed.
-    bazel_rs::repository_store::timing::report(loading_threads_for_report(
-        &command,
-        loading_phase_threads,
-        &query_options,
-        memory_limit_mb,
-    ));
+    bazel_rs::repository_store::timing::report(loading_threads);
     // Analysis warnings precede the result, also when the build fails.
     report_diagnostics(planned.diagnostics);
-    let summary = result?.summary;
+    let summary = match result {
+        Ok(executed) => executed.summary,
+        Err(error) => {
+            snapshot.failed(&error);
+            return Err(error);
+        }
+    };
     let non_empty_targets = summary.non_empty_targets;
     for (label, output) in &summary.outputs {
         // The path's raw bytes: a lone-byte target name names the byte
@@ -734,14 +923,13 @@ fn run() -> Result<(), String> {
         );
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
-    if let Some(recording) = snapshot_recording {
-        recording.finish();
-    }
+    snapshot.finish();
     Ok(())
 }
 
-/// A planned request of the full-analysis path, handed over, with its
-/// analysis diagnostics and the workspace status planning computed.
+/// A planned request — of the full-analysis path, handed over, or decoded
+/// from a snapshot hit — with its analysis diagnostics and the workspace
+/// status for its placeholders.
 struct Planned {
     request: Result<bazel_rs::request::PlannedRequest, String>,
     diagnostics: bazel_rs::request::Diagnostics,
@@ -753,23 +941,30 @@ struct Planned {
 /// a codec round trip under BAZEL_RS_SNAPSHOT_ROUNDTRIP=1), take its
 /// diagnostics (printed after execution) and the computed workspace
 /// status, then free the engine: execution and reporting read only the
-/// planned request.
-fn plan_request(mut engine: Engine, spec: bazel_rs::engine::RequestSpec<'_>) -> Planned {
-    let request = engine
-        .plan_request(spec)
-        .and_then(bazel_rs::snapshot::codec::hand_over);
+/// planned request. Under BAZEL_RS_SNAPSHOT=on the capture of what planning
+/// printed ends when planning returns, and the planned request is saved
+/// (in the background) before its diagnostics are taken.
+fn plan_request(
+    mut engine: Engine,
+    spec: bazel_rs::engine::RequestSpec<'_>,
+    snapshot: &mut bazel_rs::snapshot::Scope,
+) -> Planned {
+    let request = engine.plan_request(spec);
+    snapshot.end_window();
+    let request = request.and_then(bazel_rs::snapshot::codec::hand_over);
     let status = bazel_rs::request::StatusSource::Planned(engine.take_workspace_status());
-    let (diagnostics, request) = match request {
-        Ok(mut request) => (request.take_diagnostics(), Ok(request)),
-        Err(error) => (
-            bazel_rs::request::Diagnostics {
-                warnings: engine.take_warnings(),
-                errors: engine.take_errors(),
-            },
-            Err(error),
-        ),
-    };
+    let failed = request.is_err().then(|| bazel_rs::request::Diagnostics {
+        warnings: engine.take_warnings(),
+        errors: engine.take_errors(),
+    });
     release_engine(engine);
+    let (diagnostics, request) = match request {
+        Ok(mut request) => {
+            snapshot.planned(&request);
+            (request.take_diagnostics(), Ok(request))
+        }
+        Err(error) => (failed.unwrap_or_default(), Err(error)),
+    };
     Planned {
         request,
         diagnostics,
@@ -870,6 +1065,11 @@ struct RunContext<'a> {
     engine: std::mem::ManuallyDrop<Engine>,
     labels: Vec<bazel_rs::label::Label>,
     pattern: &'a str,
+    tail: RunTail<'a>,
+}
+
+/// What `run` reads after planning besides the planned request.
+struct RunTail<'a> {
     residue: &'a [String],
     cache: &'a Path,
     jobs: usize,
@@ -879,8 +1079,8 @@ struct RunContext<'a> {
     options: &'a bazel_rs::run_command::RunOptions,
     remote_enabled: bool,
     test: &'a bazel_rs::test_command::TestOptions,
-    /// BAZEL_RS_SNAPSHOT=record: reported once the build part ends.
-    snapshot: Option<bazel_rs::snapshot::record::Session>,
+    /// The analysis snapshot's sessions: finished once the build part ends.
+    snapshot: bazel_rs::snapshot::Scope,
 }
 
 /// `run` (runtime/commands/RunCommand.java:250-391): build exactly one
@@ -889,22 +1089,13 @@ struct RunContext<'a> {
 /// the `--script_path` script. The process replaces this one (exit code,
 /// stdin and terminal pass through).
 fn run_target(context: RunContext<'_>) -> Result<(), String> {
-    use bazel_rs::run_command::{RunInputs, command_line, random_uuid};
     let RunContext {
         mut engine,
         labels,
         pattern,
-        residue,
-        cache,
-        jobs,
-        root,
-        cwd,
-        runfiles,
-        options,
-        remote_enabled,
-        test,
-        snapshot,
+        mut tail,
     } = context;
+    let options = tail.options;
     // validateTargets (RunCommand.java:1052-1111).
     if labels.len() > 1 {
         let mut names: Vec<String> = labels.iter().map(|label| label.to_string()).collect();
@@ -957,7 +1148,31 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
             runs: std::slice::from_ref(label),
             trees: true,
         },
+        &mut tail.snapshot,
     );
+    run_tail(planned, label, tail)
+}
+
+/// `run` after planning, on a full analysis and on a snapshot hit alike:
+/// build the target, then run it (or write its script).
+fn run_tail(
+    planned: Planned,
+    label: &bazel_rs::label::Label,
+    tail: RunTail<'_>,
+) -> Result<(), String> {
+    use bazel_rs::run_command::{RunInputs, command_line, random_uuid};
+    let RunTail {
+        residue,
+        cache,
+        jobs,
+        root,
+        cwd,
+        runfiles,
+        options,
+        remote_enabled,
+        test,
+        snapshot,
+    } = tail;
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
@@ -972,10 +1187,9 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     report_diagnostics(planned.diagnostics);
     // The build part is the snapshot's scope (the run itself replaces this
     // process).
-    if let Some(recording) = snapshot
-        && result.is_ok()
-    {
-        recording.finish();
+    match &result {
+        Ok(_) => snapshot.finish(),
+        Err(error) => snapshot.failed(error),
     }
     let bazel_rs::request::Executed {
         summary,
@@ -1164,6 +1378,13 @@ struct TestContext<'a> {
     engine: std::mem::ManuallyDrop<Engine>,
     patterns: &'a [String],
     relative_directory: &'a str,
+    /// Opens the lockfile write once test-target loading succeeded.
+    lockfile_gate: &'a LockfileGate,
+    tail: TestTail<'a>,
+}
+
+/// What `test` reads after planning besides the planned request.
+struct TestTail<'a> {
     cache: &'a Path,
     jobs: usize,
     root: &'a Path,
@@ -1172,10 +1393,8 @@ struct TestContext<'a> {
     /// Whether the remote cache is set up (N41): the build summary names its
     /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
     remote_enabled: bool,
-    /// Opens the lockfile write once test-target loading succeeded.
-    lockfile_gate: &'a LockfileGate,
-    /// BAZEL_RS_SNAPSHOT=record: reported once the build part ends.
-    snapshot: Option<bazel_rs::snapshot::record::Session>,
+    /// The analysis snapshot's sessions: finished once the build part ends.
+    snapshot: bazel_rs::snapshot::Scope,
 }
 
 /// Label.print: `//pkg:name` or `@@repo//pkg:name`.
@@ -1258,20 +1477,14 @@ fn test_spec(
 /// with Bazel's code: 0 when every test passed, 3 (TESTS_FAILED) otherwise,
 /// 4 (NO_TESTS_FOUND) without tests, 1 when the build failed.
 fn test_targets(context: TestContext<'_>) -> Result<(), String> {
-    use bazel_rs::test_command::{should_output_log, summary_text};
     let TestContext {
         mut engine,
         patterns,
         relative_directory,
-        cache,
-        jobs,
-        root,
-        runfiles,
-        options,
-        remote_enabled,
         lockfile_gate,
-        snapshot,
+        mut tail,
     } = context;
+    let options = tail.options;
     let selected = engine.select_for_test(patterns, relative_directory);
     for warning in engine.take_warnings() {
         warn(&warning);
@@ -1326,11 +1539,33 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
             runs: &tests,
             trees: false,
         },
+        &mut tail.snapshot,
     );
+    test_tail(planned, tests, tail)
+}
+
+/// `test` after planning, on a full analysis and on a snapshot hit alike:
+/// build, run the tests, print the summary and exit with Bazel's code.
+/// `selected` are the tests a failed planning reports.
+fn test_tail(
+    planned: Planned,
+    selected: Vec<bazel_rs::label::Label>,
+    tail: TestTail<'_>,
+) -> Result<(), String> {
+    use bazel_rs::test_command::{should_output_log, summary_text};
+    let TestTail {
+        cache,
+        jobs,
+        root,
+        runfiles,
+        options,
+        remote_enabled,
+        snapshot,
+    } = tail;
     // The tests a failed build reports (also those of a decoded request).
     let test_labels = match &planned.request {
         Ok(request) => request.test_labels(),
-        Err(_) => tests.clone(),
+        Err(_) => selected,
     };
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
@@ -1346,12 +1581,9 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     report_diagnostics(planned.diagnostics);
     // The build part is the snapshot's scope (test results are execution
     // outcomes; the test runner exits the process).
-    if let Some(recording) = snapshot {
-        if result.is_ok() {
-            recording.finish();
-        } else {
-            drop(recording);
-        }
+    match &result {
+        Ok(_) => snapshot.finish(),
+        Err(error) => snapshot.failed(error),
     }
     let bazel_rs::request::Executed {
         summary,
