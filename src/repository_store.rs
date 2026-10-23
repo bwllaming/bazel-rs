@@ -858,6 +858,115 @@ where
     V: Fn(&Path, &[u8]) -> Result<bool, String>,
     P: FnOnce() -> Result<Vec<u8>, String>,
 {
+    materialize_inner(
+        cache,
+        stage_key,
+        spec_key,
+        provenance,
+        Some(&validate),
+        execute,
+    )
+    .map(|(root, publication, _)| (root, publication))
+}
+
+/// A local repository rule's execution (PLAN-L2 update 1 §(a)): the digests
+/// of the two runtime parts of its identity — the exact serialized runtime
+/// inputs and the encoded tree inventory — and the identity they produced.
+/// The rest of the identity (the provenance) is fixed by what the analysis
+/// snapshot validates, so a replay reproducing both digests
+/// ([`replay_local`]) reproduces the identity and the root path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalExecution {
+    pub inputs_digest: [u8; 32],
+    pub snapshot_digest: [u8; 32],
+    pub identity: String,
+}
+
+/// [`materialize_lazy`] for a local repository rule (`local = True`): it
+/// never reuses a publication across invocations (Bazel's
+/// RepositoryFetchFunction.shouldUseCachedRepoContents keeps local
+/// repositories refetching; every native invocation is a fresh server), so
+/// no warm probe runs — the specification pointer is neither read nor
+/// recorded, and its unchanged bytes are not rewritten — and the execution
+/// is no taint of the analysis snapshot: the caller records it for replay
+/// (crate::snapshot::replay) with the returned digests.
+pub fn materialize_local<F, P>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    provenance: P,
+    execute: F,
+) -> Result<(PathBuf, LocalExecution), String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    P: FnOnce() -> Result<Vec<u8>, String>,
+{
+    let (root, _, execution) =
+        materialize_inner(cache, stage_key, spec_key, provenance, None, execute)?;
+    let execution =
+        execution.ok_or("internal error: a local repository execution without digests")?;
+    Ok((root, execution))
+}
+
+/// The stage lock of `slug`: the stage pathname `stages/<slug>` exists only
+/// while it is held (until the returned file is dropped).
+fn lock_stage(locks: &Path, slug: &str) -> Result<File, String> {
+    let stage_lock_path = locks.join(format!("stage-{slug}"));
+    if let Some(metadata) = optional_metadata(&stage_lock_path)? {
+        regular_metadata(&metadata)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    no_follow(&mut options);
+    let stage_lock = options.open(&stage_lock_path).map_err(|e| e.to_string())?;
+    regular_metadata(&stage_lock.metadata().map_err(|e| e.to_string())?)?;
+    FileExt::lock_exclusive(&stage_lock)
+        .map_err(|e| format!("cannot lock direct repository stage: {e}"))?;
+    Ok(stage_lock)
+}
+
+/// A fresh, empty `stages/<slug>` (under its lock): an interrupted stage
+/// is removed first. The TempDir owns cleanup on callback errors and Rust
+/// unwinding as well.
+fn fresh_stage(stages: &Path, slug: &str) -> Result<tempfile::TempDir, String> {
+    let stage_path = stages.join(slug);
+    if optional_metadata(&stage_path)?.is_some() {
+        crate::repository_ctx::remove_tree(&stage_path)
+            .map_err(|e| format!("cannot remove interrupted direct repository stage: {e}"))?;
+    }
+    tempfile::Builder::new()
+        .prefix(slug)
+        .rand_bytes(0)
+        .tempdir_in(stages)
+        .map_err(|e| format!("cannot stage direct repository: {e}"))
+}
+
+/// A finished stage's inventory and its encoded content view (the bytes the
+/// identity frames): a repository boundary file is added when missing.
+fn stage_content(stage: &Path) -> Result<(BTreeMap<String, Entry>, Vec<u8>), String> {
+    required_directory(stage)?;
+    ensure_boundary(stage)?;
+    let files = snapshot(stage)?;
+    let encoded = serde_json::to_vec(&content_view(&files)).map_err(|e| e.to_string())?;
+    Ok((files, encoded))
+}
+
+/// A warm probe's recorded-input check (`try_reuse`).
+type Validate<'a> = &'a dyn Fn(&Path, &[u8]) -> Result<bool, String>;
+
+/// [`materialize_lazy`]; without `validate`, [`materialize_local`].
+fn materialize_inner<F, P>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    provenance: P,
+    validate: Option<Validate<'_>>,
+    execute: F,
+) -> Result<(PathBuf, Publication, Option<LocalExecution>), String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    P: FnOnce() -> Result<Vec<u8>, String>,
+{
     ensure_directory(cache)?;
     let direct = cache.join("direct");
     let trees = direct.join("trees");
@@ -870,13 +979,16 @@ where
     }
     // The pointer is published by atomic rename; an unlocked reader sees
     // either the old or the new publication, never a partial one. The warm
-    // check is the shared `try_reuse` probe (worker-safe).
+    // check is the shared `try_reuse` probe (worker-safe); a local rule
+    // (no `validate`) never reuses.
     let call_start = timing::enabled().then(std::time::Instant::now);
-    if let Some(destination) = try_reuse(cache, spec_key, &validate)? {
+    if let Some(validate) = validate
+        && let Some(destination) = try_reuse(cache, spec_key, validate)?
+    {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
-        return Ok((destination, Publication::Reused));
+        return Ok((destination, Publication::Reused, None));
     }
     // A failing or absent validation falls through to execution, exactly
     // like Bazel refetching when a watched dependency changed. Only now —
@@ -886,56 +998,43 @@ where
     let provenance = provenance.as_slice();
     // 128 bits: two repositories sharing a slug would share a stage.
     let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
-    let stage_lock_path = locks.join(format!("stage-{slug}"));
-    if let Some(metadata) = optional_metadata(&stage_lock_path)? {
-        regular_metadata(&metadata)?;
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(false).read(true).write(true);
-    no_follow(&mut options);
-    let stage_lock = options.open(&stage_lock_path).map_err(|e| e.to_string())?;
-    regular_metadata(&stage_lock.metadata().map_err(|e| e.to_string())?)?;
-    FileExt::lock_exclusive(&stage_lock)
-        .map_err(|e| format!("cannot lock direct repository stage: {e}"))?;
     // Held until return: the stage pathname exists only under this lock.
-    let _stage_guard = stage_lock;
+    let _stage_guard = lock_stage(&locks, &slug)?;
     // A concurrent publisher may have won while this process waited on
     // the stage lock: re-probe before executing (sequential semantics
     // unchanged; the pre-lock probe stays the fast path).
-    if let Some(destination) = try_reuse(cache, spec_key, &validate)? {
+    if let Some(validate) = validate
+        && let Some(destination) = try_reuse(cache, spec_key, validate)?
+    {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
-        return Ok((destination, Publication::Reused));
+        return Ok((destination, Publication::Reused, None));
     }
-    let stage_path = stages.join(&slug);
-    if optional_metadata(&stage_path)?.is_some() {
-        crate::repository_ctx::remove_tree(&stage_path)
-            .map_err(|e| format!("cannot remove interrupted direct repository stage: {e}"))?;
-    }
-    let stage = tempfile::Builder::new()
-        .prefix(&slug)
-        .rand_bytes(0)
-        .tempdir_in(&stages)
-        .map_err(|e| format!("cannot stage direct repository: {e}"))?;
-    // TempDir owns cleanup on callback errors and Rust unwinding as well.
+    let stage = fresh_stage(&stages, &slug)?;
     let started = std::time::Instant::now();
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
         let _tainted = crate::observed_fs::tainted_section();
         execute(stage.path())
     };
-    crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
-        format!(
-            "{stage_key} ({:.1} ms)",
-            started.elapsed().as_secs_f64() * 1000.0
+    if validate.is_some() {
+        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+            format!(
+                "{stage_key} ({:.1} ms)",
+                started.elapsed().as_secs_f64() * 1000.0
+            )
+        });
+    }
+    let executed = executed?;
+    let (files, encoded_snapshot) = stage_content(stage.path())?;
+    // A local execution's runtime identity parts, for its replay record.
+    let local_digests = validate.is_none().then(|| {
+        (
+            <[u8; 32]>::from(Sha256::digest(&executed.inputs)),
+            <[u8; 32]>::from(Sha256::digest(&encoded_snapshot)),
         )
     });
-    let executed = executed?;
-    required_directory(stage.path())?;
-    ensure_boundary(stage.path())?;
-    let files = snapshot(stage.path())?;
-    let encoded_snapshot = serde_json::to_vec(&content_view(&files)).map_err(|e| e.to_string())?;
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
@@ -1050,7 +1149,54 @@ where
     }
     // This call ran the repository rule even when the tree it produced
     // already existed under the same content identity.
-    Ok((destination, Publication::Executed))
+    let local = local_digests.map(|(inputs_digest, snapshot_digest)| LocalExecution {
+        inputs_digest,
+        snapshot_digest,
+        identity,
+    });
+    Ok((destination, Publication::Executed, local))
+}
+
+/// What replaying a local repository rule reproduced: the two digests a
+/// [`LocalExecution`] records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Replayed {
+    pub inputs_digest: [u8; 32],
+    pub snapshot_digest: [u8; 32],
+}
+
+/// Replay a local repository rule (crate::snapshot::replay, PLAN-L2 update
+/// 1 §(a)): `execute` runs in the very stage directory, under the same stage
+/// lock, as [`materialize_local`] uses for `stage_key` — an execution may
+/// observe its working directory (`java -XshowSettings:properties` prints
+/// `user.dir`) — and the digests of its identity inputs and tree are taken
+/// exactly as a full run would. Nothing is published, no pointer or
+/// manifest is touched, and the stage is deleted afterwards.
+pub fn replay_local<F>(cache: &Path, stage_key: &str, execute: F) -> Result<Replayed, String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+{
+    ensure_directory(cache)?;
+    let direct = cache.join("direct");
+    let locks = direct.join("locks");
+    let stages = direct.join("stages");
+    for path in [&direct, &locks, &stages] {
+        ensure_directory(path)?;
+    }
+    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
+    let _stage_guard = lock_stage(&locks, &slug)?;
+    let stage = fresh_stage(&stages, &slug)?;
+    let executed = execute(stage.path())?;
+    let (_, encoded_snapshot) = stage_content(stage.path())?;
+    let replayed = Replayed {
+        inputs_digest: Sha256::digest(&executed.inputs).into(),
+        snapshot_digest: Sha256::digest(&encoded_snapshot).into(),
+    };
+    // A callback may have created read-only directories.
+    crate::repository_ctx::remove_tree(stage.path())
+        .map_err(|e| format!("cannot remove the replay stage of {stage_key}: {e}"))?;
+    drop(stage);
+    Ok(replayed)
 }
 
 /// A pointer file's exact bytes for `identity` (kept canonical for equality).
@@ -1058,8 +1204,15 @@ fn pointer_bytes(identity: &str) -> String {
     format!("{{\"format\":1,\"identity\":\"{identity}\"}}\n")
 }
 
-/// Atomically install the specification pointer naming `identity`.
+/// Atomically install the specification pointer naming `identity`; a
+/// pointer already holding exactly these bytes is left as it is (no new
+/// inode for unchanged content: re-executed repositories would otherwise
+/// churn the pointers an analysis snapshot validates, PLAN-L2 update 1
+/// §(c)5).
 fn publish_pointer(specs: &Path, pointer: &Path, identity: &str) -> Result<(), String> {
+    if read_stable(pointer).is_ok_and(|bytes| bytes == pointer_bytes(identity).as_bytes()) {
+        return Ok(());
+    }
     let mut stage = tempfile::NamedTempFile::new_in(specs)
         .map_err(|e| format!("cannot stage direct specification: {e}"))?;
     stage
@@ -1566,6 +1719,208 @@ fn verify_snapshot_at(
 
 fn mode_of(metadata: &fs::Metadata) -> Result<u32, String> {
     mode(metadata)
+}
+
+/// A published tree of the native repository store, any of the four tree
+/// areas: registry archives (`<store>/trees/<id>`, manifest
+/// `<store>/trees/<id>.json`, crate::materializer), generated repositories
+/// (`<store>/direct/trees/<id>`, manifest `direct/manifests/<id>.json`),
+/// Git sources (`<store>/git/trees/<id>`, `git/manifests/<id>.json`) and
+/// the embedded `@bazel_tools` (`<store>/builtins/trees/<id>`,
+/// `builtins/trees/<id>.json`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PublishedTree {
+    /// `registry`, `direct`, `git` or `builtin` (the REPO record kinds).
+    pub kind: &'static str,
+    pub id: String,
+    pub root: PathBuf,
+    pub manifest: PathBuf,
+}
+
+/// The published store tree containing `path`, if any (lexically: `store`
+/// and `path` spelled alike, e.g. both canonical): `path` lies in
+/// `<store>/<area>/<id>` for one of the four tree areas, `<id>` is a
+/// publication identity — 64 lowercase hex digits, never a stage, trash,
+/// lock or manifest name — and the tree is a directory with a regular
+/// manifest file (PLAN-L2 update 1 §(c): such a tree is a link anchor in
+/// any order).
+pub fn published_tree(store: &Path, path: &Path) -> Option<PublishedTree> {
+    let rest = path.strip_prefix(store).ok()?;
+    let mut parts = rest.components().map(|component| match component {
+        Component::Normal(part) => part.to_str(),
+        _ => None,
+    });
+    let (kind, area) = match parts.next()?? {
+        "trees" => ("registry", store.join("trees")),
+        area @ ("direct" | "git" | "builtins") => {
+            if parts.next()?? != "trees" {
+                return None;
+            }
+            let kind = match area {
+                "direct" => "direct",
+                "git" => "git",
+                _ => "builtin",
+            };
+            (kind, store.join(area).join("trees"))
+        }
+        _ => return None,
+    };
+    let id = parts.next()??;
+    if id.len() != 64
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return None;
+    }
+    let root = area.join(id);
+    let manifest = match kind {
+        "direct" => store.join("direct/manifests").join(format!("{id}.json")),
+        "git" => store.join("git/manifests").join(format!("{id}.json")),
+        _ => area.join(format!("{id}.json")),
+    };
+    let published = fs::symlink_metadata(&root).is_ok_and(|metadata| metadata.is_dir())
+        && fs::symlink_metadata(&manifest).is_ok_and(|metadata| metadata.is_file());
+    published.then(|| PublishedTree {
+        kind,
+        id: id.to_owned(),
+        root,
+        manifest,
+    })
+}
+
+/// What a published tree's manifest records for one entry below its root,
+/// whatever store wrote it: content only — kind, file digest, link target —
+/// never modes, sizes or stat fingerprints, which do not change what
+/// analysis reads.
+#[derive(Debug, PartialEq, Eq)]
+enum TreeContent {
+    Directory,
+    File(String),
+    Symlink(String),
+}
+
+/// Verify a published tree against its manifest's content (a link crossing
+/// into a tree the invocation did not materialize, crate::source_links):
+/// exactly the recorded entries below the root, each with the recorded
+/// kind, SHA-256 or link target. Never follows links; reads every file once.
+pub fn verify_published_tree(tree: &PublishedTree) -> Result<(), String> {
+    let bytes = read_stable(&tree.manifest)?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("cannot parse {}: {e}", tree.manifest.display()))?;
+    let expected = manifest_content(tree.kind, &manifest)
+        .ok_or_else(|| format!("malformed repository manifest {}", tree.manifest.display()))?;
+    let mut actual = BTreeMap::new();
+    tree_content(&tree.root, &tree.root, &mut actual)?;
+    if actual != expected {
+        return Err(format!(
+            "published repository tree {} does not match its manifest",
+            tree.root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn manifest_content(
+    kind: &str,
+    manifest: &serde_json::Value,
+) -> Option<BTreeMap<String, TreeContent>> {
+    use serde_json::Value;
+    let text = |value: &Value| value.as_str().map(str::to_owned);
+    let mut expected = BTreeMap::new();
+    match kind {
+        // builtin_tools: a file list; directories are implied.
+        "builtin" => {
+            for entry in manifest.get("files")?.as_array()? {
+                let path = entry.get("path")?.as_str()?;
+                for (index, _) in path.match_indices('/') {
+                    expected.insert(path[..index].to_owned(), TreeContent::Directory);
+                }
+                expected.insert(
+                    path.to_owned(),
+                    TreeContent::File(text(entry.get("sha256")?)?),
+                );
+            }
+        }
+        // git_source: `kind` is "Directory", "File" or {"Symlink": {"target"}}.
+        "git" => {
+            for (name, entry) in manifest.get("files")?.as_object()? {
+                if name.is_empty() {
+                    continue;
+                }
+                let content = match entry.get("kind")? {
+                    Value::String(kind) if kind == "Directory" => TreeContent::Directory,
+                    Value::String(kind) if kind == "File" => {
+                        TreeContent::File(text(entry.get("sha256")?)?)
+                    }
+                    Value::Object(link) => {
+                        TreeContent::Symlink(text(link.get("Symlink")?.get("target")?)?)
+                    }
+                    _ => return None,
+                };
+                expected.insert(name.clone(), content);
+            }
+        }
+        // materializer and this store: directory flag, digest, link target.
+        _ => {
+            for (name, entry) in manifest.get("files")?.as_object()? {
+                if name.is_empty() {
+                    continue;
+                }
+                let content = if let Some(target) = entry.get("symlink").and_then(Value::as_str) {
+                    TreeContent::Symlink(target.to_owned())
+                } else if entry.get("directory")?.as_bool()? {
+                    TreeContent::Directory
+                } else {
+                    TreeContent::File(text(entry.get("sha256")?)?)
+                };
+                expected.insert(name.clone(), content);
+            }
+        }
+    }
+    Some(expected)
+}
+
+fn tree_content(
+    root: &Path,
+    directory: &Path,
+    content: &mut BTreeMap<String, TreeContent>,
+) -> Result<(), String> {
+    for child in fs::read_dir(directory).map_err(|e| e.to_string())? {
+        let path = child.map_err(|e| e.to_string())?.path();
+        let name = path
+            .strip_prefix(root)
+            .map_err(|e| e.to_string())?
+            .to_str()
+            .ok_or("non-UTF-8 repository tree path")?
+            .to_owned();
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path).map_err(|e| e.to_string())?;
+            let target = target
+                .to_str()
+                .ok_or("non-UTF-8 repository symlink target")?
+                .to_owned();
+            content.insert(name, TreeContent::Symlink(target));
+        } else if metadata.is_dir() {
+            content.insert(name, TreeContent::Directory);
+            tree_content(root, &path, content)?;
+        } else if metadata.is_file() {
+            let mut options = OpenOptions::new();
+            options.read(true);
+            no_follow(&mut options);
+            let mut file = options.open(&path).map_err(|e| e.to_string())?;
+            let mut digest = Sha256::new();
+            std::io::copy(&mut file, &mut digest).map_err(|e| e.to_string())?;
+            content.insert(name, TreeContent::File(format!("{:x}", digest.finalize())));
+        } else {
+            return Err(format!(
+                "unsupported file type in repository tree: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {

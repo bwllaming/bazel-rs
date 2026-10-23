@@ -19,9 +19,19 @@ of process/system paths — is covered by the recorded set:
 
 Not audited: calls of a thread between the tainted-section markers
 (/.bazel-rs-snapshot-marker/tainted-{begin,end}: a repository rule or module
-extension executing, which taints the run), and every call of a process that
-execs inside the window (processes such executions start; threads are joined
-to their process through the traced clone calls).
+extension executing, which taints the run or — a local repository rule — is
+replayed and compared instead), and every call of a process that execs inside
+the window (processes such executions start; threads are joined to their
+process through the traced clone calls).
+
+The record mode's replay dry run (L2-W4R, after the window, bracketed by
+/.bazel-rs-snapshot-marker/replay-{begin,end}) is audited too: a replay may
+touch only recorded paths (as above), the cache dir (its stage, the store's
+trees) and pinned repository roots (ROOT lines of the dump) — and, inside the
+execution of a rule the dump marks impure (REPLAY ... flags:environ,execute,
+which,...; bracketed per thread by /.bazel-rs-snapshot-marker/replay-exec/NAME
+and .../replay-exec-end), any host path. Processes started by a replay are
+skipped like those of the window.
 
 Default: a copy of tests/fixtures/snapshot_audit/workspace (plus the symlinks the
 fixture needs) built twice with `build --nobuild //...` (the first run warms the
@@ -52,6 +62,12 @@ MARKER_CLOSE = '/.bazel-rs-snapshot-marker/window-close'
 # belong to such executions too.
 MARKER_TAINTED_BEGIN = '/.bazel-rs-snapshot-marker/tainted-begin'
 MARKER_TAINTED_END = '/.bazel-rs-snapshot-marker/tainted-end'
+# The replay dry run (crate::snapshot::replay) and, per thread, one replayed
+# execution (the marker names the repository).
+MARKER_REPLAY_BEGIN = '/.bazel-rs-snapshot-marker/replay-begin'
+MARKER_REPLAY_END = '/.bazel-rs-snapshot-marker/replay-end'
+MARKER_REPLAY_EXEC = '/.bazel-rs-snapshot-marker/replay-exec/'
+MARKER_REPLAY_EXEC_END = '/.bazel-rs-snapshot-marker/replay-exec-end'
 
 # Process and system paths that are no inputs of planning: /proc, /sys (cgroup
 # CPU quota for available_parallelism), /dev, the window markers, and the host
@@ -225,6 +241,20 @@ def realpath_chain(path):
     return visited
 
 
+def load_replay(path):
+    """The replay records' impurity flags by repository and the pinned roots
+    (REPLAY and ROOT lines of the dump)."""
+    impure, pinned = {}, []
+    for line in Path(path).read_text().splitlines():
+        parts = line.split(' ')
+        if parts[0] == 'REPLAY' and len(parts) > 4:
+            flags = next((p[len('flags:'):] for p in parts if p.startswith('flags:')), '-')
+            impure[unescape_dump(parts[1])] = flags != '-'
+        elif parts[0] == 'ROOT' and len(parts) > 2:
+            pinned.append(unescape_dump(parts[2]))
+    return impure, pinned
+
+
 def load_dump(path):
     observed, canon_targets, readdirs, roots = set(), set(), set(), []
     canonicalized = set()
@@ -256,15 +286,23 @@ def load_dump(path):
     return observed, ancestors, readdirs, roots, canonicalized
 
 
-def audit(log, dump, cwd, cache, extra_ignored):
+def audit(log, dump, cwd, cache, extra_ignored, replay=None):
+    """(touched, unrecorded) of the recording window; with `replay` (a dict),
+    the replay section's counts are stored in it: touched, unrecorded,
+    executions (replayed executions seen), present (markers found)."""
     events = parse_strace(log, cwd)
     start = end = None
+    replay_start = replay_end = None
     for i, (_, _, paths, _, _) in enumerate(events):
         for _, p in paths:
             if p == MARKER_OPEN and start is None:
                 start = i
             if p == MARKER_CLOSE and start is not None and end is None:
                 end = i
+            if p == MARKER_REPLAY_BEGIN and replay_start is None:
+                replay_start = i
+            if p == MARKER_REPLAY_END and replay_start is not None and replay_end is None:
+                replay_end = i
     if start is None or end is None:
         return None, ['window markers not found in the trace (is BAZEL_RS_SNAPSHOT=record set?)']
     observed, ancestors, readdirs, roots, canonicalized = load_dump(dump)
@@ -273,9 +311,13 @@ def audit(log, dump, cwd, cache, extra_ignored):
     for path in canonicalized:
         ancestors |= realpath_chain(path)
     ignored = [str(Path(cache).resolve())] + [str(Path(p).resolve()) for p in extra_ignored]
+    sections = [(start, end)]
+    if replay_start is not None and replay_end is not None:
+        sections.append((replay_start, replay_end))
     # Process tree (strace -f with %process): threads join their process,
     # and a process that execs inside the window was started by a repository
-    # rule or extension execution (tainted, never recorded).
+    # rule or extension execution (tainted, never recorded) — or, in the
+    # replay section, by a replayed local rule.
     process = {}
     started = set()
     for i, (tid, name, _, line, result) in enumerate(events):
@@ -283,8 +325,28 @@ def audit(log, dump, cwd, cache, extra_ignored):
         if name in ('clone', 'clone3', 'fork', 'vfork') and result and result[0] > 0:
             child = result[0]
             process[child] = pid if 'CLONE_THREAD' in line else child
-        elif name == 'execve' and start < i < end:
+        elif name == 'execve' and any(a < i < b for a, b in sections):
             started.add(pid)
+
+    def covered(kind, p, line, opened, pid, extra_roots=()):
+        if kind == 'dir':
+            fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
+            logical = opened.get((pid, int(fd.group(1)))) if fd else None
+            if logical is not None:
+                p = logical
+        if p in IGNORED_EXACT or p.startswith(IGNORED_PREFIXES):
+            return p, None
+        if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
+            return p, None
+        if kind == 'dir':
+            if p in readdirs:
+                return p, True
+        elif p in observed or p in ancestors:
+            return p, True
+        if any(p == root or p.startswith(root + '/') for root in list(roots) + list(extra_roots)):
+            return p, True
+        return p, False
+
     opened = {}
     depth = {}
     unrecorded = {}
@@ -303,24 +365,46 @@ def audit(log, dump, cwd, cache, extra_ignored):
             # getdents64 shows the fd's resolved path; remember what was opened.
             opened[(pid, result[0])] = paths[0][1]
         for kind, p in paths:
-            if kind == 'dir':
-                fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
-                logical = opened.get((pid, int(fd.group(1)))) if fd else None
-                if logical is not None:
-                    p = logical
-            if p in IGNORED_EXACT or p.startswith(IGNORED_PREFIXES):
-                continue
-            if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
+            p, ok = covered(kind, p, line, opened, pid)
+            if ok is None:
                 continue
             touched += 1
-            if kind == 'dir':
-                if p in readdirs:
+            if not ok:
+                unrecorded.setdefault(p, (name, line.strip()))
+    if replay is not None:
+        impure, pinned = load_replay(dump)
+        replay.update(present=len(sections) > 1, touched=0, unrecorded=[], executions=0)
+        if len(sections) > 1:
+            current = {}
+            replay_unrecorded = {}
+            replay_opened = {}
+            for tid, name, paths, line, result in events[replay_start + 1:replay_end]:
+                pid = process.get(tid, tid)
+                if pid in started:
                     continue
-            elif p in observed or p in ancestors:
-                continue
-            if any(p == root or p.startswith(root + '/') for root in roots):
-                continue
-            unrecorded.setdefault(p, (name, line.strip()))
+                execs = [p for _, p in paths if p.startswith(MARKER_REPLAY_EXEC) or p == MARKER_REPLAY_EXEC_END]
+                if execs:
+                    if execs[0] == MARKER_REPLAY_EXEC_END:
+                        current.pop(tid, None)
+                    else:
+                        current[tid] = unescape_dump(execs[0][len(MARKER_REPLAY_EXEC):])
+                        replay['executions'] += 1
+                    continue
+                if tid in current and impure.get(current[tid], False):
+                    # An impure rule's execution may read the host (which,
+                    # execute, os.environ, host readdir): its replay compares
+                    # what it produced instead.
+                    continue
+                if name in ('openat', 'open', 'openat2') and result and result[0] >= 0 and paths:
+                    replay_opened[(pid, result[0])] = paths[0][1]
+                for kind, p in paths:
+                    p, ok = covered(kind, p, line, replay_opened, pid, pinned)
+                    if ok is None:
+                        continue
+                    replay['touched'] += 1
+                    if not ok:
+                        replay_unrecorded.setdefault(p, (name, line.strip()))
+            replay['unrecorded'] = [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(replay_unrecorded.items())]
     return touched, [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(unrecorded.items())]
 
 
@@ -396,8 +480,9 @@ def main():
             if i < len(warmups):
                 lines.append('  (warm-up run: not audited)')
                 continue
+            replay = {}
             touched, unrecorded = audit(log.read_text(errors='surrogateescape'), dump, str(workspace),
-                                        cache, [base / 'home', base / 'tmp'] + a.ignore)
+                                        cache, [base / 'home', base / 'tmp'] + a.ignore, replay)
             if touched is None:
                 ok = False
                 lines.extend('  ' + u for u in unrecorded)
@@ -407,6 +492,15 @@ def main():
                 lines.append('    UNRECORDED ' + u)
             if unrecorded:
                 ok = False
+            if replay.get('present'):
+                lines.append(f"  replay: {replay['executions']} replayed executions, {replay['touched']} path touches "
+                             f"outside the cache (impure executions exempt); unrecorded: {len(replay['unrecorded'])}")
+                for u in replay['unrecorded'][:200]:
+                    lines.append('    REPLAY-UNRECORDED ' + u)
+                if replay['unrecorded']:
+                    ok = False
+            else:
+                lines.append('  replay: no replay section (no local repository rule executed)')
     finally:
         if not a.keep:
             shutil.rmtree(base, ignore_errors=True)

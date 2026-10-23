@@ -191,6 +191,11 @@ mod values {
         pub metadata: Arc<HostMetadata>,
         pub id: u64,
         pub environ: Environ,
+        /// Set when `environ` is read: the execution's per-execution
+        /// impurity flag (crate::repository_ctx::ExecutedRepository), never
+        /// part of an identity.
+        #[allocative(skip)]
+        pub environ_read: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
     starlark::starlark_simple_value!(RepositoryOs);
 
@@ -258,6 +263,9 @@ fn properties(builder: &mut MethodsBuilder) {
         let host = this
             .downcast_ref::<RepositoryOs>()
             .ok_or_else(|| anyhow!("expected repository_os"))?;
+        if let Some(flag) = &host.environ_read {
+            flag.store(true, Ordering::Relaxed);
+        }
         match &host.environ {
             Environ::Present(environment) => {
                 let mut entries = Vec::with_capacity(environment.len());
@@ -282,7 +290,12 @@ pub(crate) fn alloc<'v>(heap: Heap<'v>, metadata: Arc<HostMetadata>) -> anyhow::
         std::ffi::OsString::from("synthetic"),
     )])
     .map_err(|error| anyhow!("{error}"))?;
-    alloc_os(heap, metadata, Environ::Present(Arc::new(environment)))
+    alloc_os(
+        heap,
+        metadata,
+        Environ::Present(Arc::new(environment)),
+        None,
+    )
 }
 
 /// repository_ctx.os whose client-environment snapshot failed: name/arch
@@ -292,7 +305,7 @@ pub(crate) fn alloc_with_environ_error<'v>(
     metadata: Arc<HostMetadata>,
     error: String,
 ) -> anyhow::Result<Value<'v>> {
-    alloc_os(heap, metadata, Environ::Failed(error))
+    alloc_os(heap, metadata, Environ::Failed(error), None)
 }
 
 /// repository_ctx.os (StarlarkBaseExternalContext.java:194-196): `environ` is
@@ -302,7 +315,23 @@ pub(crate) fn alloc_with_environ<'v>(
     metadata: Arc<HostMetadata>,
     environment: Arc<crate::repository_environment::ClientEnvironment>,
 ) -> anyhow::Result<Value<'v>> {
-    alloc_os(heap, metadata, Environ::Present(environment))
+    alloc_os(heap, metadata, Environ::Present(environment), None)
+}
+
+/// [`alloc_with_environ`] (or the snapshot failure) whose `environ` reads
+/// set `read` — one repository rule execution's flag (PLAN-L2 update 1
+/// §(c)1); nothing else changes.
+pub(crate) fn alloc_observed<'v>(
+    heap: Heap<'v>,
+    metadata: Arc<HostMetadata>,
+    environment: Result<Arc<crate::repository_environment::ClientEnvironment>, String>,
+    read: Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<Value<'v>> {
+    let environ = match environment {
+        Ok(environment) => Environ::Present(environment),
+        Err(error) => Environ::Failed(error),
+    };
+    alloc_os(heap, metadata, environ, Some(read))
 }
 
 /// Bazel's internal strings carry one byte per char (Latin-1).
@@ -314,6 +343,7 @@ fn alloc_os<'v>(
     heap: Heap<'v>,
     metadata: Arc<HostMetadata>,
     environ: Environ,
+    environ_read: Option<Arc<std::sync::atomic::AtomicBool>>,
 ) -> anyhow::Result<Value<'v>> {
     metadata
         .charge(&mut HostBudget::default())
@@ -322,6 +352,7 @@ fn alloc_os<'v>(
         metadata,
         id: next_identity(&NEXT_ID)?,
         environ,
+        environ_read,
     }))
 }
 

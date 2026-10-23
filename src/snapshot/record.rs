@@ -7,10 +7,14 @@
 //! * `bazel-rs-snapshot:` diagnostics lines on stderr — observation counts by
 //!   op, distinct paths, environment reads, verified repositories and their
 //!   integrity entries, every taint with its first reasons, whether the run
-//!   would be eligible to save, and the measured time of the §1c validation
-//!   (crate::snapshot::validate) as a dry run over everything recorded;
-//! * with `BAZEL_RS_SNAPSHOT_DUMP=<file>`, a text dump of every observation
-//!   plus the same summary (scripts/snapshot_fs_audit.py reads it).
+//!   would be eligible to save, the measured time of the validation a hit
+//!   would run under the command's policy (crate::snapshot::validate: per
+//!   tree unless `--verify_repo_tampering`), and the replay dry run of every
+//!   local repository rule the window executed (crate::snapshot::replay; a
+//!   mismatch taints the run);
+//! * with `BAZEL_RS_SNAPSHOT_DUMP=<file>`, a text dump of every observation,
+//!   the replay's pinned tables and records, plus the same summary
+//!   (scripts/snapshot_fs_audit.py reads it).
 //!
 //! Nothing else changes: stdout, the rest of stderr and every output are
 //! byte-identical with recording on and off. The diagnostics appear only
@@ -60,6 +64,9 @@ pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
     if !observed_fs::open_window(fixed) {
         return None;
     }
+    // Local repository rules executed in the window become replay records
+    // (crate::snapshot::replay), replayed as a dry run in the report.
+    crate::snapshot::replay::install();
     // PLAN-L2 §1a: runs with a test or debug hook are never saved.
     for (name, _) in std::env::vars_os() {
         let name = name.to_string_lossy();
@@ -119,42 +126,80 @@ impl Session {
         let Some(recorder) = observed_fs::recorder() else {
             return;
         };
-        let recording = recorder.snapshot();
         // Measurement knobs of the record mode only: the validation's thread
-        // count (default min(available parallelism, 16), PLAN-L2 §1c) and how
-        // many times to repeat the dry run (the first one pays cold caches).
+        // count (default: one below 4k checks, else min(available
+        // parallelism, 16)), how many times to repeat the validation and
+        // replay dry runs (the first one pays cold caches), and whether to
+        // also time the other validation policy.
         let knob = |name: &str| {
             std::env::var(name)
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0)
         };
-        let threads = knob("BAZEL_RS_SNAPSHOT_THREADS").unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(usize::from)
-                .unwrap_or(1)
-                .min(16)
-        });
-        let validations: Vec<_> = (0..knob("BAZEL_RS_SNAPSHOT_DRY_RUNS").unwrap_or(1).min(20))
-            .map(|_| crate::snapshot::validate::dry_run(&recording, threads))
+        let repeats = knob("BAZEL_RS_SNAPSHOT_DRY_RUNS").unwrap_or(1).min(20);
+        // Replay every local repository rule of the window (L2-W4R): a
+        // mismatch taints the run.
+        let capture = crate::snapshot::replay::global();
+        let records = capture
+            .as_ref()
+            .map(|capture| capture.records())
+            .unwrap_or_default();
+        let replays: Vec<crate::snapshot::replay::Report> = capture
+            .as_ref()
+            .map(|capture| {
+                (0..repeats)
+                    .filter_map(|_| crate::snapshot::replay::dry_run(capture))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for replay in &replays {
+            for replayed in &replay.replayed {
+                if let Some(reason) = &replayed.mismatch {
+                    observed_fs::taint_after_window(Taint::ReplayMismatch, || {
+                        format!("{}: {reason}", replayed.canonical)
+                    });
+                }
+            }
+        }
+        let recording = recorder.snapshot();
+        let policy = crate::snapshot::validate::Policy::current();
+        let validated = policy.select(&recording);
+        let threads = knob("BAZEL_RS_SNAPSHOT_THREADS")
+            .unwrap_or_else(|| crate::snapshot::validate::threads_for(&validated));
+        let validations: Vec<_> = (0..repeats)
+            .map(|_| crate::snapshot::validate::dry_run(&validated, threads))
             .collect();
-        let mut summary = summary(&self.command, &recording, &validations);
-        // The alternative policy's cost, for the W5 decision.
-        let reduced = crate::snapshot::validate::per_tree_summary(&recording);
-        let per_tree = crate::snapshot::validate::dry_run(&reduced, threads);
-        summary.push(format!(
-            "validation dry-run, per-tree summary policy (observations outside verified trees; root + manifest lstat per tree): {} ms on {} threads: {} observations, {} integrity entries; {} mismatch(es)",
-            millis(per_tree.elapsed),
-            per_tree.threads,
-            per_tree.observations,
-            per_tree.integrity,
-            per_tree.mismatches,
-        ));
+        let mut summary = summary(&self.command, &recording, policy, &validations);
+        if std::env::var_os("BAZEL_RS_SNAPSHOT_COMPARE").is_some() {
+            // The other policy's cost, for comparison.
+            let other = match policy {
+                crate::snapshot::validate::Policy::PerTree => {
+                    crate::snapshot::validate::Policy::Full
+                }
+                crate::snapshot::validate::Policy::Full => {
+                    crate::snapshot::validate::Policy::PerTree
+                }
+            };
+            let selected = other.select(&recording);
+            let threads = crate::snapshot::validate::threads_for(&selected);
+            let report = crate::snapshot::validate::dry_run(&selected, threads);
+            summary.push(validation_line(other, &report));
+        }
+        summary.extend(replay_summary(&records, &replays));
         for line in &summary {
             observed_fs::diag(line);
         }
+        let tables = capture.as_ref().and_then(|capture| capture.tables());
         if let Some(path) = &self.dump
-            && let Err(error) = write_dump(path, &recording, &summary)
+            && let Err(error) = write_dump(
+                path,
+                &recording,
+                &summary,
+                &records,
+                tables.as_ref(),
+                replays.first(),
+            )
         {
             observed_fs::diag(&format!(
                 "cannot write {DUMP_VAR}={}: {error}",
@@ -175,10 +220,135 @@ fn millis(duration: std::time::Duration) -> String {
     format!("{:.3}", duration.as_secs_f64() * 1000.0)
 }
 
+/// One validation dry run's report line.
+fn validation_line(
+    policy: crate::snapshot::validate::Policy,
+    validation: &crate::snapshot::validate::Report,
+) -> String {
+    format!(
+        "validation dry-run [{}]: {} ms on {} thread(s): {} observations ({} trusted by stat, {} content checks, {} refreshable; {} ms thread time), {} env, {} integrity entries ({} ms thread time); {} mismatch(es), {} repositories to re-verify",
+        policy.name(),
+        millis(validation.elapsed),
+        validation.threads,
+        validation.observations,
+        validation.trusted_by_stat,
+        validation.content_checks,
+        validation.refreshable,
+        millis(validation.observation_time),
+        validation.env,
+        validation.integrity,
+        millis(validation.integrity_time),
+        validation.mismatches,
+        validation.repositories_to_verify,
+    )
+}
+
+/// The replay dry runs' report lines (crate::snapshot::replay).
+fn replay_summary(
+    records: &[crate::snapshot::replay::ReplayRecord],
+    replays: &[crate::snapshot::replay::Report],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if records.is_empty() {
+        lines.push("replay: no local repository rule executed".to_owned());
+        return lines;
+    }
+    let recorded: std::time::Duration = records.iter().map(|record| record.elapsed).sum();
+    let printed = records
+        .iter()
+        .filter(|record| !record.output.is_empty())
+        .count();
+    let impure: Vec<String> = records
+        .iter()
+        .filter(|record| record.flags() != "-")
+        .map(|record| format!("{} [{}]", record.canonical, record.flags()))
+        .collect();
+    lines.push(format!(
+        "replay records: {} local repository rule(s), {} ms recorded execution time; {} printed; impure: {}",
+        records.len(),
+        millis(recorded),
+        printed,
+        if impure.is_empty() {
+            "none".to_owned()
+        } else {
+            impure.join(", ")
+        },
+    ));
+    for replay in replays {
+        let optional =
+            |value: Option<std::time::Duration>| value.map_or_else(|| "?".to_owned(), millis);
+        let slowest = replay
+            .definitions
+            .iter()
+            .map(|definition| definition.wall)
+            .max()
+            .unwrap_or_default();
+        lines.push(format!(
+            "replay dry-run: {}/{} matching over {} definition(s); wall {} ms (slowest definition load {} ms), CPU {} ms on replay threads + {} ms in child processes; pinned {} roots, {} mappings",
+            replay.matched(),
+            replay.replayed.len(),
+            replay.definitions.len(),
+            millis(replay.wall),
+            millis(slowest),
+            optional(replay.cpu),
+            optional(replay.children_cpu),
+            replay.pinned_roots,
+            replay.pinned_mappings,
+        ));
+    }
+    if let Some(replay) = replays.first() {
+        let mut slow: Vec<&crate::snapshot::replay::Replayed> = replay.replayed.iter().collect();
+        slow.sort_by_key(|replayed| std::cmp::Reverse(replayed.wall));
+        lines.push(format!(
+            "replay slowest: {}",
+            slow.iter()
+                .take(5)
+                .map(|replayed| format!(
+                    "{} {} ms (recorded {} ms)",
+                    replayed.canonical,
+                    millis(replayed.wall),
+                    millis(replayed.recorded)
+                ))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+        for definition in &replay.definitions {
+            if let Some(error) = &definition.error {
+                lines.push(format!("replay definition {}: {error}", definition.source));
+            }
+        }
+        const SHOWN: usize = 12;
+        for replayed in replay
+            .replayed
+            .iter()
+            .filter(|replayed| replayed.mismatch.is_some())
+            .take(SHOWN)
+        {
+            lines.push(format!(
+                "replay mismatch {}: {}",
+                replayed.canonical,
+                replayed.mismatch.as_deref().unwrap_or_default()
+            ));
+        }
+        let differing = replay
+            .replayed
+            .iter()
+            .filter(|replayed| replayed.output_differs)
+            .count();
+        if differing > 0 {
+            lines.push(format!(
+                "replay: {differing} replay(s) printed other output than recorded"
+            ));
+        }
+    }
+    lines
+}
+
 /// The report lines (without the `bazel-rs-snapshot:` prefix).
 pub fn summary(
     command: &str,
     recording: &Recording,
+    policy: crate::snapshot::validate::Policy,
     validations: &[crate::snapshot::validate::Report],
 ) -> Vec<String> {
     let mut lines = Vec::new();
@@ -282,21 +452,7 @@ pub fn summary(
         ));
     }
     for validation in validations {
-        lines.push(format!(
-            "validation dry-run: {} ms on {} threads: {} observations ({} trusted by stat, {} content checks, {} refreshable; {} ms thread time), {} env, {} integrity entries ({} ms thread time); {} mismatch(es), {} repositories to re-verify",
-            millis(validation.elapsed),
-            validation.threads,
-            validation.observations,
-            validation.trusted_by_stat,
-            validation.content_checks,
-            validation.refreshable,
-            millis(validation.observation_time),
-            validation.env,
-            validation.integrity,
-            millis(validation.integrity_time),
-            validation.mismatches,
-            validation.repositories_to_verify,
-        ));
+        lines.push(validation_line(policy, validation));
     }
     if let Some(validation) = validations.first() {
         for example in &validation.examples {
@@ -313,9 +469,12 @@ fn write_dump(
     path: &std::path::Path,
     recording: &Recording,
     summary: &[String],
+    records: &[crate::snapshot::replay::ReplayRecord],
+    tables: Option<&crate::snapshot::replay::PinnedTables>,
+    replay: Option<&crate::snapshot::replay::Report>,
 ) -> std::io::Result<()> {
     let mut text = String::new();
-    let _ = writeln!(text, "# bazel-rs snapshot recording (L2-W3) v1");
+    let _ = writeln!(text, "# bazel-rs snapshot recording (L2-W3, W4R) v2");
     let _ = writeln!(text, "window_start_ns {}", recording.window_start_ns);
     for (path, observation) in &recording.observations {
         let op = match &observation.op {
@@ -376,6 +535,74 @@ fn write_dump(
                 record.count
             );
         }
+    }
+    // The replay's pinned tables and records (crate::snapshot::replay).
+    if let Some(tables) = tables {
+        for (name, root) in &tables.roots {
+            let _ = writeln!(
+                text,
+                "ROOT {} {} generated:{}",
+                escape(std::ffi::OsStr::new(name)),
+                escape(root.path.as_os_str()),
+                u8::from(root.generated)
+            );
+        }
+        for (name, mapping) in &tables.mappings {
+            let _ = writeln!(
+                text,
+                "MAPPING {} entries:{} isolated:{}",
+                escape(std::ffi::OsStr::new(name)),
+                mapping.mapping.len(),
+                mapping.isolated.len()
+            );
+        }
+    }
+    for definition in replay.map_or(&[][..], |replay| &replay.definitions[..]) {
+        let _ = writeln!(
+            text,
+            "DEFINITION {} records:{} load:{} thread-cpu:{}{}",
+            escape(std::ffi::OsStr::new(&definition.source)),
+            definition.records,
+            millis(definition.wall),
+            definition.cpu.map_or_else(|| "-".to_owned(), millis),
+            definition
+                .error
+                .as_deref()
+                .map(|error| format!(" error:{}", escape(std::ffi::OsStr::new(error))))
+                .unwrap_or_default(),
+        );
+    }
+    let replayed: BTreeMap<&str, &crate::snapshot::replay::Replayed> = replay
+        .map(|replay| {
+            replay
+                .replayed
+                .iter()
+                .map(|replayed| (replayed.canonical.as_str(), replayed))
+                .collect()
+        })
+        .unwrap_or_default();
+    for record in records {
+        let outcome = replayed.get(record.canonical.as_str());
+        let _ = writeln!(
+            text,
+            "REPLAY {} {} definition:{} flags:{} output:{} recorded:{} replay:{} root:{}{}",
+            escape(std::ffi::OsStr::new(&record.canonical)),
+            match outcome {
+                None => "not-replayed",
+                Some(replayed) if replayed.mismatch.is_none() => "match",
+                Some(_) => "mismatch",
+            },
+            escape(std::ffi::OsStr::new(&record.definition.to_string())),
+            record.flags(),
+            record.output.len(),
+            millis(record.elapsed),
+            outcome.map_or_else(|| "-".to_owned(), |replayed| millis(replayed.wall)),
+            escape(record.root.as_os_str()),
+            outcome
+                .and_then(|replayed| replayed.mismatch.as_deref())
+                .map(|reason| format!(" reason:{}", escape(std::ffi::OsStr::new(reason))))
+                .unwrap_or_default(),
+        );
     }
     for line in summary {
         let _ = writeln!(text, "SUMMARY {line}");

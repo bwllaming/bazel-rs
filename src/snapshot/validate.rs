@@ -23,6 +23,16 @@
 //!
 //! A dry run never stops early: it counts every mismatch, so the report
 //! shows the full cost of a hit's validation and every stale input.
+//!
+//! Policy (PLAN-L2 update 1, decision (1)): by default a hit validates per
+//! tree ([`Policy::PerTree`]: the observations outside verified repository
+//! trees, plus each tree's root and manifest — a content-addressed tree
+//! whose root and manifest are unchanged stands for everything inside it,
+//! like Bazel trusting repository markers); the existing
+//! `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` switch selects
+//! every INTEGRITY entry too ([`Policy::Full`]). Below
+//! [`SINGLE_THREAD_CHECKS`] checks one thread runs them (thread start-up
+//! dominates otherwise).
 
 use crate::observed_fs::{
     FileKind, IntegrityEntry, Observation, Op, Outcome, Recording, StatKey, escape, listing_digest,
@@ -360,9 +370,69 @@ pub fn per_tree_summary(recording: &Recording) -> Recording {
     summary
 }
 
+/// Which checks a hit runs (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Policy {
+    /// Observations outside verified trees, plus each tree's root and
+    /// manifest (the default).
+    PerTree,
+    /// Every observation and every INTEGRITY entry (`--verify_repo_tampering`
+    /// / `BAZEL_RS_VERIFY_REPOS=full`).
+    Full,
+}
+
+impl Policy {
+    /// The policy of this command: full under the store's full verification
+    /// mode (crate::repository_store::verify_mode), else per tree.
+    pub fn current() -> Self {
+        match crate::repository_store::verify_mode() {
+            crate::repository_store::VerifyMode::Full => Self::Full,
+            crate::repository_store::VerifyMode::Stat => Self::PerTree,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PerTree => "per-tree",
+            Self::Full => "full",
+        }
+    }
+
+    /// The recording this policy validates.
+    pub fn select(self, recording: &Recording) -> Recording {
+        match self {
+            Self::PerTree => per_tree_summary(recording),
+            Self::Full => recording.clone(),
+        }
+    }
+}
+
+/// Below this many checks (observations plus integrity entries) a
+/// validation runs on one thread.
+pub const SINGLE_THREAD_CHECKS: usize = 4000;
+
+/// The validation threads for `recording`: one below
+/// [`SINGLE_THREAD_CHECKS`] checks, else min(available parallelism, 16).
+pub fn threads_for(recording: &Recording) -> usize {
+    let checks = recording.observations.len()
+        + recording
+            .repositories
+            .iter()
+            .map(|repository| repository.entries.len())
+            .sum::<usize>();
+    if checks < SINGLE_THREAD_CHECKS {
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .min(16)
+    }
+}
+
 /// Validate every observation of `recording` against the current
 /// filesystem and environment on `threads` scoped threads (never stops
-/// early; see the module docs).
+/// early; see the module docs). One thread runs inline.
 pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     let started = Instant::now();
     let threads = threads.max(1);
@@ -382,66 +452,71 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     let cursor = AtomicUsize::new(0);
     let tallies = Mutex::new(Vec::new());
     let stale_repositories = Mutex::new(BTreeSet::new());
-    std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| {
-                let mut tally = Tally::default();
-                let mut stale = BTreeSet::new();
-                loop {
-                    let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
-                    if start >= work.len() {
-                        break;
-                    }
-                    for item in &work[start..(start + BLOCK).min(work.len())] {
-                        let began = Instant::now();
-                        match item {
-                            Work::Observation(path, observation) => {
-                                tally.observations += 1;
-                                match check(path, observation) {
-                                    Ok(Checked::Plain) => {}
-                                    Ok(Checked::Stat) => tally.trusted_by_stat += 1,
-                                    Ok(Checked::Content { refresh }) => {
-                                        tally.content_checks += 1;
-                                        tally.refreshable += usize::from(refresh);
-                                        if tally.content_checked.len() < EXAMPLES {
-                                            tally.content_checked.push(format!(
-                                                "{} {}",
-                                                observation.op.name(),
-                                                escape(path.as_os_str())
-                                            ));
-                                        }
-                                    }
-                                    Err(text) => tally.mismatch(text),
+    let worker = || {
+        let mut tally = Tally::default();
+        let mut stale = BTreeSet::new();
+        loop {
+            let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
+            if start >= work.len() {
+                break;
+            }
+            for item in &work[start..(start + BLOCK).min(work.len())] {
+                let began = Instant::now();
+                match item {
+                    Work::Observation(path, observation) => {
+                        tally.observations += 1;
+                        match check(path, observation) {
+                            Ok(Checked::Plain) => {}
+                            Ok(Checked::Stat) => tally.trusted_by_stat += 1,
+                            Ok(Checked::Content { refresh }) => {
+                                tally.content_checks += 1;
+                                tally.refreshable += usize::from(refresh);
+                                if tally.content_checked.len() < EXAMPLES {
+                                    tally.content_checked.push(format!(
+                                        "{} {}",
+                                        observation.op.name(),
+                                        escape(path.as_os_str())
+                                    ));
                                 }
-                                tally.observation_time += began.elapsed();
                             }
-                            Work::Integrity(repository, entry) => {
-                                tally.integrity += 1;
-                                if let Err(text) = check_integrity(entry) {
-                                    // A racy entry only sends its tree to the
-                                    // verification; a changed one too (which
-                                    // repairs or confirms it): neither is a
-                                    // mismatch of the snapshot by itself.
-                                    if stale.insert(*repository) && !entry.racy {
-                                        tally.examples.push(text);
-                                    }
-                                }
-                                tally.integrity_time += began.elapsed();
+                            Err(text) => tally.mismatch(text),
+                        }
+                        tally.observation_time += began.elapsed();
+                    }
+                    Work::Integrity(repository, entry) => {
+                        tally.integrity += 1;
+                        if let Err(text) = check_integrity(entry) {
+                            // A racy entry only sends its tree to the
+                            // verification; a changed one too (which
+                            // repairs or confirms it): neither is a
+                            // mismatch of the snapshot by itself.
+                            if stale.insert(*repository) && !entry.racy {
+                                tally.examples.push(text);
                             }
                         }
+                        tally.integrity_time += began.elapsed();
                     }
                 }
-                tallies
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(tally);
-                stale_repositories
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .extend(stale);
-            });
+            }
         }
-    });
+        tallies
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(tally);
+        stale_repositories
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(stale);
+    };
+    if threads == 1 {
+        worker();
+    } else {
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(worker);
+            }
+        });
+    }
     let mut report = Report {
         threads,
         ..Report::default()

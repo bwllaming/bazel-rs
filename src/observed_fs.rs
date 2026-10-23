@@ -17,11 +17,13 @@
 //! Semantic records complete the filesystem ones: REPO records (a repository
 //! tree whose integrity the run verified, with the lstat key of every entry —
 //! INTEGRITY), ENV digests (never values) and TAINTs: conditions under which a
-//! run must never be saved (network, executed repository rules, evaluated
-//! extensions, pending lockfile writes, cross-repository symlink hops,
-//! build-info callbacks, `map_each` over tree artifacts, errors, and Unstable
-//! — the same `(op, path)` observed with two outcomes, or a file that changed
-//! while it was read).
+//! run must never be saved (network, executed non-local repository rules,
+//! printing local ones, evaluated extensions, pending lockfile writes, symlink
+//! hops into live repository roots, build-info callbacks, `map_each` over tree
+//! artifacts, errors, and Unstable — the same `(op, path)` observed with two
+//! outcomes, or a file that changed while it was read). Local repository rules
+//! execute on every run; their executions become replay records instead
+//! (crate::snapshot::replay).
 //!
 //! The recorder is sharded by path hash so the parallel loading workers never
 //! contend on one lock; every path is stored once (interned) with the list of
@@ -52,9 +54,10 @@ pub const RACY_MARGIN_NS: i64 = 2_000_000_000;
 pub const MARKER_OPEN: &str = "/.bazel-rs-snapshot-marker/window-open";
 pub const MARKER_CLOSE: &str = "/.bazel-rs-snapshot-marker/window-close";
 /// Marker paths bracketing, on the executing thread, work whose filesystem
-/// accesses need no record because it taints the run anyway (a repository
-/// rule or module extension executing, [`tainted_section`]): the syscall
-/// audit skips that thread's calls between them.
+/// accesses need no record because it taints the run anyway or is replayed
+/// and compared instead (a repository rule or module extension executing,
+/// [`tainted_section`]; local repository rules, crate::snapshot::replay):
+/// the syscall audit skips that thread's calls between them.
 pub const MARKER_TAINTED_BEGIN: &str = "/.bazel-rs-snapshot-marker/tainted-begin";
 pub const MARKER_TAINTED_END: &str = "/.bazel-rs-snapshot-marker/tainted-end";
 
@@ -339,8 +342,17 @@ pub enum Taint {
     /// Network access: registry files, archive, extension or repository
     /// downloads, Git fetches.
     Network,
-    /// A repository rule was executed (`local = True` rules always execute).
+    /// A repository rule that is not `local = True` was executed (a cold
+    /// fetch or a changed specification). Local rules always execute; they
+    /// are replayed and compared instead (crate::snapshot::replay).
     RepositoryRuleExecuted,
+    /// A local repository rule printed (print(), `execute(quiet=False)`,
+    /// the reproducibility DEBUG lines): v1 of the replay protocol does not
+    /// splice live output into the replayed stderr (PLAN-L2 update 1 §(b)).
+    LocalRepositoryOutput,
+    /// Replaying a local repository rule did not reproduce its recorded
+    /// identity inputs and tree (the record mode's dry run).
+    ReplayMismatch,
     /// A module extension's implementation was evaluated (not reused from a
     /// lockfile entry).
     ExtensionEvaluated,
@@ -349,19 +361,19 @@ pub enum Taint {
     RepositoryMaterialized,
     /// MODULE.bazel.lock or the hidden lockfile would be written.
     LockfileWritePending,
-    /// A symlink hop left its repository into another repository root
-    /// (resolution depends on what was materialized earlier in the run).
+    /// A symlink hop left its repository into another live (not
+    /// content-addressed) repository root — a `local_path_override` module
+    /// or a local registry source — whose use depends on what was
+    /// materialized earlier in the run. Published store trees, the main
+    /// repository and plain host paths resolve the same in any order and
+    /// every hop is recorded (crate::source_links::LinkPolicy::hop_taint).
     CrossRepositorySymlink,
-    /// A symlink hop left its repository into a host path.
-    HostSymlink,
     /// An action uses a build-info callback (`transform_version_file` /
     /// `transform_info_file`), which runs Starlark at plan time.
     BuildInfo,
     /// An Args expansion over a tree artifact calls a Starlark `map_each`
     /// at execution time.
     MapEach,
-    /// The whole repository environment was enumerated.
-    EnvironmentEnumerated,
     /// Planning failed, reported errors, or the command failed.
     Errors,
     /// An observation changed during the window.
@@ -376,14 +388,14 @@ impl Taint {
         match self {
             Self::Network => "network",
             Self::RepositoryRuleExecuted => "repository-rule-executed",
+            Self::LocalRepositoryOutput => "local-repository-output",
+            Self::ReplayMismatch => "local-repository-replay-mismatch",
             Self::ExtensionEvaluated => "extension-evaluated",
             Self::RepositoryMaterialized => "repository-materialized",
             Self::LockfileWritePending => "lockfile-write-pending",
             Self::CrossRepositorySymlink => "cross-repository-symlink",
-            Self::HostSymlink => "host-symlink",
             Self::BuildInfo => "build-info-callback",
             Self::MapEach => "map-each-deferred",
-            Self::EnvironmentEnumerated => "environment-enumerated",
             Self::Errors => "errors",
             Self::Unstable => "unstable",
             Self::TestHook => "test-hook",

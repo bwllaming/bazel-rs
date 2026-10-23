@@ -101,7 +101,7 @@ pub(crate) trait EnvironmentReader: Send + Sync {
     /// runtime/CommandEnvironment.java:333-416). Only `repository_ctx.os.environ`
     /// and `repository_ctx.execute` enumerate it; `getenv` stays name-scoped.
     fn all(&self) -> Result<Vec<(OsString, OsString)>, ReadError> {
-        // snapshot-unrecorded: enumerating the environment taints the snapshot (Snapshot::client_environment).
+        // snapshot-unrecorded: only repository rules and extensions enumerate it; an extension evaluation taints the snapshot, a local repository rule is replayed and compared (crate::snapshot::replay), any other executed rule taints.
         Ok(std::env::vars_os().collect())
     }
 }
@@ -215,6 +215,13 @@ impl Snapshot {
         }
     }
 
+    /// A new snapshot over the same reader: nothing observed yet, every name
+    /// read again on first use (a later command over the same environment;
+    /// the replay of local repository rules, crate::snapshot::replay).
+    pub(crate) fn fresh(&self) -> Self {
+        Self::with_reader(self.reader.clone())
+    }
+
     /// Bazel's `repoEnv` for this command: the complete client environment,
     /// with `--repo_env` applied when the command line installed a
     /// [`FixedReader`] (crate::repo_env; `--action_env` is not a native option
@@ -222,10 +229,14 @@ impl Snapshot {
     /// CommonCommandOptions.java:624-651). Snapshotted once per repository
     /// set on first use, so every repository of one invocation observes the
     /// same map, like one Bazel command. Failures are cached, never partial.
+    ///
+    /// Building it records nothing for the analysis snapshot (PLAN-L2
+    /// update 1 §(c)1): `repository_ctx.os` is allocated eagerly for every
+    /// execution, and only an execution reads it (its `environ` getter and
+    /// `execute` set per-execution flags, crate::repository_ctx). Module
+    /// extension evaluations taint the run; local repository rules are
+    /// replayed and compared against their recorded identity inputs.
     pub(crate) fn client_environment(&self) -> Result<Arc<ClientEnvironment>, EnvError> {
-        crate::observed_fs::taint(crate::observed_fs::Taint::EnvironmentEnumerated, || {
-            "repository environment (os.environ / execute)".to_owned()
-        });
         self.client
             .get_or_init(|| {
                 ClientEnvironment::from_entries(self.reader.all().map_err(|_| EnvError::Read)?)

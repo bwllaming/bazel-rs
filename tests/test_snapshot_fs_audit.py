@@ -106,6 +106,40 @@ class SnapshotAuditTests(unittest.TestCase):
         self.assertEqual(unrecorded, [])
         self.assertEqual(touched, 5)
 
+    def test_replay_touches_recorded_paths_stages_pinned_roots_and_impure_host_paths(self):
+        replay_trace = TRACE + (
+            '100 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-begin", 0x1, 0) = -1 ENOENT\n'
+            # A definition load: a recorded .bzl, the cache, a pinned root.
+            '105 openat(AT_FDCWD</ws>, "/ws/BUILD.bazel", O_RDONLY|O_CLOEXEC) = 3</ws/BUILD.bazel>\n'
+            '105 statx(AT_FDCWD</ws>, "/cache/repositories/direct/stages/x/BUILD", 0, 0x1) = 0\n'
+            '105 statx(AT_FDCWD</ws>, "/pinned/local/defs.bzl", 0, 0x1) = 0\n'
+            # A pure rule's execution must not read the host...
+            '105 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec/pure+repo", 0x1, 0) = -1 ENOENT\n'
+            '105 statx(AT_FDCWD</ws>, "/usr/share/pure-read", 0, 0x1) = 0\n'
+            '105 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec-end", 0x1, 0) = -1 ENOENT\n'
+            # ... an impure one may (which, execute, environ).
+            '106 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec/impure+jdk", 0x1, 0) = -1 ENOENT\n'
+            '106 statx(AT_FDCWD</ws>, "/usr/lib/jvm/release", 0, 0x1) = 0\n'
+            '106 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec-end", 0x1, 0) = -1 ENOENT\n'
+            '105 statx(AT_FDCWD</ws>, "/ws/unrecorded-in-replay", 0, 0x1) = 0\n'
+            '100 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-end", 0x1, 0) = -1 ENOENT\n'
+        )
+        dump_text = DUMP + (
+            "ROOT local+repo /pinned/local generated:1\n"
+            "REPLAY pure+repo match definition:x flags:- output:0 recorded:0.1 replay:0.1 cpu:- root:/c/t\n"
+            "REPLAY impure+jdk match definition:y flags:environ,execute,which output:0 recorded:50 replay:60 cpu:- root:/c/u\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            dump = Path(temp) / "dump.txt"
+            dump.write_text(dump_text)
+            replay = {}
+            _, unrecorded = audit.audit(replay_trace, dump, "/ws", "/cache", [], replay)
+        self.assertEqual([u.split()[0] for u in unrecorded], ["/ws/unrecorded.txt"])
+        self.assertTrue(replay["present"])
+        self.assertEqual(replay["executions"], 2)
+        self.assertEqual([u.split()[0] for u in replay["unrecorded"]],
+                         ["/usr/share/pure-read", "/ws/unrecorded-in-replay"])
+
     def test_missing_markers_fail(self):
         with tempfile.TemporaryDirectory() as temp:
             dump = Path(temp) / "dump.txt"

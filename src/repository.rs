@@ -57,9 +57,46 @@ struct RepositoryState {
         starlark::environment::Globals,
         starlark::environment::Globals,
     )>,
+    /// Pinned mode ([`RepositorySet::pinned`], crate::snapshot::replay):
+    /// roots, mappings and the generated flag answer from recorded tables;
+    /// the module graph is never resolved and anything else is refused.
+    pinned: Option<Arc<crate::snapshot::replay::PinnedTables>>,
+    /// The record mode's replay capture: local executions become replay
+    /// records, and `root()`/`mapping()` results inside replay scopes are
+    /// pinned for them.
+    replay: Option<Arc<crate::snapshot::replay::ReplayCapture>>,
+    /// Published store trees a link crossed into, verified once per set
+    /// (crate::source_links::StoreTrees).
+    verified_trees: Arc<std::sync::Mutex<BTreeMap<PathBuf, bool>>>,
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
+
+/// What a local repository rule's execution callback observed, for its
+/// replay record (crate::snapshot::replay::ReplayRecord).
+struct LocalObservation {
+    output: Vec<u8>,
+    environ_read: bool,
+    facilities: Vec<&'static str>,
+    elapsed: std::time::Duration,
+}
+
+impl LocalObservation {
+    fn of(
+        executed: &crate::repository_ctx::ExecutedRepository,
+        elapsed: std::time::Duration,
+    ) -> Self {
+        Self {
+            output: executed.output.clone(),
+            environ_read: executed.environ_read,
+            facilities: executed.inputs.host_facilities.iter().copied().collect(),
+            elapsed,
+        }
+    }
+}
+
+/// The error of everything a pinned repository set does not answer.
+const NOT_PINNED: &str = "not pinned for the replay of local repositories";
 
 #[derive(Debug)]
 struct DirectRuntime {
@@ -380,8 +417,134 @@ impl RepositorySet {
                 link_canonical: std::sync::Mutex::default(),
                 build_bzl: crate::loading::BzlCache::default(),
                 build_globals: OnceLock::new(),
+                pinned: None,
+                replay: crate::snapshot::replay::global(),
+                verified_trees: Arc::default(),
             }),
         }
+    }
+
+    /// A repository set for replaying local repository rules
+    /// (crate::snapshot::replay): `root`, `mapping`, label parsing, the
+    /// link policy and the generated flag answer from `tables` (the main
+    /// repository is `tables.main_root`, the store `tables.source_cache`);
+    /// it never reads MODULE.bazel, resolves the module graph, builds the
+    /// extension catalog, prepares groups or materializes anything, and any
+    /// repository or mapping the tables lack is an error (a miss).
+    pub(crate) fn pinned(
+        tables: crate::snapshot::replay::PinnedTables,
+        options: ResolverOptions,
+        environment: crate::repository_environment::Snapshot,
+        repository_downloads_enabled: bool,
+    ) -> Self {
+        let mut set = Self::configured_environment(
+            tables.main_root.clone(),
+            options,
+            tables.source_cache.clone(),
+            Arc::new(environment),
+            Arc::default(),
+            repository_downloads_enabled,
+        );
+        let state = Arc::get_mut(&mut set.state).expect("a new repository state is unshared");
+        state.pinned = Some(Arc::new(tables));
+        state.replay = None;
+        set
+    }
+
+    /// Record local executions and pinned tables into `capture` (tests; the
+    /// record mode installs a process-wide capture instead).
+    #[cfg(test)]
+    pub(crate) fn with_replay_capture(
+        self,
+        capture: Arc<crate::snapshot::replay::ReplayCapture>,
+    ) -> Self {
+        let mut set = Self::configured_environment(
+            self.state.root.clone(),
+            self.state.options.clone(),
+            self.state.source_cache.clone(),
+            self.state.environment.clone(),
+            self.state.host.clone(),
+            self.state.repository_downloads_enabled,
+        );
+        Arc::get_mut(&mut set.state)
+            .expect("a new repository state is unshared")
+            .replay = Some(capture);
+        set
+    }
+
+    fn pinned_tables(&self) -> Option<&crate::snapshot::replay::PinnedTables> {
+        self.state.pinned.as_deref()
+    }
+
+    /// The replay capture, while a replay scope is open on this thread.
+    fn capturing(&self) -> Option<&crate::snapshot::replay::ReplayCapture> {
+        self.state
+            .replay
+            .as_deref()
+            .filter(|_| crate::snapshot::replay::in_scope())
+    }
+
+    /// Open a replay scope on this thread when this set records for replay:
+    /// the `root()` and `mapping()` results until the guard drops are
+    /// pinned (definition loads of repository rules, local executions).
+    fn replay_scope(&self) -> Option<crate::snapshot::replay::Scope> {
+        self.state
+            .replay
+            .is_some()
+            .then(crate::snapshot::replay::scope)
+    }
+
+    /// A local repository rule executed (PLAN-L2 update 1 §(a)): no taint
+    /// of the analysis snapshot but a replay record; printed output still
+    /// taints (v1, §(b)).
+    #[allow(clippy::too_many_arguments)]
+    fn record_local_execution(
+        &self,
+        canonical: &str,
+        original_name: &str,
+        definition: crate::snapshot::replay::DefinitionSource,
+        rule: &repository_rule::RuleDefinition,
+        definition_label: &Label,
+        attributes: &BTreeMap<String, AttrValue>,
+        root: &Path,
+        execution: crate::repository_store::LocalExecution,
+        observed: Option<LocalObservation>,
+    ) {
+        let Some(observed) = observed else {
+            return;
+        };
+        if !observed.output.is_empty() {
+            crate::observed_fs::taint(crate::observed_fs::Taint::LocalRepositoryOutput, || {
+                format!("{canonical} ({} bytes)", observed.output.len())
+            });
+        }
+        let Some(capture) = &self.state.replay else {
+            return;
+        };
+        let Ok(source_cache) = self.source_cache_path() else {
+            return;
+        };
+        capture.set_context(|| crate::snapshot::replay::CaptureContext {
+            options: self.state.options.clone(),
+            environment: self.state.environment.fresh(),
+            downloads_enabled: self.state.repository_downloads_enabled,
+            main_root: self.state.root.clone(),
+            source_cache: source_cache.to_path_buf(),
+        });
+        capture.record(crate::snapshot::replay::ReplayRecord {
+            canonical: canonical.to_owned(),
+            original_name: original_name.to_owned(),
+            definition,
+            identity: rule.identity.clone(),
+            definition_label: definition_label.clone(),
+            attributes: attributes.clone(),
+            root: root.to_path_buf(),
+            execution,
+            output: observed.output,
+            environ_read: observed.environ_read,
+            facilities: observed.facilities,
+            elapsed: observed.elapsed,
+        });
     }
 
     /// The BUILD-file globals and the BUILD-phase `.bzl` globals
@@ -565,6 +728,9 @@ impl RepositorySet {
     }
 
     fn root_module(&self) -> Result<&module_graph::RootModuleSnapshot, String> {
+        if self.pinned_tables().is_some() {
+            return Err(format!("the root MODULE.bazel is {NOT_PINNED}"));
+        }
         self.state
             .root_module
             .get_or_init(|| module_graph::read_root_module(&self.state.root, &self.state.options))
@@ -712,6 +878,9 @@ impl RepositorySet {
     }
 
     pub fn resolve_graph(&self) -> Result<&ResolvedGraph, String> {
+        if self.pinned_tables().is_some() {
+            return Err(format!("the module graph is {NOT_PINNED}"));
+        }
         self.state
             .resolved
             .get_or_init(|| {
@@ -795,6 +964,17 @@ impl RepositorySet {
     /// trees and private stages are never listed.
     pub fn materialized_roots(&self) -> Vec<(String, PathBuf)> {
         let mut roots = vec![(String::new(), self.state.root.clone())];
+        if let Some(pinned) = self.pinned_tables() {
+            // Pinned: every recorded root (published trees anchor links in
+            // any order anyway, crate::source_links::StoreTrees).
+            roots.extend(
+                pinned
+                    .roots
+                    .iter()
+                    .map(|(name, root)| (name.clone(), root.path.clone())),
+            );
+            return roots;
+        }
         if let Some(Ok(graph)) = self.state.resolved.get() {
             for (name, module) in &graph.modules {
                 if let ModuleSource::LocalPath(root) = &module.source {
@@ -927,6 +1107,12 @@ impl RepositorySet {
         if repository.is_empty() {
             return false;
         }
+        if let Some(pinned) = self.pinned_tables() {
+            return pinned
+                .roots
+                .get(repository)
+                .is_some_and(|root| root.generated);
+        }
         let Some(Ok(runtime)) = self.state.direct.get() else {
             return false;
         };
@@ -973,10 +1159,20 @@ impl RepositorySet {
             .into_iter()
             .map(|path| canonical(path.clone()).unwrap_or(path))
             .collect();
+        // Published store trees anchor links whatever was materialized
+        // before (PLAN-L2 update 1 §(c)).
+        let store = self
+            .source_cache_path()
+            .ok()
+            .and_then(|store| canonical(store.to_path_buf()))
+            .map(|store| {
+                crate::source_links::StoreTrees::new(store, self.state.verified_trees.clone())
+            });
         crate::source_links::LinkPolicy {
             others,
             blocked,
             host_reads: self.is_repository_rule_generated(repository),
+            store,
         }
     }
 
@@ -985,6 +1181,24 @@ impl RepositorySet {
         if repository.is_empty() {
             return Ok(&self.state.root);
         }
+        if let Some(pinned) = self.pinned_tables() {
+            return pinned
+                .roots
+                .get(repository)
+                .map(|root| root.path.as_path())
+                .ok_or_else(|| format!("repository @@{repository} is {NOT_PINNED}"));
+        }
+        let root = self.external_root(repository)?;
+        if let Some(capture) = self.capturing() {
+            capture.note_root(repository, root, || {
+                self.is_repository_rule_generated(repository)
+            });
+        }
+        Ok(root)
+    }
+
+    /// [`Self::root`] of a non-main repository of an unpinned set.
+    fn external_root(&self, repository: &str) -> Result<&Path, String> {
         let graph = self.resolve_graph()?;
         if repository == "bazel_tools"
             && self.state.options.builtin_profile == module_graph::BuiltinProfile::ExplicitModules
@@ -1098,6 +1312,23 @@ impl RepositorySet {
 
     pub fn mapping(&self, repository: &str) -> Result<&BTreeMap<String, String>, String> {
         validate_repository_name(repository)?;
+        if let Some(pinned) = self.pinned_tables() {
+            return pinned
+                .mappings
+                .get(repository)
+                .map(|mapping| &mapping.mapping)
+                .ok_or_else(|| {
+                    format!("the repository mapping of @@{repository} is {NOT_PINNED}")
+                });
+        }
+        let mapping = self.unpinned_mapping(repository)?;
+        if let Some(capture) = self.capturing() {
+            capture.note_mapping(repository, mapping, || self.isolated_imports(repository));
+        }
+        Ok(mapping)
+    }
+
+    fn unpinned_mapping(&self, repository: &str) -> Result<&BTreeMap<String, String>, String> {
         let catalog = &self.direct_runtime()?.catalog;
         if let Some(mapping) = catalog.owner_mappings.get(repository) {
             return Ok(mapping);
@@ -1109,9 +1340,50 @@ impl RepositorySet {
         Ok(&prepared.generated_mapping)
     }
 
+    /// The apparent names `mapping_for_label` rejects in `repository`'s
+    /// module: not in its base mapping, and the first extension usage that
+    /// imports them is isolated (pinned with its mapping, so a pinned set
+    /// parses exactly like this one; empty for non-module repositories).
+    fn isolated_imports(&self, repository: &str) -> BTreeSet<String> {
+        let mut isolated = BTreeSet::new();
+        let Some(Ok(graph)) = self.state.resolved.get() else {
+            return isolated;
+        };
+        let owner = if repository.is_empty() {
+            Some((&graph.root, &graph.root_mapping))
+        } else {
+            graph
+                .modules
+                .get(repository)
+                .map(|module| (&module.module, &module.mapping))
+        };
+        let Some((module, base)) = owner else {
+            return isolated;
+        };
+        let mut seen = BTreeSet::new();
+        for usage in &module.extension_usages {
+            for import in &usage.imports {
+                if (import.dev_dependency
+                    && (!repository.is_empty() || self.state.options.ignore_dev_dependencies))
+                    || base.contains_key(&import.local_name)
+                    || !seen.insert(import.local_name.as_str())
+                {
+                    continue;
+                }
+                if usage.identity.isolation.is_some() {
+                    isolated.insert(import.local_name.clone());
+                }
+            }
+        }
+        isolated
+    }
+
     /// Catalog construction is pure metadata work. In particular, its OnceLock
     /// initializer cannot recursively demand a source root or load a definition.
     fn direct_runtime(&self) -> Result<&DirectRuntime, String> {
+        if self.pinned_tables().is_some() {
+            return Err(format!("the repository catalog is {NOT_PINNED}"));
+        }
         self.state
             .direct
             .get_or_init(|| {
@@ -1161,6 +1433,9 @@ impl RepositorySet {
                 return Err(error.clone());
             }
             let (text, symbol) = group.definition_request()?;
+            // A local rule's replay loads this definition again from pinned
+            // roots and mappings (crate::snapshot::replay).
+            let pinning = self.replay_scope();
             let label = self.parse(text, &group.owner, "")?;
             let loaded = loading::load_definition_in(
                 Arc::new(self.clone()),
@@ -1168,6 +1443,7 @@ impl RepositorySet {
                 symbol,
                 &crate::package::module_bzl_globals(),
             )?;
+            drop(pinning);
             let definition = repository_rule::unpack(&loaded.value)
                 .map_err(|error| format!("repository rule {label}%{symbol}: {error}"))?;
             // An innate usage validates every declaration before executing even
@@ -1361,40 +1637,70 @@ impl RepositorySet {
                 // their unrecorded dependencies (which/execute/executed-file
                 // reads) make stale reuse dangerous.
                 let local = prepared.definition.local;
+                let provenance = move || {
+                    direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)
+                };
+                // A local execution's observations for its replay record.
+                let observed = std::cell::RefCell::new(None);
+                let observed_by = &observed;
+                let execute = move |stage: &Path| {
+                    let started = std::time::Instant::now();
+                    let pinning = if local { this.replay_scope() } else { None };
+                    let executed = crate::repository_ctx::execute(
+                        this.clone(),
+                        &prepared.definition,
+                        &prepared.loaded.functions,
+                        attributes,
+                        canonical,
+                        &declaration.name,
+                        &prepared.label,
+                        stage,
+                    )?;
+                    drop(pinning);
+                    if local {
+                        *observed_by.borrow_mut() =
+                            Some(LocalObservation::of(&executed, started.elapsed()));
+                    }
+                    let inputs =
+                        crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
+                    let recorded =
+                        crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
+                    Ok(crate::repository_store::Executed { inputs, recorded })
+                };
+                if local {
+                    let (root, execution) = crate::repository_store::materialize_local(
+                        self.source_cache_path()?,
+                        canonical,
+                        &spec_key,
+                        provenance,
+                        execute,
+                    )?;
+                    let (_, symbol) = group.definition_request()?;
+                    self.record_local_execution(
+                        canonical,
+                        &declaration.name,
+                        crate::snapshot::replay::DefinitionSource::Direct {
+                            label: prepared.label.clone(),
+                            symbol: symbol.to_owned(),
+                        },
+                        &prepared.definition,
+                        &prepared.label,
+                        attributes,
+                        &root,
+                        execution,
+                        observed.into_inner(),
+                    );
+                    return Ok(root);
+                }
                 crate::repository_store::materialize_lazy(
                     self.source_cache_path()?,
                     canonical,
                     &spec_key,
-                    move || {
-                        direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)
-                    },
+                    provenance,
                     move |tree, recorded| {
-                        if local {
-                            return Ok(false);
-                        }
                         crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
                     },
-                    move |stage| {
-                        let executed = crate::repository_ctx::execute(
-                            this.clone(),
-                            &prepared.definition,
-                            &prepared.loaded.functions,
-                            attributes,
-                            canonical,
-                            &declaration.name,
-                            &prepared.label,
-                            stage,
-                        )?;
-                        let inputs = crate::host_os::repository_inputs(
-                            this.host()?.as_ref(),
-                            &executed.inputs,
-                        )?;
-                        let recorded = crate::repository_warm::record(
-                            &executed.inputs,
-                            &executed.watch_names,
-                        )?;
-                        Ok(crate::repository_store::Executed { inputs, recorded })
-                    },
+                    execute,
                 )
                 .map(|(root, publication)| {
                     if local && publication == crate::repository_store::Publication::Executed {
@@ -1424,10 +1730,12 @@ impl RepositorySet {
                     return Err(error.clone());
                 }
             }
+            let pinning = self.replay_scope();
             let loaded = loading::load_module_extension_in(
                 Arc::new(self.clone()), &group.label, &group.symbol,
                 &crate::package::module_bzl_globals(),
             )?;
+            drop(pinning);
             let mut preparation_budget = crate::repository_budget::HostBudget::unbounded();
             for (label, source) in &loaded.sources {
                 preparation_budget.string(label)?;
@@ -1830,15 +2138,70 @@ impl RepositorySet {
                     // Local rules never reuse across invocations here either
                     // (shouldUseCachedRepoContents; see the direct path).
                     let local = repository.definition.local;
+                    let provenance = move || Ok(prepared.framed_provenance(&canonical_name));
+                    // A local execution's observations for its replay record.
+                    let observed = std::cell::RefCell::new(None);
+                    let observed_by = &observed;
+                    let definition_label_ref = &definition_label;
+                    let execute = move |stage: &Path| {
+                        let started = std::time::Instant::now();
+                        let pinning = if local { this.replay_scope() } else { None };
+                        let executed = crate::repository_ctx::execute(
+                            this.clone(),
+                            &repository.definition,
+                            &prepared.loaded.functions,
+                            &repository.attributes,
+                            &repository.canonical_name,
+                            &repository.original_name,
+                            definition_label_ref,
+                            stage,
+                        )?;
+                        drop(pinning);
+                        if local {
+                            *observed_by.borrow_mut() =
+                                Some(LocalObservation::of(&executed, started.elapsed()));
+                        }
+                        let inputs = crate::host_os::repository_inputs(
+                            this.host()?.as_ref(),
+                            &executed.inputs,
+                        )?;
+                        let recorded = crate::repository_warm::record(
+                            &executed.inputs,
+                            &executed.watch_names,
+                        )?;
+                        Ok(crate::repository_store::Executed { inputs, recorded })
+                    };
+                    if local {
+                        let (root, execution) = crate::repository_store::materialize_local(
+                            self.source_cache_path()?,
+                            &repository.canonical_name,
+                            &spec_key,
+                            provenance,
+                            execute,
+                        )?;
+                        self.record_local_execution(
+                            &repository.canonical_name,
+                            &repository.original_name,
+                            crate::snapshot::replay::DefinitionSource::Ordinary {
+                                rule_id: crate::lockfile_extensions::repo_rule_id(
+                                    &repository.definition.identity,
+                                )?,
+                            },
+                            &repository.definition,
+                            &definition_label,
+                            &repository.attributes,
+                            &root,
+                            execution,
+                            observed.into_inner(),
+                        );
+                        return Ok(root);
+                    }
                     crate::repository_store::materialize_lazy(
                         self.source_cache_path()?,
                         &repository.canonical_name,
                         &spec_key,
-                        move || Ok(prepared.framed_provenance(&canonical_name)),
+                        provenance,
                         move |tree, recorded| {
-                            if local {
-                                return Ok(false);
-                            }
                             crate::repository_warm::unchanged(
                                 &validating,
                                 &workspace,
@@ -1846,27 +2209,7 @@ impl RepositorySet {
                                 recorded,
                             )
                         },
-                        move |stage| {
-                            let executed = crate::repository_ctx::execute(
-                                this.clone(),
-                                &repository.definition,
-                                &prepared.loaded.functions,
-                                &repository.attributes,
-                                &repository.canonical_name,
-                                &repository.original_name,
-                                &definition_label,
-                                stage,
-                            )?;
-                            let inputs = crate::host_os::repository_inputs(
-                                this.host()?.as_ref(),
-                                &executed.inputs,
-                            )?;
-                            let recorded = crate::repository_warm::record(
-                                &executed.inputs,
-                                &executed.watch_names,
-                            )?;
-                            Ok(crate::repository_store::Executed { inputs, recorded })
-                        },
+                        execute,
                     )
                     .map(|(root, publication)| {
                         if local && publication == crate::repository_store::Publication::Executed {
@@ -1892,6 +2235,25 @@ impl RepositorySet {
         // Apparent aliases require the owning module's mapping. Only the main
         // repository has the empty alias: external @// is NOT self or main.
         let main_empty_alias = repository.is_empty() && text.starts_with("@//");
+        if let Some(pinned) = self.pinned_tables() {
+            if !text.starts_with('@') || text.starts_with("@@") || main_empty_alias {
+                return Ok(None);
+            }
+            // The complete mapping resolves every visible apparent name to
+            // what the base/import selection below resolves it to (it is
+            // the base mapping plus the active non-isolated imports), and
+            // fails like it for the others; isolated imports are pinned.
+            let entry = pinned.mappings.get(repository).ok_or_else(|| {
+                format!("the repository mapping of @@{repository} is {NOT_PINNED}")
+            })?;
+            let apparent = text[1..]
+                .split_once("//")
+                .map_or(&text[1..], |(name, _)| name);
+            if entry.isolated.contains(apparent) {
+                return Err("isolated module extensions unsupported".to_owned());
+            }
+            return Ok(Some(&entry.mapping));
+        }
         if text.starts_with('@') && !text.starts_with("@@") && !main_empty_alias {
             let graph = self.resolve_graph()?;
             let owner = if repository.is_empty() {
@@ -1907,6 +2269,7 @@ impl RepositorySet {
                     .split_once("//")
                     .map_or(&text[1..], |(name, _)| name);
                 if base_mapping.contains_key(apparent) {
+                    self.pin_complete_mapping(repository);
                     return Ok(Some(base_mapping));
                 }
                 let imported_usage = module.extension_usages.iter().find(|usage| {
@@ -1924,12 +2287,22 @@ impl RepositorySet {
                 }
                 let supported_generated_import = imported_usage.is_some();
                 if !supported_generated_import {
+                    self.pin_complete_mapping(repository);
                     return Ok(Some(base_mapping));
                 }
             }
             self.mapping(repository).map(Some)
         } else {
             Ok(None)
+        }
+    }
+
+    /// Inside a replay scope, pin `repository`'s complete mapping when this
+    /// parse used its module's base mapping (a pinned set parses through the
+    /// complete one), if the catalog exists already (never built for this).
+    fn pin_complete_mapping(&self, repository: &str) {
+        if self.capturing().is_some() && matches!(self.state.direct.get(), Some(Ok(_))) {
+            let _ = self.mapping(repository);
         }
     }
 
@@ -2321,12 +2694,16 @@ impl RepositorySet {
             };
             if !definitions.contains_key(rule_id) {
                 let (label, rule) = lx::parse_repo_rule_id(rule_id)?;
+                // A local rule's replay loads it the same way from pinned
+                // roots and mappings (crate::snapshot::replay).
+                let pinning = self.replay_scope();
                 let loaded = loading::load_module_extension_in(
                     Arc::new(self.clone()),
                     &label,
                     &rule,
                     &crate::package::module_bzl_globals(),
                 )?;
+                drop(pinning);
                 let definition = repository_rule::unpack(&loaded.value)
                     .map_err(|error| format!("repoRuleId {rule_id}: {error}"))?;
                 functions.extend(loaded.functions);
@@ -4784,5 +5161,99 @@ mod tests {
             guarded_root_slot(&OnceLock::new(), "fresh", || Ok(PathBuf::from("/x"))).unwrap(),
             Path::new("/x")
         );
+    }
+
+    /// Pinned mode (crate::snapshot::replay, PLAN-L2 update 1 §(a)): roots,
+    /// mappings, label parsing, link policy and definition loads answer from
+    /// the tables; MODULE.bazel is never read, the graph never resolved,
+    /// the catalog never built; anything unpinned is an error.
+    #[test]
+    fn pinned_sets_answer_from_tables_never_resolve_and_refuse_unpinned_repositories() {
+        use crate::snapshot::replay::{PinnedMapping, PinnedRoot, PinnedTables};
+        let f = Fixture::new();
+        // Evaluating this MODULE.bazel would fail: a pinned set never reads it.
+        f.write(
+            "main/MODULE.bazel",
+            "fail('a pinned set reads no MODULE.bazel')\n",
+        );
+        f.write("main/BUILD", "");
+        f.write("dep/BUILD", "");
+        f.write(
+            "dep/defs.bzl",
+            "load('@dep//:more.bzl', 'VALUE')\ndef _impl(ctx):\n    ctx.file('value', VALUE)\nR = repository_rule(implementation = _impl, local = True)\n",
+        );
+        f.write("dep/more.bzl", "VALUE = 'from dep'\n");
+        let mapping = |entries: &[(&str, &str)]| PinnedMapping {
+            mapping: entries
+                .iter()
+                .map(|(apparent, canonical)| ((*apparent).to_owned(), (*canonical).to_owned()))
+                .collect(),
+            isolated: BTreeSet::new(),
+        };
+        let tables = PinnedTables {
+            main_root: f.0.join("main"),
+            source_cache: f.0.join("cache"),
+            roots: BTreeMap::from([(
+                "dep+".to_owned(),
+                PinnedRoot {
+                    path: f.0.join("dep"),
+                    generated: false,
+                },
+            )]),
+            mappings: BTreeMap::from([
+                (String::new(), mapping(&[("dep", "dep+")])),
+                ("dep+".to_owned(), mapping(&[("dep", "dep+")])),
+            ]),
+        };
+        let set = Arc::new(RepositorySet::pinned(
+            tables,
+            ResolverOptions::default(),
+            crate::repository_environment::Snapshot::default(),
+            true,
+        ));
+        assert_eq!(set.root("").unwrap(), f.0.join("main"));
+        assert_eq!(set.root("dep+").unwrap(), f.0.join("dep"));
+        assert_eq!(
+            set.parse("@dep//:defs.bzl", "", "").unwrap().repository,
+            "dep+"
+        );
+        assert_eq!(set.parse("//:x", "dep+", "").unwrap().repository, "dep+");
+        assert!(
+            set.parse("@absent//:x", "", "")
+                .unwrap_err()
+                .starts_with("unknown apparent repository")
+        );
+        for error in [
+            set.root("other+").unwrap_err(),
+            set.mapping("other+").unwrap_err(),
+            set.parse("@dep//:x", "other+", "").unwrap_err(),
+            set.resolve_graph().map(|_| ()).unwrap_err(),
+            set.validate_root_module().unwrap_err(),
+        ] {
+            assert!(error.contains("not pinned"), "{error}");
+        }
+        assert!(!set.is_repository_rule_generated("dep+"));
+        assert_eq!(
+            set.materialized_roots(),
+            vec![
+                (String::new(), f.0.join("main")),
+                ("dep+".to_owned(), f.0.join("dep"))
+            ]
+        );
+        // A definition loads through pinned roots and mappings only.
+        let loaded = loading::load_module_extension_in(
+            set.clone(),
+            &Label::parse_canonical("@@dep+//:defs.bzl").unwrap(),
+            "R",
+            &crate::package::module_bzl_globals(),
+        )
+        .unwrap();
+        assert!(repository_rule::unpack(&loaded.value).unwrap().local);
+        assert_eq!(loaded.sources.len(), 2);
+        assert!(set.state.root_module.get().is_none());
+        assert!(set.state.resolved.get().is_none());
+        assert!(set.state.direct.get().is_none());
+        assert!(set.state.registry_roots.get().is_none());
+        assert!(!f.0.join("cache").exists());
     }
 }

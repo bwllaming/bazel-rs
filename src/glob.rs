@@ -574,18 +574,19 @@ impl Walker<'_> {
                             self.canonical_root.display()
                         ));
                     };
-                    if anchor != self.canonical_root {
-                        // A link out of the repository taints the analysis
-                        // snapshot (which roots are materialized depends on
-                        // the run, PLAN-L2 §1b).
-                        crate::observed_fs::taint(
-                            if self.links.others.iter().any(|(_, root)| *root == anchor) {
-                                crate::observed_fs::Taint::CrossRepositorySymlink
-                            } else {
-                                crate::observed_fs::Taint::HostSymlink
-                            },
-                            || format!("glob link {} -> {}", logical.display(), real.display()),
-                        );
+                    // A link into another live repository root taints the
+                    // analysis snapshot (whether it is materialized depends
+                    // on the run); store trees, the main repository and
+                    // plain host paths resolve the same in any order
+                    // (PLAN-L2 update 1 §(c)).
+                    let host_hop = anchor == real
+                        && !self.links.others.iter().any(|(_, root)| *root == anchor);
+                    if let Some(taint) =
+                        self.links.hop_taint(self.canonical_root, &anchor, host_hop)
+                    {
+                        crate::observed_fs::taint(taint, || {
+                            format!("glob link {} -> {}", logical.display(), real.display())
+                        });
                     }
                     let host = current.host || anchor == real;
                     (metadata.is_dir(), metadata.is_file(), real, anchor, host)
