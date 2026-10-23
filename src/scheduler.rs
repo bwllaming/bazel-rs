@@ -15,11 +15,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Dependency {
     pub action_id: String,
     /// Index in the producer's declared outputs, not sorted output order.
     pub output_index: usize,
+    #[serde(with = "crate::snapshot::codec::path")]
     pub destination: PathBuf,
 }
 
@@ -30,19 +31,123 @@ pub type TreeListings = BTreeMap<PathBuf, Vec<PathBuf>>;
 /// Execution-time completion of an action whose command line (or written
 /// Args content) expands tree artifact inputs (docs/ACTIONS_PARAMS.md). It
 /// runs once all dependencies are published, before the action key is taken.
-#[derive(Clone)]
-pub struct Deferred(pub Arc<DeferredFn>);
+/// Plain data (L2-W4, PLAN-L2 §1d): what to expand, applied by
+/// [`Deferred::apply`], so a planned request can be encoded.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Deferred(pub(crate) Arc<DeferredSpec>);
 
-/// The completion callback of [`Deferred`].
-pub type DeferredFn = dyn Fn(&TreeListings, &mut Action) -> Result<(), String> + Send + Sync;
+/// What a [`Deferred`] completion expands.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DeferredSpec {
+    /// A Starlark spawn's command line (StarlarkActionFactory.buildCommandLine):
+    /// the arguments and parameter files, expanded with the tree listings;
+    /// an expansion failure is prefixed by the action's progress message
+    /// (AbstractAction.java:380-400).
+    CommandLine {
+        spec: crate::command_line::CommandLineSpec,
+        progress: String,
+        /// Parameter-file-like inputs kept after the expansion (the empty
+        /// files of a tool's runfiles tree, crate::engine).
+        #[serde(with = "crate::snapshot::codec::path_contents")]
+        extra_param_files: Vec<(PathBuf, Vec<u8>)>,
+    },
+    /// A ParameterFileWriteAction's Args content (StarlarkActionFactory.write):
+    /// the written bytes in the Args' parameter file format.
+    WriteArgs {
+        snapshot: crate::args::ArgsSnapshot,
+        #[serde(with = "crate::snapshot::codec::path_contents")]
+        extra_param_files: Vec<(PathBuf, Vec<u8>)>,
+    },
+}
 
-impl std::fmt::Debug for Deferred {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Deferred")
+impl Deferred {
+    pub(crate) fn new(spec: DeferredSpec) -> Self {
+        Self(Arc::new(spec))
+    }
+
+    /// This completion, also keeping `files` as parameter-file-like inputs
+    /// after the expansion.
+    pub(crate) fn with_extra_param_files(self, files: Vec<(PathBuf, Vec<u8>)>) -> Self {
+        let mut spec = Arc::unwrap_or_clone(self.0);
+        match &mut spec {
+            DeferredSpec::CommandLine {
+                extra_param_files, ..
+            }
+            | DeferredSpec::WriteArgs {
+                extra_param_files, ..
+            } => extra_param_files.extend(files),
+        }
+        Self::new(spec)
+    }
+
+    /// Whether the expansion calls a Starlark `map_each` (an in-memory
+    /// value: the request cannot be encoded, PLAN-L2 §1b).
+    pub fn uses_map_each(&self) -> bool {
+        match &*self.0 {
+            DeferredSpec::CommandLine { spec, .. } => spec.deferred_map_each(),
+            DeferredSpec::WriteArgs { snapshot, .. } => {
+                crate::command_line::has_deferred_map_each(&snapshot.groups)
+            }
+        }
+    }
+
+    /// Complete `action` with the tree listings of its generated inputs.
+    pub fn apply(&self, listings: &TreeListings, action: &mut Action) -> Result<(), String> {
+        let lookup = |file: &crate::starlark_types::File| tree_listing(listings, file);
+        match &*self.0 {
+            DeferredSpec::CommandLine {
+                spec,
+                progress,
+                extra_param_files,
+            } => {
+                let (arguments, param_files) = spec
+                    .expand(Some(&lookup))
+                    .map_err(|e| format!("{progress} failed: {e}"))?;
+                action.arguments = arguments;
+                action.extra.param_files = param_files;
+                action
+                    .extra
+                    .param_files
+                    .extend(extra_param_files.iter().cloned());
+            }
+            DeferredSpec::WriteArgs {
+                snapshot,
+                extra_param_files,
+            } => {
+                let arguments = crate::command_line::expand_groups(
+                    &snapshot.groups,
+                    snapshot.flag_per_line,
+                    Some(&lookup),
+                )?;
+                if let Some(write) = action.write.as_mut() {
+                    write.content =
+                        crate::command_line::param_file_bytes(&arguments, snapshot.file_type);
+                }
+                action
+                    .extra
+                    .param_files
+                    .extend(extra_param_files.iter().cloned());
+            }
+        }
+        Ok(())
     }
 }
 
-#[derive(Clone, Debug)]
+/// The listing of one expanded tree artifact (VectorArg.expandDirectories,
+/// StarlarkCustomCommandLine.java:456-485): a directory that is not an
+/// input of the action fails.
+fn tree_listing(
+    listings: &TreeListings,
+    file: &crate::starlark_types::File,
+) -> Result<Vec<PathBuf>, String> {
+    listings.get(Path::new(&file.path)).cloned().ok_or_else(|| {
+        format!(
+            "Failed to expand directory {file}. Either add the directory as an input of the action or set 'expand_directories = False' in the 'add_all' or 'add_joined' call to have the path of the directory added to the command line instead of its contents."
+        )
+    })
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlannedAction {
     /// Inputs here are filesystem sources; generated inputs go in dependencies.
     pub action: crate::action::Action,
@@ -225,7 +330,7 @@ where
             ));
         }
         if let Some(deferred) = &node.deferred {
-            (deferred.0)(&listings, &mut node.action)?;
+            deferred.apply(&listings, &mut node.action)?;
         }
         let result = execute(cache, &node.action)?;
         if result.outputs.len() != node.action.outputs.len() {

@@ -446,6 +446,11 @@ fn run() -> Result<(), String> {
             .with_source_cache(cache.join("repositories"))
             .with_repository_environment(repository_environment),
     );
+    // Never dropped (L2-W4, PLAN-L2 §5): the repository set holds only
+    // memory (the module graph, repository specifications, the `.bzl`
+    // module cache), which the process exit frees anyway; its drop at the
+    // end of the command cost about 80 ms on ~/code oauth2token.
+    std::mem::forget(Arc::clone(&repositories));
     repositories.validate_root_module()?;
     // Bazel computes the main repository mapping, hence module resolution,
     // in every command; the lockfile records that resolution's remote
@@ -600,7 +605,7 @@ fn run() -> Result<(), String> {
     }
     if command == "test" {
         return test_targets(TestContext {
-            engine: &mut engine,
+            engine,
             patterns: &rest,
             relative_directory: &relative_directory,
             cache: &cache,
@@ -633,7 +638,7 @@ fn run() -> Result<(), String> {
     lockfile_gate.open();
     if command == "run" {
         return run_target(RunContext {
-            engine: &mut engine,
+            engine,
             labels,
             pattern: &rest[0],
             residue: &rest[1..],
@@ -648,7 +653,22 @@ fn run() -> Result<(), String> {
             snapshot: snapshot_recording,
         });
     }
-    let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
+    // Plan -> PlannedRequest -> hand-over -> finalize -> execute (L2-W4).
+    let planned = plan_request(
+        std::mem::ManuallyDrop::into_inner(engine),
+        bazel_rs::engine::RequestSpec::build(&labels),
+    );
+    let result = planned.request.and_then(|request| {
+        bazel_rs::request::execute(
+            request,
+            planned.status,
+            &bazel_rs::request::ExecuteOptions {
+                cache: &cache,
+                jobs,
+                action_dump: action_dump.as_deref(),
+            },
+        )
+    });
     // After analysis and execution (review i20): repositories demanded while
     // analyzing — most of a build's — are counted too, which a report
     // printed after target-pattern selection missed.
@@ -659,16 +679,8 @@ fn run() -> Result<(), String> {
         memory_limit_mb,
     ));
     // Analysis warnings precede the result, also when the build fails.
-    for warning in engine.take_warnings() {
-        warn(&warning);
-    }
-    for error in engine.take_errors() {
-        eprintln!("ERROR: {error}");
-        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
-            format!("analysis error: {error}")
-        });
-    }
-    let summary = result?;
+    report_diagnostics(planned.diagnostics);
+    let summary = result?.summary;
     let non_empty_targets = summary.non_empty_targets;
     for (label, output) in &summary.outputs {
         // The path's raw bytes: a lone-byte target name names the byte
@@ -728,6 +740,80 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+/// A planned request of the full-analysis path, handed over, with its
+/// analysis diagnostics and the workspace status planning computed.
+struct Planned {
+    request: Result<bazel_rs::request::PlannedRequest, String>,
+    diagnostics: bazel_rs::request::Diagnostics,
+    status: bazel_rs::request::StatusSource,
+}
+
+/// The full-analysis path of `build`, `test` and `run` (L2-W4, PLAN-L2
+/// §1d): plan the request, hand it over (crate::snapshot::codec::hand_over:
+/// a codec round trip under BAZEL_RS_SNAPSHOT_ROUNDTRIP=1), take its
+/// diagnostics (printed after execution) and the computed workspace
+/// status, then free the engine: execution and reporting read only the
+/// planned request.
+fn plan_request(mut engine: Engine, spec: bazel_rs::engine::RequestSpec<'_>) -> Planned {
+    let request = engine
+        .plan_request(spec)
+        .and_then(bazel_rs::snapshot::codec::hand_over);
+    let status = bazel_rs::request::StatusSource::Planned(engine.take_workspace_status());
+    let (diagnostics, request) = match request {
+        Ok(mut request) => (request.take_diagnostics(), Ok(request)),
+        Err(error) => (
+            bazel_rs::request::Diagnostics {
+                warnings: engine.take_warnings(),
+                errors: engine.take_errors(),
+            },
+            Err(error),
+        ),
+    };
+    release_engine(engine);
+    Planned {
+        request,
+        diagnostics,
+        status,
+    }
+}
+
+/// Free the analysis state (packages, configured rules, the Starlark values
+/// they hold) before execution (L2-W4, PLAN-L2 §5): on a background thread
+/// that is never joined, so the drop overlaps execution and a drop still
+/// running when the command ends is skipped (the process exits; nothing in
+/// the engine has an effect on drop). A build that does not execute
+/// (`--nobuild`) ends right after planning: its engine is never torn down
+/// (W7, Engine::skips_teardown; planning already left its maps to the OS).
+/// Measurement switches: `BAZEL_RS_DEBUG_ENGINE_DROP=inline` drops it here
+/// on the main thread, `=leak` never drops it.
+fn release_engine(engine: Engine) {
+    match std::env::var_os("BAZEL_RS_DEBUG_ENGINE_DROP").as_deref() {
+        Some(mode) if mode == "inline" => drop(engine),
+        Some(mode) if mode == "leak" => std::mem::forget(engine),
+        _ if engine.skips_teardown() => std::mem::forget(engine),
+        _ => {
+            // A thread that cannot be spawned drops the engine right here.
+            let _ = std::thread::Builder::new()
+                .name("engine-drop".to_owned())
+                .spawn(move || drop(engine));
+        }
+    }
+}
+
+/// The analysis warnings and errors of a request, printed after execution,
+/// also when the build failed; an error taints the snapshot recording.
+fn report_diagnostics(diagnostics: bazel_rs::request::Diagnostics) {
+    for warning in diagnostics.warnings {
+        warn(&warning);
+    }
+    for error in diagnostics.errors {
+        eprintln!("ERROR: {error}");
+        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
+            format!("analysis error: {error}")
+        });
+    }
+}
+
 /// Opens the MODULE.bazel.lock write (update/refresh only) once the whole
 /// module resolution — the dep graph and every module extension the command
 /// demanded — evaluated successfully. BazelLockFileModule.afterCommand
@@ -779,7 +865,9 @@ fn builds(command: &str) -> bool {
 }
 
 struct RunContext<'a> {
-    engine: &'a mut Engine,
+    /// Never torn down unless planned (W7: an error before planning exits
+    /// without it; [`plan_request`] takes it out).
+    engine: std::mem::ManuallyDrop<Engine>,
     labels: Vec<bazel_rs::label::Label>,
     pattern: &'a str,
     residue: &'a [String],
@@ -803,7 +891,7 @@ struct RunContext<'a> {
 fn run_target(context: RunContext<'_>) -> Result<(), String> {
     use bazel_rs::run_command::{RunInputs, command_line, random_uuid};
     let RunContext {
-        engine,
+        mut engine,
         labels,
         pattern,
         residue,
@@ -846,16 +934,42 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
             "--run_under={value}: a label prefix (LabelRunUnder) is not supported by the native profile; use a command prefix"
         ));
     }
-    let result = engine.build_for_run(label, cache, jobs);
-    for warning in engine.take_warnings() {
-        warn(&warning);
-    }
-    for error in engine.take_errors() {
-        eprintln!("ERROR: {error}");
-        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
-            format!("analysis error: {error}")
-        });
-    }
+    // `run` of a test target reads the test properties (run_test): looked
+    // up now, with the target loaded; an error surfaces there.
+    let test_info = engine.test_rule_info(label).map(|info| {
+        info.map(|(info, location)| bazel_rs::request::PlannedTest {
+            label: label.clone(),
+            info,
+            location,
+        })
+    });
+    // Build the target, its executable and its runfiles tree (always
+    // created, RunCommand.ensureRunfilesBuilt, :996-1040;
+    // RunCommand.runBuild/getBuiltTargets, :394-568).
+    let planned = plan_request(
+        std::mem::ManuallyDrop::into_inner(engine),
+        bazel_rs::engine::RequestSpec {
+            command: bazel_rs::request::RequestCommand::Run {
+                label: label.clone(),
+                test: test_info,
+            },
+            build: std::slice::from_ref(label),
+            runs: std::slice::from_ref(label),
+            trees: true,
+        },
+    );
+    let result = planned.request.and_then(|request| {
+        bazel_rs::request::execute(
+            request,
+            planned.status,
+            &bazel_rs::request::ExecuteOptions {
+                cache,
+                jobs,
+                action_dump: None,
+            },
+        )
+    });
+    report_diagnostics(planned.diagnostics);
     // The build part is the snapshot's scope (the run itself replaces this
     // process).
     if let Some(recording) = snapshot
@@ -863,7 +977,19 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     {
         recording.finish();
     }
-    let (summary, target) = result?;
+    let bazel_rs::request::Executed {
+        summary,
+        mut targets,
+        command: planned_command,
+        execute,
+    } = result?;
+    let target = targets.remove(label);
+    let test_info = match planned_command {
+        bazel_rs::request::RequestCommand::Run { test, .. } => test,
+        _ => Err(format!(
+            "internal error: {label} was not planned as a run target"
+        )),
+    };
     for (label, output) in &summary.outputs {
         eprintln!("{label}\t{}", output.display());
     }
@@ -914,7 +1040,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
             execution_note()
         );
     }
-    if !engine.execute_build() {
+    if !execute {
         // --nobuild: analysis succeeded and 0 actions executed, but no
         // target was built to run (RunCommand.getBuiltTargets finds no
         // successful targets; genuine 9.3 scratch capture
@@ -931,7 +1057,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     if target.settings.test {
         return run_test(RunTest {
-            engine,
+            test_info,
             label,
             target: &target,
             residue,
@@ -1033,7 +1159,9 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
 }
 
 struct TestContext<'a> {
-    engine: &'a mut Engine,
+    /// Never torn down unless planned (W7: an error before planning exits
+    /// without it; [`plan_request`] takes it out).
+    engine: std::mem::ManuallyDrop<Engine>,
     patterns: &'a [String],
     relative_directory: &'a str,
     cache: &'a Path,
@@ -1132,7 +1260,7 @@ fn test_spec(
 fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     use bazel_rs::test_command::{should_output_log, summary_text};
     let TestContext {
-        engine,
+        mut engine,
         patterns,
         relative_directory,
         cache,
@@ -1170,16 +1298,52 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     if options.build_tests_only {
         build = tests.clone();
     }
-    let result = engine.build_for_tests(&build, &tests, cache, jobs);
-    for warning in engine.take_warnings() {
-        warn(&warning);
-    }
-    for error in engine.take_errors() {
-        eprintln!("ERROR: {error}");
-        bazel_rs::observed_fs::taint_after_window(bazel_rs::observed_fs::Taint::Errors, || {
-            format!("analysis error: {error}")
-        });
-    }
+    let planned_tests = tests
+        .iter()
+        .map(|label| {
+            let (info, location) = infos.remove(label).expect("filtered test");
+            bazel_rs::request::PlannedTest {
+                label: label.clone(),
+                info,
+                location,
+            }
+        })
+        .collect();
+    // Build `build` for `bazel test` (BuildTool with `setRunTests`,
+    // runtime/commands/TestCommand.java:150-175): the targets to build, and
+    // for each test of `tests` (a subset) its executable and the artifacts
+    // of its runfiles, which the test action stages by content
+    // (crate::test_runner). The runfiles tree itself is built only like
+    // any `build` (`--build_runfile_links`).
+    let planned = plan_request(
+        std::mem::ManuallyDrop::into_inner(engine),
+        bazel_rs::engine::RequestSpec {
+            command: bazel_rs::request::RequestCommand::Test {
+                build: build.clone(),
+                tests: planned_tests,
+            },
+            build: &build,
+            runs: &tests,
+            trees: false,
+        },
+    );
+    // The tests a failed build reports (also those of a decoded request).
+    let test_labels = match &planned.request {
+        Ok(request) => request.test_labels(),
+        Err(_) => tests.clone(),
+    };
+    let result = planned.request.and_then(|request| {
+        bazel_rs::request::execute(
+            request,
+            planned.status,
+            &bazel_rs::request::ExecuteOptions {
+                cache,
+                jobs,
+                action_dump: None,
+            },
+        )
+    });
+    report_diagnostics(planned.diagnostics);
     // The build part is the snapshot's scope (test results are execution
     // outcomes; the test runner exits the process).
     if let Some(recording) = snapshot {
@@ -1189,9 +1353,18 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
             drop(recording);
         }
     }
-    let (summary, targets) = match result {
-        Ok(built) => built,
-        Err(error) => return test_build_failure(&error, &tests, options),
+    let bazel_rs::request::Executed {
+        summary,
+        targets,
+        command: planned_command,
+        execute,
+    } = match result {
+        Ok(executed) => executed,
+        Err(error) => return test_build_failure(&error, &test_labels, options),
+    };
+    let planned_tests = match planned_command {
+        bazel_rs::request::RequestCommand::Test { tests, .. } => tests,
+        _ => Vec::new(),
     };
     // Bazel reports built targets on stderr; stdout carries test output
     // and the summary.
@@ -1245,12 +1418,12 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
             execution_note()
         );
     }
-    if tests.is_empty() {
+    if planned_tests.is_empty() {
         eprintln!("ERROR: No test targets were found, yet testing was requested");
         bazel_rs::digest_memo::finish();
         std::process::exit(4);
     }
-    if !engine.execute_build() {
+    if !execute {
         // --nobuild: the build succeeded with 0 actions but nothing was
         // built to run (TestCommand: getSuccessfulTargets is null without
         // the execution phase, so the command reports `Couldn't start
@@ -1261,12 +1434,11 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         std::process::exit(1);
     }
     let mut specs = Vec::new();
-    for label in &tests {
+    for test in planned_tests {
         let target = targets
-            .get(label)
-            .ok_or_else(|| format!("internal error: {label} was not built as a test"))?;
-        let (info, location) = infos.remove(label).expect("filtered test");
-        specs.push(test_spec(label, info, location, target)?);
+            .get(&test.label)
+            .ok_or_else(|| format!("internal error: {} was not built as a test", test.label))?;
+        specs.push(test_spec(&test.label, test.info, test.location, target)?);
     }
     let tools = bazel_rs::test_runner::Tools::embedded(cache)?;
     let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
@@ -1369,7 +1541,8 @@ fn test_build_failure(
 }
 
 struct RunTest<'a> {
-    engine: &'a mut Engine,
+    /// The run target's test properties (crate::request::RequestCommand::Run).
+    test_info: Result<Option<bazel_rs::request::PlannedTest>, String>,
     label: &'a bazel_rs::label::Label,
     target: &'a bazel_rs::engine::RunTarget,
     residue: &'a [String],
@@ -1391,7 +1564,7 @@ struct RunTest<'a> {
 fn run_test(context: RunTest<'_>) -> Result<(), String> {
     use bazel_rs::run_command::{ENV_TO_CLEAR, random_uuid, shell_escape};
     let RunTest {
-        engine,
+        test_info,
         label,
         target,
         residue,
@@ -1402,10 +1575,10 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
         options,
         test,
     } = context;
-    let Some((info, location)) = engine.test_rule_info(label)? else {
+    let Some(planned) = test_info? else {
         return Err(format!("internal error: {label} is not a test rule"));
     };
-    let spec = test_spec(label, info, location, target)?;
+    let spec = test_spec(label, planned.info, planned.location, target)?;
     // TestProvider.getTestStatusArtifacts must be a single action.
     let shards = test.sharding.shards(spec.info.shard_count).max(0) as u32;
     if shards > 1 || test.runs_per_test > 1 {

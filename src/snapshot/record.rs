@@ -50,6 +50,34 @@ pub const TEST_HOOKS: &[&str] = &[
     "BAZEL_RS_TIMING_ALLOC",
 ];
 
+/// Whether this process records (`BAZEL_RS_SNAPSHOT=record` opened the
+/// window; open or closed).
+pub fn active() -> bool {
+    observed_fs::recorder().is_some()
+}
+
+/// The planned request's encoding as the record mode measured it
+/// (crate::snapshot::codec::hand_over): its sizes and times, or why it
+/// cannot be encoded.
+static PLAN: std::sync::Mutex<Option<Result<crate::snapshot::codec::Stats, String>>> =
+    std::sync::Mutex::new(None);
+
+/// Keep the planned request's encoding measurement for the report (record
+/// mode only).
+pub fn note_plan(stats: Result<crate::snapshot::codec::Stats, String>) {
+    if active() {
+        *PLAN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stats);
+    }
+}
+
+fn noted_plan() -> Option<Result<crate::snapshot::codec::Stats, String>> {
+    PLAN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// One command's recording; reports when finished or dropped.
 pub struct Session {
     command: String,
@@ -184,6 +212,7 @@ impl Session {
             .map(|_| crate::snapshot::validate::dry_run(&validated, threads))
             .collect();
         let mut summary = summary(&self.command, &recording, policy, &validations);
+        summary.push(plan_line(noted_plan()));
         if std::env::var_os("BAZEL_RS_SNAPSHOT_COMPARE").is_some() {
             // The other policy's cost, for comparison.
             let other = match policy {
@@ -360,6 +389,24 @@ fn replay_summary(
     lines
 }
 
+/// The planned request's encoding line: what a snapshot's PLAN section
+/// would hold (L2-W4).
+fn plan_line(plan: Option<Result<crate::snapshot::codec::Stats, String>>) -> String {
+    match plan {
+        None => "plan: no planned request (planning did not complete)".to_owned(),
+        Some(Err(reason)) => format!("plan: cannot be encoded: {reason}"),
+        Some(Ok(stats)) => format!(
+            "plan: {} actions, encoded {} bytes ({} outline, {} action chunk(s)); encode {} ms, decode {} ms",
+            stats.nodes,
+            stats.bytes,
+            stats.meta_bytes,
+            stats.chunks,
+            millis(stats.encode),
+            stats.decode.map_or_else(|| "-".to_owned(), millis),
+        ),
+    }
+}
+
 /// The report lines (without the `bazel-rs-snapshot:` prefix).
 pub fn summary(
     command: &str,
@@ -369,10 +416,15 @@ pub fn summary(
 ) -> Vec<String> {
     let mut lines = Vec::new();
     // `unless-pruned`: only taints recorded when analysis registered an
-    // action the plan may still prune (Taint::plan_dependent).
+    // action the plan may still prune (Taint::plan_dependent), and the
+    // planned request never decided them (planning did not complete). Once
+    // decided (L2-W4, observed_fs::settle_plan_taints) only the plan's own
+    // remain.
     let eligible = if recording.taints.is_empty() {
         "yes"
-    } else if recording.taints.keys().all(|taint| taint.plan_dependent()) {
+    } else if recording.plan_registered.is_none()
+        && recording.taints.keys().all(|taint| taint.plan_dependent())
+    {
         "unless-pruned"
     } else {
         "no"
@@ -469,6 +521,34 @@ pub fn summary(
                 .join(" | ")
         ));
     }
+    match &recording.plan_registered {
+        Some(registered) => {
+            let kept = |taint: Taint| {
+                recording
+                    .taints
+                    .get(&taint)
+                    .map_or(0, |record| record.count)
+            };
+            lines.push(format!(
+                "plan check: {}",
+                [Taint::BuildInfo, Taint::MapEach]
+                    .into_iter()
+                    .map(|taint| {
+                        let record = registered.get(&taint);
+                        format!(
+                            "{} registered {} ({} distinct), {} in the plan",
+                            taint.name(),
+                            record.map_or(0, |record| record.count),
+                            record.map_or(0, |record| record.details.len()),
+                            kept(taint)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+        None => lines.push("plan check: not run (no planned request)".to_owned()),
+    }
     if recording.taints.is_empty() {
         lines.push("taints: none".to_owned());
     }
@@ -478,10 +558,10 @@ pub fn summary(
         lines.push(format!(
             "taint {}{}: {} occurrence(s), {} distinct: {}{}",
             taint.name(),
-            if taint.plan_dependent() {
-                " (registered by analysis; the plan may prune it)"
-            } else {
-                ""
+            match (taint.plan_dependent(), recording.plan_registered.is_some()) {
+                (true, false) => " (registered by analysis; the plan may prune it)",
+                (true, true) => " (in the planned request)",
+                _ => "",
             },
             record.count,
             record.details.len(),
@@ -573,6 +653,18 @@ fn write_dump(
             let _ = writeln!(
                 text,
                 "TAINT {} count:{} {detail}",
+                taint.name(),
+                record.count
+            );
+        }
+    }
+    // What analysis registered of the plan-dependent taints, once the
+    // planned request decided them (only the plan's own are TAINTs).
+    for (taint, record) in recording.plan_registered.iter().flatten() {
+        for detail in &record.details {
+            let _ = writeln!(
+                text,
+                "REGISTERED {} count:{} {detail}",
                 taint.name(),
                 record.count
             );

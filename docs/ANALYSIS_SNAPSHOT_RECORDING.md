@@ -1,5 +1,8 @@
 # Analysis snapshot: the recording layer (L2-W3) and local-repository replay (L2-W4R)
 
+(L2-W4 adds the planned request a snapshot saves and decides the plan-dependent taints on it:
+docs/PLANNED_REQUEST.md.)
+
 Native-only infrastructure for a future persistent analysis snapshot (a whole
 request's plan saved to disk and reused when nothing it observed changed, in
 the style of Gradle's configuration cache). This wave ships only the recording
@@ -74,7 +77,9 @@ Semantic records complete the filesystem ones:
   hidden-lockfile write, a symlink hop into another live repository root
   (`cross-repository-symlink`: a `local_path_override` module or a local
   registry source), a build-info callback (`transform_version_file` /
-  `transform_info_file`), a `map_each` over a tree artifact, errors (planning
+  `transform_info_file`) or a `map_each` over a tree artifact of an action
+  the planned request keeps (analysis records them at registration; L2-W4's
+  `plan_request` settles them on the plan, see *Record mode*), errors (planning
   failed or reported errors, or the command failed), Unstable, and test/debug
   hooks (`BAZEL_RS_LOADING_JITTER`, `BAZEL_RS_LOADING_NO_DEMAND`,
   `BAZEL_RS_DEBUG_*`; integration-20 adds the analysis self-checks
@@ -207,9 +212,13 @@ reads, verified repositories and integrity entries (with the observations
 inside them, and how many of those lie at or below a tree's symlinks), store
 trees a link crossed into that no repository of the run has as its root
 (`link anchors:`, see *Stale trees*), every taint with its
-first reasons, `eligible=yes|no|unless-pruned` (`unless-pruned`: only
-registrations the saved plan may still prune — build-info callbacks,
-`map_each` — taint, which L2-W4 decides on the plan), the measured time of
+first reasons, `eligible=yes|no`, the plan check (`plan check:
+build-info-callback registered N (D distinct), K in the plan; map-each-deferred
+...`: L2-W4 decides these two taints on the planned request — what analysis
+registered but the plan pruned does not taint; `eligible=unless-pruned` remains
+only for a run whose planning never completed, which errors taint anyway), the
+planned request's encoding (`plan: N actions, encoded B bytes ...; encode,
+decode ms`, docs/PLANNED_REQUEST.md), the measured time of
 the validation a hit would run, and the replay dry run of every local
 repository rule of the window (`replay dry-run: M/N matching over D
 definition(s); wall, CPU of the replay threads and of child processes; pinned
@@ -239,7 +248,9 @@ environment. Record-mode knobs:
 (also time the other validation policy).
 
 With `BAZEL_RS_SNAPSHOT_DUMP` the observations (`OBS`), environment digests
-(`ENV`), repositories and integrity entries (`REPO`, `INT`), taints, the
+(`ENV`), repositories and integrity entries (`REPO`, `INT`), taints (and,
+once the plan decided them, the plan-dependent registrations as
+`REGISTERED kind count:N detail` lines), the
 pinned tables (`ROOT name path generated:0|1`, `MAPPING name entries:N
 isolated:N`), the replayed definitions (`DEFINITION source records:N load:ms
 thread-cpu:ms`), the replay records with their outcome (`REPLAY name
@@ -337,7 +348,11 @@ in 0.2–1.6 ms each next to it (the 37 `_toolchain_config` repositories share
 one 3–9 ms load). No local rule printed. Every build-info registration is
 `@bazel_tools//tools/build_defs/build_info:cc_build_info`, pruned by the plan
 (none of their outputs is a planned action): L2-W4 decides that taint on the
-saved plan, after which these runs report `eligible=yes`.
+saved plan, after which these runs report `eligible=yes` (measured with the
+L2-W4 binary on all three target sets: `plan check: build-info-callback
+registered 8 (B2: 12) (... distinct), 0 in the plan`, `taints: none`; the
+planned request encodes to 10.76 MB for oauth2token and 44.7 MB for B2,
+docs/PLANNED_REQUEST.md).
 
 ## Behaviour changes of L2-W4R (outside record mode)
 

@@ -43,7 +43,9 @@ pub enum AttrKind {
     /// BuildType.LABEL_LIST_DICT, packages/BuildType.java:74-75).
     LabelListDict,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
+/// Also `Deserialize`: the replay records of local repository rules bind
+/// these values (crate::snapshot::replay), which a saved snapshot holds.
+#[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize, serde::Deserialize)]
 pub enum AttrValue {
     String(String),
     Strings(Vec<String>),

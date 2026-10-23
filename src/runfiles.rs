@@ -1101,7 +1101,7 @@ pub struct TargetRunfiles {
 }
 
 /// The `run` command settings of a Starlark rule target.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RunSettings {
     /// The tokenized `args` attribute (RunfilesSupport.computeArgs).
     pub args: Vec<String>,

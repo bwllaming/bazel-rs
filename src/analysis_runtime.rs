@@ -919,18 +919,11 @@ fn register_spawn(
                 format!("{} ({progress})", context.label)
             });
         }
-        let spec = Arc::new(spec);
-        let deferred = Deferred(Arc::new(
-            move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
-                let lookup = |file: &File| tree_listing(listings, file);
-                let (arguments, param_files) = spec
-                    .expand(Some(&lookup))
-                    .map_err(|e| format!("{progress} failed: {e}"))?;
-                action.arguments = arguments;
-                action.extra.param_files = param_files;
-                Ok(())
-            },
-        ));
+        let deferred = Deferred::new(crate::scheduler::DeferredSpec::CommandLine {
+            spec,
+            progress,
+            extra_param_files: Vec::new(),
+        });
         (Vec::new(), Vec::new(), Some(deferred))
     } else {
         let (arguments, files) = spec.expand(None).map_err(anyhow::Error::msg)?;
@@ -969,20 +962,6 @@ pub(crate) fn tool_runfiles_tree(
         directory: format!("{}.runfiles", executable.path),
         mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest.as_ref(), None),
     })
-}
-
-fn tree_listing(
-    listings: &crate::scheduler::TreeListings,
-    file: &File,
-) -> Result<Vec<std::path::PathBuf>, String> {
-    listings
-        .get(std::path::Path::new(&file.path))
-        .cloned()
-        .ok_or_else(|| {
-            format!(
-                "Failed to expand directory {file}. Either add the directory as an input of the action or set 'expand_directories = False' in the 'add_all' or 'add_joined' call to have the path of the directory added to the command line instead of its contents."
-            )
-        })
 }
 
 fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyhow::Result<String> {
@@ -1182,22 +1161,10 @@ fn action_methods(builder: &mut MethodsBuilder) {
                     format!("{} (write {})", context.label, output.path)
                 });
             }
-            let snapshot = Arc::new(snapshot);
-            let deferred = Deferred(Arc::new(
-                move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
-                    let lookup = |file: &File| tree_listing(listings, file);
-                    let arguments = crate::command_line::expand_groups(
-                        &snapshot.groups,
-                        snapshot.flag_per_line,
-                        Some(&lookup),
-                    )?;
-                    if let Some(write) = action.write.as_mut() {
-                        write.content =
-                            crate::command_line::param_file_bytes(&arguments, snapshot.file_type);
-                    }
-                    Ok(())
-                },
-            ));
+            let deferred = Deferred::new(crate::scheduler::DeferredSpec::WriteArgs {
+                snapshot,
+                extra_param_files: Vec::new(),
+            });
             (Vec::new(), Some(deferred))
         };
         context.register_action(Registration {

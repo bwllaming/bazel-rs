@@ -13,7 +13,8 @@ use crate::package_specification::{self, GroupNode};
 use crate::platforms::{ConstraintSettingInfo, ConstraintValueInfo, PlatformInfo};
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
-use crate::scheduler::{self, Dependency, PlannedAction};
+use crate::request::PlannedRequest;
+use crate::scheduler::{Dependency, PlannedAction};
 use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
 use crate::starlark_types::File;
 use crate::toolchains::{
@@ -623,6 +624,34 @@ pub struct RunTarget {
     pub action_env: crate::action_env::ActionEnvironment,
     /// The configuration's `--test_env` environment (N42), TestPolicy step 3.
     pub test_env: crate::action_env::ActionEnvironment,
+}
+
+/// What one request plans ([`Engine::plan_request`]).
+pub struct RequestSpec<'a> {
+    /// The command and what only it reads after planning (the tests of
+    /// `test`, the test properties of a `run` target).
+    pub command: crate::request::RequestCommand,
+    /// The targets to build.
+    pub build: &'a [Label],
+    /// The run/test targets whose executables and runfiles are planned too
+    /// (crate::request::PlannedRun).
+    pub runs: &'a [Label],
+    /// Whether the run targets need their runfiles tree (`run`,
+    /// RunCommand.ensureRunfilesBuilt), or only the runfiles artifacts
+    /// (`test` stages them itself).
+    pub trees: bool,
+}
+
+impl<'a> RequestSpec<'a> {
+    /// `bazel build LABELS`.
+    pub fn build(labels: &'a [Label]) -> Self {
+        Self {
+            command: crate::request::RequestCommand::Build,
+            build: labels,
+            runs: &[],
+            trees: true,
+        }
+    }
 }
 
 /// The runfiles of a `run` target.
@@ -1340,72 +1369,6 @@ enum SettingTarget {
 /// instance encapsulates the target's attributes).
 type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 
-/// One JSON object per planned action (`--native-action-dump`).
-fn dump_actions(nodes: &[scheduler::PlannedAction], path: &Path) -> std::io::Result<()> {
-    use std::io::Write;
-    // snapshot-unrecorded: --native-action-dump output (a write).
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    for node in nodes {
-        let action = &node.action;
-        let environment = crate::action::resolved_environment(action);
-        let inputs: Vec<String> = action
-            .inputs
-            .iter()
-            .map(|(_, destination)| destination.to_string_lossy().into_owned())
-            .chain(node.dependencies.iter().map(destination))
-            .collect();
-        let mut requirements: Vec<&str> =
-            action.execution_info.iter().map(String::as_str).collect();
-        requirements.extend(action.extra.execution_info.keys().map(String::as_str));
-        requirements.sort_unstable();
-        requirements.dedup();
-        let object = serde_json::json!({
-            "id": action.id,
-            "mnemonic": action.extra.mnemonic,
-            "arguments": crate::action::arguments(action),
-            "environment": environment
-                .iter()
-                .map(|(key, value)| (key, value.to_string_lossy().into_owned()))
-                .collect::<Vec<_>>(),
-            "inherited_environment": action.extra.inherited_environment.iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            "inputs": inputs,
-            "outputs": action.outputs.iter().map(|output| output.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-            "execution_requirements": requirements,
-        });
-        writeln!(file, "{object}")?;
-    }
-    Ok(())
-}
-
-/// A generated dependency's destination exec path.
-fn destination(dependency: &Dependency) -> String {
-    dependency.destination.to_string_lossy().into_owned()
-}
-
-/// Where a planned artifact is reported or published after the execution
-/// phase. An executing build indexes the scheduler results exactly as
-/// before `--nobuild` existed: execute_graph returns one result per planned
-/// node or fails, and plan_build keeps the producer of everything reported
-/// or published, so a missing result is an invariant violation that panics
-/// rather than an unbuilt artifact silently reported as built. Only
-/// `--nobuild` (no execution phase, no results) keeps the planned exec
-/// path, as BuildResultPrinter reports artifactsToBuild without executing.
-fn executed_path(
-    results: &BTreeMap<String, action::ActionResult>,
-    execute_build: bool,
-    artifact: &Artifact,
-) -> PathBuf {
-    match &artifact.producer {
-        Some((id, index)) if execute_build => results[id].outputs[*index].clone(),
-        _ => artifact.real.clone(),
-    }
-}
-
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -1615,6 +1578,10 @@ pub struct Engine {
     /// the runfiles artifacts (`test` stages them itself).
     run_trees: bool,
     run_plans: BTreeMap<Label, RunPlan>,
+    /// The ids of the actions whose planning evaluated a build-info
+    /// translation callback in the current build (snapshot blockers when
+    /// the plan keeps them, Self::plan_request).
+    build_info_actions: BTreeSet<String>,
     /// Errors reported during a build that do not fail it, without the
     /// `ERROR: ` prefix (runfiles prefix conflicts under ConflictPolicy.ERROR).
     errors: Vec<String>,
@@ -1693,6 +1660,7 @@ impl Engine {
             run_requests: BTreeSet::new(),
             run_trees: true,
             run_plans: BTreeMap::new(),
+            build_info_actions: BTreeSet::new(),
             errors: Vec::new(),
             workspace_status: crate::workspace_status::WorkspaceStatusOptions::default(),
             workspace_status_once: std::sync::OnceLock::new(),
@@ -1742,6 +1710,15 @@ impl Engine {
     /// analysis and planning maps to the OS instead of tearing them down.
     pub fn set_skip_teardown(&mut self, skip: bool) {
         self.skip_teardown = skip;
+    }
+
+    /// Whether this engine is left to the OS when its command ends (W7,
+    /// [`Self::set_skip_teardown`]): a `--nobuild` build of the CLI, whose
+    /// planning maps were forgotten at the end of planning. The CLI then
+    /// never drops the engine either; an executing build's engine is freed
+    /// while the build executes (L2-W4).
+    pub fn skips_teardown(&self) -> bool {
+        self.skip_teardown && !self.execute_build
     }
 
     /// The one workspace status computation of this invocation (N63
@@ -7497,6 +7474,12 @@ impl Engine {
     /// outputs, execution requirements) before execution (a native
     /// introspection facility; Bazel has no equivalent option — aquery is
     /// the genuine surface, docs/CC_ACTIONS.md).
+    ///
+    /// The library path of `build`, the CLI's pipeline (L2-W4): plan the
+    /// request ([`Self::plan_request`]), hand it over
+    /// (crate::snapshot::codec::hand_over) and execute it
+    /// (crate::request::execute). The analysis warnings and errors stay in
+    /// the engine ([`Self::take_warnings`], [`Self::take_errors`]).
     pub fn build_with_options(
         &mut self,
         labels: &[Label],
@@ -7507,65 +7490,144 @@ impl Engine {
         if jobs == 0 {
             return Err("jobs must be greater than zero".into());
         }
-        let (nodes, requested, aspect_reports, target_results) = self.plan_build(labels)?;
-        crate::perf_mark("plan.end");
-        if let Some(path) = action_dump
-            && let Err(error) = dump_actions(&nodes, path)
-        {
-            return Err(format!("--native-action-dump: {error}"));
-        }
-        dump_action_graph(&nodes);
-        // --nobuild: analysis/planning completed above; the execution
-        // phase is skipped entirely (BuildTool skips ExecutionTool
-        // without an execution phase), so no action runs, no output is
-        // written and the summary reports 0 executed / 0 hits. Planned
-        // artifacts are still reported below at their exec paths, as
-        // BuildResultPrinter reports artifactsToBuild under --nobuild.
-        // (Status planning is already gated in plan_build: no status
-        // nodes reach `nodes` under --nobuild.)
-        let results = if self.execute_build {
-            scheduler::execute_graph(cache, nodes, jobs)?
-        } else {
-            std::collections::BTreeMap::new()
+        let request = self.plan_request(RequestSpec::build(labels))?;
+        let mut request = crate::snapshot::codec::hand_over(request)?;
+        let diagnostics = request.take_diagnostics();
+        self.warnings.extend(diagnostics.warnings);
+        self.errors.extend(diagnostics.errors);
+        let status = self.take_workspace_status();
+        crate::request::execute(
+            request,
+            crate::request::StatusSource::Planned(status),
+            &crate::request::ExecuteOptions {
+                cache,
+                jobs,
+                action_dump,
+            },
+        )
+        .map(|executed| executed.summary)
+    }
+
+    /// Plan one build, test or run request (L2-W4, PLAN-L2 §1d): analysis
+    /// and action planning ([`Self::plan_build`]), then everything execution
+    /// and reporting read, as plain data (crate::request::PlannedRequest):
+    /// the reachable actions in plan order with the workspace status
+    /// placeholders, the reported artifacts, the run plans of `spec.runs`
+    /// with their configurations' summaries, and the analysis warnings and
+    /// errors (moved out of the engine). The snapshot blockers are decided
+    /// here, on the plan: a build-info callback or a `map_each` of an action
+    /// the plan pruned does not block (the record mode's eligibility,
+    /// crate::observed_fs::settle_plan_taints). Marks `plan.end` (which
+    /// closes the recording window) when planning succeeded.
+    pub fn plan_request(&mut self, spec: RequestSpec<'_>) -> Result<PlannedRequest, String> {
+        self.run_requests = spec.runs.iter().cloned().collect();
+        self.run_trees = spec.trees;
+        self.run_plans.clear();
+        let planned = self.plan_build(spec.build);
+        self.run_requests.clear();
+        self.run_trees = true;
+        let (nodes, requested, aspect_reports, non_empty_targets) = planned?;
+        let plans = std::mem::take(&mut self.run_plans);
+        let produced = |artifact: &Artifact| crate::request::Produced {
+            real: artifact.real.clone(),
+            producer: artifact.producer.clone(),
         };
-        crate::perf_mark("execute.end");
-        let mut summary = BuildSummary::default();
-        // The workspace status nodes (BazelWorkspaceStatusAction#*) execute
-        // like any action but are not counted: Bazel reports the status
-        // action as an internal process (`INFO: 1 process: 1 internal`),
-        // outside the build's action tally.
-        for (id, result) in &results {
-            if id.starts_with("BazelWorkspaceStatusAction#") {
+        // What the run targets read from their configurations, once per
+        // configuration (every run plan's is the top-level one today).
+        let mut configurations: Vec<crate::request::ConfigurationSummary> = Vec::new();
+        let mut configuration_index: BTreeMap<ConfigId, usize> = BTreeMap::new();
+        let mut run_plans = Vec::new();
+        for (label, plan) in plans {
+            // A plan without an executable runs nothing (no run target).
+            let Some(executable) = &plan.executable else {
                 continue;
-            }
-            if result.cache_hit {
-                summary.cache_hits += 1;
-            } else if result.remote_hit {
-                summary.remote_hits += 1;
-            } else {
-                summary.executed += 1;
-            }
+            };
+            let configuration = match configuration_index.get(&plan.config) {
+                Some(index) => *index,
+                None => {
+                    let native = &self.configurations.get(plan.config).native;
+                    configurations.push(crate::request::ConfigurationSummary {
+                        mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
+                        action_env: native.action_environment(),
+                        test_env: native.test_environment(),
+                    });
+                    configuration_index.insert(plan.config, configurations.len() - 1);
+                    configurations.len() - 1
+                }
+            };
+            run_plans.push((
+                label,
+                crate::request::PlannedRun {
+                    executable: produced(executable),
+                    executable_exec: executable.exec.clone(),
+                    executable_short_path: executable.file.short_path.clone(),
+                    tree: plan.tree.as_ref().map(|tree| {
+                        (
+                            produced(tree),
+                            crate::request::PlannedPath(tree.exec.clone()),
+                        )
+                    }),
+                    entries: plan.entries.as_ref().map(|entries| {
+                        entries
+                            .iter()
+                            .map(|(path, artifact)| (path.clone(), artifact.as_ref().map(produced)))
+                            .collect()
+                    }),
+                    settings: plan.settings,
+                    configuration,
+                },
+            ));
         }
-        let execute_build = self.execute_build;
-        for (key, artifact) in requested {
-            let real = executed_path(&results, execute_build, &artifact);
-            summary.outputs.push((key.label, real));
-        }
-        summary.non_empty_targets = target_results;
-        summary.aspects = aspect_reports
+        // The build-info actions the plan kept (it prunes unreachable ones).
+        let planned_ids: HashSet<&str> = nodes.iter().map(|node| node.action.id.as_str()).collect();
+        let build_info = std::mem::take(&mut self.build_info_actions)
             .into_iter()
-            .map(|(aspect, label, artifacts)| {
-                (
-                    aspect,
-                    label,
-                    artifacts
-                        .iter()
-                        .map(|artifact| executed_path(&results, execute_build, artifact))
-                        .collect(),
-                )
-            })
+            .filter(|id| planned_ids.contains(id.as_str()))
             .collect();
-        Ok(summary)
+        drop(planned_ids);
+        let request = PlannedRequest {
+            command: spec.command,
+            execute: self.execute_build,
+            requested: requested
+                .iter()
+                .map(|(key, artifact)| (key.label.clone(), produced(artifact)))
+                .collect(),
+            aspect_reports: aspect_reports
+                .iter()
+                .map(|(aspect, label, artifacts)| {
+                    (
+                        aspect.clone(),
+                        label.clone(),
+                        artifacts.iter().map(produced).collect(),
+                    )
+                })
+                .collect(),
+            nodes,
+            non_empty_targets,
+            run_plans,
+            configurations,
+            warnings: std::mem::take(&mut self.warnings),
+            errors: std::mem::take(&mut self.errors),
+            build_info,
+        };
+        crate::observed_fs::settle_plan_taints(
+            request
+                .blockers()
+                .into_iter()
+                .map(|blocker| (blocker.taint, blocker.detail)),
+        );
+        crate::perf_mark("plan.end");
+        Ok(request)
+    }
+
+    /// The workspace status the last planned request computed, taken: its
+    /// finalize expands the status placeholders with it
+    /// (crate::request::StatusSource::Planned). `None` when planning
+    /// computed none (no placeholder then).
+    pub fn take_workspace_status(
+        &mut self,
+    ) -> Option<crate::workspace_status::ComputedWorkspaceStatus> {
+        std::mem::take(&mut self.workspace_status_once).into_inner()
     }
 
     /// Why the remote cache key of `rule`'s spawns in `config` cannot equal
@@ -7970,138 +8032,6 @@ impl Engine {
                 _ => Runnable::No,
             },
         })
-    }
-
-    /// Build `label` for `bazel run` (RunCommand.runBuild/getBuiltTargets,
-    /// runtime/commands/RunCommand.java:394-568): its outputs, its
-    /// executable and its runfiles tree (always created,
-    /// RunCommand.ensureRunfilesBuilt, :996-1040).
-    pub fn build_for_run(
-        &mut self,
-        label: &Label,
-        cache: &Path,
-        jobs: usize,
-    ) -> Result<(BuildSummary, Option<RunTarget>), String> {
-        let (summary, mut targets) = self.build_requests(
-            std::slice::from_ref(label),
-            std::slice::from_ref(label),
-            true,
-            cache,
-            jobs,
-        )?;
-        Ok((summary, targets.remove(label)))
-    }
-
-    /// Build `build` for `bazel test` (BuildTool with `setRunTests`,
-    /// runtime/commands/TestCommand.java:150-175): the targets to build, and
-    /// for each test of `tests` (a subset) its executable and the artifacts
-    /// of its runfiles, which the test action stages by content
-    /// (crate::test_runner). The runfiles tree itself is built only like
-    /// any `build` (`--build_runfile_links`).
-    pub fn build_for_tests(
-        &mut self,
-        build: &[Label],
-        tests: &[Label],
-        cache: &Path,
-        jobs: usize,
-    ) -> Result<(BuildSummary, BTreeMap<Label, RunTarget>), String> {
-        self.build_requests(build, tests, false, cache, jobs)
-    }
-
-    fn build_requests(
-        &mut self,
-        build: &[Label],
-        requests: &[Label],
-        trees: bool,
-        cache: &Path,
-        jobs: usize,
-    ) -> Result<(BuildSummary, BTreeMap<Label, RunTarget>), String> {
-        self.run_requests = requests.iter().cloned().collect();
-        self.run_trees = trees;
-        self.run_plans.clear();
-        let planned = self.plan_build(build);
-        self.run_requests.clear();
-        self.run_trees = true;
-        let (nodes, requested, _, _) = planned?;
-        let plans = std::mem::take(&mut self.run_plans);
-        crate::perf_mark("plan.end");
-        dump_action_graph(&nodes);
-        // --nobuild: skip the execution phase (see build_with_options);
-        // run/test then find no built target (handled in main).
-        let results = if self.execute_build {
-            scheduler::execute_graph(cache, nodes, jobs)?
-        } else {
-            std::collections::BTreeMap::new()
-        };
-        crate::perf_mark("execute.end");
-        let mut summary = BuildSummary::default();
-        // Workspace status nodes are not counted (see build_with_options).
-        for (id, result) in &results {
-            if id.starts_with("BazelWorkspaceStatusAction#") {
-                continue;
-            }
-            if result.cache_hit {
-                summary.cache_hits += 1;
-            } else {
-                summary.executed += 1;
-            }
-        }
-        let execute_build = self.execute_build;
-        for (key, artifact) in requested {
-            let real = executed_path(&results, execute_build, &artifact);
-            summary.outputs.push((key.label, real));
-        }
-        let published = |artifact: &Artifact| executed_path(&results, execute_build, artifact);
-        let mut targets = BTreeMap::new();
-        for (label, plan) in plans {
-            let Some(executable) = &plan.executable else {
-                continue;
-            };
-            let runfiles = plan.tree.as_ref().and_then(|tree| {
-                let manifest = published(tree);
-                let directory = manifest.parent()?.to_path_buf();
-                // `<root>/<tree exec dir>`: strip the exec path to find the root.
-                let exec_directory = tree.exec.parent()?;
-                let mut root = directory.clone();
-                for _ in exec_directory.components() {
-                    root = root.parent()?.to_path_buf();
-                }
-                Some(RunRunfiles {
-                    executable: root.join(&executable.exec),
-                    directory,
-                    root,
-                })
-            });
-            let entries = plan.entries.as_ref().map(|entries| {
-                entries
-                    .iter()
-                    .map(|(path, artifact)| (path.clone(), artifact.as_ref().map(published)))
-                    .collect()
-            });
-            targets.insert(
-                label,
-                RunTarget {
-                    executable: published(executable),
-                    executable_exec: executable.exec.clone(),
-                    executable_short_path: executable.file().short_path,
-                    runfiles,
-                    entries,
-                    mnemonic: self.configurations.mnemonic(plan.config).to_owned(),
-                    action_env: self
-                        .configurations
-                        .get(plan.config)
-                        .native
-                        .action_environment(),
-                    test_env: self
-                        .configurations
-                        .get(plan.config)
-                        .native
-                        .test_environment(),
-                    settings: plan.settings,
-                },
-            );
-        }
-        Ok((summary, targets))
     }
 
     /// Phase 2 of one planned target (in plan order): runs Starlark
@@ -8794,6 +8724,9 @@ impl Engine {
         for mut registered in analyzed.actions {
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
+            if registered.build_info.is_some() {
+                self.build_info_actions.insert(registered.action.id.clone());
+            }
             self.resolve_build_info(workspace_status, &mut registered)?;
             let inputs = registered
                 .inputs
@@ -9806,6 +9739,9 @@ impl Engine {
         for mut registered in analyzed.actions {
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
+            if registered.build_info.is_some() {
+                self.build_info_actions.insert(registered.action.id.clone());
+            }
             self.resolve_build_info(workspace_status, &mut registered)?;
             let mut inputs = registered
                 .inputs
@@ -9898,16 +9834,7 @@ impl Engine {
             // A deferred command line recomputes the parameter files;
             // the runfiles empty files are kept.
             planned.deferred = match (registered.deferred, empties.is_empty()) {
-                (Some(deferred), false) => {
-                    let inner = deferred.0;
-                    Some(crate::scheduler::Deferred(Arc::new(
-                        move |listings: &crate::scheduler::TreeListings, action: &mut Action| {
-                            inner(listings, action)?;
-                            action.extra.param_files.extend(empties.iter().cloned());
-                            Ok(())
-                        },
-                    )))
-                }
+                (Some(deferred), false) => Some(deferred.with_extra_param_files(empties)),
                 (deferred, _) => deferred,
             };
             nodes.push(planned);
@@ -10686,6 +10613,7 @@ impl Engine {
         // likewise dropped so its OnceCells (client env) re-read.
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
+        self.build_info_actions.clear();
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -11848,65 +11776,6 @@ fn native_bool(rule: &Rule, name: &str) -> bool {
     })
 }
 
-/// Hidden action-graph dump (`BAZEL_RS_DUMP_ACTIONS=1`, review §5): every
-/// planned action's full identity — id, argv/program/write, inputs
-/// (sources and generated destinations), outputs, environment and
-/// execution info — in plan order, on stderr. The A/B gate for the
-/// parallel phases compares this dump byte for byte between thread
-/// counts; it contains no pointer identity.
-fn dump_action_graph(nodes: &[scheduler::PlannedAction]) {
-    if std::env::var_os("BAZEL_RS_DUMP_ACTIONS").is_none() {
-        return;
-    }
-    for node in nodes {
-        let action = &node.action;
-        eprintln!("ACTION {}", action.id);
-        if let Some(write) = &action.write {
-            eprintln!(
-                "  write {} bytes executable={}",
-                write.content.len(),
-                write.executable
-            );
-        } else if let Some(program) = &action.program {
-            eprintln!("  program {program}");
-        }
-        if !action.arguments.is_empty() {
-            eprintln!("  arguments {}", action.arguments.join("\u{1}"));
-        }
-        if !action.command.is_empty() {
-            eprintln!("  command {}", action.command);
-        }
-        for (source, destination) in &action.inputs {
-            eprintln!("  input {} -> {}", source.display(), destination.display());
-        }
-        for dependency in &node.dependencies {
-            eprintln!(
-                "  generated {}[{}] -> {}",
-                dependency.action_id,
-                dependency.output_index,
-                dependency.destination.display()
-            );
-        }
-        for output in &action.outputs {
-            eprintln!("  output {}", output.display());
-        }
-        for (key, value) in &action.environment {
-            eprintln!("  env {key}={value}");
-        }
-        if !action.execution_info.is_empty() {
-            eprintln!(
-                "  execution-info {}",
-                action
-                    .execution_info
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-        }
-    }
-}
-
 fn planted(artifact: &Artifact, main_ignored: &IgnoredSubdirectories) -> bool {
     if artifact.producer.is_some()
         || Label::parse_canonical(&artifact.owner).is_ok_and(|l| !l.repository.is_empty())
@@ -12209,9 +12078,13 @@ impl Engine {
     /// unchanged, maybeUpdateContent :205-209) and the volatile node
     /// (content-keyed on the volatile bytes but constant metadata, so
     /// consumers never re-key on the changing timestamp). A failed status
-    /// computation plans ONE failing node (volatile-status.txt) — Bazel's
+    /// computation leaves ONE failing node (volatile-status.txt) — Bazel's
     /// one action fails once — so the build reports a single
-    /// `Failed to determine workspace status: ...` line.
+    /// `Failed to determine workspace status: ...` line. Since the
+    /// plan/execute split (L2-W4) both nodes are planned as placeholders
+    /// (Transform::WorkspaceStatus) whatever the status, and the planned
+    /// request's finalize (crate::request) writes the status into them or
+    /// lays the failure out.
     #[allow(clippy::too_many_arguments)]
     fn ensure_workspace_status(
         &self,
@@ -12241,6 +12114,14 @@ impl Engine {
         } else if plan.is_none() {
             let client_env =
                 status_client_environment.get_or_init(crate::action_env::client_environment);
+            // The status is computed here, during planning, as before the
+            // plan/execute split: the status command's stderr is the
+            // build's stderr at this point, and build-info callbacks read
+            // the result (resolve_build_info). The planned nodes are
+            // placeholders (L2-W4): a planned request holds no status, its
+            // finalize writes this one (crate::request; a failed status
+            // becomes ONE failing #volatile node there, which the stable
+            // file's consumers then depend on).
             let computed = self.workspace_status_computed(client_env);
             let owner = "@bazel_tools//tools:internal_platform";
             // The build-data-root execution paths of the status files
@@ -12250,24 +12131,13 @@ impl Engine {
             let volatile_path = PathBuf::from("bazel-out/volatile-status.txt");
             register_output(producers, &stable_path, owner)?;
             register_output(producers, &volatile_path, owner)?;
-            let node = |id: &str,
-                        output: PathBuf,
-                        write: Option<crate::action::WriteAction>,
-                        transform: Option<crate::action::Transform>|
-             -> PlannedAction {
+            let placeholder = |id: &str, output: PathBuf, volatile: bool| -> PlannedAction {
                 PlannedAction {
                     action: Action {
                         id: id.to_owned(),
-                        command: String::new(),
-                        inputs: Vec::new(),
                         outputs: vec![output],
-                        write,
-                        program: None,
-                        arguments: Vec::new(),
-                        environment: BTreeMap::new(),
-                        shell_strict: false,
                         extra: crate::action::ActionExtra {
-                            transform,
+                            transform: Some(crate::action::Transform::WorkspaceStatus { volatile }),
                             mnemonic: "BazelWorkspaceStatusAction".to_owned(),
                             ..crate::action::ActionExtra::default()
                         },
@@ -12277,74 +12147,32 @@ impl Engine {
                     deferred: None,
                 }
             };
-            let (stable, volatile) = match computed {
-                crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => {
-                    nodes.push(node(
-                        "BazelWorkspaceStatusAction#stable",
-                        stable_path,
-                        Some(crate::action::WriteAction {
-                            content: status.stable_bytes.clone(),
-                            executable: false,
-                        }),
-                        None,
-                    ));
-                    nodes.push(node(
-                        "BazelWorkspaceStatusAction#volatile",
-                        volatile_path,
-                        Some(crate::action::WriteAction {
-                            content: status.volatile_bytes.clone(),
-                            executable: false,
-                        }),
-                        None,
-                    ));
-                    (
-                        Artifact::workspace_status(
-                            "stable-status.txt",
-                            Some(("BazelWorkspaceStatusAction#stable".to_owned(), 0)),
-                            false,
-                        ),
-                        Artifact::workspace_status(
-                            "volatile-status.txt",
-                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            true,
-                        ),
-                    )
-                }
-                crate::workspace_status::ComputedWorkspaceStatus::Failed(error) => {
-                    // ONE failing node for Bazel's ONE action: the failure
-                    // surfaces once at execution with Bazel's text.
-                    nodes.push(node(
-                        "BazelWorkspaceStatusAction#volatile",
-                        volatile_path,
-                        None,
-                        Some(crate::action::Transform::Unsupported {
-                            message: format!(
-                                "BazelWorkspaceStatusAction volatile-status.txt failed: Failed to determine workspace status: {}",
-                                error.0
-                            ),
-                        }),
-                    ));
-                    (
-                        Artifact::workspace_status(
-                            "stable-status.txt",
-                            // The failing node has one output; consumers
-                            // of either file depend on it at index 0 and
-                            // fail with it (the node never produces).
-                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            false,
-                        ),
-                        Artifact::workspace_status(
-                            "volatile-status.txt",
-                            Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            true,
-                        ),
-                    )
-                }
-            };
+            nodes.push(placeholder(
+                crate::request::STABLE_STATUS_ID,
+                stable_path,
+                false,
+            ));
+            nodes.push(placeholder(
+                crate::request::VOLATILE_STATUS_ID,
+                volatile_path,
+                true,
+            ));
+            // The planned status artifacts carry the status Files
+            // (Artifact::workspace_status, 1a91e19), produced by the
+            // placeholders; a failed status keeps them: finalize redirects
+            // the stable file's consumers to the one failing #volatile node.
             *plan = Some(WorkspaceStatusPlan {
                 computed: computed.clone_status(),
-                stable,
-                volatile,
+                stable: Artifact::workspace_status(
+                    "stable-status.txt",
+                    Some((crate::request::STABLE_STATUS_ID.to_owned(), 0)),
+                    false,
+                ),
+                volatile: Artifact::workspace_status(
+                    "volatile-status.txt",
+                    Some((crate::request::VOLATILE_STATUS_ID.to_owned(), 0)),
+                    true,
+                ),
             });
         }
         let planned = plan.as_ref().expect("just planned");
@@ -12847,37 +12675,6 @@ mod tests {
         )
     }
 
-    /// Only `--nobuild` reports the planned exec path; an executing build
-    /// reports the executed output.
-    #[test]
-    fn executed_path_falls_back_to_the_planned_path_only_under_nobuild() {
-        let artifact = generated_out_txt();
-        let mut results = BTreeMap::new();
-        assert_eq!(executed_path(&results, false, &artifact), artifact.real);
-        let executed =
-            PathBuf::from("/cache/actions/k/outputs/bazel-out/k8-fastbuild/bin/pkg/out.txt");
-        results.insert(
-            "//pkg:gen#genrule".to_owned(),
-            action::ActionResult {
-                outputs: vec![executed.clone()],
-                cache_hit: false,
-                remote_hit: false,
-                trees: BTreeMap::new(),
-            },
-        );
-        assert_eq!(executed_path(&results, true, &artifact), executed);
-        assert_eq!(executed_path(&results, false, &artifact), artifact.real);
-    }
-
-    /// An executing build never reports an unbuilt artifact: a missing
-    /// scheduler result panics exactly as the `results[id]` indexing before
-    /// `--nobuild` support did.
-    #[test]
-    #[should_panic(expected = "no entry found for key")]
-    fn executed_path_never_falls_back_when_executing() {
-        executed_path(&BTreeMap::new(), true, &generated_out_txt());
-    }
-
     /// W1b registration invariant: a File keeps its first registration; an
     /// equal re-registration is a no-op.
     #[test]
@@ -13058,23 +12855,32 @@ mod tests {
                     &mut index,
                 )
                 .unwrap();
-            // No status node under --nobuild, two when executing, one
-            // failing node when the computation failed.
-            let expected_nodes = match (execute_build, embed_label.contains('\n')) {
-                (false, _) => 0,
-                (true, false) => 2,
-                (true, true) => 1,
-            };
-            assert_eq!(nodes.len(), expected_nodes);
-            for (name, artifact) in ["stable-status.txt", "volatile-status.txt"]
-                .into_iter()
-                .zip(&planned)
+            // No status node under --nobuild; when executing, the two
+            // placeholders (L2-W4) whatever the status: the planned
+            // request's finalize writes the status into them or lays a
+            // failed computation out (ONE failing #volatile node,
+            // crate::request), not planning.
+            assert_eq!(nodes.len(), if execute_build { 2 } else { 0 });
+            assert!(nodes.iter().all(|node| matches!(
+                node.action.extra.transform,
+                Some(crate::action::Transform::WorkspaceStatus { .. })
+            )));
+            for ((name, id), artifact) in [
+                ("stable-status.txt", crate::request::STABLE_STATUS_ID),
+                ("volatile-status.txt", crate::request::VOLATILE_STATUS_ID),
+            ]
+            .into_iter()
+            .zip(&planned)
             {
                 let file = crate::analysis_runtime::workspace_status_file(name);
                 assert_eq!(*artifact.file, file, "{name}, executing: {execute_build}");
                 assert_eq!((file.short_path.as_str(), file.is_source), (name, false));
                 assert_eq!(artifact.exec, Path::new(&file.path));
-                assert_eq!(artifact.producer.is_some(), execute_build);
+                assert_eq!(
+                    artifact.producer,
+                    execute_build.then(|| (id.to_owned(), 0)),
+                    "{name}, status label {embed_label:?}"
+                );
                 assert!(same_artifact(&index[&file], artifact));
             }
             assert_eq!(index.len(), 2);

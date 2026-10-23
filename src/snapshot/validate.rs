@@ -689,6 +689,7 @@ mod tests {
             repositories: Vec::new(),
             crossed: Vec::new(),
             taints: BTreeMap::new(),
+            plan_registered: None,
         };
         let report = dry_run(&recording, 4);
         assert_eq!(report.mismatches, 0, "{:?}", report.examples);

@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// packages/TestSize.java:31-36.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum TestSize {
     Small,
     Medium,
@@ -61,7 +63,9 @@ impl TestSize {
 }
 
 /// packages/TestTimeout.java:42-45.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum TestTimeout {
     Short,
     Moderate,
@@ -726,7 +730,7 @@ fn parse_timeouts(flag: &str, value: &str) -> Result<[u64; 4], String> {
 
 /// The test-related loading-time properties of a test rule
 /// (TestTargetProperties, analysis/test/TestTargetProperties.java:81-135).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TestRuleInfo {
     pub rule_class: String,
     pub size: TestSize,

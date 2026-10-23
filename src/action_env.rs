@@ -106,7 +106,7 @@ fn apply(env: &mut BTreeMap<String, Option<String>>, entries: &[EnvVar]) {
 }
 
 /// Fixed and inherited environment variables of an action or configuration.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ActionEnvironment {
     pub fixed: BTreeMap<String, String>,
     pub inherited: BTreeSet<String>,

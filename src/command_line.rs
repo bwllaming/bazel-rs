@@ -26,7 +26,7 @@ pub(crate) const MIN_PARAM_FILE_SIZE: usize = 32768;
 const PARAM_FILE_ARG_LENGTH_ESTIMATE: usize = 512;
 
 /// ParameterFile.ParameterFileType subset reachable from Starlark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ParamFileType {
     /// SHELL_QUOTED (`shell`, the default).
     Shell,
@@ -35,7 +35,7 @@ pub(crate) enum ParamFileType {
 }
 
 /// ParamFileInfo (actions/ParamFileInfo.java:30-67).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ParamFileInfo {
     pub flag_format: String,
     pub always: bool,
@@ -44,7 +44,7 @@ pub(crate) struct ParamFileInfo {
 }
 
 /// The formatting of one add_all/add_joined call.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct VectorShape {
     pub arg_name: Option<String>,
     pub format_each: Option<String>,
@@ -56,31 +56,35 @@ pub(crate) struct VectorShape {
     pub terminate_with: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Item {
     /// Already converted (and map_each-mapped) values of a non-directory item.
     Strings(Vec<String>),
     /// A tree artifact expanded at execution time.
-    Directory(File),
+    Directory(#[serde(with = "crate::snapshot::codec::file")] File),
 }
 
 /// An add_all/add_joined call whose values contain tree artifacts.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DeferredVector {
     pub shape: VectorShape,
     pub items: Vec<Item>,
+    /// The Starlark mapper of the tree children: an in-memory value, so a
+    /// planned request that still needs one cannot be encoded
+    /// (crate::snapshot::codec::map_each).
+    #[serde(with = "crate::snapshot::codec::map_each")]
     pub map_each: Option<OwnedFrozenValue>,
 }
 
 /// One Args mutation (`recordArgStart`): add, add_all or add_joined.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Group {
     Strings(Vec<String>),
     Deferred(Arc<DeferredVector>),
 }
 
 /// One CommandLines part: a run of literal strings, or one Args object.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Part {
     pub groups: Vec<Group>,
     pub flag_per_line: bool,
@@ -320,7 +324,7 @@ pub(crate) fn param_file_bytes(arguments: &[String], file_type: ParamFileType) -
 }
 
 /// The command line of a Starlark spawn action.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CommandLineSpec {
     /// Bazel's executable part (`[exec path]` or `[sh, -c, command, ""?]`),
     /// used only for the length threshold.

@@ -21,12 +21,17 @@ hyper = { version = "=1.12.0", default-features = false }
 landlock = "=0.4.7"
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
 num-bigint = "=0.4.8"
+# The binary snapshot formats (PLAN-L2 §1d; the user directive: no JSON for
+# new stores): serde with varint integers, already in the lock through
+# `pagable`; std only (no heapless, no CRC: the store checksums sections).
+postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 ruzstd = "=0.9.1"
 # kill(2)/killpg on a child's process group without spawning kill(1) and
 # without unsafe code (git_process); same version tempfile already uses.
 rustix = { version = "=1.1.5", default-features = false, features = ["std", "process"] }
-serde = { version = "1", features = ["derive"] }
+# `rc`: the planned request's shared command-line parts (Arc) encode by value.
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha1 = "=0.10.6"
 sha2 = "0.10"

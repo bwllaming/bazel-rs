@@ -150,6 +150,7 @@ dependencies = [
  "landlock",
  "lzma-rust2",
  "num-bigint",
+ "postcard",
  "reqwest",
  "rustix",
  "ruzstd",

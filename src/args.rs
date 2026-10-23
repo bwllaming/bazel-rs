@@ -145,7 +145,7 @@ impl Args {
 }
 
 /// An immutable copy of an Args object at action registration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ArgsSnapshot {
     pub groups: Vec<Group>,
     pub flag_per_line: bool,

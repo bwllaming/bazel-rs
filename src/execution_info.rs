@@ -75,7 +75,7 @@ pub(crate) fn is_instance(value: Value<'_>) -> bool {
 /// A test rule's returned ExecutionInfo as its test action reads it
 /// (RuleConfiguredTargetBuilder.initializeTestProvider :470-498, analysis/
 /// RuleConfiguredTargetBuilder.java, `setExecutionRequirements`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TestRequirements {
     /// ExecutionInfo.getExecutionInfo in insertion order: put over the test
     /// action's execution info, replacing the values of keys the rule's tags

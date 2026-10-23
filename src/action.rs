@@ -139,11 +139,14 @@ const LOG_TAIL_BYTES: usize = 64 * 1024;
 const SPAWN_RETRY_DELAYS_MS: [u64; 7] = [1, 2, 4, 8, 16, 32, 64];
 static NEXT_WORK: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Default)]
+/// Encoded raw (paths as bytes) in a planned request (crate::snapshot::codec).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Action {
     pub id: String,
     pub command: String,
+    #[serde(with = "crate::snapshot::codec::path_pairs")]
     pub inputs: Vec<(PathBuf, PathBuf)>,
+    #[serde(with = "crate::snapshot::codec::paths")]
     pub outputs: Vec<PathBuf>,
     /// Native write, mutually exclusive with `program` and shell commands.
     pub write: Option<WriteAction>,
@@ -172,7 +175,8 @@ pub struct Action {
     pub execution_info: BTreeSet<String>,
     /// Compiled-in inputs (execution path, bytes), stored as executable
     /// content-addressed blobs and staged like every input
-    /// (crate::builtin_tools::GENRULE_SETUP).
+    /// (crate::builtin_tools::GENRULE_SETUP); encoded as the blob's tag.
+    #[serde(with = "crate::snapshot::codec::embedded")]
     pub embedded_inputs: Vec<(PathBuf, &'static [u8])>,
     /// Why this spawn's remote cache key cannot equal Bazel's (e.g. execution
     /// properties, which Bazel puts into a Platform message); such spawns
@@ -235,23 +239,28 @@ pub fn resolved_environment(action: &Action) -> BTreeMap<String, std::ffi::OsStr
     environment
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ActionExtra {
     /// Outputs (members of `Action::outputs`) that are tree artifacts.
+    #[serde(with = "crate::snapshot::codec::path_set")]
     pub tree_outputs: BTreeSet<PathBuf>,
     /// Input destinations that are tree artifacts (directories); every other
     /// input must be a regular file.
+    #[serde(with = "crate::snapshot::codec::path_set")]
     pub tree_inputs: BTreeSet<PathBuf>,
     /// Parameter files (CommandLines.ParamFileActionInput): written below
     /// the execution root before the process starts; content-keyed.
+    #[serde(with = "crate::snapshot::codec::path_contents")]
     pub param_files: Vec<(PathBuf, Vec<u8>)>,
     /// The inherited part of the action environment: names whose values
     /// come from the client environment (ActionEnvironment.getInheritedEnv).
     pub inherited_environment: BTreeSet<String>,
     /// The client values of the inherited names that the client
-    /// environment sets, resolved when the action is planned
-    /// (crate::action_env::ActionEnvironment::resolve_inherited); keyed,
-    /// and they override fixed values of the same name.
+    /// environment sets, resolved for each run by the planned request's
+    /// finalize (crate::request; ActionEnvironment::resolve_inherited);
+    /// keyed, and they override fixed values of the same name. Never
+    /// encoded: a snapshot holds no environment values.
+    #[serde(skip)]
     pub client_environment: BTreeMap<String, std::ffi::OsString>,
     /// Execution requirements: keyed, no local effect.
     pub execution_info: BTreeMap<String, String>,
@@ -274,15 +283,17 @@ pub struct ActionExtra {
     /// getConstantMetadataArtifact, StarlarkActionFactory.java:514-519).
     /// Their bytes are staged like any input's, but a change does not
     /// rebuild the consumer (ActionKeyComputer skips constant metadata).
+    #[serde(with = "crate::snapshot::codec::paths")]
     pub constant_metadata: Vec<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Transform {
     /// SymlinkAction: the output is a real symlink to the target's absolute
     /// input path, so it observes the target's bytes, permission bits and
     /// identity (SymlinkAction.java:218-238).
     Symlink {
+        #[serde(with = "crate::snapshot::codec::path")]
         target: PathBuf,
         require_executable: bool,
         /// The expanded progress message that prefixes execution failures
@@ -292,7 +303,9 @@ pub enum Transform {
     /// TemplateExpansionAction: literal, sequential replacement of internal
     /// bytes (LocalTemplateExpansionStrategy.getExpandedTemplateUnsafe).
     Template {
+        #[serde(with = "crate::snapshot::codec::path")]
         template: PathBuf,
+        #[serde(with = "crate::snapshot::codec::byte_pairs")]
         substitutions: Vec<(Vec<u8>, Vec<u8>)>,
         executable: bool,
     },
@@ -320,8 +333,11 @@ pub enum Transform {
     /// changed, verified in the N63 paired capture). `volatile` selects
     /// that keying.
     TemplateKeyed {
+        #[serde(with = "crate::snapshot::codec::path")]
         template: PathBuf,
+        #[serde(with = "crate::snapshot::codec::byte_pairs")]
         substitutions: Vec<(Vec<u8>, Vec<u8>)>,
+        #[serde(with = "crate::snapshot::codec::byte_pairs")]
         keyed_substitutions: Vec<(Vec<u8>, Vec<u8>)>,
         executable: bool,
         volatile: bool,
@@ -330,12 +346,19 @@ pub enum Transform {
     /// An action whose execution is an explicit native gap (its outputs are
     /// declared and registered, e.g. workspace-status transforms).
     Unsupported { message: String },
+    /// A workspace status node of a planned request (L2-W4): the stable or
+    /// volatile status file, whose content is this run's workspace status.
+    /// The request's finalize (crate::request) replaces it with the write
+    /// of the computed status, or the failing node of a failed status; it
+    /// never executes.
+    WorkspaceStatus { volatile: bool },
     /// SourceManifestAction (SOURCE_SYMLINKS, analysis/SourceManifestAction.java):
     /// the `<executable>.runfiles_manifest` lines `path target` of a runfiles
     /// tree, sorted by path. Each entry names the input destination it links
     /// to (the target is that input's absolute path) or `None` for an empty
     /// file. Inputs are not read: like Bazel, the manifest records paths only.
     RunfilesManifest {
+        #[serde(with = "crate::snapshot::codec::entries")]
         entries: Vec<(String, Option<PathBuf>)>,
     },
     /// SymlinkTreeAction + RunfilesTreeAction (analysis/actions/SymlinkTreeAction.java,
@@ -350,8 +373,11 @@ pub enum Transform {
     /// `create == false` is RunfileSymlinksMode.SKIP
     /// (createMinimalRunfilesDirectory: MANIFEST and `_main` only).
     RunfilesTree {
+        #[serde(with = "crate::snapshot::codec::entries")]
         entries: Vec<(String, Option<PathBuf>)>,
+        #[serde(with = "crate::snapshot::codec::path")]
         manifest: PathBuf,
+        #[serde(with = "crate::snapshot::codec::optional_path")]
         executable: Option<PathBuf>,
         create: bool,
     },
@@ -368,8 +394,9 @@ impl Transform {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct WriteAction {
+    #[serde(with = "crate::snapshot::codec::bytes")]
     pub content: Vec<u8>,
     pub executable: bool,
 }
@@ -1771,6 +1798,8 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         // (crate::engine::resolve_build_info) before plan_action validates
         // the template input.
         Some(Transform::BuildInfo { .. }) => check_one_output(action, "build info")?,
+        // A planned request's placeholder; finalize replaces it.
+        Some(Transform::WorkspaceStatus { .. }) => check_one_output(action, "workspace status")?,
         Some(Transform::RunfilesManifest { entries }) => {
             check_one_output(action, "runfiles manifest")?;
             check_runfiles_entries(action, entries)?;
@@ -2186,6 +2215,12 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             // resolved action would be, so a stray registration cannot
             // collide with either transform.
             frame(&mut hash, b"build-info");
+            frame(&mut hash, &[u8::from(*volatile)]);
+        }
+        (None, _, Some(Transform::WorkspaceStatus { volatile })) => {
+            // Replaced by the planned request's finalize (crate::request);
+            // keyed apart so a stray placeholder cannot collide.
+            frame(&mut hash, b"workspace-status-placeholder");
             frame(&mut hash, &[u8::from(*volatile)]);
         }
         (None, _, Some(Transform::RunfilesManifest { entries })) => {
@@ -3050,6 +3085,10 @@ fn run_transform(
         Transform::BuildInfo { .. } => {
             Err("build info transform must be resolved during planning".to_owned())
         }
+        Transform::WorkspaceStatus { .. } => Err(
+            "internal error: a workspace status placeholder must be expanded before execution"
+                .to_owned(),
+        ),
         Transform::Unsupported { message } => Err(message.clone()),
         Transform::RunfilesManifest { entries } => {
             let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();

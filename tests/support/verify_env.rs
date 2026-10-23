@@ -9,13 +9,17 @@
 // tests. Chained right after `env_clear()`, `.envs(verifier_environment())`
 // forwards every `BAZEL_RS_VERIFY_*` variable of the test process (none when
 // they are unset, so a plain run is unchanged); variables the harness sets
-// afterwards win. Harnesses whose tests pin the exact client environment
-// (tests/host_os.rs, tests/repository_environment.rs) do not forward.
+// afterwards win. The planned request's codec round trip
+// (`BAZEL_RS_SNAPSHOT_ROUNDTRIP=1`, src/snapshot/codec.rs: every build
+// executes its decoded plan) is such a verifier too. Harnesses whose tests
+// pin the exact client environment (tests/host_os.rs,
+// tests/repository_environment.rs) do not forward.
 fn verifier_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     std::env::vars_os()
         .filter(|(key, _)| {
-            key.to_str()
-                .is_some_and(|key| key.starts_with("BAZEL_RS_VERIFY_"))
+            key.to_str().is_some_and(|key| {
+                key.starts_with("BAZEL_RS_VERIFY_") || key == "BAZEL_RS_SNAPSHOT_ROUNDTRIP"
+            })
         })
         .collect()
 }

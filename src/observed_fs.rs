@@ -404,7 +404,8 @@ impl Taint {
 
     /// Recorded when an action is registered during analysis, which the
     /// plan may still prune (it keeps only the actions requested outputs
-    /// need): an upper bound until the saved plan itself is checked (W5).
+    /// need): an upper bound until the planned request itself is checked
+    /// ([`settle_plan_taints`], L2-W4), which keeps only the plan's own.
     pub fn plan_dependent(self) -> bool {
         matches!(self, Self::BuildInfo | Self::MapEach)
     }
@@ -445,6 +446,9 @@ pub struct Recorder {
     repositories: Mutex<Vec<RepositoryRecord>>,
     repository_roots: Mutex<HashMap<PathBuf, Claim>>,
     taints: Mutex<BTreeMap<Taint, TaintRecord>>,
+    /// The plan-dependent taints analysis registered, once the planned
+    /// request decided them ([`settle_plan_taints`]).
+    plan_registered: Mutex<Option<BTreeMap<Taint, TaintRecord>>>,
     window: Mutex<Option<Duration>>,
 }
 
@@ -461,6 +465,10 @@ pub struct Recording {
     /// repository of the run claimed them (sorted).
     pub crossed: Vec<PathBuf>,
     pub taints: BTreeMap<Taint, TaintRecord>,
+    /// What analysis registered of the plan-dependent taints, once the
+    /// planned request decided them ([`settle_plan_taints`]: `taints` then
+    /// holds only the plan's own); `None` while undecided.
+    pub plan_registered: Option<BTreeMap<Taint, TaintRecord>>,
 }
 
 impl Recording {
@@ -522,6 +530,7 @@ impl Recorder {
             repositories: Mutex::default(),
             repository_roots: Mutex::default(),
             taints: Mutex::default(),
+            plan_registered: Mutex::default(),
             window: Mutex::default(),
         }
     }
@@ -564,6 +573,33 @@ impl Recorder {
 
     fn racy(&self, key: &StatKey) -> bool {
         key.racy(self.window_start_ns)
+    }
+
+    /// See [`settle_plan_taints`].
+    fn settle_plan(&self, blockers: impl IntoIterator<Item = (Taint, String)>) {
+        let mut taints = lock(&self.taints);
+        let kinds: Vec<Taint> = taints
+            .keys()
+            .copied()
+            .filter(|kind| kind.plan_dependent())
+            .collect();
+        let mut registered = lock(&self.plan_registered);
+        let registered = registered.get_or_insert_with(BTreeMap::new);
+        for kind in kinds {
+            if let Some(record) = taints.remove(&kind) {
+                let into = registered.entry(kind).or_default();
+                into.count += record.count;
+                for detail in record.details {
+                    if into.details.len() < TAINT_DETAILS && !into.details.contains(&detail) {
+                        into.details.push(detail);
+                    }
+                }
+            }
+        }
+        drop(taints);
+        for (kind, detail) in blockers {
+            self.taint(kind, detail);
+        }
     }
 
     fn observe_lstat(&self, path: &Path, result: &io::Result<fs::Metadata>) {
@@ -802,6 +838,7 @@ impl Recorder {
             repositories,
             crossed,
             taints: lock(&self.taints).clone(),
+            plan_registered: lock(&self.plan_registered).clone(),
         }
     }
 
@@ -1158,6 +1195,18 @@ pub fn taint(kind: Taint, detail: impl FnOnce() -> String) {
 pub fn taint_after_window(kind: Taint, detail: impl FnOnce() -> String) {
     if let Some(recorder) = RECORDER.get() {
         recorder.taint(kind, detail());
+    }
+}
+
+/// The planned request decided the plan-dependent taints (L2-W4, PLAN-L2
+/// update 1 §(c)4): what analysis registered (a build-info callback, a
+/// `map_each` over a tree artifact — [`Taint::plan_dependent`]) moves to
+/// [`Recording::plan_registered`], and only `blockers`, the plan's own
+/// (crate::request::PlannedRequest::blockers: the actions the plan kept),
+/// taint the run. Recorded also after the window closed.
+pub fn settle_plan_taints(blockers: impl IntoIterator<Item = (Taint, String)>) {
+    if let Some(recorder) = RECORDER.get() {
+        recorder.settle_plan(blockers);
     }
 }
 
