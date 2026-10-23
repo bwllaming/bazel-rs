@@ -772,6 +772,10 @@ prober waits for it and is served by its publication, or misses with it.
 A probe nested in another probe (a recorded input in another repository)
 never waits — it probes on its own as before, so probe waits cannot form
 a cycle — and a wait is capped at 1 s (`PROBE_WAIT`; probes only read).
+A probe that reaches a slot its own thread is already probing (the
+recorded inputs of two repositories naming each other, possible across
+runs) is a miss instead of a recursion that overflowed the stack (review
+F4; `a_probe_reentering_a_slot_it_is_probing_is_a_miss`).
 The coordinator never probes (it evaluates). Verification volume is the
 sequential run's again (oauth2token 48.4k files at 16 workers, B2 84.3k).
 The unit tests hold every probe on a release channel instead of a sleep

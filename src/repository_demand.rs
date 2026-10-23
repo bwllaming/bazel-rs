@@ -137,11 +137,19 @@ impl Drop for ReuseOnlyGuard {
 }
 
 thread_local! {
-    /// Depth of reuse-only probes running on this thread
-    /// ([`DemandSlot::get_or_probe`]). A probe nested in another one (a
-    /// recorded input in another repository) never waits for a third
-    /// thread's probe, so probe waits cannot form a cycle.
-    static PROBE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The slots whose reuse-only probe runs on this thread, outermost
+    /// first ([`DemandSlot::get_or_probe`]). A probe nested in another one
+    /// (a recorded input in another repository) never waits for a third
+    /// thread's probe, so probe waits cannot form a cycle; and a probe that
+    /// reaches a slot this thread is already probing — recorded inputs of
+    /// repositories that name each other — is a miss, never a recursion
+    /// without end (W6 review F4).
+    static PROBING: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The identity of `slot` in [`PROBING`].
+fn probe_key<T>(slot: &DemandSlot<T>) -> usize {
+    std::ptr::from_ref(slot).cast::<()>() as usize
 }
 
 /// The longest a top-level probe waits for another thread's probe of the
@@ -204,7 +212,7 @@ enum ProbeClaim {
     TimedOut,
 }
 
-/// One probe on this thread ([`PROBE_DEPTH`]); releases the slot's probe
+/// One probe on this thread ([`PROBING`]); releases the slot's probe
 /// claim (waking its waiters) when the probe held it, after any
 /// publication.
 struct ProbeScope<'a, T> {
@@ -214,14 +222,22 @@ struct ProbeScope<'a, T> {
 
 impl<'a, T> ProbeScope<'a, T> {
     fn enter(slot: &'a DemandSlot<T>, claimed: bool) -> Self {
-        PROBE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        PROBING.with(|probing| probing.borrow_mut().push(probe_key(slot)));
         Self { slot, claimed }
     }
 }
 
 impl<T> Drop for ProbeScope<'_, T> {
     fn drop(&mut self) {
-        PROBE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        // No panicking borrows while unwinding.
+        let key = probe_key(self.slot);
+        let _ = PROBING.try_with(|probing| {
+            if let Ok(mut probing) = probing.try_borrow_mut()
+                && let Some(position) = probing.iter().rposition(|probed| *probed == key)
+            {
+                probing.remove(position);
+            }
+        });
         if self.claimed {
             let mut probing = match self.slot.probing.lock() {
                 Ok(probing) => probing,
@@ -352,7 +368,9 @@ impl<T> DemandSlot<T> {
     /// the waiter misses too. A nested probe (or a wait past
     /// [`PROBE_WAIT`]) probes on its own; the loser of a publish race
     /// reports the winner's value (probes only read, or refresh a manifest
-    /// idempotently, so a duplicate probe is harmless).
+    /// idempotently, so a duplicate probe is harmless). A probe of a slot
+    /// this thread is already probing (recorded inputs that name each
+    /// other's repositories) is a miss.
     pub fn get_or_probe(
         &self,
         runtime_id: u64,
@@ -371,7 +389,18 @@ impl<T> DemandSlot<T> {
                 "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
             ));
         }
-        let claimed = if PROBE_DEPTH.with(std::cell::Cell::get) == 0 {
+        let (nested, reentered) = PROBING.with(|probing| {
+            let probing = probing.borrow();
+            (!probing.is_empty(), probing.contains(&probe_key(self)))
+        });
+        if reentered {
+            // This thread is probing this very slot further up its stack:
+            // a miss (the coordinator's evaluation reports a real cycle).
+            return Err(format!(
+                "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
+            ));
+        }
+        let claimed = if !nested {
             match self.claim_probe() {
                 ProbeClaim::Owner => true,
                 ProbeClaim::Finished => {
@@ -1069,7 +1098,58 @@ mod tests {
         assert_eq!(inner.waits.load(Ordering::SeqCst), 0);
         // The owner loses the publish race and serves the nested value.
         assert_eq!(owner.finish().unwrap(), Ok(9));
-        assert_eq!(PROBE_DEPTH.with(std::cell::Cell::get), 0);
+        assert!(PROBING.with(|probing| probing.borrow().is_empty()));
+    }
+
+    /// W6 review F4: probes whose recorded inputs name each other's
+    /// repositories (a's validation demands b, b's demands a) used to
+    /// recurse until the stack overflowed. The re-entered probe is a miss,
+    /// each enclosing probe sees its input's miss and misses too, and
+    /// nothing is published; a slot whose input names itself likewise.
+    #[test]
+    fn a_probe_reentering_a_slot_it_is_probing_is_a_miss() {
+        /// The probe of `slots[index]`: its recorded input is the root of
+        /// `slots[input(index)]`. Bounded, so a regression fails instead of
+        /// overflowing the test's stack.
+        fn probe(
+            slots: &[DemandSlot<usize>],
+            index: usize,
+            input: fn(usize) -> usize,
+            calls: &AtomicUsize,
+        ) -> Result<usize, String> {
+            slots[index]
+                .get_or_probe(
+                    7,
+                    &format!("repository:{index}"),
+                    || {
+                        if calls.fetch_add(1, Ordering::SeqCst) > 64 {
+                            return Err("unbounded probe recursion".to_owned());
+                        }
+                        probe(slots, input(index), input, calls).map(|root| Some(root + 1))
+                    },
+                    || Ok(0),
+                )
+                .copied()
+        }
+        let _guard = no_demand();
+        let _reuse = reuse_only();
+        for (slots, input, probes) in [
+            (2, (|index| 1 - index) as fn(usize) -> usize, 2),
+            (1, (|index| index) as fn(usize) -> usize, 1),
+        ] {
+            let slots: Vec<DemandSlot<usize>> = (0..slots).map(|_| DemandSlot::new()).collect();
+            let calls = AtomicUsize::new(0);
+            let error = probe(&slots, 0, input, &calls).unwrap_err();
+            assert!(is_needs_repository(&error), "{error}");
+            assert_eq!(calls.load(Ordering::SeqCst), probes);
+            assert!(slots.iter().all(|slot| slot.ready().is_none()));
+            assert!(PROBING.with(|probing| probing.borrow().is_empty()));
+            // Released: the next probe of the slot runs again.
+            assert_eq!(
+                slots[0].get_or_probe(7, "repository:0", || Ok(Some(4)), || Ok(0)),
+                Ok(&4)
+            );
+        }
     }
 
     /// Invariant (a) of the prefetch overlap (docs/PARALLEL_ANALYSIS.md):
