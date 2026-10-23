@@ -210,3 +210,13 @@ Shared, loaded machine (overlayfs, 48-CPU quota): indicative, interleaved where 
   after planning pay the allocator debt the analysis left), the SDK `builder` action ~55 ms (5,975
   inputs: lstat-bound, overlayfs path lookups serialize), the `stdlib` actions ~25–35 ms, and a chain of
   ~36 small actions ~75 ms.
+- Review follow-ups (repository tree files by ctime, `opened_sha256`, process-group kill; same caches,
+  ~/code 14bd7e2): the first run after the change re-hashed the 7,354 repository-rule tree files the
+  executor reads (200.9 MB, recorded by birth time before) once and recorded them by ctime. The table
+  grew to 32,123 records / 2.83 MB: 7,343 of them are those files' old birth-time records, never
+  answered again and kept until eviction (a fresh cache never has them; deleting `<cache>/digests/`
+  drops them). Warm `oauth2token/...` build tail (no dump, interleaved ×3): base 2.91–3.25 s, before
+  the follow-ups 0.282–0.309 s, after 0.259–0.299 s (24,361 hits, 1 miss, nothing saved; peak RSS
+  1,383–1,386 MB). B2 `--nobuild`: registry trees 0 files hashed (0.091 s over 34 trees), `bazel_tools`
+  0 (0.003 s), recorded inputs 0 files hashed with `recorded_check` 0.008 s over 352 (`path_sha256`
+  now opens each recorded file once: no measurable change).
