@@ -181,7 +181,8 @@ mod values {
         /// A repository rule's printed output in order — print(), the
         /// `execute(quiet=False)` echo and the reproducibility DEBUG lines —
         /// collected for its replay record while it is printed as it
-        /// happens ([`execute`]), or only collected by a replay
+        /// happens ([`execute`]; only while the record mode's replay
+        /// capture records local executions), or only collected by a replay
         /// ([`execute_captured`]). Module extensions print and collect
         /// nothing here.
         pub output: RefCell<Vec<u8>>,
@@ -1309,12 +1310,13 @@ impl Context {
     /// One line a repository rule execution prints (`print()`, the
     /// reproducibility DEBUG lines): to stderr as it happens — exactly the
     /// evaluator's default handler's `eprintln!` — unless this is a
-    /// captured replay, and into the execution's output record.
+    /// captured replay, and into the execution's output record when one is
+    /// kept ([`Self::collects_output`]).
     fn print_line(&self, text: &str) {
         if self.live {
             eprintln!("{text}");
         }
-        if self.kind == Kind::Repository {
+        if self.collects_output() {
             let mut output = self.output.borrow_mut();
             output.extend_from_slice(text.as_bytes());
             output.push(b'\n');
@@ -1328,11 +1330,19 @@ impl Context {
         if self.live {
             crate::repository_process::echo(stdout, stderr);
         }
-        if self.kind == Kind::Repository {
+        if self.collects_output() {
             let mut output = self.output.borrow_mut();
             output.extend_from_slice(stdout);
             output.extend_from_slice(stderr);
         }
+    }
+
+    /// Whether [`Self::output`] collects what a repository rule prints: for
+    /// a replay (which never prints live) and while the record mode's
+    /// replay capture records local executions — otherwise nobody reads it,
+    /// and a chatty rule's output would only cost memory.
+    fn collects_output(&self) -> bool {
+        self.kind == Kind::Repository && (!self.live || self.repositories.records_for_replay())
     }
 
     /// Use `client` for downloads (tests: a private trust root).
@@ -3949,8 +3959,9 @@ pub struct ExecutedRepository {
     pub watch_names: Vec<String>,
     /// Everything the execution printed, in order: print(), the
     /// `execute(quiet=False)` echo and the reproducibility DEBUG lines.
-    /// [`execute`] wrote it to stderr as it happened; [`execute_captured`]
-    /// did not.
+    /// [`execute`] wrote it to stderr as it happened (and collects it only
+    /// while the record mode's replay capture records local executions:
+    /// empty otherwise); [`execute_captured`] did not.
     pub output: Vec<u8>,
     /// The execution read `repository_ctx.os.environ`. With
     /// `inputs.host_facilities` (`execute`, `which`, downloads) these are a
@@ -3975,7 +3986,8 @@ impl starlark::PrintHandler for CollectedPrints<'_> {
 ///
 /// What the rule prints reaches stderr as it happens, exactly as before
 /// (print(), the `execute(quiet=False)` echo, the reproducibility DEBUG
-/// lines), and is also collected per execution (PLAN-L2 update 1 §(b)):
+/// lines), and while the record mode's replay capture records local
+/// executions it is also collected per execution (PLAN-L2 update 1 §(b)):
 /// the bytes are returned ([`ExecutedRepository::output`], successful
 /// executions) for the replay record. Printing as it happens keeps every
 /// position in the stream, also around nested executions (a repository a
@@ -4549,6 +4561,44 @@ mod tests {
             serde_json::to_string(&ExecutionInputs::default()).unwrap(),
             r#"{"templates":[]}"#
         );
+    }
+
+    /// A live execution collects what it prints only while the record
+    /// mode's replay capture records local executions (nobody else reads
+    /// it); a captured replay always does.
+    #[test]
+    fn printed_output_is_collected_only_for_replay_records() {
+        let fixture = Fixture::new();
+        let loaded = fixture.load(
+            "print('printed')\nctx.execute(['/bin/sh', '-c', 'echo echoed'], quiet = False)\nctx.file('BUILD', '')",
+            "{}",
+        );
+        let definition = unpack(&loaded.value).unwrap();
+        let functions = loaded.functions;
+        let capturing = Arc::new(
+            RepositorySet::new(fixture.root.path().to_owned())
+                .with_source_cache(fixture.root.path().join("cache"))
+                .with_replay_capture(Arc::default()),
+        );
+        let run = |repositories: &Arc<RepositorySet>, live: bool| {
+            let stage = tempfile::tempdir_in("/tmp/opencode").unwrap();
+            let run = if live { execute } else { execute_captured };
+            run(
+                repositories.clone(),
+                &definition,
+                &functions,
+                &BTreeMap::new(),
+                "canonical+repo",
+                "original",
+                &Label::parse_canonical("//:defs.bzl").unwrap(),
+                stage.path(),
+            )
+            .unwrap()
+            .output
+        };
+        assert_eq!(run(&fixture.repositories, true), b"");
+        assert_eq!(run(&capturing, true), b"printed\nechoed\n");
+        assert_eq!(run(&fixture.repositories, false), b"printed\nechoed\n");
     }
 
     #[test]

@@ -476,6 +476,13 @@ impl RepositorySet {
         self.state.pinned.as_deref()
     }
 
+    /// Whether this set records local executions for replay (the record
+    /// mode's capture): only then is a live execution's output collected
+    /// (crate::repository_ctx).
+    pub(crate) fn records_for_replay(&self) -> bool {
+        self.state.replay.is_some()
+    }
+
     /// The replay capture, while a replay scope is open on this thread.
     fn capturing(&self) -> Option<&crate::snapshot::replay::ReplayCapture> {
         self.state
@@ -496,13 +503,15 @@ impl RepositorySet {
 
     /// A local repository rule executed (PLAN-L2 update 1 §(a)): no taint
     /// of the analysis snapshot but a replay record; printed output still
-    /// taints (v1, §(b)).
+    /// taints (v1, §(b)). `definition` (how a replay loads the rule) is
+    /// only formed while a replay capture records; a definition that cannot
+    /// be formed leaves the execution without a replay, which taints.
     #[allow(clippy::too_many_arguments)]
     fn record_local_execution(
         &self,
         canonical: &str,
         original_name: &str,
-        definition: crate::snapshot::replay::DefinitionSource,
+        definition: impl FnOnce() -> Result<crate::snapshot::replay::DefinitionSource, String>,
         rule: &repository_rule::RuleDefinition,
         definition_label: &Label,
         attributes: &BTreeMap<String, AttrValue>,
@@ -526,6 +535,15 @@ impl RepositorySet {
         };
         let Ok(source_cache) = self.source_cache_path() else {
             return;
+        };
+        let definition = match definition() {
+            Ok(definition) => definition,
+            Err(error) => {
+                crate::observed_fs::taint(crate::observed_fs::Taint::ReplayMismatch, || {
+                    format!("{canonical}: no replay record: {error}")
+                });
+                return;
+            }
         };
         capture.set_context(|| crate::snapshot::replay::CaptureContext {
             options: self.state.options.clone(),
@@ -1678,13 +1696,15 @@ impl RepositorySet {
                         provenance,
                         execute,
                     )?;
-                    let (_, symbol) = group.definition_request()?;
                     self.record_local_execution(
                         canonical,
                         &declaration.name,
-                        crate::snapshot::replay::DefinitionSource::Direct {
-                            label: prepared.label.clone(),
-                            symbol: symbol.to_owned(),
+                        || {
+                            let (_, symbol) = group.definition_request()?;
+                            Ok(crate::snapshot::replay::DefinitionSource::Direct {
+                                label: prepared.label.clone(),
+                                symbol: symbol.to_owned(),
+                            })
                         },
                         &prepared.definition,
                         &prepared.label,
@@ -2185,10 +2205,12 @@ impl RepositorySet {
                         self.record_local_execution(
                             &repository.canonical_name,
                             &repository.original_name,
-                            crate::snapshot::replay::DefinitionSource::Ordinary {
-                                rule_id: crate::lockfile_extensions::repo_rule_id(
-                                    &repository.definition.identity,
-                                )?,
+                            || {
+                                Ok(crate::snapshot::replay::DefinitionSource::Ordinary {
+                                    rule_id: crate::lockfile_extensions::repo_rule_id(
+                                        &repository.definition.identity,
+                                    )?,
+                                })
                             },
                             &repository.definition,
                             &definition_label,
