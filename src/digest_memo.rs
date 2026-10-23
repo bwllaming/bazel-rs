@@ -17,7 +17,7 @@
 //! | 16 | inode (u64) |
 //! | 24 | size (u64) |
 //! | 32 | modification time, ns since the epoch (i64) |
-//! | 40 | change slot, ns (i64): the change time (ctime), or for a file the cache owns its birth time |
+//! | 40 | change slot, ns (i64): the change time (ctime), or for a blob or published output its birth time |
 //! | 48 | SHA-256 (32 bytes) |
 //! | 80 | epoch (u32): the save that wrote the record |
 //! | 84 | flags (u32): [`OWNED`] (the change slot holds the birth time), [`TRUSTED`] |
@@ -28,23 +28,29 @@
 //! file is read, not mapped). A path hash collision is harmless: the full
 //! stat key is always compared, so a colliding record can only miss.
 //!
-//! Files the cache owns (store blobs, published outputs, repository trees:
-//! everything below the cache root) leave the change time out of their key,
-//! exactly like the executor's per-process memo, because every link() to a
-//! blob moves it; their slot holds the birth time instead (statx btime: set
-//! when the inode is created and never changed), so an inode number reused
-//! for a new file with an identical size and modification time — a tool that
+//! The executor's own files — store blobs and published outputs, the
+//! [`Area::Owned`] paths — leave the change time out of their key, exactly
+//! like the executor's per-process memo, because every link() to a blob
+//! moves it; their slot holds the birth time instead (statx btime: set when
+//! the inode is created and never changed), so an inode number reused for a
+//! new file with an identical size and modification time — a tool that
 //! fixes mtimes — can never match an old record. Where the filesystem
-//! reports no birth time such files are not persisted at all.
+//! reports no birth time such files are not persisted at all. Every other
+//! file, including those of the repository tree stores ([`Area::Tree`]), is
+//! keyed by its change time: nothing re-verifies a tree identity that a
+//! command no longer materializes (an old identity that a cached symlink
+//! output still points into), so only the change time catches an in-place
+//! edit there that kept the size and restored the modification time.
 //!
 //! A record is added only for a file that was settled when it was hashed:
-//! its mtime and ctime (mtime only for cache-owned files, as above) at least
-//! [`RACY_MARGIN`] older than the start of the read ("racy git": a later
-//! in-place change then necessarily carries a different timestamp), or for a
-//! file the executor wrote itself and made read-only (trusted). Only paths
-//! that recur across processes are recorded: files outside the cache, and
-//! below it published action outputs (`actions/...`), store blobs
-//! (`cas/<blob>`) and the files of the repository tree stores
+//! its mtime and ctime (mtime only for the executor's own files, as above)
+//! at least [`RACY_MARGIN`] older than the start of the read ("racy git": a
+//! later in-place change then necessarily carries a different timestamp), or
+//! for a file the executor wrote itself and made read-only (trusted; never a
+//! repository tree file). Only paths that recur across processes are
+//! recorded ([`Area`]): files outside the cache, and below it published
+//! action outputs (`actions/...`), store blobs (`cas/<blob>`) and the files
+//! of the repository tree stores
 //! (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<id>/...`);
 //! never execution roots (`work/`), the working areas of repository rules
 //! and extensions (`modextwd/`, `direct/stages/`), stages or temporary names.
@@ -102,7 +108,8 @@ const TEMPORARY_PREFIX: &str = ".v1.dmemo.";
 const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
 const READ_BUFFER_BYTES: usize = 1 << 20;
 
-/// Record flag: a file the cache owns; the change slot holds its birth time.
+/// Record flag: one of the executor's own files ([`Area::Owned`]); the
+/// change slot holds its birth time.
 pub const OWNED: u32 = 1;
 /// Record flag: derived from what the process already knew (an output the
 /// executor wrote itself and made read-only, or another path of an inode it
@@ -127,9 +134,53 @@ pub struct Key {
     pub inode: u64,
     pub size: u64,
     pub mtime_ns: i64,
-    /// The change time, or the birth time of a file the cache owns.
+    /// The change time, or the birth time of one of the executor's own
+    /// files (`owned`).
     pub change_ns: i64,
     pub owned: bool,
+}
+
+/// Where a path lies, for the table: whether and how it may be recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Area {
+    /// Outside the cache root: recorded by its change-time key.
+    Outside,
+    /// A published action output (`actions/<key>/...`) or a store blob
+    /// (`cas/<blob>`): read-only files the executor wrote and only ever
+    /// replaces by republication, recorded by their birth-time key
+    /// ([`OWNED`]: every link() moves their change time), also as
+    /// [`TRUSTED`].
+    Owned,
+    /// A file of a repository tree store
+    /// (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<id>/...`,
+    /// crate::action::repository_tree_rest): recorded only by its
+    /// change-time key and only as read in a settled state, never
+    /// [`TRUSTED`]. A command verifies the trees it materializes, but not a
+    /// tree identity it no longer materializes that a cached symlink output
+    /// still points into; a birth-time key would keep trusting an in-place
+    /// edit there that kept the size and restored the modification time.
+    Tree,
+    /// Anything else below the cache root (execution roots, the working
+    /// areas of repository rules and extensions, stages, temporary names,
+    /// the table itself), a relative path or one with a `..` component:
+    /// never recorded.
+    Transient,
+}
+
+/// [`Area`] of the `/`-separated names of a path below the cache root.
+fn area_below(rest: &[u8]) -> Area {
+    let published = |name: &[u8]| !name.is_empty() && !name.starts_with(b".");
+    let mut names = rest.split(|byte| *byte == b'/');
+    match (names.next(), names.next(), names.next()) {
+        (Some(b"actions"), Some(key), Some(_)) if published(key) => Area::Owned,
+        (Some(b"cas"), Some(blob), None) if published(blob) => Area::Owned,
+        // Files of the repository tree stores only, never the working areas
+        // of repository rules and extensions next to them.
+        _ if crate::action::repository_tree_rest(rest).is_some_and(|below| !below.is_empty()) => {
+            Area::Tree
+        }
+        _ => Area::Transient,
+    }
 }
 
 fn nanos(seconds: i64, nanoseconds: i64) -> Option<i64> {
@@ -141,9 +192,11 @@ fn system_nanos(time: SystemTime) -> Option<i64> {
 }
 
 impl Key {
-    /// The key of `metadata` (a stat of the file); `None` when it cannot be
-    /// represented: a timestamp outside the i64 nanosecond range, or a file
-    /// the cache owns on a filesystem that reports no birth time.
+    /// The key of `metadata` (a stat of the file), by its birth time when
+    /// `owned` (only for [`Area::Owned`] paths), else by its change time;
+    /// `None` when it cannot be represented: a timestamp outside the i64
+    /// nanosecond range, or an owned file on a filesystem that reports no
+    /// birth time.
     pub fn of(metadata: &fs::Metadata, owned: bool) -> Option<Self> {
         let mtime_ns = nanos(metadata.mtime(), metadata.mtime_nsec())?;
         let change_ns = if owned {
@@ -163,8 +216,9 @@ impl Key {
 }
 
 /// Whether a file with `metadata` was settled at `start`: its mtime and
-/// ctime (only mtime for a file the cache owns, whose ctime every link()
-/// moves) at least [`RACY_MARGIN`] older. A future timestamp is never settled.
+/// ctime (only mtime for one of the executor's own files, `owned`, whose
+/// ctime every link() moves) at least [`RACY_MARGIN`] older. A future
+/// timestamp is never settled.
 pub fn settled(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
     let mut times = vec![(metadata.mtime(), metadata.mtime_nsec())];
     if !owned {
@@ -466,8 +520,15 @@ impl Table {
         self.fresh.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The SHA-256 recorded for `path` in exactly the state `key`.
+    /// The SHA-256 recorded for `path` in exactly the state `key`. A
+    /// repository tree file is never answered by a birth-time key
+    /// ([`Area::Tree`]; records of one written before the tree stores were
+    /// keyed by change time are ignored).
     pub fn lookup(&self, path: &Path, key: &Key) -> Option<[u8; 32]> {
+        if key.owned && self.area(path) == Area::Tree {
+            STATS.misses.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         let hash = path_hash(path);
         if let Some(sha256) = self.body().find(hash, key) {
             STATS.hits.fetch_add(1, Ordering::Relaxed);
@@ -486,53 +547,60 @@ impl Table {
         found
     }
 
-    /// Whether `path` recurs across processes: outside the cache root, or
-    /// below it a published action output, a store blob or a file of a
-    /// repository tree store (crate::action::repository_tree_rest), spelled
-    /// as normal components.
-    fn recurring(&self, path: &Path) -> bool {
+    /// Where `path` lies ([`Area`]) relative to the canonical cache root:
+    /// below it only when spelled as normal components after the root.
+    pub fn area(&self, path: &Path) -> Area {
         let root = match self.root.get() {
             Some(root) => root,
             None => match fs::canonicalize(&self.cache) {
                 // Until the cache exists nothing below it is known.
-                Err(_) => return false,
+                Err(_) => return Area::Transient,
                 Ok(root) => self.root.get_or_init(|| root),
             },
         };
+        let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+        if crate::action::plain(root_bytes) && crate::action::plain(bytes) {
+            // Plain spellings (the executor's paths): the components follow
+            // from the bytes, without parsing or allocating.
+            if crate::action::has_parent_name(bytes) {
+                return Area::Transient;
+            }
+            return match crate::action::plain_rest(root_bytes, bytes) {
+                Some(rest) => area_below(rest),
+                None if bytes == root_bytes => Area::Transient,
+                None => Area::Outside,
+            };
+        }
         if !path.is_absolute()
             || path
                 .components()
                 .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
         {
-            return false;
+            return Area::Transient;
         }
         let Ok(relative) = path.strip_prefix(root) else {
-            return true;
+            return Area::Outside;
         };
         let names: Vec<&[u8]> = relative
             .components()
             .map(|component| component.as_os_str().as_bytes())
             .collect();
-        let published = |name: &[u8]| !name.starts_with(b".");
-        match names.as_slice() {
-            [b"actions", key, _, ..] => published(key),
-            [b"cas", blob] => published(blob),
-            // Files of the repository tree stores only, never the working
-            // areas of repository rules and extensions next to them.
-            _ => crate::action::repository_tree_rest(&names.join(&b'/'))
-                .is_some_and(|below| !below.is_empty()),
-        }
+        area_below(&names.join(&b'/'))
     }
 
     /// Record that `path` in the state `key` has `sha256`. The caller
     /// vouches that the file was settled when it was hashed, or (`trusted`)
     /// that the executor wrote it and made it read-only, or that it is
     /// another path of an inode recorded so; trusted records never cause a
-    /// save by themselves. Paths that do not recur, records the loaded file
-    /// already holds and anything beyond the record limit are ignored.
+    /// save by themselves. Paths that do not recur ([`Area::Transient`]), a
+    /// repository tree file by a birth-time key or as trusted
+    /// ([`Area::Tree`]), records the loaded file already holds and anything
+    /// beyond the record limit are ignored.
     pub fn remember(&self, path: &Path, key: Key, sha256: [u8; 32], trusted: bool) {
-        if !self.recurring(path) {
-            return;
+        match self.area(path) {
+            Area::Transient => return,
+            Area::Tree if key.owned || trusted => return,
+            Area::Outside | Area::Owned | Area::Tree => {}
         }
         let hash = path_hash(path);
         if self.body().find(hash, &key) == Some(sha256) {
@@ -1074,7 +1142,7 @@ mod tests {
             .unwrap()
     }
 
-    /// A synthetic key; odd seeds are cache-owned.
+    /// A synthetic key; odd seeds are owned (birth-time keys).
     fn key(seed: u64) -> Key {
         Key {
             device: 0x0102_0304_0506_0708 ^ seed,
@@ -1105,6 +1173,18 @@ mod tests {
 
     fn sha256_all(file: &mut File) -> io::Result<[u8; 32]> {
         sha256_reader(file, 0).map(|(sha256, _)| sha256)
+    }
+
+    /// Write a table of exactly these records, `(path, key, sha256, flags)`
+    /// at epoch 1, as an older binary could have written them.
+    fn write_records(cache: &Path, records: &[(&Path, Key, [u8; 32], u32)]) {
+        let mut encoded: Vec<[u8; RECORD_BYTES]> = records
+            .iter()
+            .map(|(path, key, sha256, flags)| encode(path_hash(path), key, sha256, 1, *flags))
+            .collect();
+        encoded.sort_unstable_by_key(|record| slot_of(record));
+        fs::create_dir_all(cache.join(DIRECTORY)).unwrap();
+        fs::write(table_path(cache), encode_table(&encoded.concat())).unwrap();
     }
 
     #[test]
@@ -1279,6 +1359,78 @@ mod tests {
                 Some(sha(index as u8))
             );
         }
+        let areas = [
+            (Area::Owned, 2),
+            (Area::Tree, recorded.len() - 2),
+            (Area::Transient, ignored.len()),
+        ];
+        for (area, count) in areas {
+            let names = recorded.iter().chain(&ignored);
+            let found = names
+                .filter(|name| reader.area(&root.join(name)) == area)
+                .count();
+            assert_eq!(found, count, "{area:?}");
+        }
+        assert_eq!(reader.area(&root), Area::Transient);
+        assert_eq!(reader.area(&root.join("actions/../cas/x")), Area::Transient);
+        assert_eq!(reader.area(Path::new("relative/path")), Area::Transient);
+        assert_eq!(reader.area(outside_path()), Area::Outside);
+        // Other spellings of the same paths classify alike.
+        let spelled = |name: &str| PathBuf::from(format!("{}//{name}/", root.display()));
+        assert_eq!(reader.area(&spelled("cas/0123-444")), Area::Owned);
+        assert_eq!(
+            reader.area(&spelled("repositories/trees/abc/BUILD.bazel")),
+            Area::Tree
+        );
+        assert_eq!(reader.area(&spelled("work/k1-1-0/x")), Area::Transient);
+    }
+
+    /// A path outside every test cache.
+    fn outside_path() -> &'static Path {
+        Path::new("/nonexistent-digest-memo-test/file")
+    }
+
+    #[test]
+    fn repository_tree_files_are_recorded_by_change_time_only() {
+        let cache = temp();
+        let root = fs::canonicalize(cache.path()).unwrap();
+        let tree_file = root.join("repositories/direct/trees/abc/value");
+        let blob = root.join("cas/0123-444");
+        let (owned, external) = (key(1), key(2));
+        let table = Table::new(cache.path());
+        // Not by its birth time, not as trusted: nothing to save.
+        table.remember(&tree_file, owned, sha(1), false);
+        table.remember(&tree_file, external, sha(2), true);
+        assert_eq!(table.save().unwrap(), Saved::Nothing);
+        // By its change time, as read; a blob by its birth time, trusted.
+        table.remember(&tree_file, external, sha(3), false);
+        table.remember(&blob, owned, sha(4), true);
+        assert!(matches!(
+            table.save().unwrap(),
+            Saved::Written {
+                records: 2,
+                written: 2,
+                ..
+            }
+        ));
+        let reader = Table::new(cache.path());
+        assert_eq!(reader.lookup(&tree_file, &external), Some(sha(3)));
+        assert_eq!(reader.lookup(&blob, &owned), Some(sha(4)));
+        // Birth-time records of tree files, as the executor wrote them
+        // before tree files were keyed by change time, never answer.
+        write_records(
+            cache.path(),
+            &[
+                (&tree_file, owned, sha(5), 0),
+                (&tree_file, external, sha(6), 0),
+                (&blob, owned, sha(7), TRUSTED),
+            ],
+        );
+        let reader = Table::new(cache.path());
+        assert_eq!(reader.loaded().1, 3);
+        assert_eq!(reader.lookup(&tree_file, &owned), None);
+        assert_eq!(reader.lookup(&tree_file, &external), Some(sha(6)));
+        assert_eq!(reader.lookup(&blob, &owned), Some(sha(7)));
     }
 
     #[test]
@@ -1297,7 +1449,7 @@ mod tests {
             false
         ));
         // An old mtime with a fresh ctime (what every link() to a store blob
-        // leaves) is settled only for a file the cache owns.
+        // leaves) is settled only for an owned file (a blob, an output).
         File::options()
             .write(true)
             .open(&path)

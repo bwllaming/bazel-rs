@@ -59,10 +59,11 @@
 //!
 //! Only bazel-rs writes these areas, so an edit made there while a command
 //! runs, after its first look, is not seen again by that command (the next
-//! one starts with empty per-process memos and re-verifies the repository
-//! trees); staging still checks the digest of every blob it links
-//! (docs/HARDLINK_STAGING.md, "Per-process memos"; across commands:
-//! docs/DIGEST_MEMO.md, "Trust").
+//! one starts with empty per-process memos, re-verifies the repository trees
+//! it materializes and takes repository tree files from the persistent
+//! digest memo only by their change time); staging still checks the digest
+//! of every blob it links (docs/HARDLINK_STAGING.md, "Per-process memos";
+//! across commands: docs/DIGEST_MEMO.md, "Trust").
 //! Workspace files and every other path outside the cache keep the full
 //! checks on every use. Many inputs (or tree files) are read and hashed on
 //! several threads (`try_map_ordered`, helpers from one process-wide budget
@@ -650,7 +651,7 @@ fn remember_directory(path: PathBuf) {
 /// spelled so; for two plain paths, `Path::strip_prefix` and the components
 /// of its result follow from the bytes ([`plain_rest`]), without parsing
 /// components or allocating (the per-input checks of a 6,000-input action).
-fn plain(bytes: &[u8]) -> bool {
+pub(crate) fn plain(bytes: &[u8]) -> bool {
     bytes.first() == Some(&b'/')
         && !bytes.ends_with(b"/")
         && !bytes.ends_with(b"/.")
@@ -661,12 +662,12 @@ fn plain(bytes: &[u8]) -> bool {
 /// For [`plain`] `root` and `path`: the bytes of `path.strip_prefix(root)`
 /// when `path` lies strictly below `root` (its components are then the
 /// `/`-separated names, none empty), else `None`.
-fn plain_rest<'a>(root: &[u8], path: &'a [u8]) -> Option<&'a [u8]> {
+pub(crate) fn plain_rest<'a>(root: &[u8], path: &'a [u8]) -> Option<&'a [u8]> {
     path.strip_prefix(root)?.strip_prefix(b"/")
 }
 
 /// Whether `/`-separated names include `..`.
-fn has_parent_name(names: &[u8]) -> bool {
+pub(crate) fn has_parent_name(names: &[u8]) -> bool {
     names.split(|byte| *byte == b'/').any(|name| name == b"..")
 }
 
@@ -818,12 +819,14 @@ fn real_directory(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, Str
 /// Identity of a file state for the digest memo, after Bazel's
 /// DigestUtils.CacheKey (vfs/DigestUtils.java:36-60: node id, change time,
 /// modification time and size). Files owned by the cache (store blobs,
-/// published outputs) leave out the change time: hardlinking a blob updates
-/// it constantly, while its bytes are immutable and verified. They keep
-/// their birth time in its place (`(0, 0)` where the filesystem reports
-/// none): link() leaves it alone, and an inode number reused for a new file
-/// gets a new one, so equal sizes and modification times (tools that fix
-/// mtimes) cannot alias it with a deleted file (crate::digest_memo).
+/// published outputs, repository tree files: everything below the cache
+/// root) leave out the change time: hardlinking a blob updates it
+/// constantly, while its bytes are immutable and verified. They keep their
+/// birth time in its place (`(0, 0)` where the filesystem reports none):
+/// link() leaves it alone, and an inode number reused for a new file gets a
+/// new one, so equal sizes and modification times (tools that fix mtimes)
+/// cannot alias it with a deleted file. (The persistent memo keys
+/// repository tree files by their change time: [`hash_file_from`].)
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct FileKey {
     device: u64,
@@ -919,6 +922,16 @@ fn hash_file(
 /// command installed one), else from reading the file; a settled or trusted
 /// result enters both (the persistent one only for paths that recur across
 /// processes: never an execution root).
+///
+/// The persistent memo keys a file of a repository tree store by its change
+/// time, unlike the per-process memo (crate::digest_memo::Area::Tree): this
+/// command verified the trees it materialized, but a published symlink
+/// output can still point into a tree identity that no command verifies any
+/// more, where an in-place edit can keep the size and restore the mtime.
+/// Such a file enters the persistent memo only from a read of a state
+/// settled by both times and left unchanged by the read — never as trusted
+/// and never from a per-process entry, which outlives such an edit made
+/// while the command runs.
 fn hash_file_from(
     path: &Path,
     before: fs::Metadata,
@@ -926,18 +939,26 @@ fn hash_file_from(
     trusted: bool,
 ) -> Result<(Sha256Digest, fs::Metadata), String> {
     let key = file_key(&before, owned);
-    let table = crate::digest_memo::installed()
-        .and_then(|table| Some((table, crate::digest_memo::Key::of(&before, owned)?)));
+    // (table, its key, whether `path` is a repository tree file).
+    let table = crate::digest_memo::installed().and_then(|table| {
+        let tree = owned && table.area(path) == crate::digest_memo::Area::Tree;
+        Some((
+            table,
+            crate::digest_memo::Key::of(&before, owned && !tree)?,
+            tree,
+        ))
+    });
     if let Some(digest) = memoized_digest(&key) {
         // An inode this process already knows, maybe through another path
         // (a published output and its blob): remember it under this one
         // (trusted: derived knowledge, which never causes a save by itself).
-        if let Some((table, table_key)) = &table {
+        // Not a tree file (see above).
+        if let Some((table, table_key, false)) = &table {
             table.remember(path, *table_key, digest.0, true);
         }
         return Ok((digest, before));
     }
-    if let Some((table, table_key)) = &table
+    if let Some((table, table_key, _)) = &table
         && let Some(sha256) = table.lookup(path, table_key)
     {
         let digest = Sha256Digest(sha256);
@@ -973,11 +994,24 @@ fn hash_file_from(
         ));
     }
     let digest = Sha256Digest(hash.finalize().into());
-    if trusted || racy_safe(&after, start, owned) {
+    let memoized = trusted || racy_safe(&after, start, owned);
+    if memoized {
         remember_digest(key, digest);
-        if let Some((table, table_key)) = table {
+    }
+    match table {
+        // A tree file: settled by its change time as well, which the read
+        // left unchanged; never trusted.
+        Some((table, table_key, true)) => {
+            if racy_safe(&after, start, false)
+                && crate::digest_memo::Key::of(&after, false) == Some(table_key)
+            {
+                table.remember(path, table_key, digest.0, false);
+            }
+        }
+        Some((table, table_key, false)) if memoized => {
             table.remember(path, table_key, digest.0, trusted);
         }
+        _ => {}
     }
     Ok((digest, before))
 }

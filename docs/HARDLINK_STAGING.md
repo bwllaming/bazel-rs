@@ -90,7 +90,8 @@ the cache are memoized only when their timestamps are at least 2 s older than
 the start of hashing ("racy git"), so a same-size rewrite within the
 filesystem's timestamp granularity is never missed; files the cache owns are
 keyed without ctime and memoized when written. Since L2-W2 the digests also
-persist across commands (docs/DIGEST_MEMO.md).
+persist across commands, there keyed with the ctime of repository tree files
+(docs/DIGEST_MEMO.md).
 
 ## Per-process memos (L2-W1)
 
@@ -120,14 +121,18 @@ The memos are bounded (256 Ki entries each, a few hundred MB at most in all;
 a memo that would exceed its cap starts over).
 
 **Trust.** These areas are written only by bazel-rs: published outputs and
-blobs are read-only and replaced only by republication, and a repository
-tree is verified when this command materializes it (before any action runs)
-and only ever replaced as a whole. An edit under
-`<cache>/{actions,cas,repositories/<tree stores>}` made while a command runs,
-after its memos took their first look, is therefore not re-detected by that
-command; the next command starts with empty per-process memos and verifies
-the repository trees again (what it takes from the persistent digest memo:
-docs/DIGEST_MEMO.md, "Trust"). Staging still verifies
+blobs are read-only and replaced only by republication, and repository
+trees are only ever replaced as a whole; the trees a command materializes
+are verified before any action runs. Not every tree file an action reads is
+in such a tree: a cached `actions.symlink` output can point into an older
+identity of a repository that no command materializes or verifies any more.
+An edit under `<cache>/{actions,cas,repositories/<tree stores>}` made while
+a command runs, after its memos took their first look, is not re-detected by
+that command; the next command starts with empty per-process memos,
+verifies the trees it materializes again, and takes a repository tree
+file's digest from the persistent digest memo only for the file's exact
+change time, so it also re-reads an edited file of an old identity
+(docs/DIGEST_MEMO.md, "Trust"). Staging still verifies
 what it links: an existing blob by mode, size and digest, a new blob by a
 digest-checked copy (a file the cache owns that already has the blob's mode
 is hardlinked instead and its digest checked after linking), both through
@@ -187,8 +192,9 @@ written into the execution root and published through this store.)
 * The digest memo trusts a cache-owned file (blob, published output) by its
   mtime alone, since every link() to it bumps its ctime (keyed by inode,
   size, mtime and birth time). Since L2-W2 such digests also persist across
-  commands; repository tree files are re-verified with their ctime by every
-  command (docs/DIGEST_MEMO.md, "Trust").
+  commands; repository tree files persist only with their ctime, because a
+  command verifies only the trees it materializes (docs/DIGEST_MEMO.md,
+  "Trust").
 
 ## Benchmark
 

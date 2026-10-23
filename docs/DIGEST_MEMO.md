@@ -30,7 +30,7 @@ followed by `count` fixed-width 88-byte records, sorted strictly by (path hash, 
 | 16 | inode (u64) |
 | 24 | size (u64) |
 | 32 | modification time, ns since the epoch (i64) |
-| 40 | change slot, ns (i64): the ctime; for a file the cache owns its birth time (below) |
+| 40 | change slot, ns (i64): the ctime; for a blob or a published output its birth time (below) |
 | 48 | SHA-256 (32 bytes) |
 | 80 | epoch (u32): the save that wrote the record |
 | 84 | flags (u32): 1 = OWNED, 2 = TRUSTED |
@@ -44,26 +44,29 @@ every upgrade.
 
 ## Keys
 
-- Files outside the cache: (device, inode, size, mtime, ctime), exactly `DigestUtils.CacheKey`. Any
-  rewrite, `touch`, chmod or rename-over changes the key — also a same-size rewrite that restores the
-  mtime (`touch -d`), through the ctime.
-- Files the cache owns (store blobs, published outputs, repository trees: everything below the cache root):
-  the executor hardlinks blobs constantly and every `link()` moves the inode's ctime, so the ctime is left
-  out, as in the per-process memo. The slot holds the statx birth time instead: `link()` leaves it alone
-  and an inode number reused for a new file gets a new one, so equal sizes and modification times (tools
-  that fix mtimes, archive extraction) can never alias a deleted file. Where the filesystem reports no
-  birth time such files are not persisted.
-- Repository verification (registry trees, `bazel_tools`, recorded repository inputs) always uses the
-  external key (with ctime), the same strength as `repository_store`'s Stat-mode fingerprints.
+- Files outside the cache and the files of the repository tree stores
+  (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`): (device, inode, size,
+  mtime, ctime), exactly `DigestUtils.CacheKey`. Any rewrite, `touch`, chmod or rename-over changes the
+  key — also a same-size rewrite that restores the mtime (`touch -d`), through the ctime. Repository
+  verification (registry trees, `bazel_tools`, recorded repository inputs; the same strength as
+  `repository_store`'s Stat-mode fingerprints) and the executor use and share these records.
+- The executor's own files, store blobs (`cas/<blob>`) and published outputs (`actions/<key>/...`; flag
+  OWNED): the executor hardlinks blobs constantly and every `link()` moves the inode's ctime, so the
+  ctime is left out, as in the per-process memo. The slot holds the statx birth time instead: `link()`
+  leaves it alone and an inode number reused for a new file gets a new one, so equal sizes and
+  modification times (tools that fix mtimes, archive extraction) can never alias a deleted file. Where
+  the filesystem reports no birth time such files are not persisted. A birth-time key of any other path
+  is neither recorded nor answered (`Table::remember`, `Table::lookup`).
 
 ## What is recorded
 
-- Only a file that was settled when it was read: its mtime and ctime (mtime only for cache-owned files)
-  at least 2 s older than the start of the read ("racy git", the margin of `action::RACY_MARGIN` and
-  `repository_store`'s fingerprints) and unchanged after the read. A later in-place change then
-  necessarily carries a different timestamp.
+- Only a file that was settled when it was read: its mtime and ctime (mtime only for blobs and
+  published outputs) at least 2 s older than the start of the read ("racy git", the margin of
+  `action::RACY_MARGIN` and `repository_store`'s fingerprints) and unchanged after the read. A later
+  in-place change then necessarily carries a different timestamp.
 - Or a file the executor wrote itself and made read-only (TRUSTED: a published output), and other paths
-  of an inode the process hashed (a published output and its blob).
+  of an inode the process hashed (a published output and its blob). Never a repository tree file: those
+  only as read in a settled state.
 - Only paths that recur across commands: files outside the cache root, and below it published action
   outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and the files of the repository tree stores
   (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`); never execution roots
@@ -85,7 +88,7 @@ records (unit test `concurrent_saves_lose_no_records`).
 
 | consumer | where | key |
 |---|---|---|
-| executor: action inputs, cache checks of published outputs, store blobs | `action::hash_file_from` (the funnel of `hash_file`, `read_regular[_from]`, `blob_valid`, `ensure_blob`): per-process memo → table → read | owned / external |
+| executor: action inputs, cache checks of published outputs, store blobs | `action::hash_file_from` (the funnel of `hash_file`, `read_regular[_from]`, `blob_valid`, `ensure_blob`): per-process memo → table → read | owned (blobs, published outputs) / external (everything else, repository tree files included) |
 | registry module trees, warm check | `materializer::tree_matches` (walk as `snapshot`, digests via the table) | external |
 | embedded `bazel_tools` tree, warm check | `builtin_tools::verified_warm` | external |
 | repository-rule inputs: `watch`, `read` of watched files, and their warm revalidation (`repository_warm::unchanged`) | `repository_ctx::file_state` → the in-process `FileDigestMemo` (docs/REPOSITORY_WARM_PERF.md) → on a miss the table (lookup by the opened file's fstat; a settled read that kept its stat is recorded) | external |
@@ -97,11 +100,11 @@ Stat-mode fingerprints in their manifests (`repository_store::verify_snapshot_at
 
 ## Trust (with the executor's per-process memos)
 
-The executor reads a repository tree file once per command and trusts it from then on, because the
-command verified the tree when it materialized it, before any action ran (L2-W1,
-docs/HARDLINK_STAGING.md, "Per-process memos"). With the table that verification no longer reads every
-file of a registry or `bazel_tools` tree, but it stays exactly as strong as `repository_store`'s Stat
-mode, because it keys by the change time:
+The executor reads a repository tree file once per command and trusts it from then on (L2-W1,
+docs/HARDLINK_STAGING.md, "Per-process memos"): the command verified the trees it materialized before
+any action ran. With the table that verification no longer reads every file of a registry or
+`bazel_tools` tree, but it stays exactly as strong as `repository_store`'s Stat mode, because it keys by
+the change time — and so does the executor, for every repository tree file:
 
 - **Next command: an edited tree file is caught.** A file of a tree store edited in place between
   commands, even with the same size and its modification time restored, has a new ctime. The next
@@ -109,19 +112,31 @@ mode, because it keys by the change time:
   the tree before any action runs: registry trees and `bazel_tools` are extracted afresh; a
   repository rule's tree fails its Stat fingerprint (ctime), so the rule runs again and the publication
   replaces the damaged tree; Git trees are hashed in full on every warm check anyway. The executor then
-  reads new inodes, which its own records never match (cache-owned files are keyed by inode and birth
-  time, below), so it hashes them. CLI test
+  reads new inodes, which its records never match, so it hashes them. CLI test
   `edited_repository_tree_files_are_caught_by_the_next_command` (both a repository rule's tree and
   `bazel_tools`; it fails if the verification's key leaves out the ctime).
-- **Within one command: unchanged.** The executor's memos and their trust are those of L2-W1: an edit
-  made while a command runs, after the command looked at the file, is not re-detected by that command.
-  The table only supplies a file's first digest in exactly the state it was recorded in; for a file
-  the cache owns that is the same device, inode, size, modification time and birth time, and for a
-  repository tree file it is reached only after this command verified the tree.
-- **The executor's own key omits the ctime** of cache-owned files (every `link()` of a blob moves it):
-  for repository tree files it relies on the verification that every command runs before execution.
-  Anything that skips that verification (for instance reusing analysis results without materializing
-  the repositories again) must key tree files by ctime in the executor, or verify them.
+- **Tree identities no command verifies any more are keyed by ctime, too.** A command verifies only the
+  trees it materializes. A cached `actions.symlink` output keeps pointing into the tree identity it was
+  created with (its action key holds the target's digest, not its path): after a change that gives the
+  repository a new identity but leaves the file's bytes alone, its cache check reads the file of the
+  old identity, which nothing verifies. With the executor's records keyed by birth time (L2-W2 before
+  the review follow-ups) a same-size edit of that file that restored its mtime was answered from the
+  table — 0 actions executed, and the symlink resolved to the edited bytes — while without the table
+  the symlink action ran again. The executor therefore looks tree files up and records them by the
+  change time, only from a read of a state that was settled by both times and that the read left
+  unchanged; never as TRUSTED, and never from its per-process memo, whose entries leave the ctime out and
+  can predate an edit made while the command runs. CLI test
+  `symlinks_into_an_old_tree_identity_see_edits_that_restore_the_mtime` (fails with birth-time keys).
+  The same holds for anything else that reaches tree files without verifying their tree (for instance
+  analysis results reused without materializing the repositories again). The price: a tree file with a
+  blob's mode (`0444`/`0555`, only possible for repository rules' trees) is hardlinked into `cas/` by
+  staging, so its ctime moves whenever it is staged and the next command hashes it once (as
+  `repository_store`'s fingerprint check already did).
+- **Within one command: unchanged.** The executor's per-process memos and their trust are those of
+  L2-W1: an edit made while a command runs, after the command looked at the file, is not re-detected by
+  that command. The table only supplies a file's first digest in exactly the state it was recorded in:
+  for a blob or a published output the same device, inode, size, modification time and birth time, for
+  a repository tree file the same device, inode, size, modification time and change time.
 - **Blobs and published outputs** (`cas/`, `actions/`) have no second check: they are read-only, and an
   in-place edit that keeps their size, mtime and mode (after a `chmod`) is trusted by later commands
   too, where before the table only the rest of the command trusted it (as the per-process memo always

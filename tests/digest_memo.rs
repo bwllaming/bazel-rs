@@ -6,7 +6,9 @@
 //! differs); a corrupt table is ignored and replaced; with
 //! `BAZEL_RS_DIGEST_MEMO=off` the table is neither read nor written. A
 //! repository tree file edited that way is caught by the next command's
-//! repository verification, which replaces the tree before execution.
+//! repository verification, which replaces the tree before execution, and
+//! by the executor's change-time key in a tree identity that nothing
+//! verifies any more (a cached symlink output still points into it).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -181,9 +183,9 @@ fn edit_keeping_size_and_mtime(path: &Path) {
     file.set_modified(modified).unwrap();
 }
 
-/// The only published directory in `directory` (a tree store).
-fn only_entry(directory: &Path) -> PathBuf {
-    let entries: Vec<PathBuf> = fs::read_dir(directory)
+/// The published directories in `directory` (a tree store).
+fn entries(directory: &Path) -> Vec<PathBuf> {
+    fs::read_dir(directory)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| {
@@ -194,7 +196,12 @@ fn only_entry(directory: &Path) -> PathBuf {
                     .as_encoded_bytes()
                     .starts_with(b".")
         })
-        .collect();
+        .collect()
+}
+
+/// The only published directory in `directory` (a tree store).
+fn only_entry(directory: &Path) -> PathBuf {
+    let entries = entries(directory);
     assert_eq!(entries.len(), 1, "{entries:?}");
     entries.into_iter().next().unwrap()
 }
@@ -292,8 +299,8 @@ fn later_processes_take_unchanged_digests_from_the_table() {
 /// it has no record of, keyed by the change time: a tree file edited in
 /// place between commands — same size, modification time restored — is
 /// caught by the next command, which replaces the tree before any action
-/// reads it; the executor then hashes the new files (its own records of
-/// cache-owned files, keyed by inode and birth time, never match them).
+/// reads it; the executor then hashes the new files (its records, keyed by
+/// inode and change time, never match them).
 /// Both a repository rule's tree (`repositories/direct/trees`) and the
 /// embedded `bazel_tools` (`repositories/builtins/trees`).
 #[test]
@@ -373,4 +380,88 @@ fn edited_repository_tree_files_are_caught_by_the_next_command() {
         .sum();
     assert!(files >= 2 && bytes >= tree_bytes, "{}", next.stderr);
     assert_eq!(fs::read(next.output("uses.txt")).unwrap(), expected);
+}
+
+/// A cached `actions.symlink` output keeps pointing into the repository
+/// tree identity it was created with: its action key holds the target's
+/// digest, not its path, so a new identity with the same file content is a
+/// cache hit, and no command verifies the old identity any more. Its cache
+/// check reads the old file through the table, which must therefore key
+/// repository tree files by their change time: a same-size edit there that
+/// restores the modification time is caught (the symlink action runs again
+/// and now points into the current identity), as without the table.
+#[test]
+fn symlinks_into_an_old_tree_identity_see_edits_that_restore_the_mtime() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "MODULE.bazel",
+        "module(name = 'stale_identity_fixture')\n\
+         maker = use_repo_rule('//:rules.bzl', 'maker')\n\
+         maker(name = 'direct_repo')\n",
+    );
+    // The tree's identity follows version.txt; `value` never changes.
+    workspace.write(
+        "rules.bzl",
+        "def _make(ctx):\n\
+         \x20   ctx.file('BUILD.bazel', \"exports_files(['value', 'version'])\")\n\
+         \x20   ctx.file('value', 'constant\\n', executable = False)\n\
+         \x20   ctx.file('version', ctx.read(Label('//:version.txt')), executable = False)\n\
+         \n\
+         maker = repository_rule(implementation = _make)\n",
+    );
+    workspace.write(
+        "link.bzl",
+        "def _impl(ctx):\n\
+         \x20   out = ctx.actions.declare_file(ctx.label.name + '.txt')\n\
+         \x20   ctx.actions.symlink(output = out, target_file = ctx.file.src)\n\
+         \x20   return [DefaultInfo(files = depset([out]))]\n\
+         \n\
+         link = rule(implementation = _impl, attrs = {'src': attr.label(allow_single_file = True)})\n",
+    );
+    workspace.write("version.txt", "v1\n");
+    workspace.write(
+        "BUILD.bazel",
+        "load(':link.bzl', 'link')\n\
+         exports_files(['version.txt'])\n\
+         link(name = 'linked', src = '@direct_repo//:value')\n\
+         genrule(name = 'one', srcs = [':linked'], outs = ['one.txt'], cmd = 'cat $< > $@')\n",
+    );
+    let build = || workspace.run(&["build", "//:one", "//:linked"], &[]);
+    let target = |run: &Run| fs::read_link(run.output("linked.txt")).unwrap();
+    let trees = workspace.path().join("cache/repositories/direct/trees");
+    let cold = build();
+    cold.shows("2 actions executed");
+    let old = target(&cold);
+    assert_eq!(old, only_entry(&trees).join("value"));
+    settle();
+    // Settled now: this build records the tree file (by its change time).
+    build().shows("0 actions executed");
+    settle();
+    // A new identity with the same `value`: the symlink action is a cache
+    // hit and still points into the old identity.
+    workspace.write("version.txt", "v2\n");
+    let bumped = build();
+    bumped.shows("0 actions executed");
+    assert_eq!(target(&bumped), old);
+    let current: Vec<PathBuf> = entries(&trees)
+        .into_iter()
+        .map(|identity| identity.join("value"))
+        .filter(|value| *value != old)
+        .collect();
+    assert_eq!(current.len(), 1, "{current:?}");
+    settle();
+    edit_keeping_size_and_mtime(&old);
+    let next = build();
+    // Caught: the symlink action ran again and points into the current
+    // identity; the consumer's input digest is unchanged (a cache hit).
+    next.shows("1 actions executed");
+    assert_eq!(target(&next), current[0]);
+    assert_eq!(
+        fs::read_to_string(next.output("linked.txt")).unwrap(),
+        "constant\n"
+    );
+    assert_eq!(
+        fs::read_to_string(next.output("one.txt")).unwrap(),
+        "constant\n"
+    );
 }
