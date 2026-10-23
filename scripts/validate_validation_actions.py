@@ -130,6 +130,13 @@ def _materialized(workspace):
                 relative = str(path.relative_to(cache))
                 if relative == 'manifest.json':
                     continue
+                # The workspace status files materialize on every executing
+                # build (N63 follow-up, after this receipt was frozen); they
+                # are not validation outputs (tests/validation_actions.rs
+                # drops them the same way).
+                if relative in ('bazel-out/stable-status.txt',
+                                'bazel-out/volatile-status.txt'):
+                    continue
                 if '/bin/' in relative:
                     relative = relative.split('/bin/', 1)[1]
                 found.setdefault(relative, path.read_text('utf-8', 'replace'))
