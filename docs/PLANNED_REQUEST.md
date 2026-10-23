@@ -117,7 +117,7 @@ L2-W5 embeds these bytes as the PLAN section of its snapshot file.
 
 | Variable | Effect |
 |---|---|
-| `BAZEL_RS_SNAPSHOT_ROUNDTRIP=1` | every full-analysis request is encoded, decoded and re-encoded (the bytes must be identical, else an internal error) and the **decoded** request executes. The CLI harnesses that clear the environment forward it like `BAZEL_RS_VERIFY_*` (tests/support/verify_env.rs), so `cargo test` with it exported executes every build of the suite from a decoded plan. |
+| `BAZEL_RS_SNAPSHOT_ROUNDTRIP=1` | every full-analysis request is encoded, the planned request dropped, the encoding decoded, and the decoded request re-encoded section by section (it must be identical, else an internal error); the **decoded** request executes. The CLI harnesses that clear the environment forward it like `BAZEL_RS_VERIFY_*` (tests/support/verify_env.rs), so `cargo test` with it exported executes every build of the suite from a decoded plan. Its cost on B2: about 0.1 s and +75–85 MB of peak RSS (the 44.7 MB encoding and a chunk's re-encoding alive with the decoded plan). |
 | `BAZEL_RS_SNAPSHOT_PLAN_OUT=<file>` | write the encoding to the file (the determinism gate compares it across thread counts and jitter seeds) |
 | `BAZEL_RS_SNAPSHOT=record` | also encodes and decodes once for the report's `plan:` line |
 | `BAZEL_RS_TIMING=1` with any of the above | a `PERF-PLAN nodes=… bytes=… meta=… chunks=… encode_ms=… decode_ms=… roundtrip=0|1` line |

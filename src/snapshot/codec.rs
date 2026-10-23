@@ -121,10 +121,9 @@ pub fn encode(request: &PlannedRequest) -> Result<Vec<u8>, EncodeError> {
     encode_with_stats(request).map(|(bytes, _)| bytes)
 }
 
-/// [`encode`], with its sizes and time.
-pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), EncodeError> {
-    let start = Instant::now();
-    let meta = postcard::to_stdvec(&Meta {
+/// The META section's content of `request`.
+fn meta_of(request: &PlannedRequest) -> Meta<'_> {
+    Meta {
         command: &request.command,
         execute: request.execute,
         requested: &request.requested,
@@ -135,8 +134,14 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
         warnings: &request.warnings,
         errors: &request.errors,
         build_info: &request.build_info,
-    })
-    .map_err(|error| postcard_error(error, "the request outline"))?;
+    }
+}
+
+/// [`encode`], with its sizes and time.
+pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), EncodeError> {
+    let start = Instant::now();
+    let meta = postcard::to_stdvec(&meta_of(request))
+        .map_err(|error| postcard_error(error, "the request outline"))?;
     let chunks = request
         .nodes
         .chunks(CHUNK)
@@ -201,6 +206,28 @@ fn not_serializable_reason(chunk: &[PlannedAction], error: postcard::Error) -> S
         error.to_string()
     };
     format!("action '{}': {reason}", node.action.id)
+}
+
+/// Whether `request` encodes to exactly `bytes`, checked one section at a
+/// time (the round trip's check, without a second copy of the encoding).
+fn encodes_to(request: &PlannedRequest, bytes: &[u8]) -> Result<bool, String> {
+    fn encoded<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, String> {
+        postcard::to_stdvec(value).map_err(|error| error.to_string())
+    }
+    let sections = sections(bytes)?;
+    if encoded(&meta_of(request))? != sections.meta {
+        return Ok(false);
+    }
+    let chunks: Vec<&[PlannedAction]> = request.nodes.chunks(CHUNK).collect();
+    if chunks.len() != sections.nodes.len() {
+        return Ok(false);
+    }
+    for (chunk, section) in chunks.into_iter().zip(sections.nodes) {
+        if encoded(chunk)? != section {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The container's sections, borrowed: the META section and the NODES chunks.
@@ -363,31 +390,37 @@ pub fn hand_over(request: PlannedRequest) -> Result<PlannedRequest, String> {
             path.to_string_lossy()
         ));
     }
-    let result = if roundtrip || record {
+    let result = if roundtrip {
+        // The decoded request executes: the planned one is not needed any
+        // more (one copy of the plan in memory, as on a hit).
+        drop(request);
         let start = Instant::now();
         let decoded = decode(&bytes).map_err(|error| {
             format!("internal error: the planned request does not decode: {error}")
         })?;
         stats.decode = Some(start.elapsed());
-        if roundtrip {
-            let again = encode(&decoded).map_err(|error| {
-                format!("internal error: the decoded planned request does not encode: {error}")
-            })?;
-            if again != bytes {
-                return Err(format!(
-                    "internal error: the planned request does not round-trip ({} bytes encoded, {} bytes after decoding)",
-                    bytes.len(),
-                    again.len()
-                ));
-            }
-            decoded
-        } else {
-            drop(decoded);
-            request
+        let same = encodes_to(&decoded, &bytes).map_err(|error| {
+            format!("internal error: the decoded planned request does not encode: {error}")
+        })?;
+        if !same {
+            return Err(format!(
+                "internal error: the planned request does not round-trip ({} bytes encoded)",
+                bytes.len()
+            ));
         }
+        decoded
+    } else if record {
+        let start = Instant::now();
+        let decoded = decode(&bytes).map_err(|error| {
+            format!("internal error: the planned request does not decode: {error}")
+        })?;
+        stats.decode = Some(start.elapsed());
+        drop(decoded);
+        request
     } else {
         request
     };
+    drop(bytes);
     perf_line(&format!(
         "nodes={} bytes={} meta={} chunks={} encode_ms={:.3} decode_ms={} roundtrip={}",
         stats.nodes,
@@ -1156,6 +1189,22 @@ mod tests {
             format!("//pkg:w#{}", 2 * CHUNK + 4)
         );
         assert_eq!(encode(&decoded).unwrap(), bytes);
+    }
+
+    /// The round trip's section-by-section check sees any difference.
+    #[test]
+    fn the_round_trip_check_compares_every_section() {
+        let mut request = sample();
+        let bytes = encode(&request).unwrap();
+        assert!(encodes_to(&request, &bytes).unwrap());
+        request.warnings.push("another".into());
+        assert!(!encodes_to(&request, &bytes).unwrap());
+        let mut request = sample();
+        request.nodes[3].action.id.push('x');
+        assert!(!encodes_to(&request, &bytes).unwrap());
+        let mut request = sample();
+        request.nodes.pop();
+        assert!(!encodes_to(&request, &bytes).unwrap());
     }
 
     #[test]
