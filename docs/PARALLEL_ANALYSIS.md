@@ -694,6 +694,19 @@ ever ran while the coordinator waited; prefetch workers run beside it.
   aborts with the sentinel and the coordinator decides at the sequential
   point. (This also closes the same order dependence for P2 workers.)
 
+**One warm probe per repository.** Workers fan out over the packages of
+one repository at once, and each used to run the slot's warm-reuse probe
+(manifest, recorded inputs, stat walk of the tree) itself; on ~/code at 16
+workers that verified 2.3–2.6x the files of the sequential run (oauth2token
+114k vs 48k files, B2 219k vs 84k; 3–7 s of worker time). A top-level
+probe now claims the slot (`DemandSlot::get_or_probe`); another top-level
+prober waits for it and is served by its publication, or misses with it.
+A probe nested in another probe (a recorded input in another repository)
+never waits — it probes on its own as before, so probe waits cannot form
+a cycle — and a wait is capped at 1 s (`PROBE_WAIT`; probes only read).
+The coordinator never probes (it evaluates). Verification volume is the
+sequential run's again (oauth2token 48.4k files at 16 workers, B2 84.3k).
+
 **Telemetry.** With `BAZEL_RS_TIMING=1`, `PERF-PREFETCH workers= loaded=
 aborted= retried= taken= waited= wait= missed= unused=` at the end of
 phase 1 (`wait`: the coordinator's total wait for units a worker was still

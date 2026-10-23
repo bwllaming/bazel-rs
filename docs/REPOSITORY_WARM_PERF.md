@@ -143,7 +143,10 @@ loading workers inside the no-demand guard):
   miss returns the sentinel WITHOUT populating the slot — the coordinator
   fetches inline at the commit slot, in demand/pattern order, exactly as
   before. Errors, prints and first-error-wins are untouched: probes never
-  print, never execute a rule, never evaluate an extension.
+  print, never execute a rule, never evaluate an extension. Since W6 one
+  top-level probe per slot runs at a time: concurrent top-level probers
+  wait for it (nested probes never wait; see PARALLEL_ANALYSIS.md, "One
+  warm probe per repository").
 - `repository_store::try_reuse` is the shared warm probe (pointer →
   manifest → recorded-input validate → stat verify), also used by
   `materialize_keyed` itself.
