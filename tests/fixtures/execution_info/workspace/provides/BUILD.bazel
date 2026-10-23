@@ -1,0 +1,69 @@
+load(
+    ":defs.bzl",
+    "env_binary",
+    "flag",
+    "host_alias",
+    "instrumented",
+    "missing_env",
+    "missing_flag",
+    "missing_instrumented",
+    "missing_toolchain",
+    "missing_variables",
+    "probe",
+    "resolved_alias",
+    "toolchain_rule",
+    "variables",
+)
+
+toolchain_rule(name = "created_toolchain")
+
+variables(name = "variables")
+
+variables(name = "runtime")
+
+host_alias(
+    name = "host_alias",
+    runtime = ":runtime",
+)
+
+toolchain_type(name = "probe_type")
+
+toolchain(
+    name = "probe_toolchain",
+    toolchain = ":created_toolchain",
+    toolchain_type = ":probe_type",
+)
+
+resolved_alias(name = "resolved_alias")
+
+flag(name = "flag")
+
+env_binary(name = "env_binary")
+
+instrumented(
+    name = "instrumented",
+    srcs = ["BUILD.bazel"],
+)
+
+probe(
+    name = "probe",
+    deps = [
+        ":created_toolchain",
+        ":env_binary",
+        ":flag",
+        ":host_alias",
+        ":instrumented",
+        ":resolved_alias",
+        ":variables",
+    ],
+)
+
+missing_toolchain(name = "missing_toolchain")
+
+missing_variables(name = "missing_variables")
+
+missing_flag(name = "missing_flag")
+
+missing_env(name = "missing_env")
+
+missing_instrumented(name = "missing_instrumented")

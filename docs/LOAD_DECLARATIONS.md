@@ -79,10 +79,15 @@ Load-time semantics that are implemented:
   too, with `AttributeUtils.java:90-98`'s `in %s, the value for attribute '%s'
   %s` (where-text `call to 'NAME' repo rule with name 'X'` /
   `'TAG' tag`).
-* **`provides=[...]`**: checked after analysis for Starlark providers only
-  (built-in keys such as `DefaultInfo` and `OutputGroupInfo` are skipped):
+* **`provides=[...]`**: checked after analysis for every advertised key,
+  Starlark and built-in (`platform_common.ToolchainInfo`,
+  `platform_common.TemplateVariableInfo`, `config_common.FeatureFlagInfo`,
+  `RunEnvironmentInfo`, `InstrumentedFilesInfo`, `testing.ExecutionInfo`, ...;
+  returned or forwarded from a dependency), except `DefaultInfo` and
+  `OutputGroupInfo`, which every rule target has:
   `rule advertised the '%s' provider, but this provider was not among those
-  returned` (`StarlarkRuleConfiguredTargetUtil.java:138-148`).
+  returned` (`StarlarkRuleConfiguredTargetUtil.java:138-148`; built-in cases
+  pinned by tests/fixtures/execution_info).
 * **`select()` values in BUILD files**: each branch is type-checked with
   Bazel's conversion text, prefixed by the target label (`//pkg:x: expected
   value of type 'list(label)' for each branch in select expression of

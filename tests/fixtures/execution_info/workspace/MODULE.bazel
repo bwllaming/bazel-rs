@@ -5,3 +5,6 @@ module(name = "execution_info")
 # tests/fixtures/label_repo_name/platforms_archive.json before each run.
 bazel_dep(name = "platforms", version = "1.0.0")
 local_path_override(module_name = "platforms", path = "platforms")
+
+# //provides:resolved_alias forwards this toolchain's ToolchainInfo.
+register_toolchains("//provides:probe_toolchain")

@@ -2,8 +2,9 @@
 //! starlarkbuildapi/test/ExecutionInfoApi.java): the constructor's binding
 //! and Dict.cast errors, the NativeInfo instance (type, dir, repr, fields,
 //! content equality and hashing), dependency access, provider requirements,
-//! `provides`, rules_python's py_interpreter_program/precompile pattern, and
-//! a test rule's ExecutionInfo on its test action.
+//! `provides` (also with the other built-in providers), rules_python's
+//! py_interpreter_program/precompile pattern, and a test rule's
+//! ExecutionInfo on its test action.
 //! Every case of tests/fixtures/execution_info/reference_receipt.json —
 //! genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here and is
@@ -72,6 +73,17 @@ const GROUPS: &[(&str, &[&str])] = &[
             "network_test",
             "local_test",
             "other_group_build",
+        ],
+    ),
+    (
+        "builtin_provides",
+        &[
+            "provides_ok",
+            "provides_missing_toolchain",
+            "provides_missing_variables",
+            "provides_missing_flag",
+            "provides_missing_env",
+            "provides_missing_instrumented",
         ],
     ),
     ("declared", &["other_group_test"]),
@@ -369,6 +381,16 @@ fn constructor_and_field_errors_match() {
 #[test]
 fn test_rule_requirements_reach_the_test_action() {
     check_group("test_action");
+}
+
+/// `provides` with the other built-in providers (checkDeclaredProviders):
+/// returned or forwarded (rules_java's java_host_runtime_alias and
+/// java_runtime_alias shapes) ToolchainInfo, TemplateVariableInfo,
+/// FeatureFlagInfo, RunEnvironmentInfo and InstrumentedFilesInfo satisfy it;
+/// advertising one without returning it fails.
+#[test]
+fn builtin_providers_satisfy_provides() {
+    check_group("builtin_provides");
 }
 
 /// Explicit native errors with a recorded difference.

@@ -258,7 +258,10 @@ constructs a ToolchainInfo (docs/TOOLCHAINS.md), and
     than DefaultInfo and OutputGroupInfo (which every rule target has),
     checkDeclaredProviders looks it up on the built target (`rule advertised
     the 'ExecutionInfo' provider, but this provider was not among those
-    returned`).
+    returned`). The fixture pins the same for ToolchainInfo,
+    TemplateVariableInfo, FeatureFlagInfo, RunEnvironmentInfo and
+    InstrumentedFilesInfo, returned or forwarded (rules_java's
+    java_host_runtime_alias and java_runtime_alias shapes).
   - Bazel reads it only for test rules
     (RuleConfiguredTargetBuilder.initializeTestProvider): analysis records it
     (`RunSettings::test_requirements`; `build` and `--nobuild` are unaffected,
