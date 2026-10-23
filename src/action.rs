@@ -96,14 +96,22 @@ const BUFFER_BYTES: usize = 1 << 20;
 /// ctime are this much older than the start of hashing ("racy git"): a later
 /// in-place change then necessarily carries a different timestamp.
 const RACY_MARGIN: Duration = Duration::from_secs(2);
-const DIGEST_MEMO_LIMIT: usize = 1 << 20;
-/// Entries (files plus directories) of memoized published trees; roughly a
-/// few hundred bytes each. The memo starts over when it would exceed this.
-const TREE_MEMO_LIMIT: usize = 1 << 20;
+// Caps of the per-process memos. A memo starts over when it would exceed
+// its cap, which is always safe: a memo only saves work, and consumers keep
+// what they took from it (shared trees are Arcs, inputs are copies). Their
+// worst-case footprints at the caps (32-byte digests, absolute paths of
+// 160-230 bytes as on ~/code, hash-table and B-tree slack included): digest
+// memo ~45 MB, tree memo ~110 MB, file memo ~85 MB, directory memo ~60 MB.
+// The warm `oauth2token/...` build (689 actions) fills about 3% of them:
+// 8.9k digests, 958 tree entries, 7.4k store files, 7.3k directories.
+/// File states with a known digest (88 bytes each, no allocation).
+const DIGEST_MEMO_LIMIT: usize = 1 << 18;
+/// Entries (files plus directories) of memoized published trees.
+const TREE_MEMO_LIMIT: usize = 1 << 18;
 /// Remembered cache-owned real directories (one path each).
 const DIRECTORY_MEMO_LIMIT: usize = 1 << 18;
-/// Remembered immutable-store files (one Input each).
-const FILE_MEMO_LIMIT: usize = 1 << 20;
+/// Remembered immutable-store files (a path and 48 bytes each).
+const FILE_MEMO_LIMIT: usize = 1 << 18;
 /// Published symlink outputs followed when they are inputs (a chain).
 const MAX_LINK_DEPTH: usize = 32;
 // Bazel 9.3 OutputPermissions.READONLY: all completed regular action outputs,
@@ -373,7 +381,7 @@ pub struct ActionResult {
 #[derive(Clone)]
 struct Input {
     path: PathBuf,
-    digest: String,
+    digest: Sha256Digest,
     size: u64,
     executable: u32,
     mode: u32,
@@ -466,8 +474,48 @@ fn hex(bytes: &[u8]) -> String {
     result
 }
 
-fn digest(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
+fn digest(bytes: &[u8]) -> Sha256Digest {
+    Sha256Digest(Sha256::digest(bytes).into())
+}
+
+/// A file's SHA-256, kept as its 32 bytes (no allocation, half the size of
+/// its hex spelling: inputs fill the per-process memos). Action keys,
+/// manifests and blob names spell it in lowercase hex, exactly as before.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Sha256Digest([u8; 32]);
+
+impl Sha256Digest {
+    /// The lowercase hex spelling, without allocating.
+    fn hex_bytes(&self) -> [u8; 64] {
+        const DIGITS: &[u8] = b"0123456789abcdef";
+        let mut text = [0; 64];
+        for (index, byte) in self.0.iter().enumerate() {
+            text[2 * index] = DIGITS[usize::from(byte >> 4)];
+            text[2 * index + 1] = DIGITS[usize::from(byte & 15)];
+        }
+        text
+    }
+
+    fn hex(&self) -> String {
+        hex(&self.0)
+    }
+
+    /// Whether `text` is exactly this digest's spelling (a manifest's).
+    fn spelled(&self, text: &str) -> bool {
+        self.hex_bytes().as_slice() == text.as_bytes()
+    }
+}
+
+impl std::fmt::Display for Sha256Digest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(std::str::from_utf8(&self.hex_bytes()).expect("ASCII hex"))
+    }
+}
+
+impl std::fmt::Debug for Sha256Digest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
 }
 
 // Length-prefix every field, including list lengths, to avoid concatenation
@@ -744,25 +792,25 @@ fn file_key(metadata: &fs::Metadata, owned: bool) -> FileKey {
     }
 }
 
-fn digest_memo() -> &'static Mutex<HashMap<FileKey, String>> {
-    static MEMO: OnceLock<Mutex<HashMap<FileKey, String>>> = OnceLock::new();
+fn digest_memo() -> &'static Mutex<HashMap<FileKey, Sha256Digest>> {
+    static MEMO: OnceLock<Mutex<HashMap<FileKey, Sha256Digest>>> = OnceLock::new();
     MEMO.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn memoized_digest(key: &FileKey) -> Option<String> {
+fn memoized_digest(key: &FileKey) -> Option<Sha256Digest> {
     digest_memo()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(key)
-        .cloned()
+        .copied()
 }
 
-fn remember_digest(key: FileKey, digest: &str) {
+fn remember_digest(key: FileKey, digest: Sha256Digest) {
     let mut memo = digest_memo().lock().unwrap_or_else(|e| e.into_inner());
     if memo.len() >= DIGEST_MEMO_LIMIT {
         memo.clear();
     }
-    memo.insert(key, digest.to_owned());
+    memo.insert(key, digest);
 }
 
 fn timestamp(seconds: i64, nanoseconds: i64) -> Option<SystemTime> {
@@ -789,7 +837,11 @@ fn racy_safe(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
 /// Streamed SHA-256 of a regular file. The file must not change while it is
 /// read. `trusted` memoizes regardless of timestamps: files this executor
 /// has just written and made read-only.
-fn hash_file(path: &Path, owned: bool, trusted: bool) -> Result<(String, fs::Metadata), String> {
+fn hash_file(
+    path: &Path,
+    owned: bool,
+    trusted: bool,
+) -> Result<(Sha256Digest, fs::Metadata), String> {
     let before = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
     hash_file_from(path, before, owned, trusted)
 }
@@ -806,7 +858,7 @@ fn hash_file_from(
     before: fs::Metadata,
     owned: bool,
     trusted: bool,
-) -> Result<(String, fs::Metadata), String> {
+) -> Result<(Sha256Digest, fs::Metadata), String> {
     let key = file_key(&before, owned);
     let table = crate::digest_memo::installed()
         .and_then(|table| Some((table, crate::digest_memo::Key::of(&before, owned)?)));
@@ -814,18 +866,16 @@ fn hash_file_from(
         // An inode this process already knows, maybe through another path
         // (a published output and its blob): remember it under this one
         // (trusted: derived knowledge, which never causes a save by itself).
-        if let Some((table, table_key)) = &table
-            && let Some(sha256) = crate::digest_memo::parse_hex(&digest)
-        {
-            table.remember(path, *table_key, sha256, true);
+        if let Some((table, table_key)) = &table {
+            table.remember(path, *table_key, digest.0, true);
         }
         return Ok((digest, before));
     }
     if let Some((table, table_key)) = &table
         && let Some(sha256) = table.lookup(path, table_key)
     {
-        let digest = crate::digest_memo::hex(&sha256);
-        remember_digest(key, &digest);
+        let digest = Sha256Digest(sha256);
+        remember_digest(key, digest);
         return Ok((digest, before));
     }
     crate::digest_memo::count_hashed(crate::digest_memo::Use::Action, before.size());
@@ -856,12 +906,11 @@ fn hash_file_from(
             path.display()
         ));
     }
-    let sha256: [u8; 32] = hash.finalize().into();
-    let digest = hex(&sha256);
+    let digest = Sha256Digest(hash.finalize().into());
     if trusted || racy_safe(&after, start, owned) {
-        remember_digest(key, &digest);
+        remember_digest(key, digest);
         if let Some((table, table_key)) = table {
-            table.remember(path, table_key, sha256, trusted);
+            table.remember(path, table_key, digest.0, trusted);
         }
     }
     Ok((digest, before))
@@ -871,22 +920,18 @@ fn hash_file_from(
 /// `path`, in the persistent memo when this process hashed exactly its
 /// inode (the execution-root file it was linked from, or its store blob),
 /// so that the next command's cache check does not read it again.
-fn remember_published(path: &Path, digest: &str) {
+fn remember_published(path: &Path, digest: Sha256Digest) {
     let Some(table) = crate::digest_memo::installed() else {
         return;
     };
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return;
     };
-    if !metadata.is_file() || memoized_digest(&file_key(&metadata, true)).as_deref() != Some(digest)
-    {
+    if !metadata.is_file() || memoized_digest(&file_key(&metadata, true)) != Some(digest) {
         return;
     }
-    if let (Some(key), Some(sha256)) = (
-        crate::digest_memo::Key::of(&metadata, true),
-        crate::digest_memo::parse_hex(digest),
-    ) {
-        table.remember(path, key, sha256, true);
+    if let Some(key) = crate::digest_memo::Key::of(&metadata, true) {
+        table.remember(path, key, digest.0, true);
     }
 }
 
@@ -958,17 +1003,33 @@ fn resolve_published(
 /// first reader in this process read them, by path: later consumers stage
 /// the same content identity without inspecting the file again, like Bazel's
 /// per-build file metadata.
-fn file_memo() -> &'static RwLock<HashMap<PathBuf, Input>> {
-    static MEMO: OnceLock<RwLock<HashMap<PathBuf, Input>>> = OnceLock::new();
+fn file_memo() -> &'static RwLock<HashMap<PathBuf, StoreFile>> {
+    static MEMO: OnceLock<RwLock<HashMap<PathBuf, StoreFile>>> = OnceLock::new();
     MEMO.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// What the file memo keeps of a store file's [`Input`]: all but its path,
+/// which is the memo's key.
+#[derive(Clone, Copy)]
+struct StoreFile {
+    digest: Sha256Digest,
+    size: u64,
+    executable: u32,
+    mode: u32,
+}
+
 fn memoized_file(path: &Path) -> Option<Input> {
-    file_memo()
+    let file = *file_memo()
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .get(path)
-        .cloned()
+        .get(path)?;
+    Some(Input {
+        path: path.to_path_buf(),
+        digest: file.digest,
+        size: file.size,
+        executable: file.executable,
+        mode: file.mode,
+    })
 }
 
 fn remember_file(input: &Input) {
@@ -976,7 +1037,15 @@ fn remember_file(input: &Input) {
     if memo.len() >= FILE_MEMO_LIMIT {
         memo.clear();
     }
-    memo.insert(input.path.clone(), input.clone());
+    memo.insert(
+        input.path.clone(),
+        StoreFile {
+            digest: input.digest,
+            size: input.size,
+            executable: input.executable,
+            mode: input.mode,
+        },
+    );
 }
 
 /// Whether `path` is a file of a repository tree below the canonical cache
@@ -1809,7 +1878,7 @@ fn frame_runfiles_entries(
 }
 
 fn frame_input(hash: &mut Sha256, input: &Input) {
-    frame(hash, input.digest.as_bytes());
+    frame(hash, &input.digest.hex_bytes());
     frame(hash, &input.executable.to_le_bytes());
 }
 
@@ -2271,7 +2340,7 @@ fn temporary(directory: &Path, stem: &str) -> PathBuf {
 
 /// Copy `source` to the new file `target` while hashing it; the copy must
 /// have the expected digest.
-fn copy_verified(source: &Path, target: &Path, expected: &str) -> Result<(), String> {
+fn copy_verified(source: &Path, target: &Path, expected: Sha256Digest) -> Result<(), String> {
     let mut input = File::open(source).map_err(|e| io_error("cannot read", source, e))?;
     let mut output = OpenOptions::new()
         .write(true)
@@ -2292,7 +2361,7 @@ fn copy_verified(source: &Path, target: &Path, expected: &str) -> Result<(), Str
             .write_all(&buffer[..count])
             .map_err(|e| io_error("cannot write", target, e))?;
     }
-    if hex(&hash.finalize()) != expected {
+    if Sha256Digest(hash.finalize().into()) != expected {
         let _ = fs::remove_file(target);
         return Err(format!(
             "input '{}' changed while it was being staged",
@@ -2332,12 +2401,12 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
     // Workers of one process that need the same new blob create it once
     // (the others wait, then find it valid) instead of copying in parallel.
     static STRIPES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
-    let stripe = u8::from_str_radix(&input.digest[..2], 16).unwrap_or(0) as usize % STRIPES.len();
+    let stripe = usize::from(input.digest.0[0]) % STRIPES.len();
     let _creating = STRIPES[stripe].lock().unwrap_or_else(|e| e.into_inner());
     if blob_valid(&blob, input)? {
         return Ok(blob);
     }
-    let candidate = temporary(cas, &input.digest);
+    let candidate = temporary(cas, &input.digest.hex());
     let linked = input.path.starts_with(root)
         && input.mode == blob_mode(input)
         && hard_link(&input.path, &candidate).is_ok();
@@ -2351,7 +2420,7 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
             ));
         }
     } else {
-        copy_verified(&input.path, &candidate, &input.digest)?;
+        copy_verified(&input.path, &candidate, input.digest)?;
         if input.executable != 0 {
             // The verified copy hashes while it writes, too slow for the
             // exclusive spawn lock; re-create the executable blob as an inode
@@ -2362,7 +2431,7 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
         set_mode(&candidate, blob_mode(input))?;
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|e| io_error("cannot inspect", &candidate, e))?;
-        remember_digest(file_key(&metadata, true), &input.digest);
+        remember_digest(file_key(&metadata, true), input.digest);
     }
     let published = match fs::hard_link(&candidate, &blob) {
         Ok(()) => Ok(()),
@@ -2630,7 +2699,7 @@ fn tree_manifest(tree: &Tree) -> TreeManifest {
         files: tree
             .files
             .iter()
-            .map(|(name, input)| (hex(name.as_os_str().as_bytes()), input.digest.clone()))
+            .map(|(name, input)| (hex(name.as_os_str().as_bytes()), input.digest.hex()))
             .collect(),
         directories: tree
             .directories
@@ -2723,7 +2792,7 @@ fn cache_valid(
                 }
                 (None, false) => {
                     let actual = read_input(&path, Some(root), false)?;
-                    if actual.mode != entry.mode || actual.digest != entry.digest {
+                    if actual.mode != entry.mode || !actual.digest.spelled(&entry.digest) {
                         return Ok(None);
                     }
                 }
@@ -3082,7 +3151,7 @@ fn publish_runfiles_tree(
             fs::rename(&from, &to).map_err(|e| io_error("cannot publish", &to, e))?;
             Some((
                 hex(sibling.as_os_str().as_bytes()),
-                input.digest.clone(),
+                input.digest.hex(),
                 blob_mode(input),
             ))
         }
@@ -3119,7 +3188,7 @@ fn runfiles_tree_valid(
             };
             let path = outputs.join(std::ffi::OsStr::from_bytes(&name));
             read_input(&path, Some(root), false)
-                .is_ok_and(|actual| actual.digest == *digest && actual.mode == *mode)
+                .is_ok_and(|actual| actual.digest.spelled(digest) && actual.mode == *mode)
         }
     }
 }
@@ -3165,8 +3234,9 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 pub struct ContentInput(Input);
 
 impl ContentInput {
-    pub fn digest(&self) -> &str {
-        &self.0.digest
+    /// The SHA-256 in lowercase hex.
+    pub fn digest(&self) -> String {
+        self.0.digest.hex()
     }
 
     pub fn executable(&self) -> bool {
@@ -3226,7 +3296,7 @@ fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, Str
     if blob_valid(&blob, &input)? {
         return Ok(blob);
     }
-    let candidate = temporary(cas, &input.digest);
+    let candidate = temporary(cas, &input.digest.hex());
     crate::spawn_lock::exclusive(executable != 0, || write_file(&candidate, bytes, 0))?;
     set_mode(&candidate, blob_mode(&input))?;
     let published = match fs::hard_link(&candidate, &blob) {
@@ -3268,7 +3338,7 @@ fn remote_action(
 ) -> Result<crate::remote_cache::RemoteAction, String> {
     use crate::remote_cache::path_string;
     let file_digest = |input: &Input| crate::reapi::Digest {
-        hash: input.digest.clone(),
+        hash: input.digest.hex(),
         size: input.size,
     };
     let mut files = BTreeMap::new();
@@ -3729,7 +3799,7 @@ pub fn execute_with_remote(
                 return Ok(match &inputs[symlink_target] {
                     Staged::File(input) => Output {
                         name: hex_name,
-                        digest: input.digest.clone(),
+                        digest: input.digest.hex(),
                         mode: input.mode,
                         tree: None,
                         symlink,
@@ -3766,10 +3836,10 @@ pub fn execute_with_remote(
             // regular output unreadable. Normalize before reading its bytes,
             // but never chmod a symlink or a path through a linked ancestor.
             let input = publish_file(&cas, &root, &source, &target)?;
-            published_files.push((name, input.digest.clone()));
+            published_files.push((name, input.digest));
             Ok(Output {
                 name: hex_name,
-                digest: input.digest,
+                digest: input.digest.hex(),
                 mode: OUTPUT_MODE,
                 tree: None,
                 symlink: None,
@@ -3794,14 +3864,14 @@ pub fn execute_with_remote(
     // What a consumer would read from the published entry: the same files,
     // digests and (normalized) modes at their published paths.
     for (name, digest) in &published_files {
-        remember_published(&cached.join("outputs").join(name), digest);
+        remember_published(&cached.join("outputs").join(name), *digest);
     }
     for (name, tree) in published_trees {
         let path = cached.join("outputs").join(name);
         if published_output(Some(&root), &path) {
             let tree = relocated(tree, &path);
             for input in tree.files.values() {
-                remember_published(&input.path, &input.digest);
+                remember_published(&input.path, input.digest);
             }
             remember_tree(path, Arc::new(tree));
         }
