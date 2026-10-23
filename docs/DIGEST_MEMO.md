@@ -102,11 +102,25 @@ records (unit test `concurrent_saves_lose_no_records`).
 | registry module trees, warm check | `materializer::tree_matches` (walk as `snapshot`, digests via the table) | external |
 | embedded `bazel_tools` tree, warm check | `builtin_tools::verified_warm` | external |
 | repository-rule inputs: `watch`, `read` of watched files, and their warm revalidation (`repository_warm::unchanged`) | `repository_ctx::file_state` → the in-process `FileDigestMemo` (docs/REPOSITORY_WARM_PERF.md) → on a miss the table (lookup by the opened file's fstat; a settled read that kept its stat is recorded) | external |
-| repository-rule inputs: `watch_tree` (and its warm revalidation) | `repository_ctx::file_sha256` → `digest_memo::path_sha256` | external |
+| repository-rule inputs: `watch_tree` (and its warm revalidation) | `repository_ctx::file_sha256` → `digest_memo::path_sha256` → `digest_memo::opened_sha256` | external |
 
 The walks themselves are unchanged (every entry is still lstat'ed and compared for type, mode, size and
 symlink target); only reading unchanged regular files is skipped. Direct repositories keep their own
 Stat-mode fingerprints in their manifests (`repository_store::verify_snapshot_at`).
+
+The registry and `bazel_tools` checks take the key from the walk's lstat and record a digest only when the
+opened file's fstat after the read still shows that key (`digest_memo::file_sha256`). Callers that start
+from a path that may lead through symlinks go through `digest_memo::opened_sha256(&file, &metadata, path,
+use)`: the caller opens the file, `metadata` is that file's own fstat, the table is consulted by that key
+and on a miss the opened file itself is read — never the path again — so a key and a digest always belong
+to one inode (a stat of the path followed by a read of the path could pair one file's key with another
+file's bytes if a symlink on the path is swapped and swapped back in between; unit test
+`digests_belong_to_the_opened_file`). `path_sha256` opens the path and hashes it that way; the caller's
+own hasher runs only without a table, for a path that does not open as a regular file, or when the read
+fails. `opened_sha256` is the entry point for any in-process digest memo in front of the table: the
+i20-hardening branch's `repository_ctx::FileDigestMemo::sha256` (not on this branch) opens and fstats the
+file itself and must hash it through `opened_sha256(.., Use::Recorded)` instead of reading it directly,
+or recorded-input file states stop hitting (and filling) the persistent table after the merge.
 
 ## Trust (with the executor's per-process memos)
 

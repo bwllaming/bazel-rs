@@ -971,7 +971,9 @@ pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
 /// consults the same table on a miss): from the persistent digest memo when
 /// it records the path in exactly its current state (settled files only;
 /// never under `--verify_repo_tampering`), so a warm run does not read
-/// unchanged files again (crate::digest_memo::path_sha256).
+/// unchanged files again (crate::digest_memo::path_sha256: it opens the file
+/// and hashes it through crate::digest_memo::opened_sha256, the entry point
+/// an in-process digest memo in front of the table must use as well).
 fn file_sha256(path: &Path) -> anyhow::Result<String> {
     let digest = crate::digest_memo::path_sha256(path, crate::digest_memo::Use::Recorded, || {
         Algorithm::Sha256

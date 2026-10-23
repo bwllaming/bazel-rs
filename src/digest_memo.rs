@@ -991,12 +991,82 @@ fn file_sha256_in(
     Ok(sha256)
 }
 
-/// [`file_sha256`] for a caller that hashes `path` itself (`hash` opens and
-/// reads it; its errors pass through unchanged): the table's digest when it
-/// records `path` in exactly the state a stat following links (as the open
-/// does) shows now; otherwise `hash`'s, recorded when that state was
-/// settled before the read and is still the file's after it. A digest of
-/// another length than SHA-256's is passed through, never recorded.
+/// The SHA-256 of `file`, a regular file the caller opened at `path`
+/// (following links) and has not read from, whose own fstat
+/// (`file.metadata()`) is `metadata`: the table's digest when it records
+/// `path` in exactly that state ([`repository_table`]); otherwise the
+/// digest of the bytes read from `file` itself — never from `path` again —
+/// recorded when that state was settled before the read and is still the
+/// file's after it. Key and bytes therefore always belong to one inode: a
+/// stat of `path` followed by a read of `path` could pair one file's key
+/// with another file's bytes when `path` (or a symlink on it) is swapped
+/// between them. A file that is not regular is hashed, never looked up or
+/// recorded. Read errors pass through.
+///
+/// This is the entry point for every in-process memo of file digests that
+/// sits in front of the table, so that the file states it observes keep
+/// hitting (and filling) the table: the i20-hardening branch's
+/// `repository_ctx::FileDigestMemo::sha256` (recorded repository inputs,
+/// not on this branch) opens and fstats the file itself and must hash it
+/// through this function (`Use::Recorded`) instead of reading the file
+/// directly; [`path_sha256`] is the same for callers that start from a path.
+pub fn opened_sha256(
+    file: &File,
+    metadata: &fs::Metadata,
+    path: &Path,
+    user: Use,
+) -> io::Result<[u8; 32]> {
+    opened_sha256_in(
+        repository_table(),
+        file,
+        metadata,
+        path,
+        user,
+        SystemTime::now,
+    )
+}
+
+/// [`opened_sha256`] with an explicit table and clock (tests).
+fn opened_sha256_in(
+    table: Option<&Table>,
+    file: &File,
+    metadata: &fs::Metadata,
+    path: &Path,
+    user: Use,
+    now: impl Fn() -> SystemTime,
+) -> io::Result<[u8; 32]> {
+    let key = table
+        .filter(|_| metadata.is_file())
+        .and_then(|_| Key::of(metadata, false));
+    if let (Some(table), Some(key)) = (table, &key)
+        && let Some(sha256) = table.lookup(path, key)
+    {
+        return Ok(sha256);
+    }
+    let start = now();
+    let mut reader = file;
+    let (sha256, _) = sha256_reader(&mut reader, metadata.size())?;
+    count_hashed(user, metadata.size());
+    if let (Some(table), Some(key)) = (table, key)
+        && settled(metadata, start, false)
+        && file
+            .metadata()
+            .is_ok_and(|after| Key::of(&after, false) == Some(key))
+    {
+        table.remember(path, key, sha256, false);
+    }
+    Ok(sha256)
+}
+
+/// The SHA-256 of the file at `path` (following links) for a caller with
+/// its own hasher `hash` (it opens and reads `path` and computes the
+/// SHA-256 of its bytes; its errors pass through unchanged). With a table
+/// ([`repository_table`]) `path` is opened here and hashed through
+/// [`opened_sha256`], keyed by the opened file's own fstat; `hash` runs
+/// only without a table, for a path that does not open as a regular file
+/// (missing, a directory, a device: `hash` reports it as before), or when
+/// reading the opened file fails. A digest of another length than
+/// SHA-256's from `hash` passes through.
 pub fn path_sha256<E>(
     path: &Path,
     user: Use,
@@ -1013,25 +1083,20 @@ fn path_sha256_in<E>(
     hash: impl FnOnce() -> Result<Vec<u8>, E>,
     now: impl Fn() -> SystemTime,
 ) -> Result<Vec<u8>, E> {
-    let before = fs::metadata(path).ok().filter(fs::Metadata::is_file);
-    let key = table
-        .and(before.as_ref())
-        .and_then(|before| Key::of(before, false));
-    if let (Some(table), Some(key)) = (table, &key)
-        && let Some(sha256) = table.lookup(path, key)
+    if let Some(table) = table
+        && let Ok(file) = File::open(path)
+        && let Ok(metadata) = file.metadata()
+        && metadata.is_file()
+        && let Ok(sha256) = opened_sha256_in(Some(table), &file, &metadata, path, user, now)
     {
         return Ok(sha256.to_vec());
     }
-    let start = now();
+    let size = fs::metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .map_or(0, |metadata| metadata.size());
     let digest = hash()?;
-    count_hashed(user, before.as_ref().map_or(0, fs::Metadata::size));
-    if let (Some(table), Some(key), Some(before)) = (table, key, &before)
-        && let Ok(sha256) = <[u8; 32]>::try_from(digest.as_slice())
-        && settled(before, start, false)
-        && fs::metadata(path).is_ok_and(|after| Key::of(&after, false) == Some(key))
-    {
-        table.remember(path, key, sha256, false);
-    }
+    count_hashed(user, size);
     Ok(digest)
 }
 
@@ -1654,76 +1719,152 @@ mod tests {
             .set_modified(SystemTime::now() - Duration::from_secs(60))
             .unwrap();
         let expected = Sha256::digest(b"binary").to_vec();
-        let hash = || -> Result<Vec<u8>, String> {
-            Ok(Sha256::digest(fs::read(&path).map_err(|e| e.to_string())?).to_vec())
-        };
+        // With a table the file is hashed through opened_sha256: the
+        // caller's hasher is only the fallback.
+        let unused = || -> Result<Vec<u8>, String> { panic!("hashed by the caller") };
         let table = Table::new(cache.path());
         // Racy (the file's ctime is fresh): hashed, not recorded.
         let now = SystemTime::now();
         assert_eq!(
-            path_sha256_in(Some(&table), &path, Use::Recorded, hash, || now),
+            path_sha256_in(Some(&table), &path, Use::Recorded, unused, || now),
             Ok(expected.clone())
         );
         assert_eq!(table.save().unwrap(), Saved::Nothing);
-        // Settled: recorded; a later process does not call the hasher.
+        // Settled: recorded; a later process takes it from the table.
         let later = SystemTime::now() + RACY_MARGIN + Duration::from_secs(1);
         assert_eq!(
-            path_sha256_in(Some(&table), &path, Use::Recorded, hash, || later),
+            path_sha256_in(Some(&table), &path, Use::Recorded, unused, || later),
             Ok(expected.clone())
         );
         assert!(matches!(
             table.save().unwrap(),
             Saved::Written { written: 1, .. }
         ));
+        let key = Key::of(&fs::metadata(&path).unwrap(), false).unwrap();
         let reader = Table::new(cache.path());
-        let unused = || -> Result<Vec<u8>, String> { panic!("hashed") };
+        assert_eq!(
+            reader.lookup(&path, &key),
+            Some(<[u8; 32]>::from(Sha256::digest(b"binary")))
+        );
         assert_eq!(
             path_sha256_in(Some(&reader), &path, Use::Recorded, unused, || later),
             Ok(expected)
         );
-        // A link to the file is another path: hashed (and recorded) anew.
+        // A link to the file is another path: a record of its own.
         let link = outside.path().join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        let mut called = false;
-        let digest = path_sha256_in(
-            Some(&reader),
-            &link,
-            Use::Recorded,
-            || -> Result<Vec<u8>, String> {
-                called = true;
-                Ok(Sha256::digest(b"binary").to_vec())
-            },
-            || later,
-        );
-        assert!(called && digest.is_ok());
-        // A changed file misses; errors and other digest lengths pass
-        // through, unrecorded.
+        assert_eq!(reader.lookup(&link, &key), None);
+        assert!(path_sha256_in(Some(&reader), &link, Use::Recorded, unused, || later).is_ok());
+        assert!(reader.lookup(&link, &key).is_some());
+        // A changed file misses and is hashed again.
         fs::write(&path, b"rebuilt binary").unwrap();
         assert_eq!(
-            path_sha256_in(Some(&reader), &path, Use::Recorded, hash, || later),
+            path_sha256_in(Some(&reader), &path, Use::Recorded, unused, || later),
             Ok(Sha256::digest(b"rebuilt binary").to_vec())
         );
+        // What does not open as a regular file goes to the caller's hasher,
+        // whose errors and digests pass through, unrecorded.
         let failing = || -> Result<Vec<u8>, String> { Err("unreadable".to_owned()) };
         let missing = outside.path().join("missing");
         assert_eq!(
             path_sha256_in(Some(&reader), &missing, Use::Recorded, failing, || later),
             Err("unreadable".to_owned())
         );
+        let twenty = || -> Result<Vec<u8>, String> { Ok(vec![7; 20]) };
+        assert_eq!(
+            path_sha256_in(Some(&reader), outside.path(), Use::Recorded, twenty, || {
+                later
+            }),
+            Ok(vec![7; 20])
+        );
+        // Without a table (--verify_repo_tampering) the caller's hasher
+        // always runs.
         let short = outside.path().join("short");
         fs::write(&short, b"x").unwrap();
-        let twenty = || -> Result<Vec<u8>, String> { Ok(vec![7; 20]) };
-        let much_later = later + Duration::from_secs(60);
         assert_eq!(
-            path_sha256_in(Some(&reader), &short, Use::Recorded, twenty, || much_later),
+            path_sha256_in(None, &short, Use::Recorded, twenty, || later),
             Ok(vec![7; 20])
         );
-        let key = Key::of(&fs::metadata(&short).unwrap(), false).unwrap();
-        assert_eq!(reader.lookup(&short, &key), None);
-        // Without a table (--verify_repo_tampering) the hasher always runs.
-        assert_eq!(
-            path_sha256_in(None, &short, Use::Recorded, twenty, || much_later),
-            Ok(vec![7; 20])
+    }
+
+    /// The symlink-swap race of a stat-then-read-by-path hasher: a path
+    /// that names file A when it is stat'ed and file B while it is read (a
+    /// symlink swapped and swapped back; A itself is untouched, so its key
+    /// is the same before and after) must never record B's digest under
+    /// A's key. The key comes from the opened file's own fstat and the
+    /// bytes from that file.
+    #[test]
+    fn digests_belong_to_the_opened_file() {
+        let cache = temp();
+        let outside = temp();
+        let (a, b) = (outside.path().join("a"), outside.path().join("b"));
+        fs::write(&a, b"file a").unwrap();
+        fs::write(&b, b"file b").unwrap();
+        let link = outside.path().join("link");
+        let point = |target: &Path| {
+            let temporary = outside.path().join("link.tmp");
+            std::os::unix::fs::symlink(target, &temporary).unwrap();
+            fs::rename(&temporary, &link).unwrap();
+        };
+        point(&a);
+        let later = SystemTime::now() + RACY_MARGIN + Duration::from_secs(1);
+        let (digest_a, digest_b) = (
+            <[u8; 32]>::from(Sha256::digest(b"file a")),
+            <[u8; 32]>::from(Sha256::digest(b"file b")),
         );
+        // A path hasher that observes the swap: it reads B by path.
+        let table = Table::new(cache.path());
+        let swapping = || -> Result<Vec<u8>, String> {
+            point(&b);
+            let bytes = fs::read(&link).map_err(|e| e.to_string())?;
+            point(&a);
+            Ok(Sha256::digest(bytes).to_vec())
+        };
+        assert_eq!(
+            path_sha256_in(Some(&table), &link, Use::Recorded, swapping, || later),
+            Ok(digest_a.to_vec())
+        );
+        let key_a = Key::of(&fs::metadata(&link).unwrap(), false).unwrap();
+        assert_eq!(table.lookup(&link, &key_a), Some(digest_a));
+        // Swapped between the open and the read: the opened file's digest,
+        // recorded under its own key.
+        let opened = File::open(&link).unwrap();
+        let metadata = opened.metadata().unwrap();
+        point(&b);
+        let fresh_cache = temp();
+        let fresh = Table::new(fresh_cache.path());
+        assert_eq!(
+            opened_sha256_in(
+                Some(&fresh),
+                &opened,
+                &metadata,
+                &link,
+                Use::Recorded,
+                || later
+            )
+            .unwrap(),
+            digest_a
+        );
+        assert_eq!(fresh.lookup(&link, &key_a), Some(digest_a));
+        let key_b = Key::of(&fs::metadata(&link).unwrap(), false).unwrap();
+        assert_eq!(fresh.lookup(&link, &key_b), None);
+        // A hit does not read the file: an opened file read to its end
+        // still gets the recorded digest.
+        let mut consumed = File::open(&a).unwrap();
+        io::copy(&mut consumed, &mut io::sink()).unwrap();
+        assert_eq!(
+            opened_sha256_in(
+                Some(&fresh),
+                &consumed,
+                &metadata,
+                &link,
+                Use::Recorded,
+                || later
+            )
+            .unwrap(),
+            digest_a
+        );
+        assert_ne!(digest_a, digest_b);
     }
 
     #[test]
