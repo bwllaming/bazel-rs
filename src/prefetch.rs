@@ -113,6 +113,8 @@ struct Counts {
     /// had to wait for, and aborted units queued again.
     taken: u64,
     waited: u64,
+    /// The coordinator's total wait for running units.
+    wait_micros: u128,
     retried: u64,
     /// Demanded packages the workers had not started (loaded inline).
     missed: u64,
@@ -365,12 +367,12 @@ impl Prefetcher {
     /// package is settled either way: it is never queued again.
     pub(crate) fn take(&self, id: &PackageId) -> Option<LoadUnit> {
         let mut state = lock(&self.shared.state);
-        let mut waited = false;
+        let mut waited = None;
         loop {
             match state.entries.get(id) {
                 Some(Entry::Running { .. }) => {
-                    if !waited {
-                        waited = true;
+                    if waited.is_none() {
+                        waited = Some(std::time::Instant::now());
                         state.counts.waited += 1;
                     }
                     state = self
@@ -397,6 +399,9 @@ impl Prefetcher {
                 }
                 Some(Entry::Done { .. }) => {
                     state.counts.taken += 1;
+                    if let Some(started) = waited {
+                        state.counts.wait_micros += started.elapsed().as_micros();
+                    }
                     let Some(Entry::Done {
                         unit,
                         blocked,
@@ -552,12 +557,13 @@ impl Prefetcher {
                 .count();
             let counts = &state.counts;
             eprintln!(
-                "PERF-PREFETCH workers={workers} loaded={} aborted={} retried={} taken={} waited={} missed={} unused={unused}",
+                "PERF-PREFETCH workers={workers} loaded={} aborted={} retried={} taken={} waited={} wait={:.3}s missed={} unused={unused}",
                 counts.loaded,
                 counts.aborted,
                 counts.retried,
                 counts.taken,
                 counts.waited,
+                counts.wait_micros as f64 / 1e6,
                 counts.missed
             );
         }

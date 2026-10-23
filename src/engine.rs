@@ -1460,6 +1460,9 @@ pub struct Engine {
     /// The rules whose labels phase-1 prefetch already queued (lookups
     /// only).
     prefetch_followed: HashSet<Label>,
+    /// The target and host platforms of the first toolchain resolution
+    /// while phase-1 prefetch runs (`prefetch_compatible_toolchain`).
+    prefetch_platforms: Option<(Arc<PlatformInfo>, Arc<PlatformInfo>)>,
     /// W7: the process exits when the command ends (the CLI sets it):
     /// state a finished command never reads again is left to the OS
     /// instead of being torn down (`set_skip_teardown`).
@@ -1645,6 +1648,7 @@ impl Engine {
             analyze_depth: 0,
             prefetch: None,
             prefetch_followed: HashSet::new(),
+            prefetch_platforms: None,
             skip_teardown: false,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
@@ -3663,6 +3667,9 @@ impl Engine {
         // rules/platform/Toolchain.java:42-110).
         let (mut toolchain_type, mut declared_toolchain) =
             self.toolchain_rule_providers(&rule, config, &platform_prerequisites, configured)?;
+        if let Some(declared) = &declared_toolchain {
+            self.prefetch_compatible_toolchain(declared);
+        }
         // ConfigFeatureFlag.create (rules/config/ConfigFeatureFlag.java:109-169).
         let mut feature_flag = self.config_feature_flag_provider(&rule)?;
         // AliasConfiguredTarget forwards the actual's providers; label_flag and
@@ -6001,6 +6008,12 @@ impl Engine {
         let host_info = self
             .platform_info(&host, config, configured, plan)
             .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?;
+        // Phase-1 prefetch: from here on, the implementation of every
+        // toolchain compatible with these platforms is queued as soon as
+        // the toolchain is analyzed (`prefetch_compatible_toolchain`).
+        if self.prefetch.is_some() && self.prefetch_platforms.is_none() {
+            self.prefetch_platforms = Some((target.clone(), host_info.clone()));
+        }
         // PlatformKeys.filterExecutionPlatforms (:168-205).
         let mut constraints = Vec::new();
         for label in &key.exec_constraints {
@@ -6075,6 +6088,32 @@ impl Engine {
             }
         }
         Ok(Some(resolved))
+    }
+
+    /// Phase-1 prefetch: a toolchain compatible with the build's target
+    /// platform and its host execution platform (the resolution of a rule
+    /// without execution constraints of its own; target settings are not
+    /// checked) has its implementation queued once the toolchain is
+    /// analyzed during registration — long before the first rule that
+    /// resolves it analyzes the implementation.
+    fn prefetch_compatible_toolchain(&mut self, declared: &DeclaredToolchainInfo) {
+        let Some((target, host)) = &self.prefetch_platforms else {
+            return;
+        };
+        if !crate::toolchains::compatible(declared, target, host)
+            || !self.prefetch_followed.insert(declared.resolved.clone())
+        {
+            return;
+        }
+        if let Some(prefetch) = &self.prefetch {
+            prefetch.submit_targets(
+                [(
+                    declared.resolved.package_id(),
+                    Some(declared.resolved.name.clone()),
+                )],
+                1,
+            );
+        }
     }
 
     /// RegisteredToolchainsCycleReporter.maybeReportCycle
@@ -10598,6 +10637,7 @@ impl Engine {
             prefetch.shutdown();
         }
         self.prefetch_followed = HashSet::new();
+        self.prefetch_platforms = None;
     }
 
     /// Phase-1 prefetch: the first analysis of `rule` queues the targets

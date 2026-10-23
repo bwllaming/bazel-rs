@@ -333,6 +333,25 @@ fn constraints_match(toolchain: &ConstraintCollection, platform: &PlatformInfo) 
         .all(|setting| !toolchain.has_without_default(setting))
 }
 
+/// Whether `toolchain` matches `target_platform` and could execute on
+/// `exec_platform` (single_resolution's constraint checks for one
+/// toolchain; allowed toolchain types and target settings aside).
+pub fn compatible(
+    toolchain: &DeclaredToolchainInfo,
+    target_platform: &PlatformInfo,
+    exec_platform: &PlatformInfo,
+) -> bool {
+    if !toolchain.use_target_platform && !constraints_match(&toolchain.target, target_platform) {
+        return false;
+    }
+    let exec_constraints = if toolchain.use_target_platform {
+        target_platform.constraints.as_ref()
+    } else {
+        &toolchain.exec
+    };
+    constraints_match(exec_constraints, exec_platform)
+}
+
 /// SingleToolchainResolutionFunction.resolveConstraints (:149-260): the
 /// toolchain implementation per execution platform (index into
 /// `exec_platforms`) for one type, toolchains in registration order.
@@ -728,6 +747,54 @@ mod tests {
             label: label(text),
             mandatory,
             ignore_if_invalid: false,
+        }
+    }
+
+    #[test]
+    fn compatible_applies_single_resolution_checks_to_one_toolchain() {
+        let os = setting("//os:os", None);
+        let linux = value(&os, "//os:linux");
+        let osx = value(&os, "//os:osx");
+        let host = platform("//p:host", vec![linux.clone()]);
+        let mac = platform("//p:mac", vec![osx.clone()]);
+        let any = toolchain("//t:any", "//t:type", vec![], vec![], "//t:any_impl");
+        let linux_only = toolchain(
+            "//t:l",
+            "//t:type",
+            vec![],
+            vec![linux.clone()],
+            "//t:l_impl",
+        );
+        let exec_osx = toolchain("//t:e", "//t:type", vec![osx.clone()], vec![], "//t:e_impl");
+        assert!(compatible(&any, &host, &host));
+        assert!(compatible(&linux_only, &host, &host));
+        assert!(!compatible(&linux_only, &mac, &host));
+        assert!(!compatible(&exec_osx, &host, &host));
+        assert!(compatible(&exec_osx, &host, &mac));
+        // use_target_platform_constraints: the target platform's constraints
+        // must hold on the execution platform.
+        let mut follows = (*any).clone();
+        follows.use_target_platform = true;
+        assert!(compatible(&follows, &host, &host));
+        assert!(!compatible(&follows, &mac, &host));
+        // Every implementation single_resolution can pick is compatible.
+        let registered = RegisteredToolchains {
+            toolchains: vec![linux_only.clone(), exec_osx.clone(), any.clone()],
+        };
+        for target in [&host, &mac] {
+            for (_, resolved) in single_resolution(
+                &label("//t:type"),
+                &registered,
+                target,
+                std::slice::from_ref(&host),
+            ) {
+                let declared = registered
+                    .toolchains
+                    .iter()
+                    .find(|toolchain| toolchain.resolved == resolved)
+                    .unwrap();
+                assert!(compatible(declared, target, &host), "{resolved}");
+            }
         }
     }
 

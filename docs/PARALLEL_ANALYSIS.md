@@ -652,6 +652,13 @@ closure; hints only — a wrong guess costs a wasted load, never output):
   the no-demand guard, so a hint never prepares a repository;
 - the labels of every rule the coordinator analyzes for the first time
   (`analyze_key` → `Engine::prefetch_rule`) and of the requested targets;
+- the implementation of every registered toolchain compatible with the
+  build's target platform and its host execution platform, as soon as the
+  toolchain is analyzed during registration
+  (`Engine::prefetch_compatible_toolchain`, `toolchains::compatible`:
+  single_resolution's constraint checks; target settings aside) — the Go
+  SDK package (0.2 s) loads during registration instead of when the first
+  Go rule analyzes its toolchain;
 - the implementations toolchain resolution selects (`resolve_toolchains`):
   they are analyzed after the rule's attribute dependencies;
 - recursively, up to 12 hops: a finished (or committed) package follows
@@ -688,7 +695,9 @@ ever ran while the coordinator waited; prefetch workers run beside it.
   point. (This also closes the same order dependence for P2 workers.)
 
 **Telemetry.** With `BAZEL_RS_TIMING=1`, `PERF-PREFETCH workers= loaded=
-aborted= retried= taken= waited= missed= unused=` at the end of phase 1.
+aborted= retried= taken= waited= wait= missed= unused=` at the end of
+phase 1 (`wait`: the coordinator's total wait for units a worker was still
+loading).
 
 **Determinism evidence.** `tests/phase1_prefetch.rs`: toolchain packages
 (`:all` and explicit labels), a dependency chain with BUILD and `.bzl`
