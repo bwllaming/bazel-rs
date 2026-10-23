@@ -1,7 +1,7 @@
 {
  "schema": "execution-info-reference-receipt/v1",
  "fixture": "execution_info",
- "purpose": "testing.ExecutionInfo (analysis/test/ExecutionInfo.java, starlarkbuildapi/test/ExecutionInfoApi.java): the provider constructor's BuiltinFunction binding and Dict.cast errors, the NativeInfo instance (type, dir, repr, struct fields with fresh dict projections, content equality and hashing, frozen load-time instances), dep[testing.ExecutionInfo] / `in`, attr.label(providers = [testing.ExecutionInfo]), `provides = [testing.ExecutionInfo]` (checkDeclaredProviders), and rules_python 1.7.0's py_interpreter_program + precompile.bzl pattern (requirements from a string-list build setting onto an action). Motivation: @@rules_python+//tools/precompiler:precompiler blocked analysis of ~/code's //src/beyondwork.ai/tools/... (`testing.ExecutionInfo is not implemented in the native profile`).",
+ "purpose": "testing.ExecutionInfo (analysis/test/ExecutionInfo.java, starlarkbuildapi/test/ExecutionInfoApi.java): the provider constructor's BuiltinFunction binding and Dict.cast errors, the NativeInfo instance (type, dir, repr, struct fields with fresh dict projections, content equality and hashing, frozen load-time instances), dep[testing.ExecutionInfo] / `in`, attr.label(providers = [testing.ExecutionInfo]), `provides = [testing.ExecutionInfo]` (checkDeclaredProviders), rules_python 1.7.0's py_interpreter_program + precompile.bzl pattern (requirements from a string-list build setting onto an action), and a test rule's ExecutionInfo on its test action (`build`, `--nobuild`, `test`: requirements merged into the test spawn's execution info, the exec group of its owner). Motivation: @@rules_python+//tools/precompiler:precompiler blocked analysis of ~/code's //src/beyondwork.ai/tools/... (`testing.ExecutionInfo is not implemented in the native profile`).",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,24 +11,24 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "83813b77f850776a8ba632d5abcb721dd7f629f8c12ebb1cdb8762790a91d723",
+  "sha256": "db2ba9cdb11fb6de61f2316e1e929989345d69f5db920fee76c1d6528718be1a",
   "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets and run arguments>"
  },
  "script": {
   "path": "/tmp/opencode/perf-research/execution-info-capture.py, execution-info-receipt.py (not committed)",
   "sha256": {
-   "execution-info-capture.py": "41ef2dd5ff6273f8cad0aba545b4fda6b034a9c8b5c077e6530edc22bf9f997c",
-   "execution-info-receipt.py": "6600562d69994bfdda3ee34736bd6f6f36e5095bada5a91cf0b47387cefd4e19"
+   "execution-info-capture.py": "e8b78332fb20f2115dc993c5c4507589a4af44a68c5ead514c4c2335859b372f",
+   "execution-info-receipt.py": "067a39a1d3f324afac88496856d3e2f20ad2575f54442b8609971f33c7801fb9"
   }
  },
  "fixture_files_sha256": {
   "MODULE.bazel": "d610564ef397a9669c003f8196d7c66e6143a855c515e327bb365bd57d3b6851",
-  "pkg/BUILD.bazel": "742bdcbd13ab65ca736e942f7bb54ed6e107ef4737ffb5b22ee32f24ab30b58d",
-  "pkg/defs.bzl": "726c5755b8b7f6f831e286a10ebb8edf2bb2f6682789acb920748987a33c72a1",
+  "pkg/BUILD.bazel": "0227c5105411a7420dbfe2745357d9b48bc374b3b55594380b6bba38021148f9",
+  "pkg/defs.bzl": "72dc3e2a62615b4f3f64952cda5233b5aefe82211c3460333a0df8c8b001691a",
   "pkg/tool.sh": "bf17dff599a8c4e2de5ceff662a31f98a3f12d682eed7d3a5b3004f75174cf07"
  },
  "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
- "comparison (tests/execution_info.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "comparison (tests/execution_info.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; `test`: the summary's target status lines and `Executed` line equal (times <T>). DECLARED_DIVERGENCE: native fails with the recorded message.",
  "genuine_key_findings": [
   "type(testing.ExecutionInfo) is Provider (repr <function ExecutionInfo>); an instance has type ExecutionInfo, dir [\"exec_group\", \"requirements\"], repr/str `struct(exec_group = \"test\", requirements = {\"requires-x\": \"1\", \"b\": \"\"})` (insertion order), exec_group defaults to \"test\" and requirements to {}.",
   "Each `requirements` access is a fresh mutable dict: mutating it does not change the provider.",
@@ -36,16 +36,18 @@
   "Binding (BuiltinFunction): `in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'` (also before the surplus-positional count and before a duplicate), `... parameter 'exec_group' ... want 'string'`, `ExecutionInfo() got unexpected keyword argument 'requirement' (did you mean 'requirements'?)`, `ExecutionInfo() accepts no more than 2 positional arguments but got 3`, `ExecutionInfo() got multiple values for argument 'requirements'`; Dict.cast: `got dict<int, string> for 'requirements', want dict<string, string>`; fields: `'ExecutionInfo' value has no field or method 'nope'`, `cannot set .requirements field of ExecutionInfo value`.",
   "`provides = [testing.ExecutionInfo]` without returning it fails: `rule advertised the 'ExecutionInfo' provider, but this provider was not among those returned` (checkDeclaredProviders looks every advertised key up on the built target; DefaultInfo/OutputGroupInfo are always there). A dep without it in attr.label(providers = [testing.ExecutionInfo]): `'//pkg:plain' does not have mandatory providers: 'ExecutionInfo'`.",
   "The py_interpreter_program shape (executable = False, DefaultInfo(executable = symlink)) builds; its requirements reach a run_shell action that runs the program from the exec configuration.",
-  "A test rule returning ExecutionInfo builds (the requirements go to its test action)."
+  "A test rule returning ExecutionInfo builds, also with --nobuild, whatever its exec group (the test action is created at analysis; `build` never runs it).",
+  "`test` applies its requirements to the test action (TestTargetProperties.java:115-118 puts them over the tags' execution info): requirements = {\"no-sandbox\": \"\"} runs the test spawn with the local strategy (`INFO: 7 processes: 6 internal, 2 local.` instead of `2 processwrapper-sandbox`); requirements = {\"requires-network\": \"\"} under --nosandbox_default_allow_network passes (the genuine processwrapper-sandbox never blocks the network; natively the Landlock sandbox denies the connection without the merged requirement, with `Permission denied`, and the test fails).",
+  "exec_group = \"other\" (declared by the rule) runs the test in that group's owner: PASSED on this host."
  ],
  "known_divergences": [
   "Exit codes of command-line errors are not exercised; analysis failures exit 1 on both sides.",
   "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and Starlark errors in its own traceback format (the messages are Bazel's).",
-  "Declared divergence test_rule: see the case.",
+  "Declared divergence other_group_test: see the case.",
   "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case."
  ],
  "counts": {
-  "MATCH": 21,
+  "MATCH": 27,
   "DECLARED_DIVERGENCE": 1
  },
  "scratch_removed": true,
@@ -57,7 +59,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.211,
+    "seconds": 9.585,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -69,7 +71,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.41,
+    "seconds": 0.413,
     "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -89,14 +91,14 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.312,
+    "seconds": 8.707,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:loaded (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:loaded up-to-date (nothing to build)\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
     "outputs": {}
    },
    "native": {
     "exit": 0,
-    "seconds": 0.349,
+    "seconds": 0.318,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {}
@@ -111,7 +113,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.401,
+    "seconds": 8.942,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:program (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:program up-to-date:\n  bazel-bin/pkg/program\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\n",
     "outputs": {
@@ -123,7 +125,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.342,
+    "seconds": 0.372,
     "stdout": "//pkg:program\tbazel-out/k8-fastbuild/bin/pkg/program\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -143,7 +145,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.052,
+    "seconds": 9.946,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:consumer (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:consumer up-to-date:\n  bazel-bin/pkg/consumer.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
     "outputs": {
@@ -155,7 +157,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 2.825,
+    "seconds": 2.811,
     "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
     "outputs": {
@@ -175,7 +177,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.2,
+    "seconds": 16.528,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:needs_ok (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:needs_ok up-to-date:\n  bazel-bin/pkg/needs_ok.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -187,7 +189,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.323,
+    "seconds": 0.338,
     "stdout": "//pkg:needs_ok\tbazel-out/k8-fastbuild/bin/pkg/needs_ok.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -207,19 +209,19 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.461,
+    "seconds": 39.092,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:57:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'\nERROR: <WS>/pkg/BUILD.bazel:57:6: Analysis of target '//pkg:needs_missing' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:needs_missing' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:58:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'\nERROR: <WS>/pkg/BUILD.bazel:58:6: Analysis of target '//pkg:needs_missing' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:needs_missing' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.322,
+    "seconds": 0.336,
     "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:57:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:58:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'\n",
     "outputs": null
    },
-   "expected_message": "<WS>/pkg/BUILD.bazel:57:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'",
+   "expected_message": "<WS>/pkg/BUILD.bazel:58:6: in dep attribute of needs rule //pkg:needs_missing: '//pkg:plain' does not have mandatory providers: 'ExecutionInfo'",
    "verdict": "MATCH",
    "exit_code_equal": true
   },
@@ -230,14 +232,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.299,
+    "seconds": 8.765,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:62:11: in advertises rule //pkg:advertises: \n<WS>/pkg/defs.bzl:144:5: rule advertised the 'ExecutionInfo' provider, but this provider was not among those returned\nERROR: <WS>/pkg/BUILD.bazel:62:11: Analysis of target '//pkg:advertises' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:advertises' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:63:11: in advertises rule //pkg:advertises: \n<WS>/pkg/defs.bzl:144:5: rule advertised the 'ExecutionInfo' provider, but this provider was not among those returned\nERROR: <WS>/pkg/BUILD.bazel:63:11: Analysis of target '//pkg:advertises' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:advertises' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.317,
+    "seconds": 0.345,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:advertises: rule advertised the 'ExecutionInfo' provider, but this provider was not among those returned\n",
     "outputs": null
@@ -256,14 +258,14 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.19,
+    "seconds": 8.303,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 16 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
     "outputs": {}
    },
    "native": {
     "exit": 0,
-    "seconds": 1.906,
+    "seconds": 1.926,
     "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n//pkg:program\tbazel-out/k8-fastbuild/bin/pkg/program\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -282,7 +284,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 11.237,
+    "seconds": 11.036,
     "stdout": "",
     "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:with_execution_info_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 target...\nTarget //pkg:with_execution_info_test up-to-date:\n  bazel-bin/pkg/with_execution_info_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\n",
     "outputs": {
@@ -293,14 +295,197 @@
     }
    },
    "native": {
-    "exit": 1,
-    "seconds": 14.22,
+    "exit": 0,
+    "seconds": 15.797,
+    "stdout": "//pkg:with_execution_info_test\tbazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "test_rule_nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:with_execution_info_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.033,
     "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:with_execution_info_test: testing.ExecutionInfo returned by a test rule is not implemented in the native profile (the test action's execution requirements and exec group)\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:with_execution_info_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 10.656,
+    "stdout": "//pkg:with_execution_info_test\tbazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh": null
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "test_rule_test": {
+   "argv": [
+    "test",
+    "//pkg:with_execution_info_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.5,
+    "stdout": "//pkg:with_execution_info_test                                           PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:with_execution_info_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:with_execution_info_test up-to-date:\n  bazel-bin/pkg/with_execution_info_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 13.081,
+    "stdout": "//pkg:with_execution_info_test                                           PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:with_execution_info_test\t<CACHE>/actions/f7057fd1c9caf63e2cd4ec9698a77bf95d92bd29cab5ec236e60e195aa4135fc/outputs/bazel-out/k8-fastbuild/bin/pkg/with_execution_info_test.sh\nbazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
    },
-   "declared_divergence": "a test rule returning testing.ExecutionInfo: Bazel applies its requirements and exec group to the test action (RuleConfiguredTargetBuilder.initializeTestProvider, TestTargetProperties.java:115-118); the native test action does not model them, so analysis fails explicitly instead of running the test with different execution requirements (on Linux, rules_cc/rules_python/rules_java return it from tests only for Apple targets)",
-   "native_message": "testing.ExecutionInfo returned by a test rule is not implemented in the native profile (the test action's execution requirements and exec group)",
+   "test_summary": [
+    "//pkg:with_execution_info_test                                           PASSED in <T>s",
+    "Executed 1 out of 1 test: 1 test passes."
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "network_test": {
+   "argv": [
+    "test",
+    "--nosandbox_default_allow_network",
+    "//pkg:network_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.089,
+    "stdout": "//pkg:network_test                                                       PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:network_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:network_test up-to-date:\n  bazel-bin/pkg/network_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/network_test.sh": [
+      "0o555",
+      "#!/bin/bash\nout=$( (echo > /dev/tcp/127.0.0.1/9) 2>&1 )\necho \"connect: $out\"\ncase \"$out\" in\n  *\"Connection refused\"*) exit 0 ;;\nesac\nexit 1\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 12.662,
+    "stdout": "//pkg:network_test                                                       PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:network_test\t<CACHE>/actions/53c4eb25fdb87f4b5146e7bc2c22b8c3173a1c04994a0f879282842ec3d95493/outputs/bazel-out/k8-fastbuild/bin/pkg/network_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "test_summary": [
+    "//pkg:network_test                                                       PASSED in <T>s",
+    "Executed 1 out of 1 test: 1 test passes."
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "local_test": {
+   "argv": [
+    "test",
+    "//pkg:local_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.29,
+    "stdout": "//pkg:local_test                                                         PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:local_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:local_test up-to-date:\n  bazel-bin/pkg/local_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 2 local.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/local_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 13.04,
+    "stdout": "//pkg:local_test                                                         PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:local_test\t<CACHE>/actions/f938affa461890c864308ee0383ddea145e73803200ddcc68e402d743a0e6fba/outputs/bazel-out/k8-fastbuild/bin/pkg/local_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "test_summary": [
+    "//pkg:local_test                                                         PASSED in <T>s",
+    "Executed 1 out of 1 test: 1 test passes."
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "other_group_build": {
+   "argv": [
+    "build",
+    "//pkg:other_group_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.041,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:other_group_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 target...\nTarget //pkg:other_group_test up-to-date:\n  bazel-bin/pkg/other_group_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/other_group_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 10.728,
+    "stdout": "//pkg:other_group_test\tbazel-out/k8-fastbuild/bin/pkg/other_group_test.sh\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/other_group_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "other_group_test": {
+   "argv": [
+    "test",
+    "//pkg:other_group_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.574,
+    "stdout": "//pkg:other_group_test                                                   PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:other_group_test (80 packages loaded, 835 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:other_group_test up-to-date:\n  bazel-bin/pkg/other_group_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/other_group_test.sh": [
+      "0o555",
+      "#!/bin/sh\nexit 0\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 12.105,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:other_group_test\t<CACHE>/actions/7d691b7e8690323e50af61340c7f793da48d35b87124a3bdbbb7960735047f38/outputs/bazel-out/k8-fastbuild/bin/pkg/other_group_test.sh\nbazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)\nbazel-rs: //pkg:other_group_test: testing.ExecutionInfo with exec_group = \"other\" is not implemented in the native profile: the test action would run in that exec group (TestActionBuilder.getTestActionOwner); only the default \"test\" group is modelled\n",
+    "outputs": null
+   },
+   "declared_divergence": "a test rule whose testing.ExecutionInfo names another exec group: Bazel runs the test action with that group's action owner (TestActionBuilder.getTestActionOwner, analysis/test/TestActionBuilder.java:151-170: its execution platform and exec properties, and getUnrunnableReason for it); the native test command models only the default `test` group (the host is its only execution platform), so `test` fails explicitly before running the test; `build` and `--nobuild` of the same target match (other_group_build)",
+   "native_message": "testing.ExecutionInfo with exec_group = \"other\" is not implemented in the native profile: the test action would run in that exec group (TestActionBuilder.getTestActionOwner); only the default \"test\" group is modelled",
    "verdict": "DECLARED_DIVERGENCE",
    "exit_code_equal": false
   },
@@ -311,14 +496,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.143,
+    "seconds": 8.568,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_list: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 156, column 10, in _bad_impl\n\t\tE([])\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_list' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_list' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_list: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 156, column 10, in _bad_impl\n\t\tE([])\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_list' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_list' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.33,
+    "seconds": 0.29,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_list: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:156, in _bad_impl\n      E([])\nerror: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\n   --> //pkg:defs.bzl:156:9\n    |\n156 |         E([])\n    |         ^^^^^\n    |\n\n",
     "outputs": null
@@ -334,14 +519,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.729,
+    "seconds": 8.858,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_none: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 158, column 10, in _bad_impl\n\t\tE(None)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'NoneType', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_none' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_none: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 158, column 10, in _bad_impl\n\t\tE(None)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'NoneType', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_none' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.31,
+    "seconds": 0.319,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:158, in _bad_impl\n      E(None)\nerror: in call to ExecutionInfo(), parameter 'requirements' got value of type 'NoneType', want 'dict'\n   --> //pkg:defs.bzl:158:9\n    |\n158 |         E(None)\n    |         ^^^^^^^\n    |\n\n",
     "outputs": null
@@ -357,14 +542,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.374,
+    "seconds": 8.617,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_int_key: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 160, column 10, in _bad_impl\n\t\tE({1: \"a\"})\nError in ExecutionInfo: got dict<int, string> for 'requirements', want dict<string, string>\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_int_key' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_int_key' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_int_key: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 160, column 10, in _bad_impl\n\t\tE({1: \"a\"})\nError in ExecutionInfo: got dict<int, string> for 'requirements', want dict<string, string>\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_int_key' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_int_key' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.312,
+    "seconds": 0.317,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_int_key: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:160, in _bad_impl\n      E({1: \"a\"})\nerror: got dict<int, string> for 'requirements', want dict<string, string>\n   --> //pkg:defs.bzl:160:9\n    |\n160 |         E({1: \"a\"})\n    |         ^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -380,14 +565,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.53,
+    "seconds": 8.482,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_int_value: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 162, column 10, in _bad_impl\n\t\tE({\"a\": 1})\nError in ExecutionInfo: got dict<string, int> for 'requirements', want dict<string, string>\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_int_value' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_int_value' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_int_value: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 162, column 10, in _bad_impl\n\t\tE({\"a\": 1})\nError in ExecutionInfo: got dict<string, int> for 'requirements', want dict<string, string>\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_int_value' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_int_value' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.307,
+    "seconds": 0.321,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_int_value: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:162, in _bad_impl\n      E({\"a\": 1})\nerror: got dict<string, int> for 'requirements', want dict<string, string>\n   --> //pkg:defs.bzl:162:9\n    |\n162 |         E({\"a\": 1})\n    |         ^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -403,14 +588,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.409,
+    "seconds": 8.092,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_group_int: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 164, column 10, in _bad_impl\n\t\tE({}, 1)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'int', want 'string'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_group_int' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_group_int' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_group_int: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 164, column 10, in _bad_impl\n\t\tE({}, 1)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'int', want 'string'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_group_int' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_group_int' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.335,
+    "seconds": 0.319,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_group_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:164, in _bad_impl\n      E({}, 1)\nerror: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'int', want 'string'\n   --> //pkg:defs.bzl:164:9\n    |\n164 |         E({}, 1)\n    |         ^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -426,14 +611,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 7.979,
+    "seconds": 8.676,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_group_none: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 166, column 10, in _bad_impl\n\t\tE(exec_group = None)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'NoneType', want 'string'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_group_none' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_group_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_group_none: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 166, column 10, in _bad_impl\n\t\tE(exec_group = None)\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'NoneType', want 'string'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_group_none' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_group_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.303,
+    "seconds": 0.304,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_group_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:166, in _bad_impl\n      E(exec_group = None)\nerror: in call to ExecutionInfo(), parameter 'exec_group' got value of type 'NoneType', want 'string'\n   --> //pkg:defs.bzl:166:9\n    |\n166 |         E(exec_group = None)\n    |         ^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -449,14 +634,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.539,
+    "seconds": 8.226,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 168, column 10, in _bad_impl\n\t\tE(requirement = {})\nError in ExecutionInfo: ExecutionInfo() got unexpected keyword argument 'requirement' (did you mean 'requirements'?)\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 168, column 10, in _bad_impl\n\t\tE(requirement = {})\nError in ExecutionInfo: ExecutionInfo() got unexpected keyword argument 'requirement' (did you mean 'requirements'?)\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.339,
+    "seconds": 0.306,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_unknown_keyword: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:168, in _bad_impl\n      E(requirement = {})\nerror: ExecutionInfo() got unexpected keyword argument 'requirement' (did you mean 'requirements'?)\n   --> //pkg:defs.bzl:168:9\n    |\n168 |         E(requirement = {})\n    |         ^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -472,14 +657,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.112,
+    "seconds": 8.346,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_three: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 170, column 10, in _bad_impl\n\t\tE({}, \"a\", \"b\")\nError in ExecutionInfo: ExecutionInfo() accepts no more than 2 positional arguments but got 3\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_three' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_three' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_three: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 170, column 10, in _bad_impl\n\t\tE({}, \"a\", \"b\")\nError in ExecutionInfo: ExecutionInfo() accepts no more than 2 positional arguments but got 3\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_three' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_three' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.347,
+    "seconds": 0.305,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_three: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:170, in _bad_impl\n      E({}, \"a\", \"b\")\nerror: ExecutionInfo() accepts no more than 2 positional arguments but got 3\n   --> //pkg:defs.bzl:170:9\n    |\n170 |         E({}, \"a\", \"b\")\n    |         ^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -495,14 +680,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.381,
+    "seconds": 8.537,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_three_bad_type: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 172, column 10, in _bad_impl\n\t\tE([], \"a\", \"b\")\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_three_bad_type' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_three_bad_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_three_bad_type: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 172, column 10, in _bad_impl\n\t\tE([], \"a\", \"b\")\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_three_bad_type' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_three_bad_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.343,
+    "seconds": 0.3,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_three_bad_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:172, in _bad_impl\n      E([], \"a\", \"b\")\nerror: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\n   --> //pkg:defs.bzl:172:9\n    |\n172 |         E([], \"a\", \"b\")\n    |         ^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -518,14 +703,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.401,
+    "seconds": 8.449,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_duplicate: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 174, column 10, in _bad_impl\n\t\tE({}, requirements = {})\nError in ExecutionInfo: ExecutionInfo() got multiple values for argument 'requirements'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_duplicate' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_duplicate' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_duplicate: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 174, column 10, in _bad_impl\n\t\tE({}, requirements = {})\nError in ExecutionInfo: ExecutionInfo() got multiple values for argument 'requirements'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_duplicate' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_duplicate' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.342,
+    "seconds": 0.307,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_duplicate: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:174, in _bad_impl\n      E({}, requirements = {})\nerror: ExecutionInfo() got multiple values for argument 'requirements'\n   --> //pkg:defs.bzl:174:9\n    |\n174 |         E({}, requirements = {})\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -541,14 +726,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.389,
+    "seconds": 8.521,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_duplicate_bad_type: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 176, column 10, in _bad_impl\n\t\tE({}, requirements = [])\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_duplicate_bad_type' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_duplicate_bad_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_duplicate_bad_type: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 176, column 10, in _bad_impl\n\t\tE({}, requirements = [])\nError in ExecutionInfo: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_duplicate_bad_type' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_duplicate_bad_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.346,
+    "seconds": 0.29,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_duplicate_bad_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:176, in _bad_impl\n      E({}, requirements = [])\nerror: in call to ExecutionInfo(), parameter 'requirements' got value of type 'list', want 'dict'\n   --> //pkg:defs.bzl:176:9\n    |\n176 |         E({}, requirements = [])\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -564,14 +749,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.521,
+    "seconds": 8.675,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_unknown_field: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 178, column 12, in _bad_impl\n\t\tE().nope\nError: 'ExecutionInfo' value has no field or method 'nope'\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_unknown_field' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_unknown_field' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_unknown_field: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 178, column 12, in _bad_impl\n\t\tE().nope\nError: 'ExecutionInfo' value has no field or method 'nope'\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_unknown_field' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_unknown_field' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.377,
+    "seconds": 0.282,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_unknown_field: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: 'ExecutionInfo' value has no field or method 'nope'\n   --> //pkg:defs.bzl:178:9\n    |\n178 |         E().nope\n    |         ^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -587,14 +772,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.378,
+    "seconds": 8.442,
     "stdout": "",
-    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:65:8: in bad rule //pkg:bad_set_field: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 181, column 13, in _bad_impl\n\t\tinfo.requirements = {}\nError: cannot set .requirements field of ExecutionInfo value\nERROR: <WS>/pkg/BUILD.bazel:65:8: Analysis of target '//pkg:bad_set_field' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_set_field' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:66:8: in bad rule //pkg:bad_set_field: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 181, column 13, in _bad_impl\n\t\tinfo.requirements = {}\nError: cannot set .requirements field of ExecutionInfo value\nERROR: <WS>/pkg/BUILD.bazel:66:8: Analysis of target '//pkg:bad_set_field' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:bad_set_field' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": {}
    },
    "native": {
     "exit": 1,
-    "seconds": 0.344,
+    "seconds": 0.326,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:bad_set_field: Traceback (most recent call last):\n  File <builtin>, in <module>\nerror: cannot set .requirements field of ExecutionInfo value\n   --> //pkg:defs.bzl:181:9\n    |\n181 |         info.requirements = {}\n    |         ^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null

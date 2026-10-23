@@ -89,9 +89,16 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   content** at `<executable>.runfiles/<path>` (N36 read-only store hardlinks,
   empty files as empty files, no `MANIFEST`), like a sandboxed spawn. The
   action key frames those contents, the arguments, the environment, tags,
-  size/timeout, shard/run numbers and `--zip_undeclared_test_outputs`
-  (TestRunnerAction.computeKey, :526-561) — never the runfiles tree node's
-  link-only key, so a changed source file reruns the test.
+  the execution info, size/timeout, shard/run numbers and
+  `--zip_undeclared_test_outputs` (TestRunnerAction.computeKey, :526-561) —
+  never the runfiles tree node's link-only key, so a changed source file
+  reruns the test.
+* execution info (TestTargetProperties, analysis/test/TestTargetProperties.java:84-122):
+  the rule's tags (TargetUtils.getExecutionInfo), `local` for local tests,
+  `no-remote-exec` for exclusive ones, then the requirements of the rule's
+  `testing.ExecutionInfo` put over them (`exec_group` other than `test`
+  fails explicitly, docs/CC_COMMON_LOADING.md); with the tags it selects the
+  spawn strategy and network policy (docs/SANDBOX.md).
 * command: `[test-setup.sh exec path, executable runfiles path, args, --test_arg...]`
   (TestStrategy.expandedArgsFromAction, analysis/test/TestStrategy.java:176-205),
   stdout to `test.log`, stderr to `test.err` (appended to the log), stdin

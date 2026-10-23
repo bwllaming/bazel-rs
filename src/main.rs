@@ -1083,6 +1083,23 @@ fn test_spec(
     } else {
         format!("bazel-out/{}/testlogs/{package}", target.mnemonic)
     };
+    // The test rule's testing.ExecutionInfo (TestActionBuilder
+    // .setExecutionRequirements): its requirements join the test action's
+    // execution info (TestTargetProperties.java:115-118). Another exec group
+    // makes that group's action owner run the test
+    // (TestActionBuilder.getTestActionOwner :156-170: its execution platform,
+    // exec properties and unrunnable check), not modelled.
+    let requirements = match &target.settings.test_requirements {
+        None => Vec::new(),
+        Some(info) if info.default_exec_group() => info.requirements.clone(),
+        Some(info) => {
+            return Err(format!(
+                "{}: testing.ExecutionInfo with exec_group = \"{}\" is not implemented in the native profile: the test action would run in that exec group (TestActionBuilder.getTestActionOwner); only the default \"test\" group is modelled",
+                label_print(label),
+                info.exec_group
+            ));
+        }
+    };
     Ok(bazel_rs::test_runner::TestSpec {
         label: label_print(label),
         info,
@@ -1097,6 +1114,7 @@ fn test_spec(
         target_inherited: target.settings.inherited.clone(),
         action_env: target.action_env.clone(),
         test_env: target.test_env.clone(),
+        requirements,
     })
 }
 

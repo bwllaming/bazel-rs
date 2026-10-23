@@ -9,6 +9,7 @@ load(
     "program",
     "provider_rule",
     "requirements_setting",
+    "requirements_test",
     "returns_loaded",
     "with_execution_info_test",
 )
@@ -84,3 +85,24 @@ advertises(name = "advertises")
 ]
 
 with_execution_info_test(name = "with_execution_info_test")
+
+# Under --nosandbox_default_allow_network only requires-network lets a
+# sandboxed test spawn connect (Spawns.requiresNetwork).
+requirements_test(
+    name = "network_test",
+    connect = True,
+    requirements = {"requires-network": ""},
+)
+
+# no-sandbox: not sandboxed (Spawns.mayBeSandboxed).
+requirements_test(
+    name = "local_test",
+    requirements = {"no-sandbox": ""},
+)
+
+# The test action in the `other` exec group.
+requirements_test(
+    name = "other_group_test",
+    group = "other",
+    requirements = {"requires-fixture": ""},
+)

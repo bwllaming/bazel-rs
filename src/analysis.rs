@@ -2241,13 +2241,6 @@ fn analyze_inner(
                     "Returning RunEnvironmentInfo from a non-executable, non-test target has no effect"
                 );
             }
-            // RuleConfiguredTargetBuilder.initializeTestProvider (:470-498):
-            // a test's ExecutionInfo is its test action's requirements and
-            // exec group (TestTargetProperties.java:115-118), not modelled.
-            ensure!(
-                !kind.test || !custom.contains_key(crate::execution_info::PROVIDER_ID),
-                "testing.ExecutionInfo returned by a test rule is not implemented in the native profile (the test action's execution requirements and exec group)"
-            );
             // parseDefaultProviderFields/addSimpleProviders (:359-490).
             let (files, target_runfiles) = crate::runfiles::configure_target(
                 returned_default.unwrap_or_default(),
@@ -2271,6 +2264,15 @@ fn analyze_inner(
             {
                 target_runfiles.run.environment = environment;
                 target_runfiles.run.inherited = inherited;
+            }
+            // RuleConfiguredTargetBuilder.initializeTestProvider (:470-498):
+            // a test rule's ExecutionInfo goes to its test action (the
+            // requirements and the exec group of its owner), which the `test`
+            // command assembles (crate::test_runner::TestSpec).
+            if kind.test {
+                target_runfiles.run.test_requirements = custom
+                    .get(crate::execution_info::PROVIDER_ID)
+                    .and_then(|info| crate::execution_info::test_requirements(*info));
             }
             // checkDeclaredProviders (analysis/starlark/StarlarkRuleConfiguredTargetUtil.java:138-148)
             // looks each advertised key up on the built target: DefaultInfo

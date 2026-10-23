@@ -144,7 +144,7 @@ needs = rule(
 def _advertises_impl(_ctx):
     return []
 
-# Built-in provider keys in `provides` are never checked.
+# A built-in provider key in `provides` that the rule does not return.
 advertises = rule(
     implementation = _advertises_impl,
     provides = [testing.ExecutionInfo],
@@ -196,5 +196,41 @@ def _with_execution_info_test_impl(ctx):
 
 with_execution_info_test = rule(
     implementation = _with_execution_info_test_impl,
+    test = True,
+)
+
+# Connects to a closed local port: "Connection refused" when the spawn may
+# use the network, a sandbox denial otherwise.
+_CONNECT = """#!/bin/bash
+out=$( (echo > /dev/tcp/127.0.0.1/9) 2>&1 )
+echo "connect: $out"
+case "$out" in
+  *"Connection refused"*) exit 0 ;;
+esac
+exit 1
+"""
+
+def _requirements_test_impl(ctx):
+    executable = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(
+        executable,
+        _CONNECT if ctx.attr.connect else "#!/bin/sh\nexit 0\n",
+        is_executable = True,
+    )
+    return [
+        DefaultInfo(executable = executable),
+        E(ctx.attr.requirements, ctx.attr.group),
+    ]
+
+# A test whose ExecutionInfo reaches its test action (TestTargetProperties,
+# TestActionBuilder.getTestActionOwner).
+requirements_test = rule(
+    implementation = _requirements_test_impl,
+    attrs = {
+        "connect": attr.bool(),
+        "group": attr.string(default = "test"),
+        "requirements": attr.string_dict(),
+    },
+    exec_groups = {"other": exec_group()},
     test = True,
 )

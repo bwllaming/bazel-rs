@@ -1111,6 +1111,10 @@ pub struct RunSettings {
     pub inherited: Vec<String>,
     /// A test rule (TargetUtils.isTestRule).
     pub test: bool,
+    /// A test rule's returned testing.ExecutionInfo: what its test action
+    /// reads (crate::execution_info::TestRequirements; `run` ignores it,
+    /// like RunCommand).
+    pub test_requirements: Option<crate::execution_info::TestRequirements>,
 }
 
 impl TargetRunfiles {

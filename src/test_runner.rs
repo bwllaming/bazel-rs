@@ -73,6 +73,21 @@ pub struct TestSpec {
     /// The target configuration's action and test environments (N42).
     pub action_env: crate::action_env::ActionEnvironment,
     pub test_env: crate::action_env::ActionEnvironment,
+    /// The requirements of the test rule's testing.ExecutionInfo
+    /// (TestTargetProperties.java:115-118), empty without one.
+    pub requirements: Vec<(String, String)>,
+}
+
+impl TestSpec {
+    /// TestTargetProperties.getExecutionInfo (analysis/test/
+    /// TestTargetProperties.java:84-122): the rule's execution info
+    /// (crate::test_command::TestRuleInfo::execution_info) with the
+    /// ExecutionInfo requirements put over it.
+    pub fn execution_info(&self) -> BTreeMap<String, String> {
+        let mut info = self.info.execution_info();
+        info.extend(self.requirements.iter().cloned());
+        info
+    }
 }
 
 /// The genuine test runner scripts of the embedded `@bazel_tools`.
@@ -484,7 +499,7 @@ impl Runner<'_> {
                 None => empty_files.push(destination),
             }
         }
-        let execution_info = spec.info.execution_info();
+        let execution_info = spec.execution_info();
         let mut hash = Sha256::new();
         frame(&mut hash, STATUS_FORMAT.as_bytes());
         frame(&mut hash, spec.label.as_bytes());
@@ -775,14 +790,15 @@ impl Runner<'_> {
     /// The spawn strategy and network policy for one test spawn (N59):
     /// TestRunner actions resolve like any other spawn
     /// (crate::sandbox::resolve with the TestRunner mnemonic,
-    /// TestRunnerAction.java:112), the test rule's tags and execution
-    /// requirements as execution info (TargetUtils.getExecutionInfo).
+    /// TestRunnerAction.java:112), the test rule's tags and the test
+    /// action's execution info (TargetUtils.getExecutionInfo with the
+    /// rule's testing.ExecutionInfo requirements, TestSpec::execution_info).
     /// Returns whether the sandbox must deny network
     /// (crate::sandbox::denies_network).
     fn strategy(&self, unit: &Unit<'_>) -> Result<(crate::sandbox::Strategy, bool), String> {
         let mut info: std::collections::BTreeSet<String> =
             unit.spec.info.tags.iter().cloned().collect();
-        info.extend(unit.spec.info.execution_info().into_keys());
+        info.extend(unit.spec.execution_info().into_keys());
         Ok((
             crate::sandbox::resolve("TestRunner", &info)?,
             crate::sandbox::denies_network(&info),
@@ -1243,4 +1259,65 @@ pub fn cached_output(summary: &TestSummary, options: &TestOptions) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_command::{TestSize, TestTimeout};
+
+    /// TestTargetProperties.java:96-122: the rule's tags-derived execution
+    /// info, then the ExecutionInfo requirements put over it (a requirement
+    /// replaces a tag's empty value), so they reach the spawn strategy and
+    /// network policy like tags do.
+    #[test]
+    fn execution_info_requirements_go_over_the_rule_tags() {
+        let spec = TestSpec {
+            label: "//pkg:t".into(),
+            info: TestRuleInfo {
+                rule_class: "x_test".into(),
+                size: TestSize::Medium,
+                timeout: TestTimeout::Moderate,
+                flaky: false,
+                shard_count: -1,
+                local: false,
+                tags: vec!["requires-network".into(), "manual".into()],
+            },
+            location: None,
+            executable: PathBuf::new(),
+            executable_exec: String::new(),
+            binary: String::new(),
+            entries: Vec::new(),
+            testlogs_package: String::new(),
+            args: Vec::new(),
+            target_env: Vec::new(),
+            target_inherited: Vec::new(),
+            action_env: Default::default(),
+            test_env: Default::default(),
+            requirements: vec![
+                ("requires-network".into(), "1".into()),
+                ("no-sandbox".into(), String::new()),
+            ],
+        };
+        assert_eq!(
+            spec.execution_info(),
+            BTreeMap::from([
+                ("no-sandbox".to_owned(), String::new()),
+                ("requires-network".to_owned(), "1".to_owned()),
+            ])
+        );
+        let keys = spec
+            .execution_info()
+            .into_keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(!crate::sandbox::denies_network(&keys));
+        let without = TestSpec {
+            requirements: Vec::new(),
+            ..spec
+        };
+        assert_eq!(
+            without.execution_info(),
+            BTreeMap::from([("requires-network".to_owned(), String::new())])
+        );
+    }
 }

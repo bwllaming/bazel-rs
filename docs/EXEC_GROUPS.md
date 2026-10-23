@@ -222,8 +222,9 @@ analyzed since N25d5, docs/CC_TOOLCHAIN.md.
   Bazel 9.3 has no ToolchainCollection there and fails with a
   NullPointerException (AutoValue_StarlarkExecGroupCollection); natively an
   explicit failure.
-* Exec groups of aspects (aspects are not analyzed), `exec_group` of
-  `testing.ExecutionInfo` (a test rule returning one fails explicitly,
+* Exec groups of aspects (aspects are not analyzed), an `exec_group` other
+  than `test` in a test rule's `testing.ExecutionInfo` (`build` works, `test`
+  fails explicitly: the test action's owner would be that group's,
   docs/CC_COMMON_LOADING.md), genrule/native-rule exec groups, and the
   action-execution side of N23d (below).
 

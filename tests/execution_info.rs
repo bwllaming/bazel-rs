@@ -2,13 +2,15 @@
 //! starlarkbuildapi/test/ExecutionInfoApi.java): the constructor's binding
 //! and Dict.cast errors, the NativeInfo instance (type, dir, repr, fields,
 //! content equality and hashing), dependency access, provider requirements,
-//! `provides`, and rules_python's py_interpreter_program/precompile pattern.
+//! `provides`, rules_python's py_interpreter_program/precompile pattern, and
+//! a test rule's ExecutionInfo on its test action.
 //! Every case of tests/fixtures/execution_info/reference_receipt.json —
 //! genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here and is
 //! compared with the genuine capture: success, the WARNING lines, Bazel's
-//! error message, and the top-level outputs (mode and contents); a declared
-//! divergence is a native failure with its recorded message.
+//! error message, the top-level outputs (mode and contents) and the `test`
+//! summary; a declared divergence is a native failure with its recorded
+//! message.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
@@ -61,7 +63,18 @@ const GROUPS: &[(&str, &[&str])] = &[
             "bad_set_field",
         ],
     ),
-    ("declared", &["test_rule"]),
+    (
+        "test_action",
+        &[
+            "test_rule",
+            "test_rule_nobuild",
+            "test_rule_test",
+            "network_test",
+            "local_test",
+            "other_group_build",
+        ],
+    ),
+    ("declared", &["other_group_test"]),
 ];
 
 struct Workspace(tempfile::TempDir);
@@ -164,6 +177,27 @@ fn warnings(stderr: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The `test` summary: each target's status line (its time as `<T>`) and
+/// the `Executed` line.
+fn test_summary(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter(|line| {
+            line.starts_with("//") || line.starts_with('@') || line.starts_with("Executed ")
+        })
+        .map(|line| match line.rsplit_once(" in ") {
+            Some((head, time))
+                if time
+                    .strip_suffix('s')
+                    .is_some_and(|seconds| seconds.parse::<f64>().is_ok()) =>
+            {
+                format!("{head} in <T>s")
+            }
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
 /// The built top-level outputs (path below `bazel-out` -> [mode, contents])
 /// of the native `LABEL\tPATH` result lines.
 fn outputs(stdout: &str) -> BTreeMap<String, Value> {
@@ -223,6 +257,15 @@ fn check(name: &str, case: &Value) {
             stderr.contains(message),
             "{name}: missing {message:?} in {stderr}"
         );
+    }
+    if argv[0] == "test" {
+        let expected: Vec<String> = case["test_summary"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(test_summary(&stdout), expected, "{name}: {stdout}");
     }
     if argv[0] == "build" && succeeded && !argv.iter().any(|arg| arg == "--nobuild") {
         let expected: BTreeMap<String, Value> = genuine["outputs"]
@@ -318,6 +361,14 @@ fn program_requirements_reach_an_action() {
 #[test]
 fn constructor_and_field_errors_match() {
     check_group("errors");
+}
+
+/// A test rule's ExecutionInfo: `build` and `--nobuild` succeed, and `test`
+/// applies its requirements to the test action (`requires-network` lets the
+/// sandboxed test connect under --nosandbox_default_allow_network).
+#[test]
+fn test_rule_requirements_reach_the_test_action() {
+    check_group("test_action");
 }
 
 /// Explicit native errors with a recorded difference.

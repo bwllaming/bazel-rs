@@ -259,15 +259,27 @@ constructs a ToolchainInfo (docs/TOOLCHAINS.md), and
     checkDeclaredProviders looks it up on the built target (`rule advertised
     the 'ExecutionInfo' provider, but this provider was not among those
     returned`).
-  - Bazel reads it only for test rules: their test action's execution
-    requirements and exec group (RuleConfiguredTargetBuilder.initializeTestProvider,
-    TestTargetProperties). The native test action does not model them, so a
-    test rule returning it fails explicitly (`testing.ExecutionInfo returned
-    by a test rule is not implemented in the native profile ...`); rules_cc,
-    rules_python and rules_java return it from tests only for Apple targets.
-  - Paired capture `tests/fixtures/execution_info` (22 genuine 9.3.0 cases:
-    21 MATCH, the test rule a declared divergence), replayed by
-    `tests/execution_info.rs`.
+  - Bazel reads it only for test rules
+    (RuleConfiguredTargetBuilder.initializeTestProvider): analysis records it
+    (`RunSettings::test_requirements`; `build` and `--nobuild` are unaffected,
+    as is `run`, which RunCommand runs without it) and the `test` command
+    applies it when it assembles the test spawn (`main.rs` `test_spec`,
+    `TestSpec::execution_info`): the requirements go over the execution info
+    the rule's tags give the test action (TestTargetProperties.java:115-118,
+    a requirement replacing a tag's value), so they reach the spawn strategy,
+    the network policy and the test's cache key like tags do (`no-sandbox`
+    runs the test unsandboxed, `requires-network` lets it connect under
+    `--nosandbox_default_allow_network`). An exec group other than the
+    default `test` makes that group's action owner run the test
+    (TestActionBuilder.getTestActionOwner: its execution platform, exec
+    properties and unrunnable check), which the native test command does not
+    model: `test` fails explicitly before running it
+    (`//pkg:t: testing.ExecutionInfo with exec_group = "other" is not
+    implemented in the native profile: ...`). rules_cc, rules_python and
+    rules_java return it from tests only for Apple targets.
+  - Paired capture `tests/fixtures/execution_info` (genuine 9.3.0 cases, all
+    MATCH but the other-exec-group `test`, a declared divergence), replayed
+    by `tests/execution_info.rs`.
 
 ## Top-level builtins
 

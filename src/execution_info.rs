@@ -8,9 +8,10 @@
 //! returns it as a provider and others read it (`dep[testing.ExecutionInfo]`,
 //! rules_python's py_interpreter_program and precompile.bzl). Bazel itself
 //! reads it only for test rules (RuleConfiguredTargetBuilder.initializeTestProvider):
-//! the test action's execution requirements and exec group, which the native
-//! test action does not model, so a test rule returning it fails explicitly
-//! (crate::analysis). Paired capture tests/fixtures/execution_info.
+//! the requirements join the test action's execution info and the exec group
+//! chooses the test action's owner ([`TestRequirements`], recorded by
+//! crate::analysis, applied by the `test` command). Paired capture
+//! tests/fixtures/execution_info.
 
 use allocative::Allocative;
 use anyhow::anyhow;
@@ -69,6 +70,41 @@ fn failure(message: String) -> starlark::Error {
 
 pub(crate) fn is_instance(value: Value<'_>) -> bool {
     ExecutionInfo::from_value(value).is_some()
+}
+
+/// A test rule's returned ExecutionInfo as its test action reads it
+/// (RuleConfiguredTargetBuilder.initializeTestProvider :470-498, analysis/
+/// RuleConfiguredTargetBuilder.java, `setExecutionRequirements`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestRequirements {
+    /// ExecutionInfo.getExecutionInfo in insertion order: put over the test
+    /// action's execution info, replacing the values of keys the rule's tags
+    /// set (TestTargetProperties.java:115-118).
+    pub requirements: Vec<(String, String)>,
+    /// ExecutionInfo.getExecGroup: the exec group whose action owner runs
+    /// the test (TestActionBuilder.getTestActionOwner, analysis/test/
+    /// TestActionBuilder.java:151-170).
+    pub exec_group: String,
+}
+
+impl TestRequirements {
+    /// Whether the test action keeps the default test runner exec group
+    /// (RuleClass.DEFAULT_TEST_RUNNER_EXEC_GROUP_NAME): its owner is the
+    /// `test` group's, the owner of a test without ExecutionInfo too (without
+    /// --use_target_platform_for_tests, whose test action owner has no
+    /// native counterpart, docs/TEST_FLAGS.md).
+    pub fn default_exec_group(&self) -> bool {
+        self.exec_group == DEFAULT_EXEC_GROUP
+    }
+}
+
+/// The requirements and exec group of an ExecutionInfo instance.
+pub(crate) fn test_requirements(value: Value<'_>) -> Option<TestRequirements> {
+    let info = ExecutionInfo::from_value(value)?;
+    Some(TestRequirements {
+        requirements: info.0.requirements.clone(),
+        exec_group: info.0.exec_group.clone(),
+    })
 }
 
 /// ExecutionInfoProvider.constructor (analysis/test/ExecutionInfo.java:75-86)
