@@ -1440,9 +1440,13 @@ fn builtin_ctx_attrs<'v>(
                 heap.alloc(targets)
             }
             // The constraint values of the target's toolchain resolution
-            // (crate::engine): Targets with their ConstraintValueInfo; the
+            // and of its compatibility check (crate::engine): Targets with
+            // their ConstraintValueInfo or ConfigMatchingProvider; the
             // `toolchains` prerequisites (target configuration).
-            ("exec_compatible_with" | "toolchains", NativeType::LabelList) => {
+            (
+                "exec_compatible_with" | "target_compatible_with" | "toolchains",
+                NativeType::LabelList,
+            ) => {
                 let mut targets = Vec::new();
                 let mut constraint_files = Vec::new();
                 for label in target.labels(name) {

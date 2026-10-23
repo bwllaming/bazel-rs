@@ -1028,6 +1028,13 @@ fn has_platform_info(rule: &Rule) -> bool {
         )
 }
 
+/// The mandatory-provider error of the first `target_compatible_with`
+/// label without a ConstraintValueInfo or ConfigMatchingProvider, if any
+/// (Engine::check_target_compatibility).
+fn unprovided_error(label: Option<&Label>, error: impl Fn(&Label) -> String) -> Result<(), String> {
+    label.map_or(Ok(()), |label| Err(error(label)))
+}
+
 /// Rules whose configured target is an AliasConfiguredTarget: `alias`
 /// (rules/Alias.java:43-56) and the LateBoundAlias build settings
 /// label_flag/label_setting (rules/LateBoundAlias.java:47-79).
@@ -3208,6 +3215,18 @@ impl Engine {
         // select() conditions, then toolchain resolution, then dependency
         // resolution (attribute validation, dependencies), then the factory.
         let ordered = self.config_conditions(&rule, config, active, configured, plan)?;
+        // Platform compatibility after the target platform and the select()
+        // conditions, before toolchain resolution and every other dependency
+        // (DependencyContextProducerWithCompatibilityCheck.java:159-189).
+        self.check_target_compatibility(
+            &rule,
+            config,
+            &ordered,
+            uses_toolchains,
+            active,
+            configured,
+            plan,
+        )?;
         if uses_toolchains {
             self.check_execution_platform_registrations()?;
         }
@@ -7074,6 +7093,177 @@ impl Engine {
         })
     }
 
+    /// IncompatibleTargetChecker.IncompatibleTargetProducer
+    /// (analysis/constraints/IncompatibleTargetChecker.java:126-227). The
+    /// configured `target_compatible_with` labels (the built-in attribute
+    /// of Starlark rules and of native rules that are not exempt from
+    /// constraint checking) are analyzed in the rule's own configuration;
+    /// each must provide a ConstraintValueInfo or a ConfigMatchingProvider
+    /// (the attribute's mandatory providers, BaseRuleClasses.java:331-337),
+    /// and they are the rule's `ctx.attr.target_compatible_with`. For a rule
+    /// that uses toolchain resolution (`checked`), with a known target
+    /// platform: each constraint value must be the platform's value of its
+    /// setting (ConstraintCollection.hasConstraintValue) and each
+    /// config_setting must match; duplicate constraint settings
+    /// (ConstraintCollection.validateConstraints) and config_setting errors
+    /// are validation errors at the rule's location. A compatible target is
+    /// analyzed as usual; an incompatible one fails explicitly, naming the
+    /// target platform and the unmet constraints in Bazel's words
+    /// (TopLevelConstraintSemantics.formatIncompatibilityReasons): Bazel
+    /// makes it an IncompatiblePlatformProvider target that wildcard patterns
+    /// skip and an explicit request rejects, which the native profile does
+    /// not model (docs/PLATFORMS.md). An incompatible target never reaches
+    /// the mandatory-provider check (its dependencies are not analyzed).
+    #[allow(clippy::too_many_arguments)]
+    fn check_target_compatibility(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        conditions: &[(String, ConfigMatching)],
+        checked: bool,
+        active: &mut Vec<ConfiguredTargetKey>,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<(), String> {
+        // The toolchain rule's own target_compatible_with is a toolchain
+        // resolution input (platform_prerequisite_attributes).
+        if matches!(rule.kind, RuleKind::Native("toolchain")) {
+            return Ok(());
+        }
+        let conditions = conditions.iter().cloned().collect::<BTreeMap<_, _>>();
+        let resolver = configured_attributes::Resolver {
+            target: &rule.label,
+            conditions: &conditions,
+            config_hash: config.to_string(),
+        };
+        let labels = match configured_attributes::configured_native_value(
+            rule,
+            &resolver,
+            "target_compatible_with",
+        )
+        .map_err(|error| located(rule.location.as_deref(), error))?
+        {
+            Some(crate::custom_rule::AttrValue::Labels(labels)) if !labels.is_empty() => labels,
+            _ => return Ok(()),
+        };
+        let mut constraints = Vec::new();
+        let mut settings = Vec::new();
+        let mut unprovided = None;
+        for text in &labels {
+            let label = self.resolve_rule_src(rule, text)?;
+            self.analyze(&label, config, active, configured, plan)?;
+            let node = configured
+                .get(&ConfiguredTargetKey::new(label.clone(), config))
+                .cloned()
+                .unwrap_or_default();
+            if node.constraint_value.is_none() && node.matching.is_none() {
+                unprovided.get_or_insert(label.clone());
+            }
+            if let Some(value) = node.constraint_value {
+                constraints.push(value);
+            }
+            if let Some(matching) = node.matching {
+                // ConfiguredTarget.getOriginalLabel: the label as written.
+                settings.push((label, matching));
+            }
+        }
+        let provider_error = |label: &Label| {
+            located(
+                rule.location.as_deref(),
+                format!(
+                    "in target_compatible_with attribute of {} rule {}: '{}' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'",
+                    rule.rule_class_name(),
+                    crate::rule_declarations::canonical_form(&rule.label),
+                    crate::rule_declarations::canonical_form(label)
+                ),
+            )
+        };
+        if !checked {
+            return unprovided_error(unprovided.as_ref(), provider_error);
+        }
+        crate::platforms::validate_constraints(&constraints)
+            .map_err(|error| located(rule.location.as_deref(), error))?;
+        // ConfigMatchingProvider.accumulateMatchResults (:155-168).
+        let mut errors: Vec<(&Label, &[String])> = Vec::new();
+        let mut not_matching = Vec::new();
+        for (label, matching) in &settings {
+            match &matching.result {
+                configured_attributes::MatchResult::InError(messages) => {
+                    errors.push((label, messages))
+                }
+                configured_attributes::MatchResult::NoMatch(_) => not_matching.push(label),
+                configured_attributes::MatchResult::Match => {}
+            }
+        }
+        if !errors.is_empty() {
+            return Err(located(
+                rule.location.as_deref(),
+                errors
+                    .iter()
+                    .map(|(label, messages)| {
+                        format!("For config_setting {label}: {}", messages.join(", "))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            ));
+        }
+        // The target platform is needed only to compare constraint values
+        // (a config_setting's result is already known).
+        let platform = if constraints.is_empty() {
+            None
+        } else {
+            Some(self.target_platform(config, configured, plan)?)
+        };
+        let unmet = platform.as_ref().map_or_else(Vec::new, |platform| {
+            constraints
+                .iter()
+                .filter(|value| platform.constraints.get(&value.setting).as_ref() != Some(*value))
+                .collect::<Vec<_>>()
+        });
+        if unmet.is_empty() && not_matching.is_empty() {
+            return unprovided_error(unprovided.as_ref(), provider_error);
+        }
+        // TopLevelConstraintSemantics.formatIncompatibilityReasons (:316-351).
+        let mut reasons = Vec::new();
+        if let Some(platform) = platform.as_ref().filter(|_| !unmet.is_empty()) {
+            let mut reason = format!(
+                " target platform ({}) didn't satisfy constraint",
+                platform.label
+            );
+            match unmet.as_slice() {
+                [only] => reason.push_str(&format!(" {}", only.label)),
+                many => reason.push_str(&format!(
+                    "s [{}]",
+                    many.iter()
+                        .map(|value| value.label.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
+            reasons.push(reason);
+        }
+        if !not_matching.is_empty() {
+            reasons.push(match not_matching.as_slice() {
+                [only] => format!(" target configuration didn't match config_setting {only}"),
+                many => format!(
+                    " target configuration didn't match config_settings [{}]",
+                    many.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+        Err(located(
+            rule.location.as_deref(),
+            format!(
+                "{} is incompatible with its target platform:{}; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+                crate::rule_declarations::canonical_form(&rule.label),
+                reasons.join(" and")
+            ),
+        ))
+    }
+
     /// ConfigConditionsProducer (analysis/producers/ConfigConditionsProducer.java:91-172):
     /// every `$config_dependencies` label is analyzed in this configuration;
     /// each must then provide a ConfigMatchingProvider
@@ -9150,15 +9340,14 @@ impl Engine {
             }
             // The target's exec_compatible_with constraint values
             // (ctx.attr.exec_compatible_with), analyzed by its toolchain
-            // resolution.
+            // resolution, and its configured target_compatible_with
+            // prerequisites (ctx.attr.target_compatible_with), analyzed by
+            // its compatibility check.
             if let Some(custom) = &rule.custom {
-                for text in custom
-                    .declaration
-                    .builtin
-                    .target
-                    .labels("exec_compatible_with")
-                {
-                    add_target(self.resolve_rule_src(rule, &text)?);
+                for name in ["exec_compatible_with", "target_compatible_with"] {
+                    for text in custom.declaration.builtin.target.labels(name) {
+                        add_target(self.resolve_rule_src(rule, &text)?);
+                    }
                 }
             }
             let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);

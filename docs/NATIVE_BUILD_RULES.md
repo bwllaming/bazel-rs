@@ -181,9 +181,10 @@ match the target platform (docs/PLATFORMS.md).
   analysis not implemented in the native profile`, including when reached as
   a dependency or through an implicit output (`//pkg:doc.binaryproto`).
   `alias`, `label_flag` and `label_setting` forward their configured actual
-  (docs/CONFIGURATION.md); any of their other non-empty attributes
-  (`target_compatible_with`, `compatible_with`, `restricted_to`,
-  `package_metadata`, `aspect_hints`, `transitive_configs`) fails explicitly.
+  (docs/CONFIGURATION.md); `target_compatible_with` is checked
+  (docs/PLATFORMS.md "target_compatible_with"); any of their other non-empty
+  attributes (`compatible_with`, `restricted_to`, `package_metadata`,
+  `aspect_hints`, `transitive_configs`) fails explicitly.
 * `filegroup`/`genrule` keep their native analysis only for the modeled
   attributes (`srcs`, `outs`, `cmd`, genrule `tools` in the exec
   configuration, docs/CONFIGURATION.md "Exec transition"; genrule
@@ -191,8 +192,9 @@ match the target platform (docs/PLATFORMS.md).
   metadata such as `tags`, `deprecation`,
   `licenses`, `features`, `message`, `local`, `output_to_bindir`,
   `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`; genrule
-  `executable = True`, below). Any other non-empty
-  value (`data`, `cmd_bash`, `stamp` other than 0, `target_compatible_with`,
+  `executable = True`, below; `target_compatible_with`, checked before
+  toolchain resolution, docs/PLATFORMS.md). Any other non-empty
+  value (`data`, `cmd_bash`, `stamp` other than 0,
   `package_metadata`, `aspect_hints`, `output_group`, ...) is recorded and
   analysis fails explicitly listing it.
 * `genrule(executable = True)` (GenRuleBase.java:78-86, 215-235, 288-298):

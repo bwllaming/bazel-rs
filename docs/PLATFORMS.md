@@ -328,8 +328,60 @@ and referenced by '//:cv_missing'`) or select() key error.
   `flags` as the target
   platform; `required_settings` and select() in a target platform's tree;
   `platform_mappings` (a workspace file fails the build);
-  `target_compatible_with` (incompatible target skipping) stays an analysis
-  gap; `--experimental_platforms_api`.
+  incompatible target skipping (an incompatible `target_compatible_with`
+  fails explicitly, below); `--experimental_platforms_api`.
+
+## target_compatible_with (step 1: compatible targets)
+
+IncompatibleTargetChecker.IncompatibleTargetProducer
+(`analysis/constraints/IncompatibleTargetChecker.java:126-227`), run by
+DependencyContextProducerWithCompatibilityCheck after the target platform
+and the select() conditions and before toolchain resolution and every other
+dependency (`analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:159-189`),
+natively `Engine::check_target_compatibility`:
+
+* The built-in `target_compatible_with` of Starlark rules and of the native
+  rules that are not exempt from constraint checking (filegroup, genrule,
+  alias, ...; BaseRuleClasses.java:331-337) is resolved like
+  ConfiguredAttributeMapper.getAndValidate, without configuring the rule's
+  other attributes (a select() without a match is Bazel's `configurable
+  attribute "target_compatible_with" in L doesn't match this configuration`
+  error). Its labels are analyzed in the rule's own configuration and must
+  provide a ConstraintValueInfo or a ConfigMatchingProvider (`in
+  target_compatible_with attribute of writer rule L: 'X' does not have
+  mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`);
+  they are `ctx.attr.target_compatible_with` (Targets).
+* For a rule that uses toolchain resolution: duplicate constraint settings
+  fail (`Duplicate constraint values detected: constraint_setting
+  @@platforms//os:os has [...]`), config_setting errors fail (`For
+  config_setting L: ...`), and the target is compatible when the target
+  platform has every constraint value (ConstraintCollection.get with the
+  setting's default, so an unset setting matches its default value) and
+  every config_setting matches. The target platform is resolved only when a
+  constraint value needs it (the default host platform stays lazy). A rule
+  without toolchain resolution (a build setting, the empty configuration)
+  is never checked, as in Bazel.
+* A compatible target is analyzed and built as usual (~/code's duckdb
+  `cross_libs` cc_library targets and `//src/python/baseimage:image`'s
+  select() of cpu constraints plus `os:linux`).
+* An incompatible target fails explicitly at its analysis, naming the target
+  platform and the unmet constraints with Bazel's reason text
+  (TopLevelConstraintSemantics.formatIncompatibilityReasons): `//pkg:x is
+  incompatible with its target platform: target platform
+  (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64;
+  skipping incompatible targets (IncompatiblePlatformProvider) is not
+  implemented in the native profile (docs/PLATFORMS.md)`. Bazel instead makes
+  it an IncompatiblePlatformProvider target: an explicit request (directly or
+  through dependencies) fails with `Target L is incompatible and cannot be
+  built, but was explicitly requested.` and its dependency chain (exit 1 in
+  both), a wildcard pattern skips it (`Target L was skipped`, the build
+  succeeds), `--skip_incompatible_explicit_targets` and SKIPPED tests are not
+  modelled (step 2).
+
+`tests/target_compatible_with.rs` replays the paired genuine capture
+`tests/fixtures/target_compatible_with/reference_receipt.json` (17 cases: 11
+MATCH, 6 declared divergences — the incompatible cases and the wildcard
+skip).
 
 ## Tests
 

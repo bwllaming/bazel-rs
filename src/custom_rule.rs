@@ -2121,7 +2121,9 @@ fn builtin_gaps(builtin: &crate::native_rules::NativeTarget) -> Vec<String> {
             continue;
         }
         let reason = match key.as_str() {
-            "target_compatible_with" => "incompatible target skipping (constraint analysis)",
+            // `target_compatible_with` is checked by crate::engine before
+            // toolchain resolution (IncompatibleTargetChecker); an
+            // incompatible target fails explicitly there.
             "compatible_with" | "restricted_to" => "constraint environments",
             // `exec_compatible_with` and `exec_group_compatible_with` filter
             // the execution platforms of the native toolchain resolution

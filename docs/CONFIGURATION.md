@@ -1184,10 +1184,9 @@ These are AliasConfiguredTargets (`rules/AliasConfiguredTarget.java:50-123`):
   the actual.
 * Toolchain resolution: `alias` uses it only with select keys or
   `target_compatible_with` (`Alias.java:78-98`), so a `constraint_value` key
-  of an alias is valid (docs/PLATFORMS.md); a non-empty
-  `target_compatible_with` (and the other constraint/metadata attributes) fails
-  explicitly as an analysis gap (incompatible target skipping is not
-  implemented). Label settings never resolve toolchains
+  of an alias is valid (docs/PLATFORMS.md); its `target_compatible_with` is
+  checked like any rule's (docs/PLATFORMS.md "target_compatible_with"), the
+  other constraint/metadata attributes fail explicitly as analysis gaps. Label settings never resolve toolchains
   (`LabelBuildSettings.java:99`).
 * `Alias.create`'s `@bazel_tools//platforms` error compares
   `getCanonicalForm()` (`@@bazel_tools//...` in Bazel 9.3) with
@@ -1283,7 +1282,9 @@ remaining mismatches are documented divergences:
   repository is the output-base symlink in Bazel, the source directory
   natively.
 * `A5/constrained`, `B8/.../incompatible`: `target_compatible_with` (N16c);
-  natively an explicit analysis gap.
+  natively an explicit analysis gap until compatible targets were analyzed
+  (docs/PLATFORMS.md "target_compatible_with"); an incompatible target is
+  still an explicit native error.
 
 EXACT_MESSAGE rows still lacking secondary Bazel errors: further rule errors
 of the same package (Bazel reports every rule error of a package; native stops
@@ -1356,8 +1357,8 @@ documented divergences:
 * Execution platforms (`register_execution_platforms` fails explicitly;
   toolchain resolution uses the host platform, docs/TOOLCHAINS.md), platform
   `flags`, `required_settings`/select() in a target platform's tree,
-  `target_compatible_with`, `--experimental_platforms_api`
-  (docs/PLATFORMS.md).
+  incompatible target skipping (a compatible `target_compatible_with` is
+  analyzed), `--experimental_platforms_api` (docs/PLATFORMS.md).
 * `config_feature_flag`, `--flag_alias`, `allow_multiple` string settings,
   Starlark int values outside 64 bits, `scope = "project"` and
   `--incompatible_exclude_starlark_flags_from_exec_config`. Option names are loaded with the native target-pattern subset

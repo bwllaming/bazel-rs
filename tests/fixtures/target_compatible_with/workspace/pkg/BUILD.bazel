@@ -1,0 +1,150 @@
+load(":defs.bzl", "setting", "tool", "tool_user", "writer")
+
+package(default_visibility = ["//visibility:public"])
+
+config_setting(
+    name = "is_linux",
+    constraint_values = ["@platforms//os:linux"],
+)
+
+config_setting(
+    name = "is_macos",
+    constraint_values = ["@platforms//os:macos"],
+)
+
+alias(
+    name = "linux_alias",
+    actual = "@platforms//os:linux",
+)
+
+# Compatible with the (linux, x86_64) host platform.
+writer(
+    name = "compatible",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+# ~/code's //src/python/baseimage shape: a select() of constraint values
+# plus a list.
+writer(
+    name = "compatible_select",
+    target_compatible_with = select({
+        "@platforms//cpu:x86_64": ["@platforms//cpu:x86_64"],
+        "@platforms//cpu:aarch64": ["@platforms//cpu:aarch64"],
+    }) + ["@platforms//os:linux"],
+)
+
+writer(
+    name = "compatible_config_setting",
+    target_compatible_with = [
+        ":is_linux",
+        ":linux_alias",
+    ],
+)
+
+writer(
+    name = "compatible_consumer",
+    deps = [
+        ":compatible",
+        ":compatible_genrule",
+        ":compatible_filegroup",
+        ":compatible_alias",
+    ],
+)
+
+genrule(
+    name = "compatible_genrule",
+    outs = ["compatible_genrule.txt"],
+    cmd = "echo genrule > $@",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+filegroup(
+    name = "compatible_filegroup",
+    srcs = ["data.txt"],
+    target_compatible_with = ["@platforms//cpu:x86_64"],
+)
+
+alias(
+    name = "compatible_alias",
+    actual = ":compatible",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+tool(
+    name = "exec_tool",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+tool_user(
+    name = "uses_exec_tool",
+    tool = ":exec_tool",
+)
+
+# No toolchain resolution: never checked.
+setting(
+    name = "setting",
+    build_setting_default = "x",
+    target_compatible_with = ["@platforms//cpu:aarch64"],
+)
+
+writer(
+    name = "reads_setting",
+    deps = [":setting"],
+)
+
+# Incompatible with the host platform.
+writer(
+    name = "incompatible",
+    target_compatible_with = ["@platforms//cpu:aarch64"],
+)
+
+writer(
+    name = "incompatible_two",
+    target_compatible_with = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+writer(
+    name = "incompatible_config_setting",
+    target_compatible_with = [":is_macos"],
+)
+
+writer(
+    name = "incompatible_consumer",
+    deps = [":incompatible"],
+)
+
+# Errors.
+writer(
+    name = "duplicate",
+    target_compatible_with = [
+        "@platforms//os:linux",
+        "@platforms//os:macos",
+    ],
+)
+
+writer(
+    name = "no_match",
+    target_compatible_with = select({
+        "@platforms//cpu:aarch64": ["@platforms//cpu:aarch64"],
+    }),
+)
+
+writer(
+    name = "not_a_constraint",
+    target_compatible_with = [":compatible"],
+)
+
+# A target platform the host-incompatible targets are compatible with.
+platform(
+    name = "linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
+)

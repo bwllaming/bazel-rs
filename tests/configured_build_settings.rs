@@ -516,10 +516,14 @@ show(name = "use_flag", dep = "//:b_alias")
     assert_eq!(f.built(&["//a:chain"]), "data\n");
     assert_eq!(f.built(&["//a:to_gen"]), "generated\n");
     assert_eq!(f.built(&["--//:b", "//a:sel"]), "other\n");
-    // target_compatible_with needs platform constraints (N16c).
+    // target_compatible_with is analyzed before the alias's other
+    // dependencies (IncompatibleTargetChecker; the compatible alias is
+    // genuine-captured in tests/fixtures/target_compatible_with,
+    // `compatible_alias`): here its `@platforms` label is not visible from
+    // the main module (no bazel_dep), the label's own loading error.
     assert!(
         f.rejected(&["//a:constrained"])
-            .contains("//a:constrained: alias accepted at load time but not analyzed by the native profile: attribute 'target_compatible_with'")
+            .contains("No repository visible as '@platforms' from main repository")
     );
 }
 

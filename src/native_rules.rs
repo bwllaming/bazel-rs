@@ -1797,9 +1797,14 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     };
     for (key, value) in &target.attrs {
         // `package_metadata` edges are analyzed in the no-config
-        // configuration by crate::engine (Rule::package_metadata).
+        // configuration by crate::engine (Rule::package_metadata);
+        // `target_compatible_with` is checked by crate::engine before
+        // toolchain resolution where Bazel checks it (a rule that uses
+        // toolchain resolution, IncompatibleTargetChecker) and has no effect
+        // elsewhere.
         if neutral.contains(&key.as_str())
             || key == "package_metadata"
+            || key == "target_compatible_with"
             || crate::custom_rule::AttrKind::is_empty_value(value)
         {
             continue;

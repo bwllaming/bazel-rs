@@ -858,6 +858,34 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
     Ok(configured)
 }
 
+/// The configured value of the built-in (native) attribute `name` of
+/// `rule`, without configuring its other attributes: its select() resolved
+/// as [`configure`] resolves it (a non-explicit result is the unset
+/// default, `None`), else its plain value. IncompatibleTargetChecker reads
+/// `target_compatible_with` through ConfiguredAttributeMapper.getAndValidate
+/// before toolchain and dependency resolution
+/// (analysis/constraints/IncompatibleTargetChecker.java:147-170).
+pub fn configured_native_value(
+    rule: &Rule,
+    resolver: &Resolver<'_>,
+    name: &str,
+) -> Result<Option<AttrValue>, String> {
+    for (source, parts) in configurable_attributes(rule) {
+        if let AttributeSource::Native(attribute) = &source
+            && attribute.name == name
+        {
+            let resolved = resolver.resolve_attribute(&source.info(), parts)?;
+            return Ok(resolved.value.filter(|_| resolved.explicit));
+        }
+    }
+    let target = match (&rule.native, &rule.custom) {
+        (Some(native), _) => Some(&**native),
+        (None, Some(custom)) => Some(&custom.declaration.builtin.target),
+        (None, None) => None,
+    };
+    Ok(target.and_then(|target| target.attrs.get(name).cloned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -456,9 +456,14 @@ fn conversion_and_unknown_attribute_errors_match_bazel() {
 #[test]
 fn unmodeled_builtin_values_fail_analysis_explicitly() {
     for (argument, feature) in [
+        // target_compatible_with is analyzed (IncompatibleTargetChecker,
+        // tests/target_compatible_with.rs): a label without a
+        // ConstraintValueInfo or ConfigMatchingProvider fails Bazel's
+        // mandatory-provider check (the receipt's
+        // T7/unmodeled_build_target_compatible_with ref_message).
         (
             "target_compatible_with = ['//:c']",
-            "attribute 'target_compatible_with' = [\"//:c\"] (incompatible target skipping (constraint analysis))",
+            "in target_compatible_with attribute of show rule //:x: '//:c' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'",
         ),
         (
             "compatible_with = ['//:c']",
@@ -492,6 +497,35 @@ fn unmodeled_builtin_values_fail_analysis_explicitly() {
         assert!(query.status.success(), "{argument}: {}", errors(&query));
         rejected(&ws.run(&["build", "//:x"]), feature);
     }
+    // A compatible target_compatible_with builds, its constraint values
+    // `ctx.attr.target_compatible_with` (the receipt's genuine
+    // D/constraints_tcw_compatible output); an incompatible one is an
+    // explicit error with Bazel's reason (D/constraints_tcw_incompatible_explicit:
+    // genuine `Target //:incompatible is incompatible and cannot be built,
+    // but was explicitly requested.`).
+    let ws = workspace(
+        "load(':defs.bzl', 'show')\nconstraint_setting(name = 's', default_constraint_value = ':v')\nconstraint_value(name = 'v', constraint_setting = ':s')\nconstraint_value(name = 'w', constraint_setting = ':s')\nshow(name = 'tcw', target_compatible_with = [':v'])\nshow(name = 'ecw', exec_compatible_with = [':v'])\nshow(name = 'incompatible', target_compatible_with = [':w'])\nshow(name = 'plain')\n",
+    );
+    // The constraint check needs the default host platform
+    // (@platforms//host, a built-in module; the fixture registry keeps
+    // module resolution local).
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let builtin = |target: &'static str| {
+        ws.run(&["build", "--experimental-builtin-modules", &registry, target])
+    };
+    assert_eq!(
+        contents(&builtin("//:tcw")),
+        [
+            "tags=[]\ntestonly=False\ndeprecation=None\nfeatures=[]\nvisibility=[]\nexec_properties={}\nexpect_failure=\"\"\ndependency_lists=[[], [], [], [], [], [<target //:v>], [], [], []]\nfiles=[[], [], []]\nabsent=[False, False, False, False, False, False]\ndeps=[]\n"
+        ]
+    );
+    rejected(
+        &builtin("//:incompatible"),
+        "//:incompatible is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint //:w;",
+    );
     // Package metadata (explicit, the applicable_licenses alias, or the
     // package default) is analyzed in the no-config configuration (N28c,
     // tests/java_parity.rs): ctx.attr.package_metadata are its targets.

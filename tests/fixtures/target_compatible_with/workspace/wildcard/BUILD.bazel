@@ -1,0 +1,8 @@
+load("//pkg:defs.bzl", "writer")
+
+writer(name = "kept")
+
+writer(
+    name = "skipped",
+    target_compatible_with = ["@platforms//cpu:aarch64"],
+)

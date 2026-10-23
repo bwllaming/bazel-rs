@@ -251,8 +251,7 @@ fail analysis: the testonly check below uses the effective value.
   recorded per action, not applied by local execution; docs/EXEC_GROUPS.md).
 * Values whose semantics are not implemented make analysis fail explicitly
   (`declared rule features not analyzed by the native profile: ...`), never
-  silently: non-empty `target_compatible_with` (constraint analysis and
-  incompatible target skipping), `compatible_with`/`restricted_to`
+  silently: `compatible_with`/`restricted_to`
   (constraint environments), `aspect_hints`, `transitive_configs`, a non-empty `expect_failure` (expected-failure
   analysis; `""` has no effect, `StarlarkRuleConfiguredTargetUtil.java:80-131`).
   `toolchains` is analyzed (N53, docs/MAKE_VARIABLES.md): TemplateVariableInfo
@@ -276,16 +275,19 @@ fail analysis: the testonly check below uses the effective value.
   in name order (the retained schema does not keep `attrs` dict order).
 * When a built-in dependency attribute names a target of the wrong kind,
   Bazel reports its own analysis error first (for example `in
-  target_compatible_with attribute of show rule //:x: '//:c' does not have
-  mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`, `in
   compatible_with attribute ...: show rule
   '//:c' is misplaced here (expected environment)`, `While resolving
   toolchains for target //:x ...: Target //:c was referenced as a
   constraint_value, but does not provide ConstraintValueInfo`, `in show rule
-  //:x: Expected failure not found: boom`), and for a satisfied
-  `target_compatible_with` it builds or skips the target (`Target //:x is
-  incompatible and cannot be built, but was explicitly requested.`); native
-  fails all of these with its explicit not-analyzed message instead.
+  //:x: Expected failure not found: boom`); native fails these with its
+  explicit not-analyzed message instead. `target_compatible_with` is
+  analyzed (docs/PLATFORMS.md "target_compatible_with"): Bazel's `in
+  target_compatible_with attribute of show rule //:x: '//:c' does not have
+  mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`, a
+  compatible target builds with `ctx.attr.target_compatible_with` its
+  Targets, and an incompatible one (`Target //:x is incompatible and cannot
+  be built, but was explicitly requested.`) is an explicit native error with
+  Bazel's reason text.
 * Pre-existing native gaps observed by the capture, unchanged here:
   `ctx.executable` was absent (added by N23a, docs/RUNFILES.md); invalid attribute names report `invalid
   attribute name "1bad"` (Bazel: ``attribute name `1bad` is not a valid
