@@ -81,6 +81,22 @@ pub struct CtxSurface {
     /// actions use (analysis_runtime::Context::action_env, crate::action_env):
     /// `ctx.configuration.default_shell_env`.
     pub action_env: Arc<crate::action_env::ActionEnvironment>,
+    /// The configuration's non-default table-driven option values
+    /// (crate::configuration::NativeOptions::values), read by the
+    /// `ctx.fragments.proto` getters.
+    pub option_values: std::collections::BTreeMap<&'static str, crate::configuration::OptionValue>,
+}
+
+impl CtxSurface {
+    /// The configured value of the table-driven option `name`
+    /// (crate::configuration::VALUE_OPTIONS).
+    fn option_value(&self, name: &str) -> crate::configuration::OptionValue {
+        self.option_values.get(name).cloned().unwrap_or_else(|| {
+            crate::configuration::value_option(name)
+                .expect("a table-driven option")
+                .default_value()
+        })
+    }
 }
 
 impl Default for CtxSurface {
@@ -106,6 +122,7 @@ impl Default for CtxSurface {
             action_env: Arc::new(
                 crate::configuration::NativeOptions::default().action_environment(),
             ),
+            option_values: Default::default(),
         }
     }
 }
@@ -1124,6 +1141,29 @@ fn device_debug_entitlements<'v>(surface: &CtxSurface, _: Heap<'v>) -> anyhow::R
     Ok(Value::new_bool(surface.compilation_mode != "opt"))
 }
 
+/// ProtoConfiguration.experimentalProtoDescriptorSetsIncludeSourceInfo
+/// (rules/proto/ProtoConfiguration.java:174-186).
+fn proto_descriptor_sets_include_source_info<'v>(
+    surface: &CtxSurface,
+    _: Heap<'v>,
+) -> anyhow::Result<Value<'v>> {
+    match surface.option_value("experimental_proto_descriptor_sets_include_source_info") {
+        crate::configuration::OptionValue::Bool(value) => Ok(Value::new_bool(value)),
+        other => anyhow::bail!("internal error: boolean option value {other}"),
+    }
+}
+
+/// ProtoConfiguration.strictProtoDepsForStarlark: StrictDepsMode.toString
+/// (rules/proto/ProtoConfiguration.java:233-237).
+fn strict_proto_deps<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(surface.option_value("strict_proto_deps").to_string()))
+}
+
+/// ProtoConfiguration.strictPublicImportsForStarlark (:239-243).
+fn strict_public_imports<'v>(surface: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    Ok(heap.alloc(surface.option_value("strict_public_imports").to_string()))
+}
+
 fn javac_flags_depset<'v>(_: &CtxSurface, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
     crate::starlark_types::empty_preorder_string_depset(heap)
 }
@@ -1340,8 +1380,11 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 Field(V::Dyn(device_debug_entitlements)),
             ),
         ],
-        // rules/proto/ProtoConfiguration.java:50-241 (`--strict_proto_deps`
-        // default error, `--strict_public_imports` default off; StrictDepsMode.toString).
+        // rules/proto/ProtoConfiguration.java:50-241: the configured
+        // `--experimental_proto_descriptor_sets_include_source_info`,
+        // `--strict_proto_deps` and `--strict_public_imports`
+        // (StrictDepsMode.toString, `ERROR`/`OFF` by default; table-driven
+        // options, crate::configuration::VALUE_OPTIONS).
         Kind::Proto => &[
             (
                 "cc_proto_library_header_suffixes",
@@ -1355,7 +1398,7 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "experimental_proto_descriptorsets_include_source_info",
                 Method {
                     private: true,
-                    value: V::Bool(false),
+                    value: V::Dyn(proto_descriptor_sets_include_source_info),
                 },
             ),
             ("experimental_protoc_opts", Field(V::Strs(&[]))),
@@ -1363,14 +1406,14 @@ fn members(kind: Kind) -> &'static [(&'static str, Member)] {
                 "strict_proto_deps",
                 Method {
                     private: true,
-                    value: V::Str("ERROR"),
+                    value: V::Dyn(strict_proto_deps),
                 },
             ),
             (
                 "strict_public_imports",
                 Method {
                     private: true,
-                    value: V::Str("OFF"),
+                    value: V::Dyn(strict_public_imports),
                 },
             ),
         ],
@@ -1962,6 +2005,42 @@ pub(crate) fn empty_struct<'v>(heap: Heap<'v>) -> Value<'v> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The private `ctx.fragments.proto` getters read the configured
+    /// table-driven options (StrictDepsMode.toString), the defaults when
+    /// unset.
+    #[test]
+    fn proto_fragment_getters_read_the_configured_options() {
+        use crate::configuration::OptionValue;
+        let mut surface = CtxSurface::default();
+        let strings = |surface: &CtxSurface| {
+            Heap::temp(|heap| {
+                (
+                    strict_proto_deps(surface, heap).unwrap().to_str(),
+                    strict_public_imports(surface, heap).unwrap().to_str(),
+                    proto_descriptor_sets_include_source_info(surface, heap)
+                        .unwrap()
+                        .to_str(),
+                )
+            })
+        };
+        assert_eq!(
+            strings(&surface),
+            ("ERROR".to_owned(), "OFF".to_owned(), "False".to_owned())
+        );
+        surface.option_values = std::collections::BTreeMap::from([
+            ("strict_proto_deps", OptionValue::Enum("OFF")),
+            ("strict_public_imports", OptionValue::Enum("STRICT")),
+            (
+                "experimental_proto_descriptor_sets_include_source_info",
+                OptionValue::Bool(true),
+            ),
+        ]);
+        assert_eq!(
+            strings(&surface),
+            ("OFF".to_owned(), "STRICT".to_owned(), "True".to_owned())
+        );
+    }
 
     #[test]
     fn tokenize_follows_shell_utils() {

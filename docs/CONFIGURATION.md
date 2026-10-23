@@ -46,6 +46,9 @@ Modelled options, with Bazel's defaults and converters:
 | `--cpu` | `""` (the host CPU, `k8`) | AutoCpuConverter: empty is the host CPU, anything else as given; the CPU part of target output roots (`--cpu=arm`: `arm-fastbuild`; a `/` is Bazel's `CPU/Platform descriptor 'a/b' is invalid as part of a path: must not contain /`); the exec configuration's is the parent's `--host_cpu`; selectable in `config_setting(values)` (deprecated, below); a `query` option (CoreOptions); part of the identity only when not the host CPU | `CoreOptions.java:279-292`, `AutoCpuConverter.java:28-71`, `OutputPathMnemonicComputer.java:247-258`, `builtin_exec_platforms.bzl:225` |
 | `--host_cpu` | `""` (the host CPU) | AutoCpuConverter; propagated to exec configurations, whose `--cpu` (and so the CPU part of default-named exec platforms' roots, `ppc-opt-exec`) it is; selectable (deprecated); a `query` option; part of the identity only when not the host CPU | `CoreOptions.java:387-394`, `builtin_exec_platforms.bzl:225, 241` |
 | `--crosstool_top` | `@bazel_tools//tools/cpp:toolchain` | LabelConverter (`//` prefixed unless `/`/`@`, main repository mapping; empty is the invalid label `//`; an unknown apparent repository is kept); a NO_OP option only `config_setting(values)` reads (deprecated, below); not carried by the exec transition; not a `query` option (CppOptions: `ARG :: Unrecognized option: ARG`); part of the identity only when not the default | `rules/cpp/CppOptions.java:102-111`, `CoreOptionConverters.java:129-140, 331-361` |
+| `--[no]experimental_proto_descriptor_sets_include_source_info` | `false` | BooleanConverter; a table-driven value option (below) | `rules/proto/ProtoConfiguration.java:58-65` |
+| `--strict_proto_deps` | `error` | StrictDepsConverter (EnumConverter over StrictDepsMode `OFF, WARN, ERROR, STRICT, DEFAULT`, case-insensitive; `default` is the constant `DEFAULT`); a table-driven value option (below) | `ProtoConfiguration.java:113-123`, `analysis/config/CoreOptionConverters.java:311-329` |
+| `--strict_public_imports` | `off` | StrictDepsConverter, as above; a table-driven value option (below) | `ProtoConfiguration.java:125-135` |
 
 Values that resolve to `@@bazel_tools//tools:host_platform` (or are empty)
 give the default configuration, exactly like the unset options (both become
@@ -76,7 +79,8 @@ configuration fragments' options, `runtime/BlazeCommandUtils.java:74-98`) and
 ignores them (query is configuration-independent); `--strip` and
 `--force_pic` stay unsupported for `query`, and `--platforms`/`--host_platform`
 are Bazel's `ARG :: Unrecognized option: ARG` (query registers no
-PlatformOptions; docs/PLATFORMS.md), like `--crosstool_top` (CppOptions). A
+PlatformOptions; docs/PLATFORMS.md), like `--crosstool_top` (CppOptions) and
+the value options of other fragments (`--strict_proto_deps`, ...; below). A
 workspace-root `platform_mappings` file (read by Bazel by default) fails the
 build explicitly: platform mappings are not modelled.
 
@@ -98,6 +102,69 @@ of the identity, so the serialization stays injective) — so target and exec
 identities at defaults are unchanged (pinned in `src/configuration.rs` and
 `src/config_registry.rs`). The no-config configuration (N28c, below) adds
 `"no_config":true`.
+
+**Value options (table-driven).** Native options whose value matters to the
+native profile only through `config_setting(values)` (and, for the proto
+options, the private `ctx.fragments.proto` getters) are rows of one table,
+`VALUE_OPTIONS` in `src/configuration.rs`, instead of typed
+`NativeOptions` fields. A row is the option's `@Option` definition (name,
+converter kind, default as written, source line), whether it is a modelled
+command-line option, and its exec-transition rule from
+`builtin_exec_platforms.bzl` (`Propagate`: in its fragment's `propagate`
+list; `Default`: neither propagated nor written; `Set(V)`: written by the
+fragment's `func`). From that one row:
+
+* the command line parses it with the shared forms and converters (only
+  `command_line` rows; the others keep the explicit `unsupported option`
+  error because their value has effects the native profile does not
+  model);
+* the configured value is `NativeOptions::values` — only values different
+  from the converted default are stored (a default spelled explicitly is
+  the default configuration; the last occurrence wins) — serialized as
+  `"values":{NAME: toString}` and omitted when empty, so every existing
+  configuration identity, action key and output root is unchanged;
+* `config_setting(values)` converts the expected value with the row's
+  converter (errors are Bazel's attribute errors) and compares it with the
+  configured value (diffs print the Java `toString`, `OFF`, `ERROR`);
+* the exec transition applies the row's rule; the `ST-` hash covers the
+  rows like the typed options;
+* `query` (CoreOptions only, `QueryCommand.java:59-67`) accepts and ignores
+  CoreOptions rows and reports the other fragments' rows as Bazel's
+  `ARG :: Unrecognized option: ARG` with SpellChecker's suggestion among the
+  `query` options (`OptionsParserImpl.java:812-824, 865-879`;
+  crate::command_options).
+
+Rows (each family checked against genuine Bazel 9.3.0, paired capture
+`tests/fixtures/value_options`, 39 cases: 35 MATCH, 4 declared divergences,
+replayed by `tests/value_options.rs`):
+
+| Option | Kind / default | Command line | Exec | Source |
+| --- | --- | --- | --- | --- |
+| `experimental_proto_descriptor_sets_include_source_info` | Bool, `false` | yes | propagated | `ProtoConfiguration.java:58-65`, `builtin_exec_platforms.bzl:426` |
+| `strict_proto_deps` | StrictDepsMode, `error` | yes | propagated | `ProtoConfiguration.java:113-123`, `:431` |
+| `strict_public_imports` | StrictDepsMode, `off` | yes | propagated | `ProtoConfiguration.java:125-135`, `:432` |
+| `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | no (coverage instrumentation is not modelled) | default | `CoreOptions.java:566-578`, `:231-287` |
+| `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
+
+They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings
+(`values = {flag: match_value}` on the three proto options, read by every
+`proto_library`), rules_python's hermetic runtimes' `:coverage_enabled`
+(`collect_code_coverage`) and grpc's `//:macos`/`//:ios`/...
+(`apple_platform_type`, which matches `macos` on Linux as in Bazel). Genuine
+findings: `strict_proto_deps` values are case-insensitive and `default` is
+not the default; the three proto options reach exec tools while the roots
+stay `k8-fastbuild`/`k8-opt-exec`; a transition setting
+`collect_code_coverage` gives `k8-fastbuild-ST-0a6d1b0f07f2` on both sides and
+its exec tools are not covered; `query --collect_code_coverage` is accepted.
+Declared divergences: `--collect_code_coverage` and `--apple_platform_type`
+on the command line, `config_setting` on `enable_runfiles` (natively an
+execution option, crate::runfiles_tree, so not a row) and Starlark
+transitions on the rows (outside `MODELLED_NATIVE_OPTIONS`) are explicit
+errors. A new row needs only its `@Option` definition, the exec rule, a
+converter kind (Bool, Enum with `toString` spellings, String,
+LowerCaseString, AutoCpu, DottedVersion) and a paired capture; options
+with other converters, `allowMultiple` or effects the native profile does
+not model keep the explicit `not implemented in the native profile` error.
 
 **JavaOptions version strings (N28b).** rules_java's toolchain packages
 select on `java_runtime_version`/`java_language_version` with
@@ -1023,6 +1090,10 @@ first-seen order (`:169-258`). For each entry, `checkOptionValue` (`:420-482`):
   label, and `@ext//:t` names the canonical repository `ext`, so it never
   matches `--crosstool_top=@ext//:t` (`@@ext+//:t` does). Paired capture:
   `tests/fixtures/pre_platforms_flags` (41 genuine 9.3.0 cases);
+* the table-driven value options (`strict_proto_deps`,
+  `strict_public_imports`, `experimental_proto_descriptor_sets_include_source_info`,
+  `collect_code_coverage`, `apple_platform_type`; above) convert and match
+  through their row (paired capture `tests/fixtures/value_options`);
 * converter failures: `While parsing option --X=V: MESSAGE`;
 * real Bazel options that are not modelled (for example `copt`, test options):
   explicit `select() on build option 'X' is not implemented in the native
@@ -1296,7 +1367,8 @@ documented divergences:
   dict of dicts, `ctx.split_attr`, N18d), `config.none()` and
   `analysis_test_transition`, `transition.and_then`, `--flag_alias`, Starlark
   transitions on native options outside the modelled ones (writing
-  `copt` or any other unmodelled option, also `host_cpu` and `crosstool_top`;
+  `copt` or any other unmodelled option, also `host_cpu`, `crosstool_top` and
+  the value options other than `collect_code_coverage`;
   `--copt` on the command line; `select()` on `copt`),
   `--flag_alias`,
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,

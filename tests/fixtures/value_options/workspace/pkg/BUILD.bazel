@@ -1,0 +1,230 @@
+load(":defs.bzl", "matched", "probe", "probes", "with_coverage", "with_strict_deps_off")
+
+package(default_visibility = ["//visibility:public"])
+
+# ProtoConfiguration.Options: --experimental_proto_descriptor_sets_include_source_info
+# (BooleanConverter, default false) and --strict_proto_deps /
+# --strict_public_imports (StrictDepsConverter: an EnumConverter over
+# StrictDepsMode OFF, WARN, ERROR, STRICT, DEFAULT; defaults error / off).
+config_setting(
+    name = "src_info_true",
+    values = {"experimental_proto_descriptor_sets_include_source_info": "true"},
+)
+
+config_setting(
+    name = "src_info_false",
+    values = {"experimental_proto_descriptor_sets_include_source_info": "false"},
+)
+
+config_setting(
+    name = "src_info_yes",
+    values = {"experimental_proto_descriptor_sets_include_source_info": "YES"},
+)
+
+config_setting(
+    name = "src_info_zero",
+    values = {"experimental_proto_descriptor_sets_include_source_info": "0"},
+)
+
+config_setting(
+    name = "strict_deps_off",
+    values = {"strict_proto_deps": "off"},
+)
+
+config_setting(
+    name = "strict_deps_error",
+    values = {"strict_proto_deps": "error"},
+)
+
+config_setting(
+    name = "strict_deps_upper",
+    values = {"strict_proto_deps": "ERROR"},
+)
+
+config_setting(
+    name = "strict_deps_default",
+    values = {"strict_proto_deps": "default"},
+)
+
+config_setting(
+    name = "strict_deps_strict",
+    values = {"strict_proto_deps": "Strict"},
+)
+
+config_setting(
+    name = "public_imports_off",
+    values = {"strict_public_imports": "off"},
+)
+
+config_setting(
+    name = "public_imports_warn",
+    values = {"strict_public_imports": "WARN"},
+)
+
+config_setting(
+    name = "proto_defaults",
+    values = {
+        "experimental_proto_descriptor_sets_include_source_info": "false",
+        "strict_proto_deps": "error",
+        "strict_public_imports": "OFF",
+    },
+)
+
+# Conversion errors of the expected values.
+config_setting(
+    name = "strict_deps_bad",
+    values = {"strict_proto_deps": "loose"},
+)
+
+config_setting(
+    name = "src_info_bad",
+    values = {"experimental_proto_descriptor_sets_include_source_info": "maybe"},
+)
+
+# CoreOptions.collect_code_coverage (BooleanConverter, default false; not
+# propagated to exec configurations), like rules_python's hermetic
+# runtimes' `:coverage_enabled`.
+config_setting(
+    name = "coverage_true",
+    values = {"collect_code_coverage": "true"},
+)
+
+config_setting(
+    name = "coverage_false",
+    values = {"collect_code_coverage": "false"},
+)
+
+config_setting(
+    name = "coverage_no",
+    values = {"collect_code_coverage": "no"},
+)
+
+config_setting(
+    name = "coverage_bad",
+    values = {"collect_code_coverage": "sometimes"},
+)
+
+# AppleCommandLineOptions.apple_platform_type (PlatformTypeConverter: lower
+# case; default macos, which the exec transition sets), like grpc's
+# `//:macos` and `//:ios`.
+config_setting(
+    name = "apple_macos",
+    values = {"apple_platform_type": "macos"},
+)
+
+config_setting(
+    name = "apple_macos_mixed",
+    values = {"apple_platform_type": "MacOS"},
+)
+
+config_setting(
+    name = "apple_ios",
+    values = {"apple_platform_type": "ios"},
+)
+
+config_setting(
+    name = "apple_empty",
+    values = {"apple_platform_type": ""},
+)
+
+# A real option the native profile does not model (like bazel_lib's
+# `//lib:enable_runfiles`): an explicit native error, never a guess.
+config_setting(
+    name = "enable_runfiles",
+    values = {"enable_runfiles": "true"},
+)
+
+probes([
+    "strict_deps_bad",
+    "src_info_bad",
+    "coverage_bad",
+    "enable_runfiles",
+])
+
+PROTO = [
+    ":src_info_true",
+    ":src_info_false",
+    ":src_info_yes",
+    ":src_info_zero",
+    ":strict_deps_off",
+    ":strict_deps_error",
+    ":strict_deps_upper",
+    ":strict_deps_default",
+    ":strict_deps_strict",
+    ":public_imports_off",
+    ":public_imports_warn",
+    ":proto_defaults",
+]
+
+COVERAGE = [
+    ":coverage_true",
+    ":coverage_false",
+    ":coverage_no",
+]
+
+APPLE = [
+    ":apple_macos",
+    ":apple_macos_mixed",
+    ":apple_ios",
+    ":apple_empty",
+]
+
+probe(
+    name = "proto",
+    matches = matched(PROTO),
+)
+
+# The proto options propagate to the exec configuration.
+probe(
+    name = "proto_exec",
+    matches = matched(PROTO),
+    tool = ":proto",
+)
+
+probe(
+    name = "coverage",
+    matches = matched(COVERAGE),
+)
+
+# A coverage configuration's exec tools are not instrumented.
+probe(
+    name = "coverage_exec",
+    matches = matched(COVERAGE),
+    tool = ":coverage",
+)
+
+with_coverage(
+    name = "coverage_on",
+    coverage = True,
+    deps = [":coverage_exec"],
+)
+
+with_coverage(
+    name = "coverage_off",
+    coverage = False,
+    deps = [":coverage_exec"],
+)
+
+# A Starlark transition writing a proto option.
+with_strict_deps_off(
+    name = "proto_transition",
+    deps = [":proto"],
+)
+
+probe(
+    name = "apple",
+    matches = matched(APPLE),
+)
+
+probe(
+    name = "apple_exec",
+    matches = matched(APPLE),
+    tool = ":apple",
+)
+
+# Every valid setting at once.
+probe(
+    name = "all",
+    matches = matched(PROTO + COVERAGE + APPLE),
+    tool = ":proto",
+)

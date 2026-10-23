@@ -1,0 +1,43 @@
+load(":defs.bzl", "flag_probe")
+load(":native_bool_flag.bzl", "native_bool_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+# protobuf 33.4's bazel/private/BUILD:176-197.
+native_bool_flag(
+    name = "experimental_proto_descriptor_sets_include_source_info",
+    flag = "experimental_proto_descriptor_sets_include_source_info",
+    match_value = "true",
+)
+
+native_bool_flag(
+    name = "strict_proto_deps",
+    flag = "strict_proto_deps",
+    match_value = "off",
+    result = False,
+)
+
+native_bool_flag(
+    name = "strict_public_imports",
+    flag = "strict_public_imports",
+    match_value = "off",
+    result = False,
+)
+
+FLAGS = [
+    ":experimental_proto_descriptor_sets_include_source_info",
+    ":strict_proto_deps",
+    ":strict_public_imports",
+]
+
+flag_probe(
+    name = "proto_flags",
+    flags = FLAGS,
+)
+
+# The flags in the target and (through `tool`) the exec configuration.
+flag_probe(
+    name = "proto_flags_exec",
+    flags = FLAGS,
+    tool = ":proto_flags",
+)

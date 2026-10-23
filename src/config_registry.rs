@@ -459,6 +459,9 @@ pub fn exec_transition(
         // Not in CppOptions' propagate list (builtin_exec_platforms.bzl:291-348):
         // the default.
         crosstool_top: defaults.crosstool_top,
+        // The table-driven options (crate::configuration::VALUE_OPTIONS):
+        // each row's exec rule (propagated, default or set).
+        values: from.native.exec_values(),
         // Not in CoreOptions' propagate list (builtin_exec_platforms.bzl:231-275):
         // the CoreOptions default (CoreOptions.java:566-578).
         collect_code_coverage: defaults.collect_code_coverage,
@@ -507,13 +510,15 @@ const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix"
 /// `toString` of each value, `@null` for null values.
 fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, String> {
     let mut options = BTreeMap::new();
-    for option in crate::configuration::OPTIONS {
-        match native.value(option.name) {
+    // The typed and the table-driven options (`collect_code_coverage` is a
+    // table row read from its typed field).
+    for name in crate::configuration::modelled_option_names() {
+        match native.value(name) {
             Some(crate::configuration::OptionValue::DottedVersion(None)) => {
-                options.insert(option.name, "@null".to_owned());
+                options.insert(name, "@null".to_owned());
             }
             Some(value) => {
-                options.insert(option.name, format!("={value}"));
+                options.insert(name, format!("={value}"));
             }
             None => {}
         }
@@ -521,10 +526,6 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
     options.insert("extra_toolchains", list(&native.extra_toolchains));
     options.insert("is exec configuration", format!("={}", native.is_exec));
-    options.insert(
-        "collect_code_coverage",
-        format!("={}", native.collect_code_coverage),
-    );
     options.insert(
         "platform_suffix",
         native
@@ -968,6 +969,67 @@ mod tests {
             )
         );
         assert_eq!(validate_top(&top), Ok(()));
+    }
+
+    /// The table-driven options' exec rules (crate::configuration::ExecValue):
+    /// ProtoConfiguration's options propagate (builtin_exec_platforms.bzl:422-436),
+    /// so `--strict_proto_deps=off` reaches exec tools while the exec root
+    /// stays `k8-opt-exec` (the exec baseline has them too); defaults keep
+    /// the exec identity of the defaults (paired captures proto_exec,
+    /// coverage_transition, apple_defaults in tests/fixtures/value_options).
+    #[test]
+    fn exec_transition_applies_the_value_option_rules() {
+        let none = BTreeSet::new();
+        let host = label("@@platforms//host:host");
+        let top = parsed(&[
+            "--strict_proto_deps=off",
+            "--experimental_proto_descriptor_sets_include_source_info",
+            "--strict_public_imports=warn",
+        ]);
+        let mut configurations = Configurations::new(top.clone());
+        assert_eq!(
+            configurations.mnemonic(configurations.top()),
+            "k8-fastbuild"
+        );
+        let exec = configurations
+            .intern_exec(configurations.top(), host.clone(), &none)
+            .unwrap();
+        let native = &configurations.get(exec).native;
+        assert_eq!(native.values, top.native.values);
+        assert_eq!(
+            native.value("strict_proto_deps"),
+            Some(crate::configuration::OptionValue::Enum("OFF"))
+        );
+        assert_eq!(configurations.mnemonic(exec), "k8-opt-exec");
+        // At the defaults nothing is stored: the exec identity is unchanged
+        // (apple_platform_type is set to its default `macos`).
+        let default_exec = exec_transition(&Configuration::default(), host.clone(), &none);
+        assert!(default_exec.native.values.is_empty());
+        assert_eq!(
+            default_exec.native.value("apple_platform_type"),
+            Some(crate::configuration::OptionValue::String("macos".into()))
+        );
+        // collect_code_coverage (a typed field) is not propagated.
+        let coverage = Configuration::new(
+            NativeOptions {
+                collect_code_coverage: true,
+                ..NativeOptions::default()
+            },
+            BTreeMap::new(),
+        );
+        let coverage_exec = exec_transition(&coverage, host, &none);
+        assert_eq!(
+            coverage_exec.native.value("collect_code_coverage"),
+            Some(crate::configuration::OptionValue::Bool(false))
+        );
+        assert_eq!(coverage_exec.id, default_exec.id);
+        // Genuine's root of that transitioned configuration
+        // (value_options/coverage_transition): the hash of
+        // `//command_line_option:collect_code_coverage=true` alone.
+        assert_eq!(
+            mnemonic(&coverage, &Configuration::default()),
+            Ok("k8-fastbuild-ST-0a6d1b0f07f2".to_owned())
+        );
     }
 
     /// N28b: `_java_options` (builtin_exec_platforms.bzl:350-385): the exec

@@ -1,0 +1,1087 @@
+{
+ "schema": "value-options-reference-receipt/v1",
+ "fixture": "value_options",
+ "purpose": "Table-driven native options (crate::configuration::VALUE_OPTIONS): config_setting(values) matching through each option's converter (case rules, toString, conversion errors), the command-line forms of the command-line rows, the exec transition (propagated / default / set), the configuration identity (a default spelled explicitly is the default configuration, a transitioned value's ST- root), and query's `Unrecognized option` for options of other fragments. Rows: ProtoConfiguration.Options experimental_proto_descriptor_sets_include_source_info, strict_proto_deps, strict_public_imports (command line + config_setting); CoreOptions collect_code_coverage and AppleCommandLineOptions apple_platform_type (config_setting only). Motivation: protobuf 33.4's bazel/private/native_bool_flag.bzl config_settings (`values = {flag: match_value}` on the three proto options) blocked every analysis depending on @protobuf.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no [--show_result=1000 for build] <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; default registry (bcr.bazel.build); one fresh copy of the fixture workspace per case (platforms extracted from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "282200003068fb77a76c4e7125a9a946b9b1a4a5e2a56c6fb149d5b745aa26df",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/value-options-capture.py, value-options-receipt.py (not committed)",
+  "sha256": {
+   "value-options-capture.py": "d6f764779a93b44c28fb3e0edf680d43c8ce2c0662bca021df847069007245f5",
+   "value-options-receipt.py": "7015de112d5bb42fab5d62763d145bf8017174d238ee6263bf30735c203ba9dc"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "fe9eec03efeff56c2b1c3776de9f3be2954ad0fd8f3a7c822ccf6cdab1c8d410",
+  "ext/BUILD.bazel": "2ca7f918b112463ff4cd585cd9c6d48cd36f942ae819569c2a5eee1230539ae0",
+  "ext/MODULE.bazel": "a02af1c154e0a4d866238124b22f169605295dbb70eb61b801587e01ea01d40c",
+  "ext/defs.bzl": "0969aca02ae81914401c1e5562e61dff2bba7f607a99f7584acb92d10522c883",
+  "ext/native_bool_flag.bzl": "bdc155af6396708daf2477c48c963b4ad5cbcbaabaa5a206bb54e76844b89663",
+  "pkg/BUILD.bazel": "85b0b679c61b0b8559f5a417f506cb86c5c3492c9eb7e81b3d5ebde3e124d7da",
+  "pkg/defs.bzl": "08d3a60fcb1fa6c49213e0d2286f6ec49a1faf3a97e9ff9a5041f89e080e2ef7"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Native stdout/outputs paths are below the action output root (`.../outputs/`).",
+ "comparison (tests/value_options.rs, live)": "MATCH: success equal (genuine exit 0 <=> native exit 0); WARNING lines equal in order; Bazel's first ERROR message (an external repository's location reduced to its BUILD file name) ends a native stderr line; built outputs (path below bazel-out -> contents, so output roots included) equal; query stdout equal. DECLARED_DIVERGENCE: genuine succeeds, native fails with the recorded explicit message.",
+ "genuine_key_findings": [
+  "--strict_proto_deps / --strict_public_imports (StrictDepsConverter, an EnumConverter over StrictDepsMode): case-insensitive values (`off`, `OFF`, `Strict`, `Warn`), `default` is the distinct constant DEFAULT (not the option default ERROR); `--strict_proto_deps=loose`: `While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)` (exit 2); `--nostrict_proto_deps :: Illegal use of 'no' prefix on non-boolean option: --nostrict_proto_deps`; the last occurrence wins.",
+  "--experimental_proto_descriptor_sets_include_source_info (BooleanConverter): `--x`, `--nox`, `--x=YES`, `--x=1`; `--x=maybe`: `'maybe' is not a boolean`; `--nox=false :: Unexpected value after boolean option: --nox=false`.",
+  "config_setting(values) converts the expected value like the command line (`ERROR`, `Strict`, `YES`, `0` all convert; the conversion errors are attribute errors `in values attribute of config_setting rule //pkg:NAME: error while parsing configuration settings: While parsing option --NAME=VALUE: ...`, exit 1).",
+  "The three proto options propagate to the exec configuration (the exec tool sees --strict_proto_deps=off etc.); the exec root stays k8-opt-exec and the top-level root k8-fastbuild (the top-level configuration is its own baseline).",
+  "protobuf's native_bool_flag pattern in an external module: strict_proto_deps is True unless --strict_proto_deps=off (warn keeps True); experimental_proto_descriptor_sets_include_source_info follows the flag.",
+  "collect_code_coverage: `{\"collect_code_coverage\": \"false\"}` and `\"no\"` match by default; a Starlark transition setting it gives the root k8-fastbuild-ST-0a6d1b0f07f2 on both sides (the hash of `//command_line_option:collect_code_coverage=true`) and its exec tool is not covered (not propagated); `'sometimes' is not a boolean`.",
+  "apple_platform_type (PlatformTypeConverter lower-cases the expected value): `macos` and `MacOS` match by default, also in the exec configuration (the exec transition sets macos); `ios` and `\"\"` do not.",
+  "query registers only CoreOptions: `--strict_proto_deps=off :: Unrecognized option: --strict_proto_deps=off` (also `--strict_public_imports` with a separate value, `--[no]experimental_proto_descriptor_sets_include_source_info`, `--apple_platform_type=ios`), no did-you-mean suggestion, exit 2; `query --collect_code_coverage` is accepted."
+ ],
+ "known_divergences": [
+  "Exit codes of command-line errors: genuine 2, native 1 (native's single error channel); success/failure always agrees.",
+  "Native prints its own result format (`LABEL\\tPATH` on stdout, `bazel-rs: N actions executed ...`) and no INFO lines.",
+  "Declared divergences (verdict DECLARED_DIVERGENCE): --collect_code_coverage and --apple_platform_type on the command line, config_setting on the unmodelled enable_runfiles, a Starlark transition writing a proto option: explicit native errors.",
+  "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case."
+ ],
+ "counts": {
+  "MATCH": 35,
+  "DECLARED_DIVERGENCE": 4
+ },
+ "scratch_removed": true,
+ "cases": {
+  "proto_defaults": {
+   "argv": [
+    "build",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.48,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.384,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_src_info": {
+   "argv": [
+    "build",
+    "--experimental_proto_descriptor_sets_include_source_info",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.154,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.394,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_src_info_yes": {
+   "argv": [
+    "build",
+    "--experimental_proto_descriptor_sets_include_source_info=YES",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.367,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.375,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_src_info_neg": {
+   "argv": [
+    "build",
+    "--experimental_proto_descriptor_sets_include_source_info",
+    "--noexperimental_proto_descriptor_sets_include_source_info",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.31,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.379,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_src_info_bad": {
+   "argv": [
+    "build",
+    "--experimental_proto_descriptor_sets_include_source_info=maybe",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.203,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.007,
+    "stdout": "",
+    "stderr": "bazel-rs: While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean\n",
+    "outputs": null
+   },
+   "expected_message": "While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_src_info_neg_value": {
+   "argv": [
+    "build",
+    "--noexperimental_proto_descriptor_sets_include_source_info=false",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.093,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --noexperimental_proto_descriptor_sets_include_source_info=false :: Unexpected value after boolean option: --noexperimental_proto_descriptor_sets_include_source_info=false\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.006,
+    "stdout": "",
+    "stderr": "bazel-rs: --noexperimental_proto_descriptor_sets_include_source_info=false :: Unexpected value after boolean option: --noexperimental_proto_descriptor_sets_include_source_info=false\n",
+    "outputs": null
+   },
+   "expected_message": "--noexperimental_proto_descriptor_sets_include_source_info=false :: Unexpected value after boolean option: --noexperimental_proto_descriptor_sets_include_source_info=false",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_strict_off": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=off",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.184,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.525,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_strict_upper": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=OFF",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.132,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.484,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_strict_separate": {
+   "argv": [
+    "build",
+    "--strict_proto_deps",
+    "strict",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.456,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\nstrict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.498,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\nstrict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_strict_explicit_default": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=error",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.205,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.557,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_strict_default_constant": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=default",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.111,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\nstrict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.409,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\nstrict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_strict_bad": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=loose",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.142,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.009,
+    "stdout": "",
+    "stderr": "bazel-rs: While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)\n",
+    "outputs": null
+   },
+   "expected_message": "While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_strict_no_prefix": {
+   "argv": [
+    "build",
+    "--nostrict_proto_deps",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.121,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --nostrict_proto_deps :: Illegal use of 'no' prefix on non-boolean option: --nostrict_proto_deps\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.006,
+    "stdout": "",
+    "stderr": "bazel-rs: --nostrict_proto_deps :: Illegal use of 'no' prefix on non-boolean option: --nostrict_proto_deps\n",
+    "outputs": null
+   },
+   "expected_message": "--nostrict_proto_deps :: Illegal use of 'no' prefix on non-boolean option: --nostrict_proto_deps",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_public_warn": {
+   "argv": [
+    "build",
+    "--strict_public_imports=Warn",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.22,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\npublic_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.457,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\npublic_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_last_wins": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=off",
+    "--strict_proto_deps=warn",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.3,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto up-to-date:\n  bazel-bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.448,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_exec": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=off",
+    "--experimental_proto_descriptor_sets_include_source_info",
+    "--strict_public_imports=strict",
+    "//pkg:proto_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.306,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto_exec (5 packages loaded, 32 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto_exec up-to-date:\n  bazel-bin/pkg/proto_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto_exec.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 3.025,
+    "stdout": "//pkg:proto_exec\tbazel-out/k8-fastbuild/bin/pkg/proto_exec.txt\n//pkg:proto_exec\tbazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto_exec.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_ext_defaults": {
+   "argv": [
+    "build",
+    "@ext//:proto_flags_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.107,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target @@ext+//:proto_flags_exec (5 packages loaded, 20 targets configured).\nINFO: Found 1 target...\nTarget @@ext+//:proto_flags_exec up-to-date:\n  bazel-bin/external/ext+/proto_flags_exec.txt\n  bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=False\ntool=bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+     "bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=False\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.938,
+    "stdout": "@@ext+//:proto_flags_exec\tbazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt\n@@ext+//:proto_flags_exec\tbazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=False\ntool=bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+     "bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=False\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_ext_set": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=OFF",
+    "--experimental_proto_descriptor_sets_include_source_info=1",
+    "@ext//:proto_flags_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.353,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target @@ext+//:proto_flags_exec (5 packages loaded, 20 targets configured).\nINFO: Found 1 target...\nTarget @@ext+//:proto_flags_exec up-to-date:\n  bazel-bin/external/ext+/proto_flags_exec.txt\n  bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt": "experimental_proto_descriptor_sets_include_source_info=True\nstrict_proto_deps=False\nstrict_public_imports=False\ntool=bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+     "bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=True\nstrict_proto_deps=False\nstrict_public_imports=False\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.901,
+    "stdout": "@@ext+//:proto_flags_exec\tbazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt\n@@ext+//:proto_flags_exec\tbazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags_exec.txt": "experimental_proto_descriptor_sets_include_source_info=True\nstrict_proto_deps=False\nstrict_public_imports=False\ntool=bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt\n",
+     "bazel-out/k8-opt-exec/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=True\nstrict_proto_deps=False\nstrict_public_imports=False\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_ext_warn": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=warn",
+    "--strict_public_imports=error",
+    "@ext//:proto_flags"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.225,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target @@ext+//:proto_flags (5 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget @@ext+//:proto_flags up-to-date:\n  bazel-bin/external/ext+/proto_flags.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=True\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.344,
+    "stdout": "@@ext+//:proto_flags\tbazel-out/k8-fastbuild/bin/external/ext+/proto_flags.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/external/ext+/proto_flags.txt": "experimental_proto_descriptor_sets_include_source_info=False\nstrict_proto_deps=True\nstrict_public_imports=True\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_setting_bad_enum": {
+   "argv": [
+    "build",
+    "//pkg:p_strict_deps_bad"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.224,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:74:15: in values attribute of config_setting rule //pkg:strict_deps_bad: error while parsing configuration settings: While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)\nERROR: <WS>/pkg/BUILD.bazel:74:15: Analysis of target '//pkg:strict_deps_bad' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_strict_deps_bad\nERROR: Analysis of target '//pkg:p_strict_deps_bad' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.333,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:74:15: in values attribute of config_setting rule //pkg:strict_deps_bad: error while parsing configuration settings: While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)\n<WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_strict_deps_bad\n",
+    "outputs": null
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:74:15: in values attribute of config_setting rule //pkg:strict_deps_bad: error while parsing configuration settings: While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_setting_bad_bool": {
+   "argv": [
+    "build",
+    "//pkg:p_src_info_bad"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.031,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:79:15: in values attribute of config_setting rule //pkg:src_info_bad: error while parsing configuration settings: While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean\nERROR: <WS>/pkg/BUILD.bazel:79:15: Analysis of target '//pkg:src_info_bad' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_src_info_bad\nERROR: Analysis of target '//pkg:p_src_info_bad' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.337,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:79:15: in values attribute of config_setting rule //pkg:src_info_bad: error while parsing configuration settings: While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean\n<WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_src_info_bad\n",
+    "outputs": null
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:79:15: in values attribute of config_setting rule //pkg:src_info_bad: error while parsing configuration settings: While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_query": {
+   "argv": [
+    "query",
+    "--strict_proto_deps=off",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.106,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --strict_proto_deps=off :: Unrecognized option: --strict_proto_deps=off\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.013,
+    "stdout": "",
+    "stderr": "bazel-rs: --strict_proto_deps=off :: Unrecognized option: --strict_proto_deps=off\n",
+    "outputs": null
+   },
+   "expected_message": "--strict_proto_deps=off :: Unrecognized option: --strict_proto_deps=off",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_query_bool": {
+   "argv": [
+    "query",
+    "--experimental_proto_descriptor_sets_include_source_info",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.066,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --experimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --experimental_proto_descriptor_sets_include_source_info\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.013,
+    "stdout": "",
+    "stderr": "bazel-rs: --experimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --experimental_proto_descriptor_sets_include_source_info\n",
+    "outputs": null
+   },
+   "expected_message": "--experimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --experimental_proto_descriptor_sets_include_source_info",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_query_neg": {
+   "argv": [
+    "query",
+    "--noexperimental_proto_descriptor_sets_include_source_info",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.143,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --noexperimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --noexperimental_proto_descriptor_sets_include_source_info\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.011,
+    "stdout": "",
+    "stderr": "bazel-rs: --noexperimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --noexperimental_proto_descriptor_sets_include_source_info\n",
+    "outputs": null
+   },
+   "expected_message": "--noexperimental_proto_descriptor_sets_include_source_info :: Unrecognized option: --noexperimental_proto_descriptor_sets_include_source_info",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_query_public": {
+   "argv": [
+    "query",
+    "--strict_public_imports",
+    "warn",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.115,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --strict_public_imports :: Unrecognized option: --strict_public_imports\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.007,
+    "stdout": "",
+    "stderr": "bazel-rs: --strict_public_imports :: Unrecognized option: --strict_public_imports\n",
+    "outputs": null
+   },
+   "expected_message": "--strict_public_imports :: Unrecognized option: --strict_public_imports",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "proto_nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--strict_proto_deps=off",
+    "//pkg:proto"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 7.997,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto (5 packages loaded, 19 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.329,
+    "stdout": "//pkg:proto\tbazel-out/k8-fastbuild/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/proto.txt": null
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "proto_transition": {
+   "argv": [
+    "build",
+    "//pkg:proto_transition"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.074,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto_transition (6 packages loaded, 21 targets configured).\nINFO: Found 1 target...\nTarget //pkg:proto_transition up-to-date:\n  bazel-out/k8-fastbuild-ST-9f43e04f8f3c/bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild-ST-9f43e04f8f3c/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 1.903,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:209:21: on dependency edge //pkg:proto_transition (25220f3) -|deps|-> //pkg:proto: Starlark transition on '//command_line_option:strict_proto_deps' is not implemented in the native profile (modelled native options: compilation_mode, host_compilation_mode, stamp, strip, force_pic, platforms, host_platform, extra_toolchains, cpu, collect_code_coverage, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version; read only: define, copt)\n",
+    "outputs": null
+   },
+   "declared_divergence": "Starlark transitions on the table-driven options are not modelled (only config_setting matching, the command line and the exec transition are): an explicit error before evaluation",
+   "native_message": "Starlark transition on '//command_line_option:strict_proto_deps' is not implemented in the native profile",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "coverage_defaults": {
+   "argv": [
+    "build",
+    "//pkg:coverage_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.198,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:coverage_exec (5 packages loaded, 14 targets configured).\nINFO: Found 1 target...\nTarget //pkg:coverage_exec up-to-date:\n  bazel-bin/pkg/coverage_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/coverage.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt": "!coverage_true\ncoverage_false\ncoverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.98,
+    "stdout": "//pkg:coverage_exec\tbazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt\n//pkg:coverage_exec\tbazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt": "!coverage_true\ncoverage_false\ncoverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "coverage_transition": {
+   "argv": [
+    "build",
+    "//pkg:coverage_on"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.389,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:coverage_on (6 packages loaded, 16 targets configured).\nINFO: Found 1 target...\nTarget //pkg:coverage_on up-to-date:\n  bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/pkg/coverage_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/coverage.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/pkg/coverage_exec.txt": "coverage_true\n!coverage_false\n!coverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.91,
+    "stdout": "//pkg:coverage_on\tbazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/pkg/coverage_exec.txt\n//pkg:coverage_on\tbazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild-ST-0a6d1b0f07f2/bin/pkg/coverage_exec.txt": "coverage_true\n!coverage_false\n!coverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "coverage_transition_off": {
+   "argv": [
+    "build",
+    "//pkg:coverage_off"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.273,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:coverage_off (6 packages loaded, 16 targets configured).\nINFO: Found 1 target...\nTarget //pkg:coverage_off up-to-date:\n  bazel-bin/pkg/coverage_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/coverage.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt": "!coverage_true\ncoverage_false\ncoverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.859,
+    "stdout": "//pkg:coverage_off\tbazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt\n//pkg:coverage_off\tbazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 2 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt": "!coverage_true\ncoverage_false\ncoverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "coverage_setting_bad": {
+   "argv": [
+    "build",
+    "//pkg:p_coverage_bad"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.107,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:102:15: in values attribute of config_setting rule //pkg:coverage_bad: error while parsing configuration settings: While parsing option --collect_code_coverage=sometimes: 'sometimes' is not a boolean\nERROR: <WS>/pkg/BUILD.bazel:102:15: Analysis of target '//pkg:coverage_bad' (config: a7a71fd) failed\nERROR: <WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_coverage_bad\nERROR: Analysis of target '//pkg:p_coverage_bad' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.324,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:102:15: in values attribute of config_setting rule //pkg:coverage_bad: error while parsing configuration settings: While parsing option --collect_code_coverage=sometimes: 'sometimes' is not a boolean\n<WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_coverage_bad\n",
+    "outputs": null
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:102:15: in values attribute of config_setting rule //pkg:coverage_bad: error while parsing configuration settings: While parsing option --collect_code_coverage=sometimes: 'sometimes' is not a boolean",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "coverage_cmdline": {
+   "argv": [
+    "build",
+    "--collect_code_coverage",
+    "//pkg:coverage_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.114,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:coverage_exec (5 packages loaded, 14 targets configured).\nINFO: Found 1 target...\nTarget //pkg:coverage_exec up-to-date:\n  bazel-bin/pkg/coverage_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/coverage.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/coverage_exec.txt": "coverage_true\n!coverage_false\n!coverage_no\ntool=bazel-out/k8-opt-exec/bin/pkg/coverage.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/coverage.txt": "!coverage_true\ncoverage_false\ncoverage_no\n"
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.007,
+    "stdout": "",
+    "stderr": "bazel-rs: unsupported option \"--collect_code_coverage\"; options are never silently ignored\n",
+    "outputs": null
+   },
+   "declared_divergence": "--collect_code_coverage on the command line turns on coverage instrumentation (--instrumentation_filter, CoverageOptions), which the native profile does not model; it stays an unsupported command-line option (a Starlark transition may set it, coverage_transition)",
+   "native_message": "unsupported option \"--collect_code_coverage\"; options are never silently ignored",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "coverage_query": {
+   "argv": [
+    "query",
+    "--collect_code_coverage",
+    "//pkg:coverage"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 7.665,
+    "stdout": "//pkg:coverage\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.333,
+    "stdout": "//pkg:coverage\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "apple_defaults": {
+   "argv": [
+    "build",
+    "//pkg:apple_exec"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 7.957,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:apple_exec (5 packages loaded, 16 targets configured).\nINFO: Found 1 target...\nTarget //pkg:apple_exec up-to-date:\n  bazel-bin/pkg/apple_exec.txt\n  bazel-out/k8-opt-exec/bin/pkg/apple.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/apple_exec.txt": "apple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/apple.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/apple.txt": "apple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.943,
+    "stdout": "//pkg:apple_exec\tbazel-out/k8-fastbuild/bin/pkg/apple_exec.txt\n//pkg:apple_exec\tbazel-out/k8-opt-exec/bin/pkg/apple.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/apple_exec.txt": "apple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/apple.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/apple.txt": "apple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "apple_cmdline": {
+   "argv": [
+    "build",
+    "--apple_platform_type=ios",
+    "//pkg:apple"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.253,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:apple (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:apple up-to-date:\n  bazel-bin/pkg/apple.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/apple.txt": "!apple_macos\n!apple_macos_mixed\napple_ios\n!apple_empty\n"
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.009,
+    "stdout": "",
+    "stderr": "bazel-rs: unsupported option \"--apple_platform_type=ios\"; options are never silently ignored\n",
+    "outputs": null
+   },
+   "declared_divergence": "--apple_platform_type is derived from Apple rule transitions and read by ctx.fragments.apple / the Apple rules, which the native profile does not model for other platform types; it stays an unsupported command-line option (always macos natively, like every non-Apple genuine configuration)",
+   "native_message": "unsupported option \"--apple_platform_type=ios\"; options are never silently ignored",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "apple_query": {
+   "argv": [
+    "query",
+    "--apple_platform_type=ios",
+    "//pkg:apple"
+   ],
+   "genuine": {
+    "exit": 2,
+    "seconds": 1.245,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: --apple_platform_type=ios :: Unrecognized option: --apple_platform_type=ios\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.008,
+    "stdout": "",
+    "stderr": "bazel-rs: --apple_platform_type=ios :: Unrecognized option: --apple_platform_type=ios\n",
+    "outputs": null
+   },
+   "expected_message": "--apple_platform_type=ios :: Unrecognized option: --apple_platform_type=ios",
+   "verdict": "MATCH",
+   "exit_code_equal": false
+  },
+  "unmodelled_enable_runfiles": {
+   "argv": [
+    "build",
+    "//pkg:p_enable_runfiles"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.169,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:p_enable_runfiles (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:p_enable_runfiles up-to-date:\n  bazel-bin/pkg/p_enable_runfiles.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/p_enable_runfiles.txt": "!enable_runfiles\n"
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.327,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:132:15: in values attribute of config_setting rule //pkg:enable_runfiles: select() on build option 'enable_runfiles' is not implemented in the native profile (modelled options: compilation_mode, host_compilation_mode, stamp, define, strip, force_pic, platforms, host_platform, use_target_platform_for_tests, java_runtime_version, java_language_version, tool_java_runtime_version, tool_java_language_version, incompatible_auto_exec_groups, ios_sdk_version, watchos_sdk_version, tvos_sdk_version, macos_sdk_version, cpu, host_cpu, crosstool_top, experimental_proto_descriptor_sets_include_source_info, strict_proto_deps, strict_public_imports, collect_code_coverage, apple_platform_type)\n<WS>/pkg/BUILD.bazel:137:7: errors encountered resolving select() keys for //pkg:p_enable_runfiles\n",
+    "outputs": null
+   },
+   "declared_divergence": "enable_runfiles (CoreOptions TriState) is not a table-driven option: natively it is an execution option (crate::runfiles_tree) outside the configuration, so config_setting on it keeps the explicit not-implemented error instead of a guessed match",
+   "native_message": "select() on build option 'enable_runfiles' is not implemented in the native profile",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "all_defaults": {
+   "argv": [
+    "build",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.518,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nINFO: Analyzed target //pkg:all (5 packages loaded, 39 targets configured).\nINFO: Found 1 target...\nTarget //pkg:all up-to-date:\n  bazel-bin/pkg/all.txt\n  bazel-out/k8-opt-exec/bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n!coverage_true\ncoverage_false\ncoverage_no\napple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.891,
+    "stdout": "//pkg:all\tbazel-out/k8-fastbuild/bin/pkg/all.txt\n//pkg:all\tbazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n!coverage_true\ncoverage_false\ncoverage_no\napple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "!src_info_true\nsrc_info_false\n!src_info_yes\nsrc_info_zero\n!strict_deps_off\nstrict_deps_error\nstrict_deps_upper\n!strict_deps_default\n!strict_deps_strict\npublic_imports_off\n!public_imports_warn\nproto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "all_set": {
+   "argv": [
+    "build",
+    "--strict_proto_deps=off",
+    "--experimental_proto_descriptor_sets_include_source_info",
+    "--strict_public_imports=strict",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.381,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nINFO: Analyzed target //pkg:all (5 packages loaded, 39 targets configured).\nINFO: Found 1 target...\nTarget //pkg:all up-to-date:\n  bazel-bin/pkg/all.txt\n  bazel-out/k8-opt-exec/bin/pkg/proto.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n!coverage_true\ncoverage_false\ncoverage_no\napple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.942,
+    "stdout": "//pkg:all\tbazel-out/k8-fastbuild/bin/pkg/all.txt\n//pkg:all\tbazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: The target pattern '//pkg:all' is ambiguous: ':all' is both a wildcard, and the name of an existing probe rule; using the latter interpretation\nbazel-rs: 1 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/all.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n!coverage_true\ncoverage_false\ncoverage_no\napple_macos\napple_macos_mixed\n!apple_ios\n!apple_empty\ntool=bazel-out/k8-opt-exec/bin/pkg/proto.txt\n",
+     "bazel-out/k8-opt-exec/bin/pkg/proto.txt": "src_info_true\n!src_info_false\nsrc_info_yes\n!src_info_zero\nstrict_deps_off\n!strict_deps_error\n!strict_deps_upper\n!strict_deps_default\n!strict_deps_strict\n!public_imports_off\n!public_imports_warn\n!proto_defaults\n"
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

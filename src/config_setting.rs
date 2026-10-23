@@ -428,9 +428,7 @@ fn check_option_value(
         // never guess a match.
         return Err(format!(
             "select() on build option '{name}' is not implemented in the native profile (modelled options: {})",
-            configuration::OPTIONS
-                .iter()
-                .map(|option| option.name)
+            configuration::modelled_option_names()
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -602,6 +600,135 @@ mod tests {
             ),
             MatchResult::NoMatch(_)
         ));
+    }
+
+    /// The table-driven options (crate::configuration::VALUE_OPTIONS): the
+    /// expected value converts like the command line (BooleanConverter, the
+    /// case-insensitive StrictDepsMode EnumConverter, PlatformTypeConverter's
+    /// lower case), diffs show the Java `toString` (`OFF`, `ERROR`), and
+    /// conversion errors are attribute errors (paired captures
+    /// tests/fixtures/value_options).
+    #[test]
+    fn values_match_table_driven_options() {
+        let matched = MatchResult::Match;
+        for (values, args) in [
+            (
+                &[
+                    ("strict_proto_deps", "error"),
+                    ("strict_public_imports", "OFF"),
+                ][..],
+                &[][..],
+            ),
+            (
+                &[("strict_proto_deps", "Off")][..],
+                &["--strict_proto_deps=off"][..],
+            ),
+            (
+                &[("strict_proto_deps", "default")][..],
+                &["--strict_proto_deps=DEFAULT"][..],
+            ),
+            (
+                &[(
+                    "experimental_proto_descriptor_sets_include_source_info",
+                    "0",
+                )][..],
+                &[][..],
+            ),
+            (
+                &[(
+                    "experimental_proto_descriptor_sets_include_source_info",
+                    "YES",
+                )][..],
+                &["--experimental_proto_descriptor_sets_include_source_info"][..],
+            ),
+            (
+                &[
+                    ("collect_code_coverage", "false"),
+                    ("collect_code_coverage", "n"),
+                ][..],
+                &[][..],
+            ),
+            (&[("apple_platform_type", "MacOS")][..], &[][..]),
+        ] {
+            assert_eq!(result(values, &[], args), matched, "{values:?} {args:?}");
+        }
+        assert_eq!(
+            result(&[("strict_proto_deps", "off")], &[], &[]),
+            MatchResult::NoMatch(vec![Diff {
+                what: option_label("strict_proto_deps"),
+                got: "ERROR".into(),
+                want: "OFF".into(),
+            }])
+        );
+        assert_eq!(
+            result(&[("apple_platform_type", "")], &[], &[]),
+            MatchResult::NoMatch(vec![Diff {
+                what: option_label("apple_platform_type"),
+                got: "macos".into(),
+                want: String::new(),
+            }])
+        );
+        assert!(matches!(
+            result(&[("collect_code_coverage", "true")], &[], &[]),
+            MatchResult::NoMatch(_)
+        ));
+        // A transitioned configuration's collect_code_coverage (N47).
+        let coverage = Configuration::new(
+            configuration::NativeOptions {
+                collect_code_coverage: true,
+                ..Default::default()
+            },
+            BTreeMap::new(),
+        );
+        let label = Label::parse_canonical("//c:x").unwrap();
+        let in_coverage = |values: &[(&str, &str)]| {
+            analyze(
+                &label,
+                &target(values, &[]),
+                &coverage,
+                &[],
+                &[],
+                None,
+                &|_| unreachable!("no labels"),
+                &mut Vec::new(),
+            )
+        };
+        assert_eq!(
+            in_coverage(&[("collect_code_coverage", "1")])
+                .unwrap()
+                .result,
+            matched
+        );
+        for (values, message) in [
+            (
+                &[("strict_proto_deps", "loose")][..],
+                "While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)",
+            ),
+            (
+                &[(
+                    "experimental_proto_descriptor_sets_include_source_info",
+                    "maybe",
+                )][..],
+                "While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean",
+            ),
+            (
+                &[("collect_code_coverage", "sometimes")][..],
+                "While parsing option --collect_code_coverage=sometimes: 'sometimes' is not a boolean",
+            ),
+        ] {
+            assert_eq!(
+                in_coverage(values).unwrap_err(),
+                format!(
+                    "in values attribute of config_setting rule //c:x: error while parsing configuration settings: {message}"
+                )
+            );
+        }
+        // Real options outside both tables keep the explicit error.
+        assert!(
+            in_coverage(&[("enable_runfiles", "true")])
+                .unwrap_err()
+                .contains("select() on build option 'enable_runfiles' is not implemented in the native profile")
+        );
     }
 
     #[test]

@@ -47,6 +47,10 @@ pub enum OptionKind {
     /// an empty input is this host's CPU ([`host_cpu`]), anything else the
     /// value as given.
     AutoCpu,
+    /// AppleCommandLineOptions.PlatformTypeConverter
+    /// (build/lib/rules/apple/AppleCommandLineOptions.java:394-406): the
+    /// input in ASCII lower case (`Ascii.toLowerCase`), never an error.
+    LowerCaseString,
 }
 
 /// One modelled native option (an `@Option` of a FragmentOptions class).
@@ -371,9 +375,185 @@ pub const DEFAULT_JAVA_RUNTIME_VERSION: &str = "local_jdk";
 /// `--tool_java_runtime_version` default (JavaOptions.java:381-387).
 pub const DEFAULT_TOOL_JAVA_RUNTIME_VERSION: &str = "remotejdk_11";
 
-/// The modelled option named `name` (its canonical name only).
+/// How Bazel 9.3's exec transition sets a [`ValueOption`]: the built-in
+/// Starlark `bazel_exec_transition`
+/// (src/main/starlark/builtins_bzl/common/builtin_exec_platforms.bzl) runs
+/// over a baseline of every native option at its default
+/// (FunctionTransitionUtil.maybeGetExecDefaults,
+/// analysis/starlark/FunctionTransitionUtil.java:167-225).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecValue {
+    /// In its fragment's `propagate` list: the parent's value.
+    Propagate,
+    /// Neither propagated nor written: the option default.
+    Default,
+    /// Written by the fragment's `func` with this unconverted value.
+    Set(&'static str),
+}
+
+/// A native option modelled by its value alone (table-driven): its
+/// converter and default ([`OptionDef`]), whether the command line may set
+/// it, and its exec-transition rule. Its configured value is matched by
+/// `config_setting(values)` (crate::config_setting) and is part of the
+/// configuration identity only when it differs from the default
+/// ([`NativeOptions::values`]), so a default spelled explicitly is the
+/// default configuration. Options whose value has further effects the
+/// native profile does not model stay unsupported on the command line
+/// (`command_line: false`): their configured value is then always the one
+/// the modelled options and transitions give (the default unless a typed
+/// [`NativeOptions`] field holds it), and matching it is exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ValueOption {
+    pub option: OptionDef,
+    /// Whether `--NAME` is a modelled command-line option (of the commands
+    /// with configuration options; `query` registers only CoreOptions,
+    /// QueryCommand.java:59-67).
+    pub command_line: bool,
+    pub exec: ExecValue,
+    /// Where the exec rule is defined (builtin_exec_platforms.bzl line).
+    pub exec_source: &'static str,
+}
+
+/// CoreOptionConverters.StrictDepsMode (build/lib/analysis/config/CoreOptionConverters.java:311-322)
+/// in declaration order, spelled as its `toString` (the constant name):
+/// StrictDepsConverter (:324-329) is an EnumConverter matching it
+/// case-insensitively; config_setting diffs print it upper-case.
+const STRICT_DEPS_MODES: &[&str] = &["OFF", "WARN", "ERROR", "STRICT", "DEFAULT"];
+
+/// The table-driven options (docs/CONFIGURATION.md "Value options"). Each
+/// row was checked against genuine Bazel 9.3.0 (paired capture
+/// tests/fixtures/value_options): converter texts, case rules, defaults,
+/// the exec transition, `query`'s `Unrecognized option`.
+pub const VALUE_OPTIONS: &[ValueOption] = &[
+    // ProtoConfiguration.Options (build/lib/rules/proto/ProtoConfiguration.java:47-154):
+    // read natively only by `config_setting` (protobuf's native_bool_flag,
+    // bazel/private/native_bool_flag.bzl) and the private
+    // `ctx.fragments.proto` getters (crate::ctx_surface). The fragment's
+    // options all propagate to exec configurations
+    // (builtin_exec_platforms.bzl:422-436).
+    ValueOption {
+        option: OptionDef {
+            name: "experimental_proto_descriptor_sets_include_source_info",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Bool,
+            default: "false",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/proto/ProtoConfiguration.java:58-65",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:426",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "strict_proto_deps",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "strict dependency checking level",
+                values: STRICT_DEPS_MODES,
+            },
+            default: "error",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/proto/ProtoConfiguration.java:113-123",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:431",
+    },
+    ValueOption {
+        option: OptionDef {
+            name: "strict_public_imports",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::Enum {
+                type_name: "strict dependency checking level",
+                values: STRICT_DEPS_MODES,
+            },
+            default: "off",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/proto/ProtoConfiguration.java:125-135",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:432",
+    },
+    // CoreOptions.collectCodeCoverage: held by the typed field
+    // NativeOptions::collect_code_coverage, which only a Starlark
+    // transition sets (N47); the command line (and `bazel coverage`) stays
+    // unsupported because coverage instrumentation is not modelled.
+    // rules_python's hermetic runtimes select on it
+    // (python/private/hermetic_runtime_repo_setup.bzl, `:coverage_enabled`).
+    ValueOption {
+        option: COLLECT_CODE_COVERAGE,
+        command_line: false,
+        exec: ExecValue::Default,
+        exec_source: "builtin_exec_platforms.bzl:231-287 (not propagated)",
+    },
+    // AppleCommandLineOptions.applePlatformType: a String option with
+    // PlatformTypeConverter, "derived from other flags and configuration
+    // transitions" that the native profile does not model (Apple rules,
+    // ctx.fragments.apple), so not a command-line option; always `macos`
+    // natively, as in every non-Apple Bazel configuration. grpc's
+    // `//:macos`, `//:ios`, ... config_settings select on it.
+    ValueOption {
+        option: OptionDef {
+            name: "apple_platform_type",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::LowerCaseString,
+            default: "macos",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/rules/apple/AppleCommandLineOptions.java:194-203",
+            deprecation: None,
+        },
+        command_line: false,
+        exec: ExecValue::Set("macos"),
+        exec_source: "builtin_exec_platforms.bzl:185, 190",
+    },
+];
+
+/// The table-driven option named `name` (its canonical name only).
+pub fn value_option(name: &str) -> Option<&'static ValueOption> {
+    VALUE_OPTIONS
+        .iter()
+        .find(|option| option.option.name == name)
+}
+
+impl ValueOption {
+    /// The converted default (`defaultValue` through the converter).
+    pub fn default_value(&self) -> OptionValue {
+        convert(&self.option, self.option.default, &|_| {
+            Err("value options have no label-typed defaults".to_owned())
+        })
+        .expect("value option defaults convert")
+    }
+}
+
+/// The modelled option named `name` (its canonical name only): a typed
+/// option of [`OPTIONS`] or a table-driven [`VALUE_OPTIONS`] row.
 pub fn option(name: &str) -> Option<&'static OptionDef> {
-    OPTIONS.iter().find(|option| option.name == name)
+    OPTIONS
+        .iter()
+        .find(|option| option.name == name)
+        .or_else(|| value_option(name).map(|option| &option.option))
+}
+
+/// The names of every modelled option, typed then table-driven, for
+/// explicit "not implemented" errors.
+pub fn modelled_option_names() -> impl Iterator<Item = &'static str> {
+    OPTIONS
+        .iter()
+        .map(|option| option.name)
+        .chain(VALUE_OPTIONS.iter().map(|option| option.option.name))
 }
 
 /// BuildOptionDetails.getCanonicalName (BuildOptionDetails.java:174-176)
@@ -428,6 +608,28 @@ pub fn unrecognized_option(arg: &str) -> Option<String> {
         return None;
     }
     Some(invalid_argument(arg, format!("Unrecognized option: {arg}")))
+}
+
+/// SpellChecker.didYouMean(arg, getAllValidArgs()) of the `query` command's
+/// options parser (OptionsParserImpl.java:812-824, 865-879): every
+/// non-INTERNAL `query` option as `--NAME`, boolean-syntax ones also as
+/// `--noNAME` (crate::command_options, genuine `help flags-as-proto`).
+/// Candidates are in name order where Bazel iterates its option classes,
+/// which can only matter for equally distant candidates.
+fn query_did_you_mean(arg: &str) -> String {
+    const QUERY: u8 = 2;
+    let words = crate::command_options::COMMAND_OPTIONS
+        .iter()
+        .filter(|(_, _, _, _, _, commands)| commands & QUERY != 0)
+        .flat_map(|(name, _, _, boolean, _, _)| {
+            let mut forms = vec![format!("--{name}")];
+            if *boolean {
+                forms.push(format!("--no{name}"));
+            }
+            forms
+        })
+        .collect::<Vec<_>>();
+    starlark::errors::bazel_did_you_mean(arg, words.iter().map(String::as_str))
 }
 
 /// A boolean option outside the modelled configuration (a Starlark
@@ -567,6 +769,8 @@ pub fn convert(
                 Err(format!("'{lower}' is not a boolean"))
             }
         }
+        // Ascii.equalsIgnoreCase against each constant's toString; the type
+        // description is the list in ASCII lower case (EnumConverter.java:52-67).
         OptionKind::Enum { type_name, values } => values
             .iter()
             .find(|value| value.eq_ignore_ascii_case(input))
@@ -574,7 +778,7 @@ pub fn convert(
             .ok_or_else(|| {
                 format!(
                     "Not a valid {type_name}: '{input}' (should be {})",
-                    join_english_list(values)
+                    join_english_list(values).to_ascii_lowercase()
                 )
             }),
         OptionKind::Assignments => match input.find('=') {
@@ -608,6 +812,7 @@ pub fn convert(
         } else {
             input.to_owned()
         })),
+        OptionKind::LowerCaseString => Ok(OptionValue::String(input.to_ascii_lowercase())),
     }
 }
 
@@ -710,6 +915,17 @@ pub struct NativeOptions {
         serialize_with = "serialize_optional_label"
     )]
     pub crosstool_top: Option<Label>,
+    /// The table-driven [`VALUE_OPTIONS`] whose value differs from the
+    /// default, by name ([`NativeOptions::value`] gives the default for the
+    /// others). Serialized as `NAME: toString` and omitted from the
+    /// identity when empty, so configurations at the defaults keep their
+    /// identities (and action keys); a default spelled explicitly is not
+    /// stored.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "serialize_values"
+    )]
+    pub values: BTreeMap<&'static str, OptionValue>,
     /// CoreOptions.collectCodeCoverage (`--collect_code_coverage`,
     /// analysis/config/CoreOptions.java:566-578, default false): a value
     /// only a Starlark transition sets natively (N47: rules_go's
@@ -885,6 +1101,19 @@ fn serialize_optional_label<S: serde::Serializer>(
     }
 }
 
+/// [`NativeOptions::values`] as `NAME: toString` (injective per option for
+/// the value options' converters: booleans, enum constants, strings).
+fn serialize_values<S: serde::Serializer>(
+    values: &BTreeMap<&'static str, OptionValue>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.collect_map(
+        values
+            .iter()
+            .map(|(name, value)| (*name, value.to_string())),
+    )
+}
+
 /// The label of [`DEFAULT_HOST_PLATFORM`].
 pub fn default_host_platform() -> Label {
     Label {
@@ -914,6 +1143,7 @@ impl Default for NativeOptions {
             cpu: None,
             host_cpu: None,
             crosstool_top: None,
+            values: BTreeMap::new(),
             collect_code_coverage: false,
             use_target_platform_for_tests: false,
             incompatible_auto_exec_groups: false,
@@ -982,8 +1212,51 @@ impl NativeOptions {
                     .clone()
                     .unwrap_or_else(default_crosstool_top),
             ),
-            _ => return None,
+            // The typed field a Starlark transition sets (N47).
+            "collect_code_coverage" => OptionValue::Bool(self.collect_code_coverage),
+            name => {
+                let option = value_option(name)?;
+                self.values
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| option.default_value())
+            }
         })
+    }
+
+    /// Records a table-driven option's converted value: stored only when
+    /// it differs from the default (the identity rule of [`Self::values`]).
+    pub fn set_value(&mut self, option: &'static ValueOption, value: OptionValue) {
+        if value == option.default_value() {
+            self.values.remove(option.option.name);
+        } else {
+            self.values.insert(option.option.name, value);
+        }
+    }
+
+    /// The table-driven values of the exec configuration of `self`
+    /// ([`ExecValue`]): propagated values are kept, the others are the
+    /// default or the transition's fixed value.
+    pub fn exec_values(&self) -> BTreeMap<&'static str, OptionValue> {
+        let mut exec = NativeOptions::default();
+        for option in VALUE_OPTIONS {
+            match option.exec {
+                ExecValue::Propagate => {
+                    if let Some(value) = self.values.get(option.option.name) {
+                        exec.set_value(option, value.clone());
+                    }
+                }
+                ExecValue::Default => {}
+                ExecValue::Set(raw) => {
+                    let value = convert(&option.option, raw, &|_| {
+                        Err("value options have no label-typed exec values".to_owned())
+                    })
+                    .expect("exec values convert");
+                    exec.set_value(option, value);
+                }
+            }
+        }
+        exec.values
     }
 
     /// CoreOptions.cpu after AutoCpuConverter: the host CPU when unset.
@@ -1305,12 +1578,41 @@ impl CommandLineOptions {
                     format!("Invalid options syntax: {arg}"),
                 ));
             }
+            // Table-driven options that are not command-line options are
+            // still `query` options when they are CoreOptions: query
+            // validates and ignores them (it never computes a
+            // configuration).
             let lookup = |name: &str| {
                 OPTIONS
                     .iter()
+                    .chain(
+                        VALUE_OPTIONS
+                            .iter()
+                            .filter(|option| option.command_line || query)
+                            .map(|option| &option.option),
+                    )
                     .filter(available)
                     .find(|option| option.name == name || option.old_name == Some(name))
             };
+            // `query` registers only CoreOptions (QueryCommand.java:59-67):
+            // OptionsParserImpl reports a table-driven option of another
+            // fragment as unknown, with SpellChecker's suggestion among the
+            // command's valid arguments (OptionsParserImpl.java:812-824;
+            // paired capture value_options/query_*).
+            if query {
+                let other_fragment = |name: &str| {
+                    VALUE_OPTIONS.iter().any(|option| {
+                        (option.option.name == name || option.option.old_name == Some(name))
+                            && !option.option.source.contains("/CoreOptions.java")
+                    })
+                };
+                if other_fragment(name) || name.strip_prefix("no").is_some_and(other_fragment) {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Unrecognized option: {arg}{}", query_did_you_mean(arg)),
+                    ));
+                }
+            }
             // `query` registers no PlatformOptions (QueryCommand.java:59-67):
             // OptionsParserImpl reports them as unknown (paired capture
             // B1/query_platforms_mac: `--platforms=//:mac :: Unrecognized
@@ -1546,6 +1848,11 @@ impl CommandLineOptions {
                 }
                 ("crosstool_top", OptionValue::Label(label)) => {
                     native.crosstool_top = (label != default_crosstool_top()).then_some(label)
+                }
+                // Table-driven options: the last occurrence wins; a default
+                // spelled explicitly is not stored.
+                (name, value) if value_option(name).is_some() => {
+                    native.set_value(value_option(name).expect("a value option"), value)
                 }
                 _ => unreachable!("converter shape of {}", option.name),
             }
@@ -2344,6 +2651,194 @@ mod tests {
             query.parse("--crosstool_top=//pkg:t", None).err().unwrap(),
             "--crosstool_top=//pkg:t :: Unrecognized option: --crosstool_top=//pkg:t"
         );
+    }
+
+    /// Every table-driven row is a real Bazel 9.3 fragment option, its
+    /// default and fixed exec value convert, and only CoreOptions rows are
+    /// `query` options.
+    #[test]
+    fn value_option_rows_are_bazel_options_with_converting_defaults() {
+        for row in VALUE_OPTIONS {
+            let name = row.option.name;
+            assert_eq!(
+                fragment_option(name),
+                Some(row.option.non_configurable),
+                "{name}"
+            );
+            assert!(OPTIONS.iter().all(|typed| typed.name != name), "{name}");
+            assert_eq!(option(name), Some(&row.option));
+            assert_eq!(
+                NativeOptions::default().value(name),
+                Some(row.default_value())
+            );
+            if let ExecValue::Set(raw) = row.exec {
+                assert!(convert(&row.option, raw, &canonical).is_ok(), "{name}");
+            }
+            assert!(!row.option.allow_multiple && row.option.abbrev.is_none());
+        }
+        let names = modelled_option_names().collect::<Vec<_>>();
+        assert_eq!(names.len(), OPTIONS.len() + VALUE_OPTIONS.len());
+        assert_eq!(
+            names[OPTIONS.len()..],
+            [
+                "experimental_proto_descriptor_sets_include_source_info",
+                "strict_proto_deps",
+                "strict_public_imports",
+                "collect_code_coverage",
+                "apple_platform_type"
+            ]
+        );
+        let defaults = NativeOptions::default();
+        assert_eq!(
+            defaults.value("strict_proto_deps"),
+            Some(OptionValue::Enum("ERROR"))
+        );
+        assert_eq!(
+            defaults.value("strict_public_imports"),
+            Some(OptionValue::Enum("OFF"))
+        );
+        assert_eq!(
+            defaults.value("experimental_proto_descriptor_sets_include_source_info"),
+            Some(OptionValue::Bool(false))
+        );
+        assert_eq!(
+            defaults.value("apple_platform_type"),
+            Some(OptionValue::String("macos".into()))
+        );
+        assert_eq!(defaults.value("enable_runfiles"), None);
+    }
+
+    /// ProtoConfiguration's options on the command line (paired captures
+    /// tests/fixtures/value_options proto_*): BooleanConverter and the
+    /// StrictDepsMode EnumConverter (case-insensitive, `toString` constants,
+    /// a lower-case type description); defaults spelled explicitly keep the
+    /// default identity; other values join it (`"values"`); the last
+    /// occurrence wins.
+    #[test]
+    fn proto_value_options_parse_and_enter_the_identity_when_set() {
+        let default = Configuration::default();
+        for args in [
+            &["--strict_proto_deps=error"][..],
+            &["--strict_proto_deps", "ERROR"][..],
+            &["--strict_public_imports=Off"][..],
+            &["--noexperimental_proto_descriptor_sets_include_source_info"][..],
+            &["--experimental_proto_descriptor_sets_include_source_info=0"][..],
+            &["--strict_proto_deps=off", "--strict_proto_deps=error"][..],
+        ] {
+            assert_eq!(parsed(args).unwrap().id, default.id, "{args:?}");
+        }
+        let set = parsed(&[
+            "--strict_proto_deps=OFF",
+            "--experimental_proto_descriptor_sets_include_source_info",
+            "--strict_public_imports",
+            "strict",
+        ])
+        .unwrap();
+        assert_eq!(
+            set.native.value("strict_proto_deps"),
+            Some(OptionValue::Enum("OFF"))
+        );
+        assert_eq!(
+            set.native.value("strict_public_imports"),
+            Some(OptionValue::Enum("STRICT"))
+        );
+        assert_eq!(
+            set.native
+                .value("experimental_proto_descriptor_sets_include_source_info"),
+            Some(OptionValue::Bool(true))
+        );
+        assert_eq!(
+            String::from_utf8(canonical_serialization(&set.native, &set.starlark, false)).unwrap(),
+            r#"{"version":1,"native":{"compilation_mode":"fastbuild","stamp":false,"define":[],"strip":"sometimes","force_pic":false,"platforms":["@@bazel_tools//tools:host_platform"],"host_platform":"@@bazel_tools//tools:host_platform","values":{"experimental_proto_descriptor_sets_include_source_info":"true","strict_proto_deps":"OFF","strict_public_imports":"STRICT"}},"starlark":[]}"#
+        );
+        // `default` is the StrictDepsMode constant DEFAULT, not the default.
+        let constant = parsed(&["--strict_proto_deps=default"]).unwrap();
+        assert_eq!(
+            constant.native.value("strict_proto_deps"),
+            Some(OptionValue::Enum("DEFAULT"))
+        );
+        assert_ne!(constant.id, default.id);
+        assert_eq!(
+            parsed(&["--strict_proto_deps=off", "--strict_proto_deps=warn"])
+                .unwrap()
+                .native
+                .values,
+            BTreeMap::from([("strict_proto_deps", OptionValue::Enum("WARN"))])
+        );
+        for (args, error) in [
+            (
+                &["--strict_proto_deps=loose"][..],
+                "While parsing option --strict_proto_deps=loose: Not a valid strict dependency checking level: 'loose' (should be off, warn, error, strict or default)",
+            ),
+            (
+                &["--nostrict_proto_deps"][..],
+                "--nostrict_proto_deps :: Illegal use of 'no' prefix on non-boolean option: --nostrict_proto_deps",
+            ),
+            (
+                &["--experimental_proto_descriptor_sets_include_source_info=maybe"][..],
+                "While parsing option --experimental_proto_descriptor_sets_include_source_info=maybe: 'maybe' is not a boolean",
+            ),
+            (
+                &["--noexperimental_proto_descriptor_sets_include_source_info=false"][..],
+                "--noexperimental_proto_descriptor_sets_include_source_info=false :: Unexpected value after boolean option: --noexperimental_proto_descriptor_sets_include_source_info=false",
+            ),
+            (
+                &["--strict_public_imports"][..],
+                "Expected value after --strict_public_imports",
+            ),
+        ] {
+            assert_eq!(parsed(args).unwrap_err(), error, "{args:?}");
+        }
+    }
+
+    /// Rows without a modelled command-line form stay unsupported options
+    /// (`NotModelled`: main's explicit error); `query` registers only
+    /// CoreOptions (QueryCommand.java:59-67): it accepts and ignores
+    /// `--collect_code_coverage` and reports the other fragments' rows as
+    /// unknown (paired captures value_options query cases).
+    #[test]
+    fn value_options_without_a_command_line_form_and_query() {
+        let mut options = CommandLineOptions::default();
+        for arg in [
+            "--collect_code_coverage",
+            "--nocollect_code_coverage",
+            "--apple_platform_type=ios",
+        ] {
+            assert!(
+                matches!(options.parse(arg, None), Ok(Parsed::NotModelled)),
+                "{arg}"
+            );
+        }
+        let mut query = CommandLineOptions::for_query();
+        assert!(matches!(
+            query.parse("--collect_code_coverage", None),
+            Ok(Parsed::Consumed(false))
+        ));
+        for (arg, next) in [
+            ("--strict_proto_deps=off", None),
+            ("--strict_public_imports", Some("warn")),
+            (
+                "--experimental_proto_descriptor_sets_include_source_info",
+                None,
+            ),
+            (
+                "--noexperimental_proto_descriptor_sets_include_source_info",
+                None,
+            ),
+            ("--apple_platform_type=ios", None),
+        ] {
+            assert_eq!(
+                query.parse(arg, next).err().unwrap(),
+                format!("{arg} :: Unrecognized option: {arg}"),
+                "{arg}"
+            );
+        }
+        // SpellChecker's suggestion among query's options when one is close.
+        assert_eq!(
+            query_did_you_mean("--keep_goin"),
+            " (did you mean '--keep_going'?)"
+        );
+        assert_eq!(query_did_you_mean("--strict_proto_deps=off"), "");
     }
 
     #[test]

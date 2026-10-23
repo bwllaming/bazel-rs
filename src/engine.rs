@@ -7053,6 +7053,7 @@ impl Engine {
             // Replaced by the analyzed target's own Context::action_env
             // (crate::analysis), the same configuration's environment.
             action_env: Arc::new(native.action_environment()),
+            option_values: native.values.clone(),
         }
     }
 
