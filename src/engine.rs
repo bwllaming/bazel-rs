@@ -164,10 +164,14 @@ struct ActionPlanning {
     /// provider files. Every File is registered once, before any consumer
     /// can see it ([`register_artifact`]): a source when its view is first
     /// built or a native rule takes it as an input, a generated file at its
-    /// producer's commit, the workspace status files by
-    /// [`Engine::ensure_workspace_status`]. One producer per output path
-    /// (register_output) and one label per source path make it a function
-    /// of the File.
+    /// producer's commit. The workspace status files (owned by no target)
+    /// are registered by [`Engine::ensure_workspace_status`] on first need:
+    /// an action input or DefaultInfo file of a committing target, or any
+    /// other lookup that reaches one ([`Engine::indexed_artifact`]: a
+    /// runfiles tree, an output group, an aspect's outputs) — so a status
+    /// File never fails to resolve, whichever targets the build has. One
+    /// producer per output path (register_output) and one label per source
+    /// path make it a function of the File.
     artifact_index: BTreeMap<File, Artifact>,
     declared: Declared,
     /// Output path -> the owning action-lookup key's display: a
@@ -366,7 +370,9 @@ fn verify_views() -> bool {
 /// ([`register_artifact`]). (W1b's migration verifier also checked, after
 /// each commit, that every File the pre-W1b provider-file walk reached from
 /// the committed target was registered; it soaked on the whole test suite
-/// and on ~/code, and W1d deleted it with the walk.)
+/// and on ~/code, and W1d deleted it with the walk. It exempted the
+/// workspace status files, which every lookup reaching one registers
+/// ([`Engine::indexed_artifact`]).)
 fn verify_artifacts() -> bool {
     static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var_os("BAZEL_RS_VERIFY_ARTIFACTS").is_some_and(|value| value == "1")
@@ -9497,6 +9503,9 @@ impl Engine {
                 producers,
                 nodes,
                 source_inputs,
+                workspace_status,
+                client_environment,
+                status_client_environment,
             },
         )? {
             runfiles_nodes.insert(key.clone(), nodes_of_target);
@@ -9526,8 +9535,17 @@ impl Engine {
                     let destination = Path::new(&tree.directory).join(path);
                     match file {
                         Some(file) => {
-                            let mut artifact =
-                                artifact_index.get(file).cloned().ok_or_else(|| {
+                            let mut artifact = self
+                                .indexed_artifact(
+                                    file,
+                                    artifact_index,
+                                    workspace_status,
+                                    nodes,
+                                    producers,
+                                    client_environment,
+                                    status_client_environment,
+                                )?
+                                .ok_or_else(|| {
                                     format!(
                                         "{}: tool runfile has no declared artifact: {}",
                                         rule.label, file.path
@@ -10474,15 +10492,33 @@ impl Engine {
         let ActionPlanning {
             dry,
             runfiles_info,
-            artifact_index,
+            mut artifact_index,
             declared,
             mut nodes,
             source_inputs,
             runfiles_nodes,
             custom_providers,
             validation,
+            mut producers,
+            client_environment,
+            status_client_environment,
+            mut workspace_status,
             ..
         } = state;
+        // The top-level lookups below: a workspace status File no target
+        // registered (only possible under --nobuild, which plans no status
+        // action above) is registered by the lookup that reaches it.
+        let mut resolve = |engine: &Engine, file: &File| {
+            engine.indexed_artifact(
+                file,
+                &mut artifact_index,
+                &mut workspace_status,
+                &mut nodes,
+                &mut producers,
+                &client_environment,
+                &status_client_environment,
+            )
+        };
         // BuildRequest.getTopLevelArtifactContext (BuildRequest.java:412-421)
         // with OutputGroupInfo.determineOutputGroups: the command's requested
         // output groups. `default` is the files to build; every other
@@ -10496,15 +10532,17 @@ impl Engine {
         let mut requested: Vec<(ConfiguredTargetKey, Artifact)> = Vec::new();
         // The built-but-unreported artifacts of hidden requested groups.
         let mut unreported = Vec::new();
+        type Resolve<'a> = dyn FnMut(&File) -> Result<Option<Artifact>, String> + 'a;
         let group_artifacts = |key: &ConfiguredTargetKey,
                                label: &Label,
                                group: &str,
                                files: Vec<File>,
                                requested: &mut Vec<(ConfiguredTargetKey, Artifact)>,
-                               unreported: &mut Vec<(ConfiguredTargetKey, Artifact)>|
+                               unreported: &mut Vec<(ConfiguredTargetKey, Artifact)>,
+                               resolve: &mut Resolve<'_>|
          -> Result<(), String> {
             for file in files {
-                let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                let artifact = resolve(&file)?.ok_or_else(|| {
                     format!(
                         "{label}: output group '{group}' file has no declared artifact identity: {}",
                         file.path
@@ -10537,7 +10575,7 @@ impl Engine {
                     // aspect's DefaultInfo.files (FileProvider merge).
                     Some(view) if !view.files.is_empty() => {
                         for file in &view.files {
-                            let artifact = artifact_index.get(file).cloned().ok_or_else(|| {
+                            let artifact = resolve(self, file)?.ok_or_else(|| {
                                 format!(
                                     "{label}: aspect output has no declared artifact identity: {}",
                                     file.path
@@ -10587,7 +10625,15 @@ impl Engine {
                 if !base_files.is_empty() {
                     target_result_labels.insert(label.clone());
                 }
-                group_artifacts(&key, label, group, files, &mut requested, &mut unreported)?;
+                group_artifacts(
+                    &key,
+                    label,
+                    group,
+                    files,
+                    &mut requested,
+                    &mut unreported,
+                    &mut |file: &File| resolve(self, file),
+                )?;
             }
             // Per-aspect reports: each aspect's own artifacts in the
             // requested (reportable) groups, plus its DefaultInfo.files for
@@ -10606,8 +10652,8 @@ impl Engine {
                             .map_err(|e| e.to_string())?
                     {
                         for file in files {
-                            if let Some(artifact) = artifact_index.get(&file) {
-                                artifacts.push(artifact.clone());
+                            if let Some(artifact) = resolve(self, &file)? {
+                                artifacts.push(artifact);
                             }
                         }
                     }
@@ -10620,7 +10666,7 @@ impl Engine {
                                 continue;
                             }
                             for file in crate::output_group_info::depset_files(depset) {
-                                let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                                let artifact = resolve(self, &file)?.ok_or_else(|| {
                                     format!(
                                         "{label}: aspect output group '{name}' file has no declared artifact identity: {}",
                                         file.path
@@ -10667,7 +10713,7 @@ impl Engine {
                     runfiles_info.get(&self.configurations.top_key(actual.clone()))
             {
                 for file in runfiles.default_runfiles().all_artifacts() {
-                    let artifact = artifact_index.get(&file).cloned().ok_or_else(|| {
+                    let artifact = resolve(self, &file)?.ok_or_else(|| {
                         format!(
                             "{label}: runfiles file has no declared artifact identity: {}",
                             file.path
@@ -10705,7 +10751,7 @@ impl Engine {
                 let executable = match runfiles_nodes.get(&actual_key) {
                     Some(support) => Some(support.executable.clone()),
                     None => match files_to_run.as_ref().and_then(|f| f.executable.as_ref()) {
-                        Some(file) => Some(artifact_index.get(file).cloned().ok_or_else(|| {
+                        Some(file) => Some(resolve(self, file)?.ok_or_else(|| {
                             format!(
                                 "{label}: executable has no declared artifact: {}",
                                 file.path
@@ -11434,16 +11480,34 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The planning state a runfiles support's nodes are registered in.
+/// The planning state a runfiles support's nodes are registered in, and
+/// what registering the workspace status files on first need takes
+/// ([`Engine::ensure_workspace_status`]).
 struct RunfilesPlanning<'a> {
     artifact_index: &'a mut BTreeMap<File, Artifact>,
     declared: &'a mut Declared,
     producers: &'a mut BTreeMap<PathBuf, String>,
     nodes: &'a mut Vec<PlannedAction>,
     source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
+    workspace_status: &'a mut Option<WorkspaceStatusPlan>,
+    client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    status_client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
 }
 
 impl RunfilesPlanning<'_> {
+    /// The Artifact `file` resolves to ([`Engine::indexed_artifact`]).
+    fn artifact(&mut self, engine: &Engine, file: &File) -> Result<Option<Artifact>, String> {
+        engine.indexed_artifact(
+            file,
+            self.artifact_index,
+            self.workspace_status,
+            self.nodes,
+            self.producers,
+            self.client_environment,
+            self.status_client_environment,
+        )
+    }
+
     /// Register the only output of a native runfiles node.
     fn output(
         &mut self,
@@ -11509,15 +11573,16 @@ impl Engine {
             return Ok(None);
         };
         let options = self.runfiles_options;
-        let lookup = |index: &BTreeMap<File, Artifact>, file: &File| -> Result<Artifact, String> {
-            index.get(file).cloned().ok_or_else(|| {
-                format!(
-                    "{}: runfiles file has no declared artifact identity: {}",
-                    rule.label, file.path
-                )
-            })
-        };
-        let executable_artifact = lookup(planning.artifact_index, executable)?;
+        let lookup =
+            |planning: &mut RunfilesPlanning<'_>, file: &File| -> Result<Artifact, String> {
+                planning.artifact(self, file)?.ok_or_else(|| {
+                    format!(
+                        "{}: runfiles file has no declared artifact identity: {}",
+                        rule.label, file.path
+                    )
+                })
+            };
+        let executable_artifact = lookup(&mut planning, executable)?;
         // RepoMappingManifestAction.
         let repositories = &self.repositories;
         let content = crate::runfiles_tree::repo_mapping_manifest(
@@ -11560,7 +11625,7 @@ impl Engine {
                     let artifact = if file == repo_mapping {
                         repo_mapping_artifact.clone()
                     } else {
-                        lookup(planning.artifact_index, file)?
+                        lookup(&mut planning, file)?
                     };
                     entries.push((path.clone(), Some(artifact.exec.clone())));
                     mapped.push((path.clone(), Some(artifact.clone())));
@@ -11865,6 +11930,42 @@ impl Engine {
             &planned.volatile,
         );
         Ok([planned.stable.clone(), planned.volatile.clone()])
+    }
+
+    /// The Artifact `file` resolves to in the build's one index (W1b), or
+    /// `None` when it is not registered. A workspace status File that no
+    /// target registered yet (no action input or DefaultInfo file of its
+    /// own needed it) is registered here, on the lookup that reaches it,
+    /// and looked up again: a status file in a runfiles tree, an output
+    /// group or an aspect's outputs resolves — to the planned status
+    /// artifact, or the bare one under --nobuild — whichever other targets
+    /// the build has, as Bazel's status artifacts always exist.
+    #[allow(clippy::too_many_arguments)]
+    fn indexed_artifact(
+        &self,
+        file: &File,
+        artifact_index: &mut BTreeMap<File, Artifact>,
+        workspace_status: &mut Option<WorkspaceStatusPlan>,
+        nodes: &mut Vec<PlannedAction>,
+        producers: &mut BTreeMap<PathBuf, String>,
+        client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+        status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    ) -> Result<Option<Artifact>, String> {
+        if let Some(artifact) = artifact_index.get(file) {
+            return Ok(Some(artifact.clone()));
+        }
+        if !crate::analysis_runtime::is_workspace_status_file(file) {
+            return Ok(None);
+        }
+        self.ensure_workspace_status(
+            workspace_status,
+            nodes,
+            producers,
+            client_environment,
+            status_client_environment,
+            artifact_index,
+        )?;
+        Ok(artifact_index.get(file).cloned())
     }
 
     /// Resolve one actions.transform_{version,info}_file registration

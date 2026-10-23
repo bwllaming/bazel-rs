@@ -11,6 +11,10 @@ load(
     "leaf",
     "run_tool",
     "status",
+    "status_exe",
+    "status_group",
+    "status_lib",
+    "status_wrap",
     "tool",
     "use",
     "via_closure",
@@ -67,3 +71,11 @@ bound(name = "bound_actions", kind = "actions")
 bound(name = "bound_args", kind = "args")
 
 bound(name = "bound_closure", kind = "closure")
+
+status_exe(name = "status_exe")
+
+status_lib(name = "status_lib")
+
+status_wrap(name = "status_wrap", deps = [":status_lib"])
+
+status_group(name = "status_group")

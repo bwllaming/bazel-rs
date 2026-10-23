@@ -228,6 +228,124 @@ fn status_file_in_default_info_needs_no_consuming_action() {
     assert!(built[0].2.starts_with("BUILD_TIMESTAMP "), "{built:?}");
 }
 
+/// The stdout of a successful `--nobuild` run (the planned outputs).
+fn planned(ws: &Workspace, args: &[&str]) -> String {
+    let mut all = vec!["--nobuild"];
+    all.extend_from_slice(args);
+    let output = ws.build(&all);
+    assert!(output.status.success(), "{args:?}: {}", stderr(&output));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+// A workspace status file reached only through runfiles, an output group or
+// a top-level aspect's outputs resolves on its own, under `build` and
+// `--nobuild` alike: the lookup that reaches it registers the status files.
+// Before, it resolved only when another target of the same build had
+// registered them (an action input or a DefaultInfo file of its own), so the
+// result depended on unrelated targets and `--nobuild` disagreed with `build`
+// (`runfiles file has no declared artifact identity: bazel-out/volatile-status.txt`,
+// `output group 'status' file has no declared artifact identity: ...`).
+// Genuine Bazel 9.3 builds every row (reference_receipt.json, `status_*`).
+
+#[test]
+fn status_file_in_an_executables_own_runfiles_resolves_alone() {
+    let ws = Workspace::new();
+    assert_eq!(
+        planned(&ws, &["//pkg:status_exe"]),
+        "//pkg:status_exe\tbazel-out/k8-fastbuild/bin/pkg/status_exe.sh\n"
+    );
+    let built = ws.build_env(&[("BAZEL_RS_DUMP_ACTIONS", "1")], &["//pkg:status_exe"]);
+    let text = stderr(&built);
+    // The runfiles manifest takes the planned status artifact.
+    assert!(
+        text.contains(
+            "ACTION //pkg:status_exe#runfiles_manifest\n\
+             \x20 generated //pkg:status_exe#0[0] -> bazel-out/k8-fastbuild/bin/pkg/status_exe.sh\n\
+             \x20 generated BazelWorkspaceStatusAction#volatile[0] -> bazel-out/volatile-status.txt\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        outputs(&built),
+        [row(
+            "//pkg:status_exe",
+            "bazel-out/k8-fastbuild/bin/pkg/status_exe.sh",
+            "#!/bin/sh\necho status_exe\n"
+        )]
+    );
+}
+
+#[test]
+fn status_file_in_dependency_runfiles_resolves_alone() {
+    let ws = Workspace::new();
+    // Merged into an executable's runfiles (its runfiles support).
+    assert_eq!(
+        planned(&ws, &["//pkg:status_wrap"]),
+        "//pkg:status_wrap\tbazel-out/k8-fastbuild/bin/pkg/status_wrap.sh\n"
+    );
+    assert_eq!(
+        outputs(&ws.build(&["//pkg:status_wrap"])),
+        [row(
+            "//pkg:status_wrap",
+            "bazel-out/k8-fastbuild/bin/pkg/status_wrap.sh",
+            "#!/bin/sh\necho status_wrap\n"
+        )]
+    );
+    // The library itself: its runfiles are built with it
+    // (OutputGroupInfo.HIDDEN_TOP_LEVEL).
+    assert_eq!(
+        planned(&ws, &["//pkg:status_lib"]),
+        "//pkg:status_lib\tbazel-out/k8-fastbuild/bin/pkg/status_lib.txt\n"
+    );
+    assert_eq!(
+        outputs(&ws.build(&["//pkg:status_lib"])),
+        [row(
+            "//pkg:status_lib",
+            "bazel-out/k8-fastbuild/bin/pkg/status_lib.txt",
+            "lib:status_lib\n"
+        )]
+    );
+}
+
+#[test]
+fn status_file_in_an_output_group_resolves_alone() {
+    let ws = Workspace::new();
+    let group = ["--output_groups=status", "//pkg:status_group"];
+    assert_eq!(
+        planned(&ws, &group),
+        "//pkg:status_group\tbazel-out/stable-status.txt\n"
+    );
+    let built = outputs(&ws.build(&group));
+    assert_eq!(built.len(), 1, "{built:?}");
+    assert_eq!(built[0].1, "bazel-out/stable-status.txt");
+    assert!(built[0].2.starts_with("BUILD_EMBED_LABEL "), "{built:?}");
+    // A top-level aspect's output group.
+    let aspect = [
+        "--aspects=//pkg:defs.bzl%status_aspect",
+        "--output_groups=aspect_status",
+        "//pkg:gen",
+    ];
+    let mut all = vec!["--nobuild"];
+    all.extend_from_slice(&aspect);
+    let planned = ws.build(&all);
+    let text = stderr(&planned);
+    assert!(planned.status.success(), "{text}");
+    assert!(
+        text.contains(
+            "Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  bazel-out/volatile-status.txt\n"
+        ),
+        "{text}"
+    );
+    let built = ws.build(&aspect);
+    let text = stderr(&built);
+    assert!(built.status.success(), "{text}");
+    assert!(
+        text.contains("Aspect //pkg:defs.bzl%status_aspect of //pkg:gen up-to-date:\n  ")
+            && text.contains("/outputs/bazel-out/volatile-status.txt\n"),
+        "{text}"
+    );
+}
+
 #[test]
 fn declared_output_of_a_dependency_path_is_an_output_conflict() {
     // Two targets declaring one output path conflict when the second

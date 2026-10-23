@@ -131,3 +131,46 @@ def _run_tool(ctx):
     return [DefaultInfo(files = depset([out]))]
 
 run_tool = rule(_run_tool, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+
+# The workspace status files outside any action input or DefaultInfo: they
+# resolve wherever a File can reach, whichever other targets the build has.
+def _status_exe(ctx):
+    # An executable whose own runfiles hold a status file.
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "#!/bin/sh\necho " + ctx.label.name + "\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = [ctx.version_file]))]
+
+status_exe = rule(_status_exe, executable = True)
+
+def _status_lib(ctx):
+    # A library whose runfiles hold a status file.
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "lib:" + ctx.label.name + "\n")
+    return [DefaultInfo(files = depset([out]), runfiles = ctx.runfiles(files = [ctx.info_file]))]
+
+status_lib = rule(_status_lib)
+
+def _status_wrap(ctx):
+    # An executable merging its dependencies' runfiles.
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "#!/bin/sh\necho " + ctx.label.name + "\n", is_executable = True)
+    runfiles = ctx.runfiles()
+    for dep in ctx.attr.deps:
+        runfiles = runfiles.merge(dep[DefaultInfo].default_runfiles)
+    return [DefaultInfo(executable = exe, runfiles = runfiles)]
+
+status_wrap = rule(_status_wrap, executable = True, attrs = {"deps": attr.label_list()})
+
+def _status_group(ctx):
+    # A status file in an output group only.
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "group:" + ctx.label.name + "\n")
+    return [DefaultInfo(files = depset([out])), OutputGroupInfo(status = depset([ctx.info_file]))]
+
+status_group = rule(_status_group)
+
+def _status_aspect(target, ctx):
+    # A status file in a top-level aspect's output group.
+    return [OutputGroupInfo(aspect_status = depset([ctx.version_file]))]
+
+status_aspect = aspect(_status_aspect)
