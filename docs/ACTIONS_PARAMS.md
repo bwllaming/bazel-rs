@@ -111,7 +111,7 @@ explicitly (unresolved symlink artifacts are not modelled). The undocumented
 internal Starlark API allowlist whenever it is passed; `True` links a source
 file itself, as the native profile has no persistent execution root
 (docs/SHAREABLE_ARTIFACTS.md, which also covers `declare_shareable_artifact`
-and the shared actions of one target).
+and shared actions, within one target and across targets).
 
 ## expand_template and template_dict
 

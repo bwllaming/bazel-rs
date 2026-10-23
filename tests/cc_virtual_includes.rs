@@ -437,6 +437,23 @@ fn check(name: &str, case: &Value, same_compiler: bool) {
             stderr.contains(message),
             "{name}: missing {message:?} in {stderr}"
         );
+        // An action conflict names its owners' labels in the next line
+        // (genuine orders them by analysis timing: compared as a set).
+        if let Some(expected) = case["expected_labels"].as_array() {
+            let line = stderr
+                .lines()
+                .skip_while(|line| !line.ends_with(message))
+                .nth(1)
+                .and_then(|line| line.strip_prefix("Label: "))
+                .unwrap_or_else(|| panic!("{name}: no Label line in {stderr}"));
+            let mut labels = line.split(", ").collect::<Vec<_>>();
+            labels.sort_unstable();
+            let expected = expected
+                .iter()
+                .map(|label| label.as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(labels, expected, "{name}: {stderr}");
+        }
         return;
     }
     if argv.iter().any(|arg| arg == "--nobuild") {
@@ -591,10 +608,11 @@ fn rules_cc_prefix_errors_match() {
 }
 
 /// The API from an allowlisted package: root-relative paths, the artifact
-/// roots, owner/short_path/root/repr, dedup, shared and conflicting actions,
-/// orphans, and a main-repository artifact below `external/` consumed by
-/// another target: one File through ctx.files, DefaultInfo and a provider
-/// field, short_path `../somerepo/x.txt` (review F2 of d2fd11c).
+/// roots, owner/short_path/root/repr, dedup, shared and conflicting actions
+/// (within a target, and of two targets on one shareable path), orphans,
+/// and a main-repository artifact below `external/` consumed by another
+/// target: one File through ctx.files, DefaultInfo and a provider field,
+/// short_path `../somerepo/x.txt` (review F2 of d2fd11c).
 #[test]
 fn shareable_artifacts_are_root_relative_and_deduplicated() {
     check_group("probes");
@@ -614,9 +632,10 @@ fn bazel_crashes_are_explicit_errors() {
 }
 
 /// Actions.canBeShared within one target for any output: identical spawns
-/// are shared, differing ones conflict, and equal registrations with a part
-/// the native comparison does not cover (tool runfiles trees, contents
-/// expanding tree artifacts) are explicit errors (declared divergences).
+/// are shared (also with a tool that has runfiles: the native key covers
+/// its runfiles tree), differing ones conflict, and equal registrations with
+/// a part the native key does not cover (contents expanding tree artifacts)
+/// are explicit errors (a declared divergence).
 #[test]
 fn identical_actions_share_and_uncompared_parts_are_explicit() {
     check_group("sharing");

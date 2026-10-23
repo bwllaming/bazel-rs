@@ -1,7 +1,7 @@
 {
  "schema": "cc-virtual-includes-reference-receipt/v1",
  "fixture": "cc_virtual_includes",
- "purpose": "ctx.actions.declare_shareable_artifact (StarlarkActionFactory.createShareableArtifact, analysis/starlark/StarlarkActionFactory.java:1267-1276) and the rules_cc 0.2.17 virtual-include path that needs it (cc/private/compile/cc_compilation_helper.bzl _compute_public_headers: strip_include_prefix/include_prefix, the _virtual_includes symlinks through ctx.actions.symlink(use_exec_root_for_source=...), the include directory in the CcCompilationContext) end to end: cc_library targets with strip_include_prefix (package-relative, repository-absolute, in an external module like @protobuf//src/google/protobuf's `/src`), include_prefix and textual headers, consumed by a cc_library and a cc_binary that compile and link; plus the API's own semantics from an allowlisted main-repository package (`test`): root-relative paths, the artifact roots, owner/short_path/root, dedup, shared and conflicting actions, the private-API restriction and misuse. Motivation: analysis of @@protobuf+//src/google/protobuf:internal_visibility failed with `'actions' value has no field or method 'declare_shareable_artifact'`. Plus Actions.canBeShared within one target for any output (//share, review follow-up: identical spawns shared, differing ones conflicting, parts the native comparison does not cover an explicit error). Plus (integration-20, review F2 of d2fd11c) a main-repository shareable artifact below `external/` consumed by another target (//test:external_consumer, case consumed_external_path): ctx.files, the producer's DefaultInfo and a provider field holding the producer's own File are one File with short_path ../somerepo/x.txt.",
+ "purpose": "ctx.actions.declare_shareable_artifact (StarlarkActionFactory.createShareableArtifact, analysis/starlark/StarlarkActionFactory.java:1267-1276) and the rules_cc 0.2.17 virtual-include path that needs it (cc/private/compile/cc_compilation_helper.bzl _compute_public_headers: strip_include_prefix/include_prefix, the _virtual_includes symlinks through ctx.actions.symlink(use_exec_root_for_source=...), the include directory in the CcCompilationContext) end to end: cc_library targets with strip_include_prefix (package-relative, repository-absolute, in an external module like @protobuf//src/google/protobuf's `/src`), include_prefix and textual headers, consumed by a cc_library and a cc_binary that compile and link; plus the API's own semantics from an allowlisted main-repository package (`test`): root-relative paths, the artifact roots, owner/short_path/root, dedup, shared and conflicting actions, the private-API restriction and misuse. Motivation: analysis of @@protobuf+//src/google/protobuf:internal_visibility failed with `'actions' value has no field or method 'declare_shareable_artifact'`. Plus Actions.canBeShared within one target for any output (//share, review follow-up: identical spawns shared — also with a tool that has runfiles —, differing ones conflicting, parts the native key does not cover an explicit error) and across targets on one shareable path (share_same shared, share_diff a conflict naming both labels). Plus (integration-20, review F2 of d2fd11c) a main-repository shareable artifact below `external/` consumed by another target (//test:external_consumer, case consumed_external_path): ctx.files, the producer's DefaultInfo and a provider field holding the producer's own File are one File with short_path ../somerepo/x.txt.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,14 +11,14 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "9c0ba555de5dd816504338de5685d6567628a0bf5110cff6c3853cc880204b1a",
+  "sha256": "effa3fdfa9c636b6798db136bccfbffe8c318bce478d24617339a3c2c5a4d3ec",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
-  "path": "/tmp/opencode/perf-research/i20s4-vinc-capture.py, i20s4-vinc-receipt.py (not committed; vinc-capture.py/vinc-receipt.py plus the integration-20 case consumed_external_path)",
+  "path": "/tmp/opencode/perf-research/pshared-vinc-capture.py, pshared-vinc-receipt.py (not committed; i20s4-vinc-*.py with the shared-actions verdicts; genuine capture reused from i20s4-vinc-genuine.json, the fixture is unchanged)",
   "sha256": {
-   "i20s4-vinc-capture.py": "cd9fd5db8e3988af27ed62b7750c686d9f4c7592d3d872194cff64ea8d00d58f",
-   "i20s4-vinc-receipt.py": "5fe07f58cecf24b26b29f244f1300ad0e99898bacd6f9e854cca6cf709637310"
+   "pshared-vinc-capture.py": "228d491223d5c26ba1474c4fddf58f42a9669dba291e50d15097a04badadb7f8",
+   "pshared-vinc-receipt.py": "ae66e57e9d514ea17c4661362ed5191abbd877fab27479d4d9e8ba68a869d084"
   }
  },
  "host_compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
@@ -51,7 +51,7 @@
   "test/v.h": "7b56b03296e0d22f66e460b8300075c6ef26368a6975e6cb63dd887764f25a5f"
  },
  "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache. Outputs are every entry below bazel-out/<target config>/bin (genuine: the output tree; native: the published action outputs): files by sha256, symlinks by target and the sha256 of what they resolve to. Symlink targets map <OB>/external/ext+/ to <WS>/ext/ (the native profile uses a local_path_override directory in place) and <OB>/execroot/_main/ to <WS>/ (use_exec_root_for_source, see known_divergences); runfiles manifests compare with <OB>/execroot/_main/ and <CACHE>/actions/<key>/outputs/ as <OUT>/. Native parameter files are action inputs, never outputs, so *.params are not compared.",
- "comparison (tests/cc_virtual_includes.rs, live)": "success equal (genuine exit 0 <=> native exit 0); a failing case's genuine message (the `Error in <callable>: ` text, the orphan or conflict message) is contained in native stderr; a declared divergence's native message is contained in native stderr; built cases: every compared genuine output exists natively with the same sha256 (symlinks: the same normalized target and resolved sha256; compiled and linked outputs only when the host's `gcc --version` is host_compiler, otherwise every _virtual_includes path a genuine .d file names is named by the native one), and the top-level outputs (genuine --show_result, native LABEL<TAB>PATH) are equal.",
+ "comparison (tests/cc_virtual_includes.rs, live)": "success equal (genuine exit 0 <=> native exit 0); a failing case's genuine message (the `Error in <callable>: ` text, the orphan message, a conflict's first line) is contained in native stderr, and a conflict's `Label:` line names the same set of labels (expected_labels; genuine orders them by analysis timing); a declared divergence's native message is contained in native stderr; built cases: every compared genuine output exists natively with the same sha256 (symlinks: the same normalized target and resolved sha256; compiled and linked outputs only when the host's `gcc --version` is host_compiler, otherwise every _virtual_includes path a genuine .d file names is named by the native one), and the top-level outputs (genuine --show_result, native LABEL<TAB>PATH) are equal.",
  "genuine_key_findings": [
   "declare_shareable_artifact(path, artifact_root=unbound): both parameters positional-only (`declare_shareable_artifact() got named argument for positional-only parameter 'path'`, `accepts no more than 2 positional arguments but got 3`); `path` must be a string (checked before the allowlist).",
   "BuiltinRestriction.failIfCalledOutsideDefaultAllowlist for the innermost .bzl: `file '//denied:defs.bzl' cannot use private API`; the main repository's `test` package is allowlisted. symlink(use_exec_root_for_source=...) is restricted the same way whenever the parameter is passed (even False).",
@@ -67,14 +67,14 @@
  "known_divergences": [
   "Bazel crashes on several misuses (exit 37); the native profile reports explicit analysis errors naming the Java exception (exit 1).",
   "The empty path: genuine declares the root itself and fails on the output prefix conflict; natively rejected at declaration (both exit 1).",
-  "Action sharing across targets (Actions.canBeShared between different owners) is not modelled by the native engine: identical producers of one path in two targets are an output conflict natively (share_same), and conflicting ones are reported as `overlapping output paths` (share_diff). Within one target, identical actions are shared like genuine and actions differing in a compared part conflict with Bazel's text; when the compared parts are equal but an action has a part the native comparison does not cover (tool runfiles trees, content expanding tree artifacts at execution, build-info callbacks), the native profile reports an explicit not-implemented error instead of guessing (share_tool_same, share_args_same; genuine shares them).",
+  "Action sharing (Actions.canBeShared) within one target and across targets compares one owner-independent native key (crate::shared_actions; share_same, share_diff, share_tool_same match since the parity-shared-actions branch, tests/fixtures/shared_actions pins the cross-target cases). When the compared parts are equal but an action has a part the native key does not cover (content expanding tree artifacts at execution, build-info callbacks), the native profile reports an explicit not-implemented error instead of guessing (share_args_same; genuine shares it).",
   "symlink(use_exec_root_for_source=True) on a source file: genuine links through <OB>/execroot/_main/<exec path>; the native profile has no persistent execution root and links the source file itself (the same file the execution root's entry is).",
   "Symlinks to files of a local_path_override module name the override directory natively (<WS>/ext/...), genuine its <OB>/external/ext+ symlink (pre-existing native repository layout).",
   "Native error reporting: the analysis error is printed with the native traceback (`bazel-rs: analysis of <label>: ...`), genuine with `ERROR: <location>: in <rule> rule <label>:` lines; a conflict is reported where the second action is registered natively, after the implementation function genuinely."
  ],
  "counts": {
-  "MATCH": 21,
-  "DECLARED_DIVERGENCE": 10
+  "MATCH": 24,
+  "DECLARED_DIVERGENCE": 7
  },
  "scratch_removed": true,
  "cases": {
@@ -95,7 +95,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 5.126,
+    "seconds": 5.466,
     "stdout": "//lib:prefixed\t<CACHE>/actions/fd5290a709e28cbe6e15e9c7208fdae39e0126f1f516c36f5ebe7b21723f8567/outputs/bazel-out/k8-fastbuild/bin/lib/libprefixed.a\n//lib:prefixed\t<CACHE>/actions/3c1be7d26e5b4bc3bcef19cc62fb9ec5145574e67ca7344885081b1ecf88f692/outputs/bazel-out/k8-fastbuild/bin/lib/libprefixed.so\n//lib:stripped\t<CACHE>/actions/2e9b605cfb3463d7e8d855e54f161e9075a6184fcc342454ce92d98c860409ff/outputs/bazel-out/k8-fastbuild/bin/lib/libstripped.a\n//lib:stripped\t<CACHE>/actions/8c3474bdef6e332705355e477cd9fd9d7f7c43c69305351fc9298019eed6ec5e/outputs/bazel-out/k8-fastbuild/bin/lib/libstripped.so\n@@ext+//src/ext:ext\t<CACHE>/actions/803b59a2859e716e8669cc9fed255baecf3c91ea9c67bd8425e1cdef61e79eb0/outputs/bazel-out/k8-fastbuild/bin/external/ext+/src/ext/libext.a\n@@ext+//src/ext:ext\t<CACHE>/actions/2f0a760e8af84dd55d464ca7ce4c1e6efa4b94481ae29efc71e2f3360b13c2bc/outputs/bazel-out/k8-fastbuild/bin/external/ext+/src/ext/libext.so\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -208,7 +208,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 5.277,
+    "seconds": 5.235,
     "stdout": "//app:app\t<CACHE>/actions/e26967467d922e2ffc8b121d1e5e20dfaed60d6dbd7e35ffe356a4f645e16eb3/outputs/bazel-out/k8-fastbuild/bin/app/app\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 14 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -318,7 +318,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 5.215,
+    "seconds": 5.123,
     "stdout": "//app:app\tbazel-out/k8-fastbuild/bin/app/app\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -339,7 +339,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 4.887,
+    "seconds": 4.836,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:not_under: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:138, in _compute_public_headers\n      fail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_r...\nerror: fail: header 'errors/x.h' is not under the specified strip prefix 'errors/include'\n   --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:138:13\n    |\n138 |             fail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_relative_path, strip_prefix))\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n"
    },
@@ -359,7 +359,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 4.891,
+    "seconds": 5.357,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:uplevel_include_prefix: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:67, in _compute_public_headers\n      fail(\"include prefix should not contain uplevel references: \" + include_prefix)\nerror: fail: include prefix should not contain uplevel references: ../up\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:67:13\n   |\n67 |             fail(\"include prefix should not contain uplevel references: \" + include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -379,7 +379,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 4.887,
+    "seconds": 5.869,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:absolute_include_prefix: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:69, in _compute_public_headers\n      fail(\"include prefix should be a relative path: \" + include_prefix)\nerror: fail: include prefix should be a relative path: /abs\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:69:13\n   |\n69 |             fail(\"include prefix should be a relative path: \" + include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -399,7 +399,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 4.92,
+    "seconds": 5.674,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:uplevel_strip: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:73, in _compute_public_headers\n      fail(\"strip include prefix should not contain uplevel references: \" + strip_i...\nerror: fail: strip include prefix should not contain uplevel references: ../x\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:73:13\n   |\n73 |             fail(\"strip include prefix should not contain uplevel references: \" + strip_include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -430,7 +430,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.116,
+    "seconds": 0.102,
     "stdout": "//test:alias\t<CACHE>/actions/b75f4727571e09ed8a7fa74edcba6d81353319784cbc2bbe87388d3dcf92e4b3/outputs/bazel-out/k8-fastbuild/bin/test/alias.report\n//test:alias\t<CACHE>/actions/f55b7e229b199156f6fdd57d8c5ed78344d635ca14b3b9a225489470ac111f97/outputs/bazel-out/k8-fastbuild/bin/test/alias.txt\n//test:bin_dir\t<CACHE>/actions/9f9ca99e1e1138ac268127a6dfc8eac0e4c69242046d895576c17c6b7c26297b/outputs/bazel-out/k8-fastbuild/bin/test/bin_dir.report\n//test:bin_dir\t<CACHE>/actions/24c507c97e983ba8658e8ef96ce4437547e9b5b759662393c667eda5bded79f3/outputs/bazel-out/k8-fastbuild/bin/test/bin_dir.txt\n//test:cross\t<CACHE>/actions/e960fee8c37249098470a216e2a36bf6ac8e02e2760a245122a5335c70df98ed/outputs/bazel-out/k8-fastbuild/bin/test/cross.report\n//test:cross\t<CACHE>/actions/2a8b165e85bdac64624c0b663b06b283ff3529887d404e9412d5e23bd705fda0/outputs/bazel-out/k8-fastbuild/bin/test/sub/cross.txt\n//test:external_path\t<CACHE>/actions/325f0eb0d46e4808e2bdea70ca457273dd328dd25aeb5d93dca6136e70415a76/outputs/bazel-out/k8-fastbuild/bin/test/external_path.report\n//test:external_path\t<CACHE>/actions/0fd9fe565ed29514d7ee1922d235186049f564b8898a0f84c98b3fabac339c18/outputs/bazel-out/k8-fastbuild/bin/external/somerepo/x.txt\n//test:file_root\t<CACHE>/actions/3252c6984b7daca1a2b573eef00ab9ff9df44273c41fbfe745c11fca49fa691c/outputs/bazel-out/k8-fastbuild/bin/test/file_root.report\n//test:file_root\t<CACHE>/actions/73946144c7881497203db5558e3daf2d697a57c4318018a818be638a134bd89c/outputs/bazel-out/k8-fastbuild/bin/test/file_root.anchor\n//test:file_root\t<CACHE>/actions/a4fd55f34ee2dc9d3572127d0f2cb9ca74d48fe890d58877a6bfac66d0d96b69/outputs/bazel-out/k8-fastbuild/bin/test/file_root.txt\n//test:genfiles_dir\t<CACHE>/actions/f75e416c4406a2ab6194f1f6edc18ff8e23937ab852baa1d137dfa33c4fcfad1/outputs/bazel-out/k8-fastbuild/bin/test/genfiles_dir.report\n//test:genfiles_dir\t<CACHE>/actions/1580b58cf973782667d899a5de7eef88c255f86824432039e1702472c4985f9f/outputs/bazel-out/k8-fastbuild/bin/test/genfiles_dir.txt\n//test:in_package\t<CACHE>/actions/1546d826056e5da37a3f359be3f3b60c44cbb00717be02f81f1f8a22cf4dd1cb/outputs/bazel-out/k8-fastbuild/bin/test/in_package.report\n//test:in_package\t<CACHE>/actions/52d91316f5c8e76a37ceba9b8cbe72a7837fe3f96c2cf57bc8295e9c7911c36b/outputs/bazel-out/k8-fastbuild/bin/test/in_package/shared.txt\n//test:normalized\t<CACHE>/actions/d9430d5ae92e71c62fdaddfe432bc0d794b328dd939b1c7b08e165d5949c2e35/outputs/bazel-out/k8-fastbuild/bin/test/normalized.report\n//test:normalized\t<CACHE>/actions/4906613568be92ca909b68004491170cf67fd823bbc54ebd18e775f028fa7ec4/outputs/bazel-out/k8-fastbuild/bin/test/normalized.txt\n//test:outside\t<CACHE>/actions/17339afa8dbd84f011ee9f24b1b8b78ecce0d936d5bdc336f46fb77032ff6c00/outputs/bazel-out/k8-fastbuild/bin/test/outside.report\n//test:outside\t<CACHE>/actions/7af51f9be4b5bd8c5a480c464779b5a30c11dd0c1d2ad933a5fd0e375e692ff0/outputs/bazel-out/k8-fastbuild/bin/elsewhere/shared.txt\n//test:symlink\t<CACHE>/actions/c4b2efe81e629574dcd22dacd6c7122d87f174678869c522392a98d1814b6515/outputs/bazel-out/k8-fastbuild/bin/test/symlink.report\n//test:symlink\t<CACHE>/actions/2aa84c9fa97b97a5c45f69bc3604d1f2cc01132a2ef1965014550092e882381d/outputs/bazel-out/k8-fastbuild/bin/test/_virtual_includes/symlink/v.h\n//test:symlink_exec_root\t<CACHE>/actions/dbb269bcfad033b88b9d52e599b3e76cd0ee4a111d4af8727aaf9233eebbb20a/outputs/bazel-out/k8-fastbuild/bin/test/symlink_exec_root.report\n//test:symlink_exec_root\t<CACHE>/actions/31eb5f43a65f45f932bad77415c0ee9a6d19a81437915e553d51e42c963e98d1/outputs/bazel-out/k8-fastbuild/bin/test/_virtual_includes/symlink_exec_root/v.h\n//test:twice\t<CACHE>/actions/48942b201783f5ba4a4e71ebff26e2dac0e5c660af1c642cdd1c4278f69f1231/outputs/bazel-out/k8-fastbuild/bin/test/twice.report\n//test:twice\t<CACHE>/actions/5a7589852806829f04b27b275249b950bca1389481fd172a243f714c2c00e4ea/outputs/bazel-out/k8-fastbuild/bin/test/twice.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 25 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -669,7 +669,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.085,
+    "seconds": 0.08,
     "stdout": "//test:same_writes\t<CACHE>/actions/8cb477c6c533ce3249b63df763199a58e7cfb2e804f725cda5dfd95e44dd9d40/outputs/bazel-out/k8-fastbuild/bin/test/same_writes.report\n//test:same_writes\t<CACHE>/actions/36af7e87b19d3ee3485c5d2ab7b385471b69f15124fdc8b8334ce866dfddb5e7/outputs/bazel-out/k8-fastbuild/bin/test/same_writes.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -711,7 +711,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 5.022,
+    "seconds": 5.219,
     "stdout": "//app:dup_consumer\t<CACHE>/actions/740bf75253d841d96e59a3ffa954b413094d4685e862ad3414150e0cef685daf/outputs/bazel-out/k8-fastbuild/bin/app/libdup_consumer.a\n//app:dup_consumer\t<CACHE>/actions/45a40acff51b04f3d243799611851be59a8dc9ca00ef18c470d7412ad49e39a5/outputs/bazel-out/k8-fastbuild/bin/app/libdup_consumer.so\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -764,14 +764,48 @@
     "stderr": "INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //test:share_a up-to-date:\n  bazel-bin/test/share_a.report\n  bazel-bin/shared/same.txt\nTarget //test/sub:share_b up-to-date:\n  bazel-bin/test/sub/share_b.report\n  bazel-bin/shared/same.txt\nINFO: Elapsed time: 2.268s, Critical Path: 0.02s\nINFO: 4 processes: 4 internal.\nINFO: Build completed successfully, 4 total actions\n"
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.083,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: overlapping output paths: bazel-out/k8-fastbuild/bin/shared/same.txt from //test:share_a conflicts with bazel-out/k8-fastbuild/bin/shared/same.txt from //test/sub:share_b\n"
+    "exit": 0,
+    "seconds": 0.096,
+    "stdout": "//test:share_a\t<CACHE>/actions/5d09125c4daf64c8227c14d2560e5c1dff92554c66aa2fe68e434e688af24878/outputs/bazel-out/k8-fastbuild/bin/test/share_a.report\n//test:share_a\t<CACHE>/actions/03e84ee65c669536cc145d4145fad2ac3f254a1e8b98f782674692f81da3f456/outputs/bazel-out/k8-fastbuild/bin/shared/same.txt\n//test/sub:share_b\t<CACHE>/actions/3fce2a5b3d23912280150716f7ca0cb015d9a243ceb479ba1831af68a5f240ae/outputs/bazel-out/k8-fastbuild/bin/test/sub/share_b.report\n//test/sub:share_b\t<CACHE>/actions/03e84ee65c669536cc145d4145fad2ac3f254a1e8b98f782674692f81da3f456/outputs/bazel-out/k8-fastbuild/bin/shared/same.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
-   "declared_divergence": "genuine shares identical actions of two targets on one shareable path (Actions.canBeShared across owners); the native engine plans one producer per output path and reports an output conflict (an engine-wide divergence for every output, not specific to shareable artifacts)",
-   "native_message": "overlapping output paths: bazel-out/k8-fastbuild/bin/shared/same.txt from //test:share_a conflicts with bazel-out/k8-fastbuild/bin/shared/same.txt from //test/sub:share_b",
-   "verdict": "DECLARED_DIVERGENCE"
+   "top_level_outputs": [
+    [
+     "//test/sub:share_b",
+     "bazel-out/k8-fastbuild/bin/shared/same.txt"
+    ],
+    [
+     "//test/sub:share_b",
+     "bazel-out/k8-fastbuild/bin/test/sub/share_b.report"
+    ],
+    [
+     "//test:share_a",
+     "bazel-out/k8-fastbuild/bin/shared/same.txt"
+    ],
+    [
+     "//test:share_a",
+     "bazel-out/k8-fastbuild/bin/test/share_a.report"
+    ]
+   ],
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/shared/same.txt": {
+     "kind": "file",
+     "sha256": "a6328afc76e9db71da297ebff4b0d3e7a7eb3b01d917c05a6573fef121b6ecb6"
+    },
+    "bazel-out/k8-fastbuild/bin/test/share_a.report": {
+     "kind": "file",
+     "sha256": "f2f76f3165cdb0d322df5136de8ce172ba6a93fdbeb0fa454e39ef6208b3a0f8"
+    },
+    "bazel-out/k8-fastbuild/bin/test/sub/share_b.report": {
+     "kind": "file",
+     "sha256": "1fe87c891b08c1569bfc762b0fb612b967a734e2b8d97d10d01583a0cb885286"
+    }
+   },
+   "reports": {
+    "bazel-out/k8-fastbuild/bin/test/share_a.report": "a.path=bazel-out/k8-fastbuild/bin/shared/same.txt\na.short_path=shared/same.txt\na.root=bazel-out/k8-fastbuild/bin\na.owner=@@//test:share_a\na.basename=same.txt\na.dirname=bazel-out/k8-fastbuild/bin/shared\na.extension=txt\na.is_source=False\na.is_directory=False\na.repr=<generated file shared/same.txt>\n",
+    "bazel-out/k8-fastbuild/bin/test/sub/share_b.report": "a.path=bazel-out/k8-fastbuild/bin/shared/same.txt\na.short_path=shared/same.txt\na.root=bazel-out/k8-fastbuild/bin\na.owner=@@//test/sub:share_b\na.basename=same.txt\na.dirname=bazel-out/k8-fastbuild/bin/shared\na.extension=txt\na.is_source=False\na.is_directory=False\na.repr=<generated file shared/same.txt>\n"
+   },
+   "verdict": "MATCH"
   },
   "share_diff": {
    "argv": [
@@ -787,13 +821,16 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.09,
+    "seconds": 0.083,
     "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: overlapping output paths: bazel-out/k8-fastbuild/bin/shared/diff.txt from //test:share_c conflicts with bazel-out/k8-fastbuild/bin/shared/diff.txt from //test/sub:share_d\n"
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test/sub:share_d, //test:share_c\n"
    },
-   "declared_divergence": "both fail (exit 1) on the conflicting producers of shared/diff.txt; genuine's ActionConflictException text vs the native engine's `overlapping output paths` (engine-wide)",
-   "native_message": "overlapping output paths: bazel-out/k8-fastbuild/bin/shared/diff.txt from //test:share_c conflicts with bazel-out/k8-fastbuild/bin/shared/diff.txt from //test/sub:share_d",
-   "verdict": "DECLARED_DIVERGENCE"
+   "expected_message": "file 'shared/diff.txt' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//test/sub:share_d",
+    "//test:share_c"
+   ],
+   "verdict": "MATCH"
   },
   "misuse_orphan": {
    "argv": [
@@ -808,7 +845,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.076,
+    "seconds": 0.074,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:orphan: The following files have no generating action:\ntest/orphan.txt\n"
    },
@@ -828,11 +865,14 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.078,
+    "seconds": 0.073,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:two_writes: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:87, in _probe_impl\n      actions.write(a, \"two\\n\")\nerror: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\n  --> //test:defs.bzl:87:9\n   |\n87 |         actions.write(a, \"two\\n\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
-   "expected_message": "file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes",
+   "expected_message": "file 'test/two_writes.txt' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//test:two_writes"
+   ],
    "verdict": "MATCH"
   },
   "misuse_named": {
@@ -848,7 +888,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.078,
+    "seconds": 0.076,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:named: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:89, in _probe_impl\n      actions.declare_shareable_artifact(path = path)\nerror: declare_shareable_artifact() got named argument for positional-only parameter 'path'\n  --> //test:defs.bzl:89:9\n   |\n89 |         actions.declare_shareable_artifact(path = path)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -868,7 +908,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.08,
+    "seconds": 0.071,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:int_path: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:91, in _probe_impl\n      actions.declare_shareable_artifact(1)\nerror: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\n  --> //test:defs.bzl:91:9\n   |\n91 |         actions.declare_shareable_artifact(1)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -888,7 +928,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.079,
+    "seconds": 0.067,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:too_many: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:93, in _probe_impl\n      actions.declare_shareable_artifact(path, ctx.bin_dir, 3)\nerror: declare_shareable_artifact() accepts no more than 2 positional arguments but got 3\n  --> //test:defs.bzl:93:9\n   |\n93 |         actions.declare_shareable_artifact(path, ctx.bin_dir, 3)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -908,7 +948,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.078,
+    "seconds": 0.073,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:root_string: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:95, in _probe_impl\n      actions.declare_shareable_artifact(path, \"bazel-out\")\nerror: declare_shareable_artifact('test/root_string.txt'): artifact_root must be a root, not 'string' (Bazel 9.3 fails with an internal ClassCastException)\n  --> //test:defs.bzl:95:9\n   |\n95 |         actions.declare_shareable_artifact(path, \"bazel-out\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -929,7 +969,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.078,
+    "seconds": 0.076,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:root_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:97, in _probe_impl\n      actions.declare_shareable_artifact(path, None)\nerror: declare_shareable_artifact('test/root_none.txt'): artifact_root must be a root, not 'NoneType' (Bazel 9.3 fails with an internal ClassCastException)\n  --> //test:defs.bzl:97:9\n   |\n97 |         actions.declare_shareable_artifact(path, None)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -950,7 +990,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.089,
+    "seconds": 0.073,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:source_root: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:99, in _probe_impl\n      actions.declare_shareable_artifact(path, ctx.file.src.root)\nerror: declare_shareable_artifact('test/source_root.txt'): artifact_root is a source root; a shareable artifact needs a derived root (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:99:9\n   |\n99 |         actions.declare_shareable_artifact(path, ctx.file.src.root)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -971,7 +1011,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.078,
+    "seconds": 0.074,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:uplevel: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact('../up.txt'): the path must not contain uplevel references (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -992,7 +1032,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.081,
+    "seconds": 0.074,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:absolute: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact('/abs.txt'): the path must be relative to the artifact root (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1013,7 +1053,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.079,
+    "seconds": 0.071,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:empty: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact(''): the path names the artifact root itself, which cannot be an output of the native profile\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1034,7 +1074,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.062,
+    "seconds": 0.058,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:declare: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:6, in _denied_impl\n      ctx.actions.declare_shareable_artifact(\"denied/x.txt\")\nerror: file '//denied:defs.bzl' cannot use private API\n --> //denied:defs.bzl:6:9\n  |\n6 |         ctx.actions.declare_shareable_artifact(\"denied/x.txt\")\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
    },
@@ -1054,7 +1094,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.063,
+    "seconds": 0.061,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:int_path: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:8, in _denied_impl\n      ctx.actions.declare_shareable_artifact(1)\nerror: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\n --> //denied:defs.bzl:8:9\n  |\n8 |         ctx.actions.declare_shareable_artifact(1)\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
    },
@@ -1074,7 +1114,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.101,
+    "seconds": 0.071,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:symlink: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:11, in _denied_impl\n      ctx.actions.symlink(\nerror: file '//denied:defs.bzl' cannot use private API\n  --> //denied:defs.bzl:11:9\n   |\n11 |           ctx.actions.symlink(\n   |  _________^\n12 | |             output = out,\n13 | |             target_file = ctx.file.src,\n14 | |             use_exec_root_for_source = False,\n15 | |         )\n   | |_________^\n   |\n\n"
    },
@@ -1094,7 +1134,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.095,
+    "seconds": 0.074,
     "stdout": "//share:shell_same\t<CACHE>/actions/3e524bbc799a3c18d3045fcd88bf5aeefcc8dae9efaaff6d533516c50a407197/outputs/bazel-out/k8-fastbuild/bin/share/shell_same.out\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -1124,14 +1164,24 @@
     "stderr": "INFO: Analyzed target //share:tool_same (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //share:tool_same up-to-date:\n  bazel-bin/share/tool_same.out\nINFO: Elapsed time: 2.344s, Critical Path: 0.02s\nINFO: 8 processes: 7 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 8 total actions\n"
    },
    "native": {
-    "exit": 1,
-    "seconds": 2.508,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //share:tool_same: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //share:defs.bzl:25, in _run_twice_impl\n      ctx.actions.run(\nerror: file 'share/tool_same.out' is generated by two actions of //share:tool_same: sharing identical actions with tool runfiles trees is not implemented in the native profile (Actions.canBeShared, docs/SHAREABLE_ARTIFACTS.md)\n  --> //share:defs.bzl:25:13\n   |\n25 |               ctx.actions.run(\n   |  _____________^\n26 | |                 executable = ctx.executable.tool,\n27 | |                 arguments = [out.path, \"same\"],\n28 | |                 outputs = [out],\n29 | |                 mnemonic = \"Twice\",\n30 | |                 progress_message = \"run %{label} \" + str(i),\n31 | |             )\n   | |_____________^\n   |\n\n"
+    "exit": 0,
+    "seconds": 2.598,
+    "stdout": "//share:tool_same\t<CACHE>/actions/806cbbf23cb996e35de27a1534af3c6bd297af2ded3300cc16d6ac2634a33cbc/outputs/bazel-out/k8-fastbuild/bin/share/tool_same.out\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
-   "declared_divergence": "genuine shares two identical ctx.actions.run registrations of one target whose executable has runfiles (Actions.canBeShared: equal key, mandatory inputs incl. the tool's runfiles tree artifact, outputs); the native comparison does not cover tool runfiles trees, so equal compared parts are an explicit not-implemented error instead of a guessed share or conflict (exit 1 vs 0)",
-   "native_message": "file 'share/tool_same.out' is generated by two actions of //share:tool_same: sharing identical actions with tool runfiles trees is not implemented in the native profile (Actions.canBeShared, docs/SHAREABLE_ARTIFACTS.md)",
-   "verdict": "DECLARED_DIVERGENCE"
+   "top_level_outputs": [
+    [
+     "//share:tool_same",
+     "bazel-out/k8-fastbuild/bin/share/tool_same.out"
+    ]
+   ],
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/share/tool_same.out": {
+     "kind": "file",
+     "sha256": "a6328afc76e9db71da297ebff4b0d3e7a7eb3b01d917c05a6573fef121b6ecb6"
+    }
+   },
+   "verdict": "MATCH"
   },
   "share_tool_diff": {
    "argv": [
@@ -1146,11 +1196,14 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 2.494,
+    "seconds": 2.538,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //share:tool_diff: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //share:defs.bzl:33, in _run_twice_impl\n      ctx.actions.run(\nerror: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\n  --> //share:defs.bzl:33:13\n   |\n33 |               ctx.actions.run(\n   |  _____________^\n34 | |                 executable = ctx.executable.tool,\n35 | |                 arguments = [out.path, \"call \" + str(i)],\n36 | |                 outputs = [out],\n37 | |                 mnemonic = \"Twice\",\n38 | |             )\n   | |_____________^\n   |\n\n"
    },
-   "expected_message": "file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff",
+   "expected_message": "file 'share/tool_diff.out' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//share:tool_diff"
+   ],
    "verdict": "MATCH"
   },
   "share_args_same": {
@@ -1166,7 +1219,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.068,
+    "seconds": 0.075,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //share:args_same: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //share:defs.bzl:62, in _args_twice_impl\n      ctx.actions.write(out, args)\nerror: file 'share/args_same.args' is generated by two actions of //share:args_same: sharing identical actions with command lines or contents expanding tree artifacts is not implemented in the native profile (Actions.canBeShared, docs/SHAREABLE_ARTIFACTS.md)\n  --> //share:defs.bzl:62:9\n   |\n62 |         ctx.actions.write(out, args)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1187,7 +1240,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.098,
+    "seconds": 0.105,
     "stdout": "//test:external_consumer\t<CACHE>/actions/87486ada55fd3ec46d23861f0f32251aedb52df26f60a0d3aa8d4389b5008618/outputs/bazel-out/k8-fastbuild/bin/test/external_consumer.report\n//test:external_consumer\t<CACHE>/actions/886706d4dcd46c271a1aae54e25e95194683a00b260fddd3c2678c6ab29a905b/outputs/bazel-out/k8-fastbuild/bin/test/external_consumer.copy\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },

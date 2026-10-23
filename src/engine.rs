@@ -216,10 +216,10 @@ struct ActionPlanning {
     /// path make it a function of the File.
     artifact_index: BTreeMap<File, Artifact>,
     declared: Declared,
-    /// Output path -> the owning action-lookup key's display: a
-    /// configured target key's label, or `label%aspect` of an aspect
-    /// application (AspectKey as ActionLookupKey).
-    producers: BTreeMap<PathBuf, String>,
+    /// Output path -> its producer (register_output): the owning
+    /// action-lookup key and, for a Starlark action, the action's id and
+    /// owner-independent key (crate::shared_actions).
+    producers: Producers,
     nodes: Vec<PlannedAction>,
     /// Every source input of every action, before execroot planting drops
     /// main-repository inputs under ignored top-level entries.
@@ -509,7 +509,7 @@ struct PlanState<'a> {
     >,
     pub aspect_target_identities: &'a mut AspectTargetIdentities,
     pub nodes: &'a mut Vec<PlannedAction>,
-    pub producers: &'a mut BTreeMap<PathBuf, String>,
+    pub producers: &'a mut Producers,
     pub source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
     pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     pub status_client_environment:
@@ -7410,9 +7410,12 @@ impl Engine {
             locations.insert(src.clone(), paths);
             for artifact in artifacts {
                 if let Some(previous) = seen.get(&artifact.exec) {
+                    // One artifact without its owner: a generated one is
+                    // identified by its producer (two targets' Artifacts of
+                    // a shared action's output are one input).
                     if previous.real != artifact.real
                         || previous.producer != artifact.producer
-                        || previous.owner != artifact.owner
+                        || (artifact.producer.is_none() && previous.owner != artifact.owner)
                     {
                         return Err(format!(
                             "different artifacts map to the same execution path: {}",
@@ -8701,27 +8704,20 @@ impl Engine {
                 artifact_index,
             )?;
         }
-        for registered in &analyzed.actions {
-            for (index, file) in registered.outputs.iter().enumerate() {
-                let exec = PathBuf::from(&file.path);
-                register_output(producers, &exec, &action_owner)?;
-                let artifact = Artifact::new(
-                    exec.clone(),
-                    exec.clone(),
-                    Some((registered.action.id.clone(), index)),
-                    file.owner.clone(),
-                    file.is_directory,
-                    registered
-                        .build_info
-                        .as_ref()
-                        .is_some_and(|build_info| build_info.volatile),
-                );
-                verify_declared_file(file, &artifact);
-                register_artifact(artifact_index, file, &artifact);
-                declared.insert((base_key.config, exec), artifact);
+        let shared = register_action_outputs(
+            &analyzed.actions,
+            (&action_owner, &base_key.label.to_string()),
+            producers,
+            artifact_index,
+            declared,
+            base_key.config,
+            |_| false,
+        )?;
+        for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
+            // Another owner's equal action produces its outputs.
+            if shared {
+                continue;
             }
-        }
-        for mut registered in analyzed.actions {
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
             if registered.build_info.is_some() {
@@ -9387,6 +9383,7 @@ impl Engine {
                         groups: Some(action_groups),
                         use_auto_exec_groups: exec_groups.use_auto_exec_groups,
                         subrule: None,
+                        executions: Arc::from([]),
                     };
                 } else {
                     // No ToolchainCollection (RuleContext.getToolchainContexts
@@ -9400,6 +9397,7 @@ impl Engine {
                         groups: None,
                         use_auto_exec_groups: use_auto,
                         subrule: None,
+                        executions: Arc::from([]),
                     };
                 }
                 action_execution = self.action_execution_table(
@@ -9407,6 +9405,9 @@ impl Engine {
                     config,
                     target_exec_groups.as_ref().filter(|_| uses_toolchains),
                 )?;
+                // Each action's key takes its exec group's execution
+                // (crate::shared_actions).
+                custom.action_exec_groups.executions = Arc::from(action_execution.as_slice());
                 // The configured target's own key and configuration (an
                 // exec, no-config or Starlark-transitioned configuration
                 // included), never a build-global one.
@@ -9695,26 +9696,21 @@ impl Engine {
         }
         // First index EVERY action's outputs, so registration order is not
         // an execution order and forward generated dependencies are legal.
-        for registered in &analyzed.actions {
-            for (index, file) in registered.outputs.iter().enumerate() {
-                let exec = PathBuf::from(&file.path);
-                register_output(producers, &exec, &key.label.to_string())?;
-                let artifact = Artifact::new(
-                    exec.clone(),
-                    exec.clone(),
-                    Some((registered.action.id.clone(), index)),
-                    file.owner.clone(),
-                    file.is_directory,
-                    registered
-                        .build_info
-                        .as_ref()
-                        .is_some_and(|build_info| build_info.volatile),
-                );
-                verify_declared_file(file, &artifact);
-                register_artifact(artifact_index, file, &artifact);
-                declared.insert((config, exec), artifact);
-            }
-        }
+        let label = key.label.to_string();
+        let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
+        let shared = register_action_outputs(
+            &analyzed.actions,
+            (&label, &label),
+            producers,
+            artifact_index,
+            declared,
+            config,
+            // A predeclared output is the rule's output-file target.
+            |exec| {
+                exec.strip_prefix(&package_output)
+                    .is_ok_and(|name| rule.outs.iter().any(|out| Path::new(out) == name))
+            },
+        )?;
         runfiles_info.insert(key.clone(), Arc::new(analyzed.runfiles.clone()));
         if let Some(nodes_of_target) = self.plan_runfiles_support(
             &key,
@@ -9736,7 +9732,12 @@ impl Engine {
         )? {
             runfiles_nodes.insert(key.clone(), nodes_of_target);
         }
-        for mut registered in analyzed.actions {
+        for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
+            // Another owner's equal action produces its outputs: no node,
+            // no source inputs, no execution of its own.
+            if shared {
+                continue;
+            }
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
             if registered.build_info.is_some() {
@@ -9826,8 +9827,9 @@ impl Engine {
                 .cloned()
                 .collect();
             let mut action = registered.action;
+            // The spawn's propagated tags are set at registration
+            // (crate::analysis_runtime::Context::register_action, keyed).
             if action.write.is_none() && action.extra.transform.is_none() {
-                action.execution_info = rule_execution_info(rule);
                 action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
             }
             let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
@@ -10134,8 +10136,9 @@ impl Engine {
                     )
                 })?;
             restricted_to_error(rule)?;
+            let producer = OutputProducer::native(&key.label.to_string());
             for output in &outputs {
-                register_output(producers, output, &key.label.to_string())?;
+                register_output(producers, output, &producer)?;
             }
             // GenRuleBase.java:141-147, 170-175, 212-216: bash sources the
             // `$genrule_setup` script (set -euo pipefail), which is an input;
@@ -11697,21 +11700,101 @@ fn check_macro_namespace(rule: &Rule, target: &Label) -> Result<(), String> {
     Ok(())
 }
 
-/// Output paths are global across configurations (Bazel's action
-/// conflicts); a conflict names the owning labels.
+/// The build's producers of output paths, global across configurations
+/// (Bazel's action graph: MapBasedActionGraph, ArtifactPrefixConflicts):
+/// one shared [`OutputProducer`] per producing action (or native output).
+type Producers = BTreeMap<PathBuf, Arc<OutputProducer>>;
+
+/// The producer of output paths ([`register_output`]).
+#[derive(Debug)]
+struct OutputProducer {
+    /// The owning action-lookup key's display: a configured target key's
+    /// label, or `label[config]%aspect` of an aspect application (AspectKey
+    /// as ActionLookupKey).
+    owner: String,
+    /// The owner's label as an action conflict names it
+    /// (ActionConflictException's `Label:` line, Label.print), when it is
+    /// not `owner` (an aspect application's base target).
+    label: Option<String>,
+    /// The producing Starlark action's id and owner-independent key
+    /// (crate::shared_actions), which Actions.canBeShared may share with an
+    /// equal action of another owner; `None` for the native producers
+    /// (genrule, runfiles support, workspace status), which are never
+    /// shared.
+    action: Option<(String, crate::shared_actions::ActionKey)>,
+}
+
+impl OutputProducer {
+    /// A native producer owned by `owner` (whose label it names).
+    fn native(owner: &str) -> Arc<Self> {
+        Arc::new(Self {
+            owner: owner.to_owned(),
+            label: None,
+            action: None,
+        })
+    }
+
+    /// The producer of a registered Starlark action's outputs, owned by
+    /// `owner` of `label`.
+    fn action(
+        owner: &str,
+        label: &str,
+        registered: &crate::analysis_runtime::RegisteredAction,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            owner: owner.to_owned(),
+            label: (label != owner).then(|| label.to_owned()),
+            action: Some((registered.action.id.clone(), registered.key)),
+        })
+    }
+
+    fn label(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.owner)
+    }
+}
+
+/// Register `producer` for `output`. Output paths are global across
+/// configurations. An exact path another producer already registered is
+/// that producer's action when the two can be shared (Actions.canBeShared
+/// between owners, MapBasedActionGraph.registerAction
+/// actions/MapBasedActionGraph.java:46-63; crate::shared_actions): the
+/// first producer's action id is returned, and the caller plans no node
+/// for its own action — its outputs are its own Artifacts produced by the
+/// first owner's action, which the first target in commit order owns.
+/// Otherwise an exact path is Bazel's action conflict (both owners named),
+/// and a path below or above another producer's output is an overlap
+/// (Actions.findArtifactPrefixConflicts).
 fn register_output(
-    producers: &mut BTreeMap<PathBuf, String>,
+    producers: &mut Producers,
     output: &Path,
-    owner: &str,
-) -> Result<(), String> {
-    for ancestor in output.ancestors() {
+    producer: &Arc<OutputProducer>,
+) -> Result<Option<String>, String> {
+    if let Some(previous) = producers.get(output) {
+        let path = output.to_string_lossy();
+        let (attempted, first) = (producer.label(), previous.label());
+        return match (&producer.action, &previous.action) {
+            (Some((_, key)), Some((id, first_key))) => match key.sharing(first_key) {
+                crate::shared_actions::Sharing::Shared => Ok(Some(id.clone())),
+                crate::shared_actions::Sharing::Conflict => Err(
+                    crate::shared_actions::conflict_message(&path, attempted, first),
+                ),
+                crate::shared_actions::Sharing::Unmodelled(reason) => Err(
+                    crate::shared_actions::unmodelled_message(&path, attempted, first, reason),
+                ),
+            },
+            _ => Err(crate::shared_actions::conflict_message(
+                &path, attempted, first,
+            )),
+        };
+    }
+    for ancestor in output.ancestors().skip(1) {
         if let Some(previous) = producers.get(ancestor) {
             return Err(format!(
                 "overlapping output paths: {} from {} conflicts with {} from {}",
                 ancestor.display(),
-                previous,
+                previous.owner,
                 output.display(),
-                owner
+                producer.owner
             ));
         }
     }
@@ -11721,13 +11804,72 @@ fn register_output(
         return Err(format!(
             "overlapping output paths: {} from {} conflicts with {} from {}",
             output.display(),
-            owner,
+            producer.owner,
             previous_path.display(),
-            previous
+            previous.owner
         ));
     }
-    producers.insert(output.to_path_buf(), owner.to_owned());
-    Ok(())
+    producers.insert(output.to_path_buf(), Arc::clone(producer));
+    Ok(None)
+}
+
+/// The first commit loop of a target's (or aspect application's) Starlark
+/// actions: every output registered with its producer ([`register_output`],
+/// owner and label `owner`) and indexed as the Artifact of its declared File
+/// — produced by the action itself, or, when the action is equal to another
+/// owner's producer of its outputs (Actions.canBeShared), by that action:
+/// the outputs stay this owner's Artifacts (File.owner is the declaring
+/// target, as Bazel keeps each target's own Artifact) and the action plans
+/// no node. Returns, per action, whether it is shared. A shared output's
+/// `declared` entry (an output-file target's lookup) stays the first
+/// owner's unless `predeclared` says it is this owner's output-file target.
+fn register_action_outputs(
+    actions: &[crate::analysis_runtime::RegisteredAction],
+    (owner, label): (&str, &str),
+    producers: &mut Producers,
+    artifact_index: &mut BTreeMap<File, Artifact>,
+    declared: &mut Declared,
+    config: ConfigId,
+    predeclared: impl Fn(&Path) -> bool,
+) -> Result<Vec<bool>, String> {
+    let mut shared = Vec::with_capacity(actions.len());
+    for registered in actions {
+        let producer = OutputProducer::action(owner, label, registered);
+        let mut first = None;
+        for (index, file) in registered.outputs.iter().enumerate() {
+            let exec = PathBuf::from(&file.path);
+            let sharing = register_output(producers, &exec, &producer)?;
+            // The key covers the outputs: an action shares all of them with
+            // one action, or none.
+            debug_assert!(index == 0 || first.is_some() == sharing.is_some());
+            first = first.or(sharing);
+            let artifact = Artifact::new(
+                exec.clone(),
+                exec.clone(),
+                Some((
+                    first
+                        .clone()
+                        .unwrap_or_else(|| registered.action.id.clone()),
+                    index,
+                )),
+                file.owner.clone(),
+                file.is_directory,
+                registered
+                    .build_info
+                    .as_ref()
+                    .is_some_and(|build_info| build_info.volatile),
+            );
+            verify_declared_file(file, &artifact);
+            register_artifact(artifact_index, file, &artifact);
+            if first.is_none() || predeclared(&exec) {
+                declared.insert((config, exec), artifact);
+            } else {
+                declared.entry((config, exec)).or_insert(artifact);
+            }
+        }
+        shared.push(first.is_some());
+    }
+    Ok(shared)
 }
 
 /// Whether Bazel plants the execroot entry for a source input. The execroot
@@ -11741,7 +11883,7 @@ fn register_output(
 /// the rule's tags that are execution requirements. Starlark actions get
 /// them too (TargetUtils.getFilteredExecutionInfo, :271-301, with
 /// --incompatible_allow_tags_propagation, default true).
-fn rule_execution_info(rule: &Rule) -> BTreeSet<String> {
+pub(crate) fn rule_execution_info(rule: &Rule) -> BTreeSet<String> {
     let tags = match (&rule.native, &rule.custom) {
         (Some(native), _) => native.tags.clone(),
         (None, Some(custom)) => custom.declaration.builtin.target.tags.clone(),
@@ -11806,7 +11948,7 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
 struct RunfilesPlanning<'a> {
     artifact_index: &'a mut BTreeMap<File, Artifact>,
     declared: &'a mut Declared,
-    producers: &'a mut BTreeMap<PathBuf, String>,
+    producers: &'a mut Producers,
     nodes: &'a mut Vec<PlannedAction>,
     source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
     workspace_status: &'a mut Option<WorkspaceStatusPlan>,
@@ -11836,7 +11978,11 @@ impl RunfilesPlanning<'_> {
         file: &File,
     ) -> Result<Artifact, String> {
         let exec = PathBuf::from(&file.path);
-        register_output(self.producers, &exec, &key.label.to_string())?;
+        register_output(
+            self.producers,
+            &exec,
+            &OutputProducer::native(&key.label.to_string()),
+        )?;
         let artifact = Artifact::new(
             exec.clone(),
             exec.clone(),
@@ -12090,7 +12236,7 @@ impl Engine {
         &self,
         plan: &mut Option<WorkspaceStatusPlan>,
         nodes: &mut Vec<PlannedAction>,
-        producers: &mut BTreeMap<PathBuf, String>,
+        producers: &mut Producers,
         #[allow(unused_variables)] client_environment: &std::cell::OnceCell<
             BTreeMap<String, std::ffi::OsString>,
         >,
@@ -12129,8 +12275,9 @@ impl Engine {
             // and bazel-out/volatile-status.txt).
             let stable_path = PathBuf::from("bazel-out/stable-status.txt");
             let volatile_path = PathBuf::from("bazel-out/volatile-status.txt");
-            register_output(producers, &stable_path, owner)?;
-            register_output(producers, &volatile_path, owner)?;
+            let producer = OutputProducer::native(owner);
+            register_output(producers, &stable_path, &producer)?;
+            register_output(producers, &volatile_path, &producer)?;
             let placeholder = |id: &str, output: PathBuf, volatile: bool| -> PlannedAction {
                 PlannedAction {
                     action: Action {
@@ -12205,7 +12352,7 @@ impl Engine {
         artifact_index: &mut BTreeMap<File, Artifact>,
         workspace_status: &mut Option<WorkspaceStatusPlan>,
         nodes: &mut Vec<PlannedAction>,
-        producers: &mut BTreeMap<PathBuf, String>,
+        producers: &mut Producers,
         client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
         status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     ) -> Result<Option<Artifact>, String> {
@@ -12378,26 +12525,33 @@ fn plan_action(
         .collect();
     action::validate_structure(&action)?;
     action.inputs.clear();
-    // Inputs at one execution path must be one File; later occurrences
-    // are dropped. At a shared path, File equality is the equality of
-    // (path text, directory, producer presence, owner): `short_path`
-    // derives from the path, the producer's presence and the owner
-    // (Artifact::compute_file; a workspace status path has one fixed File,
-    // Artifact::workspace_status). The fields are compared, never the
-    // cached File: a staged tool runfile's `exec` is its runfiles-tree
-    // destination (commit_custom_target), not the path its File was
-    // computed from.
-    // Lookups only: dependencies and inputs keep the declaration order.
+    // Inputs at one execution path must be one artifact without its owner
+    // (Artifact.equalsWithoutOwner); later occurrences are dropped. A
+    // source is identified by (path text, directory, owner), a generated
+    // artifact by (path text, directory, producing action and index): two
+    // targets' Artifacts of one shared action's output (crate::shared_actions)
+    // are one input, as in Bazel's spawn input map. The fields are compared,
+    // never the cached File: a staged tool runfile's `exec` is its
+    // runfiles-tree destination (commit_custom_target), not the path its
+    // File was computed from. Lookups only: dependencies and inputs keep the
+    // declaration order.
     let mut first = Vec::with_capacity(inputs.len());
     {
-        type Identity<'a> = (&'a std::ffi::OsStr, bool, bool, &'a str);
+        type Identity<'a> = (&'a std::ffi::OsStr, bool, Option<(&'a str, usize)>, &'a str);
         let mut seen: HashMap<&Path, Identity<'_>> = HashMap::new();
         for artifact in &inputs {
             let identity = (
                 artifact.exec.as_os_str(),
                 artifact.directory,
-                artifact.producer.is_some(),
-                artifact.owner.as_str(),
+                artifact
+                    .producer
+                    .as_ref()
+                    .map(|(id, index)| (id.as_str(), *index)),
+                if artifact.producer.is_some() {
+                    ""
+                } else {
+                    artifact.owner.as_str()
+                },
             );
             match seen.entry(artifact.exec.as_path()) {
                 std::collections::hash_map::Entry::Occupied(previous) => {
@@ -12698,6 +12852,102 @@ mod tests {
         let mut other = artifact.clone();
         other.producer = Some(("//pkg:other#0".into(), 0));
         register_artifact(&mut index, &artifact.file, &other);
+    }
+
+    /// A producer of `outputs` whose action (id `id`) writes `content`,
+    /// owned by `owner` ([`OutputProducer::action`]'s fields).
+    fn writing_producer(
+        owner: &str,
+        id: &str,
+        outputs: &[&str],
+        content: &str,
+    ) -> Arc<OutputProducer> {
+        let action = Action {
+            id: id.to_owned(),
+            outputs: outputs.iter().map(PathBuf::from).collect(),
+            write: Some(crate::action::WriteAction {
+                content: content.as_bytes().to_vec(),
+                executable: false,
+            }),
+            ..Action::default()
+        };
+        let files = outputs
+            .iter()
+            .map(|path| File {
+                path: (*path).to_owned(),
+                short_path: crate::label::generated_short_path(
+                    crate::label::split_generated_root(path).unwrap().1,
+                ),
+                owner: owner.to_owned(),
+                is_source: false,
+                is_directory: false,
+            })
+            .collect::<Vec<_>>();
+        let key = crate::shared_actions::ActionKey::of(
+            &action,
+            &crate::shared_actions::KeyedParts {
+                inputs: &[],
+                outputs: &files,
+                runfiles_trees: &[],
+                execution: crate::shared_actions::KeyedExecution::default(),
+                deferred: false,
+                build_info: false,
+            },
+        );
+        Arc::new(OutputProducer {
+            owner: owner.to_owned(),
+            label: None,
+            action: Some((id.to_owned(), key)),
+        })
+    }
+
+    /// Actions.canBeShared between owners (MapBasedActionGraph): an exact
+    /// path whose producer has an equal key is that producer's action (its
+    /// id is returned, nothing is registered); a different key, a different
+    /// output list or a native producer is Bazel's conflict naming the
+    /// attempted and the previous owner; a path below or above a produced
+    /// one stays an overlap.
+    #[test]
+    fn register_output_shares_equal_actions_and_reports_conflicts() {
+        let x = "bazel-out/k8-fastbuild/bin/p/x";
+        let y = "bazel-out/k8-fastbuild/bin/p/y";
+        let mut producers = Producers::new();
+        let first = writing_producer("//p:a", "//p:a#0", &[x, y], "same");
+        for output in [x, y] {
+            assert_eq!(
+                register_output(&mut producers, Path::new(output), &first),
+                Ok(None)
+            );
+        }
+        let equal = writing_producer("//p:b", "//p:b#3", &[x, y], "same");
+        for output in [x, y] {
+            assert_eq!(
+                register_output(&mut producers, Path::new(output), &equal),
+                Ok(Some("//p:a#0".to_owned()))
+            );
+        }
+        assert!(producers.values().all(|producer| producer.owner == "//p:a"));
+        let conflict = "file 'p/x' is generated by these conflicting actions:\nLabel: //p:c, //p:a";
+        for other in [
+            writing_producer("//p:c", "//p:c#0", &[x, y], "other"),
+            writing_producer("//p:c", "//p:c#0", &[x], "same"),
+            OutputProducer::native("//p:c"),
+        ] {
+            assert_eq!(
+                register_output(&mut producers, Path::new(x), &other),
+                Err(conflict.to_owned())
+            );
+        }
+        let below = writing_producer("//p:d", "//p:d#0", &[], "same");
+        assert_eq!(
+            register_output(&mut producers, Path::new("bazel-out/k8-fastbuild/bin/p/x/z"), &below),
+            Err("overlapping output paths: bazel-out/k8-fastbuild/bin/p/x from //p:a conflicts with bazel-out/k8-fastbuild/bin/p/x/z from //p:d".to_owned())
+        );
+        assert_eq!(
+            register_output(&mut producers, Path::new("bazel-out/k8-fastbuild/bin/p"), &below),
+            Err("overlapping output paths: bazel-out/k8-fastbuild/bin/p from //p:d conflicts with bazel-out/k8-fastbuild/bin/p/x from //p:a".to_owned())
+        );
+        assert_eq!(producers.len(), 2);
     }
 
     /// Review F2 of d2fd11c: a generated File's short path is its

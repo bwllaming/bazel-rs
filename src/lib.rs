@@ -111,6 +111,7 @@ pub mod runfiles;
 pub mod runfiles_tree;
 pub mod sandbox;
 pub mod scheduler;
+mod shared_actions;
 pub mod snapshot;
 pub mod source_links;
 pub mod spawn_lock;

@@ -74,7 +74,8 @@ use allocative::{Allocative, FlameGraphBuilder, Key, Visitor};
 use starlark::values::{FrozenHeapRef, OwnedFrozenValue};
 
 use super::{
-    ActionPlanning, Artifact, ConfiguredNode, ConfiguredNodes, Engine, Plan, RunfilesNodes,
+    ActionPlanning, Artifact, ConfiguredNode, ConfiguredNodes, Engine, OutputProducer, Plan,
+    RunfilesNodes,
 };
 use crate::config_registry::ConfiguredTargetKey;
 use crate::configuration::ConfigId;
@@ -639,6 +640,7 @@ leaf!(
     &'static [u8],
     [u8; 32],
     ConfigId,
+    crate::shared_actions::ActionKey,
     // Heaps are counted by the census / pre-visit, never per handle.
     OwnedFrozenValue,
     FrozenHeapRef,
@@ -777,6 +779,12 @@ fields!(Artifact {
     producer,
     owner,
     file
+});
+// One producer per producing action, shared by its outputs' entries.
+fields!(OutputProducer {
+    owner,
+    label,
+    action
 });
 fields!(crate::aspects::AspectApplicationKey {
     base,

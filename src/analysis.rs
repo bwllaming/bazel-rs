@@ -1750,11 +1750,15 @@ fn analyze_aspect_inner(
             groups: None,
             use_auto_exec_groups: false,
             subrule: None,
+            executions: Arc::from([]),
         },
         runfiles: crate::runfiles::ContextRunfiles {
             default_executable: None,
             ..Default::default()
         },
+        // The base rule's tags (the aspect's action owner is the base
+        // target's rule, crate::engine's aspect commit).
+        propagated_tags: crate::engine::rule_execution_info(rule),
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let ctx = make_aspect_ctx(application, &context, module.heap(), aspect_surface.clone())?;
@@ -2181,6 +2185,7 @@ fn analyze_inner(
             default_executable,
             ..Default::default()
         },
+        propagated_tags: crate::engine::rule_execution_info(rule),
     };
     for output in &rule.outs {
         context.declare(output)?;
@@ -3128,6 +3133,7 @@ r = rule(implementation=impl, attrs={
             subrule: Default::default(),
             runfiles: Default::default(),
             exec_groups: Default::default(),
+            propagated_tags: Default::default(),
         }
     }
 

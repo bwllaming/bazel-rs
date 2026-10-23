@@ -253,9 +253,33 @@ pub struct ActionExecGroups {
     /// (StarlarkSubrule.SubruleContext.maybeOverride*, :464-481), with the
     /// subrule's requested toolchain types.
     pub subrule: Option<Vec<Label>>,
+    /// The target's per-exec-group execution platform and exec properties
+    /// (crate::engine's action execution table, computed before the
+    /// implementation like ExecGroupCollection): the execution part of each
+    /// action's key (crate::shared_actions). Empty where no table was
+    /// computed (aspect applications).
+    pub executions: Arc<[ActionExecution]>,
 }
 
 impl ActionExecGroups {
+    /// The keyed execution of an action of exec group `group`
+    /// (ActionKeyComputer.getKey: the execution platform, null without a
+    /// ToolchainCollection — RuleContext.getExecutionPlatform — and the
+    /// group's exec properties).
+    pub fn keyed_execution(&self, group: &str) -> crate::shared_actions::KeyedExecution<'_> {
+        match self
+            .executions
+            .iter()
+            .find(|execution| execution.exec_group == group)
+        {
+            Some(execution) => crate::shared_actions::KeyedExecution {
+                platform: self.groups.as_ref().map(|_| &execution.platform),
+                properties: &execution.properties,
+            },
+            None => crate::shared_actions::KeyedExecution::default(),
+        }
+    }
+
     fn has(&self, name: &str) -> bool {
         self.groups
             .as_ref()
@@ -631,6 +655,7 @@ mod tests {
             ]),
             use_auto_exec_groups: true,
             subrule: None,
+            executions: Arc::from([]),
         };
         let unbound = ToolchainArgument::Unbound;
         assert_eq!(
@@ -690,6 +715,7 @@ mod tests {
             groups: None,
             use_auto_exec_groups: true,
             subrule: None,
+            executions: Arc::from([]),
         };
         assert!(none.check_toolchain_parameter(None, &unbound).is_err());
         assert_eq!(

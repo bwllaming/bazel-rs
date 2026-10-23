@@ -1,0 +1,131 @@
+load(":defs.bzl", "compile", "consumer", "grouped", "owners", "tool", "writer")
+
+tool(name = "tool")
+
+tool(name = "other_tool")
+
+# rules_pkg's //pkg/private:archive and :helpers shape: two targets
+# precompile the package's __init__.py into one output.
+compile(
+    name = "a",
+    srcs = [
+        "__init__.py",
+        "a.py",
+    ],
+)
+
+compile(
+    name = "b",
+    srcs = [
+        "__init__.py",
+        "b.py",
+    ],
+)
+
+consumer(
+    name = "both",
+    deps = [
+        ":a",
+        ":b",
+    ],
+)
+
+# Differs from :a's __init__ action in one compared part each.
+compile(
+    name = "c_args",
+    srcs = ["__init__.py"],
+    mode = "other",
+)
+
+compile(
+    name = "c_tags",
+    srcs = ["__init__.py"],
+    tags = ["no-remote"],
+)
+
+compile(
+    name = "c_mnemonic",
+    srcs = ["__init__.py"],
+    mnemonic = "OtherCompile",
+)
+
+compile(
+    name = "c_env",
+    srcs = ["__init__.py"],
+    env = {"X": "1"},
+)
+
+compile(
+    name = "c_inputs",
+    srcs = ["__init__.py"],
+    extra_inputs = ["extra.txt"],
+)
+
+compile(
+    name = "c_tool",
+    srcs = ["__init__.py"],
+    tool = ":other_tool",
+)
+
+compile(
+    name = "c_props",
+    srcs = ["__init__.py"],
+    exec_properties = {"key": "value"},
+)
+
+# Tags that are no execution requirements are not keyed.
+compile(
+    name = "c_plain_tags",
+    srcs = ["__init__.py"],
+    tags = ["plain-tag"],
+)
+
+# Writes: one declared file and one output-file target on one path.
+writer(
+    name = "w_declared",
+    path = "w.txt",
+)
+
+writer(
+    name = "w_output",
+    out = "w.txt",
+)
+
+writer(
+    name = "w_other",
+    content = "other content\n",
+    path = "w.txt",
+)
+
+owners(
+    name = "w_owners",
+    srcs = [":w.txt"],
+)
+
+# An output below another target's output.
+writer(
+    name = "p_parent",
+    path = "p",
+)
+
+writer(
+    name = "p_child",
+    path = "p/x",
+)
+
+# Exec groups: the group's name is not keyed, its exec properties are.
+grouped(
+    name = "g_one",
+    group = "g1",
+)
+
+grouped(
+    name = "g_two",
+    group = "g2",
+)
+
+grouped(
+    name = "g_props",
+    exec_properties = {"g1.key": "value"},
+    group = "g1",
+)
