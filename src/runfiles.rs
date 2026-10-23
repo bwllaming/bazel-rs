@@ -1176,16 +1176,23 @@ impl TargetRunfiles {
     }
 
     /// genrule (rules/genrule/GenRuleBase.java:215-235): no default
-    /// runfiles, the outputs as data runfiles; `executable` stays gated.
-    pub fn genrule(outputs: &[File]) -> anyhow::Result<Self> {
+    /// runfiles, the outputs as data runfiles. An `executable = True`
+    /// genrule's single output is its executable, without runfiles support
+    /// (`setRunfilesSupport(null, getExecutable(...))`, :232, 288-298), so
+    /// FilesToRunProvider is the single-executable one.
+    pub fn genrule(outputs: &[File], executable: bool) -> anyhow::Result<Self> {
         let mut data = RunfilesBuilder::default();
         data.add_files_to_build(outputs);
+        let executable = match outputs {
+            [single] if executable => Some(single.clone()),
+            _ => None,
+        };
         Ok(Self {
             provider: Some(RunfilesProvider {
                 default: Runfiles::empty(),
                 data: data.build()?,
             }),
-            files_to_run: Some(FilesToRun::create(outputs, false, None, None)),
+            files_to_run: Some(FilesToRun::create(outputs, false, None, executable)),
             run: RunSettings::default(),
         })
     }
@@ -1868,6 +1875,33 @@ mod tests {
             owner: owner.to_owned(),
             is_source: true,
         }
+    }
+
+    /// GenRuleBase (rules/genrule/GenRuleBase.java:232, 288-298): an
+    /// executable genrule's single output is a SingleExecutableFilesToRunProvider
+    /// (no runfiles support); otherwise the outputs only (paired capture
+    /// tests/fixtures/genrule_executable).
+    #[test]
+    fn executable_genrules_run_their_single_output() {
+        let exe = file("pkg/exe.sh", "//pkg:exe");
+        let executable = TargetRunfiles::genrule(std::slice::from_ref(&exe), true).unwrap();
+        let files_to_run = executable.files_to_run.unwrap();
+        assert_eq!(files_to_run.kind, FilesToRunKind::Single);
+        assert_eq!(files_to_run.executable, Some(exe.clone()));
+        assert!(files_to_run.runfiles().is_none());
+        let plain = TargetRunfiles::genrule(std::slice::from_ref(&exe), false).unwrap();
+        assert_eq!(plain.files_to_run.unwrap().executable, None);
+        // Several outputs never name an executable (the attribute error is
+        // crate::engine's).
+        let two = [exe, file("pkg/b.sh", "//pkg:exe")];
+        assert_eq!(
+            TargetRunfiles::genrule(&two, true)
+                .unwrap()
+                .files_to_run
+                .unwrap()
+                .executable,
+            None
+        );
     }
 
     #[test]

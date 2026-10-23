@@ -1,0 +1,115 @@
+load(":defs.bzl", "probe", "run_tool", "single_file_tool")
+
+package(default_visibility = ["//visibility:public"])
+
+# GenRuleBase: an executable genrule's single output is its executable
+# (FilesToRunProvider without runfiles support).
+genrule(
+    name = "exe",
+    srcs = ["tool.sh"],
+    outs = ["exe.sh"],
+    cmd = "cp $< $@",
+    executable = True,
+)
+
+genrule(
+    name = "plain",
+    srcs = ["tool.sh"],
+    outs = ["plain.sh"],
+    cmd = "cp $< $@",
+)
+
+# Like build_stack_rules_proto's //toolchain:protoc_exe: a select()ed source.
+config_setting(
+    name = "never",
+    values = {"define": "never=1"},
+)
+
+genrule(
+    name = "selected",
+    srcs = select({
+        ":never": ["plain.sh"],
+        "//conditions:default": ["tool.sh"],
+    }),
+    outs = ["selected.exe"],
+    cmd = "cp $< $@",
+    executable = True,
+)
+
+# An executable genrule as a genrule tool.
+genrule(
+    name = "use",
+    outs = ["use.txt"],
+    cmd = "$(location :exe) from-genrule > $@",
+    tools = [":exe"],
+)
+
+genrule(
+    name = "use_execpath",
+    outs = ["use_execpath.txt"],
+    cmd = "echo $(execpath :exe) $(rootpath :exe) > $@",
+    tools = [":exe"],
+)
+
+probe(
+    name = "probe",
+    exe_dep = ":exe",
+    plain_dep = ":plain",
+    tool = ":exe",
+)
+
+# The output file target is executable too.
+probe(
+    name = "probe_output_file",
+    tool = ":selected.exe",
+)
+
+run_tool(
+    name = "run_exe",
+    tool = ":exe",
+)
+
+# attr.label(executable = True) on a genrule without executable = True.
+probe(
+    name = "probe_plain_tool",
+    tool = ":plain",
+)
+
+# Several outputs: an attribute error (with the missing-cmd error).
+genrule(
+    name = "two",
+    outs = [
+        "a.txt",
+        "b.txt",
+    ],
+    cmd = "touch $(OUTS)",
+    executable = True,
+)
+
+genrule(
+    name = "two_without_cmd",
+    outs = [
+        "c.txt",
+        "d.txt",
+    ],
+    executable = True,
+)
+
+# Like build_stack_rules_proto's protoc(name = "precompiled", tool =
+# ":protoc.exe"): an executable genrule's output file in an
+# allow_single_file executable attribute, the genrule itself, and a
+# non-executable genrule's output file.
+single_file_tool(
+    name = "single_file_output",
+    tool = ":selected.exe",
+)
+
+single_file_tool(
+    name = "single_file_rule",
+    tool = ":selected",
+)
+
+single_file_tool(
+    name = "single_file_plain_output",
+    tool = ":plain.sh",
+)

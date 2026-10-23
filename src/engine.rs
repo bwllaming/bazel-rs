@@ -7722,6 +7722,9 @@ impl Engine {
             Target::Rule(rule) => match &rule.custom {
                 Some(custom) if custom.declaration.builtin.kind.test => Runnable::Test,
                 Some(custom) if custom.declaration.builtin.kind.executable => Runnable::Yes,
+                // Rule.isExecutable: the nonconfigurable `executable`
+                // attribute (packages/Rule.java:856-864).
+                None if genrule_is_executable(&rule) => Runnable::Yes,
                 _ => Runnable::No,
             },
         })
@@ -9855,6 +9858,9 @@ impl Engine {
                     ),
                 ));
             }
+            if let Some(error) = genrule_executable_error(rule, outputs.len()) {
+                return Err(error);
+            }
             for (name, path) in rule.outs.iter().zip(&outputs) {
                 let output = rule.label.with_name(name)?;
                 location_map.add(
@@ -10035,6 +10041,7 @@ impl Engine {
                 Arc::new(
                     crate::runfiles::TargetRunfiles::genrule(
                         &artifacts.iter().map(Artifact::file).collect::<Vec<_>>(),
+                        genrule_is_executable(rule),
                     )
                     .map_err(|error| format!("{}: {error:#}", rule.label))?,
                 ),
@@ -11317,6 +11324,36 @@ fn located(location: Option<&str>, message: String) -> String {
         Some(location) => format!("{location}: {message}"),
         None => message,
     }
+}
+
+/// A genrule with `executable = True` (a nonconfigurable boolean).
+fn genrule_is_executable(rule: &Rule) -> bool {
+    matches!(rule.kind, RuleKind::Genrule)
+        && rule.native.as_deref().is_some_and(|native| {
+            matches!(
+                native.attrs.get("executable"),
+                Some(crate::custom_rule::AttrValue::Bool(true))
+            )
+        })
+}
+
+/// GenRuleBase.create (rules/genrule/GenRuleBase.java:78-86): an executable
+/// genrule with several outputs is an attribute error; the missing-`cmd`
+/// error (:262-284) is reported with it.
+fn genrule_executable_error(rule: &Rule, outputs: usize) -> Option<String> {
+    if !genrule_is_executable(rule) || outputs <= 1 {
+        return None;
+    }
+    let shown = crate::rule_declarations::canonical_form(&rule.label);
+    let mut errors = format!(
+        "in executable attribute of genrule rule {shown}: if genrules produce executables, they are allowed only one output. If you need the executable=1 argument, then you should split this genrule into genrules producing single outputs"
+    );
+    if rule.cmd.is_none() {
+        errors.push_str(&format!(
+            "\nin cmd attribute of genrule rule {shown}: missing value for `cmd` attribute, you can also set `cmd_ps` or `cmd_bat` on Windows and `cmd_bash` on other platforms."
+        ));
+    }
+    Some(located_lines(rule.location.as_deref(), &errors))
 }
 
 /// RuleContextConstraintSemantics.validateAttributes

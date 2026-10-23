@@ -190,11 +190,30 @@ match the target platform (docs/PLATFORMS.md).
   `toolchains` with Make-variable expansion, docs/MAKE_VARIABLES.md;
   metadata such as `tags`, `deprecation`,
   `licenses`, `features`, `message`, `local`, `output_to_bindir`,
-  `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`). Any other non-empty
-  value (`data`, `cmd_bash`,
-  `executable=True`, `stamp` other than 0, `target_compatible_with`,
+  `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`; genrule
+  `executable = True`, below). Any other non-empty
+  value (`data`, `cmd_bash`, `stamp` other than 0, `target_compatible_with`,
   `package_metadata`, `aspect_hints`, `output_group`, ...) is recorded and
   analysis fails explicitly listing it.
+* `genrule(executable = True)` (GenRuleBase.java:78-86, 215-235, 288-298):
+  the single output is the target's executable, a FilesToRunProvider
+  without runfiles support — `dep[DefaultInfo].files_to_run.executable`,
+  `ctx.executable` of an `attr.label(executable = True)`, genrule `tools`,
+  `$(location)`/`$(execpath)`, Starlark action tools — and `bazel run` runs
+  it without a runfiles tree (Rule.isExecutable, RunCommand.java:1191-1207).
+  Several outputs are Bazel's attribute error `in executable attribute of
+  genrule rule L: if genrules produce executables, they are allowed only one
+  output. ...` (with the missing-`cmd` error when `cmd` is missing too).
+  Output permissions are unchanged (0555 like every output). In an
+  `allow_single_file` executable attribute the genrule, its output file and
+  a non-executable genrule's output file are all their single file
+  (FileConfiguredTarget.createFilesToRunProvider). Paired capture
+  `tests/fixtures/genrule_executable` (19 genuine 9.3.0 cases: 18 MATCH, one
+  declared pre-existing divergence — a non-executable prerequisite of a
+  Starlark `executable` attribute is reported as `analysis of L: in tool
+  attribute of ...` without the rule location and without Bazel's trailing
+  empty `in KIND rule L: ` error), replayed by `tests/genrule_executable.rs`.
+  Motivation: build_stack_rules_proto's `//toolchain:protoc_exe`.
 * genrule pass-through: `local`, `deprecation`, `message`, `exec_properties`
   and every `tags` value (including execution-requirement tags such as
   `no-cache`, `no-remote`, `no-sandbox`, `requires-network`, `local`) are

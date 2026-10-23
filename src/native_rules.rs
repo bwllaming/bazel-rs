@@ -1760,6 +1760,9 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
         let neutral_value = match (key.as_str(), value) {
             ("executable", AttrValue::Bool(false))
             | ("heuristic_label_expansion", AttrValue::Bool(false)) => true,
+            // An executable genrule's single output is its executable
+            // (GenRuleBase.java:78-86, 288-298; crate::engine).
+            ("executable", AttrValue::Bool(true)) => target.rule_class == "genrule",
             // stamp=0 is the genrule default (BazelGenRuleRule.java:47).
             ("stamp", AttrValue::Int(0)) => true,
             ("cmd_bash", _) => false,
