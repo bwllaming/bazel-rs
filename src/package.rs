@@ -2072,6 +2072,11 @@ pub fn evaluate(root: &Path, package: &str) -> Result<Package, String> {
 pub(crate) struct LoadUnit {
     pub(crate) result: Result<Package, String>,
     pub(crate) prints: Vec<crate::loading::LoadPrintEvent>,
+    /// The repositories whose roots the load obtained on a worker before
+    /// the sequential engine had them (crate::repository::UnitRoots): the
+    /// coordinator's commit makes them count as materialized (W6 review
+    /// F2).
+    pub(crate) roots: Vec<String>,
 }
 
 pub fn evaluate_in(
@@ -2099,10 +2104,12 @@ pub(crate) fn evaluate_load_unit(
     package: &PackageId,
 ) -> LoadUnit {
     let prints = crate::loading::LoadPrints::default();
+    let roots = crate::repository::UnitRoots::record();
     let result = evaluate_in_with_prints(repositories, package, &prints);
     LoadUnit {
         result,
         prints: prints.take(),
+        roots: roots.finish(),
     }
 }
 

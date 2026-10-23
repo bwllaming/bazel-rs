@@ -6,6 +6,7 @@
 //! by the caller and must uniquely identify repository-set runtimes.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
@@ -161,6 +162,12 @@ pub struct DemandSlot<T> {
     /// (`probed`) instead of repeating the same verification.
     probing: Mutex<bool>,
     probed: Condvar,
+    /// Whether the sequential engine has obtained the value: a thread
+    /// outside no-demand mode demanded it, or the coordinator committed a
+    /// load unit that did ([`Self::note_sequential`]). A value a worker's
+    /// probe published stays invisible to [`Self::sequential`] until then
+    /// (W6 review F2).
+    sequential: AtomicBool,
 }
 
 /// How a top-level prober's claim on a slot's probe ended
@@ -218,7 +225,37 @@ impl<T> DemandSlot<T> {
             running: Mutex::new(None),
             probing: Mutex::new(false),
             probed: Condvar::new(),
+            sequential: AtomicBool::new(false),
         }
+    }
+
+    /// The successfully computed value once the sequential engine has
+    /// obtained it (see the `sequential` field): what a decision that must
+    /// not depend on worker timing may treat as materialized.
+    pub fn sequential(&self) -> Option<&T> {
+        if self.sequential.load(Ordering::Relaxed) {
+            self.ready()
+        } else {
+            None
+        }
+    }
+
+    /// Record that the sequential engine obtained the value: the
+    /// coordinator committed a load unit that demanded it on a worker.
+    pub fn note_sequential(&self) {
+        if !self.sequential.load(Ordering::Relaxed) {
+            self.sequential.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// [`Self::note_sequential`] for a value obtained on this thread,
+    /// unless it runs in no-demand mode (a worker: its unit's commit
+    /// notes it).
+    fn note_demanded<'a>(&self, result: Result<&'a T, String>) -> Result<&'a T, String> {
+        if result.is_ok() && !no_demand_active() {
+            self.note_sequential();
+        }
+        result
     }
 
     /// Claim this slot's probe, or wait (at most [`PROBE_WAIT`]) for the
@@ -263,7 +300,7 @@ impl<T> DemandSlot<T> {
         init: impl FnOnce() -> Result<T, String>,
     ) -> Result<&T, String> {
         if let Some(result) = self.ready.get() {
-            return result.as_ref().map_err(Clone::clone);
+            return self.note_demanded(result.as_ref().map_err(Clone::clone));
         }
         if no_demand_active() {
             // Workers never fetch (review §1.2): the sentinel aborts the
@@ -272,7 +309,7 @@ impl<T> DemandSlot<T> {
                 "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
             ));
         }
-        self.evaluate(runtime_id, key, init)
+        self.note_demanded(self.evaluate(runtime_id, key, init))
     }
 
     /// Reuse-only evaluation (Step C): under the no-demand guard, try
@@ -298,10 +335,10 @@ impl<T> DemandSlot<T> {
         init: impl FnOnce() -> Result<T, String>,
     ) -> Result<&T, String> {
         if let Some(result) = self.ready.get() {
-            return result.as_ref().map_err(Clone::clone);
+            return self.note_demanded(result.as_ref().map_err(Clone::clone));
         }
         if !no_demand_active() {
-            return self.evaluate(runtime_id, key, init);
+            return self.note_demanded(self.evaluate(runtime_id, key, init));
         }
         if !reuse_only_active() {
             return Err(format!(
@@ -957,6 +994,64 @@ mod tests {
         // The owner loses the publish race and serves the nested value.
         assert_eq!(owner.join().unwrap(), Ok(9));
         assert_eq!(PROBE_DEPTH.with(std::cell::Cell::get), 0);
+    }
+
+    /// W6 review F2: a value a worker's probe published is the sequential
+    /// engine's only once a thread outside no-demand mode demands it, or
+    /// the coordinator notes it at a unit's commit; a worker's demand of a
+    /// ready value never marks it.
+    #[test]
+    fn probed_values_are_sequential_only_once_demanded_or_noted() {
+        let demanded = DemandSlot::new();
+        {
+            let _guard = no_demand();
+            let _reuse = reuse_only();
+            assert_eq!(
+                demanded.get_or_probe(7, "repository:x", || Ok(Some(5)), || Ok(1)),
+                Ok(&5)
+            );
+            assert_eq!(
+                demanded.get_or_try_init(7, "repository:x", || Ok(1)),
+                Ok(&5)
+            );
+        }
+        assert_eq!(demanded.ready(), Some(&5));
+        assert_eq!(demanded.sequential(), None);
+        assert_eq!(
+            demanded.get_or_probe(7, "repository:x", || Ok(Some(9)), || Ok(1)),
+            Ok(&5)
+        );
+        assert_eq!(demanded.sequential(), Some(&5));
+
+        let committed = DemandSlot::new();
+        {
+            let _guard = no_demand();
+            let _reuse = reuse_only();
+            assert_eq!(
+                committed.get_or_probe(7, "repository:y", || Ok(Some(6)), || Ok(1)),
+                Ok(&6)
+            );
+        }
+        assert_eq!(committed.sequential(), None);
+        committed.note_sequential();
+        assert_eq!(committed.sequential(), Some(&6));
+
+        // Evaluated outside no-demand mode: sequential at once; a failure
+        // never is.
+        let evaluated = DemandSlot::new();
+        assert_eq!(
+            evaluated.get_or_try_init(7, "repository:z", || Ok(3)),
+            Ok(&3)
+        );
+        assert_eq!(evaluated.sequential(), Some(&3));
+        let failed = DemandSlot::<usize>::new();
+        assert!(
+            failed
+                .get_or_try_init(7, "repository:w", || Err("no".into()))
+                .is_err()
+        );
+        failed.note_sequential();
+        assert_eq!(failed.sequential(), None);
     }
 
     #[test]

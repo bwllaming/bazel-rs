@@ -24,6 +24,66 @@ pub(crate) const BAZEL_TOOLS_UNAVAILABLE: &str = "the built-in repository @@baze
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
+thread_local! {
+    /// The direct and extension-generated repositories whose roots the
+    /// load unit evaluating on this no-demand thread (a loading worker)
+    /// obtained before the sequential engine had them ([`UnitRoots`]).
+    static UNIT_ROOTS: std::cell::RefCell<Option<BTreeSet<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Records, while it lives, the direct and extension-generated
+/// repositories whose roots a load unit obtains on a worker before the
+/// sequential engine has them — published by the worker's own warm-reuse
+/// probe or by another worker's (W6 review F2). They count as
+/// materialized for order-dependent decisions only once the coordinator
+/// commits the unit ([`RepositorySet::note_committed_roots`]): the
+/// sequential engine demands them at that load.
+pub(crate) struct UnitRoots {
+    previous: Option<Option<BTreeSet<String>>>,
+}
+
+impl UnitRoots {
+    pub(crate) fn record() -> Self {
+        let previous = UNIT_ROOTS.with(|roots| roots.replace(Some(BTreeSet::new())));
+        Self {
+            previous: Some(previous),
+        }
+    }
+
+    /// The recorded repositories, in name order.
+    pub(crate) fn finish(mut self) -> Vec<String> {
+        let previous = self.previous.take().flatten();
+        UNIT_ROOTS
+            .with(|roots| roots.replace(previous))
+            .map(|roots| roots.into_iter().collect())
+            .unwrap_or_default()
+    }
+
+    /// Note `canonical`'s root, just obtained on this thread, unless the
+    /// sequential engine already has it.
+    fn note<T>(canonical: &str, slot: &DemandSlot<T>) {
+        if !crate::repository_demand::no_demand_active() || slot.sequential().is_some() {
+            return;
+        }
+        UNIT_ROOTS.with(|roots| {
+            if let Some(roots) = roots.borrow_mut().as_mut()
+                && !roots.contains(canonical)
+            {
+                roots.insert(canonical.to_owned());
+            }
+        });
+    }
+}
+
+impl Drop for UnitRoots {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            UNIT_ROOTS.with(|roots| *roots.borrow_mut() = previous);
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RepositorySet {
     state: Arc<RepositoryState>,
@@ -1093,8 +1153,35 @@ impl RepositorySet {
     /// (the current invocation): main, local_path modules of a resolved graph,
     /// published registry/Git/built-in trees and generated repositories whose
     /// demand completed. Never resolves, fetches or executes anything; stale
-    /// trees and private stages are never listed.
+    /// trees and private stages are never listed. Includes the roots a
+    /// loading worker's warm-reuse probe published (published store trees,
+    /// which anchor links in any order anyway; [`Self::link_policy`]).
     pub fn materialized_roots(&self) -> Vec<(String, PathBuf)> {
+        self.roots_materialized(false)
+    }
+
+    /// [`Self::materialized_roots`] as the sequential engine sees them (W6
+    /// review F2): a direct or extension-generated repository's root counts
+    /// only once a thread outside no-demand mode demanded it or the
+    /// coordinator committed a load unit that obtained it on a worker
+    /// ([`UnitRoots`]). Registry, Git and built-in roots are only ever
+    /// materialized outside no-demand mode. So a key formed from these
+    /// roots ([`Self::friendly_repository`]) never depends on how far phase-1
+    /// prefetch workers got.
+    fn sequential_roots(&self) -> Vec<(String, PathBuf)> {
+        self.roots_materialized(true)
+    }
+
+    /// The roots of [`Self::materialized_roots`] (`sequential` false) or of
+    /// [`Self::sequential_roots`].
+    fn roots_materialized(&self, sequential: bool) -> Vec<(String, PathBuf)> {
+        let ready = |slot: &DemandSlot<PathBuf>| {
+            if sequential {
+                slot.sequential().cloned()
+            } else {
+                slot.ready().cloned()
+            }
+        };
         let mut roots = vec![(String::new(), self.state.root.clone())];
         if let Some(pinned) = self.pinned_tables() {
             // Pinned: every recorded root (published trees anchor links in
@@ -1123,21 +1210,53 @@ impl RepositorySet {
         }
         if let Some(Ok(runtime)) = self.state.direct.get() {
             for (name, slot) in &runtime.roots {
-                if let Some(root) = slot.ready() {
-                    roots.push((name.clone(), root.clone()));
+                if let Some(root) = ready(slot) {
+                    roots.push((name.clone(), root));
                 }
             }
+            // Groups are prepared outside no-demand mode only.
             for slot in runtime.ordinary.values() {
                 if let Some(prepared) = slot.ready() {
                     for repository in prepared.repositories.values() {
-                        if let Some(root) = repository.root.ready() {
-                            roots.push((repository.canonical_name.clone(), root.clone()));
+                        if let Some(root) = ready(&repository.root) {
+                            roots.push((repository.canonical_name.clone(), root));
                         }
                     }
                 }
             }
         }
         roots
+    }
+
+    /// The coordinator committed a load unit that obtained these roots on
+    /// a worker ([`UnitRoots`]): the sequential engine demands them at that
+    /// load, so from now on they count for [`Self::sequential_roots`].
+    pub(crate) fn note_committed_roots(&self, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+        let Some(Ok(runtime)) = self.state.direct.get() else {
+            return;
+        };
+        for name in names {
+            if let Some(slot) = runtime.roots.get(name) {
+                slot.note_sequential();
+                continue;
+            }
+            let Some((prefix, generated)) = name.rsplit_once('+') else {
+                continue;
+            };
+            if let Some(repository) = runtime
+                .catalog
+                .ordinary_routes
+                .get(prefix)
+                .and_then(|id| runtime.ordinary.get(id))
+                .and_then(DemandSlot::ready)
+                .and_then(|prepared| prepared.repositories.get(generated))
+            {
+                repository.root.note_sequential();
+            }
+        }
     }
 
     /// The repository of a host path for RepoCacheFriendlyPath
@@ -1161,7 +1280,9 @@ impl RepositorySet {
     /// never an `@@//<cache>/...` key, which the lockfile check treats as
     /// outdated (`LockInputProbe`).
     pub(crate) fn friendly_repository(&self, path: &Path) -> Option<(String, PathBuf)> {
-        let roots = self.materialized_roots();
+        // The sequential engine's roots (W6 review F2): a root a phase-1
+        // prefetch worker happened to probe first must not change a key.
+        let roots = self.sequential_roots();
         let found = {
             let mut memo = self
                 .state
@@ -1845,6 +1966,7 @@ impl RepositorySet {
                 .map(|(root, _)| root)
             },
         )
+        .inspect(|_| UnitRoots::note(canonical, slot))
         .map(PathBuf::as_path)
     }
 
@@ -2354,6 +2476,7 @@ impl RepositorySet {
                     .map(|(root, _)| root)
                 },
             )
+            .inspect(|_| UnitRoots::note(canonical, &repository.root))
             .map(PathBuf::as_path)
     }
 

@@ -673,6 +673,26 @@ there first:
   whose action bytes now match genuine's (`tests/phase1_prefetch.rs`,
   `aspect_bzl_prints_once_in_the_build_char_model_whoever_loads_it_first`;
   genuine receipt `tests/fixtures/phase1_prefetch/aspect_reference_receipt.json`).
+- **Recorded-input keys** (`RepositorySet::friendly_repository`; review F2
+  of d707764). A repository rule or module extension (coordinator-only
+  work) records a host path it reads or watches as `@@NAME//path` when the
+  path lies under the materialized root of NAME. Otherwise it records the
+  absolute path; for a path in the repository store, update mode then
+  cannot write the extension's lockfile entry. A worker's warm-reuse probe
+  publishes the root of a repository the sequential engine may not have
+  demanded yet, so the key depended on how far the workers had got: an
+  extension reading a file of a warm `@data` before the build demanded
+  `@data` failed at threads 1 and recorded `@@+data_repo+data//file.txt`
+  at threads 8. Keys now use the roots as the sequential engine sees them
+  (`RepositorySet::sequential_roots`, `DemandSlot::sequential`). A direct
+  or extension-generated root counts once a thread outside no-demand mode
+  demanded it, or once the coordinator committed a load unit that obtained
+  it on a worker (`LoadUnit::roots`, recorded by `repository::UnitRoots`) —
+  the point where the sequential engine demands it. Registry, Git and
+  built-in roots are only ever materialized outside no-demand mode. The
+  link policy keeps every published root: they are store trees, which
+  anchor links in any order anyway (`tests/phase1_prefetch.rs`,
+  `recorded_input_keys_name_only_roots_the_coordinator_has`).
 
 **What is queued** (target-directed, like a loading-phase transitive
 closure; hints only — a wrong guess costs a wasted load, never output):
@@ -752,8 +772,10 @@ failing chains, registry-module toolchain packages that need the
 sentinel retry (cold, then warm), and a top-level aspect whose `.bzl` a
 worker evaluates first for a package reached only through a select()
 branch not taken (with and without the build committing that package
-later) — byte-identical stdout/stderr/exit at threads 1/2/8/32 and 8/32
-with jitter; P2's `tests/parallel_loading.rs` unchanged.
+later), and a module extension that reads a file of a repository a
+worker probed warm, before and after the build demands that repository —
+byte-identical stdout/stderr/exit at threads 1/2/8/32 and 8/32 with
+jitter; P2's `tests/parallel_loading.rs` unchanged.
 
 ### Definition `.bzl` modules evaluated once per invocation
 

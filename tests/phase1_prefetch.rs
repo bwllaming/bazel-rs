@@ -71,7 +71,18 @@ fn stderr(output: &Output) -> String {
 /// jitter: exit code, stdout and stderr byte-identical. Returns the
 /// reference run.
 fn assert_identical_across_threads(ws: &Workspace, args: &[&str]) -> Output {
+    assert_identical_across_threads_after(ws, args, || {})
+}
+
+/// [`assert_identical_across_threads`], calling `before` ahead of every
+/// run.
+fn assert_identical_across_threads_after(
+    ws: &Workspace,
+    args: &[&str],
+    before: impl Fn(),
+) -> Output {
     let run = |threads: usize, jitter: u64| {
+        before();
         let jitter_text = jitter.to_string();
         let env: Vec<(&str, &str)> = if jitter > 0 {
             vec![("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
@@ -427,6 +438,120 @@ fn aspect_bzl_prints_once_in_the_build_char_model_whoever_loads_it_first() {
             genuine["output_bytes"].as_str().unwrap(),
             "{variant}: {path}"
         );
+    }
+}
+
+/// The recorded-input workspace of W6 review F2: `@early` and `@data` are
+/// two repositories of one `use_repo_rule` group; the module extension
+/// that generates `@from_ext` reads the host path `$DATA_PATH` (a file of
+/// `@data`'s store tree) without demanding `@data`. `//app:app` names
+/// `@data` and `@from_ext` — `@data` first with `data_first` — after
+/// many targets that keep the coordinator analyzing while a worker probes
+/// the warm `@data` (its group is prepared by the `@early` pattern).
+fn recorded_input_workspace(data_first: bool) -> Workspace {
+    let ws = Workspace::new(
+        "module(name = 'main')\ndata_repo = use_repo_rule('//:data.bzl', 'data_repo')\ndata_repo(name = 'early')\ndata_repo(name = 'data')\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'from_ext')\n",
+    );
+    ws.file("BUILD.bazel", "");
+    ws.file(
+        "data.bzl",
+        "def _data_repo(ctx):\n    ctx.file('BUILD.bazel', 'filegroup(name = \"files\", srcs = [\"file.txt\"], visibility = [\"//visibility:public\"])\\n')\n    ctx.file('file.txt', 'data\\n')\n\ndata_repo = repository_rule(_data_repo)\n",
+    );
+    ws.file(
+        "ext.bzl",
+        "def _from_ext(ctx):\n    ctx.file('BUILD.bazel', 'filegroup(name = \"files\", visibility = [\"//visibility:public\"])\\n')\n\nfrom_ext = repository_rule(_from_ext)\n\ndef _ext(module_ctx):\n    path = module_ctx.getenv('DATA_PATH')\n    if path:\n        module_ctx.read(path)\n    from_ext(name = 'from_ext')\n\next = module_extension(_ext)\n",
+    );
+    ws.file(
+        "app/rules.bzl",
+        "def _impl(ctx):\n    return [DefaultInfo()]\nr = rule(implementation = _impl, attrs = {'deps': attr.label_list(allow_files = True)})\n",
+    );
+    let many: String = (0..1500)
+        .map(|i| format!("r(name = 'f{i}', visibility = ['//visibility:public'])\n"))
+        .collect();
+    ws.file(
+        "many/BUILD.bazel",
+        &format!("load('//app:rules.bzl', 'r')\n{many}"),
+    );
+    let mut deps: Vec<String> = (0..1500).map(|i| format!("'//many:f{i}'")).collect();
+    deps.push("'@from_ext//:files'".to_owned());
+    if data_first {
+        deps.insert(0, "'@data//:files'".to_owned());
+    } else {
+        deps.push("'@data//:files'".to_owned());
+    }
+    ws.file(
+        "app/BUILD.bazel",
+        &format!(
+            "load(':rules.bzl', 'r')\nr(name = 'app', deps = [{}])\n",
+            deps.join(", ")
+        ),
+    );
+    ws
+}
+
+/// W6 review F2: a recorded input's key named a repository whose root a
+/// phase-1 prefetch worker's warm-reuse probe had published. The module
+/// extension reads a file of `@data`'s store tree; the sequential engine
+/// has not demanded `@data` yet when the extension runs (`@from_ext`
+/// comes first), so the path is in no known repository and update mode
+/// cannot write the extension's lockfile entry. At threads 8 and 32 a
+/// worker had usually probed `@data` by then: the key became
+/// `@@+data_repo+data//file.txt` and the build succeeded. A root now
+/// counts for keys only once the coordinator demanded it or committed a
+/// unit that did: the sequential outcome at every thread count — the
+/// failure, and with `@data` demanded first the `@@+data_repo+data//` key
+/// (the worker's unit committed before the extension runs).
+#[test]
+fn recorded_input_keys_name_only_roots_the_coordinator_has() {
+    for data_first in [false, true] {
+        let ws = recorded_input_workspace(data_first);
+        // Publish @early and @data (warm for the workers' probes).
+        let publish = ws.run_env(
+            &[],
+            &[
+                "build",
+                "--loading_phase_threads=1",
+                "@early//:files",
+                "@data//:files",
+            ],
+        );
+        assert!(publish.status.success(), "{}", stderr(&publish));
+        let stdout = String::from_utf8_lossy(&publish.stdout).into_owned();
+        let data = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("@@+data_repo+data//:files\t"))
+            .unwrap_or_else(|| panic!("{stdout}"));
+        let data = fs::canonicalize(data).unwrap();
+        assert_eq!(fs::read_to_string(&data).unwrap(), "data\n");
+        let repo_env = format!("--repo_env=DATA_PATH={}", data.display());
+        let args = [
+            repo_env.as_str(),
+            "--nobuild",
+            "@early//:files",
+            "//app:app",
+        ];
+        let lockfile = ws.0.join("MODULE.bazel.lock");
+        let reference = assert_identical_across_threads_after(&ws, &args, || {
+            let _ = fs::remove_file(&lockfile);
+        });
+        let text = stderr(&reference);
+        if data_first {
+            assert!(reference.status.success(), "{text}");
+            let lock = fs::read_to_string(&lockfile).unwrap();
+            assert!(
+                lock.contains("\"FILE:@@+data_repo+data//file.txt "),
+                "{lock}"
+            );
+        } else {
+            assert_eq!(reference.status.code(), Some(1), "{text}");
+            assert!(
+                text.contains(&format!(
+                    "module extension @@//:ext.bzl%ext: cannot write its MODULE.bazel.lock entry: the module extension watched {}, which is in no known repository (use --lockfile_mode=off)",
+                    data.display()
+                )),
+                "{text}"
+            );
+        }
     }
 }
 

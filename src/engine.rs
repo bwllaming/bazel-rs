@@ -2033,6 +2033,16 @@ impl Engine {
         package: &PackageId,
         unit: package::LoadUnit,
     ) -> Result<(), String> {
+        // The roots this load obtained on a worker count as materialized
+        // from its commit on, as at the sequential engine's load (W6
+        // review F2); an aborted unit's are the inline re-run's to note.
+        if !unit
+            .result
+            .as_ref()
+            .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error))
+        {
+            self.repositories.note_committed_roots(&unit.roots);
+        }
         let (rules, prints) = match unit.result {
             Ok(rules) => (rules, unit.prints),
             Err(error) => {
@@ -2052,6 +2062,7 @@ impl Engine {
                         .collect();
                     self.emit_load_prints(module_events);
                     let retried = self.load_package_attempt(package);
+                    self.repositories.note_committed_roots(&retried.roots);
                     return match retried.result {
                         Ok(rules) => {
                             self.emit_load_prints(retried.prints);
