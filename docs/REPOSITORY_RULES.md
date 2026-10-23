@@ -280,19 +280,47 @@ re-runs, once:
   trees (743 MB); 344 s against 317 s for a settled warm run. The superseded
   trees stay on disk: the store has no garbage collection yet (removing the
   cache directory reclaims them, at the cost of a cold run).
-* every module extension whose MODULE.bazel.lock or hidden-lockfile entry
-  keys a file by a store path — `@@//bazel-rs-out/repositories/...` with the
-  cache inside the workspace, absolute otherwise, as bazel-rs recorded them
-  before i20. Such a key is outdated (`is a path into the native repository
-  store (recorded by an older bazel-rs)`), so the extension re-evaluates once
-  and records `@@NAME//path` keys, Bazel's own (EXTENSION_CTX_SURFACE.md).
-  ~/code's hidden lockfile (`<cache-dir>/hidden-lockfiles/<sha256 of the
-  workspace path>/MODULE.bazel.lock`) holds 11 such keys — go_deps 7, go_sdk
-  1, pip 3 — so those three extensions re-evaluate once.
+* in the default `--lockfile_mode=update`, every module extension whose
+  MODULE.bazel.lock or hidden-lockfile entry keys a file by a store path,
+  `@@//bazel-rs-out/repositories/...`: what bazel-rs recorded before i20
+  with the cache inside the workspace (the default layout). Such a key is
+  outdated (`is a path into the native repository store (recorded by an
+  older bazel-rs)`), so the extension re-evaluates once and records
+  `@@NAME//path` keys, Bazel's own (EXTENSION_CTX_SURFACE.md). ~/code's
+  hidden lockfile (`<cache-dir>/hidden-lockfiles/<sha256 of the workspace
+  path>/MODULE.bazel.lock`) holds 11 such keys — go_deps 7, go_sdk 1, pip 3
+  — so those three extensions re-evaluate once; its MODULE.bazel.lock holds
+  none. With the cache outside the workspace the pre-i20 keys were already
+  Bazel's `@@NAME//path`, and no bazel-rs has written an absolute key into a
+  lockfile (a path in no repository fails the write, EXTENSION_CTX_SURFACE.md),
+  so absolute store keys are checked only defensively.
 
-After that a warm invocation re-runs only `local = True` repositories, which
-never reuse a publication (below; 45 on that ~/code target set, ~0.07 s
-together).
+"Once" holds only in a mode that writes lockfiles. `--lockfile_mode=error`
+writes none, hidden or not (as in Bazel, BazelLockFileModule.java:53-54), so
+it never migrates store keys:
+
+* a non-reproducible extension's MODULE.bazel.lock entry with a store key
+  fails the command, exit 1 (e.g. `MODULE.bazel.lock is no longer up-to-date
+  because an input to the extension '@@//:defs.bzl%ext' changed:
+  @@//bazel-rs-out/repositories/direct/trees/<id>/file.txt is a path into
+  the native repository store (recorded by an older bazel-rs). Please run
+  ...`);
+* a reproducible extension's hidden-lockfile entry (~/code's go_deps, go_sdk
+  and pip) re-evaluates on every run, until one update-mode run writes the
+  new keys.
+
+**After upgrading, run one command in update mode (the default) before any
+`--lockfile_mode=error` run**, and commit MODULE.bazel.lock if that run
+rewrote it: a CI that checks the lockfile in error mode fails until then.
+Tests (tests/repo_cache_friendly_paths.rs):
+`store_keys_in_the_lockfile_re_evaluate_the_extension_once` (error mode
+first, then update mode) and
+`store_keys_in_the_hidden_lockfile_re_evaluate_on_every_error_mode_run`; both
+behaviours were also reproduced from lockfiles the pre-i20 binary wrote.
+
+After the first update-mode run a warm invocation re-runs only `local = True`
+repositories, which never reuse a publication (below; 45 on that ~/code target
+set, ~0.07 s together).
 
 Switching binaries on one cache costs a re-run every time. A pre-i20 binary
 trusts only version-1 probes, so it re-executes every repository the i20 binary

@@ -57,6 +57,16 @@ struct WatchedProbe {
 /// and paths into other repositories as host paths ([`resolve_v1`]); it is
 /// still revalidated as written, except that a probe into the repository
 /// store is never trusted ([`unchanged`]).
+///
+/// Any change to the probe bytes — a field, a path spelling, a state
+/// encoding, what a probe covers — must bump `version`. Binaries sharing a
+/// cache rely on it in both directions: an older binary never trusts a
+/// version it does not know ([`unchanged`] answers `Ok(false)`, so it
+/// executes the rule) and never republishes over a newer version
+/// (`repository_store::upgrades_recorded`), while this binary upgrades the
+/// probes of an older version once. Changed bytes under an unchanged
+/// version would be validated by the wrong rules, and each binary would
+/// replace the other's probes on every switch.
 #[derive(Serialize, Deserialize)]
 struct RecordedInputs {
     version: u8,
@@ -493,4 +503,43 @@ fn safe_child(root: &Path, relative: &str) -> Option<PathBuf> {
         return None;
     }
     Some(root.join(relative))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Keep-but-never-trust (review i20): probes of a version this binary
+    /// does not know — a newer binary's — never validate, so the rule
+    /// executes, while `repository_store::upgrades_recorded` keeps them as
+    /// written (`newer_recorded_probes_are_never_replaced`). The same bytes
+    /// as version 2 validate (no probe, or a probe of an unchanged file):
+    /// the version alone decides. Bytes this binary cannot parse at all (a
+    /// version beyond `u8`, a format that is not JSON) are never trusted
+    /// either: an error, which `repository_store::try_reuse` takes as a
+    /// change.
+    #[test]
+    fn probes_of_a_newer_version_are_never_trusted() {
+        let workspace = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        std::fs::write(workspace.path().join("ws.txt"), "workspace file\n").unwrap();
+        let repositories = RepositorySet::new(workspace.path().to_path_buf());
+        let tree = workspace.path().join("tree");
+        let unchanged =
+            |recorded: &str| unchanged(&repositories, workspace.path(), &tree, recorded.as_bytes());
+        let file = format!(
+            r#""files":[{{"path":"@@//ws.txt","kind":"file","state":"file:{}"}}]"#,
+            sha256(b"workspace file\n")
+        );
+        assert_eq!(unchanged(r#"{"version":2}"#), Ok(true));
+        assert_eq!(unchanged(&format!(r#"{{"version":2,{file}}}"#)), Ok(true));
+        assert_eq!(unchanged(r#"{"version":3}"#), Ok(false));
+        assert_eq!(unchanged(&format!(r#"{{"version":3,{file}}}"#)), Ok(false));
+        assert_eq!(
+            unchanged(r#"{"version":3,"probes":["a newer spelling"]}"#),
+            Ok(false)
+        );
+        for unreadable in [r#"{"version":256}"#, "\0a binary probe format"] {
+            assert_ne!(unchanged(unreadable), Ok(true), "{unreadable:?}");
+        }
+    }
 }

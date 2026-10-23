@@ -562,7 +562,12 @@ probe-format bump. Test: `newer_recorded_probes_are_never_replaced`
 (version-3 probes plus an unknown field, and unreadable probe bytes:
 two executions each leave the manifest bytes and the tree and file
 inodes unchanged); with the former `existing.recorded ==
-manifest.recorded` rule it fails on the first execution.
+manifest.recorded` rule it fails on the first execution. The validator
+side of this keep-but-never-trust rule is `repository_warm::unchanged`,
+which answers `Ok(false)` for a version it does not know, even for probes
+that would validate as version 2 (test
+`probes_of_a_newer_version_are_never_trusted`). Both sides rely on every
+change to the probe bytes bumping `RecordedInputs::version`.
 
 ### Safe warm refresh
 
@@ -627,8 +632,13 @@ hashed on every observation and never remembered; a settled one once, then
 a hit through a symlink spelling; rewritten in place or replaced by a
 rename with the same size and restored mtime it is hashed anew; 16
 concurrent observations hash once; a missing file keeps its error and
-remembers nothing. `PERF-REPO recorded-input file digests` counts hashes and
-memo hits.
+remembers nothing. Test `a_digest_of_a_file_changed_while_hashed_is_never_remembered`
+(a FIFO whose stat the test changes while the leader hashes it): the leader
+answers with its own digest and drops the cell, and an observation that
+took the same cell meanwhile (the waiter) hashes its own opened file. Test
+`the_file_digest_memo_starts_over_at_its_limit`: a new key at 65,536
+entries starts over, a remembered key then is a hit and keeps them all.
+`PERF-REPO recorded-input file digests` counts hashes and memo hits.
 
 Measured with a release build (B = this memo, A = the same tree without it),
 `build --nobuild //src/beyondwork.ai/{prober,pvcautoscaler,decommission}/...`

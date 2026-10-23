@@ -4017,6 +4017,135 @@ mod tests {
         assert_eq!(memo.cells.lock().unwrap().len(), remembered);
     }
 
+    /// Review i20: a file whose stat changed while it was hashed is not
+    /// remembered — the hashing observation (the leader) answers with its
+    /// own digest and forgets the cell — and an observation that took the
+    /// same cell meanwhile (the waiter) hashes its own opened file. A FIFO
+    /// stands in for a file rewritten during the read: hashing blocks until
+    /// the test writes, so the test changes the stat key (an explicit
+    /// mtime) exactly while the leader hashes, after every observation took
+    /// its key.
+    #[test]
+    fn a_digest_of_a_file_changed_while_hashed_is_never_remembered() {
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::{Instant, SystemTime};
+        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let fifo = dir.path().join("fifo");
+        let made =
+            crate::spawn_lock::output(std::process::Command::new("mkfifo").arg(&fifo)).unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let memo = FileDigestMemo::default();
+        let settled = SystemTime::now() + Duration::from_secs(3600);
+        // The holders of the one cell: the memo and each observation that
+        // took it (after taking its stat key).
+        let holders = || -> usize {
+            let cells = memo.cells.lock().unwrap();
+            cells.values().map(Arc::strong_count).sum()
+        };
+
+        for (observers, bytes, mtime) in [(1, &b"first"[..], 1_000), (2, &b"second"[..], 2_000)] {
+            let mut digests = std::thread::scope(|scope| {
+                // The test is the FIFO's writer from the start (read-write
+                // opens never block), so the observations' opens do not
+                // block and their reads end once it closes.
+                let mut writer = fs::File::options()
+                    .read(true)
+                    .write(true)
+                    .open(&fifo)
+                    .unwrap();
+                let observations: Vec<_> = (0..observers)
+                    .map(|_| scope.spawn(|| memo.sha256(&fifo, settled).unwrap()))
+                    .collect();
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while holders() != 1 + observers {
+                    assert!(
+                        Instant::now() < deadline,
+                        "observations never took the cell"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                writer
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(mtime))
+                    .unwrap();
+                writer.write_all(bytes).unwrap();
+                drop(writer);
+                observations
+                    .into_iter()
+                    .map(|observation| observation.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            digests.sort();
+            if observers == 1 {
+                // The leader alone: its own digest of what it read.
+                assert_eq!(digests, [sha256(bytes)]);
+                assert_eq!(memo.hashed.load(SeqCst), 1);
+            } else {
+                // The leader read every byte; the waiter, finding no
+                // remembered digest, hashed its own descriptor of the
+                // drained FIFO.
+                let mut expected = [sha256(bytes), sha256(b"")];
+                expected.sort();
+                assert_eq!(digests, expected);
+                assert_eq!(memo.hashed.load(SeqCst), 3);
+            }
+            assert!(memo.cells.lock().unwrap().is_empty());
+        }
+    }
+
+    /// Review i20: the memo is bounded. A new key arriving when it holds
+    /// [`FILE_DIGEST_MEMO_LIMIT`] entries starts it over; a remembered key
+    /// arriving then is a hit and keeps every entry.
+    #[test]
+    fn the_file_digest_memo_starts_over_at_its_limit() {
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::SystemTime;
+        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        fs::write(&a, b"aaaa").unwrap();
+        fs::write(&b, b"bbbb").unwrap();
+        let memo = FileDigestMemo::default();
+        let settled = SystemTime::now() + Duration::from_secs(3600);
+        let digest = |path: &Path| memo.sha256(path, settled).unwrap();
+        let remembered = || memo.cells.lock().unwrap().len();
+        // Entries of files never observed.
+        let fill = |count: usize| {
+            let mut cells = memo.cells.lock().unwrap();
+            for index in 0..count {
+                cells.insert(
+                    FileDigestKey {
+                        path: PathBuf::from(format!("/never/observed/{index}")),
+                        device: 0,
+                        inode: index as u64,
+                        size: 0,
+                        mtime: (0, 0),
+                        ctime: (0, 0),
+                    },
+                    DigestCell::default(),
+                );
+            }
+        };
+
+        // Full: a new key starts over.
+        fill(FILE_DIGEST_MEMO_LIMIT);
+        assert_eq!(digest(&a), sha256(b"aaaa"));
+        assert_eq!(remembered(), 1);
+        assert_eq!(memo.hashed.load(SeqCst), 1);
+
+        // Full again, `a` among the entries: its hit keeps them all.
+        fill(FILE_DIGEST_MEMO_LIMIT - 1);
+        assert_eq!(remembered(), FILE_DIGEST_MEMO_LIMIT);
+        assert_eq!(digest(&a), sha256(b"aaaa"));
+        assert_eq!(remembered(), FILE_DIGEST_MEMO_LIMIT);
+        assert_eq!(memo.hashed.load(SeqCst), 1);
+
+        // Another file starts over: `a` was forgotten and is hashed anew.
+        assert_eq!(digest(&b), sha256(b"bbbb"));
+        assert_eq!(remembered(), 1);
+        assert_eq!(digest(&a), sha256(b"aaaa"));
+        assert_eq!(remembered(), 2);
+        assert_eq!(memo.hashed.load(SeqCst), 3);
+    }
+
     struct Fixture {
         root: tempfile::TempDir,
         stage: tempfile::TempDir,

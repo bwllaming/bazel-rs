@@ -56,6 +56,13 @@ impl Workspace {
 
     /// [`Self::query`], returning its stderr.
     fn query_stderr(&self, cache: &Path, extra: &[&str]) -> String {
+        let (code, stderr) = self.query_output(cache, extra);
+        assert_eq!(code, Some(0), "{stderr}");
+        stderr
+    }
+
+    /// The query, successful or not: its exit code and stderr.
+    fn query_output(&self, cache: &Path, extra: &[&str]) -> (Option<i32>, String) {
         let output = Command::new("timeout")
             .args([
                 "120s",
@@ -69,9 +76,10 @@ impl Workspace {
             .current_dir(self.path())
             .output()
             .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        assert!(output.status.success(), "{stderr}");
-        stderr
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
     }
 
     fn change_data_repository(&self) {
@@ -93,6 +101,27 @@ impl Workspace {
             "defs.bzl",
             "def _ext(module_ctx):\n",
             "def _ext(module_ctx):\n    print(\"EXTENSION EVALUATED\")\n",
+        );
+    }
+
+    /// Declare the module extension reproducible: its lockfile entry then
+    /// lives in the hidden lockfile ([`hidden_lockfile`]).
+    fn make_extension_reproducible(&self) {
+        self.edit(
+            "defs.bzl",
+            "    from_ext(name = \"from_ext\")\n",
+            "    from_ext(name = \"from_ext\")\n    return module_ctx.extension_metadata(reproducible = True)\n",
+        );
+    }
+
+    /// Make the module extension also watch the directory of the store's
+    /// content-addressed trees (the parent of @data's root): a store path
+    /// that no repository root contains.
+    fn watch_store_directory_from_extension(&self) {
+        self.edit(
+            "defs.bzl",
+            "    _observe(module_ctx)\n",
+            "    module_ctx.watch(_observe(module_ctx).dirname)\n",
         );
     }
 
@@ -157,10 +186,60 @@ fn the_seeded_store_keys_are_what_the_pre_i20_binary_recorded() {
 
 /// The module extension's recorded inputs in the workspace lockfile.
 fn lockfile_inputs(ws: &Workspace) -> Value {
-    let lock: Value =
-        serde_json::from_slice(&fs::read(ws.path().join("MODULE.bazel.lock")).unwrap()).unwrap();
+    recorded_inputs(&ws.path().join("MODULE.bazel.lock"))
+}
+
+/// The module extension's recorded inputs in lockfile `path`.
+fn recorded_inputs(path: &Path) -> Value {
+    let lock: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
     lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"].clone()
 }
+
+/// The hidden lockfile of the one workspace that used `cache`
+/// (`<cache>/hidden-lockfiles/<sha256 of the workspace path>/MODULE.bazel.lock`).
+fn hidden_lockfile(cache: &Path) -> PathBuf {
+    let [workspace] = <[String; 1]>::try_from(listing(&cache.join("hidden-lockfiles"))).unwrap();
+    cache
+        .join("hidden-lockfiles")
+        .join(workspace)
+        .join("MODULE.bazel.lock")
+}
+
+/// The store tree of @data: the one tree with a `tpl.txt`.
+fn data_tree(cache: &Path) -> String {
+    let trees = store(cache).join("trees");
+    let found: Vec<String> = listing(&trees)
+        .into_iter()
+        .filter(|identity| trees.join(identity).join("tpl.txt").exists())
+        .collect();
+    let [data] = <[String; 1]>::try_from(found).unwrap();
+    data
+}
+
+/// Rewrite the module extension's entry in lockfile `path` to the keys the
+/// pre-i20 binary recorded with the cache inside the workspace
+/// ([`pre_i20_keys`]; 4 of them name @data's store tree, returned).
+fn seed_pre_i20_keys(path: &Path, cache: &Path) -> String {
+    let data = data_tree(cache);
+    let mut lock: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let inputs = &mut lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"];
+    *inputs = pre_i20_keys(inputs, &data);
+    assert_eq!(
+        inputs
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|input| input.as_str().unwrap().contains("bazel-rs-out"))
+            .count(),
+        4
+    );
+    fs::write(path, serde_json::to_vec(&lock).unwrap()).unwrap();
+    data
+}
+
+/// The outdated-input reason of a seeded pre-i20 store key.
+const STORE_KEY_REASON: &str =
+    "is a path into the native repository store (recorded by an older bazel-rs)";
 
 #[test]
 fn store_keys_in_the_lockfile_re_evaluate_the_extension_once() {
@@ -178,34 +257,29 @@ fn store_keys_in_the_lockfile_re_evaluate_the_extension_once() {
     ws.announce_extension_evaluations();
     let cache = ws.path().join("bazel-rs-out");
     assert_eq!(evaluations(&ws.query_stderr(&cache, &[])), 1);
-    let data = listing(&store(&cache).join("trees"))
-        .into_iter()
-        .find(|identity| {
-            store(&cache)
-                .join("trees")
-                .join(identity)
-                .join("tpl.txt")
-                .exists()
-        })
-        .unwrap();
     let lock_path = ws.path().join("MODULE.bazel.lock");
-    let mut lock: Value = serde_json::from_slice(&fs::read(&lock_path).unwrap()).unwrap();
-    let inputs = &mut lock["moduleExtensions"]["//:defs.bzl%ext"]["general"]["recordedInputs"];
-    *inputs = pre_i20_keys(inputs, &data);
-    assert_eq!(
-        inputs
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|input| input.as_str().unwrap().contains("bazel-rs-out"))
-            .count(),
-        4
-    );
-    fs::write(&lock_path, serde_json::to_vec(&lock).unwrap()).unwrap();
+    let data = seed_pre_i20_keys(&lock_path, &cache);
 
     // The data repository changes a file the extension read: re-fetched
     // into a new tree, while the old tree the seeded keys name is intact.
     ws.change_data_file();
+
+    // --lockfile_mode=error writes no lockfile, so it never migrates the
+    // keys: the outdated entry of this non-reproducible extension fails the
+    // command (docs/REPOSITORY_RULES.md, upgrade note).
+    let seeded = fs::read_to_string(&lock_path).unwrap();
+    let (code, stderr) = ws.query_output(&cache, &["--lockfile_mode=error"]);
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "MODULE.bazel.lock is no longer up-to-date because an input to the extension '@@//:defs.bzl%ext' changed: @@//bazel-rs-out/repositories/direct/trees/{data}/file.txt {STORE_KEY_REASON}. Please run `bazel mod deps --lockfile_mode=update` to update your lockfile."
+        )),
+        "{stderr}"
+    );
+    assert_eq!(evaluations(&stderr), 0, "{stderr}");
+    assert_eq!(fs::read_to_string(&lock_path).unwrap(), seeded);
+
+    // Update mode (the default) re-evaluates once.
     let stderr = ws.query_stderr(&cache, &[]);
     assert_eq!(evaluations(&stderr), 1, "{stderr}");
     let settled = fs::read_to_string(&lock_path).unwrap();
@@ -221,6 +295,88 @@ fn store_keys_in_the_lockfile_re_evaluate_the_extension_once() {
     let stderr = ws.query_stderr(&cache, &[]);
     assert_eq!(evaluations(&stderr), 0, "{stderr}");
     assert_eq!(fs::read_to_string(&lock_path).unwrap(), settled);
+}
+
+#[test]
+fn store_keys_in_the_hidden_lockfile_re_evaluate_on_every_error_mode_run() {
+    // A reproducible extension's entry lives in the hidden lockfile, where
+    // ~/code keeps its 11 store keys (go_deps, go_sdk, pip) and where the
+    // pre-i20 binary wrote the seeded keys' spelling for this extension made
+    // reproducible (scratch capture
+    // /tmp/opencode/perf-research/i20h-followup-claims.py, E2). Error mode
+    // writes no lockfile, hidden or not (as in Bazel,
+    // BazelLockFileModule.ENABLED_IN_MODES), so the outdated store keys
+    // re-evaluate the extension on every run — without failing it, the
+    // entry being reproducible — until one update-mode run records
+    // `@@NAME//path` keys (docs/REPOSITORY_RULES.md, upgrade note).
+    let ws = Workspace::new();
+    ws.announce_extension_evaluations();
+    ws.make_extension_reproducible();
+    let cache = ws.path().join("bazel-rs-out");
+    assert_eq!(evaluations(&ws.query_stderr(&cache, &[])), 1);
+    let workspace_lockfile =
+        fs::read_to_string(ws.path().join("MODULE.bazel.lock")).unwrap_or_default();
+    assert!(
+        !workspace_lockfile.contains("defs.bzl%ext"),
+        "{workspace_lockfile}"
+    );
+    let hidden = hidden_lockfile(&cache);
+    seed_pre_i20_keys(&hidden, &cache);
+    let seeded = fs::read_to_string(&hidden).unwrap();
+    for _ in 0..2 {
+        let stderr = ws.query_stderr(&cache, &["--lockfile_mode=error"]);
+        assert_eq!(evaluations(&stderr), 1, "{stderr}");
+        assert_eq!(fs::read_to_string(&hidden).unwrap(), seeded);
+    }
+
+    let stderr = ws.query_stderr(&cache, &[]);
+    assert_eq!(evaluations(&stderr), 1, "{stderr}");
+    assert_eq!(
+        recorded_inputs(&hidden),
+        receipt()["genuine"]["cold"]["lockfile_recorded_inputs"]
+    );
+    let stderr = ws.query_stderr(&cache, &["--lockfile_mode=error"]);
+    assert_eq!(evaluations(&stderr), 0, "{stderr}");
+}
+
+#[test]
+fn a_watched_store_path_in_no_repository_fails_closed() {
+    // A store path that no repository root contains (here the directory of
+    // the store's trees) is spelled absolute, never `@@//<cache>/...`, so it
+    // has no lockfile key: a module extension that watches it cannot write
+    // its lockfile entry — with the cache inside the workspace (the default
+    // layout) exactly as with the cache outside it, where this always
+    // failed. Before review i20 the inside layout silently recorded
+    // `FILE:@@//bazel-rs-out/repositories/direct/trees DIR`, a key the
+    // never-rewritten store kept valid forever (docs/EXTENSION_CTX_SURFACE.md).
+    for inside in [false, true] {
+        let ws = Workspace::new();
+        ws.watch_store_directory_from_extension();
+        let outside = outside_cache();
+        let cache = if inside {
+            ws.path().join("bazel-rs-out")
+        } else {
+            outside.path().join("cache")
+        };
+        let (code, stderr) = ws.query_output(&cache, &[]);
+        assert_eq!(
+            code,
+            Some(1),
+            "cache inside the workspace: {inside}: {stderr}"
+        );
+        let trees = fs::canonicalize(store(&cache).join("trees")).unwrap();
+        assert!(
+            stderr.contains(&format!(
+                "module extension @@//:defs.bzl%ext: cannot write its MODULE.bazel.lock entry: the module extension watched {}, which is in no known repository (use --lockfile_mode=off)",
+                trees.display()
+            )),
+            "cache inside the workspace: {inside}: {stderr}"
+        );
+        let lock = fs::read_to_string(ws.path().join("MODULE.bazel.lock")).unwrap_or_default();
+        assert!(!lock.contains("repositories/direct/trees"), "{lock}");
+        // Without a lockfile entry to write, the extension evaluates.
+        ws.query(&cache, &["--lockfile_mode=off"]);
+    }
 }
 
 #[test]

@@ -2538,18 +2538,24 @@ impl LockInputProbe<'_> {
         })
     }
 
-    /// Why a workspace-relative or absolute key naming the repository store
-    /// is outdated (review i20). Before keys were RepoCacheFriendlyPaths, a
-    /// module extension's read of another repository's file was keyed as a
-    /// path into that repository's content-addressed store tree —
-    /// `@@//bazel-rs-out/repositories/...` with the default cache inside the
-    /// workspace, absolute otherwise. Store trees are never rewritten, so
-    /// such a key kept validating after the repository was fetched anew and
-    /// the extension stayed stale. Re-evaluating once records `@@NAME//path`
-    /// keys instead, and since `friendly_repository` never keys a store path
-    /// to the workspace, a re-evaluation never records this kind again.
-    /// Keys of a named repository resolve through its current root and are
-    /// never affected.
+    /// Why a workspace-relative (or absolute) key naming the repository
+    /// store is outdated (review i20). Before keys were
+    /// RepoCacheFriendlyPaths, with the cache inside the workspace (the
+    /// default layout) a module extension's read of another repository's
+    /// file was keyed as a path into that repository's content-addressed
+    /// store tree through the workspace, `@@//bazel-rs-out/repositories/...`.
+    /// Store trees are never rewritten, so such a key kept validating after
+    /// the repository was fetched anew and the extension stayed stale.
+    /// Re-evaluating once in update mode records `@@NAME//path` keys instead
+    /// (error mode writes no lockfile: docs/REPOSITORY_RULES.md, upgrade
+    /// note), and since `friendly_repository` never keys a store path to the
+    /// workspace, a re-evaluation never records this kind again. With the
+    /// cache outside the workspace the keys were already `@@NAME//path`, and
+    /// no bazel-rs has written an absolute key into a lockfile (a path in no
+    /// repository fails the write: `Context::record_bazel_file`), so the
+    /// absolute branch is defensive, for keys written by hand or by another
+    /// tool. Keys of a named repository resolve through its current root and
+    /// are never affected.
     fn store_key(&self, path: &crate::lockfile_extensions::FriendlyPath) -> Option<String> {
         let host = match path.repository.as_deref() {
             None => PathBuf::from(&path.path),

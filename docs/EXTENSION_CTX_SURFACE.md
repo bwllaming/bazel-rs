@@ -74,12 +74,34 @@ MEC = bzlmod/ModuleExtensionContext.java, SP = StarlarkPath.java).
   in external repository NAME), never as host paths into the repository store,
   so generated repositories' specifications do not depend on the cache
   location (review i20; docs/REPOSITORY_RULES.md). A store path that no
-  repository root contains is never keyed to the workspace either (absolute,
-  with the cache inside the workspace as outside it), and a MODULE.bazel.lock
-  or hidden-lockfile key that names the store through the workspace
-  (`@@//bazel-rs-out/repositories/...`) or absolutely — what bazel-rs wrote
-  before review i20 — is outdated (`is a path into the native repository
-  store`): the extension re-evaluates once and records `@@NAME//path` keys.
+  repository root contains (a store directory such as
+  `<cache>/repositories/direct/trees`, or a tree no repository of the
+  invocation names) is never keyed to the workspace either: it is spelled
+  absolute, with the cache inside the workspace as outside it, so it has no
+  lockfile key, and an extension that watches, reads or lists one fails
+  closed when its lockfile entry is written (update mode; exit 1):
+  `module extension @@//:defs.bzl%ext: cannot write its MODULE.bazel.lock
+  entry: the module extension watched <path>, which is in no known
+  repository (use --lockfile_mode=off)`. With the cache outside the
+  workspace this always failed; with the default layout, the cache inside
+  the workspace, bazel-rs before review i20 silently recorded a workspace
+  key instead (`FILE:@@//bazel-rs-out/repositories/direct/trees DIR`),
+  which stayed valid forever because the store never rewrites what it
+  names. Test: `a_watched_store_path_in_no_repository_fails_closed`
+  (tests/repo_cache_friendly_paths.rs, both layouts). Bazel treats the
+  corresponding paths of its output base (outside every `external/NAME`)
+  as outside the workspace — skipped for `watch='auto'`, an error for
+  `'yes'` — so native is stricter for `'auto'`.
+  A MODULE.bazel.lock or hidden-lockfile key naming the store through the
+  workspace (`@@//bazel-rs-out/repositories/...`, what bazel-rs recorded
+  before review i20 with the cache inside the workspace) is outdated (`is a
+  path into the native repository store`): in update mode the extension
+  re-evaluates once and records `@@NAME//path` keys; error mode writes no
+  lockfile, so it never migrates them (upgrade note in
+  docs/REPOSITORY_RULES.md). Absolute store keys are checked the same way,
+  only defensively: with the cache outside the workspace the pre-i20 keys
+  were already `@@NAME//path`, and no bazel-rs has written an absolute key
+  into a lockfile (a path in no repository fails the write, as above).
 * **Labels** resolve like repository_ctx: the package must exist
   (RepositoryUtils.getRootedPathFromLabel); the file need not.
 * **Identifying string**: checksum errors read `Checksum error in module
