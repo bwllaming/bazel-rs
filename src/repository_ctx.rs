@@ -792,7 +792,10 @@ type DigestCell = Arc<std::sync::OnceLock<Option<String>>>;
 /// hashing, so a hit never answers for different bytes; a racy file is
 /// hashed on every observation. Concurrent observations of one key hash it
 /// once: the others wait for that digest (warm validations of ~400
-/// go_repositories run in parallel).
+/// go_repositories run in parallel). A digest the memo does not hold comes
+/// from the persistent digest table when that records the file in exactly
+/// its opened state ([`FileDigestMemo::digest`]), so the memo sits in front
+/// of crate::digest_memo as `file_sha256` does for `watch_tree`.
 #[derive(Default)]
 struct FileDigestMemo {
     cells: std::sync::Mutex<std::collections::HashMap<FileDigestKey, DigestCell>>,
@@ -806,6 +809,17 @@ impl FileDigestMemo {
     /// The SHA-256 of regular file `host`, hashed at most once per settled
     /// stat key; `start` is the moment this observation began.
     fn sha256(&self, host: &Path, start: std::time::SystemTime) -> anyhow::Result<String> {
+        self.sha256_in(crate::digest_memo::repository_table(), host, start)
+    }
+
+    /// [`FileDigestMemo::sha256`] with an explicit persistent table
+    /// (`None`: none installed, or `--verify_repo_tampering`).
+    fn sha256_in(
+        &self,
+        table: Option<&crate::digest_memo::Table>,
+        host: &Path,
+        start: std::time::SystemTime,
+    ) -> anyhow::Result<String> {
         let mut file = fs::File::open(host).map_err(|error| file_not_found(host, &error))?;
         let metadata = file
             .metadata()
@@ -816,7 +830,7 @@ impl FileDigestMemo {
             .map(|canonical| FileDigestKey::new(canonical, &metadata))
             .filter(|key| key.settled(start));
         let Some(key) = key else {
-            return self.hash(host, &mut file, size);
+            return self.digest(table, host, &mut file, &metadata, start);
         };
         let cell = {
             let mut cells = self
@@ -830,7 +844,7 @@ impl FileDigestMemo {
         };
         let mut hashed_here = None;
         let remembered = cell.get_or_init(|| {
-            let digest = self.hash(host, &mut file, size);
+            let digest = self.digest(table, host, &mut file, &metadata, start);
             let remembered = match &digest {
                 // Only if the file kept the stat it is keyed by.
                 Ok(digest) if file.metadata().is_ok_and(|after| key.same_stat(&after)) => {
@@ -854,8 +868,47 @@ impl FileDigestMemo {
                 Ok(digest.clone())
             }
             // Another observation's digest could not be remembered.
-            (None, None) => self.hash(host, &mut file, size),
+            (None, None) => self.digest(table, host, &mut file, &metadata, start),
         }
+    }
+
+    /// The digest of the opened `file` (nothing has been read from it),
+    /// whose fstat is `metadata`: the persistent table's when it records
+    /// `host` in exactly that state (the external, ctime key of every
+    /// repository use of crate::digest_memo); otherwise the file is read,
+    /// and its digest recorded in the table for later processes when it
+    /// was settled at `start` and kept its stat while it was read (the rule
+    /// of `digest_memo::path_sha256`).
+    fn digest(
+        &self,
+        table: Option<&crate::digest_memo::Table>,
+        host: &Path,
+        file: &mut fs::File,
+        metadata: &fs::Metadata,
+        start: std::time::SystemTime,
+    ) -> anyhow::Result<String> {
+        use crate::digest_memo::{self, Key};
+        let size = metadata.len();
+        let key = table.and_then(|_| Key::of(metadata, false));
+        if let (Some(table), Some(key)) = (table, &key)
+            && let Some(sha256) = table.lookup(host, key)
+        {
+            // Not re-hashed: counted with the in-process memo's hits.
+            crate::repository_store::timing::count_recorded_digest(true, size);
+            return Ok(digest_memo::hex(&sha256));
+        }
+        let digest = self.hash(host, file, size)?;
+        digest_memo::count_hashed(digest_memo::Use::Recorded, size);
+        if let (Some(table), Some(key)) = (table, key)
+            && digest_memo::settled(metadata, start, false)
+            && file
+                .metadata()
+                .is_ok_and(|after| Key::of(&after, false) == Some(key))
+            && let Some(sha256) = digest_memo::parse_hex(&digest)
+        {
+            table.remember(host, key, sha256, false);
+        }
+        Ok(digest)
     }
 
     fn forget(&self, key: &FileDigestKey, cell: &DigestCell) {
@@ -913,13 +966,12 @@ pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
         .map(|digest| format!("dirtree:{digest}"))
 }
 
-/// The SHA-256 of a file a repository rule observes, or whose recorded state
-/// a warm run revalidates: from the persistent digest memo when it records
-/// the path in exactly its current state (settled files only; never under
-/// `--verify_repo_tampering`), so the hundreds of repositories recording
-/// the same tools (every gazelle `go_repository` watches the same
-/// `fetch_repo`/`gazelle` binaries) do not read them on every warm run
-/// (crate::digest_memo::path_sha256).
+/// The SHA-256 of a file of a watched tree ([`tree_digest`]; the files a
+/// repository rule watches or reads go through [`FILE_DIGESTS`], which
+/// consults the same table on a miss): from the persistent digest memo when
+/// it records the path in exactly its current state (settled files only;
+/// never under `--verify_repo_tampering`), so a warm run does not read
+/// unchanged files again (crate::digest_memo::path_sha256).
 fn file_sha256(path: &Path) -> anyhow::Result<String> {
     let digest = crate::digest_memo::path_sha256(path, crate::digest_memo::Use::Recorded, || {
         Algorithm::Sha256
@@ -4154,6 +4206,77 @@ mod tests {
         assert_eq!(digest(&a), sha256(b"aaaa"));
         assert_eq!(remembered(), 2);
         assert_eq!(memo.hashed.load(SeqCst), 3);
+    }
+
+    /// Integration-20 (i20-hardening f7c1faa + perf-exec 46c2d6b): the
+    /// in-process memo sits in front of the persistent digest table. A
+    /// digest it does not hold comes from the table when that records the
+    /// path in exactly the opened file's state (a later process reads
+    /// nothing); a settled file it hashed is recorded there, a racy one is
+    /// not; an edit keeping the size and restoring the mtime (the ctime
+    /// moved) is read again; without a table the file is simply hashed.
+    #[test]
+    fn recorded_file_digest_misses_consult_the_persistent_table() {
+        use crate::digest_memo::{Key, Saved, Table};
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::SystemTime;
+        let cache = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let outside = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let file = outside.path().join("tool");
+        fs::write(&file, b"aaaa").unwrap();
+        let settled = SystemTime::now() + Duration::from_secs(3600);
+        let key = |path: &Path| Key::of(&fs::metadata(path).unwrap(), false).unwrap();
+
+        // Racy (just written): hashed, never recorded.
+        let table = Table::new(cache.path());
+        let memo = FileDigestMemo::default();
+        let digest = memo.sha256_in(Some(&table), &file, SystemTime::now());
+        assert_eq!(digest.unwrap(), sha256(b"aaaa"));
+        assert_eq!(memo.hashed.load(SeqCst), 1);
+        assert_eq!(table.lookup(&file, &key(&file)), None);
+        assert_eq!(table.save().unwrap(), Saved::Nothing);
+
+        // Settled: hashed once (then an in-process hit) and recorded.
+        let memo = FileDigestMemo::default();
+        for _ in 0..2 {
+            let digest = memo.sha256_in(Some(&table), &file, settled);
+            assert_eq!(digest.unwrap(), sha256(b"aaaa"));
+        }
+        assert_eq!(memo.hashed.load(SeqCst), 1);
+        assert!(matches!(
+            table.save().unwrap(),
+            Saved::Written { written: 1, .. }
+        ));
+
+        // A later process: the table's digest, the file is not read.
+        let reader = Table::new(cache.path());
+        let later = FileDigestMemo::default();
+        let digest = later.sha256_in(Some(&reader), &file, settled);
+        assert_eq!(digest.unwrap(), sha256(b"aaaa"));
+        assert_eq!(later.hashed.load(SeqCst), 0);
+
+        // Rewritten in place, same size, mtime restored: read again.
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        fs::write(&file, b"bbbb").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        let edited = FileDigestMemo::default();
+        let digest = edited.sha256_in(Some(&reader), &file, settled);
+        assert_eq!(digest.unwrap(), sha256(b"bbbb"));
+        assert_eq!(edited.hashed.load(SeqCst), 1);
+
+        // Without a table: hashed.
+        let alone = FileDigestMemo::default();
+        assert_eq!(
+            alone.sha256_in(None, &file, settled).unwrap(),
+            sha256(b"bbbb")
+        );
+        assert_eq!(alone.hashed.load(SeqCst), 1);
     }
 
     struct Fixture {

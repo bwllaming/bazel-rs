@@ -88,7 +88,8 @@ records (unit test `concurrent_saves_lose_no_records`).
 | executor: action inputs, cache checks of published outputs, store blobs | `action::hash_file_from` (the funnel of `hash_file`, `read_regular[_from]`, `blob_valid`, `ensure_blob`): per-process memo → table → read | owned / external |
 | registry module trees, warm check | `materializer::tree_matches` (walk as `snapshot`, digests via the table) | external |
 | embedded `bazel_tools` tree, warm check | `builtin_tools::verified_warm` | external |
-| repository-rule inputs: `watch`, `read` of watched files, `watch_tree`, and their warm revalidation (`repository_warm::unchanged`) | `repository_ctx::file_sha256` → `digest_memo::path_sha256` | external |
+| repository-rule inputs: `watch`, `read` of watched files, and their warm revalidation (`repository_warm::unchanged`) | `repository_ctx::file_state` → the in-process `FileDigestMemo` (docs/REPOSITORY_WARM_PERF.md) → on a miss the table (lookup by the opened file's fstat; a settled read that kept its stat is recorded) | external |
+| repository-rule inputs: `watch_tree` (and its warm revalidation) | `repository_ctx::file_sha256` → `digest_memo::path_sha256` | external |
 
 The walks themselves are unchanged (every entry is still lstat'ed and compared for type, mode, size and
 symlink target); only reading unchanged regular files is skipped. Direct repositories keep their own
