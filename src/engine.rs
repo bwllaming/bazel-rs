@@ -81,31 +81,34 @@ impl Artifact {
     /// The File of an artifact at `exec` (the algorithm `file()` ran on
     /// every call before W1a).
     fn compute_file(exec_path: &Path, generated: bool, owner: &str, directory: bool) -> File {
-        // W0-A work counter: one File computed (label parsing dominates it;
-        // since W1a once per Artifact, `file()` only clones the cache).
+        // W0-A work counter: one File computed (a source owner's label
+        // parsing dominates it; since W1a once per Artifact, `file()` only
+        // clones the cache).
         crate::plan_timings::note_artifact_file();
-        // A generated file is relative to its configuration's output root.
         let exec = exec_path.to_string_lossy();
-        let generated_root = if generated {
-            crate::label::split_generated_root(&exec)
-        } else {
-            None
-        };
-        let relative = generated_root.map_or(exec_path, |(_, relative)| Path::new(relative));
         // External short paths are metadata, never filesystem lookup paths.
-        let short_path =
-            if Label::parse_canonical(owner).is_ok_and(|label| !label.repository.is_empty()) {
-                relative
-                    .strip_prefix("external")
-                    .map(|path| PathBuf::from("..").join(path))
-                    .unwrap_or_else(|_| relative.to_path_buf())
-            } else {
-                relative.to_path_buf()
-            };
+        let short_path = if generated {
+            // A generated file is relative to its configuration's output
+            // root, and its short path follows the one rule of every
+            // generated File, whoever owns it (the declared File of a
+            // rule's output is the same File; review F2 of d2fd11c).
+            let relative =
+                crate::label::split_generated_root(&exec).map_or(&*exec, |(_, relative)| relative);
+            crate::label::generated_short_path(relative)
+        } else if Label::parse_canonical(owner).is_ok_and(|label| !label.repository.is_empty()) {
+            exec_path
+                .strip_prefix("external")
+                .map(|path| PathBuf::from("..").join(path))
+                .unwrap_or_else(|_| exec_path.to_path_buf())
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            exec.clone().into_owned()
+        };
         File {
             is_directory: directory,
-            path: exec_path.to_string_lossy().into_owned(),
-            short_path: short_path.to_string_lossy().into_owned(),
+            path: exec.into_owned(),
+            short_path,
             owner: owner.to_owned(),
             is_source: !generated,
         }
@@ -425,6 +428,23 @@ fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact
         None => {
             index.insert(file.clone(), artifact.clone());
         }
+    }
+}
+
+/// The File/Artifact identity of a committed output (review F2 of
+/// d2fd11c): the File a rule declared — what its own Starlark code holds,
+/// returns in providers and registers as an action output — is the File its
+/// Artifact computes, which dependency views hand to consumers, so one
+/// artifact never reaches a consumer as two Files. Both follow one
+/// short-path rule (crate::label::generated_short_path); a divergence is an
+/// internal error, checked in debug builds and under
+/// BAZEL_RS_VERIFY_ARTIFACTS like [`register_artifact`].
+fn verify_declared_file(file: &File, artifact: &Artifact) {
+    if (cfg!(debug_assertions) || verify_artifacts()) && *artifact.file != *file {
+        panic!(
+            "internal error: declared output {} differs from its artifact's File: declared {file:?}, artifact {:?}",
+            file.path, artifact.file
+        );
     }
 }
 
@@ -8544,6 +8564,7 @@ impl Engine {
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
                 );
+                verify_declared_file(file, &artifact);
                 register_artifact(artifact_index, file, &artifact);
                 declared.insert((base_key.config, exec), artifact);
             }
@@ -9534,6 +9555,7 @@ impl Engine {
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
                 );
+                verify_declared_file(file, &artifact);
                 register_artifact(artifact_index, file, &artifact);
                 declared.insert((config, exec), artifact);
             }
@@ -9868,7 +9890,7 @@ impl Engine {
                     [File {
                         is_directory: false,
                         path: path.to_string_lossy().into_owned(),
-                        short_path: output.short_path().to_string_lossy().into_owned(),
+                        short_path: output.generated_short_path(),
                         owner: rule.label.to_string(),
                         is_source: false,
                     }],
@@ -12556,6 +12578,85 @@ mod tests {
         let mut other = artifact.clone();
         other.producer = Some(("//pkg:other#0".into(), 0));
         register_artifact(&mut index, &artifact.file, &other);
+    }
+
+    /// Review F2 of d2fd11c: a generated File's short path is its
+    /// root-relative path with a leading `external` as `..`, whoever owns
+    /// it, so a main-repository rule's shareable artifact below `external/`
+    /// is the same File as the engine's Artifact of it; sources keep the
+    /// owner rule.
+    #[test]
+    fn generated_short_paths_do_not_depend_on_the_owner() {
+        let generated = |exec: &str, owner: &str| {
+            let exec = PathBuf::from(exec);
+            Artifact::new(
+                exec.clone(),
+                exec,
+                Some(("action#0".into(), 0)),
+                owner.into(),
+                false,
+                false,
+            )
+            .file()
+        };
+        let below = "bazel-out/k8-fastbuild/bin/external/somerepo/x.txt";
+        for owner in ["//test:producer", "@@dep+//p:producer"] {
+            let file = generated(below, owner);
+            assert_eq!(file.short_path, "../somerepo/x.txt", "{owner}");
+            assert!(!file.is_source);
+        }
+        assert_eq!(
+            generated("bazel-out/k8-opt-exec/bin/test/x.txt", "//test:producer").short_path,
+            "test/x.txt"
+        );
+        // The File a rule declares (Label::generated_short_path: declare_kind
+        // and the predeclared outputs) is the one its Artifact computes, also
+        // in a main-repository package below external/.
+        let output = Label::parse("//external/dep:out.txt", "").unwrap();
+        let exec = output.generated_exec_path(crate::label::GENERATED_EXEC_ROOT);
+        let declared = File {
+            is_directory: false,
+            path: exec.to_string_lossy().into_owned(),
+            short_path: output.generated_short_path(),
+            owner: "//external/dep:rule".into(),
+            is_source: false,
+        };
+        assert_eq!(
+            generated(&declared.path, &declared.owner),
+            declared,
+            "a main-repository package below external/"
+        );
+        let source = Artifact::new(
+            PathBuf::from("/root/external/dep/in"),
+            PathBuf::from("external/dep/in"),
+            None,
+            "//external/dep:in".into(),
+            false,
+            false,
+        );
+        assert_eq!(source.file().short_path, "external/dep/in");
+    }
+
+    /// A committed output whose declared File differs from its Artifact's
+    /// File is an internal error (checked in debug builds, which the tests
+    /// are), never two Files for one artifact.
+    #[test]
+    #[should_panic(expected = "differs from its artifact's File")]
+    fn a_declared_file_differing_from_its_artifact_is_an_internal_error() {
+        let exec = PathBuf::from("bazel-out/k8-fastbuild/bin/external/somerepo/x.txt");
+        let artifact = Artifact::new(
+            exec.clone(),
+            exec,
+            Some(("//test:producer#0".into(), 0)),
+            "//test:producer".into(),
+            false,
+            false,
+        );
+        let mut declared = artifact.file();
+        verify_declared_file(&declared, &artifact);
+        // The pre-F2 owner-dependent short path of the engine's File.
+        declared.short_path = "external/somerepo/x.txt".into();
+        verify_declared_file(&declared, &artifact);
     }
 
     /// An index miss stays a miss (`None`: the caller reports its `... has no

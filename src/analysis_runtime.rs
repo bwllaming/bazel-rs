@@ -248,7 +248,7 @@ impl Context {
                 .generated_exec_path(&self.output_root)
                 .to_string_lossy()
                 .into_owned(),
-            short_path: output.short_path().to_string_lossy().into_owned(),
+            short_path: output.generated_short_path(),
             owner: self.label.to_string(),
             is_source: false,
         };
@@ -272,7 +272,10 @@ impl Context {
     /// root), not to the package, and normalized like PathFragment.create.
     /// The rule owns it; the same path declared twice (or the same exec
     /// path declared with `declare_file`) is the same artifact
-    /// (dedupAndTrackArtifactAndOrigin :241-259).
+    /// (dedupAndTrackArtifactAndOrigin :241-259). Its short path follows
+    /// the one rule of generated Files (crate::label::generated_short_path:
+    /// `external/r/x` is `../r/x` for a main-repository rule too), so the
+    /// engine's Artifact of it is this very File (review F2 of d2fd11c).
     pub(crate) fn declare_shareable(&self, root: &str, path: &str) -> anyhow::Result<File> {
         self.sync_default_executable();
         let relative = shareable_relative_path(path)?;
@@ -283,7 +286,7 @@ impl Context {
             } else {
                 format!("{root}/{relative}")
             },
-            short_path: runfiles_path(&relative),
+            short_path: crate::label::generated_short_path(&relative),
             owner: self.label.to_string(),
             is_source: false,
         };
@@ -1036,17 +1039,6 @@ fn shareable_relative_path(path: &str) -> anyhow::Result<String> {
         "declare_shareable_artifact('{path}'): the path names the artifact root itself, which cannot be an output of the native profile"
     );
     Ok(normalized)
-}
-
-/// Artifact.getRunfilesPath (actions/Artifact.java:636-662) of a derived
-/// artifact under the legacy (non-sibling) layout: `external/<repo>/...`
-/// is `../<repo>/...`.
-fn runfiles_path(relative: &str) -> String {
-    match relative.strip_prefix("external") {
-        Some("") => "..".to_owned(),
-        Some(rest) if rest.starts_with('/') => format!("..{rest}"),
-        _ => relative.to_owned(),
-    }
 }
 
 /// An explicit `artifact_root` of declare_shareable_artifact: a derived
@@ -1951,10 +1943,12 @@ mod tests {
             let message = shareable_relative_path(path).unwrap_err().to_string();
             assert!(message.contains(error), "{path}: {message}");
         }
-        assert_eq!(runfiles_path("external/repo/x.h"), "../repo/x.h");
-        assert_eq!(runfiles_path("external"), "..");
-        assert_eq!(runfiles_path("externalx/y"), "externalx/y");
-        assert_eq!(runfiles_path("pkg/x.h"), "pkg/x.h");
+        // The short path is the one rule of every generated File
+        // (crate::label::generated_short_path, unit-tested there).
+        assert_eq!(
+            crate::label::generated_short_path("external/repo/x.h"),
+            "../repo/x.h"
+        );
     }
 
     #[test]

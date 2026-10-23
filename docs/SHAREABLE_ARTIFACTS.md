@@ -38,7 +38,17 @@ type 'int', want 'string'`). `StarlarkActionFactory.createShareableArtifact`
   engine's package-relative output validation skips these declarations
   (`Context::shareable`, filtered out of `AnalysisResult::declared`).
 - The rule owns the artifact (`owner`), `short_path` is the runfiles path
-  (`external/r/x` is `../r/x`), `root` the artifact root. The same exec path
+  (`external/r/x` is `../r/x`), `root` the artifact root. The runfiles path
+  of a generated File does not depend on its owner (`Artifact.getRunfilesPath`
+  under the legacy output layout: J/actions/Artifact.java:636-662), so a
+  main-repository rule's `external/somerepo/x.txt` is `../somerepo/x.txt`.
+  That is the one short-path rule of every generated File
+  (`crate::label::generated_short_path`): declared and predeclared outputs and
+  the engine's Artifact of an output compute the same File, so a consumer gets
+  one File through `ctx.files`, `DefaultInfo` or any provider field (the
+  commit checks `declared File == Artifact File` in debug builds and under
+  `BAZEL_RS_VERIFY_ARTIFACTS=1`). Source Files keep their rule (a source root
+  is not a legacy root). The same exec path
   declared twice, or once with `declare_file`, is one artifact
   (`CachingAnalysisEnvironment.dedupAndTrackArtifactAndOrigin`, :241-259);
   without a generating action it is an orphan (`The following files have no

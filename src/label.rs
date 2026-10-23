@@ -42,6 +42,26 @@ pub(crate) fn split_generated_root(path: &str) -> Option<(&str, &str)> {
     Some((&path[..root_length], relative))
 }
 
+/// The short path of a generated (derived) file from its path below its
+/// output root: Artifact.getRunfilesPath (actions/Artifact.java:636-662)
+/// under the legacy, non-sibling output layout (`ArtifactRoot.isLegacy`,
+/// RootType.OUTPUT), where a leading `external` segment is `..` whoever owns
+/// the artifact — `external/r/x` is `../r/x` for a rule of `@r` and for a
+/// main-repository rule's shareable artifact alike. The one rule of every
+/// generated File: declared outputs (crate::analysis_runtime), the native
+/// rules' and predeclared outputs, and the engine's Artifact File
+/// (crate::engine `Artifact::compute_file`) — so a File and its Artifact
+/// never differ (review F2 of d2fd11c). Source Files keep their rule: a
+/// main-repository source below `external/` keeps it (source roots are not
+/// legacy roots).
+pub(crate) fn generated_short_path(root_relative: &str) -> String {
+    match root_relative.strip_prefix("external") {
+        Some("") => "..".to_owned(),
+        Some(rest) if rest.starts_with('/') => format!("..{rest}"),
+        _ => root_relative.to_owned(),
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct PackageId {
     pub repository: String,
@@ -259,6 +279,14 @@ impl Label {
     /// output root of the configuration it is generated in.
     pub fn generated_exec_path(&self, root: &str) -> PathBuf {
         PathBuf::from(root).join(self.source_exec_path())
+    }
+
+    /// The short path of this label's generated file
+    /// ([`generated_short_path`] of its root-relative path): the label's
+    /// [`Label::short_path`] except in a main-repository package below
+    /// `external/`, which a derived artifact's runfiles path rebases too.
+    pub fn generated_short_path(&self) -> String {
+        generated_short_path(&self.source_exec_path().to_string_lossy())
     }
 }
 
@@ -813,6 +841,35 @@ mod tests {
             "invalid target name 'a:b': target names may not contain ':'"
         );
         assert_eq!(label.with_name("d/.").unwrap().name, "d");
+    }
+
+    /// Artifact.getRunfilesPath of a derived artifact under the legacy
+    /// layout: a leading `external` segment is `..`, whoever owns it.
+    #[test]
+    fn generated_short_paths_rebase_external_whoever_owns_them() {
+        for (relative, expected) in [
+            ("p/x.txt", "p/x.txt"),
+            ("external/r+/p/x.txt", "../r+/p/x.txt"),
+            ("external/somerepo/x.txt", "../somerepo/x.txt"),
+            ("external", ".."),
+            ("externalx/y", "externalx/y"),
+            ("p/external/x", "p/external/x"),
+        ] {
+            assert_eq!(generated_short_path(relative), expected, "{relative}");
+        }
+        let external = Label::parse_canonical("@@dep+//p:q/out.txt").unwrap();
+        assert_eq!(external.generated_short_path(), "../dep+/p/q/out.txt");
+        assert_eq!(
+            PathBuf::from(external.generated_short_path()),
+            external.short_path()
+        );
+        let main = Label::parse("//p:out.txt", "").unwrap();
+        assert_eq!(main.generated_short_path(), "p/out.txt");
+        // A main-repository package below external/: its sources keep the
+        // root-relative path, its generated files are rebased.
+        let below = Label::parse("//external/dep:out.txt", "").unwrap();
+        assert_eq!(below.short_path(), PathBuf::from("external/dep/out.txt"));
+        assert_eq!(below.generated_short_path(), "../dep/out.txt");
     }
 
     #[test]

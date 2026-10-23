@@ -850,7 +850,7 @@ fn location_map(
                     .generated_exec_path(output_root)
                     .to_string_lossy()
                     .into_owned(),
-                short_path: output.short_path().to_string_lossy().into_owned(),
+                short_path: output.generated_short_path(),
                 owner: rule.label.to_string(),
                 is_source: false,
             }],
@@ -2122,7 +2122,7 @@ fn analyze_inner(
                     .generated_exec_path(target.output_root)
                     .to_string_lossy()
                     .into_owned(),
-                short_path: output.short_path().to_string_lossy().into_owned(),
+                short_path: output.generated_short_path(),
                 owner: rule.label.to_string(),
                 is_source: false,
             }))
