@@ -1126,6 +1126,103 @@ pub(crate) const TEST_RUNNER_ATTRIBUTES: [(&str, &str); 7] = [
     ),
 ];
 
+/// The test properties of a test rule (TestTargetProperties;
+/// RuleConfiguredTargetBuilder.initializeTestProvider's shard_count checks,
+/// analysis/RuleConfiguredTargetBuilder.java:470-484) and its location;
+/// `None` for any other rule.
+fn test_rule_info_of(
+    label: &Label,
+    rule: &Rule,
+) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+    use crate::custom_rule::AttrValue;
+    use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
+    let Some(custom) = &rule.custom else {
+        return Ok(None);
+    };
+    if !custom.declaration.builtin.kind.test {
+        return Ok(None);
+    }
+    let target = &custom.declaration.builtin.target;
+    let string = |name: &str| match target.attrs.get(name) {
+        Some(AttrValue::String(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let boolean = |name: &str| matches!(target.attrs.get(name), Some(AttrValue::Bool(true)));
+    // Loading validated size and timeout (RuleClass.checkForValidSizeAndTimeoutValues).
+    let size = string("size")
+        .and_then(|size| TestSize::parse(&size))
+        .unwrap_or(TestSize::Medium);
+    let timeout = string("timeout")
+        .and_then(|timeout| TestTimeout::parse(&timeout))
+        .unwrap_or(size.default_timeout());
+    if target.configurable.contains_key("shard_count") {
+        return Err(located(
+            rule.location.as_deref(),
+            format!(
+                "{label}: a select() in shard_count is not supported by the native test runner"
+            ),
+        ));
+    }
+    let shard_count = match target.attrs.get("shard_count") {
+        Some(AttrValue::Int(count)) => {
+            let attribute_error = |message: &str| {
+                located(
+                    rule.location.as_deref(),
+                    format!(
+                        "in shard_count attribute of {} rule {}: {message}",
+                        target.rule_class,
+                        crate::rule_declarations::canonical_form(label)
+                    ),
+                )
+            };
+            if *count < 0 {
+                return Err(attribute_error("Must not be negative."));
+            }
+            if *count > 50 {
+                return Err(attribute_error(
+                    "Having more than 50 shards is indicative of poor test organization. Please reduce the number of shards.",
+                ));
+            }
+            *count
+        }
+        _ => -1,
+    };
+    Ok(Some((
+        TestRuleInfo {
+            rule_class: target.rule_class.clone(),
+            size,
+            timeout,
+            flaky: boolean("flaky"),
+            shard_count,
+            local: boolean("local"),
+            tags: target.tags.clone(),
+        },
+        rule.location.clone(),
+    )))
+}
+
+/// The tags a test_suite filters a test rule with (TestTargetUtils
+/// .filterTests, packages/TestTargetUtils.java:95-117, and
+/// TestSuiteImplicitTestsAccumulator.processRule :71-90): its `tags` plus
+/// its `size`; `None` for a rule that is no test rule.
+fn test_suite_filter_tags(rule: &Rule) -> Option<BTreeSet<String>> {
+    use crate::custom_rule::AttrValue;
+    let custom = rule.custom.as_ref()?;
+    if !custom.declaration.builtin.kind.test {
+        return None;
+    }
+    let target = &custom.declaration.builtin.target;
+    // Loading validated the size (RuleClass.checkForValidSizeAndTimeoutValues).
+    let size = match target.attrs.get("size") {
+        Some(AttrValue::String(size)) => crate::test_command::TestSize::parse(size),
+        _ => None,
+    }
+    .unwrap_or(crate::test_command::TestSize::Medium);
+    let mut tags: BTreeSet<String> = target.tags.iter().cloned().collect();
+    tags.insert(size.name().to_owned());
+    Some(tags)
+}
+
 fn dependency_edges(rule: &Rule) -> Vec<Edge> {
     let mut edges = attribute_edges(rule);
     edges.extend(rule.package_metadata.iter().map(|label| Edge {
@@ -1409,6 +1506,48 @@ impl PatternError {
             PatternError::Parsing(message) | PatternError::Loading(message) => message,
         }
     }
+}
+
+/// The TargetPatternPhaseKey options of [`Engine::target_pattern_phase`].
+pub struct TargetPatternPhaseOptions<'a> {
+    /// The `test` command (TargetPatternPhaseKey.getDetermineTests).
+    pub determine_tests: bool,
+    /// `--build_tests_only`.
+    pub build_tests_only: bool,
+    /// `--[no]expand_test_suites` (LoadingOptions, default true).
+    pub expand_test_suites: bool,
+    /// The command-line TestFilter (`--test_tag_filters`,
+    /// `--test_size_filters`, ...; crate::test_command::TestOptions::accepts).
+    pub test_filter: &'a dyn Fn(&crate::test_command::TestRuleInfo) -> bool,
+}
+
+/// The TargetPatternPhaseValue of `build`/`test`.
+#[derive(Debug, Default)]
+pub struct TargetPatternPhase {
+    /// The targets to analyze and build (test suites expanded).
+    pub build: Vec<Label>,
+    /// `test`: the tests to run.
+    pub tests: Option<Vec<Label>>,
+    /// determineTests found tests but the test filters dropped every one
+    /// (`All specified test targets were excluded by filters`).
+    pub all_excluded: bool,
+    /// The test-suite expansion error events, in report order.
+    pub errors: Vec<String>,
+    /// An expansion of the tests to run failed (TargetPatternPhaseValue
+    /// .hasError: `command succeeded, but there were errors parsing the
+    /// target pattern`, BuildView.java:764-768).
+    pub pattern_error: bool,
+    /// An expansion of the targets to build failed (hasPostExpansionError:
+    /// `command succeeded, but there were loading phase errors`, :770-775).
+    pub post_expansion_error: bool,
+}
+
+/// The TestExpansionValues of one target pattern phase: each suite's tests
+/// and error flag, and the error events reported (once each).
+#[derive(Default)]
+struct TestExpansions {
+    values: HashMap<Label, (BTreeSet<Label>, bool)>,
+    events: Vec<String>,
 }
 
 pub struct Engine {
@@ -3594,6 +3733,15 @@ impl Engine {
                     .join("\n"));
             }
         }
+        // TestSuite.checkTestsAndSuites (rules/test/TestSuite.java:44-49,
+        // 104-118) after RuleContext's prerequisite validation.
+        let errors = self.test_suite_errors(&rule, config, configured)?;
+        if !errors.is_empty() {
+            return Err(crate::rule_errors::located_events(
+                rule.location.as_deref(),
+                errors,
+            ));
+        }
         if !attribute_configs.is_empty() {
             self.edge_configs.insert(key.clone(), attribute_configs);
         }
@@ -4912,6 +5060,57 @@ impl Engine {
                 errors,
             ))
         }
+    }
+
+    /// A test_suite's `tests` (TestSuiteRule.java:96-104, `allowedFileTypes()`
+    /// = no files): a file prerequisite is RuleContext's attribute error;
+    /// then TestSuite.checkTestsAndSuites (rules/test/TestSuite.java:104-118):
+    /// a prerequisite (its alias chain's end) that is neither a test rule
+    /// (TestTagsProvider) nor a test_suite (TransitiveTestsProvider) is `in
+    /// tests attribute of test_suite rule L: expecting a test or a test_suite
+    /// rule but 'M' is not one` (M as written, an alias's own label).
+    fn test_suite_errors(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        configured: &ConfiguredNodes,
+    ) -> Result<Vec<String>, String> {
+        let mut errors = Vec::new();
+        let (RuleKind::Native("test_suite"), Some(native)) = (&rule.kind, &rule.native) else {
+            return Ok(errors);
+        };
+        let shown = crate::rule_declarations::canonical_form(&rule.label);
+        let mut members = Vec::new();
+        for text in native.labels("tests") {
+            let dependency = self.resolve_rule_src(rule, &text)?;
+            let (chain, actual) = self.alias_chain(configured, config, &dependency);
+            match self.no_files_error(&chain, &actual)? {
+                Some(error) => {
+                    errors.push(format!(
+                        "in tests attribute of test_suite rule {shown}: {error}"
+                    ));
+                }
+                None => members.push((dependency, actual)),
+            }
+        }
+        if !errors.is_empty() {
+            return Ok(errors);
+        }
+        for (dependency, actual) in members {
+            let accepted = match self.target(&actual)? {
+                Target::Rule(member) => {
+                    test_suite_filter_tags(&member).is_some()
+                        || matches!(member.kind, RuleKind::Native("test_suite"))
+                }
+                _ => false,
+            };
+            if !accepted {
+                errors.push(format!(
+                    "in tests attribute of test_suite rule {shown}: expecting a test or a test_suite rule but '{dependency}' is not one"
+                ));
+            }
+        }
+        Ok(errors)
     }
 
     /// `package_metadata` allows no files (`allowedFileTypes(FileTypeSet.NO_FILE)`,
@@ -8009,6 +8208,26 @@ impl Engine {
     /// (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest; N23g).
     fn rule_edges(&self, rule: &Rule) -> Vec<Edge> {
         let mut edges = dependency_edges(rule);
+        // TestSuiteRule (rules/test/TestSuiteRule.java:96-110): `tests`,
+        // then `$implicit_tests`, both in the target configuration.
+        if let (RuleKind::Native("test_suite"), Some(native)) = (&rule.kind, &rule.native) {
+            let edge = |label: String, attribute: &str| Edge {
+                label,
+                attribute: attribute.to_owned(),
+                cfg: EdgeCfg::Target,
+            };
+            edges.extend(
+                native
+                    .labels("tests")
+                    .into_iter()
+                    .map(|label| edge(label, "tests")),
+            );
+            edges.extend(
+                self.implicit_tests(rule)
+                    .iter()
+                    .map(|label| edge(label.to_string(), "$implicit_tests")),
+            );
+        }
         let test = rule
             .custom
             .as_ref()
@@ -8037,104 +8256,153 @@ impl Engine {
         &mut self,
         label: &Label,
     ) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
-        use crate::custom_rule::AttrValue;
-        use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
         let Target::Rule(rule) = self.target(label)? else {
             return Ok(None);
         };
-        let Some(custom) = &rule.custom else {
-            return Ok(None);
-        };
-        if !custom.declaration.builtin.kind.test {
-            return Ok(None);
-        }
-        let target = &custom.declaration.builtin.target;
-        let string = |name: &str| match target.attrs.get(name) {
-            Some(AttrValue::String(value)) => Some(value.clone()),
-            _ => None,
-        };
-        let boolean = |name: &str| matches!(target.attrs.get(name), Some(AttrValue::Bool(true)));
-        // Loading validated size and timeout (RuleClass.checkForValidSizeAndTimeoutValues).
-        let size = string("size")
-            .and_then(|size| TestSize::parse(&size))
-            .unwrap_or(TestSize::Medium);
-        let timeout = string("timeout")
-            .and_then(|timeout| TestTimeout::parse(&timeout))
-            .unwrap_or(size.default_timeout());
-        if target.configurable.contains_key("shard_count") {
-            return Err(located(
-                rule.location.as_deref(),
-                format!(
-                    "{label}: a select() in shard_count is not supported by the native test runner"
-                ),
-            ));
-        }
-        let shard_count = match target.attrs.get("shard_count") {
-            Some(AttrValue::Int(count)) => {
-                let attribute_error = |message: &str| {
-                    located(
-                        rule.location.as_deref(),
-                        format!(
-                            "in shard_count attribute of {} rule {}: {message}",
-                            target.rule_class,
-                            crate::rule_declarations::canonical_form(label)
-                        ),
-                    )
-                };
-                if *count < 0 {
-                    return Err(attribute_error("Must not be negative."));
-                }
-                if *count > 50 {
-                    return Err(attribute_error(
-                        "Having more than 50 shards is indicative of poor test organization. Please reduce the number of shards.",
-                    ));
-                }
-                *count
-            }
-            _ => -1,
-        };
-        Ok(Some((
-            TestRuleInfo {
-                rule_class: target.rule_class.clone(),
-                size,
-                timeout,
-                flaky: boolean("flaky"),
-                shard_count,
-                local: boolean("local"),
-                tags: target.tags.clone(),
-            },
-            rule.location.clone(),
-        )))
+        test_rule_info_of(label, &rule)
     }
 
-    /// The targets to build and the tests to run of `bazel test PATTERNS`
-    /// (TargetPatternPhaseFunction, skyframe/TargetPatternPhaseFunction.java:95-250,
-    /// 400-500): every pattern's targets with test_suites replaced by their
-    /// tests (`--expand_test_suites`), and the tests among them
-    /// (FilteringPolicies.FILTER_TESTS: test rules and test_suites; manual
-    /// ones only when named explicitly), test suites expanded by
-    /// TestExpansionFunction (non-strict). The command-line test filters
-    /// are applied by the caller.
-    pub fn select_for_test(
+    /// TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java
+    /// :75-250) for `build` and `test`: the targets of every pattern
+    /// (FILTER_MANUAL, negative patterns subtracted, `select_filtered`);
+    /// with `determine_tests` (`test`) or `--build_tests_only` the tests
+    /// (determineTests, :408-500: each positive pattern's tests and test
+    /// suites, FilteringPolicies.FILTER_TESTS, a negative pattern's targets
+    /// unfiltered, each expanded by TestsForTargetPatternFunction, then the
+    /// command-line TestFilter `accepts`); `--build_tests_only` builds just
+    /// those, `test` adds them to the targets; with `--expand_test_suites`
+    /// (default) every test_suite among the targets is replaced by its
+    /// tests. Test suites expand strictly (TestExpansionValue.key(target,
+    /// true), TestsForTargetPatternFunction.java:52), once per suite (the
+    /// Skyframe value): a member that is neither a test nor a test suite is
+    /// an error event, and the expansion still yields the suite's tests.
+    pub fn target_pattern_phase(
         &mut self,
         patterns: &[String],
         relative_directory: &str,
-    ) -> Result<(Vec<Label>, Vec<Label>), String> {
+        options: &TargetPatternPhaseOptions<'_>,
+    ) -> Result<TargetPatternPhase, String> {
+        let selected = self.select_filtered(patterns, relative_directory, true)?;
+        let mut expansions = TestExpansions::default();
+        let mut tests = None;
+        let mut all_excluded = false;
+        let mut pattern_error = false;
+        if options.determine_tests || options.build_tests_only {
+            let (found, filtered, error) =
+                self.determine_tests(patterns, relative_directory, options, &mut expansions)?;
+            all_excluded = found.is_empty() && !filtered.is_empty();
+            pattern_error = error;
+            tests = Some(found);
+        }
+        let mut targets: BTreeSet<Label> = selected.into_iter().collect();
+        let mut tests_to_run = None;
+        if let Some(found) = tests {
+            if options.build_tests_only {
+                targets = found.iter().cloned().collect();
+            } else {
+                targets.extend(found.iter().cloned());
+            }
+            if options.determine_tests {
+                tests_to_run = Some(found);
+            }
+        }
         let mut build = BTreeSet::new();
-        let mut tests = BTreeSet::new();
-        for label in self.select_filtered(patterns, relative_directory, true)? {
-            if self.is_test_suite(&label)? {
-                let expanded = self.expand_test_suite(&label, &mut Vec::new())?;
-                build.extend(expanded.iter().cloned());
-                tests.extend(expanded);
-            } else if self.test_rule_info(&label)?.is_some() {
-                build.insert(label.clone());
-                tests.insert(label);
+        let mut post_expansion_error = false;
+        for label in targets {
+            // Every selected label's package is loaded: a lookup, no
+            // filesystem facts of source-file targets.
+            if options.expand_test_suites && self.loaded_test_suite(&label) {
+                let (expanded, error) =
+                    self.tests_in_suite(&label, &mut expansions, &mut Vec::new())?;
+                post_expansion_error |= error;
+                build.extend(expanded);
             } else {
                 build.insert(label);
             }
         }
-        Ok((build.into_iter().collect(), tests.into_iter().collect()))
+        Ok(TargetPatternPhase {
+            build: build.into_iter().collect(),
+            tests: tests_to_run.map(|tests| tests.into_iter().collect()),
+            all_excluded,
+            errors: expansions.events,
+            pattern_error,
+            post_expansion_error,
+        })
+    }
+
+    /// TargetPatternPhaseFunction.determineTests (:408-500): the tests of
+    /// the patterns in order (a positive pattern adds the expansion of its
+    /// FILTER_TESTS targets, a negative one removes the expansion of its
+    /// unfiltered targets), then the TestFilter; the tests and the
+    /// ResolvedTargets' filtered set (non-empty: "All specified test
+    /// targets were excluded by filters") and whether an expansion failed.
+    fn determine_tests(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        options: &TargetPatternPhaseOptions<'_>,
+        expansions: &mut TestExpansions,
+    ) -> Result<(BTreeSet<Label>, BTreeSet<Label>, bool), String> {
+        let parsed = patterns
+            .iter()
+            .map(|pattern| crate::target_pattern::parse(pattern, relative_directory))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut tests = BTreeSet::new();
+        let mut filtered = BTreeSet::new();
+        let mut has_error = false;
+        for pattern in &parsed {
+            let mut targets = self
+                .expand_pattern(pattern, !pattern.negative, true)
+                .map_err(PatternError::into_message)?;
+            if !pattern.negative {
+                // FilterTests (pkgcache/FilteringPolicies.java:81-87).
+                let mut kept = BTreeSet::new();
+                for label in targets {
+                    if self.test_rule_info(&label)?.is_some() || self.is_test_suite(&label)? {
+                        kept.insert(label);
+                    }
+                }
+                targets = kept;
+            }
+            // TestsForTargetPatternFunction.compute (:42-68).
+            let mut expanded = BTreeSet::new();
+            for label in targets {
+                if self.is_test_suite(&label)? {
+                    let (labels, error) =
+                        self.tests_in_suite(&label, expansions, &mut Vec::new())?;
+                    has_error |= error;
+                    expanded.extend(labels);
+                } else {
+                    expanded.insert(label);
+                }
+            }
+            if pattern.negative {
+                for label in expanded {
+                    if tests.remove(&label) {
+                        filtered.insert(label);
+                    }
+                }
+            } else {
+                for label in expanded {
+                    filtered.remove(&label);
+                    tests.insert(label);
+                }
+            }
+        }
+        // testTargetsBuilder.filter(testFilter) (:497): TestFilter.apply
+        // (pkgcache/TestFilter.java:128-170) over the test rules.
+        let mut kept = BTreeSet::new();
+        for label in tests {
+            match self.test_rule_info(&label)? {
+                Some((info, _)) if !(options.test_filter)(&info) => {
+                    filtered.insert(label);
+                }
+                _ => {
+                    kept.insert(label);
+                }
+            }
+        }
+        Ok((kept, filtered, has_error))
     }
 
     fn is_test_suite(&mut self, label: &Label) -> Result<bool, String> {
@@ -8144,71 +8412,122 @@ impl Engine {
         ))
     }
 
-    /// TestExpansionFunction.computeExpandedTests (skyframe/TestExpansionFunction.java:73-136):
-    /// the test rules of `tests` (or, when empty, the package's non-manual
-    /// tests, TestSuiteImplicitTestsAccumulator) filtered by the suite's
-    /// tags, plus the expansion of every test_suite in `tests`.
-    fn expand_test_suite(
+    /// Whether `label` is a test_suite rule of its loaded package.
+    fn loaded_test_suite(&self, label: &Label) -> bool {
+        self.packages
+            .get(&label.package_id())
+            .and_then(|package| package.get(label))
+            .is_some_and(|rule| matches!(rule.kind, RuleKind::Native("test_suite")))
+    }
+
+    /// TestExpansionFunction.computeExpandedTests with `strict`
+    /// (skyframe/TestExpansionFunction.java:58-136, TestsForTargetPattern's
+    /// key): the test rules of `tests` (a member that is neither a test nor
+    /// a test suite is the error event `in test_suite rule 'L': expecting a
+    /// test or a test_suite rule but 'M' is not one.` at the suite), the
+    /// test rules of `$implicit_tests` (the package's non-manual tests
+    /// matching the suite's tags when `tests` is empty,
+    /// TestSuiteImplicitTestsAccumulator), filtered by the suite's tags
+    /// (TestTargetUtils.filterTests: `tags` plus `size`), plus the
+    /// expansion of every test_suite in `tests` (not filtered again). One
+    /// value per suite and build (`expansions`), so an event is reported
+    /// once; the flag is the value's ResolvedTargets.hasError.
+    fn tests_in_suite(
         &mut self,
         suite: &Label,
+        expansions: &mut TestExpansions,
         active: &mut Vec<Label>,
-    ) -> Result<BTreeSet<Label>, String> {
-        use crate::test_command::{matches_filters, sort_tags_by_sense, suite_tags};
+    ) -> Result<(BTreeSet<Label>, bool), String> {
+        use crate::test_command::{matches_filters, sort_tags_by_sense};
+        if let Some(value) = expansions.values.get(suite) {
+            return Ok(value.clone());
+        }
         if active.contains(suite) {
             return Err(format!("cycle in test_suite expansion at {suite}"));
         }
         let Target::Rule(rule) = self.target(suite)? else {
-            return Ok(BTreeSet::new());
+            return Ok((BTreeSet::new(), false));
         };
         let native = rule.native.clone().unwrap_or_default();
-        if native.configurable.contains_key("tests") {
-            return Err(located(
-                rule.location.as_deref(),
-                format!(
-                    "{suite}: a select() in test_suite tests is not supported by the native test runner"
-                ),
-            ));
-        }
-        let mut members = Vec::new();
-        for text in native.labels("tests") {
-            members.push(self.resolve_rule_src(&rule, &text)?);
-        }
-        let (required, excluded) = sort_tags_by_sense(&native.tags);
-        let mut result = BTreeSet::new();
+        let mut has_error = false;
+        // The tests with their filter tags, then the nested suites.
+        let mut result = Vec::new();
         let mut suites = Vec::new();
-        if members.is_empty() {
-            let package = suite.package_id();
-            self.load_package(&package)?;
-            let candidates: Vec<Label> = self.packages[&package]
-                .values()
-                .filter(|rule| !rule.is_manual())
-                .map(|rule| rule.label.clone())
-                .collect();
-            for label in candidates {
-                if let Some((info, _)) = self.test_rule_info(&label)?
-                    && matches_filters(&suite_tags(&info), &required, &excluded, true)
-                {
-                    result.insert(label);
+        for text in native.labels("tests") {
+            let label = self.resolve_rule_src(&rule, &text)?;
+            match self.target(&label)? {
+                Target::Rule(member) if test_suite_filter_tags(&member).is_some() => {
+                    result.push((label, test_suite_filter_tags(&member)));
                 }
-            }
-        } else {
-            for label in members {
-                if let Some((info, _)) = self.test_rule_info(&label)? {
-                    if matches_filters(&suite_tags(&info), &required, &excluded, true) {
-                        result.insert(label);
-                    }
-                } else if self.is_test_suite(&label)? {
+                Target::Rule(member) if matches!(member.kind, RuleKind::Native("test_suite")) => {
                     suites.push(label);
                 }
+                _ => {
+                    expansions.events.push(located(
+                        rule.location.as_deref(),
+                        format!(
+                            "in test_suite rule '{suite}': expecting a test or a test_suite rule but '{label}' is not one."
+                        ),
+                    ));
+                    has_error = true;
+                }
+            }
+        }
+        for label in self.implicit_tests(&rule) {
+            if let Target::Rule(member) = self.target(&label)? {
+                result.push((label, test_suite_filter_tags(&member)));
+            }
+        }
+        let (required, excluded) = sort_tags_by_sense(&native.tags);
+        let mut kept = BTreeSet::new();
+        for (label, tags) in result {
+            if let Some(tags) = tags
+                && matches_filters(&tags, &required, &excluded, true)
+            {
+                kept.insert(label);
             }
         }
         active.push(suite.clone());
         for nested in suites {
-            let expanded = self.expand_test_suite(&nested, active)?;
-            result.extend(expanded);
+            let (expanded, error) = self.tests_in_suite(&nested, expansions, active)?;
+            has_error |= error;
+            kept.extend(expanded);
         }
         active.pop();
-        Ok(result)
+        expansions
+            .values
+            .insert(suite.clone(), (kept.clone(), has_error));
+        Ok((kept, has_error))
+    }
+
+    /// A test_suite's `$implicit_tests` (AttributeProvider.java:386-401 with
+    /// TestSuiteImplicitTestsAccumulator, packages/
+    /// TestSuiteImplicitTestsAccumulator.java:66-95): when `tests` is empty,
+    /// the test rules of its (loaded) package without the `manual` tag whose
+    /// `tags` and `size` match the suite's tags, sorted; otherwise none.
+    fn implicit_tests(&self, suite: &Rule) -> Vec<Label> {
+        use crate::test_command::{matches_filters, sort_tags_by_sense};
+        let Some(native) = &suite.native else {
+            return Vec::new();
+        };
+        if !native.labels("tests").is_empty() {
+            return Vec::new();
+        }
+        let Some(package) = self.packages.get(&suite.label.package_id()) else {
+            return Vec::new();
+        };
+        let (required, excluded) = sort_tags_by_sense(&native.tags);
+        let mut tests: Vec<Label> = package
+            .values()
+            .filter(|rule| !rule.is_manual())
+            .filter(|rule| {
+                test_suite_filter_tags(rule)
+                    .is_some_and(|tags| matches_filters(&tags, &required, &excluded, true))
+            })
+            .map(|rule| rule.label.clone())
+            .collect();
+        tests.sort();
+        tests
     }
 
     /// RunCommand.isExecutable of `label` (Runnable).
@@ -10482,6 +10801,53 @@ impl Engine {
                     key.clone(),
                     Arc::new(
                         crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
+                            .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                    ),
+                );
+            }
+            if let (RuleKind::Native("test_suite"), Some(native)) = (&rule.kind, &rule.native) {
+                // TestSuite.create (rules/test/TestSuite.java:51-90): no files
+                // to build; the data runfiles of `tests` and `$implicit_tests`
+                // whose test rules (TestTagsProvider: Rule.getRuleTags,
+                // through an alias too) match the suite's tags without
+                // `manual`; suites are never filtered.
+                use crate::test_command::{matches_filters, sort_tags_by_sense};
+                let (required, excluded) = sort_tags_by_sense(&native.tags);
+                let mut labels = native.labels("tests");
+                labels.extend(self.implicit_tests(rule).iter().map(ToString::to_string));
+                let mut members = Vec::new();
+                for text in labels {
+                    let label = self.resolve_rule_src(rule, &text)?;
+                    let actual = self
+                        .forwarded_actual(configured, &dependency_key(label.clone()))
+                        .unwrap_or_else(|| label.clone());
+                    let target = self.target(&actual)?;
+                    if let Target::Rule(member) = &target
+                        && let Some((info, _)) = test_rule_info_of(&actual, member)?
+                        && !matches_filters(&info.rule_tags(), &required, &excluded, true)
+                    {
+                        continue;
+                    }
+                    let files = self
+                        .artifacts(&label, config, dry, declared)?
+                        .iter()
+                        .map(Artifact::file)
+                        .collect::<Vec<_>>();
+                    let runfiles = dependency_runfiles(
+                        &target,
+                        &files,
+                        runfiles_info.get(&dependency_key(actual)),
+                    );
+                    members.push((files, runfiles));
+                }
+                let members = members
+                    .iter()
+                    .map(|(files, runfiles)| (files.as_slice(), &**runfiles))
+                    .collect::<Vec<_>>();
+                runfiles_info.insert(
+                    key.clone(),
+                    Arc::new(
+                        crate::runfiles::TargetRunfiles::test_suite(&members)
                             .map_err(|error| format!("{}: {error:#}", rule.label))?,
                     ),
                 );
@@ -12804,9 +13170,10 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
     // config_setting analysis is modelled (crate::config_setting),
     // alias/label_flag/label_setting forward to their actual,
     // constraint_setting/constraint_value/platform provide their platform
-    // providers (crate::platforms) and toolchain_type/toolchain their
-    // toolchain providers (crate::toolchains); the other native classes
-    // fail explicitly.
+    // providers (crate::platforms), toolchain_type/toolchain their
+    // toolchain providers (crate::toolchains) and test_suite its tests'
+    // runfiles (TestSuite.create); the other native classes fail
+    // explicitly.
     if let RuleKind::Native(kind) = rule.kind
         && !matches!(
             kind,
@@ -12820,6 +13187,7 @@ fn native_analysis_gate(rule: &Rule) -> Result<(), String> {
                 | "toolchain_type"
                 | "toolchain"
                 | "config_feature_flag"
+                | "test_suite"
         )
     {
         return Err(format!(
@@ -12910,6 +13278,7 @@ fn resolved_value_gate(rule: &Rule) -> Result<(), String> {
                 | "toolchain_type"
                 | "toolchain"
                 | "config_feature_flag"
+                | "test_suite"
         )
     {
         let gaps = crate::native_rules::analysis_gaps(native);

@@ -1,0 +1,8 @@
+load("//pkg:defs.bzl", "fake_test")
+
+fake_test(
+    name = "o_test",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(name = "other_suite")

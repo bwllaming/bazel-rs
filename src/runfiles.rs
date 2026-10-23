@@ -1225,6 +1225,28 @@ impl TargetRunfiles {
     }
 }
 
+impl TargetRunfiles {
+    /// test_suite (rules/test/TestSuite.java:77-90): no default runfiles;
+    /// the data runfiles of the suite's filtered tests and suites
+    /// (Runfiles.Builder.addTargets with DATA_RUNFILES and
+    /// --incompatible_always_include_files_in_data, Runfiles.java:719-775:
+    /// each one's files to build, then its data runfiles); no executable.
+    pub fn test_suite(members: &[(&[File], &TargetRunfiles)]) -> anyhow::Result<Self> {
+        let prerequisites = members
+            .iter()
+            .map(|(files, runfiles)| Prerequisite { files, runfiles })
+            .collect::<Vec<_>>();
+        Ok(Self {
+            provider: Some(RunfilesProvider {
+                default: Runfiles::empty(),
+                data: collect(&prerequisites, &[], Mapping::Data)?,
+            }),
+            files_to_run: Some(FilesToRun::create(&[], false, None, None)),
+            run: RunSettings::default(),
+        })
+    }
+}
+
 /// A dependency of a runfiles collection: its files to build and providers.
 pub(crate) struct Prerequisite<'a> {
     pub files: &'a [File],

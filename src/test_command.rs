@@ -231,6 +231,10 @@ pub struct TestOptions {
     pub timeout_filters: Option<BTreeSet<TestTimeout>>,
     pub lang_filters: Vec<String>,
     pub build_tests_only: bool,
+    /// `--[no]expand_test_suites` (LoadingOptions, default true): test
+    /// suites among the targets are replaced by their tests
+    /// (crate::engine::Engine::target_pattern_phase).
+    pub expand_test_suites: bool,
     pub verbose_summary: bool,
     pub verbose_timeout_warnings: bool,
     pub max_test_output_bytes: i64,
@@ -265,6 +269,7 @@ impl Default for TestOptions {
             timeout_filters: None,
             lang_filters: Vec::new(),
             build_tests_only: false,
+            expand_test_suites: true,
             verbose_summary: true,
             verbose_timeout_warnings: false,
             max_test_output_bytes: -1,
@@ -456,6 +461,7 @@ impl TestOptions {
                 let value = value?;
                 match name {
                     "build_tests_only" => self.build_tests_only = value,
+                    "expand_test_suites" => self.expand_test_suites = value,
                     "verbose_test_summary" => self.verbose_summary = value,
                     "test_verbose_timeout_warnings" => self.verbose_timeout_warnings = value,
                     "test_runner_fail_fast" => self.runner_fail_fast = value,
@@ -463,12 +469,8 @@ impl TestOptions {
                     "zip_undeclared_test_outputs" => self.zip_undeclared_outputs = value,
                     // The native profile has no convenience symlinks and no
                     // --notest_keep_going cancellation, and does not model
-                    // the up-to-date check or unexpanded test suites.
-                    "print_relative_test_log_paths"
-                    | "check_tests_up_to_date"
-                    | "expand_test_suites"
-                        if value != (name == "test_keep_going" || name == "expand_test_suites") =>
-                    {
+                    // the up-to-date check.
+                    "print_relative_test_log_paths" | "check_tests_up_to_date" if value => {
                         return Err(unsupported(arg));
                     }
                     "test_keep_going" if !value => return Err(unsupported(arg)),

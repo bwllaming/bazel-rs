@@ -1,0 +1,149 @@
+load(":defs.bzl", "consumer", "fake_test", "lib")
+
+fake_test(
+    name = "a_test",
+    size = "small",
+    data = ["a.txt"],
+    tags = ["fast"],
+)
+
+fake_test(
+    name = "b_test",
+    tags = ["slow"],
+)
+
+fake_test(
+    name = "m_test",
+    tags = ["manual"],
+)
+
+lib(name = "lib")
+
+test_suite(
+    name = "explicit",
+    tests = [
+        ":a_test",
+        ":b_test",
+        ":m_test",
+    ],
+)
+
+# The package's non-manual tests.
+test_suite(name = "implicit")
+
+test_suite(
+    name = "fast",
+    tags = ["fast"],
+)
+
+test_suite(
+    name = "not_fast",
+    tags = ["-fast"],
+)
+
+# A test's size is a tag for the filter.
+test_suite(
+    name = "small",
+    tags = ["small"],
+)
+
+test_suite(
+    name = "explicit_fast",
+    tags = ["+fast"],
+    tests = [
+        ":a_test",
+        ":b_test",
+    ],
+)
+
+# Nested suites are not filtered by the outer suite's tags.
+test_suite(
+    name = "nested",
+    tags = ["slow"],
+    tests = [
+        ":b_test",
+        ":fast",
+        "//other:o_test",
+    ],
+)
+
+test_suite(
+    name = "manual_suite",
+    tags = ["manual"],
+    tests = [":a_test"],
+)
+
+test_suite(
+    name = "with_lib",
+    tags = ["manual"],
+    tests = [
+        ":a_test",
+        ":lib",
+    ],
+)
+
+# Manual: an alias of a test is itself a test to run for `test` (its
+# configured target has the test's label), which this fixture leaves out.
+alias(
+    name = "a_alias",
+    testonly = True,
+    actual = ":a_test",
+    tags = ["manual"],
+)
+
+# An alias is no test rule for the expansion; analysis sees the test.
+test_suite(
+    name = "with_alias",
+    tags = ["manual"],
+    tests = [":a_alias"],
+)
+
+test_suite(
+    name = "with_file",
+    tags = ["manual"],
+    tests = ["a.txt"],
+)
+
+consumer(
+    name = "consumer",
+    testonly = True,
+    deps = [
+        ":explicit",
+        ":implicit",
+        ":nested",
+        ":a_test",
+    ],
+)
+
+consumer(
+    name = "consumer_lib",
+    testonly = True,
+    tags = ["manual"],
+    deps = [":with_lib"],
+)
+
+consumer(
+    name = "consumer_not_testonly",
+    tags = ["manual"],
+    deps = [":implicit"],
+)
+
+filegroup(
+    name = "fg",
+    testonly = True,
+    srcs = [":explicit"],
+)
+
+consumer(
+    name = "consumer_alias",
+    testonly = True,
+    tags = ["manual"],
+    deps = [":with_alias"],
+)
+
+consumer(
+    name = "consumer_file",
+    testonly = True,
+    tags = ["manual"],
+    deps = [":with_file"],
+)

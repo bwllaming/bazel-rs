@@ -39,7 +39,7 @@ is `<built-in rule NAME>` (`packages/RuleFactory.java:342-344`), `type()` is
 | `label_flag`, `label_setting` | `rules/LabelBuildSettings.java:86-127`, `packages/RuleClass.java:904-919` | `scope` (*nc*, one of `universal`/`target`/`project`, `analysis/config/Scope.java:31-60`), `build_setting_default` (nodep label, mandatory, *nc*), `help` (*nc*) |
 | `genquery` | `rules/genquery/GenQueryRule.java:37-85` | `scope` (mandatory), `strict`, `expression` (mandatory), `opts`, `compressed_output` |
 | `starlark_doc_extract` | `rules/starlarkdocextract/StarlarkDocExtractRule.java:33-139` | `src` (mandatory), `deps`, `symbol_names`, `render_main_repo_name`, `allow_unused_doc_comments`; implicit outputs `NAME.binaryproto`, `NAME.textproto` (`StarlarkDocExtract.java:77-78`) |
-| `test_suite` | `rules/test/TestSuiteRule.java:30-120` | `tests` (*nc*); `testonly` defaults to True |
+| `test_suite` | `rules/test/TestSuiteRule.java:30-120` | `tests` (*nc*, no files); `$implicit_tests` (the package's non-manual tests matching `tags` when `tests` is empty); `testonly` defaults to True |
 | `java_plugins_flag_alias` | `rules/java/JavaPluginsFlagAliasRule.java:47-69` (`bazel/rules/JavaRules.java:58`) | none |
 | `cc_libc_top_alias` | `rules/cpp/CcLibcTopAlias.java`, `rules/LateBoundAlias.java:93-145` (`bazel/rules/CcRules.java:59`) | none; no `licenses`/`distribs` |
 | `filegroup` | `rules/filegroup/FilegroupRule.java:36-80` | `srcs`, `output_group`, `data`, `output_licenses` |
@@ -325,14 +325,32 @@ too (docs/COMMON_RULE_ATTRIBUTES.md).
   values); the functions stay absent from BUILD-loaded `native`
   (docs/EXISTING_RULES.md).
 * `subpackages()`, `environment_group`, `query --output=label_kind` (query
-  options are rejected), `test_suite`'s implicit `$implicit_tests`.
+  options are rejected).
 * Every other Bazel native rule class (for example the `EmptyRule` stubs
   `java_library`/`py_binary` that load in Bazel and fail at analysis) remains an
   unknown global.
 * Analysis of every class listed above except `filegroup`/`genrule`,
   `config_setting`, the alias-like rules (docs/CONFIGURATION.md), the
-  platform rules (docs/PLATFORMS.md) and `toolchain`/`toolchain_type`
-  (docs/TOOLCHAINS.md).
+  platform rules (docs/PLATFORMS.md), `toolchain`/`toolchain_type`
+  (docs/TOOLCHAINS.md) and `test_suite` (below).
+
+## test_suite analysis
+
+`build`/`test` replace a test suite among their targets by its tests
+(docs/TEST_COMMAND.md, "Selecting tests"); a suite is analyzed as a
+dependency (its `testonly` dependents), with `--noexpand_test_suites`, or
+as another suite's member. TestSuite.create (rules/test/TestSuite.java:44-118):
+`tests` and `$implicit_tests` are target-configuration edges; a file in
+`tests` is `in tests attribute of test_suite rule L: source file 'F' is
+misplaced here (expected no files)`, a member whose alias chain ends in
+neither a test rule nor a test suite `... expecting a test or a test_suite
+rule but 'M' is not one`; the configured target has no files to build, no
+default runfiles and no executable, and its data runfiles merge, in order,
+each member's files to build and data runfiles
+(Runfiles.Builder.addTargets with --incompatible_always_include_files_in_data)
+— test rules only when their Rule.getRuleTags match the suite's `tags`
+without `manual`, nested suites always; it has an OutputGroupInfo like
+every rule target. Paired capture `tests/fixtures/test_suite`.
 
 ## Documented divergences (pre-existing, unchanged here)
 

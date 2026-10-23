@@ -513,6 +513,7 @@ fn run() -> Result<(), String> {
                                         runfiles: runfiles_options,
                                         options: &test_options,
                                         remote_enabled,
+                                        pattern_failure: None,
                                         snapshot,
                                     },
                                 ),
@@ -557,6 +558,7 @@ fn run() -> Result<(), String> {
                                         remote_enabled,
                                         loading_threads,
                                         memory_limit_mb,
+                                        pattern_failure: None,
                                         snapshot,
                                     },
                                 ),
@@ -766,28 +768,47 @@ fn run() -> Result<(), String> {
                 runfiles: runfiles_options,
                 options: &test_options,
                 remote_enabled,
+                pattern_failure: None,
                 snapshot,
             },
         });
     }
     bazel_rs::perf_mark("select.start");
-    let labels = if command == "run" {
+    let accepts = |info: &bazel_rs::test_command::TestRuleInfo| test_options.accepts(info);
+    let selected = if command == "run" {
         // The first residue argument is the target; the rest are its
         // arguments (RunCommand.java:251-252).
-        engine.select_for_build(&rest[..1], &relative_directory)
+        engine
+            .select_for_build(&rest[..1], &relative_directory)
+            .map(|build| bazel_rs::engine::TargetPatternPhase {
+                build,
+                ..Default::default()
+            })
     } else {
-        engine.select_for_build(&rest, &relative_directory)
+        engine.target_pattern_phase(
+            &rest,
+            &relative_directory,
+            &bazel_rs::engine::TargetPatternPhaseOptions {
+                determine_tests: false,
+                build_tests_only: test_options.build_tests_only,
+                expand_test_suites: test_options.expand_test_suites,
+                test_filter: &accepts,
+            },
+        )
     };
     bazel_rs::perf_mark("select.end");
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
         warn(&warning);
     }
-    let labels = labels?;
+    let selected = selected?;
     // Target-pattern loading succeeded: analysis or execution failures from
     // here on no longer block the lockfile write, like a Bazel command that
     // fails after loading (BazelLockFileModule.afterCommand still runs).
     lockfile_gate.open();
+    report_target_pattern_phase(&selected);
+    let pattern_failure = pattern_phase_failure(&selected);
+    let labels = selected.build;
     if command == "run" {
         return run_target(RunContext {
             engine,
@@ -828,6 +849,7 @@ fn run() -> Result<(), String> {
                 memory_limit_mb,
             ),
             memory_limit_mb,
+            pattern_failure,
             snapshot,
         },
     )
@@ -843,6 +865,10 @@ struct BuildTail<'a> {
     /// The effective loading-thread count, for the repository timing report.
     loading_threads: usize,
     memory_limit_mb: Option<u64>,
+    /// The target pattern phase's failure (a test suite's expansion error,
+    /// [`pattern_phase_failure`]): the build runs, then the command fails.
+    /// Always `None` on a snapshot hit (such a run is never saved).
+    pattern_failure: Option<&'static str>,
     snapshot: bazel_rs::snapshot::Scope,
 }
 
@@ -857,6 +883,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         remote_enabled,
         loading_threads,
         memory_limit_mb,
+        pattern_failure,
         snapshot,
     } = tail;
     let result = planned.request.and_then(|request| {
@@ -937,6 +964,14 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
     snapshot.finish();
+    // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
+    // a test suite's expansion error fails the command once it has built.
+    if let Some(message) = pattern_failure {
+        eprintln!("ERROR: {message}");
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -1489,6 +1524,9 @@ struct TestTail<'a> {
     /// Whether the remote cache is set up (N41): the build summary names its
     /// hits. Test actions themselves are local-only (docs/TEST_COMMAND.md).
     remote_enabled: bool,
+    /// The target pattern phase's failure ([`pattern_phase_failure`]): the
+    /// tests run, then the command fails. Always `None` on a snapshot hit.
+    pattern_failure: Option<&'static str>,
     /// The analysis snapshot's sessions: finished once the build part ends.
     snapshot: bazel_rs::snapshot::Scope,
 }
@@ -1581,31 +1619,33 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         mut tail,
     } = context;
     let options = tail.options;
-    let selected = engine.select_for_test(patterns, relative_directory);
+    let accepts = |info: &bazel_rs::test_command::TestRuleInfo| options.accepts(info);
+    let selected = engine.target_pattern_phase(
+        patterns,
+        relative_directory,
+        &bazel_rs::engine::TargetPatternPhaseOptions {
+            determine_tests: true,
+            build_tests_only: options.build_tests_only,
+            expand_test_suites: options.expand_test_suites,
+            test_filter: &accepts,
+        },
+    );
     for warning in engine.take_warnings() {
         warn(&warning);
     }
-    let (mut build, candidates) = selected?;
+    let selected = selected?;
     // Test-target loading succeeded: the lockfile write is allowed.
     lockfile_gate.open();
-    let mut tests = Vec::new();
+    report_target_pattern_phase(&selected);
+    tail.pattern_failure = pattern_phase_failure(&selected);
+    let build = selected.build;
+    let tests = selected.tests.unwrap_or_default();
     let mut infos = std::collections::BTreeMap::new();
-    let any_candidate = !candidates.is_empty();
-    for label in candidates {
+    for label in &tests {
         let (info, location) = engine
-            .test_rule_info(&label)?
+            .test_rule_info(label)?
             .ok_or_else(|| format!("internal error: {label} is not a test rule"))?;
-        if options.accepts(&info) {
-            infos.insert(label.clone(), (info, location));
-            tests.push(label);
-        }
-    }
-    // TargetPatternPhaseFunction.java:136-139.
-    if tests.is_empty() && any_candidate {
-        eprintln!("WARNING: All specified test targets were excluded by filters");
-    }
-    if options.build_tests_only {
-        build = tests.clone();
+        infos.insert(label.clone(), (info, location));
     }
     let planned_tests = tests
         .iter()
@@ -1656,6 +1696,7 @@ fn test_tail(
         runfiles,
         options,
         remote_enabled,
+        pattern_failure,
         snapshot,
     } = tail;
     // The tests a failed build reports (also those of a decoded request).
@@ -1793,6 +1834,17 @@ fn test_tail(
     }
     let _ =
         stdout.write_all(summary_text(&outcome.summaries, outcome.executed, options).as_bytes());
+    let passed = outcome
+        .summaries
+        .iter()
+        .all(|summary| summary.status.passed());
+    // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
+    // a test suite's expansion error fails the build once it has run, and
+    // passing tests say so (TestCommand.java:216-223).
+    if pattern_failure.is_some() && passed {
+        let _ =
+            stdout.write_all(b"All tests passed but there were other errors during the build.\n\n");
+    }
     let _ = stdout.flush();
     drop(stdout);
     // The build's failure summary names the first action error once
@@ -1801,10 +1853,6 @@ fn test_tail(
     if let Some(error) = outcome.errors.first().filter(|_| !options.keep_going) {
         eprintln!("ERROR: {error}");
     }
-    let passed = outcome
-        .summaries
-        .iter()
-        .all(|summary| summary.status.passed());
     // A target that failed to build (a test action error under
     // --keep_going) makes the build fail: exit 1, the more important code
     // (DetailedExitCodeComparator, TestCommand.java:236-240).
@@ -1812,6 +1860,9 @@ fn test_tail(
         .summaries
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
+    if let Some(message) = pattern_failure {
+        eprintln!("ERROR: {message}");
+    }
     if failed_to_build || !passed {
         // A snapshot hit whose tests failed: a damaged repository tree the
         // hit trusted heals (crate::snapshot::hit, L2-W5g).
@@ -1820,13 +1871,60 @@ fn test_tail(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    std::process::exit(if failed_to_build {
+    std::process::exit(if failed_to_build || pattern_failure.is_some() {
         1
     } else if passed {
         0
     } else {
         3
     });
+}
+
+/// The target pattern phase's events (TargetPatternPhaseFunction.java
+/// :134-139, 189-191): test-suite expansion errors as they were reported,
+/// `All specified test targets were excluded by filters`, and `Target
+/// pattern parsing failed.` for an expansion error of the tests to run.
+fn report_target_pattern_phase(phase: &bazel_rs::engine::TargetPatternPhase) {
+    for error in &phase.errors {
+        eprintln!("ERROR: {error}");
+    }
+    if phase.all_excluded {
+        eprintln!("WARNING: All specified test targets were excluded by filters");
+    }
+    if phase.pattern_error {
+        eprintln!("WARNING: Target pattern parsing failed.");
+    }
+}
+
+/// BuildView.createAnalysisFailureDetail's loading messages (:760-776).
+fn target_pattern_failure(pattern_error: bool, post_expansion_error: bool) -> Option<&'static str> {
+    if pattern_error {
+        Some("command succeeded, but there were errors parsing the target pattern")
+    } else if post_expansion_error {
+        Some("command succeeded, but there were loading phase errors")
+    } else {
+        None
+    }
+}
+
+/// The failure a target pattern phase leaves for the end of the command
+/// ([`target_pattern_failure`]). A phase that reported test-suite expansion
+/// errors makes the command fail after its build, so the run is never saved
+/// as an analysis snapshot (crate::observed_fs::Taint::Errors, like an
+/// analysis error; under BAZEL_RS_SNAPSHOT=verify a shadow full analysis
+/// that reports one disagrees with its hit): a snapshot hit, which skips
+/// the phase and replays what it printed, never has a failure to report.
+fn pattern_phase_failure(phase: &bazel_rs::engine::TargetPatternPhase) -> Option<&'static str> {
+    let failure = target_pattern_failure(phase.pattern_error, phase.post_expansion_error);
+    if failure.is_some() || !phase.errors.is_empty() {
+        bazel_rs::observed_fs::taint(bazel_rs::observed_fs::Taint::Errors, || {
+            format!(
+                "the target pattern phase reported {} test-suite expansion error(s)",
+                phase.errors.len()
+            )
+        });
+    }
+    failure
 }
 
 /// A failed build of `bazel test` (TestCommand.java:200-243 with

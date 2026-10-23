@@ -1778,6 +1778,20 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
             "generator_function",
             "generator_location",
         ],
+        // TestSuite.create reads `tests`, `$implicit_tests` and `tags`
+        // (rules/test/TestSuite.java:44-118; crate::engine).
+        "test_suite" => &[
+            "tests",
+            "tags",
+            "deprecation",
+            "testonly",
+            "features",
+            "licenses",
+            "distribs",
+            "generator_name",
+            "generator_function",
+            "generator_location",
+        ],
         // ConfigSetting.create reads only these (rules/config/ConfigSetting.java:111-258).
         "config_setting" => &[
             "values",

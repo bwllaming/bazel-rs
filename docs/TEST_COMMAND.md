@@ -39,26 +39,45 @@ EnumFilterConverter, TriStateConverter):
 Explicit failures: coverage (`--collect_code_coverage`, not parsed),
 per-label `regex@N` forms of `--flaky_test_attempts`/`--runs_per_test`,
 `--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
-convenience symlinks), `--noexpand_test_suites`, other `--test_strategy`
-values, `--run_under` with a test under `run`, a `select()` in `shard_count`
-or in test_suite `tests`, `--keep_going` with a build failure (the native
-build stops at the first failing action).
+convenience symlinks), other `--test_strategy` values, `--run_under` with a
+test under `run`, a `select()` in `shard_count`, `--keep_going` with a build
+failure (the native build stops at the first failing action). (A `select()`
+in test_suite `tests` is a loading error: the attribute is not configurable.)
 
 ## Selecting tests
 
-TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java:95-250,
-400-500): the targets to build are every pattern's targets with test suites
-replaced by their tests; the tests are the test rules and test suites among
-them (FilteringPolicies.FILTER_TESTS: manual ones only when named
-explicitly). TestExpansionFunction (skyframe/TestExpansionFunction.java:73-136,
-non-strict): a suite's `tests` (test rules, manual ones included; nested
-suites recursively; other targets ignored) or, when empty, the package's
-non-manual tests (TestSuiteImplicitTestsAccumulator), filtered by the suite's
-`tags` (TestTargetUtils.filterTests on tags + size). The command-line filters
-then apply (TestFilter; tag filters use Rule.getRuleTags: tags, size,
-timeout, `flaky`, `local`); `--build_tests_only` builds only those tests.
-`WARNING: All specified test targets were excluded by filters`; no tests:
-`ERROR: No test targets were found, yet testing was requested`, exit 4.
+TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java:75-250,
+determineTests :408-500; `Engine::target_pattern_phase`, shared with
+`build`): the targets are every pattern's targets (FILTER_MANUAL, negative
+patterns subtracted); the tests are determineTests' — per positive pattern
+its test rules and test suites (FilteringPolicies.FILTER_TESTS: manual ones
+only when named explicitly), per negative pattern its unfiltered targets,
+each expanded by TestsForTargetPatternFunction and added or removed in
+pattern order, then the command-line filters (TestFilter; tag filters use
+Rule.getRuleTags: tags, size, timeout, `flaky`, `local`). `test` builds the
+targets plus the tests, `--build_tests_only` (also under `build`) only the
+tests; with `--expand_test_suites` (default) every test suite among the
+targets to build is replaced by its tests — so `//pkg:suite -//pkg:t` still
+builds `t` but does not test it. TestExpansionFunction
+(skyframe/TestExpansionFunction.java:58-136, strict, one value per suite): a
+suite's `tests` (test rules, manual ones included; nested suites
+recursively) and `$implicit_tests` (when `tests` is empty, the package's
+non-manual tests matching the suite's tags, TestSuiteImplicitTestsAccumulator),
+filtered by the suite's `tags` (TestTargetUtils.filterTests on tags + size;
+a nested suite's expansion is not filtered again). A member that is neither
+a test nor a test suite (a library, an alias, a file) is the error `in
+test_suite rule 'L': expecting a test or a test_suite rule but 'M' is not
+one.` at the suite: the command still builds (and tests) the rest, then
+fails with exit 1 and BuildView's `command succeeded, but there were loading
+phase errors` (`build`) or, after `WARNING: Target pattern parsing failed.`
+and `All tests passed but there were other errors during the build.`,
+`command succeeded, but there were errors parsing the target pattern`
+(`test`). `--noexpand_test_suites` analyzes the suites themselves
+(docs/NATIVE_BUILD_RULES.md, test_suite). `WARNING: All specified test
+targets were excluded by filters`; no tests: `ERROR: No test targets were
+found, yet testing was requested`, exit 4. Paired capture
+`tests/fixtures/test_suite` (38 genuine 9.3.0 cases, all MATCH; replayed by
+`tests/test_suite.rs`).
 `shard_count` is checked like RuleConfiguredTargetBuilder.initializeTestProvider
 (`Must not be negative.`, more than 50 shards).
 
