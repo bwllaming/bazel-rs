@@ -17,6 +17,7 @@ load(
     "status_wrap",
     "tool",
     "use",
+    "use_manifest",
     "via_closure",
 )
 
@@ -79,3 +80,5 @@ status_lib(name = "status_lib")
 status_wrap(name = "status_wrap", deps = [":status_lib"])
 
 status_group(name = "status_group")
+
+use_manifest(name = "use_manifest", tool = ":tool")

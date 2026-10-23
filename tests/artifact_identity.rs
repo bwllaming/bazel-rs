@@ -352,6 +352,57 @@ fn status_file_in_an_output_group_resolves_alone() {
 }
 
 #[test]
+fn runfiles_manifest_input_resolves_to_its_planned_node() {
+    // files_to_run.runfiles_manifest is the File of a planned runfiles node
+    // (the tree MANIFEST under --build_runfile_links), so as an action input
+    // it resolves to that node. Without runfile manifests no node is planned
+    // and the field is None, as in Bazel: no File without an Artifact
+    // reaches the consumer (`input has no declared artifact` stays the
+    // error of a File no producer registered).
+    let ws = Workspace::new();
+    let planned = ws.build_env(
+        &[("BAZEL_RS_DUMP_ACTIONS", "1")],
+        &["--nobuild", "//pkg:use_manifest"],
+    );
+    let text = stderr(&planned);
+    assert!(planned.status.success(), "{text}");
+    assert!(
+        text.contains(
+            "  generated //pkg:tool#runfiles_tree[0] -> bazel-out/k8-fastbuild/bin/pkg/tool.sh.runfiles/MANIFEST\n\
+             \x20 output bazel-out/k8-fastbuild/bin/pkg/use_manifest.txt\n"
+        ),
+        "{text}"
+    );
+    let built = outputs(&ws.build(&["//pkg:use_manifest"]));
+    assert_eq!(built.len(), 1, "{built:?}");
+    assert_eq!(
+        built[0].1,
+        "bazel-out/k8-fastbuild/bin/pkg/use_manifest.txt"
+    );
+    let entries = built[0]
+        .2
+        .lines()
+        .map(|line| line.split(' ').next().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        entries,
+        [
+            "_main/pkg/gen_data.txt",
+            "_main/pkg/tool.sh",
+            "_repo_mapping"
+        ]
+    );
+    let output = ws.build(&["--nobuild_runfile_manifests", "//pkg:use_manifest"]);
+    let text = stderr(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("'NoneType' value has no field or method 'path'"),
+        "{text}"
+    );
+    assert!(!text.contains("has no declared artifact"), "{text}");
+}
+
+#[test]
 fn declared_output_of_a_dependency_path_is_an_output_conflict() {
     // Two targets declaring one output path conflict when the second
     // registers it (Bazel: an action conflict, `file 'pkg/same.txt' is

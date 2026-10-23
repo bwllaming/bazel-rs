@@ -264,10 +264,16 @@ type DependencyViews = HashMap<ConfiguredTargetKey, DependencyTarget>;
 
 /// BAZEL_RS_VERIFY_VIEWS: the memoized view of `key` equals the view this
 /// edge rebuilt (what the per-edge code computed before W1a): its files,
-/// kind, providers (keys), rule class, executable and the shared Target
-/// identity (pointer). Rebuilding re-registers the view's artifacts, which
-/// checks that their index entries are unchanged ([`register_artifact`]
-/// under BAZEL_RS_VERIFY_ARTIFACTS or in debug builds).
+/// kind, providers (ids and values), rule class, executable and the shared
+/// Target identity (pointer). A provider value is one instance per
+/// configured target (the committed providers, the native OutputGroupInfo
+/// memo), so the rebuilt view holds the very same value (pointer); the
+/// framework providers a view build synthesizes afresh — an output file's
+/// `_validation` OutputGroupInfo, a coverage configuration's
+/// InstrumentedFilesInfo — compare by repr. Rebuilding re-registers the
+/// view's artifacts, which checks that their index entries are unchanged
+/// ([`register_artifact`] under BAZEL_RS_VERIFY_ARTIFACTS or in debug
+/// builds).
 fn verify_view(
     key: &ConfiguredTargetKey,
     memoized: &DependencyTarget,
@@ -302,6 +308,20 @@ fn verify_view(
         |view: &analysis::DependencyView| view.providers.keys().cloned().collect::<Vec<_>>();
     if provider_ids(memo) != provider_ids(now) {
         stale("providers", &provider_ids(memo), &provider_ids(now));
+    }
+    for (id, value) in &memo.providers {
+        let (value, other) = (value.value(), now.providers[id].value());
+        let synthesized = matches!(
+            id.as_str(),
+            crate::output_group_info::PROVIDER_ID | crate::instrumented_files::PROVIDER_ID
+        );
+        if !value.ptr_eq(other) && (!synthesized || value.to_repr() != other.to_repr()) {
+            stale(
+                &format!("provider {id}"),
+                &value.to_repr(),
+                &other.to_repr(),
+            );
+        }
     }
     if memo.provider_keys != now.provider_keys {
         stale("provider keys", &memo.provider_keys, &now.provider_keys);
@@ -12469,6 +12489,128 @@ mod tests {
         let mut other = artifact.clone();
         other.producer = Some(("//pkg:other#0".into(), 0));
         register_artifact(&mut index, &artifact.file, &other);
+    }
+
+    /// An index miss stays a miss (`None`: the caller reports its `... has no
+    /// declared artifact ...` error where the File is used) — except for a
+    /// workspace status File, which the lookup that reaches it registers
+    /// (both status files; the bare artifacts under --nobuild, which plans
+    /// no status action), so it resolves whichever lookup comes first.
+    #[test]
+    fn indexed_artifact_registers_only_the_workspace_status_files_on_a_miss() {
+        let mut engine = Engine::new(PathBuf::new());
+        engine.set_execute_build(false);
+        let mut index = BTreeMap::new();
+        let mut plan = None;
+        let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
+        let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
+        let mut lookup = |file: &File, index: &mut BTreeMap<File, Artifact>| {
+            engine
+                .indexed_artifact(
+                    file,
+                    index,
+                    &mut plan,
+                    &mut nodes,
+                    &mut producers,
+                    &client,
+                    &status,
+                )
+                .unwrap()
+        };
+        let generated = generated_out_txt();
+        assert!(lookup(&generated.file(), &mut index).is_none());
+        assert!(index.is_empty());
+        register_artifact(&mut index, &generated.file, &generated);
+        assert!(same_artifact(
+            &lookup(&generated.file(), &mut index).unwrap(),
+            &generated
+        ));
+        let volatile = crate::analysis_runtime::workspace_status_file("volatile-status.txt");
+        let artifact = lookup(&volatile, &mut index).unwrap();
+        assert_eq!(artifact.real, Path::new("bazel-out/volatile-status.txt"));
+        assert!(artifact.producer.is_none() && artifact.constant_metadata);
+        let stable = crate::analysis_runtime::workspace_status_file("stable-status.txt");
+        assert!(index.contains_key(&stable) && index.len() == 3);
+        assert!(nodes.is_empty() && producers.is_empty());
+    }
+
+    /// A memoized dependency view of `//pkg:dep` holding `providers`, and
+    /// its key (the BAZEL_RS_VERIFY_VIEWS tests).
+    fn view_with(
+        providers: BTreeMap<String, starlark::values::OwnedFrozenValue>,
+    ) -> (ConfiguredTargetKey, DependencyTarget) {
+        let runfiles = crate::runfiles::TargetRunfiles::default();
+        let identity = Arc::new(analysis::dependency_target_data(
+            "//pkg:dep",
+            "//pkg:dep",
+            &[],
+            false,
+            true,
+            false,
+            false,
+            &providers,
+            &[],
+            &runfiles,
+        ));
+        let key = ConfiguredTargetKey::new(
+            Label::parse("//pkg:dep", "").unwrap(),
+            crate::configuration::Configuration::default().id,
+        );
+        let view = DependencyTarget::new(analysis::DependencyView {
+            label: "//pkg:dep".into(),
+            files: Vec::new(),
+            is_source: false,
+            is_rule: true,
+            is_package_group: false,
+            is_filegroup: false,
+            providers,
+            provider_keys: Vec::new(),
+            runfiles: Arc::new(runfiles),
+            rule_class: Some("dep".into()),
+            identity,
+        });
+        (key, view)
+    }
+
+    /// BAZEL_RS_VERIFY_VIEWS compares provider values, not only ids: the
+    /// same instances pass, and so does a framework OutputGroupInfo a view
+    /// build synthesizes afresh with the same repr (an output file's
+    /// `_validation` group).
+    #[test]
+    fn verify_view_accepts_the_same_provider_values() {
+        let set = crate::starlark_types::Depset::from_files(vec![generated_out_txt().file()]);
+        let committed = crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap();
+        let (key, memoized) = view_with(BTreeMap::from([
+            ("//pkg:defs.bzl%Info".to_owned(), committed),
+            (
+                crate::output_group_info::PROVIDER_ID.to_owned(),
+                crate::output_group_info::freeze_validation(set.clone()).unwrap(),
+            ),
+        ]));
+        verify_view(&key, &memoized, Ok(memoized.clone()));
+        let mut rebuilt = memoized.clone();
+        rebuilt.providers.insert(
+            crate::output_group_info::PROVIDER_ID.to_owned(),
+            crate::output_group_info::freeze_validation(set).unwrap(),
+        );
+        verify_view(&key, &memoized, Ok(rebuilt));
+    }
+
+    /// A committed provider whose value changed under the same id makes the
+    /// memoized view stale.
+    #[test]
+    #[should_panic(expected = "is stale: provider //pkg:defs.bzl%Info differs")]
+    fn verify_view_rejects_a_changed_provider_value() {
+        let (key, memoized) = view_with(BTreeMap::from([(
+            "//pkg:defs.bzl%Info".to_owned(),
+            crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap(),
+        )]));
+        let mut rebuilt = memoized.clone();
+        rebuilt.providers.insert(
+            "//pkg:defs.bzl%Info".to_owned(),
+            crate::instrumented_files::coverage_gap_frozen("//pkg:dep").unwrap(),
+        );
+        verify_view(&key, &memoized, Ok(rebuilt));
     }
 
     #[test]

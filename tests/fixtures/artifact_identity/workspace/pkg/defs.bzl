@@ -174,3 +174,13 @@ def _status_aspect(target, ctx):
     return [OutputGroupInfo(aspect_status = depset([ctx.version_file]))]
 
 status_aspect = aspect(_status_aspect)
+
+def _use_manifest(ctx):
+    # A tool's runfiles manifest as an action input: the File of the
+    # planned manifest node, None without runfile manifests (as in Bazel).
+    manifest = ctx.attr.tool[DefaultInfo].files_to_run.runfiles_manifest
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(inputs = [manifest], outputs = [out], command = "cp $1 $2", arguments = [manifest.path, out.path])
+    return [DefaultInfo(files = depset([out]))]
+
+use_manifest = rule(_use_manifest, attrs = {"tool": attr.label(executable = True, cfg = "target")})
