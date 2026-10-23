@@ -1021,9 +1021,15 @@ impl Converter<'_> {
 }
 
 /// A syntactically valid label of an apparent repository whose resolution
-/// failed (not visible, or no repository mapping is available).
-fn deferred(text: &str, _error: &str) -> bool {
-    text.starts_with('@') && !text.starts_with("@@") && !text.starts_with("@//")
+/// failed (not visible, or no repository mapping is available). Never an
+/// inline-rerun sentinel: a loading worker's resolution that needs
+/// coordinator-only work aborts its unit (the coordinator resolves the
+/// label at its demand point) instead of keeping the label unresolved.
+fn deferred(text: &str, error: &str) -> bool {
+    text.starts_with('@')
+        && !text.starts_with("@@")
+        && !text.starts_with("@//")
+        && !crate::repository_demand::is_inline_rerun_sentinel(error)
 }
 
 /// License.parseLicense (packages/License.java:115-142).
@@ -1831,6 +1837,31 @@ pub(crate) fn describe(value: &AttrValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An apparent-repository label whose resolution failed is deferred
+    /// (kept as written), unless the failure is an inline-rerun sentinel:
+    /// then the worker's unit aborts and the coordinator resolves the label
+    /// (W6 review follow-up).
+    #[test]
+    fn rerun_sentinels_are_never_deferred_labels() {
+        let unresolved = "no repository is visible as '@other' from main repository";
+        assert!(deferred("@other//pkg:x", unresolved));
+        assert!(!deferred("@@other+//pkg:x", unresolved));
+        assert!(!deferred("@//pkg:x", unresolved));
+        for sentinel in [
+            format!(
+                "{}: runtime 1:prepare:ordinary:ext is unfetched and this thread does not fetch",
+                crate::repository_demand::NEEDS_REPOSITORY
+            ),
+            crate::repository_demand::order_dependent("glob symlink x"),
+            format!(
+                "{}: waiting for //:a.bzl would close a load cycle across threads",
+                crate::repository_demand::PARALLEL_BZL_CYCLE
+            ),
+        ] {
+            assert!(!deferred("@other//pkg:x", &sentinel), "{sentinel:?}");
+        }
+    }
 
     #[test]
     fn registered_classes_build_and_spell_checker_matches_bazel() {
