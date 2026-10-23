@@ -1700,6 +1700,8 @@ impl RepositorySet {
                         provenance,
                         execute,
                     )?;
+                    // A local rule executes on every run (PERF-REPO).
+                    crate::repository_store::timing::record_local_execution(canonical);
                     self.record_local_execution(
                         canonical,
                         &declaration.name,
@@ -1729,12 +1731,7 @@ impl RepositorySet {
                     },
                     execute,
                 )
-                .map(|(root, publication)| {
-                    if local && publication == crate::repository_store::Publication::Executed {
-                        crate::repository_store::timing::record_local_execution(canonical);
-                    }
-                    root
-                })
+                .map(|(root, _)| root)
             },
         )
         .map(PathBuf::as_path)
@@ -2206,6 +2203,10 @@ impl RepositorySet {
                             provenance,
                             execute,
                         )?;
+                        // A local rule executes on every run (PERF-REPO).
+                        crate::repository_store::timing::record_local_execution(
+                            &repository.canonical_name,
+                        );
                         self.record_local_execution(
                             &repository.canonical_name,
                             &repository.original_name,
@@ -2240,14 +2241,7 @@ impl RepositorySet {
                         },
                         execute,
                     )
-                    .map(|(root, publication)| {
-                        if local && publication == crate::repository_store::Publication::Executed {
-                            crate::repository_store::timing::record_local_execution(
-                                &repository.canonical_name,
-                            );
-                        }
-                        root
-                    })
+                    .map(|(root, _)| root)
                 },
             )
             .map(PathBuf::as_path)
