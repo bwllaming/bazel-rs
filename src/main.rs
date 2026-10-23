@@ -617,13 +617,16 @@ fn run() -> Result<(), String> {
             test: &test_options,
         });
     }
+    let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
+    // After analysis and execution (review i20): repositories demanded while
+    // analyzing — most of a build's — are counted too, which a report
+    // printed after target-pattern selection missed.
     bazel_rs::repository_store::timing::report(loading_threads_for_report(
         &command,
         loading_phase_threads,
         &query_options,
         memory_limit_mb,
     ));
-    let result = engine.build_with_options(&labels, &cache, jobs, action_dump.as_deref());
     // Analysis warnings precede the result, also when the build fails.
     for warning in engine.take_warnings() {
         warn(&warning);

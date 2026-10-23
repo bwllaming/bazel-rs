@@ -237,6 +237,15 @@ pub mod timing {
         /// acceptance requires 0 after a run whose repos were staged by a
         /// build (fingerprints recorded settled, outside the racy window).
         pub files_hashed: AtomicU64,
+        /// Regular files hashed for recorded-input file states (watched or
+        /// read files, at execution and warm validation), and their bytes.
+        pub recorded_hashed: AtomicU64,
+        pub recorded_hashed_bytes: AtomicU64,
+        /// Recorded-input file states answered by the in-process digest
+        /// memo instead (review i20: `bin/gazelle` and `bin/fetch_repo` per
+        /// go_repository), and the bytes they did not re-hash.
+        pub recorded_memo_hits: AtomicU64,
+        pub recorded_memo_hit_bytes: AtomicU64,
         pub execute: Acc,
         pub publish: Acc,
         pub spec_serialize: Acc,
@@ -244,6 +253,10 @@ pub mod timing {
         pub reused: AtomicU64,
         pub executed: AtomicU64,
         pub roots: std::sync::Mutex<Vec<(String, f64, &'static str)>>,
+        /// Executed repositories whose rule is `local = True`: re-run by
+        /// every invocation by design (RepositoryFetchFunction.
+        /// shouldUseCachedRepoContents, :502-511), never reused.
+        pub local: std::sync::Mutex<Vec<String>>,
     }
     pub static PHASES: Phases = Phases {
         manifest_read: Acc {
@@ -261,6 +274,10 @@ pub mod timing {
         snapshot_files: AtomicU64::new(0),
         snapshot_bytes: AtomicU64::new(0),
         files_hashed: AtomicU64::new(0),
+        recorded_hashed: AtomicU64::new(0),
+        recorded_hashed_bytes: AtomicU64::new(0),
+        recorded_memo_hits: AtomicU64::new(0),
+        recorded_memo_hit_bytes: AtomicU64::new(0),
         execute: Acc {
             calls: AtomicU64::new(0),
             nanos: AtomicU64::new(0),
@@ -280,6 +297,7 @@ pub mod timing {
         reused: AtomicU64::new(0),
         executed: AtomicU64::new(0),
         roots: std::sync::Mutex::new(Vec::new()),
+        local: std::sync::Mutex::new(Vec::new()),
     };
 
     /// RAII phase timer; a no-op (one atomic load) when timing is off.
@@ -312,11 +330,33 @@ pub mod timing {
         }
     }
 
+    /// One recorded-input file digest of `bytes`: hashed, or a memo hit.
+    pub fn count_recorded_digest(memo_hit: bool, bytes: u64) {
+        if enabled() {
+            let (files, total) = if memo_hit {
+                (&PHASES.recorded_memo_hits, &PHASES.recorded_memo_hit_bytes)
+            } else {
+                (&PHASES.recorded_hashed, &PHASES.recorded_hashed_bytes)
+            };
+            files.fetch_add(1, Ordering::Relaxed);
+            total.fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
+
     pub fn record_root(stage_key: &str, secs: f64, outcome: &'static str) {
         if enabled()
             && let Ok(mut roots) = PHASES.roots.lock()
         {
             roots.push((stage_key.to_owned(), secs, outcome));
+        }
+    }
+
+    /// An execution of the `local = True` rule of repository `stage_key`.
+    pub fn record_local_execution(stage_key: &str) {
+        if enabled()
+            && let Ok(mut local) = PHASES.local.lock()
+        {
+            local.push(stage_key.to_owned());
         }
     }
 
@@ -359,6 +399,13 @@ pub mod timing {
             p.files_hashed.load(Ordering::Relaxed),
         );
         eprintln!(
+            "PERF-REPO recorded-input file digests: hashed={} ({} bytes) memo_hits={} ({} bytes not re-hashed)",
+            p.recorded_hashed.load(Ordering::Relaxed),
+            p.recorded_hashed_bytes.load(Ordering::Relaxed),
+            p.recorded_memo_hits.load(Ordering::Relaxed),
+            p.recorded_memo_hit_bytes.load(Ordering::Relaxed),
+        );
+        eprintln!(
             "PERF-REPO spec bytes total={} provenance bytes total={} (digest-form spec; provenance keeps full source bytes for the content identity)",
             SPEC_BYTES.load(Ordering::Relaxed),
             PROVENANCE_BYTES.load(Ordering::Relaxed),
@@ -371,6 +418,32 @@ pub mod timing {
         );
         for (key, secs, outcome) in roots.iter().take(25) {
             eprintln!("PERF-REPO root {secs:>8.3}s {outcome} {key}");
+        }
+        // Every execution, not only the slowest: a warm invocation must
+        // re-run nothing but `local = True` rules.
+        let local = p.local.lock().map(|l| l.clone()).unwrap_or_default();
+        let mut executed: Vec<&str> = roots
+            .iter()
+            .filter(|(_, _, outcome)| *outcome == "executed")
+            .map(|(key, _, _)| key.as_str())
+            .collect();
+        executed.sort_unstable();
+        let (local_executed, other): (Vec<&str>, Vec<&str>) = executed
+            .iter()
+            .partition(|key| local.iter().any(|name| name == *key));
+        eprintln!(
+            "PERF-REPO executed roots={} local={} (local = True: re-run by every invocation) other={}{}{}",
+            executed.len(),
+            local_executed.len(),
+            other.len(),
+            if other.is_empty() { "" } else { ": " },
+            other.join(" "),
+        );
+        if !local_executed.is_empty() {
+            eprintln!(
+                "PERF-REPO executed local roots: {}",
+                local_executed.join(" ")
+            );
         }
     }
 }

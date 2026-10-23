@@ -19,14 +19,24 @@ Stdout byte-identical across all runs.
 ## Instrumentation (Step A commit)
 
 `BAZEL_RS_TIMING=1` now also prints, at command end (query after
-`select.end`, build before execution):
+`select.end`, build after analysis and execution — until review i20 it
+was printed after target-pattern selection and missed the repositories
+analysis demands, most of a build's):
 
 ```
 PERF-REPO reused=N executed=M manifest_read=… recorded_check=… snapshot=… (files, bytes) execute=… publish=… spec_serialize=… prepare_group=…
+PERF-REPO recorded-input file digests: hashed=N (B bytes) memo_hits=M (B bytes not re-hashed)   (review i20)
 PERF-REPO spec bytes total=… provenance bytes total=…
 PERF-REPO warm-validation serial sum=…; per-root serial sum=… over R roots; parallel-eligible estimate at T workers: …
 PERF-REPO root <secs> <reused|executed> <canonical>   (top 25)
+PERF-REPO executed roots=N local=L (local = True: re-run by every invocation) other=K[: <canonical>…]   (review i20)
+PERF-REPO executed local roots: <canonical>…   (review i20; when L > 0)
 ```
+
+The `executed roots` line lists every execution, not only the slowest: a
+warm invocation must show `other=0`; `local = True` rules execute on every
+invocation by design (docs/REPOSITORY_RULES.md, "Publication identity and
+warm reuse").
 
 Phases are accumulated in `repository_store::timing` (relaxed atomics; one
 load per phase when unset). `spec_serialize` is timed at the two
@@ -585,3 +595,69 @@ is held — the test thread itself holds it, so a blocking refresh would
 hang; skipped when the manifest changed since it was read; applied once
 otherwise). Mutating the lock or the byte-exact compare back to the old
 identity+content guard fails the latter.
+
+### Recorded-input digest memo
+
+Every recorded-input file state (`file:<sha256>` of a file a repository rule
+read or watched) was hashed anew at every observation: at each execution and
+at each warm validation. Every go_repository watches `bin/fetch_repo` and
+`bin/gazelle` of go_repository_tools (~16 MB together), so a warm ~/code
+build re-hashed the same two binaries once per go_repository.
+`repository_ctx::file_state` now takes regular-file digests from a
+process-wide memo (`FileDigestMemo`):
+
+- keyed by the canonical path and the stat key (device, inode, size,
+  mtime and ctime with nanoseconds, after vfs/DigestUtils.CacheKey like the
+  action digest memo), taken with fstat from the opened file, so a digest
+  always belongs to the inode it is keyed by;
+- remembered only for settled files — mtime and ctime at least
+  `RACY_MARGIN` (2 s) older than the moment the observation started, the
+  rule of `action::racy_safe` and `repository_store::racy_safe` — and only
+  when the stat is unchanged after hashing. Any later write, chmod or
+  rename-over then changes the key; a racy file is hashed every time;
+- thread-safe: one `OnceLock` cell per key, so concurrent observations
+  (warm validations run on the loading workers) hash a file once and the
+  others wait for that digest; a digest that may not be remembered (changed
+  while read, unreadable) is answered to its own observation and the cell
+  dropped;
+- bounded: at 65,536 entries it starts over.
+
+Test `recorded_file_digests_are_memoized_only_when_settled`: a racy file is
+hashed on every observation and never remembered; a settled one once, then
+a hit through a symlink spelling; rewritten in place or replaced by a
+rename with the same size and restored mtime it is hashed anew; 16
+concurrent observations hash once; a missing file keeps its error and
+remembers nothing. `PERF-REPO recorded-input file digests` counts hashes and
+memo hits.
+
+Measured with a release build (B = this memo, A = the same tree without it),
+`build --nobuild //src/beyondwork.ai/{prober,pvcautoscaler,decommission}/...`
+on ~/code (update-mode recipe, private cache already migrated to the
+version-2 probes, so both binaries reuse every non-local repository),
+interleaved A, B, A, B — warm runs 2 and 3 of each:
+
+| | without memo (run 2 / run 3) | with memo (run 2 / run 3) |
+|---|---|---|
+| recorded-input digests hashed | 1,061 files, 3,570,966,587 B (both) | 198 files, 34,557,318 B (both) |
+| memo hits | 0 | 863, 3,536,409,269 B not re-hashed (both) |
+| `recorded_check` (serial sum, 354 checks) | 2.466 s / 2.453 s | 0.059 s / 0.057 s |
+| warm-validation serial sum | 5.441 s / 3.051 s | 0.496 s / 0.470 s |
+| per-root serial sum (309 roots) | 5.933 s / 3.481 s | 0.783 s / 0.869 s |
+| reused / executed | 264 / 45 (all `local = True`) | 264 / 45 (all `local = True`) |
+| wall | 327.4 s / 318.0 s | 317.0 s / 317.9 s |
+| peak RSS | 2,547 / 2,545 MB | 2,555 / 2,555 MB |
+
+The validations run in parallel on the loading workers, so the wall moves
+within noise on this analysis-bound target set (phase 1 ends at ~43-54 s,
+phase 2 takes ~270 s); what goes is ~3.5 GB of reads and ~2.4 s of serial
+hashing per warm run. Executions gain the same way: the first run of this
+branch over a pre-i20 cache, which re-executes the go_deps chain once,
+hashed 207 files (124 MB) and answered 1,077 observations (3.5 GB) from the
+memo (measured with its first, path-stat-keyed revision; the switch runs in
+docs/REPOSITORY_RULES.md, "Upgrade note"). The 45 re-runs of every warm invocation are exactly the `local = True`
+rules (`PERF-REPO executed local roots`): 37 rules_java JDK toolchain-config
+repositories plus `local_jdk`, `bazel_features_globals`,
+`bazel_features_version`, `host_platform`, `local_config_winsdk`,
+`cc_compatibility_proxy`, the rules_java compatibility proxy and
+`build_bazel_rules_swift_local_config` — 0.06-0.09 s of rule execution
+together.

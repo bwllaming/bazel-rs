@@ -688,12 +688,15 @@ fn tree_digest(root: &Path) -> anyhow::Result<String> {
 }
 
 /// RepoRecordedInput.File value: `missing`, `directory`, `other` or
-/// `file:<sha256>`.
+/// `file:<sha256>`. Regular-file digests come from [`FILE_DIGESTS`].
 fn file_state(host: &Path) -> anyhow::Result<String> {
     Ok(match fs::metadata(host) {
         Err(_) => "missing".to_owned(),
         Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
-        Ok(metadata) if metadata.is_file() => format!("file:{}", file_sha256(host)?),
+        Ok(metadata) if metadata.is_file() => format!(
+            "file:{}",
+            FILE_DIGESTS.sha256(host, std::time::SystemTime::now())?
+        ),
         Ok(_) => "other".to_owned(),
     })
 }
@@ -701,6 +704,184 @@ fn file_state(host: &Path) -> anyhow::Result<String> {
 /// `file_state` for warm-publication revalidation (RepoRecordedInput states).
 pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
     file_state(host).ok()
+}
+
+/// A file whose mtime and ctime are this much older than the moment hashing
+/// starts may be memoized ("racy git", like `action::RACY_MARGIN` and
+/// `repository_store::RACY_MARGIN`): a later in-place change then
+/// necessarily carries a different timestamp.
+const RACY_MARGIN: Duration = Duration::from_secs(2);
+/// Entries [`FILE_DIGESTS`] holds before it starts over (bounded memory).
+const FILE_DIGEST_MEMO_LIMIT: usize = 1 << 16;
+
+/// The process-wide recorded-input digest memo (review i20). Every
+/// go_repository execution and every warm validation of one observes
+/// `bin/gazelle` and `bin/fetch_repo` of go_repository_tools (~16 MB
+/// together): a warm ~/code build of 221 go_repositories hashed 1,061
+/// files / 3.6 GB without it, 198 files / 35 MB with it
+/// (docs/REPOSITORY_WARM_PERF.md).
+static FILE_DIGESTS: std::sync::LazyLock<FileDigestMemo> =
+    std::sync::LazyLock::new(FileDigestMemo::default);
+
+/// What a memoized digest is valid for: the file's canonical path and stat
+/// key (device, inode, size, mtime, ctime — vfs/DigestUtils.CacheKey, like
+/// the action digest memo). Any rewrite, rename over or chmod changes it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FileDigestKey {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    size: u64,
+    mtime: (i64, i64),
+    ctime: (i64, i64),
+}
+
+impl FileDigestKey {
+    fn new(path: PathBuf, metadata: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+        }
+    }
+
+    /// Whether `metadata` still has this key's stat.
+    fn same_stat(&self, metadata: &fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        (self.device, self.inode, self.size, self.mtime, self.ctime)
+            == (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.size(),
+                (metadata.mtime(), metadata.mtime_nsec()),
+                (metadata.ctime(), metadata.ctime_nsec()),
+            )
+    }
+
+    /// mtime and ctime at least [`RACY_MARGIN`] before `start`.
+    fn settled(&self, start: std::time::SystemTime) -> bool {
+        [self.mtime, self.ctime]
+            .into_iter()
+            .all(|(seconds, nanoseconds)| {
+                u64::try_from(seconds)
+                    .ok()
+                    .and_then(|seconds| {
+                        std::time::UNIX_EPOCH
+                            .checked_add(Duration::new(seconds, nanoseconds as u32))
+                    })
+                    .and_then(|time| time.checked_add(RACY_MARGIN))
+                    .is_some_and(|time| time <= start)
+            })
+    }
+}
+
+/// One memoized digest: set once by the observation that hashed the file —
+/// `None` when that digest may not be remembered (the file changed while
+/// it was read, or could not be read).
+type DigestCell = Arc<std::sync::OnceLock<Option<String>>>;
+
+/// An in-process memo of regular-file SHA-256 digests for recorded-input
+/// file states, shared by worker threads. The key is the opened file's own
+/// stat (fstat), so a digest always belongs to the inode it is keyed by.
+/// Only settled files are remembered ([`FileDigestKey::settled`] at the
+/// moment hashing starts) and only when their stat is unchanged after
+/// hashing, so a hit never answers for different bytes; a racy file is
+/// hashed on every observation. Concurrent observations of one key hash it
+/// once: the others wait for that digest (warm validations of ~400
+/// go_repositories run in parallel).
+#[derive(Default)]
+struct FileDigestMemo {
+    cells: std::sync::Mutex<std::collections::HashMap<FileDigestKey, DigestCell>>,
+    /// Digests this memo computed (tests: per instance, unlike the
+    /// process-wide PERF-REPO counters).
+    #[cfg(test)]
+    hashed: std::sync::atomic::AtomicUsize,
+}
+
+impl FileDigestMemo {
+    /// The SHA-256 of regular file `host`, hashed at most once per settled
+    /// stat key; `start` is the moment this observation began.
+    fn sha256(&self, host: &Path, start: std::time::SystemTime) -> anyhow::Result<String> {
+        let mut file = fs::File::open(host).map_err(|error| file_not_found(host, &error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| file_not_found(host, &error))?;
+        let size = metadata.len();
+        let key = fs::canonicalize(host)
+            .ok()
+            .map(|canonical| FileDigestKey::new(canonical, &metadata))
+            .filter(|key| key.settled(start));
+        let Some(key) = key else {
+            return self.hash(host, &mut file, size);
+        };
+        let cell = {
+            let mut cells = self
+                .cells
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cells.len() >= FILE_DIGEST_MEMO_LIMIT && !cells.contains_key(&key) {
+                cells.clear();
+            }
+            cells.entry(key.clone()).or_default().clone()
+        };
+        let mut hashed_here = None;
+        let remembered = cell.get_or_init(|| {
+            let digest = self.hash(host, &mut file, size);
+            let remembered = match &digest {
+                // Only if the file kept the stat it is keyed by.
+                Ok(digest) if file.metadata().is_ok_and(|after| key.same_stat(&after)) => {
+                    Some(digest.clone())
+                }
+                _ => None,
+            };
+            hashed_here = Some(digest);
+            remembered
+        });
+        if remembered.is_none() {
+            // Not memoizable: forget the cell so a later observation tries
+            // again (the key of a file that changed is dead anyway).
+            self.forget(&key, &cell);
+        }
+        match (hashed_here, remembered) {
+            // This observation hashed the file: its own answer.
+            (Some(digest), _) => digest,
+            (None, Some(digest)) => {
+                crate::repository_store::timing::count_recorded_digest(true, size);
+                Ok(digest.clone())
+            }
+            // Another observation's digest could not be remembered.
+            (None, None) => self.hash(host, &mut file, size),
+        }
+    }
+
+    fn forget(&self, key: &FileDigestKey, cell: &DigestCell) {
+        let mut cells = self
+            .cells
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cells
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, cell))
+        {
+            cells.remove(key);
+        }
+    }
+
+    /// Hash the rest of the opened `file` (nothing has been read from it).
+    fn hash(&self, host: &Path, file: &mut fs::File, size: u64) -> anyhow::Result<String> {
+        #[cfg(test)]
+        self.hashed
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::repository_store::timing::count_recorded_digest(false, size);
+        let mut hash = transport::Hash::new(Algorithm::Sha256);
+        transport::copy_hashed(file, &mut std::io::sink(), &mut hash)
+            .map_err(|error| file_not_found(host, &error))?;
+        Ok(transport::hex(&hash.finish()))
+    }
 }
 
 /// RepoRecordedInput.Dirents state (maybeWatchDirents, java:1740-1755): the
@@ -3746,6 +3927,95 @@ mod tests {
     use super::*;
     use crate::loading::{LoadedDefinition, load_definition_in};
     use crate::repository_rule::{bind_attributes, unpack};
+
+    /// Review i20: recorded-input file digests are memoized per canonical
+    /// path and stat key, and only for settled files: a racy file is hashed
+    /// on every observation, a file rewritten in place or replaced by a
+    /// rename (same size, mtime restored) is hashed anew rather than
+    /// answered stale, another spelling of a remembered file is a hit, and
+    /// concurrent observations of one file hash it once. Each memo instance
+    /// counts its own hashes (the process-wide one is shared with
+    /// concurrently running tests).
+    #[test]
+    fn recorded_file_digests_are_memoized_only_when_settled() {
+        use std::sync::atomic::Ordering::SeqCst;
+        use std::time::SystemTime;
+        let dir = tempfile::tempdir_in("/tmp/opencode").unwrap();
+        let file = dir.path().join("tool");
+        fs::write(&file, b"aaaa").unwrap();
+        let memo = FileDigestMemo::default();
+        let digest = |path: &Path, start: SystemTime| memo.sha256(path, start).unwrap();
+        // A settled reference instant: injected instead of waiting out the
+        // racy window.
+        let settled = SystemTime::now() + Duration::from_secs(3600);
+
+        // Racy (just written): hashed every time, never remembered.
+        assert_eq!(digest(&file, SystemTime::now()), sha256(b"aaaa"));
+        assert_eq!(digest(&file, SystemTime::now()), sha256(b"aaaa"));
+        assert_eq!(memo.hashed.load(SeqCst), 2);
+        assert!(memo.cells.lock().unwrap().is_empty());
+
+        // Settled: hashed once, then a hit, through any spelling.
+        std::os::unix::fs::symlink(&file, dir.path().join("link")).unwrap();
+        assert_eq!(digest(&file, settled), sha256(b"aaaa"));
+        assert_eq!(digest(&file, settled), sha256(b"aaaa"));
+        assert_eq!(digest(&dir.path().join("link"), settled), sha256(b"aaaa"));
+        assert_eq!(memo.hashed.load(SeqCst), 3);
+
+        // Rewritten in place, same size, mtime restored: the ctime moved
+        // (past the filesystem's timestamp tick), so the new bytes are
+        // hashed.
+        let mtime = fs::metadata(&file).unwrap().modified().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        fs::write(&file, b"bbbb").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), mtime);
+        assert_eq!(digest(&file, settled), sha256(b"bbbb"));
+        assert_eq!(digest(&file, settled), sha256(b"bbbb"));
+        assert_eq!(memo.hashed.load(SeqCst), 4);
+
+        // Replaced by a rename (another inode, same size, mtime restored):
+        // the new bytes are hashed.
+        let replacement = dir.path().join("tool.new");
+        fs::write(&replacement, b"dddd").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        fs::rename(&replacement, &file).unwrap();
+        assert_eq!(digest(&file, settled), sha256(b"dddd"));
+        assert_eq!(digest(&dir.path().join("link"), settled), sha256(b"dddd"));
+        assert_eq!(memo.hashed.load(SeqCst), 5);
+
+        // Concurrent observations of one settled file: one hash.
+        let other = dir.path().join("other");
+        fs::write(&other, b"cccc").unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..16 {
+                scope.spawn(|| assert_eq!(digest(&other, settled), sha256(b"cccc")));
+            }
+        });
+        assert_eq!(memo.hashed.load(SeqCst), 6);
+
+        // Missing: the error of an unmemoized read, nothing remembered.
+        let remembered = memo.cells.lock().unwrap().len();
+        let error = memo
+            .sha256(&dir.path().join("absent"), settled)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("java.io.FileNotFoundException: "),
+            "{error}"
+        );
+        assert_eq!(memo.cells.lock().unwrap().len(), remembered);
+    }
 
     struct Fixture {
         root: tempfile::TempDir,

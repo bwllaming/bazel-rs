@@ -1396,7 +1396,12 @@ impl RepositorySet {
                         Ok(crate::repository_store::Executed { inputs, recorded })
                     },
                 )
-                .map(|(root, _)| root)
+                .map(|(root, publication)| {
+                    if local && publication == crate::repository_store::Publication::Executed {
+                        crate::repository_store::timing::record_local_execution(canonical);
+                    }
+                    root
+                })
             },
         )
         .map(PathBuf::as_path)
@@ -1858,7 +1863,14 @@ impl RepositorySet {
                             Ok(crate::repository_store::Executed { inputs, recorded })
                         },
                     )
-                    .map(|(root, _)| root)
+                    .map(|(root, publication)| {
+                        if local && publication == crate::repository_store::Publication::Executed {
+                            crate::repository_store::timing::record_local_execution(
+                                &repository.canonical_name,
+                            );
+                        }
+                        root
+                    })
                 },
             )
             .map(PathBuf::as_path)
