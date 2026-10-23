@@ -3348,47 +3348,107 @@ mod tests {
         no_stages(cache.path());
     }
 
+    /// The outcome of the first `attempt` that completed inside the racy
+    /// window of the stat fingerprint it returns: before [`RACY_MARGIN`]
+    /// had passed since that file's newest time stamp, so every
+    /// `SystemTime::now()` the store read during the attempt (snapshot
+    /// recording, warm verify start) still found the file unsettled
+    /// ([`racy_safe`] is monotonic in its start). A scheduling stall of
+    /// RACY_MARGIN or more (a loaded parallel test run) legitimately lets
+    /// the file settle mid-attempt; such an attempt proves nothing either
+    /// way, so it is repeated instead of asserted on.
+    fn inside_racy_window<T>(mut attempt: impl FnMut() -> (StatFingerprint, T)) -> T {
+        for _ in 0..10 {
+            let (fingerprint, outcome) = attempt();
+            if !racy_safe(&fingerprint, std::time::SystemTime::now()) {
+                return outcome;
+            }
+        }
+        panic!("ten attempts in a row were stalled past the {RACY_MARGIN:?} racy window");
+    }
+
+    /// The newest time stamp (mtime or ctime) of `fingerprint`: its racy
+    /// window is `[changed_at, changed_at + RACY_MARGIN)`.
+    fn changed_at(fingerprint: &StatFingerprint) -> std::time::SystemTime {
+        [fingerprint.mtime, fingerprint.ctime]
+            .into_iter()
+            .map(|(sec, nsec)| {
+                std::time::SystemTime::UNIX_EPOCH
+                    + std::time::Duration::new(u64::try_from(sec).unwrap(), nsec as u32)
+            })
+            .max()
+            .unwrap()
+    }
+
+    /// Wait until no open file description holds the lock of publication
+    /// `identity`, and leave it free. Closing a descriptor does not
+    /// release its flock while a copy exists: a process start on another
+    /// test's thread copies this process's descriptor table, and the
+    /// child holds the copies until its exec closes them (O_CLOEXEC; the
+    /// window src/spawn_lock.rs describes for write descriptors). So a
+    /// lock this test (or a `refresh_manifest` it called) held and closed
+    /// can stay held for a while, and a try-locked refresh would skip.
+    /// Blocking waits such a copy out; the explicit unlock (it acts on
+    /// the shared open file description) leaves no copy of THIS
+    /// descriptor holding it.
+    fn free_publication_lock(direct: &Path, identity: &str) {
+        let lock = File::open(direct.join("locks").join(identity)).unwrap();
+        FileExt::lock_exclusive(&lock).unwrap();
+        FileExt::unlock(&lock).unwrap();
+    }
+
     /// Review R3: fingerprints settle through use. A freshly published
     /// manifest carries none (racy at publish); the first warm verify
     /// hashes + refreshes once the file is settled; a later external
     /// ctime bump (chmod) hash-matches once and refreshes again instead
     /// of re-hashing forever; a settled fingerprint then trusts by stat.
+    ///
+    /// Deterministic under the parallel test runner: the steps that read
+    /// the real clock are asserted for an attempt that provably ran
+    /// inside the racy window ([`inside_racy_window`]), the other racy
+    /// decisions take explicit reference instants, and the refresh runs
+    /// with the publication lock provably free ([`free_publication_lock`]).
     #[test]
     fn fingerprint_refresh_settles_after_hash_match() {
-        let cache = temp();
-        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let (cache, tree, published) = inside_racy_window(|| {
+            let cache = temp();
+            let (tree, _) = publish(cache.path(), b"", write).unwrap();
+            let manifest = fs::read(metadata_path(cache.path(), &tree)).unwrap();
+            let data = fingerprint(&fs::metadata(tree.join("data")).unwrap());
+            (data, (cache, tree, parse_manifest(&manifest).unwrap()))
+        });
         let read_manifest = |cache: &Path| -> Manifest {
             serde_json::from_slice(&fs::read(metadata_path(cache, &tree)).unwrap()).unwrap()
         };
-        assert!(read_manifest(cache.path()).files["data"].stat.is_none());
-        // Backdate `data`'s mtime an hour: content/state guards (mode,
-        // size, hash) are unaffected; only the fingerprint logic reacts.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        let since = old
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap();
-        let out = std::process::Command::new("touch")
-            .arg("-d")
-            .arg(format!("@{}.{:09}", since.as_secs(), since.subsec_nanos()))
-            .arg(tree.join("data"))
-            .output()
-            .unwrap();
-        assert!(out.status.success());
-        // Drop persisted fingerprints (legacy-manifest state).
-        {
+        assert!(published.files["data"].stat.is_none());
+        let (status, data_stat) = inside_racy_window(|| {
+            // Backdate `data`'s mtime an hour (futimens; the ctime becomes
+            // now): content/state guards (mode, size, hash) are
+            // unaffected; only the fingerprint logic reacts.
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            File::open(tree.join("data"))
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+            // Drop persisted fingerprints (legacy-manifest state).
             let path = metadata_path(cache.path(), &tree);
             let mut manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             for entry in manifest.files.values_mut() {
                 entry.stat = None;
             }
             fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-        }
-        // Warm verify through the real path: fresh ctime means the
-        // fingerprint is NOT settled relative to the verify start, so
-        // this reuse hash-matches WITHOUT refreshing yet.
-        let (_, status) = publish(cache.path(), b"", |_| panic!("must reuse")).unwrap();
+            // Warm verify through the real path: fresh ctime means the
+            // fingerprint is NOT settled relative to the verify start, so
+            // this reuse hash-matches WITHOUT refreshing yet.
+            let (_, status) = publish(cache.path(), b"", |_| panic!("must reuse")).unwrap();
+            let data = fingerprint(&fs::metadata(tree.join("data")).unwrap());
+            (
+                data,
+                (status, read_manifest(cache.path()).files["data"].stat),
+            )
+        });
         assert_eq!(status, Publication::Reused);
-        assert!(read_manifest(cache.path()).files["data"].stat.is_none());
+        assert!(data_stat.is_none());
         // Settlement, deterministically: verify as of +1h. The file's
         // times are settled relative to that start, so the hash match
         // REFRESHES the missing fingerprint with the current stat.
@@ -3399,17 +3459,18 @@ mod tests {
         assert!(outcome.matched);
         let current = fingerprint(&fs::metadata(tree.join("data")).unwrap());
         assert_eq!(outcome.refreshed.get("data"), Some(&current));
-        assert!(!racy_safe(&current, std::time::SystemTime::now()));
+        // A start inside the racy window of the backdating's ctime (as a
+        // verify right after it) neither trusts nor records the stat.
+        let racy_start = changed_at(&current) + RACY_MARGIN / 2;
+        assert!(!racy_safe(&current, racy_start));
         assert!(racy_safe(&current, settled_start));
         // Recording-side gate (review R3): a fresh file gets no
         // fingerprint at publish; the same stat is settled vs +1h.
         let metadata = fs::metadata(tree.join("data")).unwrap();
-        assert_eq!(
-            settled_fingerprint(&metadata, std::time::SystemTime::now()),
-            None
-        );
+        assert_eq!(settled_fingerprint(&metadata, racy_start), None);
         assert_eq!(settled_fingerprint(&metadata, settled_start), Some(current));
         // Persist through refresh_manifest and observe the manifest.
+        free_publication_lock(&cache.path().join("direct"), &manifest.identity);
         refresh_manifest(
             &cache.path().join("direct"),
             &manifest.identity,
@@ -3438,9 +3499,18 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             // External ctime bump only: round-trip the mode back to the
-            // recorded 0o755 — content mode unchanged, ctime bumped.
-            fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
-            fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+            // recorded 0o755 — content mode unchanged, ctime bumped. File
+            // times come from a coarse clock (one tick, ~1 ms here): the
+            // round trip repeats until the ctime provably moved.
+            for attempt in 0.. {
+                fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
+                fs::set_permissions(tree.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+                if fingerprint(&fs::metadata(tree.join("data")).unwrap()) != current {
+                    break;
+                }
+                assert!(attempt < 5000, "the ctime never moved");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             let manifest = read_manifest(cache.path());
             let outcome =
                 verify_snapshot_detailed(&tree, &manifest.files, VerifyMode::Stat).unwrap();
@@ -3516,14 +3586,24 @@ mod tests {
     /// lock — skipped (never awaited: this thread holds the lock) while a
     /// publisher holds it, skipped when the manifest changed since the
     /// probe read it (the newer manifest wins), applied once otherwise.
+    /// Every call after the publisher's is made with the lock provably free
+    /// ([`free_publication_lock`]), so each outcome has exactly the cause
+    /// asserted.
     #[test]
     fn manifest_refresh_is_a_locked_compare_and_swap() {
         let cache = temp();
         let (tree, _) = publish(cache.path(), b"", write).unwrap();
         let direct = cache.path().join("direct");
         let path = metadata_path(cache.path(), &tree);
-        let original = fs::read(&path).unwrap();
-        let manifest = parse_manifest(&original).unwrap();
+        // The probe's read, explicitly without fingerprints: what a publish
+        // records for files younger than the racy margin (one stalled past
+        // the margin would record settled ones, which need no refresh).
+        let mut manifest = parse_manifest(&fs::read(&path).unwrap()).unwrap();
+        for entry in manifest.files.values_mut() {
+            entry.stat = None;
+        }
+        let original = serde_json::to_vec(&manifest).unwrap();
+        fs::write(&path, &original).unwrap();
         let identity = manifest.identity.clone();
         let settled = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
         let outcome =
@@ -3534,6 +3614,9 @@ mod tests {
             FileExt::lock_exclusive(&publisher).unwrap();
             refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
             assert_eq!(fs::read(&path).unwrap(), original);
+            // Released explicitly: a copy of this descriptor in a child
+            // another test is starting would keep a closed one locked.
+            FileExt::unlock(&publisher).unwrap();
         }
         let mut other = manifest.clone();
         other.files.get_mut("data").unwrap().stat = Some(StatFingerprint {
@@ -3544,15 +3627,18 @@ mod tests {
         });
         let newer = serde_json::to_vec(&other).unwrap();
         fs::write(&path, &newer).unwrap();
+        free_publication_lock(&direct, &identity);
         refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
         assert_eq!(fs::read(&path).unwrap(), newer);
         fs::write(&path, &original).unwrap();
+        free_publication_lock(&direct, &identity);
         refresh_manifest(&direct, &identity, &original, &outcome.refreshed).unwrap();
         let written = fs::read(&path).unwrap();
         assert_eq!(
             parse_manifest(&written).unwrap().files["data"].stat,
             Some(refreshed)
         );
+        free_publication_lock(&direct, &identity);
         refresh_manifest(&direct, &identity, &written, &outcome.refreshed).unwrap();
         assert_eq!(fs::read(&path).unwrap(), written);
         no_stages(cache.path());
