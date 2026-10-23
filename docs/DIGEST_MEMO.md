@@ -76,7 +76,11 @@ were keyed by change time (both while the format was unreleased; unit test
   in-place change then necessarily carries a different timestamp.
 - Or a file the executor wrote itself and made read-only (TRUSTED: a published output), and other paths
   of an inode the process hashed (a published output and its blob). Never a repository tree file: those
-  only as read in a settled state.
+  only as read in a settled state. A published output is hashed right after the action's process
+  exited, inside the racy window, so nothing of the action may write it afterwards: the executor kills
+  what is left of the action's process group before it hashes the outputs (`action::kill_leftovers`,
+  as Bazel's process-wrapper does); only a process that left the group (`setsid`, a daemon) could
+  still change an output after its TRUSTED record was made.
 - Only paths that recur across commands: files outside the cache root, and below it published action
   outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and the files of the repository tree stores
   (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`); never execution roots

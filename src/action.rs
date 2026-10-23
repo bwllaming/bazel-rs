@@ -2949,6 +2949,37 @@ fn create_log(path: &Path) -> Result<File, String> {
         .map_err(|e| io_error("cannot create action log", path, e))
 }
 
+/// Once an action's process (the leader of its own process group) has
+/// exited, kill what is left of its group, like Bazel's process-wrapper
+/// ("The child is done for, but may have grandchildren that we still have to
+/// kill.": `kill(-child_pid, SIGKILL)` after the wait,
+/// process-wrapper-legacy.cc WaitForChild; its linux-sandbox ends a PID
+/// namespace instead). No process of the action can then change a staged
+/// input after `check_staged` or an output after it was hashed and
+/// published: published digests are trusted for the rest of the command and,
+/// through the persistent digest memo, by later commands. The exited leader
+/// is left unreaped until the caller's wait, so its PID, the group's ID,
+/// cannot be reused by another process in between. A process that left the
+/// group (setsid, setpgid) is not reached, as with the process-wrapper.
+fn kill_leftovers(child: &std::process::Child) {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) else {
+        return;
+    };
+    loop {
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => continue,
+            // Not waitable: leave the group alone rather than risk a reused ID.
+            Err(_) => return,
+        }
+    }
+    let _ = crate::git_process::kill_group(child.id());
+}
+
 // On Linux an executable can transiently remain open for writing in another
 // concurrently spawned child, even after our own write has closed its fd.
 // crate::spawn_lock removes that race for every executable this process writes
@@ -3753,6 +3784,7 @@ pub fn execute_with_remote(
             std::thread::sleep,
         )
         .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
+        kill_leftovers(&child);
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
@@ -6377,6 +6409,41 @@ mod tests {
             memoized_digest(&file_key(&metadata, true)),
             Some(digest(b"blob"))
         );
+    }
+
+    /// A process an action leaves behind in its group (here a background
+    /// `sleep`) is killed once the action's process exits, like Bazel's
+    /// process-wrapper does: it could otherwise still change the outputs
+    /// after they were hashed and published.
+    #[test]
+    fn processes_an_action_leaves_behind_are_killed() {
+        let alive = |pid: &str| {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    let (_, rest) = stat.rsplit_once(')')?;
+                    rest.trim_start().chars().next()
+                })
+                .is_some_and(|state| !matches!(state, 'Z' | 'X'))
+        };
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.command = "sleep 60 & echo $! > out/result".into();
+        let result = execute(&fixture.cache(), &action).unwrap();
+        let pid = fs::read_to_string(&result.outputs[0]).unwrap();
+        let pid = pid.trim();
+        assert!(!pid.is_empty());
+        let killed = (0..200).any(|_| {
+            let gone = !alive(pid);
+            if !gone {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            gone
+        });
+        if !killed {
+            let _ = Command::new("kill").args(["-9", pid]).status();
+        }
+        assert!(killed, "background process {pid} outlived its action");
     }
 
     #[test]

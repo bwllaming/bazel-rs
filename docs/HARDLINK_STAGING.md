@@ -175,9 +175,15 @@ written into the execution root and published through this store.)
   N59, but the Landlock sandbox leaves metadata operations unrestricted and
   denies nothing for `standalone`/`no-sandbox` actions or a store below a
   sandbox-writable root such as `/tmp`; docs/SANDBOX.md).
-* A background process that keeps writing an output after the action's
-  process exits can change the published inode (previously the published copy
-  was taken after exit).
+* Once the action's process exits, whatever is left of its process group is
+  killed before its staged inputs are re-checked and its outputs hashed
+  (`kill_leftovers`; Bazel's process-wrapper also kills the group after the
+  wait, `process-wrapper-legacy.cc` `WaitForChild`, and its linux-sandbox ends
+  a PID namespace), so a background process the action started cannot change
+  a published output whose digest this command and, through the persistent
+  digest memo, later commands trust. A process that left the group (`setsid`,
+  a daemon) and keeps writing an output can still change the published inode
+  (previously the published copy was taken after exit).
 * Inside the action every input is a regular file; Bazel's sandboxes show
   symlinks. `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
