@@ -98,16 +98,21 @@ build nothing; the symlinks are created when a compile needs them.
 ## Verification
 
 `tests/cc_virtual_includes.rs` replays the paired genuine Bazel 9.3.0 capture
-`tests/fixtures/cc_virtual_includes/reference_receipt.json` (30 cases: 20
+`tests/fixtures/cc_virtual_includes/reference_receipt.json` (31 cases: 21
 MATCH, 10 declared divergences): cc_library with relative, repository-absolute
 and external (`@ext//src/ext`, `strip_include_prefix = "/src"`) strip
 prefixes, `include_prefix`, textual headers, a consumer cc_library and a
 cc_binary — every object, dependency file, archive, shared library and the
 linked binary byte-identical, every `_virtual_includes` symlink pointing to the
-same file — plus the API probes and misuse cases above, and the `//share`
+same file — plus the API probes and misuse cases above, the `//share`
 package's sharing within one target (identical `run_shell` spawns shared,
 `ctx.actions.run` registrations with different arguments conflicting, and the
-two declared cases below).
+two declared cases below), and `consumed_external_path` (integration-20, the
+review F2 repro): `//test:external_producer` declares
+`external/somerepo/x.txt` and `//test:external_consumer` reads it through
+`ctx.files`, `DefaultInfo` and a provider field holding the producer's own
+File — one File every way (equal, one depset element), short_path
+`../somerepo/x.txt`, and an action input either way.
 
 ## Known differences
 

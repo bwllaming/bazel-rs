@@ -114,3 +114,51 @@ probe = rule(
         "use_exec_root": attr.bool(),
     },
 )
+
+SharedInfo = provider(doc = "The producer's own File of its artifact.", fields = ["file"])
+
+def _shared_producer_impl(ctx):
+    a = ctx.actions.declare_shareable_artifact(ctx.attr.path)
+    ctx.actions.write(a, ctx.attr.content)
+    return [DefaultInfo(files = depset([a])), SharedInfo(file = a)]
+
+shared_producer = rule(
+    implementation = _shared_producer_impl,
+    attrs = {
+        "content": attr.string(default = "shared\n"),
+        "path": attr.string(),
+    },
+)
+
+def _shared_consumer_impl(ctx):
+    # One artifact reaching a consumer through ctx.files, the dependency's
+    # DefaultInfo and a provider field holding the producer's own File: the
+    # same File every way.
+    via_files = ctx.files.dep[0]
+    via_info = ctx.attr.dep[DefaultInfo].files.to_list()[0]
+    via_provider = ctx.attr.dep[SharedInfo].file
+    lines = (
+        _describe("files", via_files) +
+        _describe("info", via_info) +
+        _describe("provider", via_provider) +
+        [
+            "files_equal_info=" + str(via_files == via_info),
+            "files_equal_provider=" + str(via_files == via_provider),
+            "in_set=" + str(len(depset([via_files, via_info, via_provider]).to_list())),
+        ]
+    )
+    copy = ctx.actions.declare_file(ctx.label.name + ".copy")
+    ctx.actions.run_shell(
+        inputs = [via_files, via_info, via_provider],
+        outputs = [copy],
+        command = "cat \"$1\" \"$2\" \"$3\" > \"$4\"",
+        arguments = [via_files.path, via_info.path, via_provider.path, copy.path],
+    )
+    report = ctx.actions.declare_file(ctx.label.name + ".report")
+    ctx.actions.write(report, "\n".join(lines) + "\n")
+    return [DefaultInfo(files = depset([report, copy]))]
+
+shared_consumer = rule(
+    implementation = _shared_consumer_impl,
+    attrs = {"dep": attr.label(providers = [SharedInfo])},
+)

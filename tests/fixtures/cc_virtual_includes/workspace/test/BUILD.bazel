@@ -1,4 +1,4 @@
-load(":defs.bzl", "probe")
+load(":defs.bzl", "probe", "shared_consumer", "shared_producer")
 
 exports_files(["v.h"])
 
@@ -74,6 +74,19 @@ probe(
     path = "test/_virtual_includes/symlink_exec_root/v.h",
     src = "v.h",
     use_exec_root = True,
+)
+
+# A main-repository shareable artifact below `external/` consumed by another
+# target: ctx.files, the producer's DefaultInfo and a provider field hand the
+# consumer the same File (short_path ../somerepo/x.txt; review F2 of d2fd11c).
+shared_producer(
+    name = "external_producer",
+    path = "external/somerepo/x.txt",
+)
+
+shared_consumer(
+    name = "external_consumer",
+    dep = ":external_producer",
 )
 
 # Two targets sharing one artifact: identical actions are shared, different

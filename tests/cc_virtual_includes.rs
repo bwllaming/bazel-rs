@@ -76,6 +76,7 @@ const GROUPS: &[(&str, bool, &[&str])] = &[
             "share_diff",
             "misuse_orphan",
             "misuse_two_writes",
+            "consumed_external_path",
         ],
     ),
     (
@@ -591,7 +592,9 @@ fn rules_cc_prefix_errors_match() {
 
 /// The API from an allowlisted package: root-relative paths, the artifact
 /// roots, owner/short_path/root/repr, dedup, shared and conflicting actions,
-/// orphans.
+/// orphans, and a main-repository artifact below `external/` consumed by
+/// another target: one File through ctx.files, DefaultInfo and a provider
+/// field, short_path `../somerepo/x.txt` (review F2 of d2fd11c).
 #[test]
 fn shareable_artifacts_are_root_relative_and_deduplicated() {
     check_group("probes");
