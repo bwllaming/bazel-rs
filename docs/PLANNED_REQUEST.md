@@ -10,7 +10,7 @@ Every `build`, `test` and `run` now runs the same steps after target-pattern sel
 
 ```text
 full analysis:  plan_request -> PlannedRequest -> hand_over -> finalize -> execute -> report
-snapshot hit:   decode ---------------------------------------> finalize -> execute -> report   (L2-W5)
+snapshot hit:   decode ---------------------------------------> finalize -> execute -> report   (L2-W5, docs/ANALYSIS_SNAPSHOT.md)
 ```
 
 * `Engine::plan_request(RequestSpec)` runs analysis and action planning (`plan_build`) and returns a
@@ -111,7 +111,8 @@ Paths, path pairs, parameter files, runfiles entries and byte strings use raw-by
 `PathBuf` refuses non-UTF-8 paths; a `Vec<u8>` is a byte string, not a sequence of numbers); a Starlark
 `File` inside an Args vector is encoded field by field (it derives starlark's always-failing `Serialize`).
 The encoding is deterministic: no hash order, no per-process ids, no status bytes, no environment values.
-L2-W5 embeds these bytes as the PLAN section of its snapshot file.
+L2-W5 embeds these bytes as the PLAN section of its snapshot file (docs/ANALYSIS_SNAPSHOT.md);
+large plans encode their chunks on scoped threads (the same bytes on any thread).
 
 ## Switches
 

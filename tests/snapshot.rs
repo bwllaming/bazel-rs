@@ -770,6 +770,69 @@ fn a_file_deleted_from_a_repository_tree_heals() {
     }
 }
 
+/// A hit skips repository verification, so the execution's digest of a
+/// repository tree file must not trust a stat key that hides an in-place
+/// edit: crate::digest_memo keys the files of the tree stores by their
+/// change time (an edit that keeps the size and restores the modification
+/// time still moves it). The hit's action reads the edited bytes and runs
+/// again — the per-tree validation's documented trade-off (PLAN-L2 update 1,
+/// decision (1)): the full analysis instead repairs the tree, and its action
+/// is a cache hit.
+#[test]
+fn a_hit_hashes_an_edited_tree_file_by_its_change_time() {
+    let build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
+    let twin = fixture();
+    twin.write("repos.bzl", NESTED_REPOS);
+    twin.write("BUILD.bazel", &build);
+    twin.same(BUILD_ALL, &[])
+        .assert_not_saved("repository-rule-executed");
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_saved();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_hit();
+    twin.each(|root| {
+        let file = generated_tree(root).join("sub/data.txt");
+        let metadata = fs::metadata(&file).unwrap();
+        let mode = metadata.permissions().mode();
+        let modified = metadata.modified().unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&file, "GENERATED\n").unwrap();
+        let handle = fs::File::options().write(true).open(&file).unwrap();
+        handle.set_modified(modified).unwrap();
+        drop(handle);
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().len(), metadata.len());
+    });
+    let edited = twin.run(BUILD_ALL, &[]);
+    edited.assert_hit().assert_success();
+    assert!(
+        edited.stderr().contains("1 actions executed, 0 cache hits"),
+        "{}",
+        edited.stderr()
+    );
+    let off = program_stderr(&edited.off);
+    assert!(off.contains("0 actions executed, 1 cache hits"), "{off}");
+    let output = |pair: &Output| {
+        let stdout = text(&pair.stdout);
+        let path = stdout
+            .lines()
+            .next()
+            .unwrap()
+            .split_once('\t')
+            .unwrap()
+            .1
+            .to_owned();
+        fs::read_to_string(path).unwrap_or_default()
+    };
+    let on_output = twin.with_side(ON, || output(&edited.on));
+    let off_output = twin.with_side(OFF, || output(&edited.off));
+    assert!(on_output.contains("GENERATED"), "{on_output}");
+    assert!(
+        off_output.contains("generated plain") || off_output.contains("generated\n"),
+        "{off_output}"
+    );
+}
+
 /// Fixture 11: another bazel-rs binary never reads the snapshot.
 #[test]
 fn another_binary_misses() {

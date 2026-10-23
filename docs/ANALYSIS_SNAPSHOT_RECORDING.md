@@ -367,10 +367,16 @@ docs/PLANNED_REQUEST.md).
 Not changed: what repository rules print reaches stderr as it happens (also
 collected per execution for the replay record, in record mode only).
 
-## Not yet (L2-W5)
+## The store and the hit path (L2-W5)
 
-The replay records and pinned tables live in memory: saving them needs
-serialization (`custom_rule::AttrValue` lacks `Deserialize`, owned by L2-W4's
-derives), the hit path runs the replays in parallel with validation and
-splices nothing (v1), and the self-healing rule (delete the snapshot when an
-action fails on a missing store-tree input) needs the store.
+`BAZEL_RS_SNAPSHOT=on` saves what this recording describes — the
+observations a hit validates, the replay records and pinned tables (binary,
+crate::snapshot::format), the window's stderr, the planned request — and
+skips loading and analysis when every input is unchanged:
+docs/ANALYSIS_SNAPSHOT.md. The replay of a hit uses the current command
+line's resolver options and repository environment (not the recorded
+set's), and any non-empty local-repository output still keeps a run from
+being saved (v1 of the printing protocol). The record mode itself is
+unchanged, except that its diagnostics go to the diagnostics stream
+(crate::snapshot::diag) and a `--workspace_status_command` that writes to
+stderr is reported as the taint `workspace-status-stderr`.

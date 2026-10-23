@@ -42,6 +42,10 @@ Digest memo: settled files' SHA-256 by path and stat key persist in
   <cache>/digests/v1.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off bypasses
   it while set (its records stay); deleting <cache>/digests/ drops them
   (docs/DIGEST_MEMO.md).
+Analysis snapshot (experimental, off by default): BAZEL_RS_SNAPSHOT=on saves a
+  build/test/run's analysis in <cache>/snapshots/ and skips loading and analysis
+  while every recorded input is unchanged; BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why
+  it missed or was not saved (docs/ANALYSIS_SNAPSHOT.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
