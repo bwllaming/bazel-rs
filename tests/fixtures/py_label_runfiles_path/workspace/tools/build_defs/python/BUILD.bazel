@@ -1,0 +1,26 @@
+load(":defs.bzl", "bad", "probe")
+
+probe(
+    name = "probe",
+    deps = [
+        "//:top",
+        "//a/b/c:x",
+        "@ext//:root",
+        "@ext//data:e",
+    ],
+)
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+    )
+    for mode in [
+        "string",
+        "none",
+        "missing",
+        "two",
+        "unknown_keyword",
+        "duplicate",
+    ]
+]

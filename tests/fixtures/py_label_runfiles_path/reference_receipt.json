@@ -1,0 +1,250 @@
+{
+ "schema": "py-label-runfiles-path-reference-receipt/v1",
+ "fixture": "py_label_runfiles_path",
+ "purpose": "py_internal.get_label_repo_runfiles_path(label) (rules/python/PyBuiltins.java:120-128 via builtins_bzl/common/python/py_internal.bzl): PackageIdentifier.getRunfilesPath of the label's package (the package in the main repository, ../REPO/PACKAGE in an external one), at analysis and while a .bzl loads, with BuiltinFunction's binding errors. py_internal is available in the main repository's tools/build_defs/python (BazelRuleClassProvider). Motivation: rules_python 1.7.0's common.bzl get_imports (py_library/py_binary `imports`) blocked analysis of ~/code's //src/beyondwork.ai/tools/... at @@rules_pkg+//pkg/private/tar:tar_writer (`py_internal.get_label_repo_runfiles_path is not implemented in the native profile`).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets and run arguments>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; default registry (bcr.bazel.build); one fresh copy of the fixture workspace per case (platforms extracted from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "17b01d49ef1d43fd9f6b0d5e9aa9956d145ad30dd9d94d89f3e552710654c8e1",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets and run arguments>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/py-label-runfiles-path-capture.py, py-label-runfiles-path-receipt.py (not committed)",
+  "sha256": {
+   "py-label-runfiles-path-capture.py": "ec0823421629bd303215b1e61ba9cca589c2db944d8bc78542529724fd6606bc",
+   "py-label-runfiles-path-receipt.py": "510cbdb4676c0f91d7f0d01a494ac3e2b98706fb1aaa566237aa40e728e9b479"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "67a54a84a3b94afb34984c61060543d99633c213d61b8810648dfe470fb94a1d",
+  "MODULE.bazel": "263b8973f4e32844898763dbefdce03dfd0b3997efd9a2da36fdb6388ff61a64",
+  "a/b/c/BUILD.bazel": "20043b419dc5f785f7068e0806c5c4dcda73b2ff0b335f1ad5a4c540dedfd2ba",
+  "ext/BUILD.bazel": "209bd6165bf5ded2ba9e1b0d6200f2830764f83bd57c893bd4712b3f39bbe4d3",
+  "ext/MODULE.bazel": "a02af1c154e0a4d866238124b22f169605295dbb70eb61b801587e01ea01d40c",
+  "ext/data/BUILD.bazel": "735f6cd81ef350a4273bb9f8841f6a94a4f88da1c687a5389f53673126abf973",
+  "ext/data/e.txt": "aa7db93a60df22428d5a6d0d4936bcd4832b6fef5892953bfc2c761f4f54b4f0",
+  "tools/build_defs/python/BUILD.bazel": "cd5062f4db2302d42d62fc82252587a15234bbfe36e03145de37cd805c7854f6",
+  "tools/build_defs/python/defs.bzl": "6d06e2eb8d436c17b433ddfb34d3c6ab6acff4eaec4a47f44ac646e1c132cad5"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/py_label_runfiles_path.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "The result is a string: \"tools/build_defs/python\" for the calling package, \"\" for the main repository's root package, \"a/b/c\" for a nested one, \"../ext+/data\" and \"../ext+\" for an external module's package and root package (also from a canonical @@ext+ label and dependency labels), \"../bazel_tools/tools/test\" for @bazel_tools; the same while a .bzl loads. rules_python's prefix is ctx.workspace_name + \"/\" + it (\"_main/tools/build_defs/python\").",
+  "Errors come from the inner builtin (`Error in get_label_repo_runfiles_path: ...`, below the py_internal.bzl wrapper frame): `in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'string', want 'Label'` (also NoneType), `get_label_repo_runfiles_path() accepts no more than 1 positional argument but got 2`, `get_label_repo_runfiles_path() got unexpected keyword argument 'lable' (did you mean 'label'?)`, `get_label_repo_runfiles_path() got multiple values for argument 'label'`.",
+  "Without an argument Bazel 9.3 crashes (FATAL, exit 37, IllegalArgumentException: argument type mismatch, args=[<unbound> (unbound)])."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and Starlark errors in its own traceback format without the @_builtins wrapper frame (the messages are Bazel's).",
+  "Declared divergence bad_missing: see the case.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 7,
+  "DECLARED_DIVERGENCE": 1
+ },
+ "scratch_removed": true,
+ "cases": {
+  "probe": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.996,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:probe (9 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:probe up-to-date:\n  bazel-bin/tools/build_defs/python/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      "self=\"tools/build_defs/python\"\nnamed=\"tools/build_defs/python\"\nroot=\"\"\nnested=\"a/b/c\"\nexternal=\"../ext+/data\"\nexternal_root=\"../ext+\"\ncanonical=\"../ext+/data\"\nbazel_tools=\"../bazel_tools/tools/test\"\ndeps=[\"\", \"a/b/c\", \"../ext+\", \"../ext+/data\"]\nloaded=\"../ext+/data\"\ntype=string\nworkspace_prefix=_main/tools/build_defs/python\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.351,
+    "stdout": "//tools/build_defs/python:probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      "self=\"tools/build_defs/python\"\nnamed=\"tools/build_defs/python\"\nroot=\"\"\nnested=\"a/b/c\"\nexternal=\"../ext+/data\"\nexternal_root=\"../ext+\"\ncanonical=\"../ext+/data\"\nbazel_tools=\"../bazel_tools/tools/test\"\ndeps=[\"\", \"a/b/c\", \"../ext+\", \"../ext+/data\"]\nloaded=\"../ext+/data\"\ntype=string\nworkspace_prefix=_main/tools/build_defs/python\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//tools/build_defs/python:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.984,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:probe (9 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.346,
+    "stdout": "//tools/build_defs/python:probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": null
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_string": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_string"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.925,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: in bad rule //tools/build_defs/python:bad_string: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 39, column 10, in _bad_impl\n\t\tf(\"//tools/build_defs/python:x\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 56, column 53, in _get_label_repo_runfiles_path\nError in get_label_repo_runfiles_path: in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'string', want 'Label'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: Analysis of target '//tools/build_defs/python:bad_string' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_string' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.334,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_string: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:39, in _bad_impl\n      f(\"//tools/build_defs/python:x\")\nerror: in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'string', want 'Label'\n  --> //tools/build_defs/python:defs.bzl:39:9\n   |\n39 |         f(\"//tools/build_defs/python:x\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'string', want 'Label'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_none": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_none"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.646,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: in bad rule //tools/build_defs/python:bad_none: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 41, column 10, in _bad_impl\n\t\tf(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 56, column 53, in _get_label_repo_runfiles_path\nError in get_label_repo_runfiles_path: in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'NoneType', want 'Label'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: Analysis of target '//tools/build_defs/python:bad_none' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.337,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:41, in _bad_impl\n      f(None)\nerror: in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'NoneType', want 'Label'\n  --> //tools/build_defs/python:defs.bzl:41:9\n   |\n41 |         f(None)\n   |         ^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to get_label_repo_runfiles_path(), parameter 'label' got value of type 'NoneType', want 'Label'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_missing"
+   ],
+   "genuine": {
+    "exit": 37,
+    "seconds": 8.666,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_missing, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_missing, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//tools/build_defs/python:bad_missing)\n\tat <starlark>.get_label_repo_runfiles_path(<builtin>:0)\n\tat <starlark>._get_label_repo_runfiles_path(/virtual_builtins_bzl/common/python/py_internal.bzl:56)\n\tat <starlark>._bad_impl(<WS>/tools/build_defs/python/defs.bzl:43)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public java.lang.String com.google.devtools.build.lib.rules.python.PyBuiltins.getLabelRepoRunfilesPath(com.google.devtools.build.lib.cmdline.Label), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[<unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat net.starlark.java.eval.Eval.evalPositionalOnlyCall(Eval.java:790)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:707)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:304)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:238)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat com.google.devtools.build.lib.analysis.starlark.StarlarkRuleConfiguredTargetUtil.evalRule(StarlarkRuleConfiguredTargetUtil.java:86)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createRule(ConfiguredTargetFactory.java:460)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createConfiguredTarget(ConfiguredTargetFactory.java:240)\n\tat com.google.devtools.build.lib.skyframe.SkyframeBuildView.createConfiguredTarget(SkyframeBuildView.java:1398)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.createConfiguredTarget(ConfiguredTargetFunction.java:453)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.compute(ConfiguredTargetFunction.java:371)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.334,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:43, in _bad_impl\n      f()\nerror: py_internal.get_label_repo_runfiles_path() without a label: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.getLabelRepoRunfilesPath), which the native profile reports instead\n  --> //tools/build_defs/python:defs.bzl:43:9\n   |\n43 |         f()\n   |         ^^^\n   |\n\n",
+    "outputs": null
+   },
+   "declared_divergence": "genuine Bazel 9.3 crashes (FATAL, exit 37): the parameter's `unbound` default reaches PyBuiltins.getLabelRepoRunfilesPath(Label) (IllegalArgumentException, argument type mismatch); the native profile reports an explicit error instead",
+   "native_message": "py_internal.get_label_repo_runfiles_path() without a label: genuine Bazel 9.3 crashes on it",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "bad_two": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_two"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.777,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: in bad rule //tools/build_defs/python:bad_two: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 45, column 10, in _bad_impl\n\t\tf(ctx.label, ctx.label)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 56, column 53, in _get_label_repo_runfiles_path\nError in get_label_repo_runfiles_path: get_label_repo_runfiles_path() accepts no more than 1 positional argument but got 2\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: Analysis of target '//tools/build_defs/python:bad_two' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_two' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.327,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_two: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:45, in _bad_impl\n      f(ctx.label, ctx.label)\nerror: get_label_repo_runfiles_path() accepts no more than 1 positional argument but got 2\n  --> //tools/build_defs/python:defs.bzl:45:9\n   |\n45 |         f(ctx.label, ctx.label)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "get_label_repo_runfiles_path() accepts no more than 1 positional argument but got 2",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_unknown_keyword": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_unknown_keyword"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.841,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: in bad rule //tools/build_defs/python:bad_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 47, column 10, in _bad_impl\n\t\tf(lable = ctx.label)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 56, column 53, in _get_label_repo_runfiles_path\nError in get_label_repo_runfiles_path: get_label_repo_runfiles_path() got unexpected keyword argument 'lable' (did you mean 'label'?)\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: Analysis of target '//tools/build_defs/python:bad_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.32,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_unknown_keyword: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:47, in _bad_impl\n      f(lable = ctx.label)\nerror: get_label_repo_runfiles_path() got unexpected keyword argument 'lable' (did you mean 'label'?)\n  --> //tools/build_defs/python:defs.bzl:47:9\n   |\n47 |         f(lable = ctx.label)\n   |         ^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "get_label_repo_runfiles_path() got unexpected keyword argument 'lable' (did you mean 'label'?)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_duplicate": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_duplicate"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.236,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: in bad rule //tools/build_defs/python:bad_duplicate: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 49, column 10, in _bad_impl\n\t\tf(ctx.label, label = ctx.label)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 56, column 53, in _get_label_repo_runfiles_path\nError in get_label_repo_runfiles_path: get_label_repo_runfiles_path() got multiple values for argument 'label'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:14:8: Analysis of target '//tools/build_defs/python:bad_duplicate' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_duplicate' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.321,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_duplicate: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:49, in _bad_impl\n      f(ctx.label, label = ctx.label)\nerror: get_label_repo_runfiles_path() got multiple values for argument 'label'\n  --> //tools/build_defs/python:defs.bzl:49:9\n   |\n49 |         f(ctx.label, label = ctx.label)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "get_label_repo_runfiles_path() got multiple values for argument 'label'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

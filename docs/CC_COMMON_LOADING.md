@@ -51,6 +51,24 @@ Struct members that Bazel defines with `def` have type `function`, and their
 compare equal by definition, so re-allocated copies, such as those in
 `apple_toolchain()`, behave like Bazel's single objects.
 
+Two `py_internal` functions are implemented; the others fail explicitly:
+
+- `merge_runfiles_with_generated_inits_empty_files_supplier(ctx=, runfiles=)`
+  (docs/RUNFILES_TREES.md).
+- `get_label_repo_runfiles_path(label)` (PyBuiltins.getLabelRepoRunfilesPath,
+  used by rules_python's `get_imports`) returns
+  PackageIdentifier.getRunfilesPath: the package in the main repository
+  (`""` for its root package), `../REPO/PACKAGE` (`../REPO` for the root
+  package) in an external one, during analysis and while a `.bzl` loads.
+  Binding errors are the inner builtin's (`in call to
+  get_label_repo_runfiles_path(), parameter 'label' got value of type
+  'string', want 'Label'`, the surplus-positional, unknown-keyword and
+  duplicate texts). Without an argument the `unbound` default reaches the
+  Java method and Bazel 9.3 crashes (IllegalArgumentException); natively that
+  is an explicit error. Paired capture `tests/fixtures/py_label_runfiles_path`
+  (8 genuine 9.3.0 cases: 7 MATCH, the crash a declared divergence), replayed
+  by `tests/py_label_runfiles_path.rs`.
+
 ### `cc_common.internal_DO_NOT_USE()` and the private-API check
 
 `_internal_exports` calls `cc_internal.check_private_api` with the allowlist

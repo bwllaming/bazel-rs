@@ -108,6 +108,8 @@ pub(crate) enum Behavior {
     /// PyBuiltins.mergeRunfilesWithGeneratedInitsEmptyFilesSupplier
     /// (rules/python/PyBuiltins.java:223-250).
     PyMergeGeneratedInits,
+    /// PyBuiltins.getLabelRepoRunfilesPath (rules/python/PyBuiltins.java:120-128).
+    PyLabelRepoRunfilesPath,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -1002,6 +1004,10 @@ fn call<'v>(
                 None => type_error(FUNCTION, "runfiles", runfiles, "runfiles"),
             })
         }
+        Behavior::PyLabelRepoRunfilesPath => {
+            let label = py_label_argument(args, heap, qualified)?;
+            Ok(heap.alloc(package_runfiles_path(&label)))
+        }
         Behavior::CcInternalExports => {
             bind_styled(style, name, &[], args, heap)?;
             crate::cc_common::internal_exports(eval)
@@ -1603,10 +1609,12 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
     let mut fields: Vec<(&'static str, FrozenValue)> = PY_INTERNAL_FUNCTIONS
         .iter()
         .map(|(field, def, qualified)| {
-            let behavior = if *field == "merge_runfiles_with_generated_inits_empty_files_supplier" {
-                Behavior::PyMergeGeneratedInits
-            } else {
-                unimplemented
+            let behavior = match *field {
+                "merge_runfiles_with_generated_inits_empty_files_supplier" => {
+                    Behavior::PyMergeGeneratedInits
+                }
+                "get_label_repo_runfiles_path" => Behavior::PyLabelRepoRunfilesPath,
+                _ => unimplemented,
             };
             (
                 *field,
@@ -1635,6 +1643,68 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
         crate::package_specification::alloc_frozen_constructor(heap),
     ));
     sorted_struct(heap, fields)
+}
+
+/// The `label` argument of `_py_builtins.get_label_repo_runfiles_path`
+/// (PyBuiltins.java:120-126: positional or named, default `unbound`, Java
+/// type Label) with BuiltinFunction's binding order
+/// (net/starlark/java/eval/BuiltinFunction.java:308-445): the positional
+/// value's type, then named arguments (unknown keyword, type, duplicate),
+/// then the surplus positional count. Without an argument the `unbound`
+/// default reaches the Java method and Bazel 9.3 crashes.
+fn py_label_argument<'v>(
+    args: &Arguments<'v, '_>,
+    heap: Heap<'v>,
+    qualified: &str,
+) -> starlark::Result<crate::label::Label> {
+    const FUNCTION: &str = "get_label_repo_runfiles_path";
+    let check = |value: Value<'v>| {
+        crate::starlark_types::unpack_label(value)
+            .and_then(|text| crate::label::Label::parse_canonical(&text).ok())
+            .ok_or_else(|| type_error(FUNCTION, "label", value, "Label"))
+    };
+    let positional: Vec<Value<'v>> = args.positions(heap)?.collect();
+    let mut bound = match positional.first() {
+        Some(value) => Some(check(*value)?),
+        None => None,
+    };
+    for (name, value) in args.names_map()?.iter() {
+        let name = name.as_str();
+        if name != "label" {
+            return Err(failure(format!(
+                "{FUNCTION}() got unexpected keyword argument '{name}'{}",
+                crate::native_rules::did_you_mean(name, &["label"])
+            )));
+        }
+        let label = check(*value)?;
+        if bound.replace(label).is_some() {
+            return Err(failure(format!(
+                "{FUNCTION}() got multiple values for argument 'label'"
+            )));
+        }
+    }
+    if positional.len() > 1 {
+        return Err(failure(format!(
+            "{FUNCTION}() accepts no more than 1 positional argument but got {}",
+            positional.len()
+        )));
+    }
+    bound.ok_or_else(|| {
+        failure(format!(
+            "{qualified}() without a label: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: the `unbound` default reaches PyBuiltins.getLabelRepoRunfilesPath), which the native profile reports instead"
+        ))
+    })
+}
+
+/// PackageIdentifier.getRunfilesPath (cmdline/PackageIdentifier.java): the
+/// package below `../REPO` for an external repository
+/// (RepositoryName.getRunfilesPath), the package itself in the main one.
+fn package_runfiles_path(label: &crate::label::Label) -> String {
+    match (label.repository.is_empty(), label.package.is_empty()) {
+        (true, _) => label.package.clone(),
+        (false, true) => format!("../{}", label.repository),
+        (false, false) => format!("../{}/{}", label.repository, label.package),
+    }
 }
 
 /// Install every language-module global into a `.bzl` environment. Pinned
@@ -1985,6 +2055,22 @@ fragment = struct(single_arch_platform = apple_common.platform.ios_simulator)
             ),
         ] {
             fails(FILE, call, message);
+        }
+    }
+
+    /// PackageIdentifier.getRunfilesPath (paired capture
+    /// tests/fixtures/py_label_runfiles_path).
+    #[test]
+    fn py_label_repo_runfiles_path_is_the_package_runfiles_path() {
+        for (label, expected) in [
+            ("//tools/build_defs/python:probe", "tools/build_defs/python"),
+            ("//:BUILD.bazel", ""),
+            ("@@ext+//data:e.txt", "../ext+/data"),
+            ("@@ext+//:root", "../ext+"),
+            ("@@bazel_tools//tools/test:x", "../bazel_tools/tools/test"),
+        ] {
+            let label = crate::label::Label::parse_canonical(label).unwrap();
+            assert_eq!(super::package_runfiles_path(&label), expected);
         }
     }
 
