@@ -500,7 +500,9 @@ fn validation_and_hidden_groups_deeper_than_the_depset_limit_compose() {
     // predecessor's group: each composed group is one level deeper (1,043
     // at the top) and the HIDDEN_TOP_LEVEL group over the 1,024-deep
     // runfiles artifacts 1,025, past the depset() limit, which framework
-    // compositions never check (Bazel's NestedSetBuilder has none).
+    // compositions never check (Bazel's NestedSetBuilder has none). An own
+    // group 1,024 deep merged with a contributor's (`deep_own`) panicked in
+    // the checked merge before W1c. Genuine Bazel 9.3.0 builds all of it.
     let ws = Workspace::new(
         &format!(
             "{COMPOSED}\n\
@@ -510,11 +512,13 @@ fn validation_and_hidden_groups_deeper_than_the_depset_limit_compose() {
                  ctx.actions.write(a, 'a')\n    \
                  ctx.actions.write(b, 'b')\n    \
                  d = depset([a])\n    \
-                 for i in range(1022):\n        \
+                 for i in range(ctx.attr.iterations):\n        \
                      d = depset([b if i % 2 == 0 else a], transitive = [d])\n    \
-                 return [DefaultInfo(files = depset([a]), runfiles = ctx.runfiles(transitive_files = d)),\n            \
+                 runfiles = ctx.runfiles(transitive_files = d) if ctx.attr.with_runfiles else None\n    \
+                 return [DefaultInfo(files = depset([a]), runfiles = runfiles),\n            \
                          OutputGroupInfo(_validation = d)]\n\
-             deep = rule(implementation = _deep)\n\
+             deep = rule(implementation = _deep, attrs = {{'iterations': attr.int(),\n    \
+                 'with_runfiles': attr.bool(), 'dep': attr.label()}})\n\
              def _count(ctx):\n    \
                  print('COUNT', len(ctx.attr.dep[OutputGroupInfo]._validation.to_list()),\n          \
                        len(ctx.attr.deep[OutputGroupInfo]._hidden_top_level_INTERNAL_.to_list()))\n    \
@@ -525,13 +529,16 @@ fn validation_and_hidden_groups_deeper_than_the_depset_limit_compose() {
                      link(name = 'c%d' % index, dep = ':c%d' % (index - 1) if index else first)\n"
         ),
         "load(':defs.bzl', 'count', 'deep', 'links')\n\
-         deep(name = 'deep')\n\
+         deep(name = 'deep', iterations = 1022, with_runfiles = True)\n\
          links(20, ':deep')\n\
+         deep(name = 'deep_own', iterations = 1023, dep = ':c0')\n\
          count(name = 'count', dep = ':c19', deep = ':deep')\n\
+         count(name = 'count_own', dep = ':deep_own', deep = ':deep')\n\
          filegroup(name = 'fg', srcs = [':c19'])\n",
     );
-    let text = ok(&ws.build(&[":count", ":fg"]));
+    let text = ok(&ws.build(&[":count", ":count_own", ":fg"]));
     assert!(text.contains("COUNT 22 2"), "{text}");
+    assert!(text.contains("COUNT 5 2"), "{text}");
     assert_eq!(ws.read("deep.b.validated").as_deref(), Some("b"));
     assert_eq!(ws.read("c19.validated").as_deref(), Some("c19"));
 }
