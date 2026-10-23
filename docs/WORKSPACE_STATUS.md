@@ -149,6 +149,16 @@ a runfiles tree, an output group, an aspect's outputs — whichever other
 targets the build has, under `build` and `--nobuild` alike (the lookup that
 reaches it registers the status files; `tests/artifact_identity.rs`
 `status_*`, paired rows in `tests/fixtures/artifact_identity/reference_receipt.json`).
+It is one File everywhere: the status artifacts carry the very Files
+ctx.info_file / ctx.version_file hold (`Artifact::workspace_status`, planned
+or the bare `--nobuild` artifacts), so a status file a dependency returns in
+DefaultInfo reaches a consumer — ctx.files, `dep[DefaultInfo].files`,
+`dep.files`, through a filegroup too — with short_path
+`stable-status.txt`/`volatile-status.txt`, not a source, root `bazel-out`,
+equal to the consumer's own (rows `status_files_of_a_dependency*`). Until
+integration-20's fix the dependency's view handed out a File computed from
+the artifact's path: short_path `bazel-out/stable-status.txt`, root `""`, a
+source under `--nobuild`, unequal.
 
 ## C++ build info (`_build_info_files`)
 

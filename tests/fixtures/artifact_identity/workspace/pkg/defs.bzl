@@ -184,3 +184,55 @@ def _use_manifest(ctx):
     return [DefaultInfo(files = depset([out]))]
 
 use_manifest = rule(_use_manifest, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+
+# A dependency's workspace status files are the consumer's own ctx.info_file
+# and ctx.version_file: one File each (short_path `stable-status.txt`, a
+# derived File of the `bazel-out` root, no owner), however the consumer
+# reaches them - ctx.files, the dependency's DefaultInfo or its Target.files,
+# from a Starlark rule or a filegroup forwarding it - under build and
+# --nobuild alike.
+def _status_files(ctx):
+    # Both status files as files to build.
+    return [DefaultInfo(files = depset([ctx.info_file, ctx.version_file]))]
+
+status_files = rule(_status_files)
+
+def _describe(how, f, own):
+    return " ".join([
+        how,
+        "path=" + f.path,
+        "short_path=" + f.short_path,
+        "is_source=" + str(f.is_source),
+        "root=" + f.root.path,
+        "owner=" + str(f.owner),
+        "equal_info_file=" + str(f == own[0]),
+        "equal_version_file=" + str(f == own[1]),
+        "in_own_set=" + str(len(depset([f] + own).to_list()) == 2),
+    ])
+
+def _status_report(ctx):
+    # The dependencies' status files as this target sees them, against its
+    # own: printed (what --nobuild shows) and written by an action taking
+    # every one of them as an input.
+    own = [ctx.info_file, ctx.version_file]
+    views = []
+    for name, dep, files in [("dep", ctx.attr.dep, ctx.files.dep), ("group", ctx.attr.group, ctx.files.group)]:
+        views.append(("ctx.files." + name, files))
+        views.append((name + "[DefaultInfo]", dep[DefaultInfo].files.to_list()))
+        views.append((name + ".files", dep.files.to_list()))
+    reached = [f for _, files in views for f in files]
+    lines = [_describe("own", f, own) for f in own]
+    lines += [_describe(how, f, own) for how, files in views for f in files]
+    lines.append("set_size=%d" % len(depset(own + reached).to_list()))
+    for line in lines:
+        print("status_report " + line)
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        inputs = own + reached,
+        outputs = [out],
+        command = "printf '%s\\n' \"$1\" > \"$2\"",
+        arguments = ["\n".join(lines), out.path],
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+status_report = rule(_status_report, attrs = {"dep": attr.label(), "group": attr.label()})

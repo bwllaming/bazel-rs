@@ -12,8 +12,10 @@ load(
     "run_tool",
     "status",
     "status_exe",
+    "status_files",
     "status_group",
     "status_lib",
+    "status_report",
     "status_wrap",
     "tool",
     "use",
@@ -82,3 +84,9 @@ status_wrap(name = "status_wrap", deps = [":status_lib"])
 status_group(name = "status_group")
 
 use_manifest(name = "use_manifest", tool = ":tool")
+
+status_files(name = "status_files")
+
+filegroup(name = "status_filegroup", srcs = [":status_files"])
+
+status_report(name = "status_report", dep = ":status_files", group = ":status_filegroup")

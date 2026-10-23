@@ -45,10 +45,11 @@ struct Artifact {
     constant_metadata: bool,
     /// The artifact's File, computed once by [`Artifact::new`] (W1a,
     /// PLAN-L1 §2.1) from `exec`, the producer's presence, `owner` and
-    /// `directory` — clones share it. It is fixed at construction: a
-    /// staged tool runfile (commit_custom_target) rewrites only `exec`
-    /// to its runfiles-tree destination and keeps the staged artifact's
-    /// File; plan_action compares such copies on their fields.
+    /// `directory` — clones share it; a workspace status artifact's is the
+    /// status File itself ([`Artifact::workspace_status`]). It is fixed at
+    /// construction: a staged tool runfile (commit_custom_target) rewrites
+    /// only `exec` to its runfiles-tree destination and keeps the staged
+    /// artifact's File; plan_action compares such copies on their fields.
     file: Arc<File>,
 }
 
@@ -75,6 +76,39 @@ impl Artifact {
             directory,
             constant_metadata,
             file,
+        }
+    }
+
+    /// A workspace status artifact (BazelWorkspaceStatusModule.java:280-281):
+    /// `bazel-out/<name>` in the build-data root, owned by no target, planned
+    /// (`producer`: the status node of an executing build) or bare (the
+    /// --nobuild artifact no action produces). Its File is the status File
+    /// ctx.info_file / ctx.version_file hold
+    /// (crate::analysis_runtime::workspace_status_file: short_path `<name>`,
+    /// a derived File, root `bazel-out`) in both cases, so the File a
+    /// consumer reaches through a dependency's files (DefaultInfo,
+    /// ctx.files, Target.files — the view hands out Artifact Files) equals
+    /// its own ctx.info_file, as in Bazel. [`Artifact::compute_file`] cannot
+    /// give it: the path lies below no configuration's output root (it
+    /// would be the short path too) and a bare artifact has no producer (it
+    /// would be a source).
+    fn workspace_status(
+        name: &str,
+        producer: Option<(String, usize)>,
+        constant_metadata: bool,
+    ) -> Self {
+        // W0-A work counter: one File per Artifact, as Artifact::new.
+        crate::plan_timings::note_artifact_file();
+        let file = crate::analysis_runtime::workspace_status_file(name);
+        let exec = PathBuf::from(&file.path);
+        Self {
+            real: exec.clone(),
+            exec,
+            producer,
+            owner: file.owner.clone(),
+            directory: file.is_directory,
+            constant_metadata,
+            file: Arc::new(file),
         }
     }
 
@@ -436,8 +470,11 @@ fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact
 /// returns in providers and registers as an action output — is the File its
 /// Artifact computes, which dependency views hand to consumers, so one
 /// artifact never reaches a consumer as two Files. Both follow one
-/// short-path rule (crate::label::generated_short_path); a divergence is an
-/// internal error, checked in debug builds and under
+/// short-path rule (crate::label::generated_short_path). The workspace
+/// status files are held to it too: ctx.info_file / ctx.version_file are
+/// their artifacts' Files, planned or bare ([`Artifact::workspace_status`],
+/// checked where [`Engine::ensure_workspace_status`] registers them). A
+/// divergence is an internal error, checked in debug builds and under
 /// BAZEL_RS_VERIFY_ARTIFACTS like [`register_artifact`].
 fn verify_declared_file(file: &File, artifact: &Artifact) {
     if (cfg!(debug_assertions) || verify_artifacts()) && *artifact.file != *file {
@@ -11890,20 +11927,10 @@ impl Engine {
                 let client_env =
                     status_client_environment.get_or_init(crate::action_env::client_environment);
                 let computed = self.workspace_status_computed(client_env).clone_status();
-                let bare = |name: &str, constant: bool| {
-                    Artifact::new(
-                        PathBuf::from(format!("bazel-out/{name}")),
-                        PathBuf::from(format!("bazel-out/{name}")),
-                        None,
-                        String::new(),
-                        false,
-                        constant,
-                    )
-                };
                 *plan = Some(WorkspaceStatusPlan {
                     computed,
-                    stable: bare("stable-status.txt", false),
-                    volatile: bare("volatile-status.txt", true),
+                    stable: Artifact::workspace_status("stable-status.txt", None, false),
+                    volatile: Artifact::workspace_status("volatile-status.txt", None, true),
                 });
             }
         } else if plan.is_none() {
@@ -11949,7 +11976,7 @@ impl Engine {
                 crate::workspace_status::ComputedWorkspaceStatus::Ok(status) => {
                     nodes.push(node(
                         "BazelWorkspaceStatusAction#stable",
-                        stable_path.clone(),
+                        stable_path,
                         Some(crate::action::WriteAction {
                             content: status.stable_bytes.clone(),
                             executable: false,
@@ -11958,7 +11985,7 @@ impl Engine {
                     ));
                     nodes.push(node(
                         "BazelWorkspaceStatusAction#volatile",
-                        volatile_path.clone(),
+                        volatile_path,
                         Some(crate::action::WriteAction {
                             content: status.volatile_bytes.clone(),
                             executable: false,
@@ -11966,20 +11993,14 @@ impl Engine {
                         None,
                     ));
                     (
-                        Artifact::new(
-                            stable_path.clone(),
-                            stable_path,
+                        Artifact::workspace_status(
+                            "stable-status.txt",
                             Some(("BazelWorkspaceStatusAction#stable".to_owned(), 0)),
-                            String::new(),
-                            false,
                             false,
                         ),
-                        Artifact::new(
-                            volatile_path.clone(),
-                            volatile_path,
+                        Artifact::workspace_status(
+                            "volatile-status.txt",
                             Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            String::new(),
-                            false,
                             true,
                         ),
                     )
@@ -11989,7 +12010,7 @@ impl Engine {
                     // surfaces once at execution with Bazel's text.
                     nodes.push(node(
                         "BazelWorkspaceStatusAction#volatile",
-                        volatile_path.clone(),
+                        volatile_path,
                         None,
                         Some(crate::action::Transform::Unsupported {
                             message: format!(
@@ -11999,23 +12020,17 @@ impl Engine {
                         }),
                     ));
                     (
-                        Artifact::new(
-                            stable_path.clone(),
-                            stable_path,
+                        Artifact::workspace_status(
+                            "stable-status.txt",
                             // The failing node has one output; consumers
                             // of either file depend on it at index 0 and
                             // fail with it (the node never produces).
                             Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            String::new(),
-                            false,
                             false,
                         ),
-                        Artifact::new(
-                            volatile_path.clone(),
-                            volatile_path,
+                        Artifact::workspace_status(
+                            "volatile-status.txt",
                             Some(("BazelWorkspaceStatusAction#volatile".to_owned(), 0)),
-                            String::new(),
-                            false,
                             true,
                         ),
                     )
@@ -12028,16 +12043,17 @@ impl Engine {
             });
         }
         let planned = plan.as_ref().expect("just planned");
-        register_artifact(
-            artifact_index,
-            &crate::analysis_runtime::workspace_status_file("stable-status.txt"),
-            &planned.stable,
-        );
-        register_artifact(
-            artifact_index,
-            &crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
-            &planned.volatile,
-        );
+        for (name, artifact) in [
+            ("stable-status.txt", &planned.stable),
+            ("volatile-status.txt", &planned.volatile),
+        ] {
+            // The File ctx.info_file / ctx.version_file hold is the status
+            // artifact's own File (Artifact::workspace_status): the one File
+            // every view hands out, as for a rule's declared output.
+            let file = crate::analysis_runtime::workspace_status_file(name);
+            verify_declared_file(&file, artifact);
+            register_artifact(artifact_index, &file, artifact);
+        }
         Ok([planned.stable.clone(), planned.volatile.clone()])
     }
 
@@ -12233,9 +12249,11 @@ fn plan_action(
     // are dropped. At a shared path, File equality is the equality of
     // (path text, directory, producer presence, owner): `short_path`
     // derives from the path, the producer's presence and the owner
-    // (Artifact::compute_file). The fields are compared, never the cached
-    // File: a staged tool runfile's `exec` is its runfiles-tree destination
-    // (commit_custom_target), not the path its File was computed from.
+    // (Artifact::compute_file; a workspace status path has one fixed File,
+    // Artifact::workspace_status). The fields are compared, never the
+    // cached File: a staged tool runfile's `exec` is its runfiles-tree
+    // destination (commit_custom_target), not the path its File was
+    // computed from.
     // Lookups only: dependencies and inputs keep the declaration order.
     let mut first = Vec::with_capacity(inputs.len());
     {
@@ -12697,9 +12715,65 @@ mod tests {
         let artifact = lookup(&volatile, &mut index).unwrap();
         assert_eq!(artifact.real, Path::new("bazel-out/volatile-status.txt"));
         assert!(artifact.producer.is_none() && artifact.constant_metadata);
+        // The bare artifact's File is the status File itself.
+        assert_eq!(*artifact.file, volatile);
         let stable = crate::analysis_runtime::workspace_status_file("stable-status.txt");
         assert!(index.contains_key(&stable) && index.len() == 3);
         assert!(nodes.is_empty() && producers.is_empty());
+    }
+
+    /// The workspace status artifacts carry the status Files ctx.info_file
+    /// and ctx.version_file hold (short_path `<name>`, derived, no owner,
+    /// root `bazel-out`) — bare under --nobuild, planned when the build
+    /// executes, also when the status computation failed — so a status file
+    /// a consumer reaches through a dependency's files (the view's Artifact
+    /// Files) equals its own, as in Bazel (tests/artifact_identity.rs
+    /// `status_files_of_a_dependency_are_the_consumers_own`). They used to
+    /// compute `bazel-out/<name>` as the short path, and a source File
+    /// without a producer.
+    #[test]
+    fn workspace_status_artifacts_carry_the_status_files() {
+        for (execute_build, embed_label) in [(false, ""), (true, ""), (true, "two\nlines")] {
+            let mut engine = Engine::new(PathBuf::new());
+            engine.set_execute_build(execute_build);
+            engine.set_workspace_status(crate::workspace_status::WorkspaceStatusOptions {
+                command: String::new(),
+                embed_label: embed_label.to_owned(),
+            });
+            let mut index = BTreeMap::new();
+            let (mut nodes, mut producers) = (Vec::new(), BTreeMap::new());
+            let (client, status) = (std::cell::OnceCell::new(), std::cell::OnceCell::new());
+            let planned = engine
+                .ensure_workspace_status(
+                    &mut None,
+                    &mut nodes,
+                    &mut producers,
+                    &client,
+                    &status,
+                    &mut index,
+                )
+                .unwrap();
+            // No status node under --nobuild, two when executing, one
+            // failing node when the computation failed.
+            let expected_nodes = match (execute_build, embed_label.contains('\n')) {
+                (false, _) => 0,
+                (true, false) => 2,
+                (true, true) => 1,
+            };
+            assert_eq!(nodes.len(), expected_nodes);
+            for (name, artifact) in ["stable-status.txt", "volatile-status.txt"]
+                .into_iter()
+                .zip(&planned)
+            {
+                let file = crate::analysis_runtime::workspace_status_file(name);
+                assert_eq!(*artifact.file, file, "{name}, executing: {execute_build}");
+                assert_eq!((file.short_path.as_str(), file.is_source), (name, false));
+                assert_eq!(artifact.exec, Path::new(&file.path));
+                assert_eq!(artifact.producer.is_some(), execute_build);
+                assert!(same_artifact(&index[&file], artifact));
+            }
+            assert_eq!(index.len(), 2);
+        }
     }
 
     /// A memoized dependency view of `//pkg:dep` holding `providers`, and

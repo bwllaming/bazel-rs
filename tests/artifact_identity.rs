@@ -351,6 +351,90 @@ fn status_file_in_an_output_group_resolves_alone() {
     );
 }
 
+/// What //pkg:status_report says about the workspace status Files it
+/// reaches through //pkg:status_files (whose DefaultInfo returns its own
+/// ctx.info_file and ctx.version_file) and through a filegroup forwarding
+/// it, against its own ctx.info_file / ctx.version_file: genuine Bazel
+/// 9.3's report, the same under build and --nobuild
+/// (reference_receipt.json `status_files_of_a_dependency*`).
+fn status_report() -> String {
+    let line = |how: &str, name: &str, stable: bool| {
+        let (info, version) = if stable {
+            ("True", "False")
+        } else {
+            ("False", "True")
+        };
+        format!(
+            "{how} path=bazel-out/{name} short_path={name} is_source=False root=bazel-out owner=None equal_info_file={info} equal_version_file={version} in_own_set=True\n"
+        )
+    };
+    let mut report = String::new();
+    for how in [
+        "own",
+        "ctx.files.dep",
+        "dep[DefaultInfo]",
+        "dep.files",
+        "ctx.files.group",
+        "group[DefaultInfo]",
+        "group.files",
+    ] {
+        report += &line(how, "stable-status.txt", true);
+        report += &line(how, "volatile-status.txt", false);
+    }
+    report + "set_size=2\n"
+}
+
+/// The `status_report` lines a build printed (its analysis-time report).
+fn printed_status_report(output: &Output) -> String {
+    stderr(output)
+        .lines()
+        .filter_map(|line| line.strip_prefix("status_report "))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+#[test]
+fn status_files_of_a_dependency_are_the_consumers_own() {
+    // A workspace status file a dependency returns in DefaultInfo reaches
+    // the consumer as the consumer's own ctx.info_file / ctx.version_file,
+    // through ctx.files, dep[DefaultInfo] and Target.files, also forwarded
+    // by a filegroup: short_path `stable-status.txt`, a derived File of the
+    // `bazel-out` root, equal, one depset element — under --nobuild too
+    // (no status action). The dependency view used to hand out the status
+    // artifact's computed File instead: short_path
+    // `bazel-out/stable-status.txt`, root "", a source under --nobuild, not
+    // equal to ctx.info_file (set_size=4).
+    let ws = Workspace::new();
+    let planned = ws.build(&["--nobuild", "//pkg:status_report"]);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    assert_eq!(printed_status_report(&planned), status_report());
+    assert_eq!(
+        String::from_utf8_lossy(&planned.stdout),
+        "//pkg:status_report\tbazel-out/k8-fastbuild/bin/pkg/status_report.txt\n"
+    );
+    let built = ws.build_env(&[("BAZEL_RS_DUMP_ACTIONS", "1")], &["//pkg:status_report"]);
+    let text = stderr(&built);
+    assert_eq!(printed_status_report(&built), status_report());
+    // Every view's File is an input resolving to the status action.
+    assert!(
+        text.contains(
+            "  command printf '%s\\n' \"$1\" > \"$2\"\n\
+             \x20 generated BazelWorkspaceStatusAction#stable[0] -> bazel-out/stable-status.txt\n\
+             \x20 generated BazelWorkspaceStatusAction#volatile[0] -> bazel-out/volatile-status.txt\n\
+             \x20 output bazel-out/k8-fastbuild/bin/pkg/status_report.txt\n"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        outputs(&built),
+        [row(
+            "//pkg:status_report",
+            "bazel-out/k8-fastbuild/bin/pkg/status_report.txt",
+            &status_report()
+        )]
+    );
+}
+
 #[test]
 fn runfiles_manifest_input_resolves_to_its_planned_node() {
     // files_to_run.runfiles_manifest is the File of a planned runfiles node

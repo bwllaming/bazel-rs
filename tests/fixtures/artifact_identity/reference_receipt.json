@@ -1,7 +1,7 @@
 {
- "schema": "w1b-artifact-identity-receipt/v2",
+ "schema": "w1b-artifact-identity-receipt/v3",
  "fixture": "artifact_identity",
- "purpose": "Programs the pre-W1b legality machinery (provider-file walk, known_file gates, per-target available maps) rejected and genuine Bazel 9.3 accepts: a File reachable only through a closure as an input and as a declare_file sibling, provider payloads with range/200-deep/cyclic/bound-method values, a workspace status file in DefaultInfo without an action; plus regression rows (three-hop provider file, forwarded DefaultInfo, generated tool runfile), the declared-output conflict (both fail, texts differ) and the analysis-bound payloads Bazel keeps and the native profile rejects explicitly. W1 review F1 rows (status_*): a workspace status file reached only through an executable's own runfiles, a dependency's runfiles merged by an executable, a library's runfiles (built with it), an output group or a top-level aspect's output group, each target alone under build and --nobuild; before F1 the native profile resolved it only when another target of the build had registered the status files. runfiles_manifest_input*: a tool's files_to_run.runfiles_manifest as an action input (the planned manifest node's File; None under --nobuild_runfile_manifests in both).",
+ "purpose": "Programs the pre-W1b legality machinery (provider-file walk, known_file gates, per-target available maps) rejected and genuine Bazel 9.3 accepts: a File reachable only through a closure as an input and as a declare_file sibling, provider payloads with range/200-deep/cyclic/bound-method values, a workspace status file in DefaultInfo without an action; plus regression rows (three-hop provider file, forwarded DefaultInfo, generated tool runfile), the declared-output conflict (both fail, texts differ) and the analysis-bound payloads Bazel keeps and the native profile rejects explicitly. W1 review F1 rows (status_*): a workspace status file reached only through an executable's own runfiles, a dependency's runfiles merged by an executable, a library's runfiles (built with it), an output group or a top-level aspect's output group, each target alone under build and --nobuild; before F1 the native profile resolved it only when another target of the build had registered the status files. runfiles_manifest_input*: a tool's files_to_run.runfiles_manifest as an action input (the planned manifest node's File; None under --nobuild_runfile_manifests in both). integration-20 rows status_files_of_a_dependency*: a dependency (//pkg:status_files) returns its ctx.info_file and ctx.version_file in DefaultInfo; //pkg:status_report reaches them through ctx.files, dep[DefaultInfo].files and Target.files, directly and through a filegroup forwarding the dependency, and describes each (path, short_path, is_source, root, owner, equality with its own ctx.info_file/ctx.version_file, membership in a depset of its own) under build and --nobuild: one File each, short_path stable-status.txt/volatile-status.txt, a derived File of the bazel-out root. Before the fix the dependency's view handed out short_path bazel-out/stable-status.txt, root '', is_source True under --nobuild, unequal (set_size=4); the pre-W1b base rejects the program (DefaultInfo file has no artifact). Schema v3 adds `report` (the print lines) to these rows' runs and the EXACT_REPORT verdict.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -9,19 +9,19 @@
  },
  "native": {
   "binary": "bazel-rs release build (cargo build --locked --release)",
-  "sha256": "7ad7b15d2e2f412f440942e26fd59618feccf706cf594dd5e2a611f3bab5a131",
-  "commit": "e381d6a992699fb6d9c37e35deb864f0eabad77d"
+  "sha256": "5eb169dbd1d1fbb13a15656b717a76f3dab8d02aa39b248455ee7c86edcb4408",
+  "commit": "the integration-20 commit adding this receipt (fix(W1): workspace status Files have one identity), built from its tree before committing; parent 95bda968c1ad769dfa7352165114b08e8ea26316"
  },
  "base_native": {
   "binary": "bazel-rs release build of 6bebe72 (pre-W1b base)",
   "sha256": "b1d76919d8ba829a87da20361073f61219d7ad4ed8064d1997956602f9c5acdb"
  },
  "capture_script": {
-  "path": "/tmp/opencode/perf-research/w1f-capture.py (scratch, not in the repo)",
-  "sha256": "1d3ef81392f00de80339102a80264e7f5012dab28f9de514fae882bac0ec85b9"
+  "path": "/tmp/opencode/perf-research/i20-status-capture.py (scratch, not in the repo; w1f-capture.py plus the report rows)",
+  "sha256": "e161deaee6715096147774366c598f00f24f7aa175858b403ac9d162b8743fc0"
  },
  "fixture_tree_sha256": [
-  "6606d0568f2f2bdc6a16e88a309e42711c462d8f8e47c6db131febc5e6179cf2",
+  "698271fb79aa5f3f20679dcaf13c0b9de6569bb58dc57e4dd6383ad9742755fc",
   2
  ],
  "verdicts": {
@@ -29,6 +29,7 @@
   "EXACT_PATHS": "both succeed; equal output paths (contents are timestamps)",
   "EXACT_ASPECT_PATHS": "both succeed; equal top-level aspect report paths (`Aspect A of L up-to-date:`; contents are timestamps). The native target line also lists the aspect's group file where genuine prints `(nothing to build)`: a pre-existing reporting difference",
   "EXIT_EQUAL": "both succeed (--nobuild: genuine prints no results; native reports planned paths)",
+  "EXACT_REPORT": "both succeed with equal analysis-time report lines (print `status_report ...`; genuine's `DEBUG: <location>: ` prefix stripped); under build also equal output paths and bytes",
   "BOTH_FAIL": "both fail (error texts recorded, not compared)",
   "EXPECTED_NATIVE_GAP": "genuine succeeds; native fails with the declared explicit message (unsupported provider payload ...: providers are frozen with their analysis)",
   "MISMATCH": "anything else"
@@ -41,7 +42,7 @@
      "//pkg:use"
     ],
     "exit": 0,
-    "seconds": 10.04,
+    "seconds": 10.76,
     "outputs": {
      "//pkg:use": [
       {
@@ -99,7 +100,7 @@
      "//pkg:via_closure"
     ],
     "exit": 0,
-    "seconds": 8.77,
+    "seconds": 8.96,
     "outputs": {
      "//pkg:via_closure": [
       {
@@ -122,7 +123,7 @@
      "//pkg:via_closure"
     ],
     "exit": 0,
-    "seconds": 0.02,
+    "seconds": 0.03,
     "outputs": {
      "//pkg:via_closure": [
       {
@@ -161,7 +162,7 @@
      "//pkg:via_range"
     ],
     "exit": 0,
-    "seconds": 8.36,
+    "seconds": 8.86,
     "outputs": {
      "//pkg:via_range": [
       {
@@ -179,7 +180,7 @@
      "//pkg:via_range"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:via_range": [
       {
@@ -213,7 +214,7 @@
      "//pkg:via_deep"
     ],
     "exit": 0,
-    "seconds": 8.07,
+    "seconds": 8.94,
     "outputs": {
      "//pkg:via_deep": [
       {
@@ -231,7 +232,7 @@
      "//pkg:via_deep"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:via_deep": [
       {
@@ -265,7 +266,7 @@
      "//pkg:via_cyclic"
     ],
     "exit": 0,
-    "seconds": 8.2,
+    "seconds": 8.91,
     "outputs": {
      "//pkg:via_cyclic": [
       {
@@ -283,7 +284,7 @@
      "//pkg:via_cyclic"
     ],
     "exit": 0,
-    "seconds": 0.02,
+    "seconds": 0.03,
     "outputs": {
      "//pkg:via_cyclic": [
       {
@@ -317,7 +318,7 @@
      "//pkg:via_method"
     ],
     "exit": 0,
-    "seconds": 8.03,
+    "seconds": 9.23,
     "outputs": {
      "//pkg:via_method": [
       {
@@ -370,7 +371,7 @@
      "//pkg:cat_fwd"
     ],
     "exit": 0,
-    "seconds": 8.4,
+    "seconds": 9.28,
     "outputs": {
      "//pkg:cat_fwd": [
       {
@@ -422,7 +423,7 @@
      "//pkg:cat_fwd"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:cat_fwd": [
       {
@@ -451,13 +452,13 @@
      "//pkg:status"
     ],
     "exit": 0,
-    "seconds": 8.26,
+    "seconds": 8.8,
     "outputs": {
      "//pkg:status": [
       {
        "path": "bazel-out/volatile-status.txt",
-       "sha256": "e08ebdb6384691cda4bcd511c1939600916a96a180f8ec8b4ece5fb80ddfe35b",
-       "text": "BUILD_TIMESTAMP 1792751036\nFORMATTED_DATE 2026 Oct 23 10 23 56 Fri\n"
+       "sha256": "4b135d09764e9a40e51e36f9ca6b66696cd91f2078b5009bd72367fe1175361c",
+       "text": "BUILD_TIMESTAMP 1792776004\nFORMATTED_DATE 2026 Oct 23 17 20 04 Fri\n"
       }
      ]
     },
@@ -469,13 +470,13 @@
      "//pkg:status"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:status": [
       {
        "path": "bazel-out/volatile-status.txt",
-       "sha256": "e08ebdb6384691cda4bcd511c1939600916a96a180f8ec8b4ece5fb80ddfe35b",
-       "text": "BUILD_TIMESTAMP 1792751036\nFORMATTED_DATE 2026 Oct 23 10 23 56 Fri\n"
+       "sha256": "4b135d09764e9a40e51e36f9ca6b66696cd91f2078b5009bd72367fe1175361c",
+       "text": "BUILD_TIMESTAMP 1792776004\nFORMATTED_DATE 2026 Oct 23 17 20 04 Fri\n"
       }
      ]
     },
@@ -487,7 +488,7 @@
      "//pkg:status"
     ],
     "exit": 1,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {},
     "errors": [
      "bazel-rs: //pkg:status: DefaultInfo file has no artifact: bazel-out/volatile-status.txt"
@@ -504,7 +505,7 @@
      "//pkg:status"
     ],
     "exit": 0,
-    "seconds": 7.93,
+    "seconds": 8.78,
     "outputs": {},
     "errors": []
    },
@@ -550,7 +551,7 @@
      "//pkg:second"
     ],
     "exit": 1,
-    "seconds": 8.24,
+    "seconds": 9.07,
     "outputs": {},
     "errors": [
      "ERROR: file 'pkg/same.txt' is generated by these conflicting actions:",
@@ -592,7 +593,7 @@
      "//pkg:run_tool"
     ],
     "exit": 0,
-    "seconds": 8.22,
+    "seconds": 9.22,
     "outputs": {
      "//pkg:run_tool": [
       {
@@ -610,7 +611,7 @@
      "//pkg:run_tool"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:run_tool": [
       {
@@ -628,7 +629,7 @@
      "//pkg:run_tool"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:run_tool": [
       {
@@ -650,7 +651,7 @@
      "//pkg:bound_ctx"
     ],
     "exit": 0,
-    "seconds": 8.38,
+    "seconds": 8.98,
     "outputs": {},
     "errors": []
    },
@@ -688,7 +689,7 @@
      "//pkg:bound_actions"
     ],
     "exit": 0,
-    "seconds": 8.51,
+    "seconds": 9.32,
     "outputs": {},
     "errors": []
    },
@@ -726,7 +727,7 @@
      "//pkg:bound_args"
     ],
     "exit": 0,
-    "seconds": 8.34,
+    "seconds": 8.9,
     "outputs": {},
     "errors": []
    },
@@ -764,7 +765,7 @@
      "//pkg:bound_closure"
     ],
     "exit": 0,
-    "seconds": 8.2,
+    "seconds": 9.01,
     "outputs": {},
     "errors": []
    },
@@ -802,7 +803,7 @@
      "//pkg:status_exe"
     ],
     "exit": 0,
-    "seconds": 8.5,
+    "seconds": 9.2,
     "outputs": {
      "//pkg:status_exe": [
       {
@@ -820,7 +821,7 @@
      "//pkg:status_exe"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:status_exe": [
       {
@@ -855,7 +856,7 @@
      "//pkg:status_exe"
     ],
     "exit": 0,
-    "seconds": 8.55,
+    "seconds": 8.99,
     "outputs": {},
     "errors": []
    },
@@ -901,7 +902,7 @@
      "//pkg:status_wrap"
     ],
     "exit": 0,
-    "seconds": 8.34,
+    "seconds": 9.09,
     "outputs": {
      "//pkg:status_wrap": [
       {
@@ -919,7 +920,7 @@
      "//pkg:status_wrap"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:status_wrap": [
       {
@@ -954,7 +955,7 @@
      "//pkg:status_wrap"
     ],
     "exit": 0,
-    "seconds": 8.86,
+    "seconds": 9.22,
     "outputs": {},
     "errors": []
    },
@@ -1000,7 +1001,7 @@
      "//pkg:status_lib"
     ],
     "exit": 0,
-    "seconds": 8.58,
+    "seconds": 8.69,
     "outputs": {
      "//pkg:status_lib": [
       {
@@ -1053,7 +1054,7 @@
      "//pkg:status_lib"
     ],
     "exit": 0,
-    "seconds": 8.57,
+    "seconds": 8.71,
     "outputs": {},
     "errors": []
    },
@@ -1100,7 +1101,7 @@
      "//pkg:status_group"
     ],
     "exit": 0,
-    "seconds": 9.29,
+    "seconds": 9.12,
     "outputs": {
      "//pkg:status_group": [
       {
@@ -1119,7 +1120,7 @@
      "//pkg:status_group"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:status_group": [
       {
@@ -1156,7 +1157,7 @@
      "//pkg:status_group"
     ],
     "exit": 0,
-    "seconds": 8.76,
+    "seconds": 9.34,
     "outputs": {},
     "errors": []
    },
@@ -1206,13 +1207,13 @@
      "//pkg:gen"
     ],
     "exit": 0,
-    "seconds": 9.32,
+    "seconds": 9.09,
     "outputs": {
      "aspect //pkg:defs.bzl%status_aspect of //pkg:gen": [
       {
        "path": "bazel-out/volatile-status.txt",
-       "sha256": "47b9ffa7329ec26f37f61caef5d2a49a22b68b9d274b78834f83765a7e32cb3f",
-       "text": "BUILD_TIMESTAMP 1792751173\nFORMATTED_DATE 2026 Oct 23 10 26 13 Fri\n"
+       "sha256": "8b6c52845dcfbd62ffad97d077a0d9bf83632861de51b16ed5f5851b071eacfb",
+       "text": "BUILD_TIMESTAMP 1792776149\nFORMATTED_DATE 2026 Oct 23 17 22 29 Fri\n"
       }
      ]
     },
@@ -1226,20 +1227,20 @@
      "//pkg:gen"
     ],
     "exit": 0,
-    "seconds": 0.01,
+    "seconds": 0.02,
     "outputs": {
      "//pkg:gen": [
       {
        "path": "bazel-out/volatile-status.txt",
-       "sha256": "47b9ffa7329ec26f37f61caef5d2a49a22b68b9d274b78834f83765a7e32cb3f",
-       "text": "BUILD_TIMESTAMP 1792751173\nFORMATTED_DATE 2026 Oct 23 10 26 13 Fri\n"
+       "sha256": "23a663fa37419dc580785a9133ae4e349d8b925496d1b2e24411bc21567dd7f5",
+       "text": "BUILD_TIMESTAMP 1792776150\nFORMATTED_DATE 2026 Oct 23 17 22 30 Fri\n"
       }
      ],
      "aspect //pkg:defs.bzl%status_aspect of //pkg:gen": [
       {
        "path": "bazel-out/volatile-status.txt",
-       "sha256": "47b9ffa7329ec26f37f61caef5d2a49a22b68b9d274b78834f83765a7e32cb3f",
-       "text": "BUILD_TIMESTAMP 1792751173\nFORMATTED_DATE 2026 Oct 23 10 26 13 Fri\n"
+       "sha256": "23a663fa37419dc580785a9133ae4e349d8b925496d1b2e24411bc21567dd7f5",
+       "text": "BUILD_TIMESTAMP 1792776150\nFORMATTED_DATE 2026 Oct 23 17 22 30 Fri\n"
       }
      ]
     },
@@ -1272,7 +1273,7 @@
      "//pkg:gen"
     ],
     "exit": 0,
-    "seconds": 8.61,
+    "seconds": 9.0,
     "outputs": {},
     "errors": []
    },
@@ -1329,13 +1330,13 @@
      "//pkg:use_manifest"
     ],
     "exit": 0,
-    "seconds": 8.91,
+    "seconds": 9.2,
     "outputs": {
      "//pkg:use_manifest": [
       {
        "path": "bazel-out/k8-fastbuild/bin/pkg/use_manifest.txt",
-       "sha256": "f337ab24a8a72060d824ce3d4dca8cff81af86f565fc9c888cd884b96f064f9a",
-       "text": "_main/pkg/gen_data.txt /tmp/opencode/w1f-capture-scratch/our/bcd1a1f19b5d9079d452d4d73b17f921/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/gen_data.txt\n_main/pkg/tool.sh /tmp/opencode/w1f-capture-scratch/our/bcd1a1f19b5d9079d452d4d73b17f921/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/tool.sh\n_repo_mapping /tmp/opencode/w1f-capture-scratch/our/bcd1a1f19b5d9079d452d4d73b17f921/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/tool.sh.repo_mapping\n"
+       "sha256": "048f60e759de8d15c674bab929c812122e1a1de59059a9303185f567d4b6ec82",
+       "text": "_main/pkg/gen_data.txt /tmp/opencode/i20-status-fix/capture-scratch/our/cf76748598fa31f7b6acc6ffb5683cfd/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/gen_data.txt\n_main/pkg/tool.sh /tmp/opencode/i20-status-fix/capture-scratch/our/cf76748598fa31f7b6acc6ffb5683cfd/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/tool.sh\n_repo_mapping /tmp/opencode/i20-status-fix/capture-scratch/our/cf76748598fa31f7b6acc6ffb5683cfd/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/tool.sh.repo_mapping\n"
       }
      ]
     },
@@ -1352,7 +1353,7 @@
      "//pkg:use_manifest": [
       {
        "path": "bazel-out/k8-fastbuild/bin/pkg/use_manifest.txt",
-       "sha256": "ab288f602b44158dd5c22573076ef2af0e597ebcee10eea023192e0e2ab3ff2f",
+       "sha256": "bac03ac1c33cd2dfd6c961cea23f049b8475fe97c93b3bf7536b86271b4c465d",
        "text": null
       }
      ]
@@ -1370,7 +1371,7 @@
      "//pkg:use_manifest": [
       {
        "path": "bazel-out/k8-fastbuild/bin/pkg/use_manifest.txt",
-       "sha256": "6d4cdf46d3bd35a278169e6eb29cbac1023fd7211c5b160f73903341fba7efdb",
+       "sha256": "ce0cc8689093477e2786d9b131ff429951ae851f667643cec77386d079b705fc",
        "text": null
       }
      ]
@@ -1388,11 +1389,11 @@
      "//pkg:use_manifest"
     ],
     "exit": 1,
-    "seconds": 8.83,
+    "seconds": 9.23,
     "outputs": {},
     "errors": [
-     "ERROR: /tmp/opencode/w1f-capture-scratch/ws/genuine/runfiles_manifest_input_without_manifests/pkg/BUILD.bazel:84:13: in use_manifest rule //pkg:use_manifest: ",
-     "ERROR: /tmp/opencode/w1f-capture-scratch/ws/genuine/runfiles_manifest_input_without_manifests/pkg/BUILD.bazel:84:13: Analysis of target '//pkg:use_manifest' (config: 1622425) failed",
+     "ERROR: /tmp/opencode/i20-status-fix/capture-scratch/ws/genuine/runfiles_manifest_input_without_manifests/pkg/BUILD.bazel:86:13: in use_manifest rule //pkg:use_manifest: ",
+     "ERROR: /tmp/opencode/i20-status-fix/capture-scratch/ws/genuine/runfiles_manifest_input_without_manifests/pkg/BUILD.bazel:86:13: Analysis of target '//pkg:use_manifest' (config: 1622425) failed",
      "ERROR: Analysis of target '//pkg:use_manifest' failed; build aborted",
      "ERROR: Build did NOT complete successfully"
     ]
@@ -1425,6 +1426,175 @@
    },
    "verdict": "BOTH_FAIL",
    "base_verdict": "BOTH_FAIL"
+  },
+  "status_files_of_a_dependency": {
+   "genuine": {
+    "argv": [
+     "build",
+     "//pkg:status_report"
+    ],
+    "exit": 0,
+    "seconds": 9.32,
+    "outputs": {
+     "//pkg:status_report": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/status_report.txt",
+       "sha256": "54f8ed00d712350f6cc492ffd57c603627e7a9a371769c99b7988bc035ef0766",
+       "text": null
+      }
+     ]
+    },
+    "errors": [],
+    "report": [
+     "own path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "own path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.dep path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.dep path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.group path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.group path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "set_size=2"
+    ]
+   },
+   "native": {
+    "argv": [
+     "build",
+     "//pkg:status_report"
+    ],
+    "exit": 0,
+    "seconds": 0.03,
+    "outputs": {
+     "//pkg:status_report": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/status_report.txt",
+       "sha256": "54f8ed00d712350f6cc492ffd57c603627e7a9a371769c99b7988bc035ef0766",
+       "text": null
+      }
+     ]
+    },
+    "errors": [],
+    "report": [
+     "own path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "own path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.dep path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.dep path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.group path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.group path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "set_size=2"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "//pkg:status_report"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: //pkg:status_files: DefaultInfo file has no artifact: bazel-out/stable-status.txt"
+    ],
+    "report": []
+   },
+   "verdict": "EXACT_REPORT",
+   "base_verdict": "MISMATCH"
+  },
+  "status_files_of_a_dependency_nobuild": {
+   "genuine": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status_report"
+    ],
+    "exit": 0,
+    "seconds": 9.13,
+    "outputs": {},
+    "errors": [],
+    "report": [
+     "own path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "own path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.dep path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.dep path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.group path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.group path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "set_size=2"
+    ]
+   },
+   "native": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status_report"
+    ],
+    "exit": 0,
+    "seconds": 0.01,
+    "outputs": {
+     "//pkg:status_report": [
+      {
+       "path": "bazel-out/k8-fastbuild/bin/pkg/status_report.txt",
+       "sha256": null,
+       "text": null
+      }
+     ]
+    },
+    "errors": [],
+    "report": [
+     "own path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "own path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.dep path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.dep path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "dep.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "dep.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "ctx.files.group path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "ctx.files.group path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group[DefaultInfo] path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "group.files path=bazel-out/stable-status.txt short_path=stable-status.txt is_source=False root=bazel-out owner=None equal_info_file=True equal_version_file=False in_own_set=True",
+     "group.files path=bazel-out/volatile-status.txt short_path=volatile-status.txt is_source=False root=bazel-out owner=None equal_info_file=False equal_version_file=True in_own_set=True",
+     "set_size=2"
+    ]
+   },
+   "base_native": {
+    "argv": [
+     "build",
+     "--nobuild",
+     "//pkg:status_report"
+    ],
+    "exit": 1,
+    "seconds": 0.01,
+    "outputs": {},
+    "errors": [
+     "bazel-rs: //pkg:status_files: DefaultInfo file has no artifact: bazel-out/stable-status.txt"
+    ],
+    "report": []
+   },
+   "verdict": "EXACT_REPORT",
+   "base_verdict": "MISMATCH"
   }
  },
  "counts": {
@@ -1433,7 +1603,8 @@
   "EXIT_EQUAL": 6,
   "BOTH_FAIL": 2,
   "EXPECTED_NATIVE_GAP": 4,
-  "EXACT_ASPECT_PATHS": 1
+  "EXACT_ASPECT_PATHS": 1,
+  "EXACT_REPORT": 2
  },
  "scratch_removed": true
 }

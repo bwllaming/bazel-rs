@@ -271,8 +271,9 @@ pub fn note_dependency_view<K: Hash + ?Sized>(key: &K, constructed: bool) {
 /// W0-A: one File computed from an artifact's paths and owner (R3: label
 /// parsing dominates it) — `Artifact::compute_file`, once per Artifact since
 /// W1a caches the File (`Artifact::file` only clones it; integration-20),
-/// reported as `artifact_file=`. One relaxed increment when enabled; one
-/// atomic load otherwise.
+/// reported as `artifact_file=`; a workspace status artifact's fixed File
+/// (`Artifact::workspace_status`) counts too, so it stays one per Artifact.
+/// One relaxed increment when enabled; one atomic load otherwise.
 pub fn note_artifact_file() {
     if enabled() {
         ARTIFACT_FILES.fetch_add(1, Ordering::Relaxed);
