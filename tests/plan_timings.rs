@@ -286,6 +286,16 @@ fn allocation_report_is_opt_in_and_stderr_only() {
             .any(|l| l.starts_with("PERF-ALLOC-HEAP ") && l.contains(" custom_providers heaps=")),
         "{stderr}"
     );
+    for prefix in [
+        "PERF-ALLOC-COUNTS packages=1 rules=",
+        "PERF-ALLOC-SIZES rule=",
+        "PERF-ALLOC-DETAIL ",
+    ] {
+        assert!(
+            stderr.lines().any(|l| l.starts_with(prefix)),
+            "missing {prefix}:\n{stderr}"
+        );
+    }
     // Both switches: the stage report and the breakdown side by side.
     let both = ws.run_with(
         "1",

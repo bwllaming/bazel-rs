@@ -808,6 +808,21 @@ impl BzlCache {
             .unwrap_or_default()
     }
 
+    /// The frozen heaps of the successfully evaluated modules, for the
+    /// W0-A retained-memory breakdown (engine::alloc_report).
+    pub(crate) fn frozen_heaps(&self) -> Vec<starlark::values::FrozenHeapRef> {
+        self.modules.lock().map_or_else(
+            |_| Vec::new(),
+            |modules| {
+                modules
+                    .values()
+                    .filter_map(|result| result.as_ref().ok())
+                    .map(|bzl| bzl.module.frozen_heap().clone())
+                    .collect()
+            },
+        )
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.modules.lock().unwrap().len()

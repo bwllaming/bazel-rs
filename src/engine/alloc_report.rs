@@ -7,16 +7,20 @@
 //!
 //! ```text
 //! PERF-ALLOC <bytes> <name>                      (one line per bucket)
+//! PERF-ALLOC-DETAIL <bytes> <bucket>/part:<part>  (rule parts inside a bucket)
 //! PERF-ALLOC-HEAP <bytes> <group> heaps=<n>      (frozen-heap arenas by referrer)
-//! PERF-ALLOC-SUMMARY total=<bytes> rss=<kB>kB hwm=<kB>kB covered=<pct>% elapsed=<s>s
+//! PERF-ALLOC-SIZES rule=<bytes> ...              (inline sizes of key types)
+//! PERF-ALLOC-COUNTS packages=<n> rules=<n> ...   (entries of the main structures)
+//! PERF-ALLOC-SUMMARY total=<bytes> rss=<kB>kB hwm=<kB>kB covered=<pct>% rss_anon=… rss_file=… threads=… elapsed=<s>s
 //! ```
 //!
 //! Method. A single `allocative::FlameGraphBuilder` holds the one
 //! "already counted" set of the measurement, so a shared allocation (an
 //! `Arc` pointee, a Starlark frozen heap) is counted exactly once:
 //! - Engine-native structures (`packages`, `plan`, `configured_rules`,
-//!   `configured_nodes`, every `action_planning.*` map, a few
-//!   `engine.*` maps) are walked by [`Footprint`] in this module:
+//!   `configured_nodes`, every `action_planning.*` map, the per-target
+//!   toolchain/exec-group contexts and a few other `engine.*` maps) are
+//!   walked by [`Footprint`] in this module:
 //!   arithmetic over capacities, `BTreeMap` nodes estimated at ~8 entries
 //!   per 11-slot node, hash tables from their capacity. An `Arc` pointee is
 //!   attributed to the first bucket that reaches it, in the order of
@@ -29,13 +33,23 @@
 //!   pointee to its type, so these appear as `shared:<Type>` buckets
 //!   (`shared:FrozenFrozenHeap`, `shared:DepsetNode`, `shared:Target`, ...).
 //!   `PERF-ALLOC-HEAP` splits the frozen-heap arena bytes (only the arena
-//!   chunks) by the first structure that references each heap.
+//!   chunks) by the first structure that references each heap, the
+//!   `.bzl` module cache first (`bzl_modules`).
+//! - `native.malloc_overhead_est`: glibc chunk rounding and headers of the
+//!   allocations the native walk counted (an estimate: 16-byte granules,
+//!   8-byte header, 32-byte minimum; page-rounded above the mmap threshold).
+//! - `PERF-ALLOC-DETAIL` splits the `Rule` data inside a bucket by part
+//!   (attribute schema, attribute values, declaration, ctx surface,
+//!   toolchain contexts, function handles, native attributes, location;
+//!   already included in the bucket's line). A rule's inline size (its
+//!   share of the containing buffer) stays in the plain total.
 //!
 //! Coverage and known gaps (the summary's `covered` is total / VmRSS):
-//! - not walked: the `.bzl` module cache except through heaps the rules
-//!   and providers reference (their heap refs reach the modules they use),
-//!   the package loader's other caches, configuration registry, toolchain
-//!   contexts, aspect definitions, the action cache and allocator slack;
+//! - not walked: the package loader's other caches, the repository set
+//!   (mappings), configuration registry, registered toolchains and
+//!   platforms, aspect definitions, the action cache, freed-but-retained
+//!   allocator memory (phase-1/phase-2 churn, fragmentation) and the
+//!   binary (file-backed, `rss_file` in the summary);
 //! - shallow (inline size only): `Arc`s of `CtxSurface`,
 //!   `ToolchainContextData`, `ExecGroupsData`, `PlatformInfo`,
 //!   `DeclaredToolchainInfo`, package groups; `PackageArgs`,
@@ -89,19 +103,29 @@ pub(super) fn report_if_enabled(
     }
     let started = std::time::Instant::now();
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let rss_kb: u64 = crate::proc_status_kb(&status, "VmRSS:")
+    let rss_kb: u64 = crate::proc_status_value(&status, "VmRSS:")
         .parse()
         .unwrap_or(0);
-    let hwm_kb: u64 = crate::proc_status_kb(&status, "VmHWM:")
+    let hwm_kb: u64 = crate::proc_status_value(&status, "VmHWM:")
         .parse()
         .unwrap_or(0);
+    // Anonymous vs file-backed resident memory and the thread count, to
+    // read the summary's coverage against.
+    let anon_kb = crate::proc_status_value(&status, "RssAnon:").to_owned();
+    let file_kb = crate::proc_status_value(&status, "RssFile:").to_owned();
+    let threads = crate::proc_status_value(&status, "Threads:").to_owned();
     let census = HeapCensus::collect(engine, state, plan);
     let groups = groups(engine, state, plan, configured);
-    let text = measure(&census.postorder, &groups);
-    let buckets = buckets(&text, &groups);
+    let (text, overhead) = measure(&census.postorder, &groups);
+    let (mut buckets, details) = buckets(&text, &groups);
+    buckets.push((MALLOC_OVERHEAD.to_owned(), overhead as u64));
+    sort_rows(&mut buckets);
     let total: u64 = buckets.iter().map(|(_, bytes)| *bytes).sum();
     for (name, bytes) in &buckets {
         eprintln!("PERF-ALLOC {bytes} {name}");
+    }
+    for (name, bytes) in &details {
+        eprintln!("PERF-ALLOC-DETAIL {bytes} {name}");
     }
     let mut heaps: Vec<(u64, &str, u64)> = census
         .groups
@@ -112,13 +136,44 @@ pub(super) fn report_if_enabled(
     for (bytes, name, count) in heaps {
         eprintln!("PERF-ALLOC-HEAP {bytes} {name} heaps={count}");
     }
+    eprintln!(
+        "PERF-ALLOC-SIZES rule={} custom_invocation={} configured_target_key={} label={} artifact={} file={} planned_action={} configured_node={} target_runfiles={} target={}",
+        size_of::<Rule>(),
+        size_of::<crate::custom_rule::CustomInvocation>(),
+        size_of::<ConfiguredTargetKey>(),
+        size_of::<Label>(),
+        size_of::<Artifact>(),
+        size_of::<File>(),
+        size_of::<crate::scheduler::PlannedAction>(),
+        size_of::<ConfiguredNode>(),
+        size_of::<crate::runfiles::TargetRunfiles>(),
+        size_of::<crate::starlark_types::Target>(),
+    );
+    eprintln!(
+        "PERF-ALLOC-COUNTS packages={} rules={} plan={} configured_rules={} configured_nodes={} dry={} artifact_index={} views={} nodes={} target_identities={} heaps={}",
+        engine.packages.len(),
+        engine
+            .packages
+            .values()
+            .map(|package| package.rules.len())
+            .sum::<usize>(),
+        plan.len(),
+        engine.configured_rules.len(),
+        configured.len(),
+        state.dry.len(),
+        state.artifact_index.len(),
+        state.views.len(),
+        state.nodes.len(),
+        state.target_identities.len(),
+        census.postorder.len(),
+    );
     let covered = if rss_kb > 0 {
         total as f64 * 100.0 / (rss_kb as f64 * 1024.0)
     } else {
         0.0
     };
     eprintln!(
-        "PERF-ALLOC-SUMMARY total={total} rss={rss_kb}kB hwm={hwm_kb}kB covered={covered:.1}% elapsed={:.3}s",
+        "PERF-ALLOC-SUMMARY total={total} rss={rss_kb}kB hwm={hwm_kb}kB covered={covered:.1}% rss_anon={anon_kb}kB rss_file={file_kb}kB threads={threads} elapsed={:.3}s",
         started.elapsed().as_secs_f64()
     );
 }
@@ -165,6 +220,8 @@ fn groups<'a>(
             "action_planning.aspect_target_identities",
             &state.aspect_target_identities,
         ),
+        ("engine.toolchain_contexts", &engine.toolchain_contexts),
+        ("engine.exec_group_contexts", &engine.exec_group_contexts),
         ("engine.exec_configurations", &engine.exec_configurations),
         ("engine.edge_configs", &engine.edge_configs),
         ("engine.rule_delegations", &engine.rule_delegations),
@@ -196,13 +253,17 @@ const KEY_HEAPS: &str = "frozen_heaps";
 const KEY_OWNED: Key = Key::new("owned");
 const KEY_ARC: Key = Key::new("arc");
 const KEY_STARLARK: Key = Key::new("starlark");
+/// The bucket of the native walk's estimated malloc overhead.
+const MALLOC_OVERHEAD: &str = "native.malloc_overhead_est";
 /// An `Arc` allocation's header (strong and weak counts).
 const ARC_HEADER: usize = 2 * size_of::<usize>();
 
 /// Run the measurement; returns allocative's flame-graph text
-/// (`stack;frames <bytes>` lines).
-fn measure(heaps: &[FrozenHeapRef], groups: &[Group<'_>]) -> String {
+/// (`stack;frames <bytes>` lines) and the estimated malloc overhead of the
+/// native walk.
+fn measure(heaps: &[FrozenHeapRef], groups: &[Group<'_>]) -> (String, usize) {
     let mut builder = FlameGraphBuilder::default();
+    let mut overhead = 0;
     {
         let mut root = builder.root_visitor();
         // Heaps first, dependencies before dependents (DFS postorder):
@@ -212,35 +273,42 @@ fn measure(heaps: &[FrozenHeapRef], groups: &[Group<'_>]) -> String {
             root.visit_field(Key::new(KEY_HEAPS), heap);
         }
         for &(name, value) in groups {
-            walk_group(&mut root, name, value);
+            overhead += walk_group(&mut root, name, value);
         }
         root.exit();
     }
-    builder.finish().flamegraph().write()
+    (builder.finish().flamegraph().write(), overhead)
 }
 
-fn walk_group(root: &mut Visitor<'_>, name: &'static str, value: &dyn Footprint) {
+/// Walk one bucket; returns its estimated malloc overhead.
+fn walk_group(root: &mut Visitor<'_>, name: &'static str, value: &dyn Footprint) -> usize {
     let key = Key::new(name);
     let mut node = root.enter_unique(key.clone(), 0);
-    let (bytes, double) = {
+    let (bytes, double, overhead) = {
         let mut walker = Walker {
             visitor: &mut node,
             group: key,
             double: 0,
+            overhead: 0,
+            part: None,
         };
         let bytes = value.heap(&mut walker);
-        (bytes, walker.double)
+        (bytes, walker.double, walker.overhead)
     };
     node.visit_simple(KEY_OWNED, bytes.saturating_sub(double));
     node.exit();
+    overhead
 }
+
+type Rows = Vec<(String, u64)>;
 
 /// Sum allocative's flame-graph lines per bucket: a group's own subtree,
 /// or `shared:<Type>` for a shared pointee allocative re-rooted at its
-/// type. Largest first, then by name.
-fn buckets(text: &str, groups: &[Group<'_>]) -> Vec<(String, u64)> {
+/// type; and per `<group>/part:<part>` detail. Largest first, then by name.
+fn buckets(text: &str, groups: &[Group<'_>]) -> (Rows, Rows) {
     let names: HashSet<&str> = groups.iter().map(|(name, _)| *name).collect();
     let mut sums: BTreeMap<String, u64> = BTreeMap::new();
+    let mut details: BTreeMap<String, u64> = BTreeMap::new();
     for line in text.lines() {
         let Some((stack, bytes)) = line.rsplit_once(' ') else {
             continue;
@@ -251,6 +319,9 @@ fn buckets(text: &str, groups: &[Group<'_>]) -> Vec<(String, u64)> {
         let mut frames = stack.split(';');
         let first = frames.next().unwrap_or_default();
         let bucket = if names.contains(first) {
+            if let Some(part) = frames.next().filter(|frame| frame.starts_with("part:")) {
+                *details.entry(format!("{first}/{part}")).or_default() += bytes;
+            }
             first.to_owned()
         } else if first == KEY_HEAPS {
             continue;
@@ -263,9 +334,16 @@ fn buckets(text: &str, groups: &[Group<'_>]) -> Vec<(String, u64)> {
         };
         *sums.entry(bucket).or_default() += bytes;
     }
-    let mut sorted: Vec<(String, u64)> = sums.into_iter().filter(|(_, b)| *b > 0).collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    sorted
+    let mut sums: Rows = sums.into_iter().filter(|(_, b)| *b > 0).collect();
+    let mut details: Rows = details.into_iter().filter(|(_, b)| *b > 0).collect();
+    sort_rows(&mut sums);
+    sort_rows(&mut details);
+    (sums, details)
+}
+
+/// Largest first, then by name.
+fn sort_rows(rows: &mut Rows) {
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 }
 
 /// `a::b::Type<c::D>` -> `Type`.
@@ -287,6 +365,9 @@ struct HeapCensus {
 impl HeapCensus {
     fn collect(engine: &Engine, state: &ActionPlanning, plan: &Plan) -> Self {
         let mut census = HeapCensus::default();
+        for heap in engine.repositories.build_bzl_cache().frozen_heaps() {
+            census.heap("bzl_modules", &heap);
+        }
         for package in engine.packages.values() {
             for rule in package.rules.values() {
                 census.rule("rules", rule);
@@ -367,6 +448,11 @@ pub(super) struct Walker<'v, 'b> {
     visitor: &'v mut Visitor<'b>,
     group: Key,
     double: usize,
+    /// Estimated malloc overhead of the allocations counted ([`malloc_chunk`]).
+    overhead: usize,
+    /// The `part:` detail being measured ([`Walker::in_part`]): shared
+    /// pointees reached inside it are reported under it too.
+    part: Option<&'static str>,
 }
 
 impl Walker<'_, '_> {
@@ -380,16 +466,20 @@ impl Walker<'_, '_> {
         let group = self.group.clone();
         if let Some(mut shared) = self.visitor.enter_shared(KEY_ARC, 0, ptr) {
             let mut node = shared.enter_unique(group.clone(), 0);
-            let (bytes, double) = {
+            let (bytes, double, overhead) = {
                 let mut inner = Walker {
                     visitor: &mut node,
                     group,
                     double: 0,
+                    overhead: 0,
+                    part: self.part,
                 };
                 let bytes = measure(&mut inner);
-                (bytes, inner.double)
+                (bytes, inner.double, inner.overhead)
             };
-            node.visit_simple(KEY_OWNED, bytes.saturating_sub(double));
+            self.overhead += overhead;
+            let key = self.part.map_or(KEY_OWNED, Key::new);
+            node.visit_simple(key, bytes.saturating_sub(double));
             node.exit();
             shared.exit();
         }
@@ -402,6 +492,40 @@ impl Walker<'_, '_> {
         self.visitor.visit_field(KEY_STARLARK, value);
         0
     }
+
+    /// One heap allocation of `bytes` payload: returns `bytes`, records
+    /// its estimated malloc overhead.
+    fn alloc(&mut self, bytes: usize) -> usize {
+        self.overhead += malloc_chunk(bytes) - bytes;
+        bytes
+    }
+
+    /// Measure a `part:` detail of the current bucket (reported under
+    /// it, still inside the bucket's total; shared pointees reached inside
+    /// are reported under the same part).
+    fn in_part(&mut self, part: &'static str, measure: impl FnOnce(&mut Self) -> usize) {
+        let outer = self.part.replace(part);
+        let double_before = self.double;
+        let bytes = measure(self);
+        let double = self.double - double_before;
+        self.double = double_before;
+        self.part = outer;
+        let bytes = bytes.saturating_sub(double);
+        if bytes > 0 {
+            self.visitor.visit_simple(Key::new(part), bytes);
+        }
+    }
+}
+
+/// glibc's chunk size for a `bytes` request on 64-bit: 8-byte header,
+/// 16-byte granules, 32-byte minimum; page-rounded mmap chunks above the
+/// default 128 KiB threshold. 0 for no allocation.
+fn malloc_chunk(bytes: usize) -> usize {
+    match bytes {
+        0 => 0,
+        _ if bytes >= 128 * 1024 => (bytes + 16).div_ceil(4096) * 4096,
+        _ => (bytes + 8).div_ceil(16).max(2) * 16,
+    }
 }
 
 /// Heap bytes a value owns beyond its own inline size; shared pointees
@@ -413,14 +537,29 @@ pub(super) trait Footprint {
 /// Bytes of std's B-tree nodes for `len` entries: 11 slots per node,
 /// ~8 used on average, internal nodes adding 12 edge pointers.
 fn btree_bytes<K, V>(len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    const SLOTS: usize = 11;
-    let leaf = 2 * size_of::<usize>() + SLOTS * (size_of::<K>() + size_of::<V>());
+    let (nodes, internal) = btree_nodes(len);
+    let leaf = 2 * size_of::<usize>() + BTREE_SLOTS * (size_of::<K>() + size_of::<V>());
+    nodes * leaf + internal * (BTREE_SLOTS + 1) * size_of::<usize>()
+}
+
+const BTREE_SLOTS: usize = 11;
+
+/// (all nodes, internal nodes) of a B-tree of `len` entries.
+fn btree_nodes(len: usize) -> (usize, usize) {
     let nodes = len.div_ceil(8);
-    let internal = nodes / 9;
-    nodes * leaf + internal * (SLOTS + 1) * size_of::<usize>()
+    (nodes, if nodes > 1 { nodes / 9 } else { 0 })
+}
+
+impl Walker<'_, '_> {
+    /// A B-tree's node bytes, with each node's malloc overhead recorded.
+    fn btree<K, V>(&mut self, len: usize) -> usize {
+        let bytes = btree_bytes::<K, V>(len);
+        let (nodes, _) = btree_nodes(len);
+        if let Some(per_node) = bytes.checked_div(nodes) {
+            self.overhead += nodes * (malloc_chunk(per_node) - per_node);
+        }
+        bytes
+    }
 }
 
 /// Bytes of a hashbrown table of `capacity` (usable slots) entries `T`:
@@ -508,26 +647,27 @@ leaf!(
 );
 
 impl Footprint for String {
-    fn heap(&self, _: &mut Walker<'_, '_>) -> usize {
-        self.capacity()
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.alloc(self.capacity())
     }
 }
 
 impl Footprint for PathBuf {
-    fn heap(&self, _: &mut Walker<'_, '_>) -> usize {
-        self.capacity()
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.alloc(self.capacity())
     }
 }
 
 impl Footprint for std::ffi::OsString {
-    fn heap(&self, _: &mut Walker<'_, '_>) -> usize {
-        self.capacity()
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.alloc(self.capacity())
     }
 }
 
 impl<T: Footprint> Footprint for Vec<T> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        self.capacity() * size_of::<T>() + self.iter().map(|item| item.heap(walker)).sum::<usize>()
+        walker.alloc(self.capacity() * size_of::<T>())
+            + self.iter().map(|item| item.heap(walker)).sum::<usize>()
     }
 }
 
@@ -539,7 +679,7 @@ impl<T: Footprint> Footprint for Option<T> {
 
 impl<T: Footprint> Footprint for Box<T> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        size_of::<T>() + (**self).heap(walker)
+        walker.alloc(size_of::<T>()) + (**self).heap(walker)
     }
 }
 
@@ -559,7 +699,7 @@ impl<T: Footprint> Footprint for Arc<T> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         let value: &T = self;
         walker.shared(Arc::as_ptr(self).cast(), |walker| {
-            ARC_HEADER + size_of::<T>() + value.heap(walker)
+            walker.alloc(ARC_HEADER + size_of::<T>()) + value.heap(walker)
         });
         0
     }
@@ -569,8 +709,7 @@ impl<T: Footprint> Footprint for Arc<[T]> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         let items: &[T] = self;
         walker.shared(Arc::as_ptr(self).cast(), |walker| {
-            ARC_HEADER
-                + std::mem::size_of_val(items)
+            walker.alloc(ARC_HEADER + std::mem::size_of_val(items))
                 + items.iter().map(|item| item.heap(walker)).sum::<usize>()
         });
         0
@@ -579,7 +718,7 @@ impl<T: Footprint> Footprint for Arc<[T]> {
 
 impl<K: Footprint, V: Footprint> Footprint for BTreeMap<K, V> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        btree_bytes::<K, V>(self.len())
+        walker.btree::<K, V>(self.len())
             + self
                 .iter()
                 .map(|(key, value)| key.heap(walker) + value.heap(walker))
@@ -589,13 +728,13 @@ impl<K: Footprint, V: Footprint> Footprint for BTreeMap<K, V> {
 
 impl<K: Footprint> Footprint for BTreeSet<K> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        btree_bytes::<K, ()>(self.len()) + self.iter().map(|key| key.heap(walker)).sum::<usize>()
+        walker.btree::<K, ()>(self.len()) + self.iter().map(|key| key.heap(walker)).sum::<usize>()
     }
 }
 
 impl<K: Footprint, V: Footprint, S> Footprint for HashMap<K, V, S> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        hash_table_bytes::<(K, V)>(self.capacity())
+        walker.alloc(hash_table_bytes::<(K, V)>(self.capacity()))
             + self
                 .iter()
                 .map(|(key, value)| key.heap(walker) + value.heap(walker))
@@ -605,7 +744,7 @@ impl<K: Footprint, V: Footprint, S> Footprint for HashMap<K, V, S> {
 
 impl<K: Footprint, S> Footprint for HashSet<K, S> {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
-        hash_table_bytes::<K>(self.capacity())
+        walker.alloc(hash_table_bytes::<K>(self.capacity()))
             + self.iter().map(|key| key.heap(walker)).sum::<usize>()
     }
 }
@@ -649,21 +788,45 @@ fields!(Package {
     direct_loads,
     load_graph
 });
-fields!(Rule {
-    label,
-    srcs,
-    outs,
-    cmd,
-    visibility,
-    custom,
-    macro_owner,
-    native,
-    unanalyzed,
-    package_metadata,
-    location,
-    call_stack,
-    generator
-});
+/// A rule's heap data by part (`PERF-ALLOC-DETAIL`): the per-instance
+/// copies W3 targets (schema, attribute values, declaration) apart from
+/// the rest. Its inline size is in the containing buffer (see
+/// `PERF-ALLOC-SIZES`).
+impl Footprint for Rule {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        if let Some(custom) = &self.custom {
+            walker.in_part("part:schema", |w| custom.schema.heap(w));
+            walker.in_part("part:attrs", |w| custom.attrs.heap(w));
+            walker.in_part("part:declaration", |w| custom.declaration.heap(w));
+            walker.in_part("part:surface", |w| custom.surface.heap(w));
+            walker.in_part("part:toolchains", |w| {
+                custom.toolchains.heap(w) + custom.exec_groups.heap(w)
+            });
+            walker.in_part("part:functions", |w| {
+                custom.subrules.heap(w)
+                    + custom.top_level_functions.heap(w)
+                    + custom.transitions.heap(w)
+            });
+        }
+        walker.in_part("part:native", |w| self.native.heap(w));
+        walker.in_part("part:location", |w| {
+            self.location.heap(w)
+                + self.call_stack.heap(w)
+                + self.generator.heap(w)
+                + self.macro_owner.heap(w)
+        });
+        self.custom
+            .as_ref()
+            .map_or(0, |custom| custom.build_setting.heap(walker))
+            + self.label.heap(walker)
+            + self.srcs.heap(walker)
+            + self.outs.heap(walker)
+            + self.cmd.heap(walker)
+            + self.visibility.heap(walker)
+            + self.unanalyzed.heap(walker)
+            + self.package_metadata.heap(walker)
+    }
+}
 fields!(MacroOwner {
     definition_package,
     name
@@ -672,19 +835,6 @@ fields!(Generator {
     name,
     function,
     location
-});
-fields!(crate::custom_rule::CustomInvocation {
-    build_setting,
-    toolchains,
-    exec_groups,
-    surface,
-    implementation,
-    subrules,
-    top_level_functions,
-    transitions,
-    attrs,
-    schema,
-    declaration
 });
 fields!(crate::custom_rule::InvocationDeclaration {
     implicit_outputs,
@@ -750,6 +900,25 @@ fields!(ConfiguredNode {
     actual,
     platform,
     declared_toolchain
+});
+// Toolchain resolution results kept per configured target.
+fields!(crate::toolchains::UnloadedToolchainContext {
+    target_platform,
+    exec_platform,
+    toolchain_types,
+    requested,
+    resolved
+});
+fields!(crate::toolchains::ToolchainTypeRequirement { label });
+fields!(crate::toolchains::ToolchainTypeInfo {
+    type_label,
+    no_match_error
+});
+fields!(crate::exec_groups::TargetExecGroups { groups });
+fields!(crate::exec_groups::ResolvedGroup {
+    name,
+    types,
+    context
 });
 fields!(crate::configured_attributes::ConfigMatching {
     label,
@@ -836,7 +1005,7 @@ mod tests {
     use super::*;
 
     fn walk_text(groups: &[Group<'_>]) -> String {
-        measure(&[], groups)
+        measure(&[], groups).0
     }
 
     #[test]
@@ -845,7 +1014,7 @@ mod tests {
         let first = vec![shared.clone(), shared.clone()];
         let second = vec![shared.clone()];
         let groups: Vec<Group<'_>> = vec![("first", &first), ("second", &second)];
-        let buckets = buckets(&walk_text(&groups), &groups);
+        let (buckets, _) = buckets(&walk_text(&groups), &groups);
         let get = |name: &str| {
             buckets
                 .iter()
@@ -864,10 +1033,44 @@ mod tests {
         names.push(String::with_capacity(10));
         names.push(String::with_capacity(20));
         let groups: Vec<Group<'_>> = vec![("names", &names)];
-        let buckets = buckets(&walk_text(&groups), &groups);
+        let (buckets, details) = buckets(&walk_text(&groups), &groups);
         assert_eq!(
             buckets,
             vec![("names".to_owned(), (4 * size_of::<String>() + 30) as u64)]
+        );
+        assert!(details.is_empty());
+        // Overhead: 96-byte buffer -> 112-byte chunk; 10 -> 32; 20 -> 32.
+        assert_eq!(measure(&[], &groups).1, 16 + 22 + 12);
+    }
+
+    #[test]
+    fn malloc_chunks_follow_glibc_rounding() {
+        assert_eq!(malloc_chunk(0), 0);
+        assert_eq!(malloc_chunk(1), 32);
+        assert_eq!(malloc_chunk(24), 32);
+        assert_eq!(malloc_chunk(25), 48);
+        assert_eq!(malloc_chunk(96), 112);
+        assert_eq!(malloc_chunk(128 * 1024), 33 * 4096);
+    }
+
+    #[test]
+    fn rule_parts_are_details_of_their_bucket() {
+        let text = "plan;owned 100\nplan;part:schema 40\nplan;part:attrs 2\npackages;part:schema 7\npackages;arc 0\n";
+        let plan: Vec<String> = Vec::new();
+        let packages: Vec<String> = Vec::new();
+        let groups: Vec<Group<'_>> = vec![("packages", &packages), ("plan", &plan)];
+        let (buckets, details) = buckets(text, &groups);
+        assert_eq!(
+            buckets,
+            vec![("plan".to_owned(), 142), ("packages".to_owned(), 7)]
+        );
+        assert_eq!(
+            details,
+            vec![
+                ("plan/part:schema".to_owned(), 40),
+                ("packages/part:schema".to_owned(), 7),
+                ("plan/part:attrs".to_owned(), 2),
+            ]
         );
     }
 
@@ -891,7 +1094,7 @@ mod tests {
         let a: Vec<String> = Vec::new();
         let groups: Vec<Group<'_>> = vec![("a", &a)];
         assert_eq!(
-            buckets(text, &groups),
+            buckets(text, &groups).0,
             vec![
                 ("a".to_owned(), 10),
                 ("shared:FrozenFrozenHeap".to_owned(), 7),

@@ -8,7 +8,7 @@ target sets and how to read the output.
 
 usage: ab_bench.py --a BIN_A --b BIN_B --cache-a DIR --cache-b DIR --out OUTDIR
                    [--mode nobuild|build] [--warmups W] [--runs N]
-                   [--lockfile-seed LOCKFILE] [--extra-env K=V ...]
+                   [--lockfile-seed LOCKFILE] [--lockfile-dir DIR] [--extra-env K=V ...]
                    [--extra-env-a K=V ...] [--extra-env-b K=V ...]
                    [--extra-arg ARG ...] [--sides ab|a|b] [--timeout S]
                    [--workspace DIR] [--compare-only] TARGET...
@@ -23,9 +23,9 @@ private HOME and TMPDIR:
 with BAZEL_RS_DUMP_ACTIONS=1 and BAZEL_RS_TIMING=1. Lockfile flags:
   - without --lockfile-seed: --lockfile_mode=off;
   - with --lockfile-seed (the update-mode recipe): the seed is copied ONCE
-    to OUTDIR/lock-a and OUTDIR/lock-b, and each side passes
-    --lockfile_mode=update --native-lockfile=OUTDIR/lock-<side>. The
-    workspace's own lockfile is never written.
+    to DIR/lock-a and DIR/lock-b (DIR = --lockfile-dir, default OUTDIR), and
+    each side passes --lockfile_mode=update --native-lockfile=DIR/lock-<side>.
+    The workspace's own lockfile is never written.
 
 The sides run interleaved (a0 b0 a1 b1 ...): W warm-up runs, then N measured
 runs, W+N in total. With the default W=0, `--runs N` behaves exactly like the
@@ -71,7 +71,7 @@ LOCKSIDE = re.compile(r'/lock-[ab]\b')
 # src/engine/alloc_report.rs). `hwm=` is absent from older binaries.
 PERF_MARK = re.compile(r'PERF\s+([0-9.]+)s rss=(\d*)kB (\S+)(?: hwm=(\d*)kB)?')
 STAGE_TOTAL = re.compile(r'PERF-STAGE total (\S+) ([0-9.]+)s(?: count=(\d+))?(?: covered=([0-9.]+)%)?')
-ALLOC_ROW = re.compile(r'PERF-ALLOC (\d+) (\S+)$')
+ALLOC_ROW = re.compile(r'PERF-ALLOC(-DETAIL|-HEAP)? (\d+) (\S+)(?: heaps=(\d+))?$')
 COUNTER = re.compile(r'(\w+)=([0-9.]+)')
 
 
@@ -165,24 +165,31 @@ def counters(line):
 
 
 def perf_counters(perf):
-    """The W0-A counter rows: flush batches, views, the allocation summary."""
+    """The W0-A counter rows: flush batches, views and the allocation
+    report's summary, counts and type sizes."""
     rows = {}
     for line in perf:
         for prefix, name in (('PERF-STAGE flush-batch ', 'flush_batch'),
                              ('PERF-STAGE views ', 'views'),
-                             ('PERF-ALLOC-SUMMARY ', 'alloc_summary')):
+                             ('PERF-ALLOC-SUMMARY ', 'alloc_summary'),
+                             ('PERF-ALLOC-COUNTS ', 'alloc_counts'),
+                             ('PERF-ALLOC-SIZES ', 'alloc_sizes')):
             if line.startswith(prefix):
                 rows[name] = counters(line[len(prefix):])
     return rows
 
 
-def alloc_rows(perf):
-    """`PERF-ALLOC <bytes> <name>` rows (largest first, as printed)."""
+def alloc_rows(perf, kind=''):
+    """`PERF-ALLOC <bytes> <name>` rows (largest first, as printed); with
+    kind='-DETAIL' or '-HEAP' the rule-part or frozen-heap rows."""
     rows = []
     for line in perf:
         match = ALLOC_ROW.match(line)
-        if match:
-            rows.append({'bytes': int(match.group(1)), 'name': match.group(2)})
+        if match and (match.group(1) or '') == kind:
+            row = {'bytes': int(match.group(2)), 'name': match.group(3)}
+            if match.group(4) is not None:
+                row['heaps'] = int(match.group(4))
+            rows.append(row)
     return rows
 
 
@@ -238,7 +245,7 @@ def run_one(bin_, cache, out, args, extra_env, tag, workspace, timeout):
 
 def side_args(args, out, side):
     if args.lockfile_seed:
-        lock = out / f'lock-{side}'
+        lock = Path(args.lockfile_dir or out) / f'lock-{side}'
         if not lock.exists():
             lock.write_bytes(Path(args.lockfile_seed).read_bytes())
         lockfile = ['--lockfile_mode=update', f'--native-lockfile={lock}']
@@ -260,9 +267,10 @@ def parse_run(out, tag, cache, fallback=None):
     record['marks'] = perf_marks(perf)
     record['stages'] = stage_totals(perf)
     record.update(perf_counters(perf))
-    alloc = alloc_rows(perf)
-    if alloc:
-        record['alloc'] = alloc
+    for key, kind in (('alloc', ''), ('alloc_detail', '-DETAIL'), ('alloc_heap', '-HEAP')):
+        rows = alloc_rows(perf, kind)
+        if rows:
+            record[key] = rows
     if record['marks']:
         # Peak RSS of the run: the largest hwm the marks saw.
         hwms = [m['hwm_kb'] for m in record['marks'].values() if m.get('hwm_kb')]
@@ -385,6 +393,9 @@ def main(argv=None):
     ap.add_argument('--lockfile-seed', default=None,
                     help='update-mode recipe: copy this lockfile once to OUT/lock-{a,b} and pass '
                          '--lockfile_mode=update --native-lockfile=OUT/lock-<side> (default: --lockfile_mode=off)')
+    ap.add_argument('--lockfile-dir', default=None,
+                    help='where lock-{a,b} live (default: OUT); share one across target sets so each side '
+                         'keeps one private lockfile')
     ap.add_argument('--sides', default='ab', choices=['ab', 'a', 'b'], help='run only one side (no comparison)')
     ap.add_argument('--timeout', type=float, default=7200, help='seconds per run before it is killed')
     ap.add_argument('--workspace', default=str(WORKSPACE))
@@ -442,7 +453,8 @@ def main(argv=None):
         after = canary(workspace)
         canaries = {'canary_before': before, 'canary_after': after, 'canary_unchanged': before == after}
         if args.lockfile_seed:
-            config['lockfiles_after'] = {side: sha(out / f'lock-{side}') for side in sides}
+            lock_dir = Path(args.lockfile_dir or out)
+            config['lockfiles_after'] = {side: sha(lock_dir / f'lock-{side}') for side in sides}
         report = build_report(out, config, caches, sides, args.warmups, canaries)
     (out / 'report.json').write_text(json.dumps(report, indent=1))
     print(json.dumps(brief(report), indent=1))

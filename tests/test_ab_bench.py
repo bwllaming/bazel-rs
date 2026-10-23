@@ -26,8 +26,10 @@ PERF-STAGE flush-batch flushes=3 planned=40 empty=1 min=0 median=8 p90=32 max=32
 PERF-STAGE views edges=900 constructed=900 distinct=300 artifact_file=12000
 PERF-ALLOC 1024 action_planning.provider_files
 PERF-ALLOC 512 shared:DepsetNode
+PERF-ALLOC-DETAIL 256 plan/part:schema
 PERF-ALLOC-HEAP 2048 custom_providers heaps=12
-PERF-ALLOC-SUMMARY total=1536 rss=102400kB hwm=204800kB covered=1.5% elapsed=0.250s
+PERF-ALLOC-COUNTS packages=2 rules=9
+PERF-ALLOC-SUMMARY total=1536 rss=102400kB hwm=204800kB covered=1.5% rss_anon=1kB rss_file=2kB threads=2 elapsed=0.250s
 --native-lockfile=/tmp/opencode/x-ab/lock-a ok
 PERF    45.500s rss=1400000kB plan.end hwm=1450000kB
 INFO: done
@@ -55,7 +57,7 @@ class NormalisationTests(unittest.TestCase):
             "INFO: done",
         ])
         self.assertTrue(all(line.startswith("PERF") for line in perf))
-        self.assertEqual(len(perf), 10)
+        self.assertEqual(len(perf), 12)
 
     def test_perf_marks_with_and_without_hwm(self):
         marks = ab.perf_marks([
@@ -86,6 +88,11 @@ class NormalisationTests(unittest.TestCase):
             {"bytes": 1024, "name": "action_planning.provider_files"},
             {"bytes": 512, "name": "shared:DepsetNode"},
         ])
+        self.assertEqual(ab.alloc_rows(perf, "-DETAIL"), [{"bytes": 256, "name": "plan/part:schema"}])
+        self.assertEqual(ab.alloc_rows(perf, "-HEAP"),
+                         [{"bytes": 2048, "name": "custom_providers", "heaps": 12}])
+        self.assertEqual(rows["alloc_counts"], {"packages": 2, "rules": 9})
+        self.assertEqual(rows["alloc_summary"]["threads"], 2)
 
     def test_summarize_takes_medians(self):
         records = [

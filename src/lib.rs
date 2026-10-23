@@ -150,8 +150,8 @@ pub fn perf_mark(name: &str) {
     if std::env::var_os("BAZEL_RS_TIMING").is_some() {
         let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         let (rss, hwm) = (
-            proc_status_kb(&status, "VmRSS:"),
-            proc_status_kb(&status, "VmHWM:"),
+            proc_status_value(&status, "VmRSS:"),
+            proc_status_value(&status, "VmHWM:"),
         );
         eprintln!(
             "PERF {:>9.3}s rss={}kB {name} hwm={}kB",
@@ -162,9 +162,10 @@ pub fn perf_mark(name: &str) {
     }
 }
 
-/// The value column of one `/proc/self/status` field (`VmRSS:`, `VmHWM:`),
-/// in kB as the kernel prints it; empty when absent (non-Linux).
-pub(crate) fn proc_status_kb<'a>(status: &'a str, field: &str) -> &'a str {
+/// The value column of one `/proc/self/status` field (`VmRSS:`, `VmHWM:`
+/// in kB as the kernel prints them, `Threads:`); empty when absent
+/// (non-Linux).
+pub(crate) fn proc_status_value<'a>(status: &'a str, field: &str) -> &'a str {
     status
         .lines()
         .find(|line| line.starts_with(field))
@@ -177,8 +178,8 @@ mod perf_mark_tests {
     #[test]
     fn proc_status_fields_are_read_by_name() {
         let status = "Name:\tbazel-rs\nVmHWM:\t  204800 kB\nVmRSS:\t  102400 kB\n";
-        assert_eq!(super::proc_status_kb(status, "VmRSS:"), "102400");
-        assert_eq!(super::proc_status_kb(status, "VmHWM:"), "204800");
-        assert_eq!(super::proc_status_kb(status, "VmSwap:"), "");
+        assert_eq!(super::proc_status_value(status, "VmRSS:"), "102400");
+        assert_eq!(super::proc_status_value(status, "VmHWM:"), "204800");
+        assert_eq!(super::proc_status_value(status, "VmSwap:"), "");
     }
 }
