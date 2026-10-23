@@ -391,8 +391,8 @@ fn verify_views() -> bool {
 /// each commit, that every File the pre-W1b provider-file walk reached from
 /// the committed target was registered; it soaked on the whole test suite
 /// and on ~/code, and W1d deleted it with the walk. It exempted the
-/// workspace status files, which every lookup reaching one registers
-/// ([`Engine::indexed_artifact`]).)
+/// status files, now registered for every lookup that can reach one
+/// (before it, or by it: [`Engine::indexed_artifact`]).)
 fn verify_artifacts() -> bool {
     static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var_os("BAZEL_RS_VERIFY_ARTIFACTS").is_some_and(|value| value == "1")
