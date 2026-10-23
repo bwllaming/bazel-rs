@@ -216,7 +216,7 @@ pub fn materialize(cache: &Path) -> Result<PathBuf, String> {
     if fs::symlink_metadata(&manifest_path)
         .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MANIFEST.len() as u64)
         && fs::read(&manifest_path).is_ok_and(|bytes| bytes == MANIFEST)
-        && verify_tree(&destination, &bundle.manifest).is_ok()
+        && verified_warm(&destination, &bundle.manifest)
     {
         return Ok(destination);
     }
@@ -255,11 +255,26 @@ fn stage_tree(
         .map_err(|error| format!("stage embedded bazel_tools: {error}"))?;
     set_directory_mode(staging.path())?;
     crate::archive::extract(archive, "tar.gz", "", staging.path())?;
-    verify_tree(staging.path(), manifest)?;
+    verify_tree(staging.path(), manifest, false)?;
     Ok(staging)
 }
 
-fn verify_tree(root: &Path, manifest: &Manifest) -> Result<(), String> {
+/// The warm check of the published tree: [`verify_tree`] with each file's
+/// digest from the digest memo when it records the file's path in exactly
+/// its current state (recorded only when settled, repository_store's
+/// Stat-mode trust), so an unchanged tree is not read; every file is read
+/// under `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full`.
+fn verified_warm(root: &Path, manifest: &Manifest) -> bool {
+    let start = std::time::Instant::now();
+    let verified = verify_tree(root, manifest, true).is_ok();
+    crate::digest_memo::count_verified(crate::digest_memo::Use::Builtin, start.elapsed());
+    verified
+}
+
+/// Whether `root` holds exactly the manifest's files and directories, with
+/// their sizes, modes and SHA-256 digests; `memo` takes the digests through
+/// the digest memo (the warm check of the published tree).
+fn verify_tree(root: &Path, manifest: &Manifest, memo: bool) -> Result<(), String> {
     let files: BTreeMap<_, _> = manifest
         .files
         .iter()
@@ -304,14 +319,37 @@ fn verify_tree(root: &Path, manifest: &Manifest) -> Result<(), String> {
             {
                 return Err(format!("invalid embedded bazel_tools cache file: {name}"));
             }
-            let mut digest = Sha256::new();
-            let file = File::open(&path).map_err(|error| error.to_string())?;
-            let copied = std::io::copy(&mut file.take(expected.size + 1), &mut digest)
-                .map_err(|error| error.to_string())?;
-            if copied != expected.size || hex(&digest.finalize()) != expected.sha256 {
-                return Err(format!(
-                    "embedded bazel_tools cache integrity mismatch: {name}"
-                ));
+            let mismatch = || format!("embedded bazel_tools cache integrity mismatch: {name}");
+            if memo {
+                // At most one byte beyond the expected size, as below.
+                let sha256 = crate::digest_memo::file_sha256(
+                    &path,
+                    &metadata,
+                    crate::digest_memo::Use::Builtin,
+                    |file| {
+                        let (sha256, copied) = crate::digest_memo::sha256_reader(
+                            &mut file.take(expected.size + 1),
+                            expected.size,
+                        )?;
+                        if copied == expected.size {
+                            Ok(sha256)
+                        } else {
+                            Err(std::io::Error::other("size changed while reading"))
+                        }
+                    },
+                )
+                .map_err(|_| mismatch())?;
+                if crate::digest_memo::hex(&sha256) != expected.sha256 {
+                    return Err(mismatch());
+                }
+            } else {
+                let mut digest = Sha256::new();
+                let file = File::open(&path).map_err(|error| error.to_string())?;
+                let copied = std::io::copy(&mut file.take(expected.size + 1), &mut digest)
+                    .map_err(|error| error.to_string())?;
+                if copied != expected.size || hex(&digest.finalize()) != expected.sha256 {
+                    return Err(mismatch());
+                }
             }
             file_count += 1;
         }
@@ -586,21 +624,31 @@ mod tests {
         let archive = gzip.finish().unwrap();
         let stage = stage_tree(temp.path(), &archive, &manifest).unwrap();
         let file = stage.path().join("dir/file");
+        // The warm (memo) check and the staging check agree.
+        let rejected = |stage: &Path| {
+            let (warm, staged) = (
+                verify_tree(stage, &manifest, true),
+                verify_tree(stage, &manifest, false),
+            );
+            assert_eq!(warm.is_err(), staged.is_err());
+            warm.is_err()
+        };
+        assert!(!rejected(stage.path()));
         fs::create_dir(stage.path().join("empty")).unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         fs::remove_dir(stage.path().join("empty")).unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(stage.path().join("dir"), fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         set_directory_mode(&stage.path().join("dir")).unwrap();
         fs::write(&file, b"binary\0\xfe").unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         fs::write(&file, b"wrong size").unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         fs::remove_file(&file).unwrap();
-        assert!(verify_tree(stage.path(), &manifest).is_err());
+        assert!(rejected(stage.path()));
         drop(stage);
 
         assert!(stage_tree(temp.path(), b"not a gzip archive", &manifest).is_err());

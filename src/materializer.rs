@@ -328,7 +328,7 @@ pub fn materialize_with_registry_config(
         && let Ok(bytes) = fs::read(&manifest_path)
         && let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes)
         && manifest.format == FORMAT
-        && snapshot(&destination).is_ok_and(|actual| actual == manifest.files)
+        && tree_matches(&destination, &manifest.files)
     {
         return Ok(destination);
     }
@@ -697,8 +697,50 @@ struct Entry {
     symlink: Option<String>,
 }
 
+/// The warm check of a published tree: whether `root` still holds exactly
+/// the snapshot `expected`. Every entry is inspected as by [`snapshot`]; a
+/// regular file's digest is taken from the digest memo when it records the
+/// file's path in exactly its current state (dev, inode, size, mtime,
+/// ctime; recorded only when settled: repository_store's Stat-mode trust)
+/// and read otherwise, so a warm run reads no unchanged file. Under
+/// `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` every file is
+/// read (crate::digest_memo::repository_table).
+fn tree_matches(root: &Path, expected: &BTreeMap<String, Entry>) -> bool {
+    let start = std::time::Instant::now();
+    let matched = snapshot_with(root, &|path, metadata| {
+        crate::digest_memo::file_sha256(path, metadata, crate::digest_memo::Use::Registry, |file| {
+            crate::digest_memo::sha256_reader(file, metadata.len()).map(|(sha256, _)| sha256)
+        })
+        .map(|sha256| crate::digest_memo::hex(&sha256))
+        .map_err(|e| e.to_string())
+    })
+    .is_ok_and(|actual| actual == *expected);
+    crate::digest_memo::count_verified(crate::digest_memo::Use::Registry, start.elapsed());
+    matched
+}
+
+/// A regular file's SHA-256 (hex) from its path and lstat.
+type FileDigest<'a> = &'a dyn Fn(&Path, &fs::Metadata) -> Result<String, String>;
+
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
-    fn walk(root: &Path, dir: &Path, result: &mut BTreeMap<String, Entry>) -> Result<(), String> {
+    snapshot_with(root, &|path, _| {
+        let mut digest = Sha256::new();
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        std::io::copy(&mut file, &mut digest).map_err(|e| e.to_string())?;
+        Ok(hex(&digest.finalize()))
+    })
+}
+
+fn snapshot_with(
+    root: &Path,
+    file_digest: FileDigest<'_>,
+) -> Result<BTreeMap<String, Entry>, String> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        result: &mut BTreeMap<String, Entry>,
+        file_digest: FileDigest<'_>,
+    ) -> Result<(), String> {
         for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
             let path = entry.map_err(|e| e.to_string())?.path();
             let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
@@ -738,10 +780,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
             #[cfg(not(unix))]
             let mode = u32::from(metadata.permissions().readonly());
             let sha256 = if metadata.is_file() {
-                let mut digest = Sha256::new();
-                let mut file = File::open(&path).map_err(|e| e.to_string())?;
-                std::io::copy(&mut file, &mut digest).map_err(|e| e.to_string())?;
-                hex(&digest.finalize())
+                file_digest(&path, &metadata)?
             } else {
                 String::new()
             };
@@ -755,13 +794,13 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                 },
             );
             if metadata.is_dir() {
-                walk(root, &path, result)?;
+                walk(root, &path, result, file_digest)?;
             }
         }
         Ok(())
     }
     let mut result = BTreeMap::new();
-    walk(root, root, &mut result)?;
+    walk(root, root, &mut result, file_digest)?;
     Ok(result)
 }
 

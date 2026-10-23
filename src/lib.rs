@@ -38,6 +38,7 @@ pub mod credentials;
 pub mod ctx_surface;
 pub mod custom_rule;
 mod depset_items;
+pub mod digest_memo;
 pub mod download_proxy;
 pub mod engine;
 mod exec_groups;

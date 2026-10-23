@@ -38,6 +38,9 @@ Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMOR
 Repository verify: --verify-repo-tampering forces full re-hash of warm
   repository publications (default: stat-fingerprint trust, Bazel's model;
   env BAZEL_RS_VERIFY_REPOS=full is equivalent).
+Digest memo: settled files' SHA-256 by path and stat key persist in
+  <cache>/digests/v1.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off disables
+  it (docs/DIGEST_MEMO.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
@@ -319,6 +322,9 @@ fn run() -> Result<(), String> {
     } else {
         cwd.join(cache)
     };
+    // The persistent file-digest memo of this cache (crate::digest_memo),
+    // saved by `digest_memo::finish` when the command ends.
+    bazel_rs::digest_memo::install(&cache);
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
     let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(
         rc_options.attempt_to_print_relative_paths,
@@ -564,6 +570,7 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("I/O error: {e}"))?;
         if outcome.exit_code != 0 {
             bazel_rs::loading::module_timings::report();
+            bazel_rs::digest_memo::finish();
             std::process::exit(outcome.exit_code);
         }
         bazel_rs::memory_limit::report_peak(memory_limit_mb);
@@ -977,6 +984,7 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     }
     process.envs(&line.environment);
     process.current_dir(&line.working_directory);
+    bazel_rs::digest_memo::finish();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", argv[0]))
 }
@@ -1163,6 +1171,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
     }
     if tests.is_empty() {
         eprintln!("ERROR: No test targets were found, yet testing was requested");
+        bazel_rs::digest_memo::finish();
         std::process::exit(4);
     }
     if !engine.execute_build() {
@@ -1172,6 +1181,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         // the build. Unable to run tests`, exit 1; genuine 9.3 scratch
         // capture `test --nobuild //pkg:t`).
         eprintln!("ERROR: Couldn't start the build. Unable to run tests");
+        bazel_rs::digest_memo::finish();
         std::process::exit(1);
     }
     let mut specs = Vec::new();
@@ -1225,6 +1235,7 @@ fn test_targets(context: TestContext<'_>) -> Result<(), String> {
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
     bazel_rs::loading::module_timings::report();
+    bazel_rs::digest_memo::finish();
     std::process::exit(if failed_to_build {
         1
     } else if passed {
@@ -1277,6 +1288,7 @@ fn test_build_failure(
     use std::io::Write;
     let _ = std::io::stdout().flush();
     bazel_rs::loading::module_timings::report();
+    bazel_rs::digest_memo::finish();
     std::process::exit(1);
 }
 
@@ -1454,6 +1466,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     }
     process.envs(&environment);
     process.current_dir(&execroot);
+    bazel_rs::digest_memo::finish();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", options.shell))
 }
@@ -2539,6 +2552,8 @@ fn warn(warning: &str) {
 
 fn main() {
     let result = run();
+    // Save the digest memo's new records (if any), also after a failure.
+    bazel_rs::digest_memo::finish();
     // N62 breakdown aid (BAZEL_RS_TIMING_MODULES=1): report before any
     // exit path, idempotent, silent unless enabled.
     bazel_rs::loading::module_timings::report();

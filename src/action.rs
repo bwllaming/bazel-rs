@@ -649,13 +649,18 @@ fn real_directory(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, Str
 /// DigestUtils.CacheKey (vfs/DigestUtils.java:36-60: node id, change time,
 /// modification time and size). Files owned by the cache (store blobs,
 /// published outputs) leave out the change time: hardlinking a blob updates
-/// it constantly, while its bytes are immutable and verified.
+/// it constantly, while its bytes are immutable and verified. They keep
+/// their birth time in its place (`(0, 0)` where the filesystem reports
+/// none): link() leaves it alone, and an inode number reused for a new file
+/// gets a new one, so equal sizes and modification times (tools that fix
+/// mtimes) cannot alias it with a deleted file (crate::digest_memo).
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct FileKey {
     device: u64,
     inode: u64,
     size: u64,
     mtime: (i64, i64),
+    /// The change time, or a cache-owned file's birth time.
     ctime: (i64, i64),
 }
 
@@ -666,7 +671,17 @@ fn file_key(metadata: &fs::Metadata, owned: bool) -> FileKey {
         size: metadata.size(),
         mtime: (metadata.mtime(), metadata.mtime_nsec()),
         ctime: if owned {
-            (0, 0)
+            metadata
+                .created()
+                .ok()
+                .and_then(|birth| birth.duration_since(SystemTime::UNIX_EPOCH).ok())
+                .and_then(|birth| {
+                    Some((
+                        i64::try_from(birth.as_secs()).ok()?,
+                        i64::from(birth.subsec_nanos()),
+                    ))
+                })
+                .unwrap_or((0, 0))
         } else {
             (metadata.ctime(), metadata.ctime_nsec())
         },
@@ -724,7 +739,12 @@ fn hash_file(path: &Path, owned: bool, trusted: bool) -> Result<(String, fs::Met
 }
 
 /// [`hash_file`] with `before`, the caller's lstat of `path` (taken just
-/// before: the file must not change from then on).
+/// before: the file must not change from then on). The digest comes from
+/// the per-process memo (any path of the inode), else from the persistent
+/// memo of this path in exactly this state (crate::digest_memo, when the
+/// command installed one), else from reading the file; a settled or trusted
+/// result enters both (the persistent one only for paths that recur across
+/// processes: never an execution root).
 fn hash_file_from(
     path: &Path,
     before: fs::Metadata,
@@ -732,9 +752,27 @@ fn hash_file_from(
     trusted: bool,
 ) -> Result<(String, fs::Metadata), String> {
     let key = file_key(&before, owned);
+    let table = crate::digest_memo::installed()
+        .and_then(|table| Some((table, crate::digest_memo::Key::of(&before, owned)?)));
     if let Some(digest) = memoized_digest(&key) {
+        // An inode this process already knows, maybe through another path
+        // (a published output and its blob): remember it under this one
+        // (trusted: derived knowledge, which never causes a save by itself).
+        if let Some((table, table_key)) = &table
+            && let Some(sha256) = crate::digest_memo::parse_hex(&digest)
+        {
+            table.remember(path, *table_key, sha256, true);
+        }
         return Ok((digest, before));
     }
+    if let Some((table, table_key)) = &table
+        && let Some(sha256) = table.lookup(path, table_key)
+    {
+        let digest = crate::digest_memo::hex(&sha256);
+        remember_digest(key, &digest);
+        return Ok((digest, before));
+    }
+    crate::digest_memo::count_hashed(crate::digest_memo::Use::Action, before.size());
     let start = SystemTime::now();
     let mut file = File::open(path).map_err(|e| io_error("cannot read", path, e))?;
     let mut hash = Sha256::new();
@@ -762,11 +800,38 @@ fn hash_file_from(
             path.display()
         ));
     }
-    let digest = hex(&hash.finalize());
+    let sha256: [u8; 32] = hash.finalize().into();
+    let digest = hex(&sha256);
     if trusted || racy_safe(&after, start, owned) {
         remember_digest(key, &digest);
+        if let Some((table, table_key)) = table {
+            table.remember(path, table_key, sha256, trusted);
+        }
     }
     Ok((digest, before))
+}
+
+/// After publication: record `digest`, the content of the published output
+/// `path`, in the persistent memo when this process hashed exactly its
+/// inode (the execution-root file it was linked from, or its store blob),
+/// so that the next command's cache check does not read it again.
+fn remember_published(path: &Path, digest: &str) {
+    let Some(table) = crate::digest_memo::installed() else {
+        return;
+    };
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !metadata.is_file() || memoized_digest(&file_key(&metadata, true)).as_deref() != Some(digest)
+    {
+        return;
+    }
+    if let (Some(key), Some(sha256)) = (
+        crate::digest_memo::Key::of(&metadata, true),
+        crate::digest_memo::parse_hex(digest),
+    ) {
+        table.remember(path, key, sha256, true);
+    }
 }
 
 fn owned_by(root: Option<&Path>, path: &Path) -> bool {
@@ -3395,6 +3460,8 @@ pub fn execute_with_remote(
     let mut listings = BTreeMap::new();
     // Published tree outputs, for the tree memo once the entry is in place.
     let mut published_trees = Vec::new();
+    // Published regular files and their digests, for the persistent memo.
+    let mut published_files = Vec::new();
     for name in outputs {
         let source = execroot.join(name);
         let target = completed.join("outputs").join(name);
@@ -3466,6 +3533,7 @@ pub fn execute_with_remote(
             // regular output unreadable. Normalize before reading its bytes,
             // but never chmod a symlink or a path through a linked ancestor.
             let input = publish_file(&cas, &root, &source, &target)?;
+            published_files.push((name, input.digest.clone()));
             Ok(Output {
                 name: hex_name,
                 digest: input.digest,
@@ -3492,10 +3560,16 @@ pub fn execute_with_remote(
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
     // What a consumer would read from the published entry: the same files,
     // digests and (normalized) modes at their published paths.
+    for (name, digest) in &published_files {
+        remember_published(&cached.join("outputs").join(name), digest);
+    }
     for (name, tree) in published_trees {
         let path = cached.join("outputs").join(name);
         if published_output(Some(&root), &path) {
             let tree = relocated(tree, &path);
+            for input in tree.files.values() {
+                remember_published(&input.path, &input.digest);
+            }
             remember_tree(path, Arc::new(tree));
         }
     }

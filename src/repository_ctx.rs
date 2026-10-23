@@ -913,10 +913,20 @@ pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
         .map(|digest| format!("dirtree:{digest}"))
 }
 
+/// The SHA-256 of a file a repository rule observes, or whose recorded state
+/// a warm run revalidates: from the persistent digest memo when it records
+/// the path in exactly its current state (settled files only; never under
+/// `--verify_repo_tampering`), so the hundreds of repositories recording
+/// the same tools (every gazelle `go_repository` watches the same
+/// `fetch_repo`/`gazelle` binaries) do not read them on every warm run
+/// (crate::digest_memo::path_sha256).
 fn file_sha256(path: &Path) -> anyhow::Result<String> {
-    let (digest, _) = Algorithm::Sha256
-        .hash_file(path)
-        .map_err(|error| file_not_found(path, &error))?;
+    let digest = crate::digest_memo::path_sha256(path, crate::digest_memo::Use::Recorded, || {
+        Algorithm::Sha256
+            .hash_file(path)
+            .map(|(digest, _)| digest)
+            .map_err(|error| file_not_found(path, &error))
+    })?;
     Ok(transport::hex(&digest))
 }
 
