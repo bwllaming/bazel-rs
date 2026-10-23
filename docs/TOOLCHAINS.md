@@ -208,7 +208,8 @@ resolves never silently becomes `None`.
   `struct(a = 1, b = 2)`, `dir()` the field names, structural equality.
   Rules return it like any provider; `dep[platform_common.ToolchainInfo]`,
   `platform_common.ToolchainInfo in dep` and `attr.label(providers = [...])`
-  work; files inside it are provider files (action inputs).
+  work; files inside it are action inputs like any File (resolved through
+  the build's artifact index, W1b).
 * ResolvedToolchainContext.load (`analysis/ResolvedToolchainContext.java:48-110`):
   each resolved implementation (through an alias: the alias label is the
   resolved label) must provide ToolchainInfo, else `While resolving
@@ -239,7 +240,7 @@ resolves never silently becomes `None`.
   Starlark inlined a small helper function from another module (the inlined
   expression keeps its own span). The implementation runs once. A
   `ctx.toolchains` value stored in a provider and indexed by another target
-  uses that caller's `.bzl` (its ToolchainInfo files are provider files).
+  uses that caller's `.bzl` (its ToolchainInfo files are action inputs).
   Without a location (indexing from native code) or with a module name that
   is not a label, a string key fails explicitly (`ctx.toolchains["K"]: the
   native profile cannot determine the calling .bzl file ...`); there is no

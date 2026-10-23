@@ -713,6 +713,12 @@ pub fn returned_provider_key_names(result: Value<'_>) -> anyhow::Result<Vec<Stri
 /// encounter order. Unknown value kinds and cyclic/overdeep containers fail
 /// explicitly rather than silently losing dependencies. String depsets and
 /// primitive metadata (including Labels) contain no files.
+///
+/// Since W1b (PLAN-L1 §2.2) nothing in analysis gates on this walk — a
+/// consumer resolves any File it reaches through the build's artifact index
+/// (crate::engine) — and it only serves the `BAZEL_RS_VERIFY_ARTIFACTS=1`
+/// migration verifier (crate::engine::verify_registered), until W1d deletes
+/// it.
 pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
     const MAX_DEPTH: usize = 128;
     struct Walk<'v> {
@@ -768,9 +774,9 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
                 // Owned C++ feature-engine values, the artifact-free
                 // HeaderInfo, the cpp fragment, and Starlark `def`/lambda
                 // functions (closures such as CcToolchainInfo's
-                // `static_runtime_lib`):
-                // opaque here; a File reachable only through a closure is not
-                // a known input of consumers and fails explicitly when used.
+                // `static_runtime_lib`): opaque here; a File reachable only
+                // through a closure resolves through the artifact index like
+                // any other (W1b).
             } else if crate::apple_xcode::is_file_free_payload(value) {
                 // DottedVersion, or an XcodeVersionInfo closure from the
                 // verbatim @_builtins providers.bzl (it captures only
@@ -849,6 +855,70 @@ pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
     };
     walk.walk(value, 0)?;
     Ok(walk.files)
+}
+
+/// The Starlark types of the analysis-bound values the native profile
+/// allocates without freeze support (`Heap::alloc_complex_no_freeze`): rule,
+/// aspect and subrule contexts, their action factories, `Args`,
+/// `TemplateDict`, `ctx.fragments` and the aspect's rule attributes. Bazel
+/// lets a provider hold them; a provider here is frozen with its target's
+/// analysis, so they cannot cross it.
+const ANALYSIS_BOUND_TYPES: [&str; 7] = [
+    "ctx",
+    "subrule_ctx",
+    "actions",
+    "Args",
+    "TemplateDict",
+    "fragments",
+    "StarlarkAttributesCollection",
+];
+
+/// Reject an analysis-bound value (ANALYSIS_BOUND_TYPES) among the returned
+/// providers' payloads before they are frozen, with the pre-W1b provider-file
+/// walk's `unsupported provider payload type T`. Only this analysis's own
+/// (unfrozen) values are visited — fields, list/tuple/set/dict elements and
+/// struct fields; frozen values (a dependency's providers) cannot hold an
+/// unfrozen value — so the check is linear in the target's own payload. A
+/// value captured by a closure is not visited; its freeze fails instead
+/// ([`unsupported_payload_freeze`]).
+pub(crate) fn check_freezable_payloads<'v>(
+    providers: impl IntoIterator<Item = Value<'v>>,
+) -> anyhow::Result<()> {
+    let mut visited = HashSet::new();
+    let mut stack: Vec<Value<'v>> = providers.into_iter().collect();
+    stack.reverse();
+    while let Some(value) = stack.pop() {
+        if value.unpack_frozen().is_some() || !visited.insert(value.identity()) {
+            continue;
+        }
+        let kind = value.get_type();
+        if ANALYSIS_BOUND_TYPES.contains(&kind) {
+            bail!("unsupported provider payload type {kind}");
+        }
+        let mut children: Vec<Value<'v>> = Vec::new();
+        if let Some(provider) = ProviderInstance::from_value(value) {
+            children.extend(provider.fields.iter().map(|(_, field)| *field));
+        } else if let Some(list) = ListRef::from_value(value) {
+            children.extend(list.iter());
+        } else if let Some(tuple) = TupleRef::from_value(value) {
+            children.extend(tuple.iter());
+        } else if let Some(set) = SetRef::unpack_value_opt(value) {
+            children.extend(set.iter());
+        } else if let Some(dict) = DictRef::from_value(value) {
+            children.extend(dict.iter().flat_map(|(key, child)| [key, child]));
+        } else if let Some(structure) = StructRef::from_value(value) {
+            children.extend(structure.iter().map(|(_, child)| child));
+        }
+        stack.extend(children.into_iter().rev());
+    }
+    Ok(())
+}
+
+/// A provider freeze that failed after [`check_freezable_payloads`] (an
+/// analysis-bound value captured by a closure): the same rejection class,
+/// with the freezer's message.
+pub(crate) fn unsupported_payload_freeze(error: starlark::values::FreezeError) -> anyhow::Error {
+    anyhow!("unsupported provider payload: {}", error.err_msg)
 }
 
 fn field_schema(value: Value<'_>) -> anyhow::Result<Option<BTreeSet<String>>> {

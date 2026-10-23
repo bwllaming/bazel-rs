@@ -1,0 +1,133 @@
+# W1b (PLAN-L1 §6): every File resolves through the build's one artifact
+# index, as Bazel resolves an action input, a DefaultInfo file or a runfile
+# through its Artifact - however the File reached the consumer.
+Info = provider(fields = ["f"])
+Holder = provider(fields = ["inner"])
+Box = provider(fields = ["get", "payload"])
+
+def _leaf(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "leaf:" + ctx.label.name + "\n")
+    return [Info(f = out)]
+
+leaf = rule(_leaf)
+
+def _hold(ctx):
+    return [Holder(inner = ctx.attr.dep[Info])]
+
+hold = rule(_hold, attrs = {"dep": attr.label()})
+
+def _forward(ctx):
+    return [ctx.attr.dep[Holder]]
+
+forward = rule(_forward, attrs = {"dep": attr.label()})
+
+def _use(ctx):
+    # The leaf's File, three hops away (use -> forward -> hold -> leaf).
+    f = ctx.attr.dep[Holder].inner.f
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(inputs = [f], outputs = [out], command = "cat $1 > $2", arguments = [f.path, out.path])
+    return [DefaultInfo(files = depset([out]))]
+
+use = rule(_use, attrs = {"dep": attr.label()})
+
+def _payload(kind):
+    # Provider payload values the pre-W1b provider-file walk rejected.
+    if kind == "range":
+        return range(3)
+    if kind == "deep":
+        deep = []
+        for _ in range(200):
+            deep = [deep]
+        return deep
+    if kind == "cyclic":
+        cyclic = []
+        cyclic.append(cyclic)
+        return cyclic
+    if kind == "method":
+        return "payload".startswith
+    return None
+
+def _closure(ctx):
+    hidden = ctx.actions.declare_file(ctx.label.name + ".hidden")
+    ctx.actions.write(hidden, "hidden:" + ctx.label.name + "\n")
+    return [Box(get = lambda: hidden, payload = _payload(ctx.attr.kind))]
+
+closure = rule(_closure, attrs = {"kind": attr.string()})
+
+def _bound(ctx):
+    # Values bound to this analysis: Bazel keeps them in the provider; the
+    # native profile freezes providers with the analysis and rejects them.
+    if ctx.attr.kind == "closure":
+        return [Box(get = lambda: ctx, payload = None)]
+    payload = {"ctx": ctx, "actions": ctx.actions, "args": ctx.actions.args()}[ctx.attr.kind]
+    return [Box(get = None, payload = [payload])]
+
+bound = rule(_bound, attrs = {"kind": attr.string()})
+
+def _via_closure(ctx):
+    # A File reachable only through a closure is an input, and a sibling.
+    f = ctx.attr.dep[Box].get()
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(inputs = [f], outputs = [out], command = "cat $1 > $2", arguments = [f.path, out.path])
+    files = [out]
+    if ctx.attr.sibling:
+        sibling = ctx.actions.declare_file(ctx.label.name + ".sibling", sibling = f)
+        ctx.actions.write(sibling, "sibling of " + f.basename + "\n")
+        files.append(sibling)
+    return [DefaultInfo(files = depset(files))]
+
+via_closure = rule(_via_closure, attrs = {"dep": attr.label(), "sibling": attr.bool()})
+
+def _gen(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + "_data.txt")
+    ctx.actions.write(out, "generated data\n")
+    return [DefaultInfo(files = depset([out]))]
+
+gen = rule(_gen)
+
+def _fwd(ctx):
+    # The dependency's DefaultInfo, forwarded as is.
+    return [ctx.attr.dep[DefaultInfo]]
+
+fwd = rule(_fwd, attrs = {"dep": attr.label()})
+
+def _cat(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run_shell(
+        inputs = ctx.files.deps,
+        outputs = [out],
+        command = "cat \"$@\" > " + out.path,
+        arguments = [f.path for f in ctx.files.deps],
+    )
+    return [DefaultInfo(files = depset([out]))]
+
+cat = rule(_cat, attrs = {"deps": attr.label_list(allow_files = True)})
+
+def _status(ctx):
+    # A workspace status file to build, consumed by no action.
+    return [DefaultInfo(files = depset([ctx.version_file]))]
+
+status = rule(_status)
+
+def _decl(ctx):
+    out = ctx.actions.declare_file("same.txt")
+    ctx.actions.write(out, ctx.label.name)
+    return [DefaultInfo(files = depset([out]))]
+
+decl = rule(_decl, attrs = {"dep": attr.label()})
+
+def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(exe, "#!/bin/sh\ncat $0.runfiles/_main/pkg/gen_data.txt > $1\n", is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tool = rule(_tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _run_tool(ctx):
+    # The tool's generated runfile is staged into the spawn from its producer.
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.run(executable = ctx.executable.tool, arguments = [out.path], outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+
+run_tool = rule(_run_tool, attrs = {"tool": attr.label(executable = True, cfg = "target")})

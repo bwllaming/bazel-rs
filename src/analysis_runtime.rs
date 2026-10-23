@@ -158,7 +158,6 @@ mod owned {
         /// The owner part of the target's action ids
         /// (crate::config_registry::ConfiguredTargetKey::action_owner).
         pub action_owner: String,
-        pub dependency_files: BTreeSet<File>,
         pub declared: RefCell<Vec<File>>,
         pub actions: RefCell<Vec<RegisteredAction>>,
         pub active: Arc<AtomicBool>,
@@ -251,29 +250,13 @@ impl Context {
         let mut declared = self.declared.borrow_mut();
         // A path declared both as a file and as a directory is reported when
         // the implementation returns (StarlarkProviderValidationUtil), like Bazel.
+        // An output path another target already produces is the commit's
+        // `overlapping output paths` conflict (crate::engine register_output,
+        // Bazel's ActionConflictException; W1b).
         if !declared.contains(&file) {
-            ensure!(
-                !self
-                    .dependency_files
-                    .iter()
-                    .any(|other| other.path == file.path),
-                "declared output {} conflicts with a dependency artifact",
-                file.path
-            );
             declared.push(file.clone());
         }
         Ok(file)
-    }
-
-    pub(crate) fn known_file(&self, file: &File) -> bool {
-        if is_workspace_status_file(file) {
-            return true;
-        }
-        self.sync_default_executable();
-        self.dependency_files.contains(file)
-            || self.declared.borrow().contains(file)
-            // N23f: the dependencies' runfiles and repository mapping manifests.
-            || self.runfiles.manifests.contains(file)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -352,16 +335,11 @@ impl Context {
                 output.path
             );
         }
-        for input in &inputs {
-            // The workspace status files are produced by the build's
-            // BazelWorkspaceStatusAction (N63), planned as a system node
-            // whose artifacts resolve these inputs.
-            ensure!(
-                is_workspace_status_file(input) || self.known_file(input),
-                "action input {} is not a dependency or declared output",
-                input.path
-            );
-        }
+        // Inputs are Artifacts, whatever path the File took to reach this
+        // implementation (a dependency, a provider field, a closure; Bazel
+        // has no input restriction): the engine resolves each through the
+        // build's artifact index at commit (W1b), the workspace status
+        // files through the build's BazelWorkspaceStatusAction (N63).
         extra.tree_outputs = outputs
             .iter()
             .filter(|file| file.is_directory)
@@ -888,10 +866,10 @@ fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyho
         return Ok(filename.to_owned());
     }
     let sibling = unpack_file(sibling)?;
-    ensure!(
-        context.known_file(&sibling),
-        "sibling must be a dependency or declared File"
-    );
+    // Any File may anchor the declaration (StarlarkActionFactory.declareFile
+    // :142-163 has no "known File" gate, nor has the native profile since
+    // W1b); the result must stay in the current package, checked natively
+    // through the sibling's owner below.
     let owner = Label::parse_canonical(&sibling.owner).map_err(anyhow::Error::msg)?;
     ensure!(
         owner.package_id() == context.label.package_id(),
@@ -1719,7 +1697,6 @@ mod tests {
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
-            dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),
@@ -1924,7 +1901,6 @@ r=rule(implementation=_rule,subrules=[S])
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//:target".into(),
-            dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),

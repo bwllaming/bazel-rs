@@ -1252,9 +1252,6 @@ pub(crate) struct ContextRunfiles {
     /// StarlarkAttributesCollection.getExecutableRunfilesMap
     /// (analysis/starlark/StarlarkAttributesCollection.java:410-430).
     pub executables: RefCell<BTreeMap<File, FilesToRun>>,
-    /// The dependencies' runfiles and repository-mapping manifests, which
-    /// their runfiles support generates (N23f).
-    pub manifests: BTreeSet<File>,
 }
 
 impl ContextRunfiles {
@@ -1275,22 +1272,6 @@ impl ContextRunfiles {
             .borrow()
             .values()
             .any(|known| known.id == files_to_run.id)
-    }
-}
-
-impl TargetRunfiles {
-    /// The FilesToRunProvider manifests of this target.
-    pub(crate) fn manifests(&self) -> Vec<File> {
-        self.files_to_run
-            .iter()
-            .flat_map(|files| {
-                files
-                    .runfiles_manifest
-                    .iter()
-                    .chain(&files.repo_mapping_manifest)
-                    .cloned()
-            })
-            .collect()
     }
 }
 

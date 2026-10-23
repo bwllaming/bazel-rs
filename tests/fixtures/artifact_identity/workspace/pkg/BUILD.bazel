@@ -1,0 +1,69 @@
+load(
+    ":defs.bzl",
+    "bound",
+    "cat",
+    "closure",
+    "decl",
+    "forward",
+    "fwd",
+    "gen",
+    "hold",
+    "leaf",
+    "run_tool",
+    "status",
+    "tool",
+    "use",
+    "via_closure",
+)
+
+leaf(name = "leaf")
+
+hold(name = "hold", dep = ":leaf")
+
+forward(name = "forward", dep = ":hold")
+
+use(name = "use", dep = ":forward")
+
+closure(name = "closure")
+
+closure(name = "closure_range", kind = "range")
+
+closure(name = "closure_deep", kind = "deep")
+
+closure(name = "closure_cyclic", kind = "cyclic")
+
+closure(name = "closure_method", kind = "method")
+
+via_closure(name = "via_closure", dep = ":closure", sibling = True)
+
+via_closure(name = "via_range", dep = ":closure_range")
+
+via_closure(name = "via_deep", dep = ":closure_deep")
+
+via_closure(name = "via_cyclic", dep = ":closure_cyclic")
+
+via_closure(name = "via_method", dep = ":closure_method")
+
+gen(name = "gen")
+
+fwd(name = "fwd", dep = ":gen")
+
+cat(name = "cat_fwd", deps = [":fwd"])
+
+status(name = "status")
+
+decl(name = "first")
+
+decl(name = "second", dep = ":first")
+
+tool(name = "tool", data = [":gen"])
+
+run_tool(name = "run_tool", tool = ":tool")
+
+bound(name = "bound_ctx", kind = "ctx")
+
+bound(name = "bound_actions", kind = "actions")
+
+bound(name = "bound_args", kind = "args")
+
+bound(name = "bound_closure", kind = "closure")

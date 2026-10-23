@@ -235,7 +235,7 @@ Code: `src/config_registry.rs`, `src/engine.rs`, `src/analysis.rs`,
   `json.encode(File)`'s `root`). There is no ambient (thread-local) root.
 * **Keys.** Every analysis and planning map is keyed by
   `ConfiguredTargetKey { label, config }`: configured nodes, the analysis
-  plan, the per-target artifacts, providers and provider files, declared
+  plan, the per-target artifacts and providers, declared
   artifacts (`(config, exec path)`), output producers (paths stay global, so
   overlapping outputs of different configurations still conflict),
   requested artifacts, the platform memo and the empty-configuration rules,

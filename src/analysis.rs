@@ -31,8 +31,6 @@ pub struct DependencyView {
     /// Actual native `filegroup` rule (Filegroup.java).
     pub is_filegroup: bool,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
-    /// Shared with the engine's per-target provider files (W1a).
-    pub provider_files: Arc<Vec<File>>,
     /// Display names of the returned declared providers, in return order.
     pub provider_keys: Vec<String>,
     /// RunfilesProvider/FilesToRunProvider (docs/RUNFILES.md), shared with
@@ -104,7 +102,6 @@ pub struct AnalysisResult {
     pub declared: Vec<File>,
     pub actions: Vec<RegisteredAction>,
     pub providers: BTreeMap<String, OwnedFrozenValue>,
-    pub provider_files: Vec<File>,
     /// Display names of the returned declared providers, in return order.
     pub provider_keys: Vec<String>,
     /// RunfilesProvider/FilesToRunProvider of the configured target.
@@ -1735,17 +1732,6 @@ fn analyze_aspect_inner(
         rule_class: invocation.declaration.rule_class.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
-        dependency_files: application
-            .dependencies
-            .values()
-            .flat_map(|dep| {
-                dep.files
-                    .iter()
-                    .chain(dep.provider_files.iter())
-                    .cloned()
-                    .chain(dep.runfiles.files())
-            })
-            .collect(),
         declared: RefCell::new(Vec::new()),
         actions: RefCell::new(Vec::new()),
         active,
@@ -1797,10 +1783,9 @@ fn analyze_aspect_inner(
         check_return_shape(returned)?;
         let custom = crate::providers::returned_custom_providers(returned)?;
         let provider_keys = crate::providers::returned_provider_key_names(returned)?;
+        crate::providers::check_freezable_payloads(custom.values().copied())?;
         let mut slots = Vec::new();
-        let mut provider_files = BTreeSet::new();
         for (identity, provider) in custom {
-            provider_files.extend(crate::providers::provider_files(provider)?);
             let slot = format!("$provider:{}", slots.len());
             module.set(&slot, provider);
             slots.push((identity, slot));
@@ -1811,7 +1796,7 @@ fn analyze_aspect_inner(
                 "aspect:{}%{}",
                 rule.label, aspect.exported_name
             ))))
-            .map_err(|error| anyhow!("cannot freeze aspect providers: {error:?}"))?;
+            .map_err(crate::providers::unsupported_payload_freeze)?;
         let providers = slots
             .into_iter()
             .map(|(identity, slot)| {
@@ -1826,7 +1811,6 @@ fn analyze_aspect_inner(
             declared: context.declared.borrow().clone(),
             actions: context.actions.borrow().clone(),
             providers,
-            provider_files: provider_files.into_iter().collect(),
             provider_keys,
             runfiles: crate::runfiles::TargetRunfiles::default(),
         })
@@ -2170,19 +2154,6 @@ fn analyze_inner(
         rule_class: invocation.declaration.rule_class.clone(),
         output_root: target.output_root.to_owned(),
         action_owner: target.action_owner.to_owned(),
-        // Dependencies' runfiles artifacts are observable through
-        // dep[DefaultInfo] and their FilesToRunProviders.
-        dependency_files: dependencies
-            .values()
-            .flat_map(|target| {
-                target
-                    .files
-                    .iter()
-                    .chain(target.provider_files.iter())
-                    .cloned()
-                    .chain(target.runfiles.files())
-            })
-            .collect(),
         declared: RefCell::new(Vec::new()),
         actions: RefCell::new(Vec::new()),
         active,
@@ -2201,18 +2172,14 @@ fn analyze_inner(
         exec_groups: invocation.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
             default_executable,
-            manifests: dependencies
-                .values()
-                .flat_map(|target| target.runfiles.manifests())
-                .collect(),
             ..Default::default()
         },
     };
     for output in &rule.outs {
         context.declare(output)?;
     }
-    let (files, providers, provider_files, provider_keys, target_runfiles) =
-        Module::with_temp_heap(|module| -> anyhow::Result<_> {
+    let (files, providers, provider_keys, target_runfiles) = Module::with_temp_heap(
+        |module| -> anyhow::Result<_> {
             let ctx = make_ctx(rule, &context, dependencies, module.heap(), surface.clone())?;
             // Bazel's implicit DefaultInfo includes only predeclared outputs.
             let predeclared = context.declared.borrow().clone();
@@ -2356,10 +2323,14 @@ fn analyze_inner(
                 crate::output_group_info::PROVIDER_ID.to_owned(),
                 module.heap().alloc(merged),
             );
+            // No provider-file walk (W1b, PLAN-L1 §2.2): a consumer
+            // resolves whatever File it reaches through the build's
+            // artifact index, as Bazel resolves an input through its
+            // Artifact (crate::engine). Only the values this analysis
+            // allocated are checked, for what the freeze cannot carry.
+            crate::providers::check_freezable_payloads(custom.values().copied())?;
             let mut slots = Vec::new();
-            let mut provider_files = BTreeSet::new();
             for (identity, provider) in custom {
-                provider_files.extend(crate::providers::provider_files(provider)?);
                 let slot = format!("$provider:{}", slots.len());
                 module.set(&slot, provider);
                 slots.push((identity, slot));
@@ -2370,7 +2341,7 @@ fn analyze_inner(
                     "analysis:{}",
                     rule.label
                 ))))
-                .map_err(|error| anyhow!("cannot freeze analysis providers: {error:?}"))?;
+                .map_err(crate::providers::unsupported_payload_freeze)?;
             let providers = slots
                 .into_iter()
                 .map(|(identity, slot)| {
@@ -2379,31 +2350,9 @@ fn analyze_inner(
                         .map(|(value, _)| (identity, value))
                 })
                 .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
-            Ok((
-                files,
-                providers,
-                provider_files.into_iter().collect::<Vec<_>>(),
-                provider_keys,
-                target_runfiles,
-            ))
-        })?;
-    for file in files.iter().chain(&provider_files) {
-        ensure!(
-            context.known_file(file),
-            "DefaultInfo contains unknown file {}",
-            file.path
-        );
-    }
-    // Runfiles artifacts need an artifact identity like every other file; the
-    // FilesToRunProvider manifests are declared but have no action yet
-    // (docs/RUNFILES.md).
-    for file in target_runfiles.files() {
-        ensure!(
-            context.known_file(&file),
-            "runfiles contain unknown file {}",
-            file.path
-        );
-    }
+            Ok((files, providers, provider_keys, target_runfiles))
+        },
+    )?;
     let declared = context.take_declared();
     let actions = std::mem::take(&mut *context.actions.borrow_mut());
     // StarlarkProviderValidationUtil.validateArtifacts
@@ -2449,7 +2398,6 @@ fn analyze_inner(
         declared,
         actions,
         providers,
-        provider_files,
         provider_keys,
         runfiles: target_runfiles,
     })
@@ -2641,7 +2589,6 @@ r = rule(implementation=impl, attrs={"mode": attr.string(), "out": attr.output()
                     );
                     assert_eq!(result.declared.len(), 1);
                     assert_eq!(result.files.len(), usize::from(mode != "nested_empty"));
-                    assert!(result.provider_files.is_empty());
                     // The returned provider and the framework's OutputGroupInfo.
                     assert_eq!(result.providers.len(), 2);
                     assert!(
@@ -2720,7 +2667,6 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 is_rule: true,
                 is_package_group: false,
                 providers: producer.providers,
-                provider_files: Arc::new(producer.provider_files),
                 provider_keys: producer.provider_keys,
                 is_filegroup: false,
                 runfiles: Arc::new(producer.runfiles),
@@ -2836,7 +2782,6 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
                 is_rule: true,
                 is_package_group: false,
                 providers,
-                provider_files: Default::default(),
                 provider_keys: Vec::new(),
                 is_filegroup: false,
                 runfiles: Default::default(),
@@ -3147,7 +3092,6 @@ r = rule(implementation=impl, attrs={
             action_env: Default::default(),
             output_root: crate::label::GENERATED_EXEC_ROOT.into(),
             action_owner: "//pkg:rule".into(),
-            dependency_files: BTreeSet::new(),
             declared: RefCell::new(Vec::new()),
             actions: RefCell::new(Vec::new()),
             active: Arc::new(AtomicBool::new(true)),

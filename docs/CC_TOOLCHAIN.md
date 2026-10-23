@@ -72,11 +72,11 @@ C++ build `Variables` (traversed: File-valued variables are inputs),
 cache is a `Mutex`, so concurrent analyses of consumers share one frozen
 instance safely, `src/cc_features/tests.rs`), the artifact-free
 `HeaderInfo`, the `cpp` fragment, and Starlark `def`/lambda functions
-(`CcToolchainInfo.static_runtime_lib` etc.). Functions are opaque to the
-provider-file walk: a File reachable only through a closure is not a known
-input of a consumer and fails explicitly if used as one (`action input ... is
-not a dependency or declared output`; rules_cc also stores the captured
-depsets as plain fields).
+(`CcToolchainInfo.static_runtime_lib` etc.). Since W1b nothing walks a
+returned provider: every File a consumer reaches, through a closure too,
+resolves through the build's one artifact index to its producer, as Bazel
+resolves an input through its Artifact (tests/artifact_identity.rs,
+paired capture tests/fixtures/artifact_identity/reference_receipt.json).
 
 ## Build info (`bazel_cc_build_info`)
 
@@ -111,10 +111,9 @@ demanding them through any consumer.
   `RunfilesSupport.getRunfilesTreeArtifact`); the native profile has no
   runfiles-tree artifact and lists the default runfiles' artifacts, as for
   every other rule (`:159-173`).
-- A File reachable only through a Starlark closure inside a provider (opaque
-  to the provider-file walk) used as an action input fails with
-  `action input <path> is not a dependency or declared output`
-  (tests/output_group_info.rs).
+- (Closed by W1b: a File reachable only through a Starlark closure inside a
+  provider is an action input like any other, tests/output_group_info.rs and
+  tests/artifact_identity.rs.)
 - Output paths use Bazel's `k8-<mode>` / `k8-opt-exec` roots since N41
   closed divergence D1 (docs/CONFIGURATION.md), so `ctx.bin_dir`-derived
   values such as `CcToolchainInfo.dynamic_runtime_solib_dir` read
@@ -136,7 +135,7 @@ demanding them through any consumer.
   `cc_features::tests::shared_features_configure_concurrently`,
   provider payload tests in `src/providers.rs`; CLI `tests/output_group_info.rs`
   (native-target OutputGroupInfo identity through edges and aliases,
-  `_validation`/`_validation_transitive`, closure-only Files).
+  `_validation`/`_validation_transitive`, closure-only Files as inputs).
 - Paired genuine Bazel 9.3 capture: `tests/fixtures/cc_toolchain/reference_receipt.json`
   (harness `artifacts/cc_toolchain-capture.py`, complete genuine modules on both
   engines). Final run: F1 (target, exec, zig, build-info dump, redacted

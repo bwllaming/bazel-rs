@@ -2,7 +2,9 @@
 //! native rule targets is one instance per configured target, the private
 //! `_validation_transitive` group is restricted like Bazel's
 //! RuleConfiguredTargetBuilder, and a File reachable only through a closure
-//! in a provider is not a known action input.
+//! in a provider is an action input like any other (W1b: the engine resolves
+//! every File through the build's artifact index, as Bazel resolves an input
+//! through its Artifact).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;
@@ -325,17 +327,18 @@ consumer = rule(implementation = _consumer, attrs = {"dep": attr.label()})
 "#;
 
 #[test]
-fn file_reachable_only_through_a_provider_closure_is_not_a_known_input() {
+fn file_reachable_only_through_a_provider_closure_is_an_input() {
     let ws = Workspace::new(
         CLOSURE,
         "load(':defs.bzl', 'consumer', 'producer')\n\
          producer(name = 'producer')\n\
          consumer(name = 'consumer', dep = ':producer')\n",
     );
-    // The closure's File is never a provider payload File of the producer
-    // (docs/CC_TOOLCHAIN.md), so the input is unknown, explicitly.
-    rejected(
-        &ws.build(&[":consumer"]),
-        "action input bazel-out/k8-fastbuild/bin/hidden.txt is not a dependency or declared output",
-    );
+    // Bazel imposes no input restriction: the closure's File is the
+    // producer's Artifact, so the consumer's action depends on the
+    // producer's write action, which runs although the producer's own
+    // files to build are empty (tests/fixtures/provider_payload_files
+    // receipt: genuine Bazel 9.3 builds the same program).
+    ok(&ws.build(&[":consumer"]));
+    assert_eq!(ws.read("out.txt").as_deref(), Some("hidden"));
 }

@@ -996,8 +996,15 @@ m=macro(implementation=_m)
 #[test]
 fn native_info_direct_and_nested_custom_returns_are_controlled_unsupported() {
     // Nested in another provider the info is ordinary payload (rules_cc's
-    // CcToolchainInfo `_allowlist_for_layering_check`, docs/CC_TOOLCHAIN.md).
-    for returned in ["[Box(value=p)]", "[Box(value=[{'nested':p}])]"] {
+    // CcToolchainInfo `_allowlist_for_layering_check`, docs/CC_TOOLCHAIN.md),
+    // and so is its bound `contains` method (W1b: no provider-file walk
+    // rejects unmodelled payload values, as in genuine Bazel 9.3; bound
+    // methods in tests/fixtures/artifact_identity/reference_receipt.json).
+    for returned in [
+        "[Box(value=p)]",
+        "[Box(value=[{'nested':p}])]",
+        "[Box(value=p.contains)]",
+    ] {
         let ws = Workspace::new(
             &format!(
                 "Box=provider(fields=['value'])\ndef _check(ctx):\n    p=ctx.attr.g[PackageSpecificationInfo]\n    return {returned}\ncheck=rule(implementation=_check,attrs={{{GROUP_ATTR}}})\n"
@@ -1008,20 +1015,16 @@ fn native_info_direct_and_nested_custom_returns_are_controlled_unsupported() {
         );
         assert!(outputs(&ws.run(&["build", ":check"])).is_empty());
     }
-    for returned in ["[p]", "[Box(value=p.contains)]"] {
-        let ws = Workspace::new(
-            &format!(
-                "Box=provider(fields=['value'])\ndef _check(ctx):\n    p=ctx.attr.g[PackageSpecificationInfo]\n    return {returned}\ncheck=rule(implementation=_check,attrs={{{GROUP_ATTR}}})\n"
-            ),
-            &format!(
-                "{LOAD}package_group(name='g',packages=['//foo'])\ncheck(name='check',g=':g')\n"
-            ),
-        );
-        success(&ws.run(&["query", ":check"]));
-        // Upstream direct forwarding crashes; this is an intentional bounded
-        // native rejection, not a claim of successful upstream forwarding.
-        ws.reject_build(&[":check"], "unsupported");
-    }
+    let ws = Workspace::new(
+        &format!(
+            "Box=provider(fields=['value'])\ndef _check(ctx):\n    p=ctx.attr.g[PackageSpecificationInfo]\n    return [p]\ncheck=rule(implementation=_check,attrs={{{GROUP_ATTR}}})\n"
+        ),
+        &format!("{LOAD}package_group(name='g',packages=['//foo'])\ncheck(name='check',g=':g')\n"),
+    );
+    success(&ws.run(&["query", ":check"]));
+    // Upstream direct forwarding crashes; this is an intentional bounded
+    // native rejection, not a claim of successful upstream forwarding.
+    ws.reject_build(&[":check"], "unsupported");
 }
 
 #[test]

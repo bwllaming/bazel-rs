@@ -79,19 +79,22 @@ As a result:
   `availability()` returns the lowercased value. `xcode_version()` returns
   `None`, a path, or a DottedVersion. Unknown platforms fail with
   `Unhandled platform type: X` and `Unhandled platform: X`.
-- A rule may return an instance. The returned-provider file walk
-  (`providers::provider_files`) accepts DottedVersions and functions defined
-  by this embedded file. These are recognised by the vendored `def` repr
-  `<function NAME from FILE>`, which ends with the defining module's filename.
-  No user `.bzl` is evaluated under the `@@_builtins` label. Other functions
-  are still rejected.
+- A rule may return an instance. Since W1b no returned-provider file walk
+  gates analysis (every File resolves through the build's artifact index;
+  `providers::provider_files` only serves the `BAZEL_RS_VERIFY_ARTIFACTS`
+  verifier, where it accepts DottedVersions and the functions defined by this
+  embedded file, recognised by the vendored `def` repr
+  `<function NAME from FILE>`; no user `.bzl` is evaluated under the
+  `@@_builtins` label).
 - **Closure capture guard.** The init closures (`providers.bzl:72-134`)
-  capture the raw `availability` and `xcode_version` arguments, so the file
-  walk cannot see what they hold. Bazel accepts any value there. Natively, a
-  File, depset or struct could be hidden from dependency tracking, for example
-  with `availability = struct(lower = lambda: depset([f]))`. To prevent this,
-  every `XcodeVersionInfo(...)` argument must be None, bool, int, float or
-  string. The check runs in `providers.rs` `init_call`, before `init`.
+  capture the raw `availability` and `xcode_version` arguments, which the
+  pre-W1b file walk could not see, so a File, depset or struct could have been
+  hidden from dependency tracking, for example with
+  `availability = struct(lower = lambda: depset([f]))`. Bazel accepts any
+  value there. Natively every `XcodeVersionInfo(...)` argument must still be
+  None, bool, int, float or string (no dependency tracking needs it since
+  W1b; lifting it is left to the walker's removal, W1d). The check runs in
+  `providers.rs` `init_call`, before `init`.
   Anything else fails explicitly with
   `XcodeVersionInfo argument 'availability' of type 'File' is not supported in the native profile (...)`.
   This is a deliberate, explicit divergence: genuine Bazel would build the

@@ -151,16 +151,23 @@ struct ActionPlanning {
     dry: BTreeMap<ConfiguredTargetKey, Artifacts>,
     custom_providers:
         BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    /// Shared with the dependency views (W1a): aliases and delegations
-    /// share their actual's list.
-    provider_files: BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     /// Returned declared-provider names per analyzed rule (Target debugPrint).
     provider_keys: BTreeMap<ConfiguredTargetKey, Vec<String>>,
     /// RunfilesProvider/FilesToRunProvider of analyzed rule targets
     /// (docs/RUNFILES.md); file targets and other native rules have none.
     runfiles_info: BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
-    /// File metadata is not a source filesystem path. Keep the real artifact
-    /// identity even when a custom provider forwards a non-default file.
+    /// The build's one File -> Artifact resolver (W1b, PLAN-L1 §2.1): the
+    /// role of Bazel's Artifact identity (actions/Artifact.java:677-702),
+    /// so an action input, a DefaultInfo file or a runfile resolves to its
+    /// producer however the File reached the consumer — a provider field, a
+    /// closure, a held Target — as in Bazel, which never enumerates
+    /// provider files. Every File is registered once, before any consumer
+    /// can see it ([`register_artifact`]): a source when its view is first
+    /// built or a native rule takes it as an input, a generated file at its
+    /// producer's commit, the workspace status files by
+    /// [`Engine::ensure_workspace_status`]. One producer per output path
+    /// (register_output) and one label per source path make it a function
+    /// of the File.
     artifact_index: BTreeMap<File, Artifact>,
     declared: Declared,
     /// Output path -> the owning action-lookup key's display: a
@@ -206,8 +213,6 @@ struct ActionPlanning {
         crate::aspects::AspectApplicationKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
     >,
-    /// Provider payload files of aspect applications.
-    aspect_provider_files: BTreeMap<crate::aspects::AspectApplicationKey, Vec<File>>,
     /// The one shared `Target` value of each aspect-configured target (N58,
     /// N55): the base configured target with a set of aspects merged in
     /// (MergedConfiguredTarget), one per (label, configuration, aspects).
@@ -249,175 +254,73 @@ struct ActionPlanning {
 
 /// The dependency views of a build, keyed like the edge that requested
 /// them: the requested label in the edge's configuration.
-type DependencyViews = HashMap<ConfiguredTargetKey, Arc<PlannedView>>;
+type DependencyViews = HashMap<ConfiguredTargetKey, DependencyTarget>;
 
-/// One memoized dependency view (W1a, PLAN-L1 §2.1): what every edge of
-/// one (requested label, edge configuration) gets — the view itself — and
-/// what it adds to the consumer's `available` artifacts, replayed per edge
-/// in the per-edge order ([`PlannedView::replay`]). Built on the first
-/// edge, after the dependency committed: every input (the dependency's
-/// `dry` artifacts or declared outputs, providers, provider files,
-/// runfiles, the alias chain and rule-transition delegations, the
-/// framework OutputGroupInfo and the shared Target identity) is final by
-/// then. Errors are never memoized.
-struct PlannedView {
-    target: DependencyTarget,
-    /// The dependency's artifacts (Engine::artifacts): `target.files` with
-    /// their artifacts.
-    defaults: Artifacts,
-    /// Per provider file of `target`: whether it is one of `defaults`'
-    /// Files. Their replay is skipped: per edge, the per-edge code
-    /// registered `defaults` in `artifact_index` right before it looked
-    /// the provider files up, so it re-inserted the same artifacts.
-    provider_defaults: Vec<bool>,
-    /// The files of `target.runfiles.files()` that are not among
-    /// `defaults`' Files (skipped likewise), resolved through
-    /// `artifact_index` per edge.
-    runfiles_files: Vec<File>,
-    /// `target.runfiles.manifests()`: added when planned.
-    manifests: Vec<File>,
-}
-
-impl PlannedView {
-    /// Add the view's artifacts to a consumer's `available` ones in the
-    /// per-edge order: the dependency's artifacts, its provider files and
-    /// runfiles (their artifacts through `artifact_index`), then its
-    /// runfiles manifests when planned. Inserting each key once is the same
-    /// map as the per-edge insert sequence: a later insert of a key
-    /// replaces the value, and within one view a key's last value is the
-    /// one inserted here.
-    fn replay(
-        &self,
-        artifact_index: &BTreeMap<File, Artifact>,
-        available: &mut BTreeMap<File, Artifact>,
-    ) -> Result<(), String> {
-        for artifact in self.defaults.iter() {
-            available.insert(artifact.file(), artifact.clone());
-        }
-        for (file, default) in self
-            .target
-            .provider_files
-            .iter()
-            .zip(&self.provider_defaults)
-        {
-            if !default {
-                let artifact = provider_file_artifact(artifact_index, file)?;
-                available.insert(file.clone(), artifact.clone());
-            }
-        }
-        for file in &self.runfiles_files {
-            let artifact = runfiles_file_artifact(artifact_index, file)?;
-            available.insert(file.clone(), artifact.clone());
-        }
-        for file in &self.manifests {
-            if let Some(artifact) = artifact_index.get(file) {
-                available.insert(file.clone(), artifact.clone());
-            }
-        }
-        Ok(())
+/// BAZEL_RS_VERIFY_VIEWS: the memoized view of `key` equals the view this
+/// edge rebuilt (what the per-edge code computed before W1a): its files,
+/// kind, providers (keys), rule class, executable and the shared Target
+/// identity (pointer). Rebuilding re-registers the view's artifacts, which
+/// checks that their index entries are unchanged ([`register_artifact`]
+/// under BAZEL_RS_VERIFY_ARTIFACTS or in debug builds).
+fn verify_view(
+    key: &ConfiguredTargetKey,
+    memoized: &DependencyTarget,
+    rebuilt: Result<DependencyTarget, String>,
+) {
+    let stale = |what: &str, memoized: &dyn std::fmt::Debug, rebuilt: &dyn std::fmt::Debug| {
+        stale_view(key, what, memoized, rebuilt)
+    };
+    let rebuilt = match rebuilt {
+        Ok(rebuilt) => rebuilt,
+        Err(error) => stale_view(key, "the outcome", &"Ok", &error),
+    };
+    let (memo, now) = (&**memoized, &*rebuilt);
+    if memo.label != now.label {
+        stale("label", &memo.label, &now.label);
     }
-
-    /// BAZEL_RS_VERIFY_VIEWS: a later edge skips re-registering the
-    /// dependency's artifacts in `artifact_index`, which is only sound
-    /// while their entries are unchanged.
-    fn verify_index(&self, key: &ConfiguredTargetKey, artifact_index: &BTreeMap<File, Artifact>) {
-        for artifact in self.defaults.iter() {
-            let indexed = artifact_index.get(&*artifact.file);
-            if !indexed.is_some_and(|indexed| same_artifact(indexed, artifact)) {
-                panic!(
-                    "BAZEL_RS_VERIFY_VIEWS: the artifact index entry of {} (a default artifact of the memoized dependency view of {} in {}) changed after the view was built: memoized {artifact:?}, indexed {indexed:?}",
-                    artifact.file.path, key.label, key.config
-                );
-            }
-        }
+    if memo.files != now.files {
+        stale("files", &memo.files, &now.files);
     }
-
-    /// BAZEL_RS_VERIFY_VIEWS: the memoized view equals the view this edge
-    /// rebuilt (what the per-edge code computed before W1a): its files,
-    /// providers (keys), provider files, runfiles, rule class, the shared
-    /// Target identity (pointer) and the artifacts it makes available.
-    fn verify(&self, key: &ConfiguredTargetKey, rebuilt: Result<PlannedView, String>) {
-        let stale = |what: &str, memoized: &dyn std::fmt::Debug, rebuilt: &dyn std::fmt::Debug| {
-            stale_view(key, what, memoized, rebuilt)
-        };
-        let rebuilt = match rebuilt {
-            Ok(rebuilt) => rebuilt,
-            Err(error) => stale_view(key, "the outcome", &"Ok", &error),
-        };
-        let (memo, now) = (&*self.target, &*rebuilt.target);
-        if memo.label != now.label {
-            stale("label", &memo.label, &now.label);
-        }
-        if memo.files != now.files {
-            stale("files", &memo.files, &now.files);
-        }
-        let kinds = |view: &analysis::DependencyView| {
-            (
-                view.is_source,
-                view.is_rule,
-                view.is_package_group,
-                view.is_filegroup,
-            )
-        };
-        if kinds(memo) != kinds(now) {
-            stale("target kind", &kinds(memo), &kinds(now));
-        }
-        let provider_ids =
-            |view: &analysis::DependencyView| view.providers.keys().cloned().collect::<Vec<_>>();
-        if provider_ids(memo) != provider_ids(now) {
-            stale("providers", &provider_ids(memo), &provider_ids(now));
-        }
-        if memo.provider_keys != now.provider_keys {
-            stale("provider keys", &memo.provider_keys, &now.provider_keys);
-        }
-        if memo.provider_files != now.provider_files {
-            stale("provider files", &memo.provider_files, &now.provider_files);
-        }
-        if memo.rule_class != now.rule_class {
-            stale("rule class", &memo.rule_class, &now.rule_class);
-        }
-        if !Arc::ptr_eq(&memo.identity, &now.identity) {
-            stale(
-                "Target identity",
-                &Arc::as_ptr(&memo.identity),
-                &Arc::as_ptr(&now.identity),
-            );
-        }
-        if self.provider_defaults != rebuilt.provider_defaults {
-            stale(
-                "provider files among the artifacts",
-                &self.provider_defaults,
-                &rebuilt.provider_defaults,
-            );
-        }
-        if self.runfiles_files != rebuilt.runfiles_files {
-            stale(
-                "runfiles files",
-                &self.runfiles_files,
-                &rebuilt.runfiles_files,
-            );
-        }
-        if self.manifests != rebuilt.manifests {
-            stale("runfiles manifests", &self.manifests, &rebuilt.manifests);
-        }
-        let executable = |view: &analysis::DependencyView| {
+    let kinds = |view: &analysis::DependencyView| {
+        (
+            view.is_source,
+            view.is_rule,
+            view.is_package_group,
+            view.is_filegroup,
+        )
+    };
+    if kinds(memo) != kinds(now) {
+        stale("target kind", &kinds(memo), &kinds(now));
+    }
+    let provider_ids =
+        |view: &analysis::DependencyView| view.providers.keys().cloned().collect::<Vec<_>>();
+    if provider_ids(memo) != provider_ids(now) {
+        stale("providers", &provider_ids(memo), &provider_ids(now));
+    }
+    if memo.provider_keys != now.provider_keys {
+        stale("provider keys", &memo.provider_keys, &now.provider_keys);
+    }
+    if memo.rule_class != now.rule_class {
+        stale("rule class", &memo.rule_class, &now.rule_class);
+    }
+    if !Arc::ptr_eq(&memo.identity, &now.identity) {
+        stale(
+            "Target identity",
+            &Arc::as_ptr(&memo.identity),
+            &Arc::as_ptr(&now.identity),
+        );
+    }
+    let runfiles = |view: &analysis::DependencyView| {
+        (
+            view.runfiles.files(),
             view.runfiles
                 .files_to_run
                 .as_ref()
-                .map(|files_to_run| files_to_run.executable.clone())
-        };
-        if executable(memo) != executable(now) {
-            stale("executable", &executable(memo), &executable(now));
-        }
-        if self.defaults.len() != rebuilt.defaults.len()
-            || self
-                .defaults
-                .iter()
-                .zip(rebuilt.defaults.iter())
-                .any(|(memo, now)| !same_artifact(memo, now))
-        {
-            stale("artifacts", &self.defaults, &rebuilt.defaults);
-        }
+                .map(|files_to_run| files_to_run.executable.clone()),
+        )
+    };
+    if runfiles(memo) != runfiles(now) {
+        stale("runfiles", &runfiles(memo), &runfiles(now));
     }
 }
 
@@ -455,30 +358,76 @@ fn verify_views() -> bool {
     *VERIFY
 }
 
-/// The artifact of a dependency's provider file.
-fn provider_file_artifact<'a>(
-    artifact_index: &'a BTreeMap<File, Artifact>,
-    file: &File,
-) -> Result<&'a Artifact, String> {
-    artifact_index.get(file).ok_or_else(|| {
-        format!(
-            "provider file has no declared artifact identity: {}",
-            file.path
-        )
-    })
+/// Whether BAZEL_RS_VERIFY_ARTIFACTS=1 asks to check the artifact-index
+/// invariants (W1b's migration verifier, PLAN-L1 §6): after each commit,
+/// every File the pre-W1b provider-file walk reaches from the committed
+/// target is registered ([`verify_registered`]), and re-registering a File
+/// never changes its Artifact ([`register_artifact`]; always checked in
+/// debug builds).
+fn verify_artifacts() -> bool {
+    static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        std::env::var_os("BAZEL_RS_VERIFY_ARTIFACTS").is_some_and(|value| value == "1")
+    });
+    *VERIFY
 }
 
-/// The artifact of a dependency's runfiles file.
-fn runfiles_file_artifact<'a>(
-    artifact_index: &'a BTreeMap<File, Artifact>,
-    file: &File,
-) -> Result<&'a Artifact, String> {
-    artifact_index.get(file).ok_or_else(|| {
-        format!(
-            "runfiles file has no declared artifact identity: {}",
-            file.path
-        )
-    })
+/// Register `artifact` as the Artifact of `file` in the build's one
+/// resolver (W1b registration invariant, PLAN-L1 §2.1). A File is
+/// registered once: a second registration keeps the first entry, which the
+/// invariant makes the same Artifact — re-registering it with a different
+/// one is an internal error, checked in debug builds and under
+/// BAZEL_RS_VERIFY_ARTIFACTS.
+fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact: &Artifact) {
+    match index.get(file) {
+        Some(registered) => {
+            if (cfg!(debug_assertions) || verify_artifacts())
+                && !same_artifact(registered, artifact)
+            {
+                panic!(
+                    "internal error: File {} re-registered with a different artifact: registered {registered:?}, now {artifact:?}",
+                    file.path
+                );
+            }
+        }
+        None => {
+            index.insert(file.clone(), artifact.clone());
+        }
+    }
+}
+
+/// BAZEL_RS_VERIFY_ARTIFACTS (PLAN-L1 §6): every File reachable from a
+/// committed target — the pre-W1b provider-file walk over its providers
+/// (walk errors ignored: the walk no longer gates anything), its runfiles
+/// and its files to build — is registered in `artifact_index`, so no
+/// consumer can reach an unregistered File through it. The workspace
+/// status files are registered on demand ([`Engine::ensure_workspace_status`],
+/// by their consumers) and are exempt.
+fn verify_registered<'a>(
+    owner: &str,
+    providers: impl IntoIterator<Item = (&'a String, &'a starlark::values::OwnedFrozenValue)>,
+    files: impl IntoIterator<Item = File>,
+    artifact_index: &BTreeMap<File, Artifact>,
+) {
+    let check = |file: &File, origin: &str| {
+        if !artifact_index.contains_key(file)
+            && !crate::analysis_runtime::is_workspace_status_file(file)
+        {
+            panic!(
+                "BAZEL_RS_VERIFY_ARTIFACTS: {owner}: {origin} file {} (owner {:?}) is not registered in the artifact index",
+                file.path, file.owner
+            );
+        }
+    };
+    for (id, provider) in providers {
+        if let Ok(files) = crate::providers::provider_files(provider.value()) {
+            for file in &files {
+                check(file, &format!("provider {id}"));
+            }
+        }
+    }
+    for file in files {
+        check(&file, "default or runfiles");
+    }
 }
 
 /// The mutable planning fields an aspect application needs (N58): the same
@@ -489,7 +438,6 @@ struct PlanState<'a> {
     pub dry: &'a mut BTreeMap<ConfiguredTargetKey, Artifacts>,
     pub custom_providers:
         &'a mut BTreeMap<ConfiguredTargetKey, BTreeMap<String, starlark::values::OwnedFrozenValue>>,
-    pub provider_files: &'a mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     pub provider_keys: &'a mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
     pub runfiles_info: &'a mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
     pub artifact_index: &'a mut BTreeMap<File, Artifact>,
@@ -503,7 +451,6 @@ struct PlanState<'a> {
         crate::aspects::AspectApplicationKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
     >,
-    pub aspect_provider_files: &'a mut BTreeMap<crate::aspects::AspectApplicationKey, Vec<File>>,
     pub aspect_target_identities: &'a mut AspectTargetIdentities,
     pub nodes: &'a mut Vec<PlannedAction>,
     pub producers: &'a mut BTreeMap<PathBuf, String>,
@@ -521,7 +468,6 @@ impl ActionPlanning {
         let ActionPlanning {
             dry,
             custom_providers,
-            provider_files,
             provider_keys,
             runfiles_info,
             artifact_index,
@@ -534,7 +480,6 @@ impl ActionPlanning {
             native_output_groups,
             validation,
             aspect_providers,
-            aspect_provider_files,
             target_identities,
             aspect_target_identities,
             workspace_status,
@@ -544,7 +489,6 @@ impl ActionPlanning {
         PlanState {
             dry,
             custom_providers,
-            provider_files,
             provider_keys,
             runfiles_info,
             artifact_index,
@@ -553,7 +497,6 @@ impl ActionPlanning {
             validation,
             target_identities,
             aspect_providers,
-            aspect_provider_files,
             aspect_target_identities,
             nodes,
             producers,
@@ -1272,17 +1215,15 @@ enum PreparedKind {
     Native,
     /// A custom rule (boxed: the snapshot dominates the enum's size):
     /// `snapshot` feeds the compute, `action_execution` the commit's
-    /// execution-platform table, and `available` carries the dependency
-    /// artifacts the prepare resolved (the commit's own-output and
-    /// DefaultInfo lookups see them). The plan's own rule (a parameter
-    /// of commit) serves the commit.
+    /// execution-platform table. The commit resolves every File through
+    /// the build's `artifact_index` (W1b). The plan's own rule (a
+    /// parameter of commit) serves the commit.
     Custom(Box<CustomPrepared>),
 }
 
 struct CustomPrepared {
     snapshot: ComputeSnapshot,
     action_execution: Vec<crate::exec_groups::ActionExecution>,
-    available: BTreeMap<File, Artifact>,
 }
 
 /// The worker stack size for parallel package loading (review §1.6):
@@ -7899,16 +7840,14 @@ impl Engine {
     //
     /// The dependency view of one edge (N58: shared with aspect
     /// applications): the resolved target's artifacts, providers (with the
-    /// framework OutputGroupInfo), provider files, runfiles and the one
-    /// shared `Target` value (N55) — everything a consumer's `ctx.attr`
-    /// entry holds (DependencyResolver + ConfiguredTargetAndData) — with
-    /// its artifacts added to the consumer's `available` ones.
+    /// framework OutputGroupInfo), runfiles and the one shared `Target`
+    /// value (N55) — everything a consumer's `ctx.attr` entry holds
+    /// (DependencyResolver + ConfiguredTargetAndData).
     ///
     /// Memoized per edge key, the requested label in the edge's
     /// configuration (W1a, PLAN-L1 §2.1): the first edge builds the view
     /// (Self::dependency_view) after the dependency committed, when its
-    /// every input is final; later edges share it and replay its
-    /// `available` additions (PlannedView::replay). Errors are never
+    /// every input is final; later edges share it. Errors are never
     /// memoized. `BAZEL_RS_VERIFY_VIEWS=1` rebuilds the view on every
     /// later edge and panics when the memoized one went stale.
     #[allow(clippy::too_many_arguments)]
@@ -7920,7 +7859,6 @@ impl Engine {
             ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         >,
-        provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
         provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
         runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
         artifact_index: &mut BTreeMap<File, Artifact>,
@@ -7935,40 +7873,16 @@ impl Engine {
             std::sync::Arc<crate::starlark_types::Target>,
         >,
         views: &mut DependencyViews,
-        available: &mut BTreeMap<File, Artifact>,
         label: &Label,
         edge_config: ConfigId,
     ) -> Result<DependencyTarget, String> {
         let key = ConfiguredTargetKey::new(label.clone(), edge_config);
-        let view = match views.get(&key).cloned() {
-            Some(view) => {
-                if verify_views() {
-                    view.verify_index(&key, artifact_index);
-                    let rebuilt = self.dependency_view(
-                        configured,
-                        dry,
-                        custom_providers,
-                        provider_files,
-                        provider_keys,
-                        runfiles_info,
-                        artifact_index,
-                        declared,
-                        native_output_groups,
-                        validation,
-                        target_identities,
-                        label,
-                        edge_config,
-                    );
-                    view.verify(&key, rebuilt);
-                }
-                view
-            }
-            None => {
-                let view = Arc::new(self.dependency_view(
+        if let Some(view) = views.get(&key).cloned() {
+            if verify_views() {
+                let rebuilt = self.dependency_view(
                     configured,
                     dry,
                     custom_providers,
-                    provider_files,
                     provider_keys,
                     runfiles_info,
                     artifact_index,
@@ -7978,19 +7892,35 @@ impl Engine {
                     target_identities,
                     label,
                     edge_config,
-                )?);
-                views.insert(key, view.clone());
-                view
+                );
+                verify_view(&key, &view, rebuilt);
             }
-        };
-        view.replay(artifact_index, available)?;
-        Ok(view.target.clone())
+            return Ok(view);
+        }
+        let view = self.dependency_view(
+            configured,
+            dry,
+            custom_providers,
+            provider_keys,
+            runfiles_info,
+            artifact_index,
+            declared,
+            native_output_groups,
+            validation,
+            target_identities,
+            label,
+            edge_config,
+        )?;
+        views.insert(key, view.clone());
+        Ok(view)
     }
 
     /// Build the dependency view of one edge key (the miss path of
-    /// Self::plan_dependency_view, the per-edge code before W1a): the
-    /// dependency's artifacts join `artifact_index`, every provider and
-    /// runfiles file must already be in it.
+    /// Self::plan_dependency_view, the per-edge code before W1a). The
+    /// dependency's artifacts are registered in `artifact_index` (a source
+    /// file's on its first view, W1b registration invariant); everything
+    /// else a consumer reaches through the view — provider payloads,
+    /// runfiles — was registered by its producer.
     #[allow(clippy::too_many_arguments)]
     fn dependency_view(
         &mut self,
@@ -8000,7 +7930,6 @@ impl Engine {
             ConfiguredTargetKey,
             BTreeMap<String, starlark::values::OwnedFrozenValue>,
         >,
-        provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
         provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
         runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
         artifact_index: &mut BTreeMap<File, Artifact>,
@@ -8016,12 +7945,13 @@ impl Engine {
         >,
         label: &Label,
         edge_config: ConfigId,
-    ) -> Result<PlannedView, String> {
+    ) -> Result<DependencyTarget, String> {
         let artifacts = self.shared_artifacts(label, edge_config, dry, declared)?;
         let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
         for artifact in artifacts.iter() {
-            artifact_index.insert(artifact.file(), artifact.clone());
+            register_artifact(artifact_index, &artifact.file, artifact);
         }
+        drop(artifacts);
         let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
         let forwarded = self.forwarded_actual(configured, &dependency);
         let actual = forwarded.clone().unwrap_or_else(|| label.clone());
@@ -8039,49 +7969,7 @@ impl Engine {
             ),
         );
         let is_rule = matches!(&target, Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)));
-        // The dependency's `_validation` files: a native rule's
-        // propagated group, an output-file target's generating rule's
-        // group (OutputFileConfiguredTarget.java:109-118, the
-        // configuration follows the generating rule's transition,
-        // Self::artifacts); a Starlark rule carries them in its
-        // providers already. They are provider payload files of the
-        // dependency: legal action inputs of the consumer
-        // (crate::analysis_runtime::Context::known_file).
-        let validation = match &target {
-            Target::Output(generating, _) => {
-                let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
-                self.planned_validation(custom_providers, validation, &owner)
-            }
-            _ if is_rule => self.planned_validation(custom_providers, validation, &actual_key),
-            _ => Vec::new(),
-        };
-        let mut target_provider_files: Arc<Vec<File>> =
-            provider_files.get(&dependency).cloned().unwrap_or_default();
-        // The validation files not already among the dependency's
-        // provider files (a Starlark rule lists them; a native rule
-        // or output-file target does not) join them here.
-        for file in &validation {
-            if !target_provider_files.contains(file) {
-                Arc::make_mut(&mut target_provider_files).push(file.clone());
-            }
-        }
-        for file in target_provider_files.iter() {
-            provider_file_artifact(artifact_index, file)?;
-        }
-        let default_files = files.iter().collect::<HashSet<_>>();
-        let provider_defaults = target_provider_files
-            .iter()
-            .map(|file| default_files.contains(file))
-            .collect();
         let runfiles = dependency_runfiles(&target, &files, runfiles_info.get(&actual_key));
-        let mut runfiles_files = runfiles.files();
-        for file in &runfiles_files {
-            runfiles_file_artifact(artifact_index, file)?;
-        }
-        runfiles_files.retain(|file| !default_files.contains(file));
-        drop(default_files);
-        // N23f: the FilesToRunProvider manifests are generated files.
-        let manifests = runfiles.manifests();
         let mut providers = custom_providers
             .get(&dependency)
             .cloned()
@@ -8089,15 +7977,16 @@ impl Engine {
         // Every rule target has an OutputGroupInfo
         // (RuleConfiguredTargetBuilder.java:155-173): a native rule's
         // is the HIDDEN_TOP_LEVEL group of its default runfiles plus
-        // the `_validation` group propagated from its prerequisites,
-        // built once per configured target.
+        // the `_validation` group propagated from its prerequisites
+        // (Self::planned_validation; a Starlark rule carries its group in
+        // its providers already), built once per configured target.
         if is_rule && !providers.contains_key(crate::output_group_info::PROVIDER_ID) {
             let value = match native_output_groups.get(&actual_key) {
                 Some(value) => value.clone(),
                 None => {
                     let value = crate::output_group_info::freeze(
                         runfiles.default_runfiles().all_artifacts(),
-                        validation.clone(),
+                        self.planned_validation(custom_providers, validation, &actual_key),
                     )?;
                     native_output_groups.insert(actual_key.clone(), value.clone());
                     value
@@ -8105,13 +7994,19 @@ impl Engine {
             };
             providers.insert(crate::output_group_info::PROVIDER_ID.to_owned(), value);
         }
-        // An output-file target's OutputGroupInfo is that single
-        // `_validation` group, present only when non-empty.
-        if matches!(&target, Target::Output(..)) && !validation.is_empty() {
-            providers.insert(
-                crate::output_group_info::PROVIDER_ID.to_owned(),
-                crate::output_group_info::freeze_validation(validation.clone())?,
-            );
+        // An output-file target's OutputGroupInfo is its generating rule's
+        // `_validation` group (OutputFileConfiguredTarget.java:109-118, the
+        // configuration follows the generating rule's transition,
+        // Self::artifacts), present only when non-empty.
+        if let Target::Output(generating, _) = &target {
+            let owner = ConfiguredTargetKey::new(generating.label.clone(), edge_config);
+            let files = self.planned_validation(custom_providers, validation, &owner);
+            if !files.is_empty() {
+                providers.insert(
+                    crate::output_group_info::PROVIDER_ID.to_owned(),
+                    crate::output_group_info::freeze_validation(files)?,
+                );
+            }
         }
         // InstrumentedFilesInfo.EMPTY (coverage disabled): filegroup
         // and genrule add it (Filegroup.java:63-108,
@@ -8196,31 +8091,24 @@ impl Engine {
                     .clone()
             }
         };
-        Ok(PlannedView {
-            target: DependencyTarget::new(analysis::DependencyView {
-                label: actual.to_string(),
-                files,
-                is_source: matches!(target, Target::Source(_)),
-                is_rule,
-                is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
-                is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
-                providers,
-                provider_files: target_provider_files,
-                provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
-                runfiles,
-                rule_class: match &target {
-                    Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
-                        Some(rule.rule_class_name().to_owned())
-                    }
-                    _ => None,
-                },
-                identity,
-            }),
-            defaults: artifacts,
-            provider_defaults,
-            runfiles_files,
-            manifests,
-        })
+        Ok(DependencyTarget::new(analysis::DependencyView {
+            label: actual.to_string(),
+            files,
+            is_source: matches!(target, Target::Source(_)),
+            is_rule,
+            is_package_group: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::PackageGroup(_))),
+            is_filegroup: matches!(&target, Target::Rule(rule) if matches!(rule.kind, RuleKind::Filegroup)),
+            providers,
+            provider_keys: provider_keys.get(&actual_key).cloned().unwrap_or_default(),
+            runfiles,
+            rule_class: match &target {
+                Target::Rule(rule) if !matches!(rule.kind, RuleKind::PackageGroup(_)) => {
+                    Some(rule.rule_class_name().to_owned())
+                }
+                _ => None,
+            },
+            identity,
+        }))
     }
 
     /// Plan every aspect application of `collection` on the configured
@@ -8239,7 +8127,6 @@ impl Engine {
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,
-        available: &mut BTreeMap<File, Artifact>,
         label: &Label,
         edge_config: ConfigId,
         collection: &crate::aspects::AspectCollection,
@@ -8249,7 +8136,6 @@ impl Engine {
             let PlanState {
                 dry,
                 custom_providers,
-                provider_files,
                 provider_keys,
                 runfiles_info,
                 artifact_index,
@@ -8264,7 +8150,6 @@ impl Engine {
                 configured,
                 dry,
                 custom_providers,
-                provider_files,
                 provider_keys,
                 runfiles_info,
                 artifact_index,
@@ -8273,7 +8158,6 @@ impl Engine {
                 validation,
                 target_identities,
                 views,
-                available,
                 label,
                 edge_config,
             )?
@@ -8330,7 +8214,7 @@ impl Engine {
                 continue;
             }
             let providers = self.plan_aspect_application(
-                state, configured, available, &base_key, &base, aspect, bases, collection,
+                state, configured, &base_key, &base, aspect, bases, collection,
             )?;
             state
                 .aspect_providers
@@ -8338,13 +8222,6 @@ impl Engine {
             applications.push((key, providers));
         }
         base = crate::aspects::merged_dependency(&base, &applications)?;
-        // The merged files of every aspect (DefaultInfo.files) are action
-        // inputs of the consumer: known artifacts.
-        for file in base.provider_files.iter() {
-            if let Some(artifact) = state.artifact_index.get(file) {
-                available.insert(file.clone(), artifact.clone());
-            }
-        }
         // One shared Target value per aspect-configured target (N55's
         // sharing applied to the merged configured target): its providers
         // are the merged set, not the base target's.
@@ -8383,7 +8260,6 @@ impl Engine {
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,
-        available: &mut BTreeMap<File, Artifact>,
         base_key: &ConfiguredTargetKey,
         base: &DependencyTarget,
         aspect: &std::sync::Arc<crate::aspects::AspectDefinition>,
@@ -8474,7 +8350,6 @@ impl Engine {
                 let (view, _) = self.plan_aspect_dependency(
                     state,
                     configured,
-                    available,
                     &dependency,
                     base_key.config,
                     Vec::new(),
@@ -8538,7 +8413,6 @@ impl Engine {
             let (view, _) = self.plan_aspect_dependency(
                 state,
                 configured,
-                available,
                 &dependency,
                 edge_config,
                 propagating,
@@ -8608,7 +8482,6 @@ impl Engine {
             client_environment,
             status_client_environment,
             workspace_status,
-            aspect_provider_files,
             ..
         } = state;
         let main_ignored = self.ignored("")?;
@@ -8620,7 +8493,7 @@ impl Engine {
                 producers,
                 client_environment,
                 status_client_environment,
-                available,
+                artifact_index,
             )?;
         }
         for registered in &analyzed.actions {
@@ -8638,17 +8511,8 @@ impl Engine {
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
                 );
-                available.insert(file.clone(), artifact.clone());
-                artifact_index.insert(file.clone(), artifact.clone());
+                register_artifact(artifact_index, file, &artifact);
                 declared.insert((base_key.config, exec), artifact);
-            }
-        }
-        for file in &analyzed.provider_files {
-            if !available.contains_key(file) {
-                return Err(format!(
-                    "aspect {}: provider file has no declared artifact identity: {}",
-                    aspect.identity, file.path
-                ));
             }
         }
         for mut registered in analyzed.actions {
@@ -8659,7 +8523,7 @@ impl Engine {
                 .inputs
                 .iter()
                 .map(|file| {
-                    available.get(file).cloned().ok_or_else(|| {
+                    artifact_index.get(file).cloned().ok_or_else(|| {
                         format!(
                             "aspect {}: input has no declared artifact: {}",
                             aspect.identity, file.path
@@ -8675,7 +8539,14 @@ impl Engine {
             let planned = plan_action(action, inputs, &main_ignored, client_environment)?;
             nodes.push(planned);
         }
-        aspect_provider_files.insert(key, analyzed.provider_files.clone());
+        if verify_artifacts() {
+            verify_registered(
+                &action_owner,
+                &analyzed.providers,
+                std::iter::empty(),
+                artifact_index,
+            );
+        }
         Ok(analyzed.providers)
     }
 
@@ -8685,7 +8556,6 @@ impl Engine {
         &mut self,
         state: &mut PlanState<'_>,
         configured: &mut ConfiguredNodes,
-        available: &mut BTreeMap<File, Artifact>,
         label: &Label,
         edge_config: ConfigId,
         mut aspects: Vec<std::sync::Arc<crate::aspects::AspectDefinition>>,
@@ -8694,7 +8564,6 @@ impl Engine {
             let PlanState {
                 dry,
                 custom_providers,
-                provider_files,
                 provider_keys,
                 runfiles_info,
                 artifact_index,
@@ -8710,7 +8579,6 @@ impl Engine {
                     configured,
                     dry,
                     custom_providers,
-                    provider_files,
                     provider_keys,
                     runfiles_info,
                     artifact_index,
@@ -8719,7 +8587,6 @@ impl Engine {
                     validation,
                     target_identities,
                     views,
-                    available,
                     label,
                     edge_config,
                 )?,
@@ -8756,7 +8623,6 @@ impl Engine {
                     let PlanState {
                         dry,
                         custom_providers,
-                        provider_files,
                         provider_keys,
                         runfiles_info,
                         artifact_index,
@@ -8772,7 +8638,6 @@ impl Engine {
                             configured,
                             dry,
                             custom_providers,
-                            provider_files,
                             provider_keys,
                             runfiles_info,
                             artifact_index,
@@ -8781,7 +8646,6 @@ impl Engine {
                             validation,
                             target_identities,
                             views,
-                            available,
                             label,
                             edge_config,
                         )?,
@@ -8796,7 +8660,6 @@ impl Engine {
             let PlanState {
                 dry,
                 custom_providers,
-                provider_files,
                 provider_keys,
                 runfiles_info,
                 artifact_index,
@@ -8812,7 +8675,6 @@ impl Engine {
                     configured,
                     dry,
                     custom_providers,
-                    provider_files,
                     provider_keys,
                     runfiles_info,
                     artifact_index,
@@ -8821,7 +8683,6 @@ impl Engine {
                     validation,
                     target_identities,
                     views,
-                    available,
                     label,
                     edge_config,
                 )?,
@@ -8840,7 +8701,6 @@ impl Engine {
             let PlanState {
                 dry,
                 custom_providers,
-                provider_files,
                 provider_keys,
                 runfiles_info,
                 artifact_index,
@@ -8856,7 +8716,6 @@ impl Engine {
                     configured,
                     dry,
                     custom_providers,
-                    provider_files,
                     provider_keys,
                     runfiles_info,
                     artifact_index,
@@ -8865,21 +8724,13 @@ impl Engine {
                     validation,
                     target_identities,
                     views,
-                    available,
                     label,
                     edge_config,
                 )?,
                 Vec::new(),
             ));
         }
-        self.plan_aspect_collection(
-            state,
-            configured,
-            available,
-            label,
-            edge_config,
-            &collection,
-        )
+        self.plan_aspect_collection(state, configured, label, edge_config, &collection)
     }
 
     /// The pure compute of one custom rule (P1: no threads yet; the types
@@ -8918,7 +8769,6 @@ impl Engine {
         let ActionPlanning {
             dry,
             custom_providers,
-            provider_files,
             provider_keys,
             runfiles_info,
             artifact_index,
@@ -8933,7 +8783,6 @@ impl Engine {
             repositories,
             target_identities,
             aspect_providers,
-            aspect_provider_files,
             aspect_target_identities,
             workspace_status,
             views,
@@ -9002,7 +8851,6 @@ impl Engine {
         }
         if custom_rule {
             let mut dependency_targets = BTreeMap::new();
-            let mut available = BTreeMap::new();
             // Resolved dependencies only: `$config_dependencies` is never a
             // prerequisite (DependencyResolutionHelpers.java:408-416). The
             // resolved toolchain implementations are dependencies too
@@ -9134,7 +8982,6 @@ impl Engine {
                         configured,
                         dry,
                         custom_providers,
-                        provider_files,
                         provider_keys,
                         runfiles_info,
                         artifact_index,
@@ -9143,7 +8990,6 @@ impl Engine {
                         validation,
                         target_identities,
                         views,
-                        &mut available,
                         &label,
                         edge_config,
                     )?
@@ -9155,7 +9001,6 @@ impl Engine {
                     let mut planning = PlanState {
                         dry: &mut *dry,
                         custom_providers: &mut *custom_providers,
-                        provider_files: &mut *provider_files,
                         provider_keys: &mut *provider_keys,
                         runfiles_info: &mut *runfiles_info,
                         artifact_index: &mut *artifact_index,
@@ -9164,7 +9009,6 @@ impl Engine {
                         validation: &mut *validation,
                         target_identities: &mut *target_identities,
                         aspect_providers: &mut *aspect_providers,
-                        aspect_provider_files: &mut *aspect_provider_files,
                         aspect_target_identities: &mut *aspect_target_identities,
                         nodes: &mut *nodes,
                         producers: &mut *producers,
@@ -9177,7 +9021,6 @@ impl Engine {
                     self.plan_aspect_dependency(
                         &mut planning,
                         configured,
-                        &mut available,
                         &label,
                         edge_config,
                         aspects,
@@ -9407,7 +9250,6 @@ impl Engine {
                 kind: PreparedKind::Custom(Box::new(CustomPrepared {
                     snapshot,
                     action_execution,
-                    available,
                 })),
             });
         }
@@ -9463,7 +9305,6 @@ impl Engine {
                 let ActionPlanning {
                     dry,
                     custom_providers,
-                    provider_files,
                     ..
                 } = state;
                 let node = self.resolve_group(&rule.label, &mut Vec::new())?;
@@ -9479,7 +9320,6 @@ impl Engine {
                     key.clone(),
                     BTreeMap::from([(package_specification::PROVIDER_ID.to_owned(), info)]),
                 );
-                provider_files.insert(key.clone(), Arc::default());
                 dry.insert(key, Arc::default());
                 return Ok(());
             }
@@ -9497,7 +9337,6 @@ impl Engine {
                     rule,
                     custom.snapshot,
                     custom.action_execution,
-                    custom.available,
                     computed.expect("custom target computed"),
                 )?;
                 return Ok(());
@@ -9536,13 +9375,11 @@ impl Engine {
         rule: &Rule,
         snapshot: ComputeSnapshot,
         action_execution: Vec<crate::exec_groups::ActionExecution>,
-        mut available: BTreeMap<File, Artifact>,
         computed: ComputeOutcome,
     ) -> Result<(), String> {
         let ActionPlanning {
             dry,
             custom_providers,
-            provider_files,
             provider_keys,
             runfiles_info,
             artifact_index,
@@ -9621,7 +9458,6 @@ impl Engine {
         self.check_transition_allowlist(rule, &key, configured)?;
         custom_providers.insert(key.clone(), analyzed.providers.clone());
         provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
-        provider_files.insert(key.clone(), Arc::new(analyzed.provider_files.clone()));
         for file in &analyzed.declared {
             let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
             let short_name = Path::new(&file.path)
@@ -9638,15 +9474,22 @@ impl Engine {
         // N63: plan the workspace status system nodes before indexing this
         // target's outputs, so actions consuming bazel-out/{stable,volatile}
         // -status.txt (or a transform_{version,info}_file registration)
-        // resolve their artifacts.
-        if Self::workspace_status_needed(&analyzed.actions) {
+        // resolve their artifacts, and so does a status file among the
+        // target's files to build (W1b: whichever target registered the
+        // status files first, PLAN-L1 §2.1).
+        if Self::workspace_status_needed(&analyzed.actions)
+            || analyzed
+                .files
+                .iter()
+                .any(crate::analysis_runtime::is_workspace_status_file)
+        {
             self.ensure_workspace_status(
                 workspace_status,
                 nodes,
                 producers,
                 client_environment,
                 status_client_environment,
-                &mut available,
+                artifact_index,
             )?;
         }
         // First index EVERY action's outputs, so registration order is not
@@ -9666,21 +9509,8 @@ impl Engine {
                         .as_ref()
                         .is_some_and(|build_info| build_info.volatile),
                 );
-                available.insert(file.clone(), artifact.clone());
-                artifact_index.insert(file.clone(), artifact.clone());
+                register_artifact(artifact_index, file, &artifact);
                 declared.insert((config, exec), artifact);
-            }
-        }
-        for file in analyzed
-            .provider_files
-            .iter()
-            .chain(&analyzed.runfiles.files())
-        {
-            if !available.contains_key(file) {
-                return Err(format!(
-                    "{}: provider file has no declared artifact identity: {}",
-                    rule.label, file.path
-                ));
             }
         }
         runfiles_info.insert(key.clone(), Arc::new(analyzed.runfiles.clone()));
@@ -9691,7 +9521,6 @@ impl Engine {
             &transitive,
             &action_owner,
             &main_ignored,
-            &available,
             RunfilesPlanning {
                 artifact_index,
                 declared,
@@ -9710,7 +9539,7 @@ impl Engine {
                 .inputs
                 .iter()
                 .map(|file| {
-                    available.get(file).cloned().ok_or_else(|| {
+                    artifact_index.get(file).cloned().ok_or_else(|| {
                         format!(
                             "{}: input has no declared artifact: {}",
                             rule.label, file.path
@@ -9727,11 +9556,8 @@ impl Engine {
                     let destination = Path::new(&tree.directory).join(path);
                     match file {
                         Some(file) => {
-                            let mut artifact = available
-                                .get(file)
-                                .or_else(|| artifact_index.get(file))
-                                .cloned()
-                                .ok_or_else(|| {
+                            let mut artifact =
+                                artifact_index.get(file).cloned().ok_or_else(|| {
                                     format!(
                                         "{}: tool runfile has no declared artifact: {}",
                                         rule.label, file.path
@@ -9809,7 +9635,7 @@ impl Engine {
             .files
             .iter()
             .map(|file| {
-                available.get(file).cloned().ok_or_else(|| {
+                artifact_index.get(file).cloned().ok_or_else(|| {
                     format!(
                         "{}: DefaultInfo file has no artifact: {}",
                         rule.label, file.path
@@ -9818,6 +9644,18 @@ impl Engine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         dry.insert(key.clone(), Arc::new(defaults));
+        if verify_artifacts() {
+            verify_registered(
+                &action_owner,
+                &analyzed.providers,
+                analyzed
+                    .files
+                    .iter()
+                    .cloned()
+                    .chain(analyzed.runfiles.files()),
+                artifact_index,
+            );
+        }
         Ok(())
     }
 
@@ -9841,7 +9679,6 @@ impl Engine {
         let ActionPlanning {
             dry,
             custom_providers,
-            provider_files,
             runfiles_info,
             artifact_index,
             declared,
@@ -9893,9 +9730,11 @@ impl Engine {
                 validation.insert(key.clone(), collected);
             }
         }
+        // A native rule's source inputs join the index here (W1b
+        // registration invariant); generated ones are registered already.
         let (inputs, _) = self.inputs(rule, config, dry, declared)?;
         for artifact in &inputs {
-            artifact_index.insert(artifact.file(), artifact.clone());
+            register_artifact(artifact_index, &artifact.file, artifact);
         }
         // The genrule's location map (LocationTemplateContext over
         // CommandHelper.getLabelMap, LocationExpander.buildLocationMap with
@@ -9970,7 +9809,7 @@ impl Engine {
                     template_variables.push(variables);
                 }
                 for artifact in &artifacts {
-                    artifact_index.insert(artifact.file(), artifact.clone());
+                    register_artifact(artifact_index, &artifact.file, artifact);
                 }
                 tools.extend(artifacts);
             }
@@ -10168,7 +10007,7 @@ impl Engine {
                 })
                 .collect::<Vec<_>>();
             for artifact in &artifacts {
-                artifact_index.insert(artifact.file(), artifact.clone());
+                register_artifact(artifact_index, &artifact.file, artifact);
                 declared.insert((config, artifact.exec.clone()), artifact.clone());
             }
             runfiles_info.insert(
@@ -10202,7 +10041,6 @@ impl Engine {
                 if let Some(provider) = provider {
                     let (id, value) = crate::platform_providers::freeze(provider)?;
                     custom_providers.insert(key.clone(), BTreeMap::from([(id, value)]));
-                    provider_files.insert(key.clone(), Arc::default());
                 }
                 // ConfigFeatureFlagProvider, visible as
                 // dep[config_common.FeatureFlagInfo].
@@ -10212,7 +10050,6 @@ impl Engine {
                         key.clone(),
                         BTreeMap::from([(crate::feature_flags::PROVIDER_ID.to_owned(), value)]),
                     );
-                    provider_files.insert(key.clone(), Arc::default());
                 }
             }
             // An alias-like target forwards its actual's files (above) and
@@ -10221,9 +10058,6 @@ impl Engine {
                 let actual = dependency_key(self.resolve_rule_src(rule, &rule.srcs[0])?);
                 if let Some(providers) = custom_providers.get(&actual).cloned() {
                     custom_providers.insert(key.clone(), providers);
-                }
-                if let Some(files) = provider_files.get(&actual).cloned() {
-                    provider_files.insert(key.clone(), files);
                 }
                 if let Some(runfiles) = runfiles_info.get(&actual).cloned() {
                     runfiles_info.insert(key.clone(), runfiles);
@@ -10295,7 +10129,6 @@ impl Engine {
             &mut state.delegations,
             &mut state.dry,
             &mut state.custom_providers,
-            &mut state.provider_files,
             &mut state.provider_keys,
             &mut state.runfiles_info,
         );
@@ -10645,12 +10478,10 @@ impl Engine {
                 if !matches!(self.target(label)?, Target::Rule(_) | Target::Output(..)) {
                     continue;
                 }
-                let mut available = BTreeMap::new();
                 let mut planning = state.plan_state();
                 let planned = self.plan_aspect_dependency(
                     &mut planning,
                     &mut configured,
-                    &mut available,
                     label,
                     top,
                     aspect_defs.clone(),
@@ -10673,16 +10504,16 @@ impl Engine {
         let mut status_artifacts: Vec<Artifact> = Vec::new();
         if self.execute_build {
             let state_ref = state.plan_state();
-            let mut available: BTreeMap<File, Artifact> = BTreeMap::new();
-            self.ensure_workspace_status(
-                state_ref.workspace_status,
-                state_ref.nodes,
-                state_ref.producers,
-                state_ref.client_environment,
-                state_ref.status_client_environment,
-                &mut available,
-            )?;
-            status_artifacts = available.into_values().collect();
+            status_artifacts = self
+                .ensure_workspace_status(
+                    state_ref.workspace_status,
+                    state_ref.nodes,
+                    state_ref.producers,
+                    state_ref.client_environment,
+                    state_ref.status_client_environment,
+                    state_ref.artifact_index,
+                )?
+                .to_vec();
         }
         let ActionPlanning {
             dry,
@@ -11216,7 +11047,6 @@ fn flush_delegations(
         ConfiguredTargetKey,
         BTreeMap<String, starlark::values::OwnedFrozenValue>,
     >,
-    provider_files: &mut BTreeMap<ConfiguredTargetKey, Arc<Vec<File>>>,
     provider_keys: &mut BTreeMap<ConfiguredTargetKey, Vec<String>>,
     runfiles_info: &mut BTreeMap<ConfiguredTargetKey, Arc<crate::runfiles::TargetRunfiles>>,
 ) {
@@ -11227,9 +11057,6 @@ fn flush_delegations(
         dry.insert(requested.clone(), files);
         if let Some(providers) = custom_providers.get(owner).cloned() {
             custom_providers.insert(requested.clone(), providers);
-        }
-        if let Some(files) = provider_files.get(owner).cloned() {
-            provider_files.insert(requested.clone(), files);
         }
         if let Some(keys) = provider_keys.get(owner).cloned() {
             provider_keys.insert(requested.clone(), keys);
@@ -11678,7 +11505,7 @@ impl RunfilesPlanning<'_> {
             false,
             false,
         );
-        self.artifact_index.insert(file.clone(), artifact.clone());
+        register_artifact(self.artifact_index, file, &artifact);
         self.declared.insert((key.config, exec), artifact.clone());
         Ok(artifact)
     }
@@ -11713,7 +11540,6 @@ impl Engine {
         transitive: &BTreeSet<String>,
         action_owner: &str,
         main_ignored: &IgnoredSubdirectories,
-        available: &BTreeMap<File, Artifact>,
         mut planning: RunfilesPlanning<'_>,
     ) -> Result<Option<RunfilesNodes>, String> {
         let Some(files_to_run) = &target.files_to_run else {
@@ -11728,16 +11554,12 @@ impl Engine {
         };
         let options = self.runfiles_options;
         let lookup = |index: &BTreeMap<File, Artifact>, file: &File| -> Result<Artifact, String> {
-            available
-                .get(file)
-                .or_else(|| index.get(file))
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "{}: runfiles file has no declared artifact identity: {}",
-                        rule.label, file.path
-                    )
-                })
+            index.get(file).cloned().ok_or_else(|| {
+                format!(
+                    "{}: runfiles file has no declared artifact identity: {}",
+                    rule.label, file.path
+                )
+            })
         };
         let executable_artifact = lookup(planning.artifact_index, executable)?;
         // RepoMappingManifestAction.
@@ -11882,7 +11704,7 @@ impl Engine {
     }
 
     /// Whether any registered action of a target needs the workspace status
-    /// artifacts in `available`: an action input of a status file
+    /// artifacts registered: an action input of a status file
     /// (ctx.info_file/ctx.version_file) or an
     /// actions.transform_{version,info}_file registration.
     fn workspace_status_needed(registered: &[crate::analysis_runtime::RegisteredAction]) -> bool {
@@ -11896,7 +11718,8 @@ impl Engine {
     }
 
     /// Plan the ONE BazelWorkspaceStatusAction of this build (N63
-    /// follow-up) and expose its two artifacts to `available`. Bazel has
+    /// follow-up), register its two artifacts as the status Files'
+    /// (`artifact_index`, W1b) and return them, stable first. Bazel has
     /// one action with both outputs (BazelWorkspaceStatusModule.java
     /// :87-98, outputs ImmutableSet.of(stableStatus, volatileStatus)) and
     /// adds both artifacts to artifactsToBuild unconditionally on every
@@ -11927,8 +11750,8 @@ impl Engine {
             BTreeMap<String, std::ffi::OsString>,
         >,
         status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
-        available: &mut BTreeMap<File, Artifact>,
-    ) -> Result<(), String> {
+        artifact_index: &mut BTreeMap<File, Artifact>,
+    ) -> Result<[Artifact; 2], String> {
         if !self.execute_build {
             // --nobuild: no execution phase, no status action. Consumers
             // of the status files still resolve their artifacts below
@@ -11953,18 +11776,7 @@ impl Engine {
                     volatile: bare("volatile-status.txt", true),
                 });
             }
-            let planned = plan.as_ref().expect("just planned");
-            available.insert(
-                crate::analysis_runtime::workspace_status_file("stable-status.txt"),
-                planned.stable.clone(),
-            );
-            available.insert(
-                crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
-                planned.volatile.clone(),
-            );
-            return Ok(());
-        }
-        if plan.is_none() {
+        } else if plan.is_none() {
             let client_env =
                 status_client_environment.get_or_init(crate::action_env::client_environment);
             let computed = self.workspace_status_computed(client_env);
@@ -12086,15 +11898,17 @@ impl Engine {
             });
         }
         let planned = plan.as_ref().expect("just planned");
-        available.insert(
-            crate::analysis_runtime::workspace_status_file("stable-status.txt"),
-            planned.stable.clone(),
+        register_artifact(
+            artifact_index,
+            &crate::analysis_runtime::workspace_status_file("stable-status.txt"),
+            &planned.stable,
         );
-        available.insert(
-            crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
-            planned.volatile.clone(),
+        register_artifact(
+            artifact_index,
+            &crate::analysis_runtime::workspace_status_file("volatile-status.txt"),
+            &planned.volatile,
         );
-        Ok(())
+        Ok([planned.stable.clone(), planned.volatile.clone()])
     }
 
     /// Resolve one actions.transform_{version,info}_file registration
@@ -12573,6 +12387,72 @@ mod tests {
     #[should_panic(expected = "no entry found for key")]
     fn executed_path_never_falls_back_when_executing() {
         executed_path(&BTreeMap::new(), true, &generated_out_txt());
+    }
+
+    /// W1b registration invariant: a File keeps its first registration; an
+    /// equal re-registration is a no-op.
+    #[test]
+    fn register_artifact_keeps_one_artifact_per_file() {
+        let artifact = generated_out_txt();
+        let mut index = BTreeMap::new();
+        register_artifact(&mut index, &artifact.file, &artifact);
+        register_artifact(&mut index, &artifact.file, &artifact.clone());
+        assert_eq!(index.len(), 1);
+        assert!(same_artifact(&index[&*artifact.file], &artifact));
+    }
+
+    /// Re-registering a File with a different Artifact is an internal error
+    /// (checked in debug builds, which the tests are).
+    #[test]
+    #[should_panic(expected = "re-registered with a different artifact")]
+    fn register_artifact_rejects_a_second_artifact_for_a_file() {
+        let artifact = generated_out_txt();
+        let mut index = BTreeMap::new();
+        register_artifact(&mut index, &artifact.file, &artifact);
+        let mut other = artifact.clone();
+        other.producer = Some(("//pkg:other#0".into(), 0));
+        register_artifact(&mut index, &artifact.file, &other);
+    }
+
+    /// BAZEL_RS_VERIFY_ARTIFACTS: a reachable File missing from the index
+    /// panics with its owner; the workspace status files are exempt
+    /// (registered on demand by their consumers).
+    #[test]
+    fn verify_registered_names_an_unregistered_file() {
+        let artifact = generated_out_txt();
+        let mut index = BTreeMap::new();
+        register_artifact(&mut index, &artifact.file, &artifact);
+        let status = crate::analysis_runtime::workspace_status_file("volatile-status.txt");
+        verify_registered(
+            "//pkg:ok",
+            &BTreeMap::new(),
+            [artifact.file(), status],
+            &index,
+        );
+        let missing = std::panic::catch_unwind(|| {
+            verify_registered(
+                "//pkg:consumer",
+                &BTreeMap::new(),
+                [Artifact::compute_file(
+                    Path::new("bazel-out/k8-fastbuild/bin/pkg/unregistered.txt"),
+                    true,
+                    "//pkg:gen",
+                    false,
+                )],
+                &index,
+            )
+        })
+        .unwrap_err();
+        let message = missing
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            message.contains(
+                "BAZEL_RS_VERIFY_ARTIFACTS: //pkg:consumer: default or runfiles file bazel-out/k8-fastbuild/bin/pkg/unregistered.txt"
+            ),
+            "{message}"
+        );
     }
 
     #[test]
