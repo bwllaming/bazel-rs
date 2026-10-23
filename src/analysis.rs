@@ -589,6 +589,26 @@ fn dependency<'a>(
     Ok(target)
 }
 
+/// A label-list attribute's `ctx.files` entry (StarlarkAttributesCollection
+/// .addAttribute, analysis/starlark/StarlarkAttributesCollection.java:398-409,
+/// over PrerequisiteArtifacts.nestedSet, PrerequisiteArtifacts.java:64-72):
+/// a stable-order NestedSet of every prerequisite's files to build, so its
+/// list has each File once, at its first occurrence in prerequisite order
+/// (a filegroup over another prerequisite's file adds nothing).
+fn prerequisite_files<'v, 'a>(
+    heap: Heap<'v>,
+    prerequisites: impl Iterator<Item = &'a [File]>,
+) -> Value<'v> {
+    let mut seen = BTreeSet::new();
+    let mut files = Vec::new();
+    for file in prerequisites.flatten() {
+        if seen.insert(file) {
+            files.push(alloc_file(heap, file.clone()));
+        }
+    }
+    heap.alloc(files)
+}
+
 /// Configured prerequisites of a label-valued dictionary attribute.
 struct DictPrerequisites<'v, 'a> {
     /// One Target value per distinct label.
@@ -1226,14 +1246,7 @@ fn ctx_attribute_structs<'v>(
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 files.insert(
                     name.clone(),
-                    heap.alloc(
-                        targets
-                            .iter()
-                            .flat_map(|target| target.files.iter())
-                            .cloned()
-                            .map(|file| alloc_file(heap, file))
-                            .collect::<Vec<_>>(),
-                    ),
+                    prerequisite_files(heap, targets.iter().map(|target| target.files.as_slice())),
                 );
                 heap.alloc(
                     labels
@@ -1427,16 +1440,13 @@ fn builtin_ctx_attrs<'v>(
                         .ok_or_else(|| {
                             anyhow!("attribute {name}: dependency {label} was not resolved")
                         })?;
-                    metadata_files.extend(
-                        dependency
-                            .files
-                            .iter()
-                            .cloned()
-                            .map(|file| alloc_file(heap, file)),
-                    );
+                    metadata_files.push(dependency.files.as_slice());
                     targets.push(alloc_dependency(heap, dependency));
                 }
-                files.insert(name.to_owned(), heap.alloc(metadata_files));
+                files.insert(
+                    name.to_owned(),
+                    prerequisite_files(heap, metadata_files.into_iter()),
+                );
                 heap.alloc(targets)
             }
             // The constraint values of the target's toolchain resolution
@@ -1456,16 +1466,13 @@ fn builtin_ctx_attrs<'v>(
                     let dependency = dependencies.get(&key).ok_or_else(|| {
                         anyhow!("attribute {name}: dependency {label} was not resolved")
                     })?;
-                    constraint_files.extend(
-                        dependency
-                            .files
-                            .iter()
-                            .cloned()
-                            .map(|file| alloc_file(heap, file)),
-                    );
+                    constraint_files.push(dependency.files.as_slice());
                     targets.push(alloc_dependency(heap, dependency));
                 }
-                files.insert(name.to_owned(), heap.alloc(constraint_files));
+                files.insert(
+                    name.to_owned(),
+                    prerequisite_files(heap, constraint_files.into_iter()),
+                );
                 heap.alloc(targets)
             }
             (_, NativeType::LabelList) => {

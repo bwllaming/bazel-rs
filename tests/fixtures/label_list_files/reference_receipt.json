@@ -1,0 +1,383 @@
+{
+ "schema": "label-list-files-reference-receipt/v1",
+ "fixture": "label_list_files",
+ "purpose": "ctx.files of a label-list attribute (StarlarkAttributesCollection.addAttribute, analysis/starlark/StarlarkAttributesCollection.java:398-409, over PrerequisiteArtifacts.nestedSet, PrerequisiteArtifacts.java:64-72): a stable-order NestedSet of every prerequisite's files to build, so each File appears once, at its first occurrence in prerequisite order; also the aspect's ctx.rule.files and the built-in dependency attributes. Motivation (review finding): `deps = [\":gen\", \":fg\"]` with fg a filegroup over gen gave genuine [\"pkg/gen.txt\"] but natively the file twice, which reaches action inputs and command lines (`arguments = [f.path for f in ctx.files.deps]`).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "fbcda6b3c8142ee3861c1e7cd5a43766164cfa7190f4cc1b48a1fb3f3db62bef",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pnext-capture.py, pnext-receipt.py (not committed)",
+  "sha256": {
+   "pnext-capture.py": "ad9355dc0df57010754d639a71f394ad6924e2541dac0e71b39ac1051472e247",
+   "pnext-receipt.py": "1bdf10b50406a1e739e592cfe8c8c79aa8f71ce911a2cea8d34078fbc89d6e22"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "d6fa2a5081fdd1f0133e833558ade7048a0abf8880e15e314c827a24b181429b",
+  "pkg/BUILD.bazel": "f887ba8c7a3f7ac39b57f1768a244ad8fddfaa903a9b7f24d4103be64dfc9488",
+  "pkg/a.txt": "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7",
+  "pkg/b.txt": "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f",
+  "pkg/defs.bzl": "0c50f36d150b38bdece92a39afd44a3156d841d3cc97501b80ca22bd61574824"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/label_list_files.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "A filegroup over another prerequisite's file, either order, an alias of a prerequisite, and a source file listed directly and through a filegroup each give one File (deps=[\"pkg/gen.txt\"], [\"pkg/a.txt\"]); first occurrence wins: [fg_multi(m1, m2, gen), gen, multi] gives [m1, m2, gen]; distinct prerequisites keep their order; ctx.attr keeps every Target (an alias's Target has the actual's label).",
+  "The command line and inputs of an action built from ctx.files list each file once (the .args output).",
+  "An aspect's ctx.rule.files of the same attribute is deduplicated alike; label_keyed_string_dict files (dict) and a single label (one) were already one entry each."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 9
+ },
+ "scratch_removed": true,
+ "cases": {
+  "dup": {
+   "argv": [
+    "build",
+    "//pkg:dup"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.561,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:dup (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:dup up-to-date:\n  bazel-bin/pkg/dup.txt\n  bazel-bin/pkg/dup.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 3 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dup.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/dup.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:fg\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.409,
+    "stdout": "//pkg:dup\tbazel-out/k8-fastbuild/bin/pkg/dup.txt\n//pkg:dup\tbazel-out/k8-fastbuild/bin/pkg/dup.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dup.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/dup.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:fg\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "reversed": {
+   "argv": [
+    "build",
+    "//pkg:reversed"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.793,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:reversed (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:reversed up-to-date:\n  bazel-bin/pkg/reversed.txt\n  bazel-bin/pkg/reversed.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 3 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/reversed.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/reversed.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:fg\", \"@@//pkg:gen\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.392,
+    "stdout": "//pkg:reversed\tbazel-out/k8-fastbuild/bin/pkg/reversed.txt\n//pkg:reversed\tbazel-out/k8-fastbuild/bin/pkg/reversed.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/reversed.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/reversed.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:fg\", \"@@//pkg:gen\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "order": {
+   "argv": [
+    "build",
+    "//pkg:order"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.558,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:order (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:order up-to-date:\n  bazel-bin/pkg/order.txt\n  bazel-bin/pkg/order.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 5 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/order.args": [
+      "0o555",
+      "pkg/m1.txt\npkg/m2.txt\npkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/order.txt": [
+      "0o555",
+      "deps=[\"pkg/m1.txt\", \"pkg/m2.txt\", \"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:fg_multi\", \"@@//pkg:gen\", \"@@//pkg:multi\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.396,
+    "stdout": "//pkg:order\tbazel-out/k8-fastbuild/bin/pkg/order.txt\n//pkg:order\tbazel-out/k8-fastbuild/bin/pkg/order.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/order.args": [
+      "0o555",
+      "pkg/m1.txt\npkg/m2.txt\npkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/order.txt": [
+      "0o555",
+      "deps=[\"pkg/m1.txt\", \"pkg/m2.txt\", \"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:fg_multi\", \"@@//pkg:gen\", \"@@//pkg:multi\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "source": {
+   "argv": [
+    "build",
+    "//pkg:source"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.801,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:source (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:source up-to-date:\n  bazel-bin/pkg/source.txt\n  bazel-bin/pkg/source.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/source.args": [
+      "0o555",
+      "pkg/a.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/source.txt": [
+      "0o555",
+      "deps=[\"pkg/a.txt\"]\ndeps_targets=[\"@@//pkg:a.txt\", \"@@//pkg:fg_src\"]\nsrcs=[\"pkg/a.txt\", \"pkg/b.txt\"]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.388,
+    "stdout": "//pkg:source\tbazel-out/k8-fastbuild/bin/pkg/source.txt\n//pkg:source\tbazel-out/k8-fastbuild/bin/pkg/source.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/source.args": [
+      "0o555",
+      "pkg/a.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/source.txt": [
+      "0o555",
+      "deps=[\"pkg/a.txt\"]\ndeps_targets=[\"@@//pkg:a.txt\", \"@@//pkg:fg_src\"]\nsrcs=[\"pkg/a.txt\", \"pkg/b.txt\"]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "alias": {
+   "argv": [
+    "build",
+    "//pkg:alias"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.782,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:alias (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:alias up-to-date:\n  bazel-bin/pkg/alias.txt\n  bazel-bin/pkg/alias.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 3 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/alias.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/alias.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:gen\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.397,
+    "stdout": "//pkg:alias\tbazel-out/k8-fastbuild/bin/pkg/alias.txt\n//pkg:alias\tbazel-out/k8-fastbuild/bin/pkg/alias.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/alias.args": [
+      "0o555",
+      "pkg/gen.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/alias.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:gen\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dict": {
+   "argv": [
+    "build",
+    "//pkg:dict"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.535,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:dict (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:dict up-to-date:\n  bazel-bin/pkg/dict.txt\n  bazel-bin/pkg/dict.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dict.args": [
+      "0o555",
+      "\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/dict.txt": [
+      "0o555",
+      "deps=[]\ndeps_targets=[]\nsrcs=[]\ndict=[\"pkg/gen.txt\", \"pkg/m1.txt\", \"pkg/m2.txt\"]\none=[\"pkg/m1.txt\", \"pkg/m2.txt\", \"pkg/gen.txt\"]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.442,
+    "stdout": "//pkg:dict\tbazel-out/k8-fastbuild/bin/pkg/dict.txt\n//pkg:dict\tbazel-out/k8-fastbuild/bin/pkg/dict.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dict.args": [
+      "0o555",
+      "\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/dict.txt": [
+      "0o555",
+      "deps=[]\ndeps_targets=[]\nsrcs=[]\ndict=[\"pkg/gen.txt\", \"pkg/m1.txt\", \"pkg/m2.txt\"]\none=[\"pkg/m1.txt\", \"pkg/m2.txt\", \"pkg/gen.txt\"]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "distinct": {
+   "argv": [
+    "build",
+    "//pkg:distinct"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.033,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:distinct (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:distinct up-to-date:\n  bazel-bin/pkg/distinct.txt\n  bazel-bin/pkg/distinct.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 5 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/distinct.args": [
+      "0o555",
+      "pkg/gen.txt\npkg/m1.txt\npkg/m2.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/distinct.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\", \"pkg/m1.txt\", \"pkg/m2.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:multi\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.447,
+    "stdout": "//pkg:distinct\tbazel-out/k8-fastbuild/bin/pkg/distinct.txt\n//pkg:distinct\tbazel-out/k8-fastbuild/bin/pkg/distinct.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/distinct.args": [
+      "0o555",
+      "pkg/gen.txt\npkg/m1.txt\npkg/m2.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/distinct.txt": [
+      "0o555",
+      "deps=[\"pkg/gen.txt\", \"pkg/m1.txt\", \"pkg/m2.txt\"]\ndeps_targets=[\"@@//pkg:gen\", \"@@//pkg:multi\"]\nsrcs=[]\ndict=[]\none=[]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "aspect": {
+   "argv": [
+    "build",
+    "//pkg:aspect"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.958,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:aspect (5 packages loaded, 10 targets configured, 1 aspect application).\nINFO: Found 1 target...\nTarget //pkg:aspect up-to-date:\n  bazel-bin/pkg/aspect.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/aspect.txt": [
+      "0o555",
+      "rule.files.deps=[\"pkg/gen.txt\"]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.386,
+    "stdout": "//pkg:aspect\tbazel-out/k8-fastbuild/bin/pkg/aspect.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/aspect.txt": [
+      "0o555",
+      "rule.files.deps=[\"pkg/gen.txt\"]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.806,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 14 targets (5 packages loaded, 23 targets configured, 1 aspect application).\nINFO: Found 14 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.356,
+    "stdout": "//pkg:alias\tbazel-out/k8-fastbuild/bin/pkg/alias.txt\n//pkg:alias\tbazel-out/k8-fastbuild/bin/pkg/alias.args\n//pkg:aspect\tbazel-out/k8-fastbuild/bin/pkg/aspect.txt\n//pkg:dict\tbazel-out/k8-fastbuild/bin/pkg/dict.txt\n//pkg:dict\tbazel-out/k8-fastbuild/bin/pkg/dict.args\n//pkg:distinct\tbazel-out/k8-fastbuild/bin/pkg/distinct.txt\n//pkg:distinct\tbazel-out/k8-fastbuild/bin/pkg/distinct.args\n//pkg:dup\tbazel-out/k8-fastbuild/bin/pkg/dup.txt\n//pkg:dup\tbazel-out/k8-fastbuild/bin/pkg/dup.args\n//pkg:fg\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:fg_multi\tbazel-out/k8-fastbuild/bin/pkg/m1.txt\n//pkg:fg_multi\tbazel-out/k8-fastbuild/bin/pkg/m2.txt\n//pkg:fg_multi\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:fg_src\t<WS>/pkg/a.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen_alias\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:multi\tbazel-out/k8-fastbuild/bin/pkg/m1.txt\n//pkg:multi\tbazel-out/k8-fastbuild/bin/pkg/m2.txt\n//pkg:order\tbazel-out/k8-fastbuild/bin/pkg/order.txt\n//pkg:order\tbazel-out/k8-fastbuild/bin/pkg/order.args\n//pkg:reversed\tbazel-out/k8-fastbuild/bin/pkg/reversed.txt\n//pkg:reversed\tbazel-out/k8-fastbuild/bin/pkg/reversed.args\n//pkg:source\tbazel-out/k8-fastbuild/bin/pkg/source.txt\n//pkg:source\tbazel-out/k8-fastbuild/bin/pkg/source.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

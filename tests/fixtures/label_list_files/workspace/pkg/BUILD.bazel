@@ -1,0 +1,108 @@
+load(":defs.bzl", "aspect_probe", "gen", "probe")
+
+gen(
+    name = "gen",
+    outs = ["gen.txt"],
+)
+
+gen(
+    name = "multi",
+    outs = [
+        "m1.txt",
+        "m2.txt",
+    ],
+)
+
+filegroup(
+    name = "fg",
+    srcs = [":gen"],
+)
+
+filegroup(
+    name = "fg_multi",
+    srcs = [
+        ":multi",
+        ":gen",
+    ],
+)
+
+filegroup(
+    name = "fg_src",
+    srcs = ["a.txt"],
+)
+
+alias(
+    name = "gen_alias",
+    actual = ":gen",
+)
+
+# The reviewer's repro: a filegroup over another dependency's file.
+probe(
+    name = "dup",
+    deps = [
+        ":gen",
+        ":fg",
+    ],
+)
+
+probe(
+    name = "reversed",
+    deps = [
+        ":fg",
+        ":gen",
+    ],
+)
+
+# First occurrence wins: [m1, m2, gen].
+probe(
+    name = "order",
+    deps = [
+        ":fg_multi",
+        ":gen",
+        ":multi",
+    ],
+)
+
+probe(
+    name = "source",
+    deps = [
+        "a.txt",
+        ":fg_src",
+    ],
+    srcs = [
+        ":fg_src",
+        "a.txt",
+        "b.txt",
+    ],
+)
+
+probe(
+    name = "alias",
+    deps = [
+        ":gen",
+        ":gen_alias",
+    ],
+)
+
+probe(
+    name = "dict",
+    dict = {
+        ":gen": "x",
+        ":fg": "y",
+        ":multi": "z",
+    },
+    one = ":fg_multi",
+)
+
+probe(
+    name = "distinct",
+    deps = [
+        ":gen",
+        ":multi",
+    ],
+)
+
+aspect_probe(
+    name = "aspect",
+    target = ":dup",
+)

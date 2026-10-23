@@ -180,7 +180,14 @@ Every prerequisite of a Starlark `attr.label`, `attr.label_list`,
   `nothing` for `[]`.
 * Rule prerequisites are not filtered: `ctx.files` is all files to build
   (`PrerequisiteArtifacts.nestedSet`, `PrerequisiteArtifacts.java:64-72`) and
-  `ctx.file` the single file (`PrerequisitesCollection.java:253-271`).
+  `ctx.file` the single file (`PrerequisitesCollection.java:253-271`). The
+  nested set is a stable-order union of the prerequisites' files to build:
+  for a label list (and the built-in dependency lists, an aspect's
+  `ctx.rule.files`) each File appears once, at its first occurrence in
+  prerequisite order — `deps = [":gen", ":fg"]` with `fg` a filegroup of
+  `gen`'s file is `[gen.txt]`, so action inputs and command lines built from
+  it list the file once (paired capture `tests/fixtures/label_list_files`,
+  9 genuine 9.3.0 cases, all MATCH; `tests/label_list_files.rs`).
 * Prerequisite errors follow `RuleContext.Builder.build`
   (`RuleContext.java:1491-1503`): after the prerequisites are analyzed and
   before the implementation runs, every prerequisite of every attribute is
