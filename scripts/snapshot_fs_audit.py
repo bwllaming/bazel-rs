@@ -15,7 +15,16 @@ of process/system paths — is covered by the recorded set:
     ancestor of its result;
   * it is a listed directory: getdents64 on an fd whose openat path (the
     logical one; strace -y shows the resolved one) has a READDIR record;
-  * it lies inside a verified repository root (the integrity walk).
+  * it lies inside a verified repository root (the integrity walk) and not
+    at or below one of that tree's symlinks (INT ... l): the tree fixes the
+    link, not what it reaches, so what is read through it must be recorded.
+
+A file opened for reading (open/openat/openat2 without O_DIRECTORY, O_PATH
+or O_WRONLY that succeeded) needs more than coverage: a READ record of that
+path (its content digest), unless it lies inside a verified repository root
+(not below a link), a pinned root (replay section) or an ignored prefix.
+Without one the report lists it as UNREAD: planning used contents the
+snapshot would not validate.
 
 Not audited: calls of a thread between the tainted-section markers
 (/.bazel-rs-snapshot-marker/tainted-{begin,end}: a repository rule or module
@@ -255,9 +264,32 @@ def load_replay(path):
     return impure, pinned
 
 
+class Dump:
+    """What a record-mode dump recorded, as the audit consults it."""
+
+    def __init__(self, observed, ancestors, readdirs, roots, canonicalized, reads, links):
+        self.observed = observed
+        self.ancestors = ancestors
+        self.readdirs = readdirs
+        self.roots = roots
+        self.canonicalized = canonicalized
+        # Paths with a READ record (a content digest).
+        self.reads = reads
+        # Symlink entries of the verified trees (INT ... l).
+        self.links = links
+
+    def in_tree(self, p, extra_roots=()):
+        """Inside a verified (or pinned) root and not at or below one of the
+        trees' symlinks."""
+        def under(prefix):
+            return p == prefix or p.startswith(prefix + '/')
+        return (any(under(root) for root in list(self.roots) + list(extra_roots))
+                and not any(under(link) for link in self.links))
+
+
 def load_dump(path):
     observed, canon_targets, readdirs, roots = set(), set(), set(), []
-    canonicalized = set()
+    canonicalized, reads, links = set(), set(), []
     for line in Path(path).read_text().splitlines():
         parts = line.split(' ')
         if parts[0] == 'OBS':
@@ -270,26 +302,43 @@ def load_dump(path):
                     canon_targets.add(unescape_dump(parts[3][5:]))
             if parts[2].startswith('READDIR'):
                 readdirs.add(p)
+            if parts[2] == 'READ':
+                reads.add(p)
         elif parts[0] == 'INT':
-            observed.add(unescape_dump(parts[1]))
+            p = unescape_dump(parts[1])
+            observed.add(p)
+            if len(parts) > 2 and parts[2] == 'l':
+                links.append(p)
         elif parts[0] == 'REPO':
             root = unescape_dump(parts[3])
             roots.append(root)
             observed.add(root)
             if parts[4].startswith('manifest:') and parts[4] != 'manifest:-':
                 observed.add(unescape_dump(parts[4][len('manifest:'):]))
+    # Only a tree's own links (a manifest is no tree entry).
+    links = [link for link in links if any(link == root or link.startswith(root + '/') for root in roots)]
     ancestors = set()
     for target in canon_targets:
         p = Path(target)
         for parent in [p] + list(p.parents):
             ancestors.add(str(parent))
-    return observed, ancestors, readdirs, roots, canonicalized
+    return Dump(observed, ancestors, readdirs, roots, canonicalized, reads, links)
 
 
-def audit(log, dump, cwd, cache, extra_ignored, replay=None):
+def reads_file(name, line, result):
+    """A successful open of a file for reading: open/openat/openat2 without
+    O_DIRECTORY, O_PATH or O_WRONLY."""
+    if name not in ('open', 'openat', 'openat2') or not result or result[0] < 0:
+        return False
+    return not any(flag in line for flag in ('O_DIRECTORY', 'O_PATH', 'O_WRONLY'))
+
+
+def audit(log, dump, cwd, cache, extra_ignored, replay=None, stats=None):
     """(touched, unrecorded) of the recording window; with `replay` (a dict),
     the replay section's counts are stored in it: touched, unrecorded,
-    executions (replayed executions seen), present (markers found)."""
+    executions (replayed executions seen), present (markers found); with
+    `stats` (a dict), the window's `read_opens`: files opened for reading
+    outside the ignored prefixes (each needs a READ record or a tree)."""
     events = parse_strace(log, cwd)
     start = end = None
     replay_start = replay_end = None
@@ -305,10 +354,11 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None):
                 replay_end = i
     if start is None or end is None:
         return None, ['window markers not found in the trace (is BAZEL_RS_SNAPSHOT=record set?)']
-    observed, ancestors, readdirs, roots, canonicalized = load_dump(dump)
+    recorded = load_dump(dump)
+    observed, ancestors, readdirs = recorded.observed, recorded.ancestors, recorded.readdirs
     # realpath(3) readlinks every prefix of the path it resolves, through
     # link targets: a CANON record covers that whole chain.
-    for path in canonicalized:
+    for path in recorded.canonicalized:
         ancestors |= realpath_chain(path)
     ignored = [str(Path(cache).resolve())] + [str(Path(p).resolve()) for p in extra_ignored]
     sections = [(start, end)]
@@ -328,7 +378,10 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None):
         elif name == 'execve' and any(a < i < b for a, b in sections):
             started.add(pid)
 
-    def covered(kind, p, line, opened, pid, extra_roots=()):
+    def covered(kind, p, line, opened, pid, extra_roots=(), read=False):
+        """(path, None) when ignored; else (path, covered?). With `read`
+        (the call opened the file for reading) only a READ record or a
+        verified tree covers it."""
         if kind == 'dir':
             fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
             logical = opened.get((pid, int(fd.group(1)))) if fd else None
@@ -338,19 +391,19 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None):
             return p, None
         if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
             return p, None
+        if recorded.in_tree(p, extra_roots):
+            return p, True
+        if read:
+            return p, p in recorded.reads
         if kind == 'dir':
-            if p in readdirs:
-                return p, True
-        elif p in observed or p in ancestors:
-            return p, True
-        if any(p == root or p.startswith(root + '/') for root in list(roots) + list(extra_roots)):
-            return p, True
-        return p, False
+            return p, p in readdirs
+        return p, p in observed or p in ancestors
 
     opened = {}
     depth = {}
     unrecorded = {}
     touched = 0
+    read_opens = 0
     for tid, name, paths, line, result in events[start + 1:end]:
         pid = process.get(tid, tid)
         if pid in started:
@@ -364,13 +417,17 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None):
         if name in ('openat', 'open', 'openat2') and result and result[0] >= 0 and paths:
             # getdents64 shows the fd's resolved path; remember what was opened.
             opened[(pid, result[0])] = paths[0][1]
+        read = reads_file(name, line, result)
         for kind, p in paths:
-            p, ok = covered(kind, p, line, opened, pid)
+            p, ok = covered(kind, p, line, opened, pid, read=read)
             if ok is None:
                 continue
             touched += 1
+            read_opens += read
             if not ok:
-                unrecorded.setdefault(p, (name, line.strip()))
+                unrecorded.setdefault(p, ('UNREAD ' + name if read else name, line.strip()))
+    if stats is not None:
+        stats['read_opens'] = read_opens
     if replay is not None:
         impure, pinned = load_replay(dump)
         replay.update(present=len(sections) > 1, touched=0, unrecorded=[], executions=0)
@@ -397,13 +454,16 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None):
                     continue
                 if name in ('openat', 'open', 'openat2') and result and result[0] >= 0 and paths:
                     replay_opened[(pid, result[0])] = paths[0][1]
+                # A replayed execution's reads need no record (the replay
+                # compares what it produced); a definition load's do.
+                read = tid not in current and reads_file(name, line, result)
                 for kind, p in paths:
-                    p, ok = covered(kind, p, line, replay_opened, pid, pinned)
+                    p, ok = covered(kind, p, line, replay_opened, pid, pinned, read=read)
                     if ok is None:
                         continue
                     replay['touched'] += 1
                     if not ok:
-                        replay_unrecorded.setdefault(p, (name, line.strip()))
+                        replay_unrecorded.setdefault(p, ('UNREAD ' + name if read else name, line.strip()))
             replay['unrecorded'] = [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(replay_unrecorded.items())]
     return touched, [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(unrecorded.items())]
 
@@ -480,14 +540,15 @@ def main():
             if i < len(warmups):
                 lines.append('  (warm-up run: not audited)')
                 continue
-            replay = {}
+            replay, stats = {}, {}
             touched, unrecorded = audit(log.read_text(errors='surrogateescape'), dump, str(workspace),
-                                        cache, [base / 'home', base / 'tmp'] + a.ignore, replay)
+                                        cache, [base / 'home', base / 'tmp'] + a.ignore, replay, stats)
             if touched is None:
                 ok = False
                 lines.extend('  ' + u for u in unrecorded)
                 continue
-            lines.append(f'  window: {touched} path touches outside the cache; unrecorded: {len(unrecorded)}')
+            lines.append(f'  window: {touched} path touches outside the cache ({stats["read_opens"]} files opened '
+                         f'for reading); unrecorded: {len(unrecorded)}')
             for u in unrecorded[:200]:
                 lines.append('    UNRECORDED ' + u)
             if unrecorded:

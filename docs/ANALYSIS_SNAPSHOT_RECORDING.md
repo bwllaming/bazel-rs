@@ -47,7 +47,13 @@ Semantic records complete the filesystem ones:
   (registry archives, direct/extension repositories, Git trees, the embedded
   `@bazel_tools`, and a published store tree a symlink crossed into, see
   *Link anchors*) with the lstat key of each entry and of its manifest; the
-  spec pointer naming a (non-local) direct repository is a READ.
+  spec pointer naming a (non-local) direct repository is a READ. A tree's
+  owner records it (`observed_fs::repository_tree`); a crossing records a
+  tree no repository of the run named yet (`crossed_tree`) and the owner's
+  record replaces it if the repository is materialized later, so the
+  recording does not depend on which came first. A local repository's tree
+  is never a REPO (`local_tree`: it is replayed, its observations are
+  validated one by one).
 * **REPLAY**: every `local = True` repository rule the window executed, with
   the pinned tables its replay needs (see *Local repository rules*).
 * **TAINT**: conditions under which a run is never saved — network access,
@@ -106,9 +112,11 @@ shows it after the build's output; the L2-W5 hit path captures fd 2 while it
 replays (or `loading` gains a print sink for definition loads).
 
 What a repository rule prints — `print()`, the `execute(quiet=False)` echo,
-the reproducibility `DEBUG:` lines — still reaches stderr as it happens and
-is also collected per execution (`repository_ctx::execute`,
-`ExecutedRepository::output`). Printing as it happens keeps every byte at
+the reproducibility `DEBUG:` lines — still reaches stderr as it happens and,
+while the record mode's replay capture records local executions, is also
+collected per execution (`repository_ctx::execute`,
+`ExecutedRepository::output`; otherwise nothing reads it, so nothing is
+kept). Printing as it happens keeps every byte at
 its position, also when a rule demands another repository while it runs:
 the other rule's output appears between the demanding rule's earlier and
 later lines, as before and as Bazel's suspended fetch prints it (writing a
@@ -134,11 +142,29 @@ A symlink target inside a published store tree —
 invocation materialized before (`source_links::StoreTrees`), as Bazel follows
 such a link and fetches the target repository. A tree no root of the
 invocation names is verified against its manifest's content on its first
-crossing (memoized per repository set) and recorded as a REPO. Stages, trash
-and every other store path stay blocked. Previously the link resolved only
-when the target repository happened to be materialized earlier in the run;
+crossing (memoized per repository set; registry, direct and Git manifests
+alike) and recorded as a REPO; a tree the invocation materialized is
+recorded by its owner. When the materialized root that contains the target
+already is that tree (a link within one store tree, e.g. a glob through an
+internal link), nothing is checked: the test is lexical. Stages, trash and
+every other store path stay blocked. Previously the link resolved only when
+the target repository happened to be materialized earlier in the run;
 otherwise it failed (an order-dependent error, now fixed:
 `tests/local_repository_replay.rs`).
+
+**Stale trees (caveat).** Store trees are content-addressed, so a link names
+one publication of its target repository. A reused repository can hold a
+link into an *older* tree of its target (the target was republished, e.g.
+with other BUILD bytes, while the linked file kept its digest, so the
+linking repository's recorded inputs still validate): the link resolves to
+that old, verified tree, where Bazel would read the target repository's
+current contents. Likewise a link into a local repository's tree reads its
+last publication, where Bazel refetches the local repository. Both are rare,
+and a hit and a miss agree (the full-analysis path resolves the same way).
+The record mode names such trees: `link anchors: N store tree(s) a link
+crossed into never became a repository root in this run` (only for runs that
+executed or published no repository, which could root a tree without a
+REPO record).
 
 Hops into store trees, into the main repository (always materialized) and to
 plain host paths (outside the store and every live root; every hop is
@@ -165,7 +191,10 @@ end of planning (the `plan.end` mark of build, test and run; the end of
 loading for query). At the end of the command (for test and run, once their
 build part ended) the mode prints `bazel-rs-snapshot:` lines on stderr:
 observation counts by op and READDIR projection, distinct paths, environment
-reads, verified repositories and integrity entries, every taint with its
+reads, verified repositories and integrity entries (with the observations
+inside them, and how many of those lie at or below a tree's symlinks), store
+trees a link crossed into that no repository of the run has as its root
+(`link anchors:`, see *Stale trees*), every taint with its
 first reasons, `eligible=yes|no|unless-pruned` (`unless-pruned`: only
 registrations the saved plan may still prune — build-info callbacks,
 `map_each` — taint, which L2-W4 decides on the plan), the measured time of
@@ -176,11 +205,16 @@ roots and mappings`, the slowest replays, every mismatch; a mismatch taints).
 
 Validation (`crate::snapshot::validate`, decision (1) of PLAN-L2 update 1) is
 a dry run of the hit's checks under the command's policy: per tree by default
-(the observations outside verified repository trees, plus each tree's root
-and manifest — a content-addressed tree whose root and manifest are
-unchanged stands for everything inside it, like Bazel trusting repository
-markers), every INTEGRITY entry under the existing `--verify_repo_tampering`
-/ `BAZEL_RS_VERIFY_REPOS=full`. Settled stat keys are trusted, racy or
+(the observations outside verified repository trees and those at or below a
+symlink of a verified tree, plus each tree's root and manifest — a
+content-addressed tree whose root and manifest are unchanged stands for
+everything inside it, like Bazel trusting repository markers, but not for
+what its links reach: the glob walker lists a host directory through a
+tree's link, and `glob::is_subpackage` stats its BUILD files, under the
+logical path inside the tree, so `ctx.symlink("/usr/include/x", "inc")` plus
+`glob(["inc/**"])` must miss when a header is added there), every INTEGRITY
+entry under the existing `--verify_repo_tampering` /
+`BAZEL_RS_VERIFY_REPOS=full`. Settled stat keys are trusted, racy or
 changed ones re-read and compared by content. Below 4,000 checks one thread
 runs them inline and in place (no work list: in the large, fragmented heap
 at the end of a full analysis one allocation cost the record mode's dry run
@@ -228,7 +262,10 @@ stderr). Any other value of the variable is reported and ignored.
    `/.bazel-rs-snapshot-marker/window-{open,close}`. Every path touched inside
    the window outside the cache dir must be covered by the dump (an
    observation, a step of a canonicalized path's resolution, a listed
-   directory, or a path inside a verified repository tree); `/proc`, `/sys`,
+   directory, or a path inside a verified repository tree but not at or below
+   one of its symlinks), and a file opened for reading needs a READ record of
+   that path (its content digest; reported as `UNREAD` otherwise) unless it
+   lies inside such a tree; `/proc`, `/sys`,
    `/dev` and the workspace status's host facts are exempt, and so is work
    that taints the run anyway: a repository rule or module extension
    executing is bracketed on its thread by
@@ -246,7 +283,14 @@ stderr). Any other value of the variable is reported and ignored.
    DIR --cache DIR -- ARGS` audits any workspace.
 
 Shadow verification and the determinism gate (layers 3 and 4) come with the
-snapshot store itself.
+snapshot store itself. The recording's own determinism is tested now
+(`record_mode_observes_the_same_inputs_in_every_loading_order`): every
+observation, environment digest, REPO and INTEGRITY record (without the
+`racy` flags), replay record, pinned table and taint but the test hook's is
+the same at 1, 8 and 32 loading threads under `BAZEL_RS_LOADING_JITTER`
+seeds, and never Unstable, on a workspace with globs through links and
+subpackages, a replayed local repository and a link into another
+repository's store tree raced against that repository's demand.
 
 ## Measured on ~/code (L2-W4R, warm, update-mode recipe)
 
@@ -258,6 +302,18 @@ snapshot store itself.
 | replay wall / CPU | 119–153 ms / 103–172 ms + 50–80 ms in `java` | 133–137 ms / 105–115 ms + 70 ms | 112–134 ms / 102–119 ms + 60–70 ms |
 | validation [per-tree], 1 thread | 1.5–2.7 ms (613 obs + 220 entries) | 2.5–2.7 ms | 7.1–8.6 ms (2,206 obs + 596 entries) |
 | syscall audit (window / replay) | 29,757 / 2,730 touches, 0 unrecorded | — | 139,268 / 2,727, 0 unrecorded |
+
+With the per-tree policy also validating what a tree's links reach (review
+follow-up, 5b91a73; oauth2token:all `--nobuild`, 7 dry runs on a machine at
+load 25–32): 719 observations + 220 entries — the 106 more are the STAT,
+CANON, LSTAT and READLINK records at or below the verified trees' 100
+symlinks (toolchain wrapper links, `local_config_cc`'s links into
+rules_cc) — in
+2.1–7.7 ms on one thread (the previous binary, same conditions: 1.5–2.2 ms),
+0 mismatches; no `link anchors:` line. The stricter syscall audit (a READ
+record for every file opened for reading, no tree exemption below a tree's
+links) is clean: 29,757 window touches including 38 files opened for reading,
+2,730 replay touches, 0 unrecorded.
 
 The critical path of a replay is `local_jdk`: its definition load (the
 rules_java/rules_cc `.bzl` closure, 57–75 ms) plus its execution (`java`,
@@ -279,7 +335,7 @@ saved plan, after which these runs report `eligible=yes`.
   pointers of any repository are no longer rewritten.
 
 Not changed: what repository rules print reaches stderr as it happens (also
-collected per execution for the replay record).
+collected per execution for the replay record, in record mode only).
 
 ## Not yet (L2-W5)
 

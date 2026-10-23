@@ -140,6 +140,58 @@ class SnapshotAuditTests(unittest.TestCase):
         self.assertEqual([u.split()[0] for u in replay["unrecorded"]],
                          ["/usr/share/pure-read", "/ws/unrecorded-in-replay"])
 
+    def test_files_opened_for_reading_need_a_read_record_and_tree_links_no_exemption(self):
+        trace = (
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/window-open", 0x1, 0) = -1 ENOENT\n'
+            # Read with a READ record; read with only a STAT record.
+            '1 openat(AT_FDCWD</ws>, "/ws/read.bzl", O_RDONLY|O_CLOEXEC) = 3</ws/read.bzl>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/stat-only.txt", O_RDONLY|O_CLOEXEC) = 3</ws/stat-only.txt>\n'
+            # Directory, O_PATH and write opens need coverage only.
+            '1 openat(AT_FDCWD</ws>, "/ws/dir", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 4</ws/dir>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/handle", O_RDONLY|O_PATH|O_CLOEXEC) = 4</ws/handle>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/written", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 4</ws/written>\n'
+            # A failed open is no read.
+            '1 openat(AT_FDCWD</ws>, "/ws/missing", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)\n'
+            # Inside a verified tree: covered by the tree...
+            '1 openat(AT_FDCWD</ws>, "/c/trees/t/BUILD", O_RDONLY|O_CLOEXEC) = 3</c/trees/t/BUILD>\n'
+            '1 statx(AT_FDCWD</ws>, "/c/trees/t/sub/x", 0, 0x1) = 0\n'
+            # ... but not below one of its links (a host directory).
+            '1 statx(AT_FDCWD</ws>, "/c/trees/t/inc/recorded.h", 0, 0x1) = 0\n'
+            '1 statx(AT_FDCWD</ws>, "/c/trees/t/inc/unrecorded.h", 0, 0x1) = 0\n'
+            '1 openat(AT_FDCWD</ws>, "/c/trees/t/inc/read.h", O_RDONLY|O_CLOEXEC) = 3</host/x/read.h>\n'
+            '1 openat(AT_FDCWD</ws>, "/c/trees/t/inc", O_RDONLY|O_DIRECTORY|O_CLOEXEC) = 5</host/x>\n'
+            '1 getdents64(5</host/x>, 0x1 /* 3 entries */, 32768) = 80\n'
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/window-close", 0x1, 0) = -1 ENOENT\n'
+        )
+        dump_text = (
+            "OBS /ws/read.bzl READ sha256:00 key:1:2:3:4:5\n"
+            "OBS /ws/stat-only.txt STAT kind:f\n"
+            "OBS /ws/dir STAT kind:d\n"
+            "OBS /ws/handle STAT kind:f\n"
+            "OBS /ws/written STAT error:2\n"
+            "OBS /ws/missing READ error:2\n"
+            "OBS /c/trees/t/inc/recorded.h STAT kind:f\n"
+            "OBS /c/trees/t/inc/read.h STAT kind:f\n"
+            "REPO direct t /c/trees/t manifest:/c/manifests/t.json entries:3\n"
+            "INT /c/manifests/t.json f key:1:2:3:4:5\n"
+            "INT /c/trees/t d key:1:2:3:4:5\n"
+            "INT /c/trees/t/inc l key:1:2:3:4:5\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            dump = Path(temp) / "dump.txt"
+            dump.write_text(dump_text)
+            stats = {}
+            _, unrecorded = audit.audit(trace, dump, "/ws", "/cache", [], stats=stats)
+        self.assertEqual(stats["read_opens"], 4)
+        found = {u.split()[0]: u.split()[1] for u in unrecorded}
+        self.assertEqual(found, {
+            "/ws/stat-only.txt": "[UNREAD",
+            "/c/trees/t/inc/unrecorded.h": "[statx]",
+            "/c/trees/t/inc/read.h": "[UNREAD",
+            # The link itself is a tree entry; listing through it is not.
+            "/c/trees/t/inc": "[getdents64]",
+        })
+
     def test_missing_markers_fail(self):
         with tempfile.TemporaryDirectory() as temp:
             dump = Path(temp) / "dump.txt"
