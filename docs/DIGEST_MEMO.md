@@ -94,6 +94,39 @@ The walks themselves are unchanged (every entry is still lstat'ed and compared f
 symlink target); only reading unchanged regular files is skipped. Direct repositories keep their own
 Stat-mode fingerprints in their manifests (`repository_store::verify_snapshot_at`).
 
+## Trust (with the executor's per-process memos)
+
+The executor reads a repository tree file once per command and trusts it from then on, because the
+command verified the tree when it materialized it, before any action ran (L2-W1,
+docs/HARDLINK_STAGING.md, "Per-process memos"). With the table that verification no longer reads every
+file of a registry or `bazel_tools` tree, but it stays exactly as strong as `repository_store`'s Stat
+mode, because it keys by the change time:
+
+- **Next command: an edited tree file is caught.** A file of a tree store edited in place between
+  commands, even with the same size and its modification time restored, has a new ctime. The next
+  command's verification finds no record of that state, hashes the file, sees the mismatch and replaces
+  the tree before any action runs: registry trees and `bazel_tools` are extracted afresh; a
+  repository rule's tree fails its Stat fingerprint (ctime), so the rule runs again and the publication
+  replaces the damaged tree; Git trees are hashed in full on every warm check anyway. The executor then
+  reads new inodes, which its own records never match (cache-owned files are keyed by inode and birth
+  time, below), so it hashes them. CLI test
+  `edited_repository_tree_files_are_caught_by_the_next_command` (both a repository rule's tree and
+  `bazel_tools`; it fails if the verification's key leaves out the ctime).
+- **Within one command: unchanged.** The executor's memos and their trust are those of L2-W1: an edit
+  made while a command runs, after the command looked at the file, is not re-detected by that command.
+  The table only supplies a file's first digest in exactly the state it was recorded in; for a file
+  the cache owns that is the same device, inode, size, modification time and birth time, and for a
+  repository tree file it is reached only after this command verified the tree.
+- **The executor's own key omits the ctime** of cache-owned files (every `link()` of a blob moves it):
+  for repository tree files it relies on the verification that every command runs before execution.
+  Anything that skips that verification (for instance reusing analysis results without materializing
+  the repositories again) must key tree files by ctime in the executor, or verify them.
+- **Blobs and published outputs** (`cas/`, `actions/`) have no second check: they are read-only, and an
+  in-place edit that keeps their size, mtime and mode (after a `chmod`) is trusted by later commands
+  too, where before the table only the rest of the command trusted it (as the per-process memo always
+  did, docs/HARDLINK_STAGING.md, "Trade-offs and limits"). `BAZEL_RS_DIGEST_MEMO=off` restores the
+  re-hash per command.
+
 ## Switches
 
 - `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full`: repository verification (registry trees,

@@ -185,7 +185,10 @@ written into the execution root and published through this store.)
 * A blob removed between its validity check and the link (a concurrent
   damaged-blob removal) is ensured once more and linked again.
 * The digest memo trusts a cache-owned file (blob, published output) by its
-  mtime alone, since every link() to it bumps its ctime.
+  mtime alone, since every link() to it bumps its ctime (keyed by inode,
+  size, mtime and birth time). Since L2-W2 such digests also persist across
+  commands; repository tree files are re-verified with their ctime by every
+  command (docs/DIGEST_MEMO.md, "Trust").
 
 ## Benchmark
 
