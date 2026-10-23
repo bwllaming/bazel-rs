@@ -38,6 +38,15 @@ subpackage lookup consults (`glob::listing_keeps`); recorded repository inputs
 (`dirents`) record everything. While recording, the facade returns only the
 projected entries, so a caller cannot depend on an unrecorded entry.
 
+A READ answered by a digest memo instead of the facade's own read
+(integration-20) is recorded the same way by `observed_fs::note_read_digest`:
+the warm revalidation of recorded repository-rule inputs takes file digests
+from the recorded-input memo and the persistent digest table
+(`repository_ctx::recorded_file_state`, `observed_tree_digest`; a hit reads
+nothing), and every answer, hit or read, becomes the READ of that path with the
+stat key the lookup used — the opened file's fstat, for a symlink the target's
+plus the link's LSTAT — never a fresh lstat.
+
 The same `(op, path)` observed twice with different outcomes, or a file that
 changed while it was read, makes the run **Unstable**.
 
@@ -257,7 +266,7 @@ stderr). Any other value of the variable is reported and ignored.
    `observed_fs`, `snapshot/*`), the variable is a diagnostics switch or test
    hook, or the use carries a `// snapshot-unrecorded: <reason>` comment.
    Allowlisted storage modules record what they verify through the semantic
-   hooks (`repository_tree`, `note_read`, `taint`).
+   hooks (`repository_tree`, `note_read`, `note_read_digest`, `taint`).
    `digest_memo` is not on the allowlist: only its own table files (and the
    hashing it does for callers that record the answer themselves) carry
    `snapshot-unrecorded:` comments.

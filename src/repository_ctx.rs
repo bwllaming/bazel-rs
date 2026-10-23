@@ -716,14 +716,19 @@ fn file_state(host: &Path) -> anyhow::Result<String> {
 
 /// `file_state` for warm-publication revalidation (RepoRecordedInput
 /// states), observed through crate::observed_fs for the analysis snapshot
-/// (the same state string).
+/// (the same state string). A regular file's digest comes from
+/// [`FILE_DIGESTS`] — the in-process memo, the persistent digest table or a
+/// read — and every answer is recorded as the READ of `host` it stands for
+/// ([`FileDigestMemo::observed_sha256`]).
 pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
     Some(match crate::observed_fs::metadata(host) {
         Err(_) => "missing".to_owned(),
         Ok(metadata) if metadata.is_dir() => "directory".to_owned(),
         Ok(metadata) if metadata.is_file() => format!(
             "file:{}",
-            crate::observed_fs::hex(&crate::observed_fs::sha256_file(host).ok()?)
+            FILE_DIGESTS
+                .observed_sha256(host, std::time::SystemTime::now())
+                .ok()?
         ),
         Ok(_) => "other".to_owned(),
     })
@@ -836,6 +841,25 @@ impl FileDigestMemo {
         self.sha256_in(crate::digest_memo::repository_table(), host, start)
     }
 
+    /// [`FileDigestMemo::sha256`] for the warm revalidation of recorded
+    /// inputs, inside the analysis snapshot's recording window
+    /// (integration-20, INTEGRATION-20.md F4): every answer — an in-process
+    /// hit, the persistent table's digest or a read — is recorded as the
+    /// READ of `host` it stands for, keyed by the opened file's fstat: the
+    /// exact stat the memo and the table were looked up by
+    /// (crate::observed_fs::note_read_digest; a symlink's LSTAT too). The
+    /// canonical path of the in-process key is observed as well.
+    fn observed_sha256(&self, host: &Path, start: std::time::SystemTime) -> anyhow::Result<String> {
+        let (digest, opened) =
+            self.answer(crate::digest_memo::repository_table(), host, start, true)?;
+        if crate::observed_fs::recording()
+            && let Some(sha256) = crate::digest_memo::parse_hex(&digest)
+        {
+            crate::observed_fs::note_read_digest(host, &opened, sha256);
+        }
+        Ok(digest)
+    }
+
     /// [`FileDigestMemo::sha256`] with an explicit persistent table
     /// (`None`: none installed, or `--verify_repo_tampering`).
     fn sha256_in(
@@ -844,17 +868,38 @@ impl FileDigestMemo {
         host: &Path,
         start: std::time::SystemTime,
     ) -> anyhow::Result<String> {
+        self.answer(table, host, start, false)
+            .map(|(digest, _)| digest)
+    }
+
+    /// The digest of regular file `host` and the fstat of the file opened
+    /// for it (the stat every lookup of the answer was keyed by). With
+    /// `observed` the in-process key's canonical path is taken through
+    /// crate::observed_fs.
+    fn answer(
+        &self,
+        table: Option<&crate::digest_memo::Table>,
+        host: &Path,
+        start: std::time::SystemTime,
+        observed: bool,
+    ) -> anyhow::Result<(String, fs::Metadata)> {
         let file = fs::File::open(host).map_err(|error| file_not_found(host, &error))?;
         let metadata = file
             .metadata()
             .map_err(|error| file_not_found(host, &error))?;
         let size = metadata.len();
-        let key = fs::canonicalize(host)
+        let canonical = if observed {
+            crate::observed_fs::canonicalize(host)
+        } else {
+            fs::canonicalize(host)
+        };
+        let key = canonical
             .ok()
             .map(|canonical| FileDigestKey::new(canonical, &metadata))
             .filter(|key| key.settled(start));
         let Some(key) = key else {
-            return self.digest(table, host, &file, &metadata, start);
+            let digest = self.digest(table, host, &file, &metadata, start)?;
+            return Ok((digest, metadata));
         };
         let cell = {
             let mut cells = self
@@ -884,7 +929,7 @@ impl FileDigestMemo {
             // again (the key of a file that changed is dead anyway).
             self.forget(&key, &cell);
         }
-        match (hashed_here, remembered) {
+        let digest = match (hashed_here, remembered) {
             // This observation hashed the file: its own answer.
             (Some(digest), _) => digest,
             (None, Some(digest)) => {
@@ -893,7 +938,8 @@ impl FileDigestMemo {
             }
             // Another observation's digest could not be remembered.
             (None, None) => self.digest(table, host, &file, &metadata, start),
-        }
+        }?;
+        Ok((digest, metadata))
     }
 
     /// The digest of the opened `file` (nothing has been read from it),
@@ -975,7 +1021,9 @@ pub(crate) fn recorded_dirtree_state(host: &Path) -> Option<String> {
 }
 
 /// [`tree_digest`] observed through crate::observed_fs (the same digest),
-/// for warm-publication revalidation inside the snapshot window.
+/// for warm-publication revalidation inside the snapshot window. A file's
+/// digest comes from the persistent digest table as for [`tree_digest`]
+/// ([`observed_file_sha256`]).
 fn observed_tree_digest(root: &Path) -> std::io::Result<String> {
     use crate::observed_fs;
     fn visit(directory: &Path, prefix: &[u8], out: &mut Vec<u8>) -> std::io::Result<()> {
@@ -1003,7 +1051,7 @@ fn observed_tree_digest(root: &Path) -> std::io::Result<String> {
                 out.push(0);
                 visit(&path, &relative, out)?;
             } else if metadata.is_file() {
-                let digest = observed_fs::hex(&observed_fs::sha256_file(&path)?);
+                let digest = observed_fs::hex(&observed_file_sha256(&path)?);
                 out.extend_from_slice(format!("file\0{digest}").as_bytes());
             } else {
                 out.extend_from_slice(b"other");
@@ -1015,6 +1063,26 @@ fn observed_tree_digest(root: &Path) -> std::io::Result<String> {
     let mut out = Vec::new();
     visit(root, b"", &mut out)?;
     Ok(sha256(&out))
+}
+
+/// [`file_sha256`] for [`observed_tree_digest`] (integration-20,
+/// INTEGRATION-20.md F4): the file at `path` is opened and hashed through
+/// crate::digest_memo::opened_sha256 — the persistent table's digest when it
+/// records `path` in exactly the opened file's state, otherwise the bytes
+/// read from it — and the answer, hit or read, is recorded as the READ of
+/// `path` it stands for, keyed by the opened file's fstat
+/// (crate::observed_fs::note_read_digest).
+fn observed_file_sha256(path: &Path) -> std::io::Result<[u8; 32]> {
+    let file = fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    let sha256 = crate::digest_memo::opened_sha256(
+        &file,
+        &metadata,
+        path,
+        crate::digest_memo::Use::Recorded,
+    )?;
+    crate::observed_fs::note_read_digest(path, &metadata, sha256);
+    Ok(sha256)
 }
 
 /// The SHA-256 of a file of a watched tree ([`tree_digest`]; the files a

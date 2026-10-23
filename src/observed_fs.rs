@@ -623,6 +623,22 @@ impl Recorder {
         self.observe(path, Op::Read, Outcome::Read { sha256, key, racy });
     }
 
+    /// [`note_read_digest`]: READ with the key `opened` (the stat the
+    /// digest memo's lookup used), and — as in [`Recorder::key_before`] —
+    /// the LSTAT of a symlink at `path`.
+    fn read_digest(&self, path: &Path, opened: &fs::Metadata, sha256: [u8; 32]) {
+        let lstat = fs::symlink_metadata(path);
+        if lstat
+            .as_ref()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            self.observe_lstat(path, &lstat);
+        }
+        let key = StatKey::of(opened);
+        let racy = self.racy(&key);
+        self.observe(path, Op::Read, Outcome::Read { sha256, key, racy });
+    }
+
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         self.read_staged(path).map_err(ReadError::into_inner)
     }
@@ -1104,6 +1120,24 @@ pub fn note_read(path: &Path, bytes: &[u8]) {
     );
 }
 
+/// Record the READ of `path` that a digest memo answered (integration-20,
+/// INTEGRATION-20.md F4): crate::digest_memo's persistent table, an
+/// in-process memo in front of it (repository_ctx's recorded-input
+/// `FileDigestMemo`), or the bytes such a caller hashed from the file it
+/// opened at `path`. `sha256` is that file's digest and `opened` its own
+/// fstat — the exact stat the memo's lookup was keyed by (for a symlink the
+/// target's) — which becomes the READ's key: never [`note_read`]'s fresh
+/// lstat, since a hit reads nothing and a link's own lstat says nothing
+/// about the bytes it leads to. As for a read through this facade
+/// (`Recorder::key_before`), a symlink at `path` also becomes an LSTAT
+/// observation (its target), so retargeting it is seen. Call it for every
+/// answer, hit or read.
+pub fn note_read_digest(path: &Path, opened: &fs::Metadata, sha256: [u8; 32]) {
+    if let Some(recorder) = active() {
+        recorder.read_digest(path, opened, sha256);
+    }
+}
+
 /// Record an environment value the repository environment observed (ENV,
 /// digest only; crate::repository_environment).
 pub fn note_env(name: &OsStr, value: Option<&OsStr>) {
@@ -1296,6 +1330,55 @@ mod tests {
             Outcome::Read { racy: true, .. }
         ));
         assert!(recording.taints.is_empty(), "{:?}", recording.taints);
+    }
+
+    /// A digest memo's answer (integration-20 F4) is recorded as the READ a
+    /// read through the facade records: the opened file's stat — for a
+    /// symlink the target's, plus the link's LSTAT — never the link's own
+    /// lstat.
+    #[test]
+    fn digest_memo_answers_are_reads_keyed_by_the_opened_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::write(root.join("a"), b"alpha").unwrap();
+        std::os::unix::fs::symlink("a", root.join("link")).unwrap();
+        let digest = sha256(b"alpha");
+        let opened = fs::File::open(root.join("link"))
+            .unwrap()
+            .metadata()
+            .unwrap();
+        let memo = Recorder::new(now_ns(), BTreeSet::new());
+        memo.read_digest(
+            &root.join("a"),
+            &fs::metadata(root.join("a")).unwrap(),
+            digest,
+        );
+        memo.read_digest(&root.join("link"), &opened, digest);
+        let facade = Recorder::new(now_ns(), BTreeSet::new());
+        facade.read(&root.join("a")).unwrap();
+        facade.read(&root.join("link")).unwrap();
+        let (memo, facade) = (memo.snapshot(), facade.snapshot());
+        assert_eq!(memo.observations, facade.observations);
+        let key = StatKey::of(&opened);
+        assert_ne!(
+            key,
+            StatKey::of(&fs::symlink_metadata(root.join("link")).unwrap())
+        );
+        let link_read = memo
+            .observations
+            .iter()
+            .find(|(path, observation)| path.ends_with("link") && observation.op == Op::Read)
+            .unwrap();
+        assert!(matches!(
+            link_read.1.outcome,
+            Outcome::Read { sha256, key: read_key, .. } if sha256 == digest && read_key == key
+        ));
+        assert!(memo.observations.iter().any(|(path, observation)| {
+            path.ends_with("link")
+                && observation.op == Op::Lstat
+                && observation.outcome == Outcome::Link(PathBuf::from("a"))
+        }));
+        assert!(memo.taints.is_empty(), "{:?}", memo.taints);
     }
 
     #[test]

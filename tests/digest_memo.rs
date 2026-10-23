@@ -465,3 +465,109 @@ fn symlinks_into_an_old_tree_identity_see_edits_that_restore_the_mtime() {
         "constant\n"
     );
 }
+
+/// Integration-20 (INTEGRATION-20.md F4): the warm revalidation of a
+/// repository rule's recorded file inputs takes their digests from the
+/// recorded-input memo and the persistent table, so it reads nothing — and
+/// the analysis snapshot's record mode still records every answer as the
+/// READ of that path, keyed by the stat the lookup used: the file's own,
+/// and for a symlink the target's (plus the link's LSTAT), never the
+/// link's lstat.
+#[test]
+fn record_mode_records_reads_the_digest_memo_answered() {
+    let workspace = Workspace::new();
+    workspace.write(
+        "MODULE.bazel",
+        "module(name = 'recorded_inputs_fixture')\n\
+         gen = use_repo_rule('//:rules.bzl', 'gen')\n\
+         gen(name = 'gen')\n",
+    );
+    workspace.write(
+        "rules.bzl",
+        "def _gen(ctx):\n\
+         \x20   ctx.watch(Label('//:input.txt'))\n\
+         \x20   ctx.watch(Label('//:link.txt'))\n\
+         \x20   ctx.file('BUILD.bazel', \"filegroup(name = 'all')\")\n\
+         \n\
+         gen = repository_rule(implementation = _gen)\n",
+    );
+    workspace.write("BUILD.bazel", "");
+    workspace.write("input.txt", "watched contents\n");
+    std::os::unix::fs::symlink("input.txt", workspace.path().join("link.txt")).unwrap();
+    let analyze = |environment: &[(&str, &str)]| {
+        workspace.run(&["build", "--nobuild", "@gen//:all"], environment)
+    };
+    let recorded = |run: &Run| -> String {
+        run.stderr
+            .lines()
+            .find(|line| line.starts_with("PERF-REPO recorded-input file digests:"))
+            .unwrap_or_else(|| panic!("no recorded-input digests line:\n{}", run.stderr))
+            .to_owned()
+    };
+    // Cold: the rule runs; its just-written inputs are racy (never memoized
+    // or recorded in the table).
+    analyze(&[]);
+    settle();
+    // Warm: the recorded inputs are revalidated, read once (the link's
+    // canonical path and stat are the file's: an in-process hit) and
+    // recorded in the table.
+    let warm = analyze(&[]);
+    assert!(
+        recorded(&warm).contains("hashed=1 ") && recorded(&warm).contains("memo_hits=1 "),
+        "{}",
+        warm.stderr
+    );
+    // Recording: nothing is read, every answer is a recorded READ.
+    let dump = workspace.path().join("snapshot-dump.txt");
+    let dump_text = dump.to_str().unwrap();
+    let recording = analyze(&[
+        ("BAZEL_RS_SNAPSHOT", "record"),
+        ("BAZEL_RS_SNAPSHOT_DUMP", dump_text),
+    ]);
+    assert!(
+        recorded(&recording).contains("hashed=0 ") && recorded(&recording).contains("memo_hits=2 "),
+        "{}",
+        recording.stderr
+    );
+    let root = fs::canonicalize(workspace.path()).unwrap();
+    let input = fs::metadata(root.join("input.txt")).unwrap();
+    let key = format!(
+        "{}:{}:{}:{}:{}",
+        input.dev(),
+        input.ino(),
+        input.size(),
+        input.mtime() * 1_000_000_000 + input.mtime_nsec(),
+        input.ctime() * 1_000_000_000 + input.ctime_nsec(),
+    );
+    let link = fs::symlink_metadata(root.join("link.txt")).unwrap();
+    assert_ne!(link.ino(), input.ino());
+    let sha256 = {
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(b"watched contents\n").into();
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let dump = fs::read_to_string(&dump).unwrap();
+    for expected in [
+        format!(
+            "OBS {}/input.txt READ sha256:{sha256} key:{key}",
+            root.display()
+        ),
+        format!("OBS {}/link.txt LSTAT link:input.txt", root.display()),
+        format!(
+            "OBS {}/link.txt READ sha256:{sha256} key:{key}",
+            root.display()
+        ),
+    ] {
+        assert!(
+            dump.lines().any(|line| line == expected),
+            "missing {expected:?} in the dump:\n{}",
+            dump.lines()
+                .filter(|line| line.contains("input.txt") || line.contains("link.txt"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
