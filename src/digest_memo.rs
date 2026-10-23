@@ -1007,11 +1007,12 @@ fn file_sha256_in(
 ///
 /// This is the entry point for every in-process memo of file digests that
 /// sits in front of the table, so that the file states it observes keep
-/// hitting (and filling) the table: the i20-hardening branch's
-/// `repository_ctx::FileDigestMemo::sha256` (recorded repository inputs,
-/// not on this branch) opens and fstats the file itself and must hash it
-/// through this function (`Use::Recorded`) instead of reading the file
-/// directly; [`path_sha256`] is the same for callers that start from a path.
+/// hitting (and filling) the table: `repository_ctx::FileDigestMemo`
+/// (recorded repository inputs, i20-hardening) opens and fstats the file
+/// itself and hashes it through this function (`Use::Recorded`; its
+/// [`opened_sha256_in`] form, which also tells a table answer from a read)
+/// instead of reading the file directly; [`path_sha256`] is the same for
+/// callers that start from a path.
 pub fn opened_sha256(
     file: &File,
     metadata: &fs::Metadata,
@@ -1026,24 +1027,39 @@ pub fn opened_sha256(
         user,
         SystemTime::now,
     )
+    .map(|(sha256, _)| sha256)
 }
 
-/// [`opened_sha256`] with an explicit table and clock (tests).
-fn opened_sha256_in(
+/// How an [`opened_sha256`] digest was answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    /// The table records the path in exactly the opened file's state:
+    /// nothing was read (an in-process memo in front of the table counts it
+    /// as a hit).
+    Table,
+    /// The opened file was read.
+    Read,
+}
+
+/// [`opened_sha256`] with an explicit table (`None`: none installed, or
+/// `--verify_repo_tampering`) and clock, and how it was answered
+/// (`repository_ctx::FileDigestMemo`, whose clock is the observation's
+/// start; tests).
+pub(crate) fn opened_sha256_in(
     table: Option<&Table>,
     file: &File,
     metadata: &fs::Metadata,
     path: &Path,
     user: Use,
     now: impl Fn() -> SystemTime,
-) -> io::Result<[u8; 32]> {
+) -> io::Result<([u8; 32], Answer)> {
     let key = table
         .filter(|_| metadata.is_file())
         .and_then(|_| Key::of(metadata, false));
     if let (Some(table), Some(key)) = (table, &key)
         && let Some(sha256) = table.lookup(path, key)
     {
-        return Ok(sha256);
+        return Ok((sha256, Answer::Table));
     }
     let start = now();
     let mut reader = file;
@@ -1057,7 +1073,7 @@ fn opened_sha256_in(
     {
         table.remember(path, key, sha256, false);
     }
-    Ok(sha256)
+    Ok((sha256, Answer::Read))
 }
 
 /// The SHA-256 of the file at `path` (following links) for a caller with
@@ -1089,7 +1105,7 @@ fn path_sha256_in<E>(
         && let Ok(file) = File::open(path)
         && let Ok(metadata) = file.metadata()
         && metadata.is_file()
-        && let Ok(sha256) = opened_sha256_in(Some(table), &file, &metadata, path, user, now)
+        && let Ok((sha256, _)) = opened_sha256_in(Some(table), &file, &metadata, path, user, now)
     {
         return Ok(sha256.to_vec());
     }
@@ -1845,7 +1861,7 @@ mod tests {
                 || later
             )
             .unwrap(),
-            digest_a
+            (digest_a, Answer::Read)
         );
         assert_eq!(fresh.lookup(&link, &key_a), Some(digest_a));
         let key_b = Key::of(&fs::metadata(&link).unwrap(), false).unwrap();
@@ -1864,7 +1880,7 @@ mod tests {
                 || later
             )
             .unwrap(),
-            digest_a
+            (digest_a, Answer::Table)
         );
         assert_ne!(digest_a, digest_b);
     }

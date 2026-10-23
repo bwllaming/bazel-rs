@@ -627,11 +627,12 @@ process-wide memo (`FileDigestMemo`):
   dropped;
 - bounded: at 65,536 entries it starts over;
 - in front of the persistent digest table (docs/DIGEST_MEMO.md;
-  integration-20): a digest the memo does not hold is taken from
-  `<cache>/digests/v1.dmemo` when that records the path in exactly the
-  opened file's state (external ctime key; never under
-  `--verify_repo_tampering`), and a settled read that kept its stat is
-  recorded there, so a later process reads none of the unchanged files.
+  integration-20): a digest the memo does not hold comes from
+  `digest_memo::opened_sha256` — `<cache>/digests/v1.dmemo`'s when that
+  records the path in exactly the opened file's state (external ctime key;
+  never under `--verify_repo_tampering`), otherwise the opened file is
+  read and a settled read that kept its stat is recorded there — so a
+  later process reads none of the unchanged files.
   Test `recorded_file_digest_misses_consult_the_persistent_table`.
 
 Test `recorded_file_digests_are_memoized_only_when_settled`: a racy file is

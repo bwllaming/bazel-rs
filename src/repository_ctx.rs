@@ -793,9 +793,10 @@ type DigestCell = Arc<std::sync::OnceLock<Option<String>>>;
 /// hashed on every observation. Concurrent observations of one key hash it
 /// once: the others wait for that digest (warm validations of ~400
 /// go_repositories run in parallel). A digest the memo does not hold comes
-/// from the persistent digest table when that records the file in exactly
-/// its opened state ([`FileDigestMemo::digest`]), so the memo sits in front
-/// of crate::digest_memo as `file_sha256` does for `watch_tree`.
+/// from crate::digest_memo::opened_sha256 ([`FileDigestMemo::digest`]): the
+/// persistent digest table's when that records the file in exactly its
+/// opened state, so the memo sits in front of the table as `file_sha256`
+/// does for `watch_tree`.
 #[derive(Default)]
 struct FileDigestMemo {
     cells: std::sync::Mutex<std::collections::HashMap<FileDigestKey, DigestCell>>,
@@ -820,7 +821,7 @@ impl FileDigestMemo {
         host: &Path,
         start: std::time::SystemTime,
     ) -> anyhow::Result<String> {
-        let mut file = fs::File::open(host).map_err(|error| file_not_found(host, &error))?;
+        let file = fs::File::open(host).map_err(|error| file_not_found(host, &error))?;
         let metadata = file
             .metadata()
             .map_err(|error| file_not_found(host, &error))?;
@@ -830,7 +831,7 @@ impl FileDigestMemo {
             .map(|canonical| FileDigestKey::new(canonical, &metadata))
             .filter(|key| key.settled(start));
         let Some(key) = key else {
-            return self.digest(table, host, &mut file, &metadata, start);
+            return self.digest(table, host, &file, &metadata, start);
         };
         let cell = {
             let mut cells = self
@@ -844,7 +845,7 @@ impl FileDigestMemo {
         };
         let mut hashed_here = None;
         let remembered = cell.get_or_init(|| {
-            let digest = self.digest(table, host, &mut file, &metadata, start);
+            let digest = self.digest(table, host, &file, &metadata, start);
             let remembered = match &digest {
                 // Only if the file kept the stat it is keyed by.
                 Ok(digest) if file.metadata().is_ok_and(|after| key.same_stat(&after)) => {
@@ -868,47 +869,41 @@ impl FileDigestMemo {
                 Ok(digest.clone())
             }
             // Another observation's digest could not be remembered.
-            (None, None) => self.digest(table, host, &mut file, &metadata, start),
+            (None, None) => self.digest(table, host, &file, &metadata, start),
         }
     }
 
     /// The digest of the opened `file` (nothing has been read from it),
-    /// whose fstat is `metadata`: the persistent table's when it records
-    /// `host` in exactly that state (the external, ctime key of every
-    /// repository use of crate::digest_memo); otherwise the file is read,
-    /// and its digest recorded in the table for later processes when it
-    /// was settled at `start` and kept its stat while it was read (the rule
-    /// of `digest_memo::path_sha256`).
+    /// whose fstat is `metadata`, through crate::digest_memo::opened_sha256
+    /// (`Use::Recorded`; the one implementation of the table's contract):
+    /// the persistent table's when it records `host` in exactly that state
+    /// (the external, ctime key of every repository use of the table);
+    /// otherwise the bytes read from `file` itself, recorded in the table
+    /// for later processes when the file was settled at `start` (this
+    /// observation's start, before the read) and kept its stat while it was
+    /// read. A table answer is counted with the in-process memo's hits.
     fn digest(
         &self,
         table: Option<&crate::digest_memo::Table>,
         host: &Path,
-        file: &mut fs::File,
+        file: &fs::File,
         metadata: &fs::Metadata,
         start: std::time::SystemTime,
     ) -> anyhow::Result<String> {
-        use crate::digest_memo::{self, Key};
-        let size = metadata.len();
-        let key = table.and_then(|_| Key::of(metadata, false));
-        if let (Some(table), Some(key)) = (table, &key)
-            && let Some(sha256) = table.lookup(host, key)
-        {
-            // Not re-hashed: counted with the in-process memo's hits.
-            crate::repository_store::timing::count_recorded_digest(true, size);
-            return Ok(digest_memo::hex(&sha256));
+        use crate::digest_memo::{self, Answer, Use};
+        let (sha256, answer) =
+            digest_memo::opened_sha256_in(table, file, metadata, host, Use::Recorded, || start)
+                .map_err(|error| file_not_found(host, &error))?;
+        #[cfg(test)]
+        if answer == Answer::Read {
+            self.hashed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
-        let digest = self.hash(host, file, size)?;
-        digest_memo::count_hashed(digest_memo::Use::Recorded, size);
-        if let (Some(table), Some(key)) = (table, key)
-            && digest_memo::settled(metadata, start, false)
-            && file
-                .metadata()
-                .is_ok_and(|after| Key::of(&after, false) == Some(key))
-            && let Some(sha256) = digest_memo::parse_hex(&digest)
-        {
-            table.remember(host, key, sha256, false);
-        }
-        Ok(digest)
+        crate::repository_store::timing::count_recorded_digest(
+            answer == Answer::Table,
+            metadata.len(),
+        );
+        Ok(digest_memo::hex(&sha256))
     }
 
     fn forget(&self, key: &FileDigestKey, cell: &DigestCell) {
@@ -922,18 +917,6 @@ impl FileDigestMemo {
         {
             cells.remove(key);
         }
-    }
-
-    /// Hash the rest of the opened `file` (nothing has been read from it).
-    fn hash(&self, host: &Path, file: &mut fs::File, size: u64) -> anyhow::Result<String> {
-        #[cfg(test)]
-        self.hashed
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::repository_store::timing::count_recorded_digest(false, size);
-        let mut hash = transport::Hash::new(Algorithm::Sha256);
-        transport::copy_hashed(file, &mut std::io::sink(), &mut hash)
-            .map_err(|error| file_not_found(host, &error))?;
-        Ok(transport::hex(&hash.finish()))
     }
 }
 
