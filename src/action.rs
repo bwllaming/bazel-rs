@@ -63,7 +63,7 @@
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, hash_map};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -499,6 +499,21 @@ fn validate_relative(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// `Path::cmp` of two paths [`validate_relative`] admitted (relative, every
+/// component normal, single separators), from the bytes: byte order with
+/// the separator below every other byte. At the first differing byte a
+/// separator ends the shorter of two components, which sorts first, as a
+/// path that ends there does.
+fn compare_relative(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let rank = |byte: u8| {
+        if byte == b'/' { 0 } else { u16::from(byte) + 1 }
+    };
+    match a.iter().zip(b).position(|(x, y)| x != y) {
+        Some(at) => rank(a[at]).cmp(&rank(b[at])),
+        None => a.len().cmp(&b.len()),
+    }
+}
+
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
@@ -569,6 +584,43 @@ fn remember_directory(path: PathBuf) {
     memo.insert(path);
 }
 
+/// Whether `bytes` spell a plain absolute path: a leading `/`, no empty
+/// component (`//`), no `.` component and no trailing separator — exactly
+/// the absolute paths that `Path::components` rebuilds byte for byte (`..`
+/// stays a component). The canonical cache root and planned inputs are
+/// spelled so; for two plain paths, `Path::strip_prefix` and the components
+/// of its result follow from the bytes ([`plain_rest`]), without parsing
+/// components or allocating (the per-input checks of a 6,000-input action).
+fn plain(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&b'/')
+        && !bytes.ends_with(b"/")
+        && !bytes.ends_with(b"/.")
+        && !bytes.windows(2).any(|pair| pair == b"//")
+        && !bytes.windows(3).any(|triple| triple == b"/./")
+}
+
+/// For [`plain`] `root` and `path`: the bytes of `path.strip_prefix(root)`
+/// when `path` lies strictly below `root` (its components are then the
+/// `/`-separated names, none empty), else `None`.
+fn plain_rest<'a>(root: &[u8], path: &'a [u8]) -> Option<&'a [u8]> {
+    path.strip_prefix(root)?.strip_prefix(b"/")
+}
+
+/// [`owned_no_linked_ancestor`]'s qualification of `path` below a `root`
+/// that is not [`plain`], by components.
+fn owned_area_by_components(path: &Path, root: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut components = relative.components();
+    matches!(
+        components.next(),
+        Some(Component::Normal(first))
+            if matches!(first.as_bytes(), b"actions" | b"cas" | b"repositories")
+    ) && components.all(|component| matches!(component, Component::Normal(_)))
+        && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
+}
+
 /// The memoized part of [`no_linked_ancestor`] for `path` below the
 /// canonical cache root `root`, in `actions/`, `cas/` or `repositories/`,
 /// spelled exactly as its normal components (no `.`, `..`, repeated or
@@ -583,16 +635,19 @@ fn owned_no_linked_ancestor(
     root: &Path,
     leaf: Option<fs::Metadata>,
 ) -> Option<fs::Metadata> {
-    let relative = path.strip_prefix(root).ok()?;
-    let mut components = relative.components();
-    match components.next() {
-        Some(Component::Normal(first))
-            if matches!(first.as_bytes(), b"actions" | b"cas" | b"repositories") => {}
-        _ => return None,
-    }
-    if !components.all(|component| matches!(component, Component::Normal(_)))
-        || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
-    {
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    let qualifies = if plain(root_bytes) {
+        // Spelled as its components: plain as well.
+        plain(bytes)
+            && plain_rest(root_bytes, bytes).is_some_and(|rest| {
+                let mut names = rest.split(|byte| *byte == b'/');
+                matches!(names.next(), Some(b"actions" | b"cas" | b"repositories"))
+                    && names.all(|name| name != b"..")
+            })
+    } else {
+        owned_area_by_components(path, root)
+    };
+    if !qualifies {
         return None;
     }
     let parent = path.parent()?;
@@ -835,7 +890,25 @@ fn remember_published(path: &Path, digest: &str) {
 }
 
 fn owned_by(root: Option<&Path>, path: &Path) -> bool {
-    root.is_some_and(|root| path.starts_with(root))
+    root.is_some_and(|root| {
+        let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+        if plain(root_bytes) && plain(bytes) {
+            bytes == root_bytes || plain_rest(root_bytes, bytes).is_some()
+        } else {
+            path.starts_with(root)
+        }
+    })
+}
+
+/// Whether `path` is `<root>/actions` or below it (`Path::starts_with`).
+fn in_actions(root: &Path, path: &Path) -> bool {
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    if plain(root_bytes) && plain(bytes) {
+        plain_rest(root_bytes, bytes)
+            .is_some_and(|rest| rest == b"actions" || rest.starts_with(b"actions/"))
+    } else {
+        path.starts_with(root.join("actions"))
+    }
 }
 
 /// Follow published symlink outputs (`<root>/actions/.../outputs/...`, see
@@ -850,10 +923,9 @@ fn resolve_published(
     let Some(root) = root else {
         return Ok((path.to_path_buf(), None));
     };
-    let actions = root.join("actions");
     let mut current = path.to_path_buf();
     for _ in 0..MAX_LINK_DEPTH {
-        if !current.starts_with(&actions) {
+        if !in_actions(root, &current) {
             return Ok((current, None));
         }
         match fs::symlink_metadata(&current) {
@@ -915,7 +987,36 @@ fn remember_file(input: &Input) {
 /// publish them again in this process. Neither are the stores' temporary
 /// entries (`.stage-*`, `.trash-*`, `.tmp-*`).
 fn store_file(root: Option<&Path>, path: &Path) -> bool {
-    let Some(relative) = root.and_then(|root| path.strip_prefix(root).ok()) else {
+    let Some(root) = root else {
+        return false;
+    };
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    if !plain(root_bytes) {
+        return store_file_by_components(root, path);
+    }
+    // Spelled as its components: plain as well.
+    plain(bytes)
+        && plain_rest(root_bytes, bytes).is_some_and(|rest| {
+            let names: Vec<&[u8]> = rest.split(|byte| *byte == b'/').collect();
+            !names.contains(&b"..".as_slice()) && in_store(&names)
+        })
+}
+
+/// Whether the names below the cache root (normal components) are a
+/// store file's ([`store_file`]).
+fn in_store(names: &[&[u8]]) -> bool {
+    let published = |name: &[u8]| !name.starts_with(b".");
+    match names {
+        [b"cas", blob] => published(blob),
+        [b"repositories", b"trees", identity, _, ..]
+        | [b"repositories", _, b"trees", identity, _, ..] => published(identity),
+        _ => false,
+    }
+}
+
+/// [`store_file`] below a `root` that is not [`plain`], by components.
+fn store_file_by_components(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };
     let mut names = Vec::new();
@@ -925,14 +1026,7 @@ fn store_file(root: Option<&Path>, path: &Path) -> bool {
         };
         names.push(name.as_bytes());
     }
-    let published = |name: &[u8]| !name.starts_with(b".");
-    let in_store = match names.as_slice() {
-        [b"cas", blob] => published(blob),
-        [b"repositories", b"trees", identity, _, ..]
-        | [b"repositories", _, b"trees", identity, _, ..] => published(identity),
-        _ => false,
-    };
-    in_store && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
+    in_store(&names) && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
 /// Digest and mode of a regular file; `root` (the canonical cache root)
@@ -1196,12 +1290,26 @@ fn forget_trees(prefix: &Path) {
 /// Whether `path` is a published action output below the canonical cache
 /// root `root`: `<root>/actions/...`, normal components only.
 fn published_output(root: Option<&Path>, path: &Path) -> bool {
-    root.and_then(|root| path.strip_prefix(root).ok())
-        .is_some_and(|relative| {
-            let mut components = relative.components();
-            components.next() == Some(Component::Normal(OsStr::new("actions")))
-                && components.all(|component| matches!(component, Component::Normal(_)))
-        })
+    let Some(root) = root else {
+        return false;
+    };
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    if plain(root_bytes) && plain(bytes) {
+        return plain_rest(root_bytes, bytes).is_some_and(|rest| {
+            let mut names = rest.split(|byte| *byte == b'/');
+            names.next() == Some(b"actions") && names.all(|name| name != b"..")
+        });
+    }
+    published_output_by_components(root, path)
+}
+
+/// [`published_output`] for paths that are not [`plain`], by components.
+fn published_output_by_components(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|relative| {
+        let mut components = relative.components();
+        components.next() == Some(Component::Normal(OsStr::new("actions")))
+            && components.all(|component| matches!(component, Component::Normal(_)))
+    })
 }
 
 /// `tree`, read below another directory (the execution root it was
@@ -1628,8 +1736,6 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     validate_structure(action)?;
     let mut outputs = action.outputs.clone();
     outputs.sort();
-    let mut inputs: BTreeMap<PathBuf, Staged> = BTreeMap::new();
-    let mut origins: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
     let paths_only = action
         .extra
         .transform
@@ -1675,12 +1781,23 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     for (&index, result) in misses.iter().zip(read_misses) {
         staged[index] = Some(result);
     }
+    // The first mapping of each destination (by bytes: validate_structure
+    // admitted only relative normal components, so equal bytes are equal
+    // paths), in input order, so that failures surface exactly where they
+    // did; the ordered maps are then built from sorted runs instead of one
+    // component-wise search per input (6,000-input actions).
     let mut staged = staged.into_iter();
+    let mut first_origins: HashSet<&[u8]> = HashSet::with_capacity(action.inputs.len());
+    let mut origin_entries: Vec<(&PathBuf, PathBuf)> = Vec::with_capacity(action.inputs.len());
+    let mut input_slots: HashMap<&[u8], usize> = HashMap::with_capacity(reads.len());
+    let mut input_entries: Vec<(&PathBuf, Staged)> = Vec::with_capacity(reads.len());
     for (source, destination) in &action.inputs {
-        if let btree_map::Entry::Vacant(entry) = origins.entry(destination.clone()) {
-            entry.insert(
+        let name = destination.as_os_str().as_bytes();
+        if first_origins.insert(name) {
+            origin_entries.push((
+                destination,
                 absolute_input(source).map_err(|e| io_error("cannot resolve input", source, e))?,
-            );
+            ));
         }
         if !read(destination) {
             continue;
@@ -1690,9 +1807,9 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             .next()
             .flatten()
             .expect("one result per read input")?;
-        match inputs.entry(destination.clone()) {
-            btree_map::Entry::Occupied(previous) => {
-                let same = match (previous.get(), &input) {
+        match input_slots.entry(name) {
+            hash_map::Entry::Occupied(slot) => {
+                let same = match (&input_entries[*slot.get()].1, &input) {
                     (Staged::File(a), Staged::File(b)) => {
                         a.digest == b.digest && a.executable == b.executable
                     }
@@ -1705,11 +1822,26 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
                     ));
                 }
             }
-            btree_map::Entry::Vacant(entry) => {
-                entry.insert(input);
+            hash_map::Entry::Vacant(slot) => {
+                slot.insert(input_entries.len());
+                input_entries.push((destination, input));
             }
         }
     }
+    let by_destination = |a: &PathBuf, b: &PathBuf| {
+        compare_relative(a.as_os_str().as_bytes(), b.as_os_str().as_bytes())
+    };
+    origin_entries.sort_unstable_by(|a, b| by_destination(a.0, b.0));
+    input_entries.sort_unstable_by(|a, b| by_destination(a.0, b.0));
+    // Sorted and unique: collecting checks the order in one pass.
+    let origins: BTreeMap<PathBuf, PathBuf> = origin_entries
+        .into_iter()
+        .map(|(destination, origin)| (destination.clone(), origin))
+        .collect();
+    let inputs: BTreeMap<PathBuf, Staged> = input_entries
+        .into_iter()
+        .map(|(destination, input)| (destination.clone(), input))
+        .collect();
     let mut hash = Sha256::new();
     for value in [FORMAT, std::env::consts::OS, std::env::consts::ARCH] {
         frame(&mut hash, value.as_bytes());
@@ -5052,6 +5184,117 @@ mod tests {
             &root.join("repositories/trees/abc")
         ));
         assert!(!store_file(None, &root.join("cas/0123-444")));
+    }
+
+    /// The byte-level checks of plain paths agree with the component-wise
+    /// definitions on every spelling (repeated, trailing and `.`/`..`
+    /// components, siblings sharing a prefix, relative paths).
+    #[test]
+    fn plain_path_checks_agree_with_component_checks() {
+        let roots = ["/cache", "/c/root", "/c/ro"];
+        let relatives = [
+            "",
+            "/",
+            "/actions",
+            "/actions/",
+            "/actions/k/outputs/file",
+            "/actions/k/outputs/../file",
+            "/actions/./k",
+            "/actions//k",
+            "/actionsx/k",
+            "/cas",
+            "/cas/0123-444",
+            "/cas/.tmp-0123-1-2",
+            "/cas/0123-444/",
+            "/cas/0123-444/.",
+            "/cas/a/b",
+            "/repositories/trees/abc/pkg/file.go",
+            "/repositories/trees/abc/pkg/./file.go",
+            "/repositories/trees/abc//file.go",
+            "/repositories/trees/abc/../x/file.go",
+            "/repositories/trees/abc",
+            "/repositories/trees/.stage-x/file",
+            "/repositories/direct/trees/def/file.go",
+            "/repositories/direct/trees/def",
+            "/repositories/modextwd/x/file",
+            "/work/k/execroot/file",
+            "/..",
+            "/../cache/cas/x",
+            "x/cas/0123-444",
+        ];
+        for root in roots {
+            let root = Path::new(root);
+            for relative in relatives {
+                let joined = format!("{}{relative}", root.display());
+                let others = [
+                    joined.clone(),
+                    format!("/c{relative}"),
+                    relative.trim_start_matches('/').to_owned(),
+                ];
+                for spelled in others {
+                    let path = Path::new(&spelled);
+                    let by_components = path.components().collect::<PathBuf>();
+                    assert_eq!(
+                        plain(path.as_os_str().as_bytes()),
+                        path.is_absolute() && by_components.as_os_str() == path.as_os_str(),
+                        "plain {spelled}"
+                    );
+                    assert_eq!(
+                        store_file(Some(root), path),
+                        store_file_by_components(root, path),
+                        "store_file {spelled} below {}",
+                        root.display()
+                    );
+                    assert_eq!(
+                        published_output(Some(root), path),
+                        published_output_by_components(root, path),
+                        "published_output {spelled}"
+                    );
+                    assert_eq!(
+                        owned_by(Some(root), path),
+                        path.starts_with(root),
+                        "owned_by {spelled}"
+                    );
+                    assert_eq!(
+                        in_actions(root, path),
+                        path.starts_with(root.join("actions")),
+                        "in_actions {spelled}"
+                    );
+                    let qualifies = plain(root.as_os_str().as_bytes())
+                        && plain(path.as_os_str().as_bytes())
+                        && plain_rest(root.as_os_str().as_bytes(), path.as_os_str().as_bytes())
+                            .is_some_and(|rest| {
+                                let mut names = rest.split(|byte| *byte == b'/');
+                                matches!(names.next(), Some(b"actions" | b"cas" | b"repositories"))
+                                    && names.all(|name| name != b"..")
+                            });
+                    assert_eq!(
+                        qualifies,
+                        owned_area_by_components(path, root),
+                        "owned area {spelled}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The byte comparison of validated relative paths is `Path::cmp`.
+    #[test]
+    fn relative_destinations_compare_like_paths() {
+        let names = [
+            "a", "a-b", "a.b", "a/b", "a/b/c", "a/bc", "a0", "ab", "a/b-c", "a/b/c-d", "b", "a/b0",
+            "A", "a/B", "a b", "a/\u{e9}", "z/y", "a/b/c/d", "\u{e9}", "a~", "a/~",
+        ];
+        for a in names {
+            assert!(validate_relative(Path::new(a)).is_ok(), "{a}");
+            for b in names {
+                assert_eq!(
+                    compare_relative(a.as_bytes(), b.as_bytes()),
+                    Path::new(a).cmp(Path::new(b)),
+                    "{a} vs {b}"
+                );
+            }
+        }
     }
 
     #[test]
