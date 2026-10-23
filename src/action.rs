@@ -41,11 +41,30 @@
 //! .checkForConcurrentModifications (:478-521) and the damaged blob is
 //! discarded. `actions.symlink` outputs are real symlinks to the target's
 //! input path (analysis/actions/SymlinkAction.java:218-238).
+//!
+//! Per-process memos keep the execution phase from inspecting the same
+//! cache-owned state once per action, like Bazel's per-build metadata:
+//! - a published tree artifact (`<root>/actions/<key>/outputs/...`, read-only
+//!   by contract and checked by `tree_valid`) is read once and shared as an
+//!   `Arc<Tree>` by every consumer, like Bazel's in-memory TreeArtifactValue;
+//!   its producer seeds the entry (cache check or publication) and replaces
+//!   or drops it whenever it publishes the tree again (`read_staged`);
+//! - a file of the cache's immutable stores (content-addressed repository
+//!   trees and blobs) is read once (`file_memo`);
+//! - cache-owned directories (below the canonical cache root, outside the
+//!   execution roots under `work/`) are lstat'ed once to establish that they
+//!   are real directories (`no_linked_ancestor`).
+//!
+//! Workspace files and every other path outside the cache keep the full
+//! checks on every use. Many inputs (or tree files) are read and hashed on
+//! several threads (`try_map_ordered`), reporting the error a sequential
+//! read reports.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_map};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -53,7 +72,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
 
 // `native-action-v8` (integration of N41 with N42, docs/ACTION_ENV.md and
@@ -77,6 +96,13 @@ const BUFFER_BYTES: usize = 1 << 20;
 /// in-place change then necessarily carries a different timestamp.
 const RACY_MARGIN: Duration = Duration::from_secs(2);
 const DIGEST_MEMO_LIMIT: usize = 1 << 20;
+/// Entries (files plus directories) of memoized published trees; roughly a
+/// few hundred bytes each. The memo starts over when it would exceed this.
+const TREE_MEMO_LIMIT: usize = 1 << 20;
+/// Remembered cache-owned real directories (one path each).
+const DIRECTORY_MEMO_LIMIT: usize = 1 << 18;
+/// Remembered immutable-store files (one Input each).
+const FILE_MEMO_LIMIT: usize = 1 << 20;
 /// Published symlink outputs followed when they are inputs (a chain).
 const MAX_LINK_DEPTH: usize = 32;
 // Bazel 9.3 OutputPermissions.READONLY: all completed regular action outputs,
@@ -371,7 +397,9 @@ struct Tree {
 #[derive(Clone, PartialEq, Eq)]
 enum Staged {
     File(Input),
-    Tree(Tree),
+    /// Shared: a published tree is read once per process and every consumer
+    /// stages the same value ([`read_staged`]).
+    Tree(Arc<Tree>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -477,7 +505,27 @@ fn overlaps(a: &Path, b: &Path) -> bool {
 
 // Check all ancestors, not just the leaf: dir/link/file must not escape via
 // dir/link. This intentionally rejects source paths through symlink directories.
-fn no_linked_ancestor(path: &Path) -> Result<fs::Metadata, String> {
+// `cache` is the canonical cache root when the caller has one: a cache-owned
+// path then skips the directories this process already verified
+// ([`owned_no_linked_ancestor`]). Any failure, and every other path, takes
+// the full walk, so errors are reported exactly as without the memo.
+fn no_linked_ancestor(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, String> {
+    checked_path(path, cache, None)
+}
+
+/// [`no_linked_ancestor`], where `leaf` is the caller's lstat of `path`,
+/// taken just before: the memoized check uses it instead of inspecting the
+/// leaf again (the full walk ignores it).
+fn checked_path(
+    path: &Path,
+    cache: Option<&Path>,
+    leaf: Option<fs::Metadata>,
+) -> Result<fs::Metadata, String> {
+    if let Some(metadata) = cache.and_then(|root| owned_no_linked_ancestor(path, root, leaf)) {
+        return Ok(metadata);
+    }
+    #[cfg(test)]
+    FULL_ANCESTOR_WALKS.with(|walks| walks.set(walks.get() + 1));
     let mut prefix = PathBuf::new();
     for component in path.components() {
         prefix.push(component.as_os_str());
@@ -490,16 +538,107 @@ fn no_linked_ancestor(path: &Path) -> Result<fs::Metadata, String> {
     fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))
 }
 
-fn regular_file(path: &Path) -> Result<fs::Metadata, String> {
-    let metadata = no_linked_ancestor(path)?;
+/// Cache-owned directories verified by lstat to be real directories, each
+/// together with every directory between it and the cache root. They stay
+/// real directories while this process runs: the cache root is canonical,
+/// and below `actions/`, `cas/` and `repositories/` bazel-rs only creates
+/// real directories (published outputs move into place by rename;
+/// repository trees are content-addressed and only ever replaced as a whole
+/// by a tree of the same content). The execution roots under `work/` run
+/// arbitrary processes and are never remembered. Other writers racing these
+/// checks are outside the module's trust model.
+fn verified_directories() -> &'static RwLock<HashSet<PathBuf>> {
+    static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+fn directory_verified(path: &Path) -> bool {
+    verified_directories()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(path)
+}
+
+fn remember_directory(path: PathBuf) {
+    let mut memo = verified_directories()
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if memo.len() >= DIRECTORY_MEMO_LIMIT {
+        memo.clear();
+    }
+    memo.insert(path);
+}
+
+/// The memoized part of [`no_linked_ancestor`] for `path` below the
+/// canonical cache root `root`, in `actions/`, `cas/` or `repositories/`,
+/// spelled exactly as its normal components (no `.`, `..`, repeated or
+/// trailing separator). The root and its ancestors are real directories:
+/// the caller canonicalized the root for this action. Directories below it
+/// are lstat'ed once per process; the leaf is always inspected (or `leaf`,
+/// the caller's lstat of it, is used). `None` when the path does not qualify
+/// or anything fails, so that the full walk produces the result (and the
+/// exact error) it always did.
+fn owned_no_linked_ancestor(
+    path: &Path,
+    root: &Path,
+    leaf: Option<fs::Metadata>,
+) -> Option<fs::Metadata> {
+    let relative = path.strip_prefix(root).ok()?;
+    let mut components = relative.components();
+    match components.next() {
+        Some(Component::Normal(first))
+            if matches!(first.as_bytes(), b"actions" | b"cas" | b"repositories") => {}
+        _ => return None,
+    }
+    if !components.all(|component| matches!(component, Component::Normal(_)))
+        || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
+    {
+        return None;
+    }
+    let parent = path.parent()?;
+    if parent != root && !directory_verified(parent) {
+        let mut prefix = root.to_path_buf();
+        for component in parent.strip_prefix(root).ok()?.components() {
+            prefix.push(component);
+            if directory_verified(&prefix) {
+                continue;
+            }
+            // lstat: a symlink is never a directory here.
+            if !fs::symlink_metadata(&prefix).ok()?.is_dir() {
+                return None;
+            }
+            remember_directory(prefix.clone());
+        }
+    }
+    let metadata = match leaf {
+        Some(metadata) => metadata,
+        None => fs::symlink_metadata(path).ok()?,
+    };
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    Some(metadata)
+}
+
+fn regular_file(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, String> {
+    regular_file_known(path, cache, None)
+}
+
+/// [`regular_file`] with the caller's lstat of `path` ([`checked_path`]).
+fn regular_file_known(
+    path: &Path,
+    cache: Option<&Path>,
+    leaf: Option<fs::Metadata>,
+) -> Result<fs::Metadata, String> {
+    let metadata = checked_path(path, cache, leaf)?;
     if !metadata.is_file() {
         return Err(format!("expected regular file: '{}'", path.display()));
     }
     Ok(metadata)
 }
 
-fn real_directory(path: &Path) -> Result<fs::Metadata, String> {
-    let metadata = no_linked_ancestor(path)?;
+fn real_directory(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, String> {
+    let metadata = no_linked_ancestor(path, cache)?;
     if !metadata.is_dir() {
         return Err(format!("expected directory: '{}'", path.display()));
     }
@@ -581,6 +720,17 @@ fn racy_safe(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
 /// has just written and made read-only.
 fn hash_file(path: &Path, owned: bool, trusted: bool) -> Result<(String, fs::Metadata), String> {
     let before = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
+    hash_file_from(path, before, owned, trusted)
+}
+
+/// [`hash_file`] with `before`, the caller's lstat of `path` (taken just
+/// before: the file must not change from then on).
+fn hash_file_from(
+    path: &Path,
+    before: fs::Metadata,
+    owned: bool,
+    trusted: bool,
+) -> Result<(String, fs::Metadata), String> {
     let key = file_key(&before, owned);
     if let Some(digest) = memoized_digest(&key) {
         return Ok((digest, before));
@@ -588,7 +738,12 @@ fn hash_file(path: &Path, owned: bool, trusted: bool) -> Result<(String, fs::Met
     let start = SystemTime::now();
     let mut file = File::open(path).map_err(|e| io_error("cannot read", path, e))?;
     let mut hash = Sha256::new();
-    let mut buffer = vec![0; BUFFER_BYTES];
+    // No larger than the file needs (plus one byte to see its end): a fresh
+    // zeroed BUFFER_BYTES buffer per small file costs more than hashing it.
+    let capacity = usize::try_from(before.size()).map_or(BUFFER_BYTES, |size| {
+        size.saturating_add(1).min(BUFFER_BYTES)
+    });
+    let mut buffer = vec![0; capacity];
     loop {
         let count = file
             .read(&mut buffer)
@@ -620,21 +775,26 @@ fn owned_by(root: Option<&Path>, path: &Path) -> bool {
 
 /// Follow published symlink outputs (`<root>/actions/.../outputs/...`, see
 /// Transform::Symlink) to the file or directory they name. Any other symlink
-/// is left for the regular-file checks to reject.
-fn resolve_published(path: &Path, root: Option<&Path>) -> Result<PathBuf, String> {
+/// is left for the regular-file checks to reject. Also returns the lstat of
+/// the resolved path when this took one (a published path that is no
+/// symlink), so that the caller need not inspect it again.
+fn resolve_published(
+    path: &Path,
+    root: Option<&Path>,
+) -> Result<(PathBuf, Option<fs::Metadata>), String> {
     let Some(root) = root else {
-        return Ok(path.to_path_buf());
+        return Ok((path.to_path_buf(), None));
     };
     let actions = root.join("actions");
     let mut current = path.to_path_buf();
     for _ in 0..MAX_LINK_DEPTH {
         if !current.starts_with(&actions) {
-            return Ok(current);
+            return Ok((current, None));
         }
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 if let Some(parent) = current.parent() {
-                    no_linked_ancestor(parent)?;
+                    no_linked_ancestor(parent, Some(root))?;
                 }
                 let target = fs::read_link(&current)
                     .map_err(|e| io_error("cannot read link", &current, e))?;
@@ -646,7 +806,8 @@ fn resolve_published(path: &Path, root: Option<&Path>) -> Result<PathBuf, String
                 }
                 current = target;
             }
-            _ => return Ok(current),
+            Ok(metadata) => return Ok((current, Some(metadata))),
+            Err(_) => return Ok((current, None)),
         }
     }
     Err(format!(
@@ -655,21 +816,98 @@ fn resolve_published(path: &Path, root: Option<&Path>) -> Result<PathBuf, String
     ))
 }
 
+/// Regular files of the cache's immutable stores ([`store_file`]) as the
+/// first reader in this process read them, by path: later consumers stage
+/// the same content identity without inspecting the file again, like Bazel's
+/// per-build file metadata.
+fn file_memo() -> &'static RwLock<HashMap<PathBuf, Input>> {
+    static MEMO: OnceLock<RwLock<HashMap<PathBuf, Input>>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn memoized_file(path: &Path) -> Option<Input> {
+    file_memo()
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+}
+
+fn remember_file(input: &Input) {
+    let mut memo = file_memo().write().unwrap_or_else(|e| e.into_inner());
+    if memo.len() >= FILE_MEMO_LIMIT {
+        memo.clear();
+    }
+    memo.insert(input.path.clone(), input.clone());
+}
+
+/// Whether `path` is a file of a repository tree below the canonical cache
+/// root (`repositories/[<kind>/]trees/<identity>/...`: content-addressed,
+/// verified when materialized before execution, and only ever replaced as a
+/// whole by a tree of the same content) or a blob of the content-addressed
+/// store (`cas/<digest>-<mode>`, read-only and immutable), spelled exactly
+/// as its normal components. Published outputs are not: their producer can
+/// publish them again in this process. Neither are the stores' temporary
+/// entries (`.stage-*`, `.trash-*`, `.tmp-*`).
+fn store_file(root: Option<&Path>, path: &Path) -> bool {
+    let Some(relative) = root.and_then(|root| path.strip_prefix(root).ok()) else {
+        return false;
+    };
+    let mut names = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        names.push(name.as_bytes());
+    }
+    let published = |name: &[u8]| !name.starts_with(b".");
+    let in_store = match names.as_slice() {
+        [b"cas", blob] => published(blob),
+        [b"repositories", b"trees", identity, _, ..]
+        | [b"repositories", _, b"trees", identity, _, ..] => published(identity),
+        _ => false,
+    };
+    in_store && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
+}
+
 /// Digest and mode of a regular file; `root` (the canonical cache root)
-/// enables following published symlink outputs when `follow` is set.
+/// enables following published symlink outputs when `follow` is set. A file
+/// of the cache's immutable stores is read once per process ([`file_memo`]).
 fn read_input(path: &Path, root: Option<&Path>, follow: bool) -> Result<Input, String> {
-    let path = if follow {
+    let (path, leaf) = if follow {
         resolve_published(path, root)?
     } else {
-        path.to_path_buf()
+        (path.to_path_buf(), None)
     };
-    regular_file(&path)?;
-    read_regular(&path, owned_by(root, &path), false)
+    let stored = store_file(root, &path);
+    if stored && let Some(input) = memoized_file(&path) {
+        return Ok(input);
+    }
+    #[cfg(test)]
+    FILE_READS.with(|reads| reads.set(reads.get() + 1));
+    let metadata = regular_file_known(&path, root, leaf)?;
+    let input = read_regular_from(&path, metadata, owned_by(root, &path), false)?;
+    if stored {
+        remember_file(&input);
+    }
+    Ok(input)
 }
 
 /// read_input for a path already checked to be a regular file.
 fn read_regular(path: &Path, owned: bool, trusted: bool) -> Result<Input, String> {
-    let (digest, metadata) = hash_file(path, owned, trusted)?;
+    let metadata = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
+    read_regular_from(path, metadata, owned, trusted)
+}
+
+/// [`read_regular`] with `metadata`, the caller's lstat of `path` (taken
+/// just before).
+fn read_regular_from(
+    path: &Path,
+    metadata: fs::Metadata,
+    owned: bool,
+    trusted: bool,
+) -> Result<Input, String> {
+    let (digest, metadata) = hash_file_from(path, metadata, owned, trusted)?;
     if !metadata.is_file() {
         return Err(format!("expected regular file: '{}'", path.display()));
     }
@@ -682,64 +920,292 @@ fn read_regular(path: &Path, owned: bool, trusted: bool) -> Result<Input, String
     })
 }
 
+/// Inputs (or tree files) per helper thread of [`try_map_ordered`]: fewer
+/// items are mapped on the calling thread.
+const PARALLEL_ITEMS_PER_THREAD: usize = 32;
+/// At most this many threads map one set of items ([`try_map_ordered`]).
+const PARALLEL_THREADS: usize = 16;
+
+/// `map` over `items`, results in `items` order. Callers consume them in
+/// order and stop at the first error, which is therefore exactly the error a
+/// sequential pass reports. Up to PARALLEL_ITEMS_PER_THREAD items run on the
+/// calling thread, also stopping at the first error; more run on up to
+/// PARALLEL_THREADS threads (the calling thread included), where items after
+/// an error are mapped too and their results discarded. Reading many inputs
+/// (an SDK, a large tree) is then bounded by the I/O and hashing throughput
+/// of several cores instead of one.
+pub(crate) fn try_map_ordered<T, R>(
+    items: &[T],
+    map: impl Fn(&T) -> Result<R, String> + Sync,
+) -> Vec<Result<R, String>>
+where
+    T: Sync,
+    R: Send,
+{
+    static CORES: OnceLock<usize> = OnceLock::new();
+    let cores = *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from));
+    let threads = (items.len() / PARALLEL_ITEMS_PER_THREAD)
+        .min(PARALLEL_THREADS)
+        .min(cores);
+    if threads < 2 {
+        let mut results = Vec::with_capacity(items.len());
+        for item in items {
+            let result = map(item);
+            let failed = result.is_err();
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
+        return results;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(index) else {
+                return done;
+            };
+            done.push((index, map(item)));
+        }
+    };
+    let mut slots: Vec<Option<Result<R, String>>> = (0..items.len()).map(|_| None).collect();
+    std::thread::scope(|scope| {
+        // A helper that cannot be started leaves its share to the others.
+        let helpers: Vec<_> = (1..threads)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok())
+            .collect();
+        let mut done = work();
+        for helper in helpers {
+            match helper.join() {
+                Ok(more) => done.extend(more),
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        }
+        for (index, result) in done {
+            slots[index] = Some(result);
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| slot.expect("every item is mapped"))
+        .collect()
+}
+
 /// Walk a directory without following symlinks. Entries are visited in byte
 /// order; a symlink or special file below the root is an explicit error.
 /// `normalize` makes every file OUTPUT_MODE before it is read (completed
 /// tree outputs, ActionOutputMetadataStore.java:245-281); such files are the
-/// executor's own and are memoized as trusted.
+/// executor's own and are memoized as trusted. The files are read after the
+/// walk ([`try_map_ordered`]); the first failure in walk order is reported,
+/// exactly as if each file were read when the walk reached it.
 fn read_tree(root: &Path, cache: Option<&Path>, normalize: bool) -> Result<Tree, String> {
-    real_directory(root)?;
+    #[cfg(test)]
+    TREE_WALKS.with(|walks| walks.set(walks.get() + 1));
+    real_directory(root, cache)?;
     let owned = owned_by(cache, root);
-    let mut tree = Tree {
-        files: BTreeMap::new(),
-        directories: BTreeSet::new(),
-    };
-    let mut pending = vec![PathBuf::new()];
-    while let Some(relative) = pending.pop() {
-        let directory = root.join(&relative);
-        let mut entries = fs::read_dir(&directory)
-            .map_err(|e| io_error("cannot list directory", &directory, e))?
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| io_error("cannot list directory", &directory, e))?;
-        entries.sort();
-        for name in entries {
-            let child = relative.join(&name);
-            let path = root.join(&child);
-            let metadata =
-                fs::symlink_metadata(&path).map_err(|e| io_error("cannot inspect", &path, e))?;
-            if metadata.file_type().is_symlink() {
-                return Err(format!(
-                    "tree artifact entry '{}' is a symlink; symlinks inside tree artifacts are not supported by the native profile",
-                    path.display()
-                ));
-            } else if metadata.is_dir() {
-                tree.directories.insert(child.clone());
-                pending.push(child);
-            } else if metadata.is_file() {
-                if normalize {
-                    set_mode(&path, OUTPUT_MODE)?;
+    let mut directories = BTreeSet::new();
+    // Regular files in walk order with their lstat, unless normalized (the
+    // chmod changes it, so the read inspects the file again).
+    let mut files: Vec<(PathBuf, PathBuf, Option<fs::Metadata>)> = Vec::new();
+    let mut walk = || -> Result<(), String> {
+        let mut pending = vec![PathBuf::new()];
+        while let Some(relative) = pending.pop() {
+            let directory = root.join(&relative);
+            let mut entries = fs::read_dir(&directory)
+                .map_err(|e| io_error("cannot list directory", &directory, e))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| io_error("cannot list directory", &directory, e))?;
+            entries.sort();
+            for name in entries {
+                let child = relative.join(&name);
+                let path = root.join(&child);
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|e| io_error("cannot inspect", &path, e))?;
+                if metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "tree artifact entry '{}' is a symlink; symlinks inside tree artifacts are not supported by the native profile",
+                        path.display()
+                    ));
+                } else if metadata.is_dir() {
+                    directories.insert(child.clone());
+                    pending.push(child);
+                } else if metadata.is_file() {
+                    if normalize {
+                        set_mode(&path, OUTPUT_MODE)?;
+                    }
+                    files.push((child, path, (!normalize).then_some(metadata)));
+                } else {
+                    return Err(format!(
+                        "tree artifact entry '{}' is not a regular file or directory",
+                        path.display()
+                    ));
                 }
-                tree.files
-                    .insert(child, read_regular(&path, owned, normalize)?);
-            } else {
-                return Err(format!(
-                    "tree artifact entry '{}' is not a regular file or directory",
-                    path.display()
-                ));
             }
         }
+        Ok(())
+    };
+    let walked = walk();
+    let inputs = try_map_ordered(&files, |(_, path, metadata)| match metadata {
+        Some(metadata) => read_regular_from(path, metadata.clone(), owned, normalize),
+        None => read_regular(path, owned, normalize),
+    });
+    let mut tree = Tree {
+        files: BTreeMap::new(),
+        directories,
+    };
+    for ((child, _, _), input) in files.into_iter().zip(inputs) {
+        tree.files.insert(child, input?);
     }
+    walked?;
     Ok(tree)
 }
 
-fn read_staged(path: &Path, tree: bool, root: Option<&Path>) -> Result<Staged, String> {
-    if tree {
-        let resolved = resolve_published(path, root)?;
-        Ok(Staged::Tree(read_tree(&resolved, root, false)?))
-    } else {
-        Ok(Staged::File(read_input(path, root, true)?))
+/// Published tree artifacts by path ([`published_output`]), read once per
+/// process and shared by every consumer, like Bazel's in-memory
+/// TreeArtifactValue instead of a walk of the tree per consuming action. A
+/// published tree is read-only by contract (TREE_ROOT_MODE and OUTPUT_MODE,
+/// checked by [`tree_valid`]). Its producer seeds the entry when its cache
+/// entry is valid or when it publishes the tree, and drops it before it
+/// removes a stale entry, so a tree published again in this process
+/// replaces the old value.
+#[derive(Default)]
+struct TreeMemo {
+    trees: HashMap<PathBuf, Arc<Tree>>,
+    /// Files plus directories of all memoized trees (TREE_MEMO_LIMIT).
+    entries: usize,
+}
+
+fn tree_memo() -> &'static Mutex<TreeMemo> {
+    static MEMO: OnceLock<Mutex<TreeMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(TreeMemo::default()))
+}
+
+fn tree_entries(tree: &Tree) -> usize {
+    tree.files.len() + tree.directories.len()
+}
+
+fn memoized_tree(path: &Path) -> Option<Arc<Tree>> {
+    tree_memo()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .trees
+        .get(path)
+        .cloned()
+}
+
+fn remember_tree(path: PathBuf, tree: Arc<Tree>) {
+    let mut memo = tree_memo().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(previous) = memo.trees.remove(&path) {
+        memo.entries -= tree_entries(&previous);
     }
+    let entries = tree_entries(&tree);
+    if entries > TREE_MEMO_LIMIT {
+        return;
+    }
+    if memo.entries + entries > TREE_MEMO_LIMIT {
+        memo.trees.clear();
+        memo.entries = 0;
+    }
+    memo.entries += entries;
+    memo.trees.insert(path, tree);
+}
+
+/// Drop the memoized trees at or below `prefix`: an action's cache entry
+/// that is about to be removed (and published again).
+fn forget_trees(prefix: &Path) {
+    let mut memo = tree_memo().lock().unwrap_or_else(|e| e.into_inner());
+    let mut removed = 0;
+    memo.trees.retain(|path, tree| {
+        let keep = !path.starts_with(prefix);
+        if !keep {
+            removed += tree_entries(tree);
+        }
+        keep
+    });
+    memo.entries -= removed;
+}
+
+/// Whether `path` is a published action output below the canonical cache
+/// root `root`: `<root>/actions/...`, normal components only.
+fn published_output(root: Option<&Path>, path: &Path) -> bool {
+    root.and_then(|root| path.strip_prefix(root).ok())
+        .is_some_and(|relative| {
+            let mut components = relative.components();
+            components.next() == Some(Component::Normal(OsStr::new("actions")))
+                && components.all(|component| matches!(component, Component::Normal(_)))
+        })
+}
+
+/// `tree`, read below another directory (the execution root it was
+/// published from), with its files' paths below `root`.
+fn relocated(tree: Tree, root: &Path) -> Tree {
+    Tree {
+        files: tree
+            .files
+            .into_iter()
+            .map(|(name, input)| {
+                let path = root.join(&name);
+                (name, Input { path, ..input })
+            })
+            .collect(),
+        directories: tree.directories,
+    }
+}
+
+/// What [`read_staged`] returns for `path` when a per-process memo holds it
+/// and no filesystem access is needed: a file of the immutable stores (no
+/// published symlink to follow there) or a memoized published tree (a real
+/// directory when it was read, and published trees stay in place).
+fn memoized_staged(path: &Path, tree: bool, root: Option<&Path>) -> Option<Staged> {
+    if tree {
+        published_output(root, path)
+            .then(|| memoized_tree(path))
+            .flatten()
+            .map(Staged::Tree)
+    } else {
+        store_file(root, path)
+            .then(|| memoized_file(path))
+            .flatten()
+            .map(Staged::File)
+    }
+}
+
+/// [`std::path::absolute`], without rebuilding a path that is already
+/// absolute and plain (no repeated or trailing separator, no `.`
+/// component), which it would return unchanged: planned inputs are.
+fn absolute_input(source: &Path) -> io::Result<PathBuf> {
+    let bytes = source.as_os_str().as_bytes();
+    let plain = bytes.first() == Some(&b'/')
+        && !bytes.ends_with(b"/")
+        && !bytes.ends_with(b"/.")
+        && !bytes.windows(2).any(|pair| pair == b"//")
+        && !bytes.windows(3).any(|triple| triple == b"/./");
+    if plain {
+        Ok(source.to_path_buf())
+    } else {
+        std::path::absolute(source)
+    }
+}
+
+/// A tree input that resolves to a published tree takes its value from the
+/// tree memo (read and remembered on a miss); any other tree is read.
+fn read_staged(path: &Path, tree: bool, root: Option<&Path>) -> Result<Staged, String> {
+    if !tree {
+        return Ok(Staged::File(read_input(path, root, true)?));
+    }
+    let (resolved, _) = resolve_published(path, root)?;
+    if !published_output(root, &resolved) {
+        return Ok(Staged::Tree(Arc::new(read_tree(&resolved, root, false)?)));
+    }
+    if let Some(tree) = memoized_tree(&resolved) {
+        return Ok(Staged::Tree(tree));
+    }
+    let tree = Arc::new(read_tree(&resolved, root, false)?);
+    remember_tree(resolved, Arc::clone(&tree));
+    Ok(Staged::Tree(tree))
 }
 
 /// Byte-ordered relative paths of a tree's regular files.
@@ -1104,38 +1570,79 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         .transform
         .as_ref()
         .filter(|transform| transform.reads_paths_only());
+    // Whether an input is read by content: runfiles transforms read only
+    // their manifest and executable (the other inputs are keyed by path).
+    let read = |destination: &PathBuf| match paths_only {
+        None => true,
+        Some(Transform::RunfilesTree {
+            manifest,
+            executable,
+            ..
+        }) => manifest == destination || executable.as_ref() == Some(destination),
+        Some(_) => false,
+    };
+    let reads: Vec<(&Path, bool)> = action
+        .inputs
+        .iter()
+        .filter(|(_, destination)| read(destination))
+        .map(|(source, destination)| {
+            (
+                source.as_path(),
+                action.extra.tree_inputs.contains(destination),
+            )
+        })
+        .collect();
+    // Inputs the per-process memos hold need no filesystem access; the
+    // others are read up front (many of them, such as an SDK being hashed,
+    // on several threads). The loop consumes the results in input order, so
+    // it fails exactly where a sequential read would.
+    let mut staged: Vec<Option<Result<Staged, String>>> = reads
+        .iter()
+        .map(|&(source, tree)| memoized_staged(source, tree, root).map(Ok))
+        .collect();
+    let misses: Vec<usize> = (0..staged.len())
+        .filter(|&index| staged[index].is_none())
+        .collect();
+    let read_misses = try_map_ordered(&misses, |&index| {
+        let (source, tree) = reads[index];
+        read_staged(source, tree, root)
+    });
+    for (&index, result) in misses.iter().zip(read_misses) {
+        staged[index] = Some(result);
+    }
+    let mut staged = staged.into_iter();
     for (source, destination) in &action.inputs {
-        if !origins.contains_key(destination) {
-            let origin = std::path::absolute(source)
-                .map_err(|e| io_error("cannot resolve input", source, e))?;
-            origins.insert(destination.clone(), origin);
+        if let btree_map::Entry::Vacant(entry) = origins.entry(destination.clone()) {
+            entry.insert(
+                absolute_input(source).map_err(|e| io_error("cannot resolve input", source, e))?,
+            );
         }
-        if let Some(transform) = paths_only {
-            match transform {
-                Transform::RunfilesTree {
-                    manifest,
-                    executable,
-                    ..
-                } if manifest == destination || executable.as_ref() == Some(destination) => {}
-                _ => continue,
-            }
+        if !read(destination) {
+            continue;
         }
-        let input = read_staged(source, action.extra.tree_inputs.contains(destination), root)?;
-        if let Some(previous) = inputs.get(destination) {
-            let same = match (previous, &input) {
-                (Staged::File(a), Staged::File(b)) => {
-                    a.digest == b.digest && a.executable == b.executable
+        // Every input before the first failure has a result.
+        let input = staged
+            .next()
+            .flatten()
+            .expect("one result per read input")?;
+        match inputs.entry(destination.clone()) {
+            btree_map::Entry::Occupied(previous) => {
+                let same = match (previous.get(), &input) {
+                    (Staged::File(a), Staged::File(b)) => {
+                        a.digest == b.digest && a.executable == b.executable
+                    }
+                    (a, b) => a == b,
+                };
+                if !same {
+                    return Err(format!(
+                        "conflicting duplicate input destination '{}'",
+                        destination.display()
+                    ));
                 }
-                (a, b) => a == b,
-            };
-            if !same {
-                return Err(format!(
-                    "conflicting duplicate input destination '{}'",
-                    destination.display()
-                ));
             }
-        } else {
-            inputs.insert(destination.clone(), input);
+            btree_map::Entry::Vacant(entry) => {
+                entry.insert(input);
+            }
         }
     }
     let mut hash = Sha256::new();
@@ -1423,6 +1930,12 @@ thread_local! {
     static REMOVE_BLOB_BEFORE_LINK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Test observation: (hardlinked, copied) staged and published files.
     static LINK_COUNTS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+    /// Test observation: full (unmemoized) no_linked_ancestor walks.
+    static FULL_ANCESTOR_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test observation: read_tree walks.
+    static TREE_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Test observation: read_input reads (not served by the file memo).
+    static FILE_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn count_link(linked: bool) {
@@ -1757,7 +2270,8 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
 /// identical outputs share one inode. A failed hardlink falls back to a
 /// rename (SandboxHelpers.moveOutputs, :178-236), then a copy.
 fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result<Input, String> {
-    regular_file(source)?;
+    // The execution root is the process's: always checked in full.
+    regular_file(source, None)?;
     set_mode(source, OUTPUT_MODE)?;
     let input = read_regular(source, true, true)?;
     if let Some(parent) = target.parent() {
@@ -1831,7 +2345,7 @@ fn tree_manifest(tree: &Tree) -> TreeManifest {
 /// A published tree (or a symlink output's target tree) with completed-tree
 /// permissions and the manifest's contents.
 fn tree_valid(path: &Path, expected: &TreeManifest, root: &Path) -> Result<Option<Tree>, String> {
-    if real_directory(path)?.permissions().mode() & 0o7777 != TREE_ROOT_MODE {
+    if real_directory(path, Some(root))?.permissions().mode() & 0o7777 != TREE_ROOT_MODE {
         return Ok(None);
     }
     let tree = read_tree(path, Some(root), false)?;
@@ -1852,6 +2366,9 @@ fn tree_valid(path: &Path, expected: &TreeManifest, root: &Path) -> Result<Optio
     Ok(Some(tree))
 }
 
+/// The tree listings of a valid cache entry. Every validated published tree
+/// (also a symlink output's target tree) seeds the tree memo, so consumers
+/// in this process never walk it again ([`read_staged`]).
 fn cache_valid(
     directory: &Path,
     key: &str,
@@ -1860,8 +2377,9 @@ fn cache_valid(
     root: &Path,
 ) -> Option<BTreeMap<PathBuf, Vec<PathBuf>>> {
     let manifest_path = directory.join("manifest.json");
-    let check = || -> Result<Option<BTreeMap<PathBuf, Vec<PathBuf>>>, String> {
-        regular_file(&manifest_path)?;
+    let mut validated = Vec::new();
+    let mut check = || -> Result<Option<BTreeMap<PathBuf, Vec<PathBuf>>>, String> {
+        regular_file(&manifest_path, Some(root))?;
         let bytes = fs::read(&manifest_path)
             .map_err(|e| io_error("cannot read manifest", &manifest_path, e))?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
@@ -1895,7 +2413,7 @@ fn cache_valid(
                 {
                     return Ok(None);
                 }
-                path = resolve_published(&path, Some(root))?;
+                path = resolve_published(&path, Some(root))?.0;
             }
             match (&entry.tree, trees.contains(name)) {
                 (Some(expected), true) => {
@@ -1903,6 +2421,7 @@ fn cache_valid(
                         return Ok(None);
                     };
                     listings.insert(name.clone(), tree_listing(&tree));
+                    validated.push((path, tree));
                 }
                 (None, false) => {
                     let actual = read_input(&path, Some(root), false)?;
@@ -1915,7 +2434,13 @@ fn cache_valid(
         }
         Ok(Some(listings))
     };
-    check().unwrap_or(None)
+    let listings = check().unwrap_or(None)?;
+    for (path, tree) in validated {
+        if published_output(Some(root), &path) {
+            remember_tree(path, Arc::new(tree));
+        }
+    }
+    Some(listings)
 }
 
 fn fresh_work(parent: &Path, key: &str) -> Result<WorkDir, String> {
@@ -2187,9 +2712,10 @@ fn run_transform(
 }
 
 /// The entries below a runfiles tree root other than its `MANIFEST`, in byte
-/// order, without following symlinks.
-fn runfiles_listing(root: &Path) -> Result<Vec<(String, String)>, String> {
-    real_directory(root)?;
+/// order, without following symlinks. `cache`: the canonical cache root for
+/// a published tree ([`no_linked_ancestor`]).
+fn runfiles_listing(root: &Path, cache: Option<&Path>) -> Result<Vec<(String, String)>, String> {
+    real_directory(root, cache)?;
     let mut listing = Vec::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(relative) = pending.pop() {
@@ -2242,7 +2768,7 @@ fn publish_runfiles_tree(
     let relative = manifest.parent().expect("validated MANIFEST parent");
     let source = execroot.join(relative);
     let target = outputs.join(relative);
-    let entries = runfiles_listing(&source)?;
+    let entries = runfiles_listing(&source, None)?;
     for entry in fs::read_dir(&source).map_err(|e| io_error("cannot list directory", &source, e))? {
         let name = entry.map_err(|e| e.to_string())?.file_name();
         fs::rename(source.join(&name), target.join(&name))
@@ -2280,7 +2806,11 @@ fn runfiles_tree_valid(
     root: &Path,
 ) -> bool {
     let relative = manifest.parent().unwrap_or(Path::new(""));
-    if runfiles_listing(&outputs.join(relative)).ok().as_ref() != Some(&expected.entries) {
+    if runfiles_listing(&outputs.join(relative), Some(root))
+        .ok()
+        .as_ref()
+        != Some(&expected.entries)
+    {
         return false;
     }
     match &expected.sibling_file {
@@ -2572,6 +3102,9 @@ pub fn execute_with_remote(
     if let Some(listings) = cache_valid(&cached, key, outputs, &action.extra.tree_outputs, &root) {
         return Ok(result(listings, true, false));
     }
+    // This entry's trees are no longer what the memo holds: they are removed
+    // now and published again below.
+    forget_trees(&cached);
     remove_stale(&cached)?;
     let work = fresh_work(&work_parent, key)?;
     let execroot = work.0.join("execroot");
@@ -2860,6 +3393,8 @@ pub fn execute_with_remote(
         outputs: Vec::new(),
     };
     let mut listings = BTreeMap::new();
+    // Published tree outputs, for the tree memo once the entry is in place.
+    let mut published_trees = Vec::new();
     for name in outputs {
         let source = execroot.join(name);
         let target = completed.join("outputs").join(name);
@@ -2916,14 +3451,16 @@ pub fn execute_with_remote(
             if tree_output {
                 let tree = publish_tree(&cas, &root, &source, &target)?;
                 listings.insert(name.clone(), tree_listing(&tree));
-                return Ok(Output {
+                let output = Output {
                     name: hex_name,
                     digest: String::new(),
                     mode: TREE_ROOT_MODE,
                     tree: Some(tree_manifest(&tree)),
                     symlink: None,
                     runfiles: None,
-                });
+                };
+                published_trees.push((name, tree));
+                return Ok(output);
             }
             // Match metadata collection order: a successful action may leave a
             // regular output unreadable. Normalize before reading its bytes,
@@ -2953,6 +3490,15 @@ pub fn execute_with_remote(
     // Same-filesystem rename publishes all declared files and the manifest at
     // once. Crash durability is not promised; damaged entries rebuild on use.
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
+    // What a consumer would read from the published entry: the same files,
+    // digests and (normalized) modes at their published paths.
+    for (name, tree) in published_trees {
+        let path = cached.join("outputs").join(name);
+        if published_output(Some(&root), &path) {
+            let tree = relocated(tree, &path);
+            remember_tree(path, Arc::new(tree));
+        }
+    }
     if remote_hit.is_some() {
         return Ok(result(listings, false, true));
     }
@@ -4195,6 +4741,300 @@ mod tests {
                 .contains("expected directory")
         );
         fixture.assert_unpublished();
+    }
+
+    fn tree_walks() -> u64 {
+        TREE_WALKS.with(std::cell::Cell::get)
+    }
+
+    fn full_ancestor_walks() -> u64 {
+        FULL_ANCESTOR_WALKS.with(std::cell::Cell::get)
+    }
+
+    /// File paths of a tree, which Input equality ignores.
+    fn tree_paths(tree: &Tree) -> Vec<&Path> {
+        tree.files
+            .values()
+            .map(|input| input.path.as_path())
+            .collect()
+    }
+
+    #[test]
+    fn published_trees_are_read_once_per_process_and_replaced_when_published_again() {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("fail");
+        let mut producer = fixture.action();
+        producer.inputs.clear();
+        producer.outputs = vec!["out/tree".into()];
+        producer.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree")]);
+        // The marker is not an input: it fails a re-execution with the same key.
+        producer.command = format!(
+            "test ! -e '{}' && mkdir -p out/tree/sub/empty && printf a > out/tree/a && printf b > out/tree/sub/b",
+            marker.display()
+        );
+        let tree = execute(&fixture.cache(), &producer).unwrap().outputs[0].clone();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        // The publication seeds the memo with exactly what a consumer reads.
+        let seeded = memoized_tree(&tree).expect("published tree is memoized");
+        let fresh = read_tree(&tree, Some(&root), false).unwrap();
+        assert!(*seeded == fresh);
+        assert_eq!(tree_paths(&seeded), tree_paths(&fresh));
+        let consumer = |id: &str| {
+            let mut consumer = fixture.action();
+            consumer.id = id.into();
+            consumer.inputs = vec![(tree.clone(), "in/tree".into())];
+            consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
+            consumer.command =
+                "cat in/tree/a in/tree/sub/b > out/result; test -d in/tree/sub/empty".into();
+            consumer
+        };
+        // Consumers stage the memoized tree; nobody walks it again.
+        let walks = tree_walks();
+        for id in ["first", "second"] {
+            let consumed = execute(&fixture.cache(), &consumer(id)).unwrap();
+            assert!(!consumed.cache_hit);
+            assert_eq!(fs::read(&consumed.outputs[0]).unwrap(), b"ab");
+            assert!(execute(&fixture.cache(), &consumer(id)).unwrap().cache_hit);
+        }
+        assert_eq!(tree_walks(), walks);
+        // The memoized value keys a consumer exactly like a fresh read.
+        let memo_key = prepare(&consumer("first"), Some(&root)).unwrap().key;
+        forget_trees(&tree);
+        assert_eq!(
+            prepare(&consumer("first"), Some(&root)).unwrap().key,
+            memo_key
+        );
+        assert_eq!(tree_walks(), walks + 1);
+        // The producer's cache check always validates the published tree, and
+        // the validated value replaces the entry.
+        let before = memoized_tree(&tree).unwrap();
+        assert!(execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(tree_walks(), walks + 2);
+        assert!(!Arc::ptr_eq(&before, &memoized_tree(&tree).unwrap()));
+        // A damaged entry whose re-execution fails leaves no memoized tree.
+        fs::set_permissions(tree.join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_file(tree.join("sub/b")).unwrap();
+        fs::write(&marker, b"").unwrap();
+        assert!(execute(&fixture.cache(), &producer).is_err());
+        assert!(memoized_tree(&tree).is_none());
+        let Err(error) = prepare(&consumer("first"), Some(&root)) else {
+            panic!("a removed tree is not served from the memo");
+        };
+        assert!(error.contains("cannot inspect"), "{error}");
+        // Published again, the new tree replaces it for every consumer.
+        fs::remove_file(&marker).unwrap();
+        assert!(!execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        let republished = memoized_tree(&tree).expect("republished tree is memoized");
+        assert!(*republished == read_tree(&tree, Some(&root), false).unwrap());
+        assert!(
+            execute(&fixture.cache(), &consumer("first"))
+                .unwrap()
+                .cache_hit
+        );
+        let third = execute(&fixture.cache(), &consumer("third")).unwrap();
+        assert_eq!(fs::read(&third.outputs[0]).unwrap(), b"ab");
+    }
+
+    #[test]
+    fn ordered_maps_report_the_first_error_in_item_order() {
+        let fail = |&item: &usize| {
+            if item % 400 == 399 {
+                Err(format!("item {item}"))
+            } else {
+                Ok(item * 2)
+            }
+        };
+        // Few items: mapped on this thread, up to the first error.
+        let small: Vec<usize> = (390..410).collect();
+        let results = try_map_ordered(&small, fail);
+        assert_eq!(results.len(), 10);
+        assert_eq!(results[9], Err("item 399".to_owned()));
+        assert!(results[..9].iter().all(Result::is_ok));
+        // Many: every item mapped (on several threads), in order.
+        let large: Vec<usize> = (0..1000).collect();
+        let results = try_map_ordered(&large, fail);
+        assert_eq!(results.len(), 1000);
+        assert_eq!(results.iter().position(Result::is_err), Some(399));
+        assert_eq!(results[998], Ok(1996));
+        assert_eq!(results[799], Err("item 799".to_owned()));
+        let panicked = std::panic::catch_unwind(|| {
+            try_map_ordered(&large, |&item| {
+                assert_ne!(item, 700, "intentional panic");
+                Ok(item)
+            })
+        });
+        assert!(panicked.is_err());
+    }
+
+    #[test]
+    fn large_trees_and_input_sets_fail_like_sequential_reads() {
+        let fixture = Fixture::new();
+        let tree = fixture.0.join("tree");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        for i in 0..300 {
+            fs::write(tree.join(format!("f{i:03}")), format!("{i}")).unwrap();
+        }
+        fs::write(tree.join("sub/x"), b"x").unwrap();
+        let read = read_tree(&tree, None, false).unwrap();
+        assert_eq!(read.files.len(), 301);
+        assert_eq!(read.directories, BTreeSet::from([PathBuf::from("sub")]));
+        for (name, input) in &read.files {
+            let expected = read_regular(&tree.join(name), false, false).unwrap();
+            assert!(*input == expected);
+            assert_eq!((&input.path, input.size), (&expected.path, expected.size));
+        }
+        // Inputs: the first failure in input order, wherever it is read.
+        let mut action = fixture.action();
+        action.inputs = (0..300)
+            .map(|i| {
+                (
+                    tree.join(format!("f{i:03}")),
+                    PathBuf::from(format!("in/{i}")),
+                )
+            })
+            .collect();
+        action.inputs.push((tree.join("f001"), "in/0".into()));
+        action.inputs[100].0 = fixture.0.join("missing");
+        let Err(error) = prepare(&action, None) else {
+            panic!("missing input");
+        };
+        assert!(error.starts_with("cannot inspect") && error.contains("missing"));
+        action.inputs[100].0 = tree.join("f100");
+        let Err(error) = prepare(&action, None) else {
+            panic!("conflicting duplicate");
+        };
+        assert_eq!(error, "conflicting duplicate input destination 'in/0'");
+        action.inputs.pop();
+        assert!(prepare(&action, None).is_ok());
+        // Trees: a file that cannot be read before a later walk failure.
+        symlink("x", tree.join("sub/link")).unwrap();
+        if !unsafe_is_root() {
+            fs::set_permissions(tree.join("f150"), fs::Permissions::from_mode(0o000)).unwrap();
+            let Err(error) = read_tree(&tree, None, false) else {
+                panic!("unreadable file");
+            };
+            assert!(
+                error.starts_with(&format!("cannot read '{}'", tree.join("f150").display())),
+                "{error}"
+            );
+            fs::set_permissions(tree.join("f150"), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let Err(error) = read_tree(&tree, None, false) else {
+            panic!("symlink in tree");
+        };
+        assert!(
+            error.starts_with(&format!(
+                "tree artifact entry '{}' is a symlink",
+                tree.join("sub/link").display()
+            )),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn immutable_store_files_are_read_once_per_process() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let read = |path: &Path| {
+            let before = FILE_READS.with(std::cell::Cell::get);
+            let input = read_input(path, Some(&root), true).unwrap();
+            (input, FILE_READS.with(std::cell::Cell::get) - before)
+        };
+        let create = |path: &Path| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"package x\n").unwrap();
+        };
+        for path in [
+            root.join("repositories/trees/abc/pkg/file.go"),
+            root.join("repositories/direct/trees/def/file.go"),
+            root.join("cas/0123-444"),
+        ] {
+            create(&path);
+            let (first, reads) = read(&path);
+            assert_eq!(reads, 1, "{}", path.display());
+            let (again, reads) = read(&path);
+            assert_eq!(reads, 0, "{}", path.display());
+            assert!(again == first);
+            assert_eq!((&again.path, again.size), (&path, first.size));
+        }
+        // Read every time: published outputs, temporary store entries,
+        // other stores, other spellings and files outside the cache.
+        for path in [
+            root.join("actions/key/outputs/file"),
+            root.join("repositories/trees/.stage-x/file"),
+            root.join("repositories/modextwd/x/file"),
+            root.join("repositories/trees/abc/pkg/./file.go"),
+            root.join("cas/.tmp-0123-1-2"),
+            fixture.0.join("source.go"),
+        ] {
+            create(&path);
+            for _ in 0..2 {
+                assert_eq!(read(&path).1, 1, "{}", path.display());
+            }
+        }
+        assert!(!store_file(
+            Some(&root),
+            &root.join("repositories/trees/abc")
+        ));
+        assert!(!store_file(None, &root.join("cas/0123-444")));
+    }
+
+    #[test]
+    fn cache_owned_directories_are_verified_once_and_links_stay_rejected() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let tree = root.join("repositories/trees/x");
+        fs::create_dir_all(tree.join("a/b")).unwrap();
+        fs::write(tree.join("a/b/file"), b"x").unwrap();
+        let file = tree.join("a/b/file");
+        let walks = full_ancestor_walks();
+        for _ in 0..2 {
+            assert!(no_linked_ancestor(&file, Some(&root)).unwrap().is_file());
+        }
+        assert_eq!(full_ancestor_walks(), walks);
+        for directory in ["repositories", "repositories/trees/x/a/b"] {
+            assert!(directory_verified(&root.join(directory)), "{directory}");
+        }
+        // Everything else takes the full walk: paths outside the cache, the
+        // execution roots, other spellings, and calls without a cache root.
+        let work = root.join("work/x");
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("file"), b"x").unwrap();
+        let source = fixture.0.join("source");
+        fs::write(&source, b"x").unwrap();
+        for (path, cache) in [
+            (source, Some(root.as_path())),
+            (work.join("file"), Some(root.as_path())),
+            (tree.join("a/./b/file"), Some(root.as_path())),
+            (tree.join("a/b/../b/file"), Some(root.as_path())),
+            (file.clone(), None),
+        ] {
+            let before = full_ancestor_walks();
+            assert!(no_linked_ancestor(&path, cache).unwrap().is_file());
+            assert_eq!(full_ancestor_walks(), before + 1, "{}", path.display());
+        }
+        assert!(!directory_verified(&work));
+        // Links and missing or misspelled entries fail exactly as before.
+        symlink(tree.join("a"), tree.join("link")).unwrap();
+        symlink(&file, tree.join("a/b/leaf")).unwrap();
+        for path in [
+            tree.join("link/b/file"),
+            tree.join("a/b/leaf"),
+            tree.join("a/missing/file"),
+            tree.join("a/b/missing"),
+            PathBuf::from(format!("{}/", file.display())),
+        ] {
+            let error = no_linked_ancestor(&path, Some(&root)).unwrap_err();
+            assert_eq!(error, no_linked_ancestor(&path, None).unwrap_err());
+        }
+        assert!(
+            no_linked_ancestor(&tree.join("link/b/file"), Some(&root))
+                .unwrap_err()
+                .contains("symlink is not allowed")
+        );
+        assert!(!directory_verified(&tree.join("link")));
     }
 
     #[test]
