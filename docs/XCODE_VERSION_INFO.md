@@ -79,30 +79,23 @@ As a result:
   `availability()` returns the lowercased value. `xcode_version()` returns
   `None`, a path, or a DottedVersion. Unknown platforms fail with
   `Unhandled platform type: X` and `Unhandled platform: X`.
-- A rule may return an instance. Since W1b no returned-provider file walk
-  gates analysis (every File resolves through the build's artifact index;
-  `providers::provider_files` only serves the `BAZEL_RS_VERIFY_ARTIFACTS`
-  verifier, where it accepts DottedVersions and the functions defined by this
-  embedded file, recognised by the vendored `def` repr
-  `<function NAME from FILE>`; no user `.bzl` is evaluated under the
-  `@@_builtins` label).
-- **Closure capture guard.** The init closures (`providers.bzl:72-134`)
-  capture the raw `availability` and `xcode_version` arguments, which the
-  pre-W1b file walk could not see, so a File, depset or struct could have been
-  hidden from dependency tracking, for example with
-  `availability = struct(lower = lambda: depset([f]))`. Bazel accepts any
-  value there. Natively every `XcodeVersionInfo(...)` argument must still be
-  None, bool, int, float or string (no dependency tracking needs it since
-  W1b; lifting it is left to the walker's removal, W1d). The check runs in
-  `providers.rs` `init_call`, before `init`.
-  Anything else fails explicitly with
-  `XcodeVersionInfo argument 'availability' of type 'File' is not supported in the native profile (...)`.
-  This is a deliberate, explicit divergence: genuine Bazel would build the
-  provider, and would only fail later if `.lower()` or `.startswith` is called.
-  Scalars keep Bazel's own errors, for example the dotted_version type error
-  for `None`. Tests:
-  - `tests/xcode_version_info.rs` `files_cannot_hide_in_xcode_version_info_closures` (a real File);
-  - `src/apple_xcode.rs` `xcode_version_info_is_the_builtins_provider` (struct, depset and list).
+- A rule may return an instance. No returned-provider file walk gates
+  analysis (W1b: every File resolves through the build's artifact index; W1d
+  deleted the walk).
+- **Init arguments are unrestricted, as in Bazel.** The init closures
+  (`providers.bzl:72-134`) capture the raw `availability` and
+  `xcode_version` arguments. The pre-W1b provider-file walk could not see
+  through them, so until W1d every `XcodeVersionInfo(...)` argument had to be
+  None, bool, int, float or string (`XcodeVersionInfo argument 'availability'
+  of type 'File' is not supported in the native profile (...)`). That guard
+  is gone: any value builds the provider, and a File reached only through a
+  closure, for example `availability = struct(lower = lambda: f)`, is the
+  producer's Artifact and an action input like any other (genuine Bazel 9.3.0
+  builds the same program). Values fail only where Bazel's own code fails,
+  for example the dotted_version type error for a `None` version, or a later
+  `.lower()`/`.startswith` call on a value without it. Tests:
+  - `tests/xcode_version_info.rs` `files_in_xcode_version_info_closures_are_inputs` (a real File used as an input);
+  - `src/apple_xcode.rs` `xcode_version_info_is_the_builtins_provider` (struct, depset and list arguments).
 
 The no-versions `host_xcodes` provider gives these values:
 

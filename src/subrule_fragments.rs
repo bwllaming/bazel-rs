@@ -784,11 +784,6 @@ fn cpp_methods(builder: &mut MethodsBuilder) {
 }
 
 /// A `cpp` fragment of the given configuration (rule `ctx.fragments.cpp`).
-/// A `cpp` configuration fragment value (owned, file-free).
-pub(crate) fn is_cpp_fragment(value: Value<'_>) -> bool {
-    CppFragment::from_value(value).is_some()
-}
-
 pub(crate) fn alloc_cpp(heap: Heap<'_>, view: CppConfigurationView) -> Value<'_> {
     heap.alloc(CppFragment { view })
 }

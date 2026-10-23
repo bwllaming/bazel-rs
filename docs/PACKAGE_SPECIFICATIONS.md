@@ -86,8 +86,9 @@ unsupported in this native profile. The reference crashes on the direct-return
 case; native code must reject it with a controlled error, not reproduce the crash
 or claim successful forwarding. Nested in another provider's fields (as
 rules_cc's `CcToolchainInfo._allowlist_for_layering_check` stores the
-`cc_toolchain` parse-headers allowlist) it is ordinary file-free payload since
-N25d5 (docs/CC_TOOLCHAIN.md); its bound `contains` method stays unsupported.
+`cc_toolchain` parse-headers allowlist) it is ordinary payload since N25d5
+(docs/CC_TOOLCHAIN.md), and so is its bound `contains` method since W1b (no
+provider-file walk rejects unmodelled payload values, as in Bazel).
 
 ## Evidence and remaining work
 

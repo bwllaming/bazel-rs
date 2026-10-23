@@ -91,19 +91,20 @@ fn dotted_version_matrix_and_host_xcodes_provider_dump() {
     );
 }
 
-/// providers.bzl's closures capture `availability`/`xcode_version` raw, out of
-/// sight of the returned-provider file walk; natively a File there fails
-/// explicitly at construction instead of being silently dropped.
+/// providers.bzl's closures capture `availability`/`xcode_version` raw. Bazel
+/// accepts any value there, and so does the native profile since W1d (no
+/// provider-file walk has to see through the closures): a File reached only
+/// through `availability()` is the producer's Artifact and a consumer's
+/// action input like any other (W1b artifact index).
 #[test]
-fn files_cannot_hide_in_xcode_version_info_closures() {
+fn files_in_xcode_version_info_closures_are_inputs() {
     let workspace = Workspace::new();
     let root = workspace.0.path();
     fs::create_dir_all(root.join("hide")).unwrap();
     fs::write(root.join("hide/src.txt"), "payload\n").unwrap();
     fs::write(
         root.join("hide/defs.bzl"),
-        "load('//:defs.bzl', 'info_lines')\n\
-def _impl(ctx):\n    \
+        "def _impl(ctx):\n    \
     f = ctx.file.src\n    \
     info = apple_common.XcodeVersionConfig(\n        \
         ios_sdk_version = '8.4', ios_minimum_os_version = '8.4',\n        \
@@ -111,26 +112,29 @@ def _impl(ctx):\n    \
         watchos_sdk_version = '2.0', watchos_minimum_os_version = '2.0',\n        \
         tvos_sdk_version = '9.0', tvos_minimum_os_version = '9.0',\n        \
         macos_sdk_version = '10.11', macos_minimum_os_version = '10.11',\n        \
-        xcode_version = None, availability = f,\n        \
+        xcode_version = None, availability = struct(lower = lambda: f),\n        \
         xcode_version_flag = None, include_xcode_execution_info = False)\n    \
     return [info]\n\
-hide = rule(implementation = _impl, attrs = {'src': attr.label(allow_single_file = True)})\n",
+hide = rule(implementation = _impl, attrs = {'src': attr.label(allow_single_file = True)})\n\
+def _use(ctx):\n    \
+    hidden = ctx.attr.dep[apple_common.XcodeVersionConfig].availability()\n    \
+    out = ctx.actions.declare_file(ctx.label.name + '.txt')\n    \
+    ctx.actions.run_shell(inputs = [hidden], outputs = [out], command = 'cp $1 $2',\n        \
+        arguments = [hidden.path, out.path])\n    \
+    return [DefaultInfo(files = depset([out]))]\n\
+use = rule(implementation = _use, attrs = {'dep': attr.label()})\n",
     )
     .unwrap();
     fs::write(
         root.join("hide/BUILD"),
-        "load(':defs.bzl', 'hide')\nhide(name = 'hide', src = 'src.txt')\n",
+        "load(':defs.bzl', 'hide', 'use')\n\
+hide(name = 'hide', src = 'src.txt')\n\
+use(name = 'use', dep = ':hide')\n",
     )
     .unwrap();
-    let output = workspace.build(&["//hide:hide"]);
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(
-        stderr(&output).contains(
-            "XcodeVersionInfo argument 'availability' of type 'File' is not supported in the native profile"
-        ),
-        "{}",
-        stderr(&output)
-    );
+    let output = workspace.build(&["//hide:use"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    assert_eq!(output_of(&output, "//hide:use"), "payload\n");
 }
 
 #[test]

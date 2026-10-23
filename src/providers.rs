@@ -27,7 +27,7 @@ use std::hash::Hash;
 use std::sync::OnceLock;
 
 use crate::loading::ExtensionContext;
-use crate::starlark_types::{File, is_default_info, unpack_label};
+use crate::starlark_types::is_default_info;
 
 pub(crate) const DEFAULT_INFO_PROVIDER_ID: &str = "builtin:DefaultInfo";
 
@@ -256,9 +256,6 @@ impl<'v, V: ValueLike<'v>> ProviderConstructorGen<V> {
             .iter()
             .map(|(name, value)| (name.as_str(), *value))
             .collect::<Vec<_>>();
-        if identity == crate::apple_xcode::XCODE_VERSION_INFO_ID {
-            crate::apple_xcode::check_init_arguments(&positional, &named)?;
-        }
         let result = eval.eval_function(init, &positional, &named)?;
         const WHAT: &str = "return value of provider init()";
         let dict = DictRef::from_value(result).ok_or_else(|| {
@@ -709,154 +706,6 @@ pub fn returned_provider_key_names(result: Value<'_>) -> anyhow::Result<Vec<Stri
         .collect())
 }
 
-/// Collect files reachable through supported provider payloads, preserving first
-/// encounter order. Unknown value kinds and cyclic/overdeep containers fail
-/// explicitly rather than silently losing dependencies. String depsets and
-/// primitive metadata (including Labels) contain no files.
-///
-/// Since W1b (PLAN-L1 §2.2) nothing in analysis gates on this walk — a
-/// consumer resolves any File it reaches through the build's artifact index
-/// (crate::engine) — and it only serves the `BAZEL_RS_VERIFY_ARTIFACTS=1`
-/// migration verifier (crate::engine::verify_registered), until W1d deletes
-/// it.
-pub fn provider_files(value: Value<'_>) -> anyhow::Result<Vec<File>> {
-    const MAX_DEPTH: usize = 128;
-    struct Walk<'v> {
-        active: HashSet<starlark::values::ValueIdentity<'v>>,
-        visited: HashSet<starlark::values::ValueIdentity<'v>>,
-        seen_files: BTreeSet<File>,
-        files: Vec<File>,
-    }
-    impl<'v> Walk<'v> {
-        fn file(&mut self, file: File) {
-            if self.seen_files.insert(file.clone()) {
-                self.files.push(file);
-            }
-        }
-
-        fn walk(&mut self, value: Value<'v>, depth: usize) -> anyhow::Result<()> {
-            if depth > MAX_DEPTH {
-                bail!("provider payload exceeds nesting depth limit {MAX_DEPTH}");
-            }
-            let identity = value.identity();
-            if self.active.contains(&identity) {
-                bail!("cycle in provider payload");
-            }
-            if !self.visited.insert(identity) {
-                return Ok(());
-            }
-            self.active.insert(identity);
-            if let Some(file) = File::from_value(value) {
-                self.file(file.clone());
-            } else if let Some(files) = crate::output_group_info::files(value) {
-                for file in files {
-                    self.file(file);
-                }
-            } else if crate::template_variable_info::is_instance(value)
-                || crate::package_specification::is_instance(value)
-                || crate::run_environment_info::is_instance(value)
-                || crate::instrumented_files::is_instance(value)
-                || crate::feature_flags::is_instance(value)
-                || crate::instrumented_files::is_instance(value)
-            {
-                // Its fully owned string-to-string snapshot cannot contain
-                // files (InstrumentedFilesInfo.EMPTY holds empty sets only).
-            } else if let Some(values) = crate::cc_variables::payload(value) {
-                // C++ build Variables: File-valued variables are inputs.
-                for child in values {
-                    self.walk(child, depth + 1)?;
-                }
-            } else if crate::cc_features::is_file_free_payload(value)
-                || crate::cc_common::is_header_info(value)
-                || crate::subrule_fragments::is_cpp_fragment(value)
-                || (value.get_type() == "function" && value.parameters_spec().is_some())
-            {
-                // Owned C++ feature-engine values, the artifact-free
-                // HeaderInfo, the cpp fragment, and Starlark `def`/lambda
-                // functions (closures such as CcToolchainInfo's
-                // `static_runtime_lib`): opaque here; a File reachable only
-                // through a closure resolves through the artifact index like
-                // any other (W1b).
-            } else if crate::apple_xcode::is_file_free_payload(value) {
-                // DottedVersion, or an XcodeVersionInfo closure from the
-                // verbatim @_builtins providers.bzl (it captures only
-                // strings, DottedVersions and the platform tables).
-            } else if let Some(files) = crate::starlark_types::contained_depset_files(value) {
-                for file in files? {
-                    self.file(file);
-                }
-            } else if let Some(files) = crate::starlark_types::runfiles_payload_files(value) {
-                // Runfiles, SymlinkEntry, FilesToRunProvider and DefaultInfo
-                // payloads (docs/RUNFILES.md).
-                for file in files {
-                    self.file(file);
-                }
-            } else if let Some(provider) = ProviderInstance::from_value(value) {
-                for (_, field) in &provider.fields {
-                    self.walk(*field, depth + 1)?;
-                }
-            } else if let Some(fields) = crate::toolchain_info::fields(value) {
-                for field in fields {
-                    self.walk(field, depth + 1)?;
-                }
-            } else if let Some(infos) = crate::toolchain_info::context_infos(value) {
-                // A ctx.toolchains value stored in a provider: its
-                // ToolchainInfos' files.
-                for info in infos {
-                    self.walk(info, depth + 1)?;
-                }
-            } else if let Some(list) = ListRef::from_value(value) {
-                for child in list.iter() {
-                    self.walk(child, depth + 1)?;
-                }
-            } else if let Some(tuple) = TupleRef::from_value(value) {
-                for child in tuple.iter() {
-                    self.walk(child, depth + 1)?;
-                }
-            } else if let Some(set) = SetRef::unpack_value_opt(value) {
-                for child in set.iter() {
-                    self.walk(child, depth + 1)?;
-                }
-            } else if let Some(dict) = DictRef::from_value(value) {
-                for (key, child) in dict.iter() {
-                    self.walk(key, depth + 1)?;
-                    self.walk(child, depth + 1)?;
-                }
-            } else if let Some(structure) = StructRef::from_value(value) {
-                for (_, child) in structure.iter() {
-                    self.walk(child, depth + 1)?;
-                }
-            } else if let Some(fields) = crate::runfiles::outputs_fields(value) {
-                // ctx.outputs (formerly a plain struct): its predeclared output Files.
-                self.walk(fields, depth + 1)?;
-            } else if let Some(files) = crate::starlark_types::target_value_files(value) {
-                // A configured target value (Targets are immutable values a
-                // provider may hold, e.g. rules_go's GoArchiveData._cdeps):
-                // its files, runfiles and providers' files.
-                for file in files? {
-                    self.file(file);
-                }
-            } else if !matches!(
-                value.get_type(),
-                "NoneType" | "bool" | "int" | "float" | "string"
-            ) && unpack_label(value).is_none()
-            {
-                bail!("unsupported provider payload type {}", value.get_type());
-            }
-            self.active.remove(&identity);
-            Ok(())
-        }
-    }
-    let mut walk = Walk {
-        active: HashSet::new(),
-        visited: HashSet::new(),
-        seen_files: BTreeSet::new(),
-        files: Vec::new(),
-    };
-    walk.walk(value, 0)?;
-    Ok(walk.files)
-}
-
 /// The Starlark types of the analysis-bound values the native profile
 /// allocates without freeze support (`Heap::alloc_complex_no_freeze`): rule,
 /// aspect and subrule contexts, their action factories, `Args`,
@@ -1010,7 +859,8 @@ pub fn globals(builder: &mut GlobalsBuilder) {
 mod tests {
     use super::*;
     use crate::starlark_types::{
-        alloc_file, alloc_target_with_providers, analysis_globals, default_files,
+        File, alloc_file, alloc_target_with_providers, analysis_globals, default_files,
+        unpack_label,
     };
     use starlark::environment::{FrozenModule, Globals, LibraryExtension, Module};
     use starlark::syntax::{AstModule, Dialect};
@@ -1036,6 +886,15 @@ mod tests {
         }
     }
 
+    /// The File held by field `name` of a provider instance.
+    fn file_field(value: Value<'_>, name: &str) -> Option<File> {
+        let (_, _, fields, _) = instance_parts(value)?;
+        fields
+            .into_iter()
+            .find(|(field, _)| field == name)
+            .and_then(|(_, value)| File::from_value(value).cloned())
+    }
+
     #[test]
     fn run_environment_registry_requirements_returns_and_nested_target_transport() {
         let definitions = extension("//defs:providers.bzl", "P = provider()\nR = RunEnvironmentInfo\nAlias = R\ninfo = R({'z': 'v'}, ['HOME', 'HOME'])\nx = P(info=info, nested=[{'k': struct(info=(info,))}], file=file)").unwrap();
@@ -1058,8 +917,7 @@ mod tests {
                 display_name: "RunEnvironmentInfo".into(),
             }
         );
-        assert_eq!(provider_files(x.value()).unwrap(), vec![file()]);
-        assert!(provider_files(info.value()).unwrap().is_empty());
+        assert_eq!(file_field(x.value(), "file"), Some(file()));
         Module::with_temp_heap(|module| {
             module.import_public_symbols(&definitions);
             for source in [
@@ -1181,7 +1039,7 @@ names.append("consumer")
         drop(alias);
         let reowned = consumer.get("x").unwrap();
         drop(consumer);
-        assert_eq!(provider_files(reowned.value()).unwrap(), vec![file()]);
+        assert_eq!(file_field(reowned.value(), "file"), Some(file()));
     }
 
     fn context(label: &str) -> ExtensionContext {
@@ -1795,8 +1653,8 @@ template = platform_common.TemplateVariableInfo({})
                     .eval_module(ast, &test_globals())
                     .unwrap();
                 // Forwarded inside another provider (rules_cc's CcToolchainInfo
-                // `_allowlist_for_layering_check`): owned and file-free.
-                assert!(provider_files(result).unwrap().is_empty(), "{source}");
+                // `_allowlist_for_layering_check`): an owned value it may hold.
+                check_freezable_payloads([result]).unwrap();
             }
         });
     }
@@ -1913,8 +1771,8 @@ template = platform_common.TemplateVariableInfo({})
         let nested = frozen.get("x").unwrap();
         let empty = frozen.get("empty").unwrap();
         drop(frozen);
-        assert_eq!(provider_files(nested.value()).unwrap(), vec![file()]);
-        assert!(provider_files(empty.value()).unwrap().is_empty());
+        assert_eq!(file_field(nested.value(), "file"), Some(file()));
+        assert_eq!(file_field(empty.value(), "file"), None);
         assert_ne!(
             provider_identity(definitions.get("P").unwrap().value()).as_deref(),
             Some(crate::template_variable_info::PROVIDER_ID)
@@ -1922,46 +1780,7 @@ template = platform_common.TemplateVariableInfo({})
     }
 
     #[test]
-    fn nested_file_payloads_cycles_depth_and_unknown_types() {
-        let definitions = extension("//defs:providers.bzl", "P = provider()").unwrap();
-        Module::with_temp_heap(|module| {
-            module.import_public_symbols(&definitions);
-            for (source, expected) in [
-                (
-                    "P(x=[file, (depset([file]),), {file: struct(nested=P(f=file))}], metadata=[None, True, 12345678901234567890, 1.5, 'x', Label('//pkg:x'), depset(['s'])])",
-                    Some(vec![file()]),
-                ),
-                ("P(x={'k': 1})", Some(vec![])),
-                ("l = []; p = P(x=l); l.append(p); p", None),
-                ("P(x=len)", None),
-                // Builtins are unhashable (Bazel 9.3); a def is a hashable unknown kind.
-                // A def is opaque provider payload (CcToolchainInfo closures).
-                ("def f():\n    pass\nP(x=set([f]))", Some(vec![])),
-                ("l = []; l.append(l); P(x=[set([file]), l])", None),
-                (
-                    "def deep():\n    x = []\n    for i in range(140):\n        x = [x]\n    return P(x=x)\ndeep()",
-                    None,
-                ),
-                (
-                    "def deep():\n    x = file\n    for i in range(140):\n        x = (x,)\n    return P(x=set([x]))\ndeep()",
-                    None,
-                ),
-            ] {
-                let ast =
-                    AstModule::parse("impl.star", source.to_owned(), &Dialect::Standard).unwrap();
-                let result = Evaluator::new(&module)
-                    .eval_module(ast, &test_globals())
-                    .unwrap();
-                match expected {
-                    Some(expected) => assert_eq!(provider_files(result).unwrap(), expected),
-                    None => assert!(provider_files(result).is_err(), "{source}"),
-                }
-            }
-        });
-    }
-
-    #[test]
-    fn set_payload_files_preserve_first_encounter_order_shared_values_and_freeze() {
+    fn set_payloads_keep_first_encounter_order_through_freeze_and_reowning() {
         let generated = File {
             is_directory: false,
             path: "bazel-rs-out/bin/pkg/generated.txt".into(),
@@ -1976,7 +1795,17 @@ template = platform_common.TemplateVariableInfo({})
             owner: "//pkg:second.txt".into(),
             is_source: true,
         };
-        let expected = vec![generated.clone(), file(), second_source.clone()];
+        // `shared` (field `a`): first-encounter order, duplicates dropped.
+        let expected = vec![generated.clone(), file()];
+        let set_files = |value: Value<'_>| -> Vec<File> {
+            let (_, _, fields, _) = instance_parts(value).unwrap();
+            let (_, set) = fields.into_iter().find(|(name, _)| name == "a").unwrap();
+            SetRef::unpack_value_opt(set)
+                .unwrap()
+                .iter()
+                .map(|element| File::from_value(element).unwrap().clone())
+                .collect()
+        };
         let frozen = Module::with_temp_heap(|module| {
             module.set("file", alloc_file(module.heap(), file()));
             module.set("generated", alloc_file(module.heap(), generated));
@@ -1995,26 +1824,18 @@ empty = P(files=set(), metadata=metadata)
                 eval.extra = Some(&context);
                 eval.eval_module(ast, &test_globals()).unwrap();
             }
-            assert_eq!(provider_files(module.get("x").unwrap()).unwrap(), expected);
-            assert!(
-                provider_files(module.get("empty").unwrap())
-                    .unwrap()
-                    .is_empty()
-            );
+            assert_eq!(set_files(module.get("x").unwrap()), expected);
             module.freeze().unwrap()
         });
         let payload = frozen.get("x").unwrap();
         drop(frozen);
-        assert_eq!(provider_files(payload.value()).unwrap(), expected);
+        assert_eq!(set_files(payload.value()), expected);
         let reowned = Module::with_temp_heap(|module| {
             module.set("x", module.heap().access_owned_frozen_value(&payload));
             module.freeze().unwrap()
         });
         drop(payload);
-        assert_eq!(
-            provider_files(reowned.get("x").unwrap().value()).unwrap(),
-            expected
-        );
+        assert_eq!(set_files(reowned.get("x").unwrap().value()), expected);
     }
 
     #[test]
@@ -2178,9 +1999,15 @@ empty = P(files=set(), metadata=metadata)
         });
         drop(p);
         drop(q);
-        assert_eq!(
-            provider_files(reowned.get("x").unwrap().value()).unwrap(),
-            vec![file()]
-        );
+        // The re-owned instance keeps its payload alive: `files` is [file].
+        let x = reowned.get("x").unwrap();
+        let (_, _, fields, _) = instance_parts(x.value()).unwrap();
+        let (_, files) = fields
+            .into_iter()
+            .find(|(name, _)| name == "files")
+            .unwrap();
+        let files = ListRef::from_value(files).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(File::from_value(files[0]), Some(&file()));
     }
 }

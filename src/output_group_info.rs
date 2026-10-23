@@ -67,16 +67,6 @@ pub(crate) fn groups(value: Value<'_>) -> Option<&[(String, Depset)]> {
     OutputGroupInfo::from_value(value).map(|info| info.groups.as_slice())
 }
 
-/// Every File of every group (provider payload traversal).
-pub(crate) fn files(value: Value<'_>) -> Option<Vec<File>> {
-    let info = OutputGroupInfo::from_value(value)?;
-    let mut files = Vec::new();
-    for (_, depset) in &info.groups {
-        files.extend(depset_files(depset));
-    }
-    Some(files)
-}
-
 pub(crate) fn depset_files(depset: &Depset) -> Vec<File> {
     depset
         .flatten()

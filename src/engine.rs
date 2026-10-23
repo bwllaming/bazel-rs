@@ -361,11 +361,12 @@ fn verify_views() -> bool {
 }
 
 /// Whether BAZEL_RS_VERIFY_ARTIFACTS=1 asks to check the artifact-index
-/// invariants (W1b's migration verifier, PLAN-L1 §6): after each commit,
-/// every File the pre-W1b provider-file walk reaches from the committed
-/// target is registered ([`verify_registered`]), and re-registering a File
-/// never changes its Artifact ([`register_artifact`]; always checked in
-/// debug builds).
+/// invariant in release builds too (debug builds always check it): a File
+/// re-registered with a different Artifact is an internal error
+/// ([`register_artifact`]). (W1b's migration verifier also checked, after
+/// each commit, that every File the pre-W1b provider-file walk reached from
+/// the committed target was registered; it soaked on the whole test suite
+/// and on ~/code, and W1d deleted it with the walk.)
 fn verify_artifacts() -> bool {
     static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var_os("BAZEL_RS_VERIFY_ARTIFACTS").is_some_and(|value| value == "1")
@@ -394,41 +395,6 @@ fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact
         None => {
             index.insert(file.clone(), artifact.clone());
         }
-    }
-}
-
-/// BAZEL_RS_VERIFY_ARTIFACTS (PLAN-L1 §6): every File reachable from a
-/// committed target — the pre-W1b provider-file walk over its providers
-/// (walk errors ignored: the walk no longer gates anything), its runfiles
-/// and its files to build — is registered in `artifact_index`, so no
-/// consumer can reach an unregistered File through it. The workspace
-/// status files are registered on demand ([`Engine::ensure_workspace_status`],
-/// by their consumers) and are exempt.
-fn verify_registered<'a>(
-    owner: &str,
-    providers: impl IntoIterator<Item = (&'a String, &'a starlark::values::OwnedFrozenValue)>,
-    files: impl IntoIterator<Item = File>,
-    artifact_index: &BTreeMap<File, Artifact>,
-) {
-    let check = |file: &File, origin: &str| {
-        if !artifact_index.contains_key(file)
-            && !crate::analysis_runtime::is_workspace_status_file(file)
-        {
-            panic!(
-                "BAZEL_RS_VERIFY_ARTIFACTS: {owner}: {origin} file {} (owner {:?}) is not registered in the artifact index",
-                file.path, file.owner
-            );
-        }
-    };
-    for (id, provider) in providers {
-        if let Ok(files) = crate::providers::provider_files(provider.value()) {
-            for file in &files {
-                check(file, &format!("provider {id}"));
-            }
-        }
-    }
-    for file in files {
-        check(&file, "default or runfiles");
     }
 }
 
@@ -1230,7 +1196,7 @@ struct CustomPrepared {
 
 /// The worker stack size for parallel package loading (review §1.6):
 /// Rust's 2 MiB default overflows where the 8 MiB main thread works
-/// (Starlark evaluation, depset flattening, JSON, provider walks); 16
+/// (Starlark evaluation, depset flattening, JSON); 16
 /// MiB is comfortable.
 const LOADING_WORKER_STACK: usize = 16 << 20;
 
@@ -8551,14 +8517,6 @@ impl Engine {
             let planned = plan_action(action, inputs, &main_ignored, client_environment)?;
             nodes.push(planned);
         }
-        if verify_artifacts() {
-            verify_registered(
-                &action_owner,
-                &analyzed.providers,
-                std::iter::empty(),
-                artifact_index,
-            );
-        }
         Ok(analyzed.providers)
     }
 
@@ -9656,18 +9614,6 @@ impl Engine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         dry.insert(key.clone(), Arc::new(defaults));
-        if verify_artifacts() {
-            verify_registered(
-                &action_owner,
-                &analyzed.providers,
-                analyzed
-                    .files
-                    .iter()
-                    .cloned()
-                    .chain(analyzed.runfiles.files()),
-                artifact_index,
-            );
-        }
         Ok(())
     }
 
@@ -12422,47 +12368,6 @@ mod tests {
         let mut other = artifact.clone();
         other.producer = Some(("//pkg:other#0".into(), 0));
         register_artifact(&mut index, &artifact.file, &other);
-    }
-
-    /// BAZEL_RS_VERIFY_ARTIFACTS: a reachable File missing from the index
-    /// panics with its owner; the workspace status files are exempt
-    /// (registered on demand by their consumers).
-    #[test]
-    fn verify_registered_names_an_unregistered_file() {
-        let artifact = generated_out_txt();
-        let mut index = BTreeMap::new();
-        register_artifact(&mut index, &artifact.file, &artifact);
-        let status = crate::analysis_runtime::workspace_status_file("volatile-status.txt");
-        verify_registered(
-            "//pkg:ok",
-            &BTreeMap::new(),
-            [artifact.file(), status],
-            &index,
-        );
-        let missing = std::panic::catch_unwind(|| {
-            verify_registered(
-                "//pkg:consumer",
-                &BTreeMap::new(),
-                [Artifact::compute_file(
-                    Path::new("bazel-out/k8-fastbuild/bin/pkg/unregistered.txt"),
-                    true,
-                    "//pkg:gen",
-                    false,
-                )],
-                &index,
-            )
-        })
-        .unwrap_err();
-        let message = missing
-            .downcast_ref::<String>()
-            .cloned()
-            .unwrap_or_default();
-        assert!(
-            message.contains(
-                "BAZEL_RS_VERIFY_ARTIFACTS: //pkg:consumer: default or runfiles file bazel-out/k8-fastbuild/bin/pkg/unregistered.txt"
-            ),
-            "{message}"
-        );
     }
 
     #[test]

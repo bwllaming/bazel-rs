@@ -1451,99 +1451,6 @@ pub fn unpack_depset(value: Value<'_>) -> anyhow::Result<Vec<File>> {
         .collect()
 }
 
-/// Scalar metadata depsets contain no File dependencies. Tuples may contain
-/// File values and must not hide those dependencies from provider traversal.
-pub(crate) fn contained_depset_files(value: Value<'_>) -> Option<anyhow::Result<Vec<File>>> {
-    Depset::from_value(value).map(depset_payload_files)
-}
-
-/// The files a depset's elements carry, in first-encounter order: Files,
-/// symlink targets, and (N49) those inside tuples, struct and provider
-/// elements, nested depsets, runfiles and configured targets.
-fn depset_payload_files(depset: &Depset) -> anyhow::Result<Vec<File>> {
-    let mut stack: Vec<Item> = depset.flatten().into_iter().cloned().collect();
-    stack.reverse();
-    let mut files = BTreeSet::new();
-    let mut result = Vec::new();
-    let mut add = |file: File, result: &mut Vec<File>| {
-        if files.insert(file.clone()) {
-            result.push(file);
-        }
-    };
-    while let Some(item) = stack.pop() {
-        match item {
-            Item::File(file) => add(file, &mut result),
-            Item::Symlink(entry) => add(entry.target, &mut result),
-            // N49b: frozen lists and dicts inside depset elements.
-            Item::Tuple(items) | Item::List(items) => stack.extend(items.into_iter().rev()),
-            Item::Dict(dict) => stack.extend(
-                dict.0
-                    .iter()
-                    .rev()
-                    .flat_map(|(key, value)| [value.clone(), key.clone()]),
-            ),
-            Item::Struct(item) => stack.extend(item.fields.iter().rev().map(|(_, v)| v.clone())),
-            Item::Depset(item) => {
-                for file in depset_payload_files(&item.0)? {
-                    add(file, &mut result);
-                }
-            }
-            Item::Runfiles(item) => {
-                for file in item.0.all_artifacts() {
-                    add(file, &mut result);
-                }
-            }
-            Item::Target(item) => {
-                for file in target_payload_files(&item.0)? {
-                    add(file, &mut result);
-                }
-            }
-            Item::String(_)
-            | Item::Label(_)
-            | Item::Int(_)
-            | Item::Bool(_)
-            | Item::None
-            | Item::Function(_) => {}
-        }
-    }
-    Ok(result)
-}
-
-/// The files a configured target value carries for a holder of it: its
-/// files to build, runfiles and the files of its providers.
-pub(crate) fn target_payload_files(target: &Target) -> anyhow::Result<Vec<File>> {
-    let mut seen = BTreeSet::new();
-    let mut result = Vec::new();
-    let mut provider_files = Vec::new();
-    for (key, provider) in &target.providers {
-        provider_files.extend(crate::providers::provider_files(provider.value()).map_err(
-            |error| {
-                anyhow!(
-                    "files of provider {key} of target {} held in a provider: {error}",
-                    target.label.canonical_form()
-                )
-            },
-        )?);
-    }
-    for file in target
-        .files
-        .iter()
-        .cloned()
-        .chain(target.runfiles.files())
-        .chain(provider_files)
-    {
-        if seen.insert(file.clone()) {
-            result.push(file);
-        }
-    }
-    Ok(result)
-}
-
-/// [`target_payload_files`] of a Target value.
-pub(crate) fn target_value_files(value: Value<'_>) -> Option<anyhow::Result<Vec<File>>> {
-    TargetValue::from_value(value).map(|target| target_payload_files(&target.0))
-}
-
 /// BuiltinProvider.repr (packages/BuiltinProvider.java:94-97).
 impl fmt::Display for DefaultInfoConstructor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1801,46 +1708,6 @@ pub(crate) fn returned_default_info(
 /// outputs; an explicitly empty depset requests no default outputs.
 pub fn default_files(result: Value<'_>) -> anyhow::Result<Option<Vec<File>>> {
     Ok(returned_default_info(result)?.and_then(|info| info.files))
-}
-
-/// Files reachable from a DefaultInfo, Runfiles, SymlinkEntry or
-/// FilesToRunProvider payload value (provider-file traversal).
-pub(crate) fn runfiles_payload_files(value: Value<'_>) -> Option<Vec<File>> {
-    use crate::runfiles::{FilesToRun, Runfiles};
-    if let Some(runfiles) = Runfiles::from_value(value) {
-        return Some(runfiles.all_artifacts());
-    }
-    if let Some(entry) = SymlinkEntry::from_value(value) {
-        return Some(vec![entry.target.clone()]);
-    }
-    let files_to_run = |files_to_run: &FilesToRun| {
-        let mut files = files_to_run.executable.iter().cloned().collect::<Vec<_>>();
-        if let Some(runfiles) = files_to_run.runfiles() {
-            files.extend(runfiles.all_artifacts());
-        }
-        files
-    };
-    if let Some(provider) = FilesToRun::from_value(value) {
-        return Some(files_to_run(provider));
-    }
-    let info = DefaultInfoValue::from_value(value)?;
-    let mut files = Vec::new();
-    if let Some(depset) = &info.files {
-        files.extend(default_info_files(depset).unwrap_or_default());
-    }
-    for runfiles in [&info.runfiles, &info.data_runfiles, &info.default_runfiles]
-        .into_iter()
-        .flatten()
-    {
-        files.extend(runfiles.all_artifacts());
-    }
-    files.extend(info.executable.iter().cloned());
-    if let Some(provider) = &info.files_to_run {
-        files.extend(files_to_run(provider));
-    }
-    let mut seen = BTreeSet::new();
-    files.retain(|file| seen.insert(file.clone()));
-    Some(files)
 }
 
 pub(crate) fn is_depset(value: Value<'_>) -> bool {
@@ -3492,7 +3359,6 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 };
                 assert_eq!(unpack_depset(value).unwrap(), expected);
                 assert_eq!(file_list(value).unwrap(), expected);
-                assert_eq!(contained_depset_files(value).unwrap().unwrap(), expected);
             }
             let ast = AstModule::parse(
                 "tuple.star",
@@ -3504,10 +3370,6 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
                 .eval_module(ast, &globals())
                 .unwrap();
             assert!(unpack_depset(value).is_err());
-            assert_eq!(
-                contained_depset_files(value).unwrap().unwrap(),
-                vec![file("pkg/a.txt"), file("pkg/b")]
-            );
         });
     }
 

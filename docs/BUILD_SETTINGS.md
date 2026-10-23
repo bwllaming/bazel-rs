@@ -54,8 +54,8 @@ the constructor input or a returned dictionary never changes provider storage.
 
 The constructor has stable native provider identity across modules and aliases;
 instances use identity equality/hash, not mapping equality. Frozen provider
-ownership, target membership/indexing, duplicate-provider validation and nested
-provider payload traversal use the normal native analysis paths.
+ownership, target membership/indexing, duplicate-provider validation and nesting
+in other providers' payloads use the normal native analysis paths.
 
 Consumers may explicitly read this provider from a declared dependency and use
 its values in actions. Producing it from a resolved toolchain or a `toolchains`

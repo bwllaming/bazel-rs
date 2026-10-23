@@ -83,17 +83,6 @@ pub(crate) fn is_instance(value: Value<'_>) -> bool {
     ToolchainInfo::from_value(value).is_some()
 }
 
-/// The field values of a ToolchainInfo (for provider file collection).
-pub(crate) fn fields<'v>(value: Value<'v>) -> Option<Vec<Value<'v>>> {
-    Some(
-        ToolchainInfo::from_value(value)?
-            .fields
-            .iter()
-            .map(|(_, value)| *value)
-            .collect(),
-    )
-}
-
 impl<V> fmt::Display for ToolchainInfoGen<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("struct(...)")
@@ -413,20 +402,6 @@ impl<'v> StarlarkValue<'v> for ToolchainContext {
             .map_err(starlark::Error::new_other)?;
         Ok(data.type_label(&label).is_some())
     }
-}
-
-/// The ToolchainInfo values of a `ctx.toolchains` value (an escaped
-/// context in a provider), for provider file collection.
-pub(crate) fn context_infos<'v>(value: Value<'v>) -> Option<Vec<Value<'v>>> {
-    let context = ToolchainContext::from_value(value)?;
-    Some(
-        context
-            .data
-            .iter()
-            .flat_map(|data| data.toolchains.values())
-            .map(|info| info.value())
-            .collect(),
-    )
 }
 
 pub(crate) fn alloc_context(heap: Heap<'_>, data: Option<Arc<ToolchainContextData>>) -> Value<'_> {

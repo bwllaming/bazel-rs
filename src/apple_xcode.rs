@@ -328,54 +328,6 @@ fn providers_module() -> &'static FrozenModule {
     })
 }
 
-pub(crate) const XCODE_VERSION_INFO_ID: &str =
-    "@@_builtins//:common/xcode/providers.bzl%XcodeVersionInfo";
-
-/// The init closures (`providers.bzl:72-134`) capture the raw `availability`
-/// and `xcode_version` arguments, which `providers::provider_files` cannot see
-/// through. Bazel accepts any value there; natively only file-free scalars
-/// (None, bool, int, float, string) are accepted, so no File, depset or
-/// struct can be hidden in a returned XcodeVersionInfo. Every other value
-/// fails explicitly before `init` runs. Scalars keep Bazel's own errors, e.g.
-/// the dotted_version type error for `None` or an int.
-pub(crate) fn check_init_arguments<'v>(
-    positional: &[Value<'v>],
-    named: &[(&str, Value<'v>)],
-) -> starlark::Result<()> {
-    let scalar = |value: Value<'v>| {
-        matches!(
-            value.get_type(),
-            "NoneType" | "bool" | "int" | "float" | "string"
-        )
-    };
-    let positional = positional.iter().map(|value| ("<positional>", *value));
-    for (name, value) in positional.chain(named.iter().copied()) {
-        if !scalar(value) {
-            return Err(failure(format!(
-                "XcodeVersionInfo argument '{name}' of type '{}' is not supported in the native profile \
-                 (its init closures would hide provider payload from dependency tracking); \
-                 pass a string, bool or None",
-                value.get_type()
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Returned-provider payloads that provably hold no files: DottedVersion
-/// values and the functions defined by the embedded providers.bzl. The
-/// vendored `def` repr ends with the defining module's filename
-/// (`<function NAME from FILE>`; NAME is an identifier), no user `.bzl` is
-/// evaluated under the `@@_builtins` label, and `check_init_arguments`
-/// keeps every captured init argument a file-free scalar.
-pub(crate) fn is_file_free_payload(value: Value<'_>) -> bool {
-    DottedVersion::from_value(value).is_some()
-        || (value.get_type() == "function"
-            && value
-                .to_repr()
-                .ends_with(&format!(" from {PROVIDERS_LABEL}>")))
-}
-
 /// `XcodeVersionInfo` from the evaluated providers.bzl, kept alive by `heap`.
 pub(crate) fn xcode_version_info(heap: &FrozenHeap) -> FrozenValue {
     providers_module()
@@ -669,27 +621,32 @@ local = apple_common.XcodeVersionConfig(
             &HOST_XCODES.replace("ios_sdk_version = \"8.4\"", "ios_sdk_version = \"8..4\""),
             "but got '8..4'",
         );
-        // Values the init closures would capture unseen fail before init; a
-        // struct could otherwise smuggle files out through availability().
-        for (field, value, kind) in [
+        // The init closures capture `availability` and `xcode_version` raw,
+        // and Bazel accepts any value there; so does the native profile since
+        // no provider-file walk has to see through them (W1b/W1d: a File
+        // reached through a closure resolves through the artifact index).
+        for (field, value, check) in [
             (
                 "availability = \"UNKNOWN\"",
                 "availability = struct(lower = lambda: depset())",
-                "struct",
+                "info.availability() == depset()",
             ),
-            ("xcode_version = None", "xcode_version = depset()", "depset"),
+            (
+                "xcode_version = None",
+                "xcode_version = depset()",
+                "info.xcode_version() == None",
+            ),
             (
                 "xcode_version_flag = None",
                 "xcode_version_flag = [\"x\"]",
-                "list",
+                "info.execution_info() == {\"requires-darwin\": \"\", \"supports-xcode-requirements-set\": \"\"}",
             ),
         ] {
-            let name = value.split(' ').next().unwrap();
-            fails(
+            pass(
                 FILE,
-                &HOST_XCODES.replace(field, value),
                 &format!(
-                    "XcodeVersionInfo argument '{name}' of type '{kind}' is not supported in the native profile"
+                    "{}({check}) or fail({check:?})\n",
+                    HOST_XCODES.replace(field, value)
                 ),
             );
         }
@@ -698,26 +655,6 @@ local = apple_common.XcodeVersionConfig(
             &HOST_XCODES.replace("ios_sdk_version = \"8.4\"", "ios_sdk_version = None"),
             "in call to dotted_version(), parameter 'version' got value of type 'NoneType', want 'string'",
         );
-    }
-
-    #[test]
-    fn only_dotted_versions_and_builtins_closures_are_file_free_payloads() {
-        let frozen = crate::language_modules::tests::run(
-            FILE,
-            &format!(
-                "{HOST_XCODES}v = apple_common.dotted_version('1')\ndef own():\n    pass\nlam = apple_common.dotted_version\na = info.availability\nm = info.minimum_os_for_platform_type\n"
-            ),
-        )
-        .unwrap();
-        let get = |name: &str| frozen.get(name).unwrap();
-        assert!(is_file_free_payload(get("v").value()));
-        assert!(is_file_free_payload(get("a").value()));
-        assert!(is_file_free_payload(get("m").value()));
-        let info = get("info");
-        assert!(!is_file_free_payload(get("own").value()));
-        // The apple_common.bzl lambda is not from providers.bzl.
-        assert!(!is_file_free_payload(get("lam").value()));
-        assert!(!is_file_free_payload(info.value()));
     }
 
     #[test]

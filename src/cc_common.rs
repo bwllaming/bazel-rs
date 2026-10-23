@@ -155,9 +155,6 @@ mod owned {
 }
 pub(crate) use owned::HeaderInfo;
 
-pub(crate) fn is_header_info(value: Value<'_>) -> bool {
-    HeaderInfo::from_value(value).is_some()
-}
 starlark_simple_value!(HeaderInfo);
 
 impl fmt::Display for HeaderInfo {

@@ -67,16 +67,17 @@ so the compilation-mode features flip to `opt`.
 
 Provider payloads that cross frozen dependency boundaries (`CcToolchainInfo`
 fields) now include `PackageSpecificationInfo` (owned `Arc` DAG, file-free),
-C++ build `Variables` (traversed: File-valued variables are inputs),
+C++ build `Variables` (File-valued variables are inputs),
 `CcToolchainFeatures`/`FeatureConfiguration` (owned data; the configuration
 cache is a `Mutex`, so concurrent analyses of consumers share one frozen
 instance safely, `src/cc_features/tests.rs`), the artifact-free
 `HeaderInfo`, the `cpp` fragment, and Starlark `def`/lambda functions
 (`CcToolchainInfo.static_runtime_lib` etc.). Since W1b nothing walks a
-returned provider: every File a consumer reaches, through a closure too,
-resolves through the build's one artifact index to its producer, as Bazel
-resolves an input through its Artifact (tests/artifact_identity.rs,
-paired capture tests/fixtures/artifact_identity/reference_receipt.json).
+returned provider (W1d deleted the walk): every File a consumer reaches,
+through a closure too, resolves through the build's one artifact index to
+its producer, as Bazel resolves an input through its Artifact
+(tests/artifact_identity.rs, paired capture
+tests/fixtures/artifact_identity/reference_receipt.json).
 
 ## Build info (`bazel_cc_build_info`)
 

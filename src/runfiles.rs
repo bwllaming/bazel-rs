@@ -1463,12 +1463,6 @@ pub(crate) fn alloc_outputs<'v>(
     })
 }
 
-/// The field struct of a `ctx.outputs` value (a provider payload walks its
-/// predeclared output Files, crate::providers).
-pub(crate) fn outputs_fields(value: Value<'_>) -> Option<Value<'_>> {
-    Outputs::from_value(value).map(|outputs| outputs.fields.value())
-}
-
 /// `ctx.executable`.
 pub(crate) fn alloc_executable_struct<'v>(heap: Heap<'v>, fields: OwnedFrozenValue) -> Value<'v> {
     heap.alloc(ExecutableStruct { fields })

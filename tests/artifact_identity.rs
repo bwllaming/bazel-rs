@@ -5,8 +5,9 @@
 //! runfiles). Programs the former legality machinery rejected and Bazel
 //! accepts now build; the paired genuine Bazel 9.3 capture is
 //! tests/fixtures/artifact_identity/reference_receipt.json. Every build runs
-//! with the migration verifier (`BAZEL_RS_VERIFY_ARTIFACTS=1`: every File
-//! reachable from a committed target is registered).
+//! with `BAZEL_RS_VERIFY_ARTIFACTS=1` (no File re-registered with a different
+//! Artifact; until W1d it also re-ran the former provider-file walk after
+//! each commit and asserted every File it reached was registered).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::path::Path;

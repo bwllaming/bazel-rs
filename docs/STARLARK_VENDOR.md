@@ -4,9 +4,9 @@ The root `[patch.crates-io]` selects `vendor/starlark-0.14.2`. The dependency
 remains exactly `starlark = "=0.14.2"`; H0 changed its lock entry only by removing
 that package's registry source and checksum. The original H0 baseline changed no
 semantics. Subsequent [set-core compatibility patches](STARLARK_SETS.md) are
-declared separately; they do not upgrade dependencies. Production globals and
-provider-file traversal are enabled by the subsequent native integration, not by
-the vendored-core patch itself.
+declared separately; they do not upgrade dependencies. Production globals are
+enabled by the subsequent native integration, not by the vendored-core patch
+itself.
 
 The native JSON codec adds one typed, allocation-free BigInt borrow accessor to
 the vendored Value API, permitting budget checks before integer conversion. Its
