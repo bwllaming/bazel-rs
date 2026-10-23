@@ -39,8 +39,9 @@ Repository verify: --verify-repo-tampering forces full re-hash of warm
   repository publications (default: stat-fingerprint trust, Bazel's model;
   env BAZEL_RS_VERIFY_REPOS=full is equivalent).
 Digest memo: settled files' SHA-256 by path and stat key persist in
-  <cache>/digests/v1.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off disables
-  it (docs/DIGEST_MEMO.md).
+  <cache>/digests/v1.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off bypasses
+  it while set (its records stay); deleting <cache>/digests/ drops them
+  (docs/DIGEST_MEMO.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).

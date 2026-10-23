@@ -72,7 +72,9 @@
 //! would force a full re-hash after every upgrade.
 //!
 //! `BAZEL_RS_DIGEST_MEMO=off` disables the persistent table (the per-process
-//! memos stay). `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` make
+//! memos stay) while it is set; it repairs nothing: the records stay and
+//! count again once it is unset. Deleting `<cache>/digests/` drops them all.
+//! `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` make
 //! repository verification re-hash every file without consulting it
 //! (crate::repository_store::verify_mode).
 

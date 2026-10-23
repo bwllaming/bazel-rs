@@ -165,14 +165,20 @@ the change time — and so does the executor, for every repository tree file:
   in-place edit that keeps their size, mtime and mode (after a `chmod`) is trusted by later commands
   too, where before the table only the rest of the command trusted it (as the per-process memo always
   did, docs/HARDLINK_STAGING.md, "Trade-offs and limits"). `BAZEL_RS_DIGEST_MEMO=off` restores the
-  re-hash per command.
+  re-hash per command while it is set, but repairs nothing (below): only deleting `<cache>/digests/`
+  drops a record that trusts such an edit.
 
 ## Switches
 
 - `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full`: repository verification (registry trees,
   `bazel_tools`, recorded inputs) re-hashes every file without consulting the table (the executor keeps
   using it, like its per-process memo).
-- `BAZEL_RS_DIGEST_MEMO=off`: the table is neither read nor written (the per-process memos stay).
+- `BAZEL_RS_DIGEST_MEMO=off`: the table is neither read nor written (the per-process memos stay). It
+  does not repair stale records: they stay in the file untouched, and once the variable is unset the
+  table trusts them again.
+- Deleting `<cache>/digests/` (or just `v1.dmemo`) drops every record: the next command re-hashes what
+  it reads and writes a new table. This is the way to discard records, for instance after editing files
+  below the cache by hand.
 - `BAZEL_RS_TIMING=1` prints two `PERF-DMEMO` lines at the end: load outcome, records, bytes and load time;
   lookups (hits in the file, hits among this process's new records, misses), records remembered and what
   the save wrote; files and bytes actually hashed per consumer, with the time spent in registry and
