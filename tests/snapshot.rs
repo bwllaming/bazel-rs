@@ -1652,19 +1652,27 @@ fn shared_tool_runfiles_groups_save_and_hit() {
     twin.write("tooled/BUILD.bazel", TOOLED_BUILD);
     twin.write("tooled/data.txt", "data one\n");
     let args = &["build", "//tooled:use"];
-    twin.save(args, &[]);
-    // The plan holds one group, held by both tool actions.
-    let timed = twin.run_side(OFF, args, &[("BAZEL_RS_TIMING", "1")]);
-    let groups = text(&timed.stderr)
-        .lines()
-        .find(|line| line.starts_with("PERF-GROUPS "))
-        .map(str::to_owned)
-        .unwrap_or_default();
-    assert!(
-        groups.contains(" holders=2 refs=2 distinct=1 "),
-        "{groups}\n{}",
-        text(&timed.stderr)
-    );
+    // Saved under BAZEL_RS_TIMING: the plan holds one group, held by both
+    // tool actions (PERF-GROUPS, a diagnostics line: never part of what
+    // planning printed, which a hit replays and verify compares).
+    let timing = [("BAZEL_RS_TIMING", "1")];
+    let mut saved = twin.same(args, &timing);
+    if saved.line("saved ").is_none() {
+        saved = twin.same(args, &timing);
+    }
+    saved.assert_saved();
+    for output in [&saved.on, &saved.off] {
+        let groups = text(&output.stderr)
+            .lines()
+            .find(|line| line.starts_with("PERF-GROUPS "))
+            .map(str::to_owned)
+            .unwrap_or_default();
+        assert!(
+            groups.contains(" holders=2 refs=2 distinct=1 "),
+            "{groups}\n{}",
+            text(&output.stderr)
+        );
+    }
     for _ in 0..2 {
         let hit = twin.same(args, &[]);
         hit.assert_hit().assert_success();
@@ -1672,6 +1680,11 @@ fn shared_tool_runfiles_groups_save_and_hit() {
             hit.stderr().contains("0 actions executed"),
             "{}",
             hit.stderr()
+        );
+        assert!(
+            !text(&hit.on.stderr).contains("PERF-"),
+            "{}",
+            text(&hit.on.stderr)
         );
         assert_eq!(built_output(&twin, ON, &hit.on), "data one\n");
     }

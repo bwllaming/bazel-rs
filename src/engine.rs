@@ -12783,12 +12783,14 @@ fn report_input_groups(nodes: &[PlannedAction], listed_tree_actions: usize) {
             distinct.insert(Arc::as_ptr(group), entries(group));
         }
     }
-    eprintln!(
+    // The diagnostics stream (crate::snapshot::diag), like PERF-STAGE: never
+    // part of what planning printed, which a snapshot hit replays.
+    crate::snapshot::diag::line_fmt(format_args!(
         "PERF-GROUPS nodes={} holders={holders} refs={refs} distinct={} distinct_entries={} listed_entries={listed} listed_tree_actions={listed_tree_actions}",
         nodes.len(),
         distinct.len(),
         distinct.values().sum::<usize>(),
-    );
+    ));
 }
 
 /// The source inputs of one planned action (ActionPlanning::source_inputs):
