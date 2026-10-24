@@ -79,7 +79,8 @@ pub struct KeyedParts<'a> {
     pub outputs: &'a [File],
     /// The tools' runfiles trees: Bazel's mandatory inputs include each
     /// tool's runfiles tree artifact; natively its directory and mapping
-    /// (runfiles path -> exec path), compared without owner like files.
+    /// (runfiles path -> exec path), compared without owner like files,
+    /// through each tree's [`tree_digest`].
     pub runfiles_trees: &'a [std::sync::Arc<ToolRunfilesTree>],
     pub execution: KeyedExecution<'a>,
     /// Contents or command lines completed when the action executes
@@ -115,18 +116,10 @@ impl ActionKey {
         }
         key.count(parts.runfiles_trees.len());
         for tree in parts.runfiles_trees {
-            key.str(tree.directory());
-            key.count(tree.mapping().len());
-            for (path, file) in tree.mapping() {
-                key.str(path);
-                match file {
-                    Some(file) => {
-                        key.tag(1);
-                        key.file(file);
-                    }
-                    None => key.tag(0),
-                }
-            }
+            // A fixed-width digest of the tree's framed content, computed
+            // once per tree: equal trees contribute equal bytes, different
+            // ones (but for a SHA-256 collision) different bytes.
+            key.0.update(tree.digest());
         }
         match parts.execution.platform {
             Some(platform) => {
@@ -175,6 +168,45 @@ impl ActionKey {
             Sharing::Conflict
         }
     }
+}
+
+/// The digest a tool's runfiles tree contributes to the key of every
+/// action using the tool (PA-1 follow-up B4,
+/// crate::analysis_runtime::ToolRunfilesTree::digest): SHA-256 over the
+/// framed tree — its directory, its entry count, then each entry's
+/// runfiles path and its File compared without owner (exec path and kind),
+/// or the empty-file tag — the bytes each key hashed per tree before.
+///
+/// Keyed through this digest, an action's key no longer hashes every entry
+/// of every tool tree on each registration (on ~/code's pythonworker 20,501
+/// registrations held 40,327 trees of ~900 entries on average: 36.8 M
+/// entries hashed during analysis); a tree is hashed once when computed
+/// (once per build: the planner holds it). The key's bytes differ from the
+/// full encoding, which only matters to a comparison with another
+/// encoding: an [`ActionKey`] is in-process only (no serialization, its
+/// digest private) and only ever compared with keys of this process
+/// ([`ActionKey::sharing`]), all computed through the same digests. The
+/// comparison outcomes are those of the full encoding: the digest is a
+/// pure function of the tree's content (not its identity), so equal trees
+/// of different providers still share, and the framing is injective with
+/// fixed-width digests in the outer key, so two keys of different trees
+/// collide only through a SHA-256 collision, the assumption every key
+/// comparison already makes.
+pub(crate) fn tree_digest(directory: &str, mapping: &crate::runfiles::RunfilesMapping) -> [u8; 32] {
+    let mut key = Fingerprint::default();
+    key.str(directory);
+    key.count(mapping.len());
+    for (path, file) in mapping {
+        key.str(path);
+        match file {
+            Some(file) => {
+                key.tag(1);
+                key.file(file);
+            }
+            None => key.tag(0),
+        }
+    }
+    key.0.finalize().into()
 }
 
 /// The first lines of Bazel's ActionConflictException
@@ -786,6 +818,98 @@ mod tests {
         assert_eq!(
             plain.sharing(&key(&action, "//p:a", None, None)),
             Sharing::Conflict
+        );
+    }
+
+    /// PA-1 follow-up B4: a tool tree enters a key through its digest, a
+    /// function of its content: trees of different providers with one
+    /// content share, any difference in the directory, an entry's path,
+    /// its File (path or kind; not its owner) or an empty file conflicts,
+    /// and the framing keeps adjacent fields from aliasing.
+    #[test]
+    fn tool_trees_are_keyed_by_their_content_digest() {
+        let directory = "bazel-out/k8-opt-exec/bin/tool.runfiles";
+        let tree = |identity: u64, directory: &str, mapping: crate::runfiles::RunfilesMapping| {
+            std::sync::Arc::new(ToolRunfilesTree::for_test(identity, directory, mapping))
+        };
+        let keyed = |trees: &[std::sync::Arc<ToolRunfilesTree>]| {
+            ActionKey::of(
+                &spawn("//p:a#0", "x"),
+                &KeyedParts {
+                    inputs: &[],
+                    outputs: &[],
+                    runfiles_trees: trees,
+                    execution: KeyedExecution::default(),
+                    deferred: false,
+                    build_info: false,
+                    shareable: true,
+                },
+            )
+        };
+        let data = || -> crate::runfiles::RunfilesMapping {
+            [
+                (
+                    "_main/data".to_owned(),
+                    Some(file("tools/data", "//tools:a")),
+                ),
+                ("_main/__init__.py".to_owned(), None),
+            ]
+            .into()
+        };
+        let base = keyed(&[tree(1, directory, data())]);
+        // Another provider (identity) of the same content; another owner.
+        let mut owned = data();
+        owned.insert(
+            "_main/data".to_owned(),
+            Some(file("tools/data", "//other:b")),
+        );
+        assert_eq!(
+            base.sharing(&keyed(&[tree(2, directory, owned)])),
+            Sharing::Shared
+        );
+        let mut directory_file = data();
+        directory_file.insert(
+            "_main/data".to_owned(),
+            Some(File {
+                is_directory: true,
+                ..file("tools/data", "//tools:a")
+            }),
+        );
+        let mut renamed = data();
+        let moved = renamed.remove("_main/data").unwrap();
+        renamed.insert("_main/datb".to_owned(), moved);
+        let mut emptied = data();
+        emptied.insert("_main/data".to_owned(), None);
+        let mut filled = data();
+        filled.insert(
+            "_main/__init__.py".to_owned(),
+            Some(file("tools/__init__.py", "//tools:a")),
+        );
+        let mut retargeted = data();
+        retargeted.insert(
+            "_main/data".to_owned(),
+            Some(file("tools/other", "//tools:a")),
+        );
+        for different in [
+            keyed(&[]),
+            keyed(&[tree(1, "bazel-out/k8-opt-exec/bin/tool2.runfiles", data())]),
+            keyed(&[tree(1, directory, directory_file)]),
+            keyed(&[tree(1, directory, renamed)]),
+            keyed(&[tree(1, directory, emptied)]),
+            keyed(&[tree(1, directory, filled)]),
+            keyed(&[tree(1, directory, retargeted)]),
+            keyed(&[tree(1, directory, data()), tree(1, directory, data())]),
+        ] {
+            assert_eq!(base.sharing(&different), Sharing::Conflict);
+        }
+        // Length framing: a path/file boundary cannot move.
+        assert_ne!(
+            tree_digest("d", &[("ab".to_owned(), Some(file("c", "//:c")))].into()),
+            tree_digest("d", &[("a".to_owned(), Some(file("bc", "//:c")))].into())
+        );
+        assert_ne!(
+            tree_digest("da", &[("b".to_owned(), None)].into()),
+            tree_digest("d", &[("ab".to_owned(), None)].into())
         );
     }
 

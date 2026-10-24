@@ -635,6 +635,8 @@ pub struct ToolRunfilesTree {
     identity: u64,
     directory: String,
     mapping: crate::runfiles::RunfilesMapping,
+    /// crate::shared_actions::tree_digest of the directory and mapping.
+    digest: [u8; 32],
 }
 
 impl ToolRunfilesTree {
@@ -645,11 +647,21 @@ impl ToolRunfilesTree {
             .runfiles()
             .filter(|runfiles| !runfiles.is_empty())?;
         let executable = files_to_run.executable()?;
-        Some(Self {
-            identity: files_to_run.identity(),
-            directory: format!("{}.runfiles", executable.path),
-            mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest(), None),
-        })
+        Some(Self::new(
+            files_to_run.identity(),
+            format!("{}.runfiles", executable.path),
+            runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest(), None),
+        ))
+    }
+
+    fn new(identity: u64, directory: String, mapping: crate::runfiles::RunfilesMapping) -> Self {
+        let digest = crate::shared_actions::tree_digest(&directory, &mapping);
+        Self {
+            identity,
+            directory,
+            mapping,
+            digest,
+        }
     }
 
     /// A tree of the given parts (unit tests of its consumers).
@@ -659,11 +671,7 @@ impl ToolRunfilesTree {
         directory: &str,
         mapping: crate::runfiles::RunfilesMapping,
     ) -> Self {
-        Self {
-            identity,
-            directory: directory.to_owned(),
-            mapping,
-        }
+        Self::new(identity, directory.to_owned(), mapping)
     }
 
     /// The identity of the FilesToRunProvider the tree is of: equal
@@ -680,6 +688,13 @@ impl ToolRunfilesTree {
     /// Runfiles path -> File (`None`: an empty file), in path order.
     pub fn mapping(&self) -> &crate::runfiles::RunfilesMapping {
         &self.mapping
+    }
+
+    /// The tree's part of the key of every action using it
+    /// (crate::shared_actions::tree_digest; PA-1 follow-up B4): computed
+    /// once with the tree.
+    pub(crate) fn digest(&self) -> &[u8; 32] {
+        &self.digest
     }
 
     /// Whether `other` has this tree's content: what a memo hit by

@@ -154,7 +154,16 @@ and accessors; a constructor copying an identity copies its content) and a
 `ToolRunfilesTree` is only computed from its provider; debug builds check
 the content on every memo hit. Identities come from a per-process counter:
 they must never be persisted (a snapshot restoring identities could
-collide with the fresh ones of the restoring process). A group stays shared
+collide with the fresh ones of the restoring process). The
+owner-independent key every registration computes for Actions.canBeShared
+(crate::shared_actions::ActionKey) takes each tool tree through the
+tree's content digest (`shared_actions::tree_digest`: SHA-256 of the
+framed directory and entries, computed once with the tree), not its
+entries: on pythonworker that removed hashing 36.8 million entries during
+analysis (`--nobuild` CPU 30.3 s -> 23.8 s). The key bytes differ from
+the full encoding but keys are in-process only and compare exactly as
+before (a function of the content, not the identity; fixed-width digests
+in an injective framing). A group stays shared
 only when listing it could change nothing but the list
 (`scheduler::groups_apart`: a process action, valid groups with unrelated
 roots, no path of the action itself at, above or below a root, and the
