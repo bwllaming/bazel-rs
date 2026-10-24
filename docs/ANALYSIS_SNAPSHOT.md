@@ -214,11 +214,9 @@ again with the edited bytes and may produce a different output
 (`a_hit_hashes_an_edited_tree_file_by_its_change_time`; never a stale
 cache hit); a test that still passes runs on the edited runfile; and the
 program `run` starts replaces bazel-rs's process, so its failure is never
-seen. Like Bazel, which trusts an external repository's files once its
-marker is up to date, a hit uses a tampered store file as it is.
-`BAZEL_RS_SNAPSHOT=verify` avoids it: the shadow full analysis repairs the
-tree before the hit executes — a mismatch (`first=taint`, the full
-analysis's plan executes). `--verify_repo_tampering` /
+seen. `BAZEL_RS_SNAPSHOT=verify` avoids it: the shadow full analysis
+repairs the tree before the hit executes — a mismatch (`first=taint`, the
+full analysis's plan executes). `--verify_repo_tampering` /
 `BAZEL_RS_VERIFY_REPOS=full` avoids it too (every INTEGRITY entry
 validated: the tampered file is a miss, which repairs the tree). The directory
 entries cost the hit more checks — on ~/code 10,313 instead of 1,009
@@ -227,6 +225,55 @@ entries cost the hit more checks — on ~/code 10,313 instead of 1,009
 and INPUTS grows from 265 to 651 KB (oauth2token) and 389 to 953 KB (B2): the
 hit's wall stayed within the noise (0.60–0.70 s vs 0.60–0.78 s; B2
 0.34–0.48 s vs 0.33–0.39 s).
+
+*How genuine Bazel 9.3 compares* (L2-W5h; /tmp/opencode/bazel-9.3-reference).
+A **live server** re-checks, before every command, the files of external
+repositories that are in its Skyframe graph:
+`--experimental_check_external_repository_files` (default true,
+RepositoryOptions.java ~322) makes
+SkyframeExecutor.handleDiffsWithMissingDiffInformation
+(SkyframeExecutor.java ~3938–4033) check the `EXTERNAL_REPO` file states,
+and a file whose type, size, digest (where the file system supplies one),
+inode or modification time changed re-fetches its repository with a
+warning (FileStateValue.compareContents ~249–285,
+DirtinessCheckerUtils.java ~154–166, ExternalFilesHelper.java ~392–413:
+`Repository '...' will be fetched again since the file '...' has been
+modified externally`). A change of the change time alone — a `chmod`, or
+a same-size edit that restores the modification time on the same inode —
+is `SAME_EXCEPT_CHANGE_TIME`: the node is re-evaluated, the repository is
+not re-fetched, and the tampering persists. A **fresh server** —
+`--batch`, which is what every bazel-rs process corresponds to (no
+daemon) — reuses a non-local repository whose marker file is up to date
+(RepositoryFetchFunction.java ~252–256), and the marker records only what
+the rule read (DigestWriter.java ~104–130: its recorded inputs), never the
+repository's own files, so any edit of them persists; `local = True`
+repositories are always re-fetched (RepositoryFetchFunction.java
+~502–509). With the snapshot **off**, bazel-rs is stricter than both: its
+warm probe verifies every reused tree against its manifest — mode, size
+and the stat fingerprint, change time included, hashing a file on any
+difference; every file under `--verify_repo_tampering` — and re-executes
+the rule on a difference, and it re-executes every local rule. A hit
+under `on` is as strict as a fresh Bazel server for a store tree's files
+(stricter for additions, deletions and renames, which are misses) and as
+strict as the snapshot-less run for a local repository's tree (L2-W5h).
+
+*Recovering from a tampered store tree*: one run with
+`BAZEL_RS_SNAPSHOT=off` (or unset) repairs it — its warm probe sees the
+file differ, re-executes the rule and republishes the tree, a new
+directory — and the snapshot then misses on the renamed or changed
+directories (`integrity` with the tree's path in events.log) and saves
+anew; `BAZEL_RS_SNAPSHOT=verify` repairs it too (the shadow analysis), and
+removing `<cache>/snapshots/v1/` drops every snapshot. A local
+repository's tree needs nothing (every hit checks it).
+
+*Exits that never heal*: the healing check runs only when bazel-rs itself
+sees the command fail after a hit, so these leave a damaged store tree in
+place until a full analysis runs: Ctrl-C, SIGTERM and SIGKILL (the process
+ends before any check); the memory watchdog's exit (code 33); an uncaught
+panic (the process ends with its message, code 101); `run` whose program fails
+after the exec (bazel-rs's process is the program then); `run
+--script_path` (the script runs later, outside bazel-rs); and tests that
+still pass on the damaged runfile.
 
 ## Verify mode (L2-W6)
 
