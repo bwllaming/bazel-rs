@@ -5,6 +5,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/racy_window.rs");
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -431,9 +432,39 @@ fn extension_and_repository_producers_publish_stable_canonical_payload() {
     let cold = f.build(&["@made//:data", "//:copy"], &expected);
     cold.actions(1, 0);
     let store = f.0.path().join("cache/repositories/direct");
+    // The cold publication recorded no stat fingerprints (its files were
+    // younger than the store's racy margin). Once they have settled, the
+    // first warm build hash-verifies them and persists their fingerprints:
+    // its only write (support/racy_window.rs). Wait for that
+    // deterministically instead of depending on how soon it starts.
+    wait_until_settled(&store.join("trees"));
+    let cold_inventory = inventory(&store);
+    assert!(cold_inventory.keys().any(|p| p.starts_with("trees")));
+    assert!(cold_inventory.keys().any(|p| p.starts_with("manifests")));
+    let refreshing = f.build(&["@made//:data", "//:copy"], &expected);
+    refreshing.actions(0, 1);
+    assert_eq!(cold.paths, refreshing.paths);
     let before = inventory(&store);
-    assert!(before.keys().any(|p| p.starts_with("trees")));
-    assert!(before.keys().any(|p| p.starts_with("manifests")));
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        cold_inventory.keys().collect::<Vec<_>>()
+    );
+    for (path, (bytes, mode)) in &before {
+        let (cold_bytes, cold_mode) = &cold_inventory[path];
+        assert_eq!(mode, cold_mode, "{}", path.display());
+        if path.starts_with("manifests") {
+            assert_eq!(
+                without_fingerprints(bytes),
+                without_fingerprints(cold_bytes),
+                "a warm reuse only adds stat fingerprints to {}",
+                path.display()
+            );
+            assert!(files_fingerprinted(bytes), "{}", path.display());
+        } else {
+            assert_eq!(bytes, cold_bytes, "{}", path.display());
+        }
+    }
+    // With every fingerprint settled, a further warm build writes nothing.
     let warm = f.build(&["@made//:data", "//:copy"], &expected);
     warm.actions(0, 1);
     assert_eq!(cold.paths, warm.paths);

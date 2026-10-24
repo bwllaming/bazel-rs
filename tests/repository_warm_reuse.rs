@@ -5,6 +5,8 @@
 //! process reuses the publication pointers (nothing re-executes, nothing is
 //! republished, the N52 lockfile is reused untouched).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/racy_window.rs");
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -112,6 +114,8 @@ fn publication_state(dir: &Path) -> Vec<(PathBuf, Vec<u8>, u128)> {
             .as_nanos();
         state.push((path.clone(), fs::read(&path).unwrap(), stamp));
     }
+    // By path: a manifest rewritten by rename may change directory order.
+    state.sort();
     state
 }
 
@@ -169,16 +173,46 @@ fn warm_second_process_hits_publication_pointers_and_lockfile() {
     assert_green(&f.run_build("cache-warm"));
     let direct = f.path("cache-warm/repositories/direct");
     let lockfile = f.path("MODULE.bazel.lock");
-    let before = (
-        listing(&direct.join("trees")),
-        listing(&direct.join("specs")),
-        publication_state(&direct.join("specs")),
-        publication_state(&direct.join("manifests")),
-        fs::read(&lockfile).unwrap_or_default(),
+    let state = || {
+        (
+            listing(&direct.join("trees")),
+            listing(&direct.join("specs")),
+            publication_state(&direct.join("specs")),
+            publication_state(&direct.join("manifests")),
+            fs::read(&lockfile).unwrap_or_default(),
+        )
+    };
+    // The cold publication recorded no stat fingerprints (its files were
+    // younger than the store's racy margin). Once they have settled, the
+    // first warm process hash-verifies them and persists their
+    // fingerprints: its only write (support/racy_window.rs). Wait for that
+    // deterministically instead of depending on how soon it starts.
+    wait_until_settled(&direct.join("trees"));
+    let cold = state();
+    assert_green(&f.run_build("cache-warm"));
+    let refreshed = state();
+    assert_eq!(refreshed.0, cold.0, "no new trees");
+    assert_eq!(refreshed.1, cold.1, "no new specs");
+    assert_eq!(
+        refreshed.2, cold.2,
+        "spec pointers must be hit, not rewritten"
     );
-    // Second process, same cache: the N52 lockfile is reused, the spec
+    assert_eq!(refreshed.4, cold.4, "the lockfile must be reused untouched");
+    assert_eq!(refreshed.3.len(), cold.3.len(), "no new publications");
+    for ((path, bytes, _), (cold_path, cold_bytes, _)) in refreshed.3.iter().zip(&cold.3) {
+        assert_eq!(path, cold_path);
+        assert_eq!(
+            without_fingerprints(bytes),
+            without_fingerprints(cold_bytes),
+            "a warm reuse only adds stat fingerprints to {}",
+            path.display()
+        );
+        assert!(files_fingerprinted(bytes), "{}", path.display());
+    }
+    let before = refreshed;
+    // Second warm process, same cache: the N52 lockfile is reused, the spec
     // pointers are validated and hit — no re-execution, no republication,
-    // no lockfile rewrite.
+    // no lockfile rewrite, and with every fingerprint settled no refresh.
     assert_green(&f.run_build("cache-warm"));
     assert_eq!(listing(&direct.join("trees")), before.0, "no new trees");
     assert_eq!(listing(&direct.join("specs")), before.1, "no new specs");
