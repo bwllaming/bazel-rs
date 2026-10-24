@@ -352,27 +352,68 @@ const GENERATED_SOURCE: &str = "__scheduler_generated_source__";
 /// apart ([`groups_apart`]) is checked without listing them: its own part
 /// and each group's namespace ([`InputGroup::valid`]) decide, exactly as
 /// the listed action would; any other node is listed and checked as is.
+/// That shortcut holds because every check of validate_structure is local
+/// to the paths of the own part or of one group's namespace; under
+/// `BAZEL_RS_VERIFY_ARTIFACTS=1` (and in debug builds) a node accepted by
+/// it is also checked listed, and a different result is an internal error
+/// ([`verify_listing`]), so a later non-local check cannot silently
+/// diverge.
 pub fn validate_node(node: &PlannedAction) -> Result<(), String> {
-    let generated = |dependency: &Dependency| {
-        (
-            PathBuf::from(GENERATED_SOURCE),
-            dependency.destination.clone(),
-        )
-    };
+    validate_node_checked(node, verify_listing())
+}
+
+/// Whether [`validate_node`] checks the nodes its shortcut accepts in
+/// their listed form too: in debug builds, and in release builds under
+/// `BAZEL_RS_VERIFY_ARTIFACTS=1` (read once per process), the switch of
+/// crate::engine's artifact-index invariant checks.
+fn verify_listing() -> bool {
+    static VERIFY: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+        cfg!(debug_assertions)
+            || std::env::var_os("BAZEL_RS_VERIFY_ARTIFACTS").is_some_and(|value| value == "1")
+    });
+    *VERIFY
+}
+
+/// [`validate_node`]; `verify` also checks a node accepted without listing
+/// its groups in its listed form and panics (an internal error) when that
+/// fails.
+fn validate_node_checked(node: &PlannedAction, verify: bool) -> Result<(), String> {
     let mut synthetic = node.action.clone();
     synthetic
         .inputs
-        .extend(node.dependencies.iter().map(generated));
+        .extend(node.dependencies.iter().map(generated_input));
     if node.groups.is_empty() {
         return action::validate_structure(&synthetic);
     }
     if groups_apart(&synthetic, &node.groups) && action::validate_structure(&synthetic).is_ok() {
+        if verify && let Err(error) = validate_listed(node) {
+            panic!(
+                "internal error (BAZEL_RS_VERIFY_ARTIFACTS): action '{}' validates with its shared input groups apart, but its listed form fails: {error}",
+                node.action.id
+            );
+        }
         return Ok(());
     }
+    validate_listed(node)
+}
+
+/// `action::validate_structure` of a node's listed form: its action with
+/// every group listed and every generated input (own, then the groups').
+fn validate_listed(node: &PlannedAction) -> Result<(), String> {
     let mut listed = node.action.clone();
     list_groups(&mut listed, &node.groups);
-    listed.inputs.extend(node.all_dependencies().map(generated));
+    listed
+        .inputs
+        .extend(node.all_dependencies().map(generated_input));
     action::validate_structure(&listed)
+}
+
+/// A generated input in [`validate_node`]'s synthetic actions.
+fn generated_input(dependency: &Dependency) -> (PathBuf, PathBuf) {
+    (
+        PathBuf::from(GENERATED_SOURCE),
+        dependency.destination.clone(),
+    )
 }
 
 struct Graph {
@@ -1390,6 +1431,14 @@ mod tests {
                 listed_validation(&node),
                 "case {index}"
             );
+            // The shortcut alone and verified (B2) agree with the listed form.
+            for verify in [false, true] {
+                assert_eq!(
+                    validate_node_checked(&node, verify),
+                    listed_validation(&node),
+                    "case {index}, verify {verify}"
+                );
+            }
         }
         // Only the listed form of an invalid case reports its error.
         let mut overlapping = consumer.clone();
@@ -1399,6 +1448,55 @@ mod tests {
                 .unwrap_err()
                 .contains("overlapping input/output path 'tool.runfiles/_main/a'")
         );
+    }
+
+    /// PA-1 follow-up B2: verification (BAZEL_RS_VERIFY_ARTIFACTS, debug
+    /// builds) checks a node the shortcut accepts in its listed form too.
+    /// A shortcut that disagrees with the listed check — here a group
+    /// claiming a valid namespace its entries do not have, which the
+    /// shortcut trusts — is an internal error instead of a silent accept.
+    #[test]
+    fn verified_validation_catches_a_shortcut_that_disagrees() {
+        let source = Path::new("/nonexistent/source");
+        let forged = Arc::new(InputGroup {
+            root: "tool.runfiles".into(),
+            inputs: vec![(source.into(), "tool.runfiles/../escaped".into())],
+            dependencies: Vec::new(),
+            tree_inputs: Vec::new(),
+            constant_metadata: Vec::new(),
+            empty_files: Vec::new(),
+            sources: vec![source.into()],
+            valid: true,
+        });
+        let mut consumer = node("consumer");
+        consumer.groups = vec![forged];
+        assert!(groups_apart(&consumer.action, &consumer.groups));
+        assert!(
+            listed_validation(&consumer)
+                .unwrap_err()
+                .contains("unsafe mapped path 'tool.runfiles/../escaped'")
+        );
+        assert_eq!(validate_node_checked(&consumer, false), Ok(()));
+        let verified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_node_checked(&consumer, true)
+        }))
+        .unwrap_err();
+        let message = verified
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            message.starts_with(
+                "internal error (BAZEL_RS_VERIFY_ARTIFACTS): action 'consumer' validates with its shared input groups apart, but its listed form fails: "
+            ) && message.contains("unsafe mapped path 'tool.runfiles/../escaped'"),
+            "{message}"
+        );
+        // validate_node itself verifies in debug builds.
+        if cfg!(debug_assertions) {
+            let validated =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| validate_node(&consumer)));
+            assert!(validated.is_err());
+        }
     }
 
     #[test]

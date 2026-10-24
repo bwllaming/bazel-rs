@@ -162,7 +162,9 @@ action's own part validates); otherwise the tree is listed in the action as
 before. Everything observable is the listed form: the action dumps
 (`BAZEL_RS_DUMP_ACTIONS`, `--native-action-dump`) print a node's own inputs
 then each group's (`PlannedAction::inputs`/`all_dependencies`), the scheduler
-validates exactly the listed node (`validate_node`) and a dispatched job lists
+validates exactly the listed node (`validate_node`; debug builds and
+`BAZEL_RS_VERIFY_ARTIFACTS=1` also check every node it accepts without
+listing in its listed form, a different result being an internal error) and a dispatched job lists
 its groups in the action right before it executes (sources after its own,
 generated inputs after its own, empty files re-added after a deferred command
 line), so keys, staging and outputs are unchanged. On ~/code every rules_python
