@@ -50,6 +50,10 @@ impl Workspace {
         fs::write(path, content).unwrap();
     }
 
+    /// One bazel-rs command. The analysis snapshot's mode is always
+    /// explicit: `off` unless `env` sets `BAZEL_RS_SNAPSHOT` (record, on,
+    /// verify) — warm-ups and reference runs must never save or hit a
+    /// snapshot, whatever the default of the binary.
     fn run_env(&self, env: &[(&str, &str)], args: &[&str]) -> Output {
         let home = self.scratch.join("home");
         let tmp = self.scratch.join("tmp");
@@ -61,6 +65,7 @@ impl Workspace {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &tmp)
+            .env("BAZEL_RS_SNAPSHOT", "off")
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
             .args(args)
@@ -921,7 +926,8 @@ fn snapshot_run(ws: &Workspace, mode: &str, threads: usize, args: &[&str]) -> (O
 /// snapshot saved at one thread count verifies strictly at the others
 /// (verify mode's shadow analysis records with prefetch on: the two
 /// recordings agree), an `on` snapshot saved at threads 8 hits at threads
-/// 1 and 32 with the unset run's output, and a hit replays no
+/// 1 and 32 with the output of the run without the snapshot, and a hit
+/// replays no
 /// PERF-PREFETCH (it is diagnostics, never part of the captured window).
 #[test]
 fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
@@ -942,12 +948,12 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
             .copied()
             .collect::<Vec<_>>(),
     );
-    let unset = ws.run_env(&[], &{
+    let off = ws.run_env(&[], &{
         let mut command = vec!["build"];
         command.extend_from_slice(&args);
         command
     });
-    assert!(unset.status.success(), "{}", stderr(&unset));
+    assert!(off.status.success(), "{}", stderr(&off));
     for (save, verifies) in [(1, [8, 32]), (8, [1, 32])] {
         let _ = fs::remove_dir_all(ws.root.join("cache/snapshots"));
         let (saved, explain) = snapshot_run(&ws, "verify", save, &args);
@@ -966,8 +972,8 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
                 "saved at {save}, verified at {threads}: {}",
                 fs::read_to_string(ws.root.join("cache/snapshots/verify.log")).unwrap_or_default()
             );
-            assert_eq!(program_stderr(&verified), program_stderr(&unset));
-            assert_eq!(verified.stdout, unset.stdout);
+            assert_eq!(program_stderr(&verified), program_stderr(&off));
+            assert_eq!(verified.stdout, off.stdout);
         }
     }
     // `on`: saved at threads 8 (prefetch on; its PERF-PREFETCH line goes
@@ -995,7 +1001,7 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
             "{threads}: {}",
             stderr(&hit)
         );
-        assert_eq!(program_stderr(&hit), program_stderr(&unset), "{threads}");
-        assert_eq!(hit.stdout, unset.stdout, "{threads}");
+        assert_eq!(program_stderr(&hit), program_stderr(&off), "{threads}");
+        assert_eq!(hit.stdout, off.stdout, "{threads}");
     }
 }
