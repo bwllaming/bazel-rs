@@ -3,6 +3,8 @@
 //! (docs/TEST_FLAGS.md). Expected texts are genuine Bazel 9.3 strings
 //! (paired capture tests/fixtures/test_flags/reference_receipt.json).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -75,6 +77,17 @@ impl Fixture {
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
+        );
+        // Offline: the modules these builds materialize from the registry
+        // (@platforms for execution platforms; rules_python's own closure).
+        seed_module_archives(
+            &self.0.path().join("cache"),
+            &[
+                "platforms@1.0.0",
+                "bazel_features@1.42.1",
+                "bazel_skylib@1.8.2",
+                "rules_python@1.7.0",
+            ],
         );
         let mut all = vec!["--experimental-builtin-modules", registry.as_str()];
         all.extend_from_slice(args);

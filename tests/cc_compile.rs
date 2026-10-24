@@ -12,6 +12,7 @@
 
 include!("support/executable_script.rs");
 include!("support/verify_env.rs");
+include!("support/module_archives.rs");
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -181,6 +182,8 @@ impl Workspace {
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
         );
+        // Offline: @rules_license (bazel_tools' dependency) is materialized.
+        seed_module_archives(&self.root.join(cache), &["rules_license@1.0.0"]);
         let mut command = Command::new("/usr/bin/timeout");
         command
             .args(["--kill-after=5s", "900s"])

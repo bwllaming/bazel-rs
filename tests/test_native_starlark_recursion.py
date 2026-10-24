@@ -41,6 +41,14 @@ ALLOWLIST = {
         'third-party bazel-skylib (fixture): static mutual reference only, it never recurses at run time',
     ('tests/starlark_sets.rs', 'mutation'):
         'Rust format! template: `{mutation}` is a placeholder, not a call',
+    **{
+        ('tests/fixtures/module_archives/rules_python-1.7.0.tar.gz!'
+         'rules_python-1.7.0/python/private/pypi/pep508_evaluate.bzl', name):
+            'third-party rules_python 1.7.0 (fixture archive): static mutual reference only '
+            '(_new_expr stores a lambda that calls _parse; _open_parenthesis builds a new '
+            'expression without parsing), it never recurses at run time'
+        for name in ('_new_expr', '_open_parenthesis', '_parse')
+    },
 }
 
 STARLARK_NAMES = ('BUILD', 'BUILD.bazel', 'BUILD.tools', 'WORKSPACE', 'MODULE.bazel', 'REPO.bazel')

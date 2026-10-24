@@ -12,6 +12,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -79,6 +80,8 @@ impl Fixture {
                 .join("tests/fixtures/builtin_modules/registry")
                 .display()
         );
+        // Offline: execution platform resolution materializes @platforms.
+        seed_module_archives(&self.0.path().join("cache"), &["platforms@1.0.0"]);
         let output = Command::new("timeout")
             .args([
                 "300s",

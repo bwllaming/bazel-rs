@@ -6,6 +6,8 @@
 //! every File through the build's artifact index, as Bazel resolves an input
 //! through its Artifact).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -251,7 +253,13 @@ fn tool_dependencies_do_not_propagate_validation() {
     // skip_validations=True attribute never reaches the native analysis
     // (an unanalyzed declared feature), so that half of the filter is
     // fixture-verified only (tests/fixtures/validation_actions).
-    let text = ok(&ws.build_with(&["--experimental-builtin-modules"], &[":tool_only"]));
+    // Offline: the genuine registry fixture, and the @platforms archive
+    // that execution platform resolution materializes.
+    seed_module_archives(&ws.path().join("private-cache"), &["platforms@1.0.0"]);
+    let text = ok(&ws.build_with(
+        &["--experimental-builtin-modules", &builtin_registry_flag()],
+        &[":tool_only"],
+    ));
     assert!(!text.contains("validated"), "{text}");
     assert!(ws.read("leaf.validated").is_none());
 }

@@ -6,6 +6,7 @@
 //! with the paired capture (artifacts/bazel_test-capture.py extracts them).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/module_archives.rs");
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -825,6 +826,8 @@ fn builtin_profile_repo_mapping_includes_test_runner_dependencies() {
             .join("tests/fixtures/builtin_modules/registry")
             .display()
     );
+    // Offline: the toolchain resolution materializes @platforms.
+    seed_module_archives(&ws.path().join("private-cache"), &["platforms@1.0.0"]);
     let output = ws.run(&[
         "test",
         "--experimental-builtin-modules",

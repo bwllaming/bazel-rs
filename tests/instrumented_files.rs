@@ -6,6 +6,8 @@
 //! configurations from a Starlark transition stay explicit. Expected values
 //! equal genuine Bazel 9.3.0's (tests/fixtures/instrumented_files/reference_receipt.json).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -46,6 +48,8 @@ impl Workspace {
     }
 
     fn run(&self, target: &str) -> Output {
+        // Offline: execution platform resolution materializes @platforms.
+        seed_module_archives(&self.0.path().join("private-cache"), &["platforms@1.0.0"]);
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args([

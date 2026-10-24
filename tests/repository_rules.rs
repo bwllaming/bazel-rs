@@ -299,35 +299,49 @@ fn cycles_fail_with_demand_chain_not_timeout_or_panic() {
 
 #[test]
 fn callback_failure_unsupported_operations_and_paths_never_publish() {
+    // A download that fails at once and never leaves the machine (no DNS
+    // query, as `example.invalid` still needs): a loopback port nothing
+    // listens on any more.
+    let refused = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/x", listener.local_addr().unwrap())
+    };
     for (operation, marker) in [
-        ("fail('rollback-sentinel')", "rollback-sentinel"),
-        ("ctx.file('../outside', 'bad')", "path"),
         (
-            "ctx.watch_tree('x')",
-            "can't call watch_tree() on non-directory",
+            "fail('rollback-sentinel')".to_owned(),
+            "rollback-sentinel".to_owned(),
+        ),
+        (
+            "ctx.file('../outside', 'bad')".to_owned(),
+            "path".to_owned(),
+        ),
+        (
+            "ctx.watch_tree('x')".to_owned(),
+            "can't call watch_tree() on non-directory".to_owned(),
         ),
         // A pending download's failure surfaces from wait() (java:640-697).
         (
-            "ctx.download('https://example.invalid/x','x',sha256='0'*64,block=False).wait()",
-            "Error downloading [https://example.invalid/x]",
+            format!("ctx.download('{refused}','x',sha256='0'*64,block=False).wait()"),
+            format!("Error downloading [{refused}]"),
         ),
         (
-            "ctx.symlink('a','../outside')",
-            "Cannot write outside of the repository directory",
+            "ctx.symlink('a','../outside')".to_owned(),
+            "Cannot write outside of the repository directory".to_owned(),
         ),
         (
-            "ctx.execute(['sh','-c','echo should-not-publish'])\n    fail('after-execute')",
-            "after-execute",
+            "ctx.execute(['sh','-c','echo should-not-publish'])\n    fail('after-execute')"
+                .to_owned(),
+            "after-execute".to_owned(),
         ),
         // RepositoryFetchFunction.java:681-695 accepts string-keyed dicts.
         (
-            "return {1:'value'}",
-            "got dict<int, string> for 'return value', want dict<string, unknown>",
+            "return {1:'value'}".to_owned(),
+            "got dict<int, string> for 'return value', want dict<string, unknown>".to_owned(),
         ),
     ] {
         let f = Fixture::new();
         f.file("defs.bzl", format!("def _impl(ctx):\n    ctx.file('partial', 'private')\n    {operation}\nmake=repository_rule(_impl,attrs={{'text':attr.string()}})\n"));
-        rejected(&f.run(&["build", "@made//:data.txt"]), marker);
+        rejected(&f.run(&["build", "@made//:data.txt"]), &marker);
         assert!(f.roots().is_empty());
         assert!(!f.0.path().join("outside").exists());
         assert!(

@@ -10,6 +10,7 @@
 //! by the executor's change-time key in a tree identity that nothing
 //! verifies any more (a cached symlink output still points into it).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
 
 use std::fs;
 use std::io::Write;
@@ -336,9 +337,16 @@ fn edited_repository_tree_files_are_caught_by_the_next_command() {
     // the edit below is caught by the full analysis's warm probe, which a
     // hit skips (the hit's healing of the failure it then causes is
     // tests/snapshot.rs's `a_failed_hit_on_a_tampered_store_tree_heals`).
+    // Offline: the genuine registry fixture (no module archive is needed).
+    let registry = builtin_registry_flag();
     let build = || {
         workspace.run(
-            &["build", "--experimental-builtin-modules", "//:uses"],
+            &[
+                "build",
+                "--experimental-builtin-modules",
+                &registry,
+                "//:uses",
+            ],
             &[SNAPSHOT_OFF],
         )
     };

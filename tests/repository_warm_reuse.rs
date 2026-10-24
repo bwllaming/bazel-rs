@@ -6,6 +6,7 @@
 //! republished, the N52 lockfile is reused untouched).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/racy_window.rs");
+include!("support/module_archives.rs");
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,6 +61,7 @@ impl Fixture {
     fn run_build(&self, cache: &str) -> Output {
         self.command(cache)
             .args(["build", "--experimental-builtin-modules"])
+            .arg(builtin_registry_flag())
             .arg("//:uses_repos")
             .output()
             .unwrap()
@@ -262,6 +264,7 @@ fn warm_parallel_query_is_byte_identical_and_reuses() {
         cmd.args([
             "query",
             "--experimental-builtin-modules",
+            &builtin_registry_flag(),
             &format!("--loading_phase_threads={threads}"),
             "//...",
         ]);

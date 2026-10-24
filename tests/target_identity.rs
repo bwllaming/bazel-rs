@@ -23,6 +23,7 @@
 //! artifacts/target_identity-capture.py, receipt
 //! tests/fixtures/target_identity/reference_receipt.json).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
 
 use std::fs;
 use std::path::PathBuf;
@@ -345,10 +346,14 @@ impl Drop for Workspace {
 #[test]
 fn one_target_value_per_configured_target_across_the_analysis() {
     let ws = Workspace::new();
+    // Offline: the genuine registry fixture, and the @platforms archive
+    // that execution platform resolution materializes.
+    seed_module_archives(&ws.0.join("bazel-rs-out"), &["platforms@1.0.0"]);
     let result = ws.run(&[
         "build",
         "--jobs=4",
         "--experimental-builtin-modules",
+        &builtin_registry_flag(),
         "//:consumer",
     ]);
     let stderr = String::from_utf8_lossy(&result.stderr);
@@ -368,7 +373,12 @@ fn target_files_is_one_depset_per_target() {
     ws.file("files/defs.bzl", FILES_DEFS);
     ws.file("files/BUILD.bazel", FILES_BUILD);
     ws.file("files/data.txt", "data\n");
-    let result = ws.run(&["build", "--experimental-builtin-modules", "//files:check"]);
+    let result = ws.run(&[
+        "build",
+        "--experimental-builtin-modules",
+        &builtin_registry_flag(),
+        "//files:check",
+    ]);
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(result.status.success(), "{stderr}");
     let stdout = String::from_utf8_lossy(&result.stdout);
@@ -407,7 +417,12 @@ fn freeze_with_a_target_keeps_the_other_explicit_errors() {
         ),
         ("//:bad_mutate", "trying to mutate a frozen list value"),
     ] {
-        let result = ws.run(&["build", "--experimental-builtin-modules", target]);
+        let result = ws.run(&[
+            "build",
+            "--experimental-builtin-modules",
+            &builtin_registry_flag(),
+            target,
+        ]);
         assert_eq!(result.status.code(), Some(1), "{target}");
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(

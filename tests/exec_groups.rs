@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -80,6 +81,8 @@ impl Fixture {
         );
         let mut all = Vec::new();
         if builtin {
+            // Offline: execution platform resolution materializes @platforms.
+            seed_module_archives(&self.0.path().join("cache"), &["platforms@1.0.0"]);
             all.extend(["--experimental-builtin-modules", registry.as_str()]);
         } else {
             // Without the built-in modules the stub overrides name modules

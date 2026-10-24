@@ -15,6 +15,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/module_archives.rs");
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -257,6 +258,8 @@ impl Workspace {
             "--registry=file://{}",
             fixtures().join("builtin_modules/registry").display()
         );
+        // Offline: @rules_license (bazel_tools' dependency) is materialized.
+        seed_module_archives(&self.cache(name), &["rules_license@1.0.0"]);
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "900s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")

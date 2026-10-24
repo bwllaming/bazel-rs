@@ -4,6 +4,8 @@
 //! (reference_receipt.json) records the same phases' native columns; these
 //! tests assert them executably.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -182,7 +184,13 @@ fn tool_and_implicit_dependencies_do_not_propagate() {
     // attributes never contribute (Attribute.isToolDependency; the observed
     // genuine-9.3 contract of receipt A08).
     let ws = Workspace::new();
-    ok(&ws.build_with(&["--experimental-builtin-modules"], &["//:tool_only"]));
+    // Offline: the genuine registry fixture, and the @platforms archive
+    // that execution platform resolution materializes.
+    seed_module_archives(&ws.path().join("cache"), &["platforms@1.0.0"]);
+    ok(&ws.build_with(
+        &["--experimental-builtin-modules", &builtin_registry_flag()],
+        &["//:tool_only"],
+    ));
     assert_eq!(ws.outputs(), ["k8-fastbuild/bin/tool_only.out"]);
     let ws = Workspace::new();
     ok(&ws.build_with(&[], &["//:private_dep"]));

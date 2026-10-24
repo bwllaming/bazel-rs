@@ -10,6 +10,8 @@
 //! (rules_go's toolchain-provided `go.toolchain.actions.stdlib`) and
 //! `File.root`.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
+include!("support/module_archives.rs");
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -45,6 +47,8 @@ impl Workspace {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        // Offline: @rules_license (bazel_tools' dependency) is materialized.
+        seed_module_archives(&self.path().join("private-cache"), &["rules_license@1.0.0"]);
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
