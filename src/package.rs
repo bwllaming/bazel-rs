@@ -2112,7 +2112,9 @@ pub(crate) fn evaluate_load_unit(
     repositories: Arc<RepositorySet>,
     package: &PackageId,
 ) -> LoadUnit {
-    let frame = crate::repository_demand::no_demand_active().then(crate::observed_fs::unit_scope);
+    let frame = (crate::repository_demand::no_demand_active()
+        && crate::observed_fs::hook(crate::observed_fs::Hook::Unit))
+    .then(crate::observed_fs::unit_scope);
     let prints = crate::loading::LoadPrints::default();
     let roots = crate::repository::UnitRoots::record();
     let result = evaluate_in_with_prints(repositories, package, &prints);

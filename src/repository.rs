@@ -18,6 +18,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+/// The canonical form of a root, the repository store or a blocked prefix
+/// as the link policy and the recorded-input keys take it (W6R): not
+/// recorded where taken — [`RepositorySet::record_link_anchors`] records
+/// them once at the end of planning — unless the `canon` hook is off (a
+/// test's kill switch).
+pub(crate) fn link_canonical_form(path: &Path) -> std::io::Result<PathBuf> {
+    if crate::observed_fs::hook(crate::observed_fs::Hook::Canon) {
+        // snapshot-unrecorded: recorded once at the end of planning for every counting root, the store and the blocked prefixes (RepositorySet::record_link_anchors, W6R)
+        std::fs::canonicalize(path)
+    } else {
+        crate::observed_fs::canonicalize(path)
+    }
+}
+
 /// Demanding `@@bazel_tools` without the built-in profile. Its mapping entry
 /// exists in every module, like Bazel; only its contents are absent.
 pub(crate) const BAZEL_TOOLS_UNAVAILABLE: &str = "the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules";
@@ -235,7 +249,10 @@ impl DirectRuntime {
             return;
         }
         slot.note_sequential();
-        crate::observed_fs::replay_some(slot.observations());
+        let replay = crate::observed_fs::hook(crate::observed_fs::Hook::Probe);
+        if replay {
+            crate::observed_fs::replay_some(slot.observations());
+        }
         let mut pending: Vec<&str> = slot.obtained().iter().map(String::as_str).collect();
         while let Some(canonical) = pending.pop() {
             let Some(obtained) = self.root_slot(canonical) else {
@@ -245,7 +262,9 @@ impl DirectRuntime {
                 continue;
             }
             obtained.note_sequential();
-            crate::observed_fs::replay_some(obtained.observations());
+            if replay {
+                crate::observed_fs::replay_some(obtained.observations());
+            }
             pending.extend(obtained.obtained().iter().map(String::as_str));
         }
     }
@@ -436,7 +455,9 @@ impl PreparedOrdinary {
         {
             // A worker's probe may have computed it (W6R): the sequential
             // engine's computation reads the declared environment here.
-            crate::observed_fs::replay_some(observations.as_ref());
+            if crate::observed_fs::hook(crate::observed_fs::Hook::Spec) {
+                crate::observed_fs::replay_some(observations.as_ref());
+            }
             return Ok(key.clone());
         }
         let (key, observations) = crate::observed_fs::capture(|| {
@@ -905,7 +926,9 @@ impl RepositorySet {
             .cloned();
         if let Some((result, observations)) = cached {
             self.note_obtained(repository);
-            crate::observed_fs::replay_some(observations.as_ref());
+            if crate::observed_fs::hook(crate::observed_fs::Hook::Ignored) {
+                crate::observed_fs::replay_some(observations.as_ref());
+            }
             return result;
         }
         let (computed, observations) = crate::observed_fs::capture(|| {
@@ -1475,8 +1498,7 @@ impl RepositorySet {
                 roots,
                 |root| match memo.get(root) {
                     Some(canonical) => Some(canonical.clone()),
-                    // snapshot-unrecorded: every counting root's CANON is recorded once at the end of planning (RepositorySet::record_link_anchors, W6R)
-                    None => std::fs::canonicalize(root).ok().inspect(|canonical| {
+                    None => link_canonical_form(root).ok().inspect(|canonical| {
                         memo.insert(root.to_path_buf(), canonical.clone());
                     }),
                 },
@@ -1510,8 +1532,7 @@ impl RepositorySet {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match memo.get(store) {
                 Some(canonical) => Some(canonical.clone()),
-                // snapshot-unrecorded: the store's CANON is recorded once at the end of planning (RepositorySet::record_link_anchors, W6R)
-                None => std::fs::canonicalize(store).ok().inspect(|canonical| {
+                None => link_canonical_form(store).ok().inspect(|canonical| {
                     memo.insert(store.to_path_buf(), canonical.clone());
                 }),
             }
@@ -1547,7 +1568,9 @@ impl RepositorySet {
     /// still counts at its end — call this at the end of planning, inside
     /// the recording window. The same set at every thread count.
     pub fn record_link_anchors(&self) {
-        if !crate::observed_fs::recording() {
+        if !crate::observed_fs::recording()
+            || !crate::observed_fs::hook(crate::observed_fs::Hook::Canon)
+        {
             return;
         }
         let mut paths: Vec<PathBuf> = self
@@ -1611,7 +1634,9 @@ impl RepositorySet {
     /// on when a worker's unit asks); [`Self::record_link_anchors`]
     /// records them once.
     pub fn link_policy(&self, repository: &str) -> crate::source_links::LinkPolicy {
-        let roots = if crate::observed_fs::recording() {
+        let roots = if crate::observed_fs::recording()
+            && crate::observed_fs::hook(crate::observed_fs::Hook::Link)
+        {
             self.sequential_roots()
         } else {
             self.materialized_roots()
@@ -1627,8 +1652,7 @@ impl RepositorySet {
             if let Some(canonical) = memo.get(&path) {
                 return Some(canonical.clone());
             }
-            // snapshot-unrecorded: recorded once at the end of planning for every counting root, the store and the blocked prefixes (Self::record_link_anchors, W6R)
-            let canonical = std::fs::canonicalize(&path).ok()?;
+            let canonical = link_canonical_form(&path).ok()?;
             memo.insert(path, canonical.clone());
             Some(canonical)
         };
@@ -4909,6 +4933,179 @@ mod tests {
         assert_eq!(recorded_sorted, expected);
         for root in [warm.root(&early).unwrap(), warm.root(&data).unwrap()] {
             assert!(recorded.iter().any(|path| path == root), "{root:?}");
+        }
+    }
+
+    /// W6R, the observations twin of
+    /// [`a_probed_root_counts_with_the_roots_its_probe_obtained`]: the chain
+    /// `@a` → `@b` → `@c` of recorded reads, and a load unit of `@a`'s
+    /// root package (`load(':defs.bzl')`) on a worker. What the probes
+    /// observed (the three trees' REPO records, the recorded inputs' reads)
+    /// travels with the publications, what the unit observed with the unit,
+    /// what `defs.bzl` and the ignored subdirectories observed with their
+    /// memo entries. None of it reaches the recording before the sequential
+    /// engine obtains `@a`, and then exactly what that obtain observes at
+    /// threads 1: a demand (the probes'), the unit's commit (everything), a
+    /// load of `@a//sub` that hits the `.bzl` cache (the probes', the
+    /// module's, the ignored lookup's), an ignored-subdirectories hit (the
+    /// probes', the ignored lookup's). One kill switch per hook breaks it.
+    #[test]
+    fn a_probed_roots_observations_reach_the_recording_where_it_counts() {
+        use crate::observed_fs::tests_support::{hook_off, record_this_thread};
+        use crate::observed_fs::{Hook, Op};
+        use crate::repository_demand::{no_demand, reuse_only};
+        let f = Fixture::new();
+        f.write("BUILD", "");
+        f.write(
+            "rules.bzl",
+            "def implementation(ctx):\n    if ctx.attr.read_from:\n        ctx.read(ctx.attr.read_from)\n    ctx.file('BUILD.bazel', \"load(':defs.bzl', 'X')\\nexports_files(['file.txt'])\\n\")\n    ctx.file('sub/BUILD.bazel', \"load('//:defs.bzl', 'X')\\n\")\n    ctx.file('defs.bzl', 'X = 1\\n')\n    ctx.file('file.txt', 'data')\nR = repository_rule(implementation, attrs = {'read_from': attr.label()})\n",
+        );
+        f.write(
+            "MODULE.bazel",
+            "r=use_repo_rule('//:rules.bzl','R')\nr(name='early')\nr(name='c')\nr(name='b', read_from='@c//:file.txt')\nr(name='a', read_from='@b//:file.txt')\n",
+        );
+        let cold = RepositorySet::new(f.0.clone());
+        let canonical = |name: &str| {
+            cold.parse(&format!("@{name}//:file.txt"), "", "")
+                .unwrap()
+                .repository
+        };
+        let (early, a, b, c) = (
+            canonical("early"),
+            canonical("a"),
+            canonical("b"),
+            canonical("c"),
+        );
+        cold.root(&a).unwrap();
+        let roots: Vec<PathBuf> = [&a, &b, &c]
+            .map(|name| cold.root(name).unwrap().to_path_buf())
+            .to_vec();
+        // What each obtain must bring: the probes' (`P`), the module's
+        // (`D`), the ignored lookup's (`I`), the unit's own (`U`).
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Part {
+            Probes,
+            Module,
+            Ignored,
+            Unit,
+        }
+        let parts = |recording: &crate::observed_fs::Recording| -> Vec<Part> {
+            let observed = |path: PathBuf, op: Op| {
+                recording
+                    .observations
+                    .iter()
+                    .any(|(seen, observation)| *seen == path && observation.op == op)
+            };
+            let probes = roots
+                .iter()
+                .all(|root| recording.repositories.iter().any(|tree| tree.root == *root))
+                && observed(roots[1].join("file.txt"), Op::Read)
+                && observed(roots[2].join("file.txt"), Op::Read);
+            let mut found = Vec::new();
+            if probes {
+                found.push(Part::Probes);
+            }
+            if observed(roots[0].join("defs.bzl"), Op::Read) {
+                found.push(Part::Module);
+            }
+            if observed(roots[0].join(".bazelignore"), Op::Stat) {
+                found.push(Part::Ignored);
+            }
+            if observed(roots[0].join("BUILD.bazel"), Op::Read) {
+                found.push(Part::Unit);
+            }
+            found
+        };
+        type Obtain = fn(&Arc<RepositorySet>, &str, crate::package::LoadUnit);
+        let obtains: [(&str, Obtain, &[Part]); 4] = [
+            (
+                "demand",
+                |warm, a, _| {
+                    warm.root(a).unwrap();
+                },
+                &[Part::Probes],
+            ),
+            (
+                "commit",
+                |warm, _, unit| {
+                    warm.note_committed_roots(&unit.roots);
+                    crate::observed_fs::commit(unit.observations);
+                },
+                &[Part::Probes, Part::Module, Part::Ignored, Part::Unit],
+            ),
+            (
+                "cache hit",
+                |warm, a, _| {
+                    let sub = PackageId {
+                        repository: a.to_owned(),
+                        package: "sub".to_owned(),
+                    };
+                    crate::package::evaluate_in(warm.clone(), &sub).unwrap();
+                },
+                &[Part::Probes, Part::Module, Part::Ignored],
+            ),
+            (
+                "ignored hit",
+                |warm, a, _| {
+                    warm.ignored_subdirectories(a).unwrap();
+                },
+                &[Part::Probes, Part::Ignored],
+            ),
+        ];
+        // Every hook on: exactly the parts; one hook off: the parts it
+        // carries are missing at the obtain (the unit's frame: everything
+        // the unit observed is there before any obtain).
+        let switches: [Option<Hook>; 5] = [
+            None,
+            Some(Hook::Probe),
+            Some(Hook::Bzl),
+            Some(Hook::Ignored),
+            Some(Hook::Unit),
+        ];
+        for (name, obtain, expected) in obtains {
+            for off in switches {
+                let context = format!("{name}, hook off: {off:?}");
+                let warm = Arc::new(RepositorySet::new(f.0.clone()));
+                warm.root(&early).unwrap();
+                let window = record_this_thread();
+                let _off = off.map(hook_off);
+                let unit = {
+                    let _guard = no_demand();
+                    let _reuse = reuse_only();
+                    let root_package = PackageId {
+                        repository: a.clone(),
+                        package: String::new(),
+                    };
+                    let unit = crate::package::evaluate_load_unit(warm.clone(), &root_package);
+                    assert!(unit.result.is_ok(), "{context}: {:?}", unit.result.err());
+                    unit
+                };
+                assert_eq!(unit.roots, std::slice::from_ref(&a), "{context}");
+                let before = parts(&window.recorder.snapshot());
+                if off == Some(Hook::Unit) {
+                    assert!(
+                        before.contains(&Part::Unit),
+                        "{context}: the unit recorded at once"
+                    );
+                    continue;
+                }
+                assert!(before.is_empty(), "{context}: before the obtain {before:?}");
+                obtain(&warm, &a, unit);
+                let after = parts(&window.recorder.snapshot());
+                let wanted: Vec<Part> = expected
+                    .iter()
+                    .copied()
+                    .filter(|part| match (off, part) {
+                        (Some(Hook::Probe), Part::Probes) => false,
+                        (Some(Hook::Bzl), Part::Module) => name != "cache hit",
+                        (Some(Hook::Ignored), Part::Ignored) => {
+                            !matches!(name, "cache hit" | "ignored hit")
+                        }
+                        _ => true,
+                    })
+                    .collect();
+                assert_eq!(after, wanted, "{context}");
+            }
         }
     }
 

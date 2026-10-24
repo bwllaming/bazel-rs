@@ -1313,10 +1313,12 @@ impl<'a> Loader<'a> {
         // follow-up). A success or a failure alike. Likewise what its
         // load observed for the analysis snapshot (W6R).
         self.repositories.note_obtained(&label.repository);
-        crate::observed_fs::replay_some(match &cached {
-            Ok(cached) => cached.observations.as_ref(),
-            Err(failure) => failure.observations.as_ref(),
-        });
+        if crate::observed_fs::hook(crate::observed_fs::Hook::Bzl) {
+            crate::observed_fs::replay_some(match &cached {
+                Ok(cached) => cached.observations.as_ref(),
+                Err(failure) => failure.observations.as_ref(),
+            });
+        }
         let cached = match cached {
             Ok(cached) => cached,
             // A cached failure replays for every loading package (P2
@@ -1491,10 +1493,12 @@ impl<'a> Loader<'a> {
                                     // already; noted like every hit, and
                                     // its observations replayed (W6R).
                                     self.repositories.note_obtained(&label.repository);
-                                    crate::observed_fs::replay_some(match served {
-                                        Ok(cached) => cached.observations.as_ref(),
-                                        Err(failure) => failure.observations.as_ref(),
-                                    });
+                                    if crate::observed_fs::hook(crate::observed_fs::Hook::Bzl) {
+                                        crate::observed_fs::replay_some(match served {
+                                            Ok(cached) => cached.observations.as_ref(),
+                                            Err(failure) => failure.observations.as_ref(),
+                                        });
+                                    }
                                 }
                                 match served {
                                     Some(Ok(cached)) => {

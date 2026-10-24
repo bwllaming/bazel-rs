@@ -308,12 +308,18 @@ impl Snapshot {
             }
         };
         // Never hold the map mutex across the reader or any Starlark evaluation.
-        let captured = entry.captured.get_or_init(|| self.capture(&entry));
+        let mut read_here = false;
+        let captured = entry.captured.get_or_init(|| {
+            read_here = true;
+            self.capture(&entry)
+        });
         // Every lookup records the value it uses (W6R): the snapshot is
         // shared by the invocation's threads, and a loading worker may
         // have read the name first, for a unit or a probe whose
         // observations the build drops.
-        if let Some(digest) = entry.noted.get() {
+        if (read_here || crate::observed_fs::hook(crate::observed_fs::Hook::Env))
+            && let Some(digest) = entry.noted.get()
+        {
             crate::observed_fs::note_env_digest(std::ffi::OsStr::new(&*entry.name), *digest);
         }
         captured.as_ref().map_err(|e| *e)?;

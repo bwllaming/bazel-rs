@@ -609,7 +609,7 @@ impl Recorder {
         }
         let framed = in_frame();
         debug_assert!(
-            framed || !crate::repository_demand::no_demand_active(),
+            framed || !crate::repository_demand::no_demand_active() || !hook(Hook::Unit),
             "a no-demand thread recorded outside a frame"
         );
         framed
@@ -1251,6 +1251,87 @@ impl Recorder {
             restat_manifest(record, self.window_start_ns);
         }
     }
+}
+
+// ---- the hooks that keep a recording the threads-1 one (W6R) ---------------
+
+/// The places where what loading workers observe joins the recording at
+/// the sequential engine's point (docs/ANALYSIS_SNAPSHOT_RECORDING.md,
+/// "Recording with phase-1 prefetch"). Each can be switched off for tests
+/// that prove a fixture needs it (`BAZEL_RS_DEBUG_W6R_OFF=bzl,probe,...`,
+/// a debug switch: a run with it is never saved, the record mode reports
+/// the test-hook taint).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hook {
+    /// `unit`: a loading worker's load unit records into its frame,
+    /// committed with the unit (off: into the recorder at once).
+    Unit,
+    /// `bzl`: a shared `.bzl` cache hit replays the entry's set.
+    Bzl,
+    /// `ignored`: an ignored-subdirectories hit replays the entry's set.
+    Ignored,
+    /// `probe`: a root that begins to count replays its probe's set.
+    Probe,
+    /// `env`: every repository-environment lookup records the value.
+    Env,
+    /// `spec`: an ordinary spec-key hit replays the key's set.
+    Spec,
+    /// `link`: the link policy holds the sequential roots while recording.
+    Link,
+    /// `canon`: the link policy's canonical forms are recorded once, at
+    /// the end of planning (off: where it takes them).
+    Canon,
+}
+
+impl Hook {
+    fn bit(self) -> u32 {
+        1 << (self as u32)
+    }
+
+    fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "unit" => Self::Unit,
+            "bzl" => Self::Bzl,
+            "ignored" => Self::Ignored,
+            "probe" => Self::Probe,
+            "env" => Self::Env,
+            "spec" => Self::Spec,
+            "link" => Self::Link,
+            "canon" => Self::Canon,
+            _ => return None,
+        })
+    }
+}
+
+/// The hooks `BAZEL_RS_DEBUG_W6R_OFF` switches off.
+fn hooks_off() -> u32 {
+    static OFF: OnceLock<u32> = OnceLock::new();
+    *OFF.get_or_init(|| {
+        std::env::var("BAZEL_RS_DEBUG_W6R_OFF")
+            .map(|names| {
+                names
+                    .split(',')
+                    .filter_map(|name| Hook::named(name.trim()))
+                    .fold(0, |off, hook| off | hook.bit())
+            })
+            .unwrap_or(0)
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Unit tests: the hooks off on this thread ([`tests_support::hook_off`]).
+    static THREAD_HOOKS_OFF: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether `hook` is on (always, unless a test switched it off).
+#[inline]
+pub fn hook(hook: Hook) -> bool {
+    #[cfg(test)]
+    if THREAD_HOOKS_OFF.with(std::cell::Cell::get) & hook.bit() != 0 {
+        return false;
+    }
+    hooks_off() & hook.bit() == 0
 }
 
 // ---- frames (W6R) ----------------------------------------------------------
@@ -1952,6 +2033,21 @@ pub(crate) mod tests_support {
     impl Drop for ThreadWindow {
         fn drop(&mut self) {
             THREAD_RECORDER.with(|cell| cell.set(None));
+        }
+    }
+
+    /// Switch `hook` off on this thread until the guard drops (a kill
+    /// switch: the test proves it needs the hook).
+    pub(crate) fn hook_off(hook: Hook) -> HookOff {
+        THREAD_HOOKS_OFF.with(|off| off.set(off.get() | hook.bit()));
+        HookOff(hook)
+    }
+
+    pub(crate) struct HookOff(Hook);
+
+    impl Drop for HookOff {
+        fn drop(&mut self) {
+            THREAD_HOOKS_OFF.with(|off| off.set(off.get() & !self.0.bit()));
         }
     }
 }
