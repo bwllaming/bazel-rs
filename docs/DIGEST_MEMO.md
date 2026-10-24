@@ -249,6 +249,34 @@ Shared, loaded machine (overlayfs, 48-CPU quota): indicative, interleaved where 
 
 ## fix-digest-memo (version 2): stale per-process answers (~/code 14bd7e2, lockfile c7a0c3df…)
 
+### Upgrade note: action manifests `native-action-v9`
+
+Binaries before fix-digest-memo — action manifests `native-action-v8` and earlier, among them the i20
+release (5d62bd61) — could publish another action's output (the stale per-process digest described
+below). Such an entry is self-consistent: its manifest names exactly the bytes it holds, so no cache
+check can tell it from a good one, and it was served as a cache hit until the action's key changed. The
+action manifests therefore move to `native-action-v9` (`action::MANIFEST_FORMAT`); the action keys stay
+`native-action-v8`, so key-pinned tests and the directory names `actions/<key>/` are unchanged.
+
+- **One-time re-execution.** The first build with this binary on an existing cache executes every action
+  it needs once more: an entry of another manifest format is a cache miss, never an error, and is replaced
+  by a v9 entry (unit test `entries_of_earlier_manifest_formats_are_executed_again`). Repositories are not
+  fetched or executed again: their stores have formats of their own, untouched by this change. Together
+  with the digest table's version 2 (each file the build reads is hashed once more) the measured cost is
+  below ("Upgrade cost").
+- **Old entries stay on disk.** Entries of actions that are not built again stay in `<cache>/actions/`,
+  never trusted, until they are deleted: there is no action-cache garbage collection; deleting
+  `<cache>/actions/` drops them (with every other entry). `<cache>/digests/v1.dmemo` can be deleted too.
+- **Do not alternate binaries on one cache.** An older binary treats the v9 entries as misses in turn, so
+  two binaries of different manifest formats sharing a cache re-execute each other's actions.
+- **Remote caches.** The remote cache keys are Bazel's (REAPI action digests), not this format: an entry
+  that an affected binary uploaded is still found and its outputs are downloaded and published
+  (`--remote_accept_cached`). Native uploads needed both `--remote_upload_local_results` (Bazel's default)
+  and `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1` (docs/REMOTE_CACHE.md). If an affected binary ran with both, purge
+  the Action Cache entries that bazel-rs uploaded, or the remote cache's whole Action Cache: the wrong part
+  is the mapping from an action to its outputs (the CAS blobs are content-addressed and correct). Native
+  ActionResults carry no `execution_metadata.worker`, only its four timestamps.
+
 - Repro (4,000 write actions, 8-byte outputs alternating one shared and unique contents, fresh cache per
   build): the 0363050 release published an old blob as a new action's output in 10 of 40 builds (1–5
   outputs each; a second, warm build served the same wrong outputs from the action cache); after the fix

@@ -17,9 +17,10 @@ content-addressed store (`0444` plus the keyed executable bits) since N36
 (docs/HARDLINK_STAGING.md).
 
 The `native-action-v5` cache identity invalidated earlier mode-preserving entries
-(manifests were `native-action-v7` after N36 and are `native-action-v8`, with
-the key, since the N41 x N42 merge; docs/ACTIONS_PARAMS.md,
-docs/HARDLINK_STAGING.md, docs/REMOTE_CACHE.md).
+(manifests were `native-action-v7` after N36, `native-action-v8` with the key
+since the N41 x N42 merge, and are `native-action-v9` since fix-digest-memo;
+docs/ACTIONS_PARAMS.md, docs/HARDLINK_STAGING.md, docs/REMOTE_CACHE.md,
+docs/DIGEST_MEMO.md "Upgrade note").
 Cache hits require exact `0555` output permissions, executable masks and content
 digests. Writable, non-executable or privileged-mode tampering causes a rebuild.
 The upstream writable-output option (`0755`) is not implemented. Tree

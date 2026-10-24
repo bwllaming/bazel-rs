@@ -200,7 +200,11 @@ docs/ACTION_ENV.md; the N41 x N42 merge moved key and manifests together to
 `native-action-v8`, docs/REMOTE_CACHE.md: pre-v8 entries rebuild once. The
 manifest schema is unchanged. N41's compiled-in genrule-setup.sh is stored as
 an executable `cas/` blob and staged like every input; remote cache hits are
-written into the execution root and published through this store.)
+written into the execution root and published through this store.
+fix-digest-memo moved the manifests alone to `native-action-v9`: entries of
+the binaries whose digest memo could publish another action's output are
+never trusted, so every cache executes its actions once more; the keys stay
+`native-action-v8`, docs/DIGEST_MEMO.md "Upgrade note".)
 
 ## Trade-offs and limits
 
@@ -346,7 +350,7 @@ symlinks and special files are still rejected) and records each group as
 with identical bytes and mode. `cas/` is a publication root: every blob must be
 named by its own digest and read-only mode (`0444` plus executable bits), and a
 negative case may leave none. Action manifests are checked as
-`native-action-v8` (v7 before the N41 x N42 merge) regular-file outputs
+`native-action-v9` (v8 before fix-digest-memo, v7 before the N41 x N42 merge) regular-file outputs
 (`mode` `0555`, no `tree`/`symlink`).
 Retained copies under `native-cache/` are independent single-link files.
 

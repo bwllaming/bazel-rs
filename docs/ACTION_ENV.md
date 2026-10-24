@@ -117,7 +117,8 @@ fastbuild and dbg sets, `existing_genrule_fixture_keys_are_pinned`) carries
 the new values with this explanation.
 
 Integration with N41 (one more deliberate rekey, pinned once for both): the
-key and manifest format is `native-action-v8`. Reasons: N41's spawn argv
+key and manifest format is `native-action-v8` (the manifests alone are
+`native-action-v9` since fix-digest-memo, docs/DIGEST_MEMO.md "Upgrade note"). Reasons: N41's spawn argv
 (genrules `bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; CMD'`
 with the script as a keyed input instead of `bash -e -o pipefail -c CMD`;
 run_shell's `$0` only with arguments; a File executable's execution path as

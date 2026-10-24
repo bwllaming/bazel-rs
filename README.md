@@ -163,7 +163,8 @@ Implemented:
   `bash -c 'source …/genrule-setup.sh; CMD'` (`set -euo pipefail`) with
   their configuration's action environment (strict `PATH=/bin:/usr/bin:/usr/local/bin`
   by default, N42); custom shell actions are plain `bash -c`.
-  SHA256 action keys and manifests use `native-action-v8`; output-content and executable
+  SHA256 action keys use `native-action-v8`, their manifests `native-action-v9` (entries of
+  earlier binaries are executed once more: docs/DIGEST_MEMO.md, "Upgrade note"); output-content and executable
   mode validation on cache hits; per-key cross-process locks; atomic publication.
 - An http(s) `--remote_cache` with Bazel's action keys (entries are shared with
   genuine Bazel both ways) and Bazel's credential helpers for the cache and the

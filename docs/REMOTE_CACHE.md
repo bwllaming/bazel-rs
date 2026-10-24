@@ -181,7 +181,9 @@ the spawns (the paired capture confirms every point):
   the uploaded Command (equal apart from TMPDIR). With N42's environment
   framing and the k8 roots this is the native cache format
   `native-action-v8` (keys and manifests; docs/ACTION_ENV.md records the
-  rekey; the keyed tests were re-pinned once).
+  rekey; the keyed tests were re-pinned once). Since fix-digest-memo the
+  local manifests are `native-action-v9`; remote keys are unaffected
+  (docs/DIGEST_MEMO.md, "Upgrade note").
 * Parameter files (`args.use_param_file`) are files of the input root at
   their `<output>-N.params` execution paths (Bazel's ParamFileActionInput);
   tree artifact inputs contribute their files (no empty subdirectories).
@@ -236,7 +238,10 @@ environment. Without it, `--remote_upload_local_results` (Bazel's default
 true) is treated as false and the build warns once:
 `native remote cache uploads are disabled by default (…); set
 BAZEL_RS_ALLOW_REMOTE_UPLOAD=1 to upload local results`. Reads
-(`--remote_accept_cached`) are unaffected.
+(`--remote_accept_cached`) are unaffected. A binary before fix-digest-memo
+could publish, and with this opt-in upload, another action's output as an
+action's result: purge the Action Cache entries such a binary uploaded
+(docs/DIGEST_MEMO.md, "Upgrade note").
 
 ## D1: output roots
 

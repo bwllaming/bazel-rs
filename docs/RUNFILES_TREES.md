@@ -115,7 +115,8 @@ like Bazel's symlinks into the workspace), a changed generated input has a new
 published path and so a new tree. Cache hits re-check every tree entry, the
 MANIFEST link and the sibling's digest and mode; a damaged tree is rebuilt. The manifest
 JSON records the tree (`runfiles`, an optional field of the manifest format,
-`native-action-v8` since the N41 merge).
+`native-action-v8` since the N41 merge, `native-action-v9` since
+fix-digest-memo).
 
 ## Tools with runfiles in actions
 

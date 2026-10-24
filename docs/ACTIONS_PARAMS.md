@@ -169,7 +169,9 @@ modes); the key identity stayed `native-action-v5` so actions without N23d
 features kept their keys (N42 moved it to `native-action-v6`: the environment
 is framed as fixed map, inherited names and resolved client values for every
 action, and the exact-environment flag is gone, docs/ACTION_ENV.md; the N41
-merge moved key and manifests to `native-action-v8`, docs/REMOTE_CACHE.md).
+merge moved key and manifests to `native-action-v8`, docs/REMOTE_CACHE.md;
+fix-digest-memo the manifests alone to `native-action-v9`,
+docs/DIGEST_MEMO.md "Upgrade note").
 Parameter files are input-root files of the remote cache key at their
 `<output>-N.params` paths (crate::action::remote_action). Tree
 outputs/inputs, parameter files, the

@@ -191,8 +191,9 @@ consume(name = "c", deps = [":gen", ":u"])
 ];
 
 // The pinned native action keys, re-pinned once for the N41 x N42 merge
-// (integration-14; docs/ACTION_ENV.md and docs/REMOTE_CACHE.md): the key and
-// manifest format is native-action-v8; D1 is closed (`k8-*` output roots),
+// (integration-14; docs/ACTION_ENV.md and docs/REMOTE_CACHE.md): the key
+// format is native-action-v8 (manifests native-action-v9 since fix-digest-memo,
+// which changes no key); D1 is closed (`k8-*` output roots),
 // genrules run Bazel's argv (`source .../genrule-setup.sh; CMD`, the setup
 // script a keyed input), run_shell pads `$0` only with arguments, and every
 // spawn's environment is N42's (fixed map, inherited names, resolved

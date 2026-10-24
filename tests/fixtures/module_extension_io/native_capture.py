@@ -23,10 +23,10 @@ import time
 Q = None
 OUTPUT = "bazel-out/k8-fastbuild/bin/consumed.json"  # rust-fastbuild before N41 closed D1
 CANONICAL_REPOSITORY = "+io+made"
-# The action manifest format (src/action.rs MANIFEST_FORMAT): native-action-v8
-# since the N41 x N42 merge (key and manifest moved together; the N36 schema
-# {name,digest,mode,tree,symlink} is unchanged).
-ACTION_MANIFEST_FORMAT = "native-action-v8"
+# The action manifest format (src/action.rs MANIFEST_FORMAT): native-action-v9
+# since fix-digest-memo (v8 since the N41 x N42 merge, when key and manifest
+# moved together; the N36 schema {name,digest,mode,tree,symlink} is unchanged).
+ACTION_MANIFEST_FORMAT = "native-action-v9"
 NATIVE_VERSION = b"bazel-rs 0.1.0 (experimental; compatibility target Bazel 9.3.0)\n"
 SUMMARY = re.compile(rb"bazel-rs: ([0-9]+) actions executed, ([0-9]+) cache hits \(experimental local execution; not sandboxed\)")
 SCHEMA = "module-io-native-diagnostic-v2"
@@ -787,7 +787,7 @@ def discover_publications(snapshot, cache):
                 key = path.parent.name
                 require(bool(re.fullmatch(r"[0-9a-f]{64}", key)), "action identity path")
                 # The manifest format follows src/action.rs MANIFEST_FORMAT
-                # (native-action-v8; N36's schema).
+                # (native-action-v9; N36's schema).
                 Q.equal([manifest["format"], manifest["key"]], [ACTION_MANIFEST_FORMAT, key], "action identity/profile")
                 require(type(manifest["outputs"]) is list and bool(manifest["outputs"]), "action outputs required")
                 claimed = {relative}

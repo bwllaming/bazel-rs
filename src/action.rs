@@ -104,9 +104,17 @@ use std::time::{Duration, SystemTime};
 // output roots are k8-* (D1 closed). N23d features (tree artifacts, parameter
 // files, execution requirements, transforms) are framed in an extra block.
 // Hardlink staging (N36) changes no key. Manifests (symlink outputs since
-// N36) move to v8 with the key, so v7 entries rebuild once.
+// N36) moved to v8 with the key, so v7 entries rebuilt once.
 const FORMAT: &str = "native-action-v8";
-const MANIFEST_FORMAT: &str = "native-action-v8";
+/// The format of the published entries' manifests: `native-action-v9`
+/// (fix-digest-memo; the key stays `native-action-v8`, FORMAT). Binaries
+/// that wrote v8 manifests could publish another action's output — their
+/// per-process digest memo answered for a new file with the digest of a
+/// deleted one (docs/DIGEST_MEMO.md, "Upgrade note") — and such an entry is
+/// self-consistent (its manifest names the bytes it holds), so no check of
+/// it could tell. An entry of any other format is a cache miss, never an
+/// error: the action runs once more and its entry is replaced.
+const MANIFEST_FORMAT: &str = "native-action-v9";
 /// The content-addressed store below the cache root.
 const CAS: &str = "cas";
 /// Read and copy buffer for streamed digests.
@@ -5155,6 +5163,50 @@ mod tests {
         symlink(&action.inputs[0].0, path).unwrap();
         assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
         assert!(!fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+    }
+
+    /// An entry an earlier binary wrote with a `native-action-v8` manifest
+    /// is never trusted, even when it is self-consistent — the shape of an
+    /// entry whose output was another action's (the stale-digest bug,
+    /// docs/DIGEST_MEMO.md "Upgrade note"): the action runs again without an
+    /// error, the entry is replaced by one of this format with the action's
+    /// own bytes, and that one is a cache hit.
+    #[test]
+    fn entries_of_earlier_manifest_formats_are_executed_again() {
+        let fixture = Fixture::new();
+        let action = fixture.action();
+        let first = execute(&fixture.cache(), &action).unwrap();
+        let path = &first.outputs[0];
+        let entry = path.parent().unwrap().parent().unwrap().parent().unwrap();
+        let manifest_path = entry.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest["format"], MANIFEST_FORMAT);
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // As the bug left it: another action's bytes, named by the manifest.
+        let other = b"other action's bytes\n";
+        fs::remove_file(path).unwrap();
+        write_file(path, other, 0).unwrap();
+        set_mode(path, OUTPUT_MODE).unwrap();
+        manifest["format"] = "native-action-v8".into();
+        manifest["outputs"][0]["digest"] = digest(other).hex().into();
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        // Accepted as it stands, it would be a hit with the wrong bytes.
+        let mut current = manifest.clone();
+        current["format"] = MANIFEST_FORMAT.into();
+        fs::write(&manifest_path, serde_json::to_vec(&current).unwrap()).unwrap();
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        assert_eq!(fs::read(path).unwrap(), other);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let again = execute(&fixture.cache(), &action).unwrap();
+        assert!(!again.cache_hit);
+        assert_eq!(again.outputs, first.outputs);
+        assert_eq!(fs::read(path).unwrap(), b"hello\n");
+        let rewritten: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(rewritten["format"], MANIFEST_FORMAT);
+        assert_eq!(rewritten["outputs"][0]["digest"], digest(b"hello\n").hex());
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
     }
 
     #[test]
