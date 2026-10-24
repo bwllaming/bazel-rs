@@ -138,6 +138,9 @@ mod owned {
         Runfiles(crate::depset_items::RunfilesItem),
         /// N49: a global `def` (StarlarkFunction.isImmutable).
         Function(crate::depset_items::FunctionItem),
+        /// A CcCompilationContext.HeaderInfo (isImmutable), e.g. inside a
+        /// CcInfo of a rules_rust DepVariantInfo.
+        HeaderInfo(crate::depset_items::HeaderInfoItem),
         /// N49b: a frozen list inside an element (never a top-level
         /// element; StarlarkList.equals: element-wise, never equal to a tuple).
         List(Vec<Item>),
@@ -170,6 +173,7 @@ mod owned {
         Function,
         List,
         Dict,
+        HeaderInfo,
     }
 
     #[derive(Debug, Allocative, StarlarkPagable)]
@@ -879,6 +883,7 @@ impl Item {
             Self::Target(item) => heap.alloc(TargetValue(item.0.clone())),
             Self::Runfiles(item) => heap.alloc(item.0.as_ref().clone()),
             Self::Function(item) => heap.access_owned_frozen_value(&item.0),
+            Self::HeaderInfo(item) => heap.alloc(item.0.as_ref().clone()),
             Self::List(_) | Self::Dict(_) => {
                 crate::depset_items::alloc_frozen_container(heap, self)
             }
@@ -900,6 +905,7 @@ impl Item {
             Self::Target(_) => ItemType::Target,
             Self::Runfiles(_) => ItemType::Runfiles,
             Self::Function(_) => ItemType::Function,
+            Self::HeaderInfo(_) => ItemType::HeaderInfo,
             Self::List(_) => ItemType::List,
             Self::Dict(_) => ItemType::Dict,
         }
@@ -954,6 +960,7 @@ impl ItemType {
             Self::Function => "function",
             Self::List => "list",
             Self::Dict => "dict",
+            Self::HeaderInfo => "HeaderInfo",
         }
     }
 
@@ -974,6 +981,7 @@ impl ItemType {
             12 => Ok(Self::Function),
             13 => Ok(Self::List),
             14 => Ok(Self::Dict),
+            15 => Ok(Self::HeaderInfo),
             _ => bail!("invalid serialized depset element type {tag}"),
         }
     }
@@ -1041,7 +1049,8 @@ impl starlark::pagable::StarlarkSerialize for Item {
             | Self::Depset(_)
             | Self::Target(_)
             | Self::Runfiles(_)
-            | Self::Function(_) => Err(starlark::Error::new_other(anyhow!(
+            | Self::Function(_)
+            | Self::HeaderInfo(_) => Err(starlark::Error::new_other(anyhow!(
                 "a depset of {} elements cannot be serialized",
                 self.kind().name()
             ))),
@@ -1108,6 +1117,7 @@ impl fmt::Display for Item {
             Self::Target(item) => write!(f, "{}", item.0),
             Self::Runfiles(item) => write!(f, "{}", item.0),
             Self::Function(item) => f.write_str(&item.0.value().to_repr()),
+            Self::HeaderInfo(item) => write!(f, "{}", item.0),
             Self::List(items) => {
                 f.write_str("[")?;
                 for (i, item) in items.iter().enumerate() {

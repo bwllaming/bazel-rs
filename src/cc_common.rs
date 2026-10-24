@@ -956,6 +956,32 @@ e = cc_internal.create_header_info_with_deps(header_info = h)
         }
     }
 
+    /// Depset.checkElement accepts a HeaderInfo, also inside a struct or
+    /// provider instance (HeaderInfo.isImmutable, CcCompilationContext.java
+    /// :797-800; rules_rust's `depset(deps)` of DepVariantInfo with a CcInfo,
+    /// rust/private/rustc.bzl:1716); equal elements are deduplicated by the
+    /// HeaderInfo's identity and `to_list` returns that identity.
+    #[test]
+    fn header_infos_are_immutable_depset_elements() {
+        pass(
+            "@@rules_cc+//cc/private:cc_info.bzl",
+            &format!(
+                "{CC_INTERNAL_BZL}{}",
+                r#"
+Info = provider(fields = ["cc"])
+h = cc_internal.create_header_info()
+g = cc_internal.create_header_info()
+d = depset([struct(h = h), struct(h = h), struct(h = g), Info(cc = struct(h = h))])
+items = d.to_list()
+(len(items) == 3) or fail("dedup")
+(items[0].h == h and items[1].h == g and items[2].cc.h == h and items[0] == struct(h = h)) or fail("identity")
+(len(depset([h, h, g]).to_list()) == 2 and depset([h]).to_list()[0] == h) or fail("top-level")
+(len(depset(transitive = [depset([struct(h = h)]), depset([struct(h = h)])]).to_list()) == 1) or fail("transitive")
+"#
+            ),
+        );
+    }
+
     #[test]
     fn create_header_info_is_frozen_into_module_globals() {
         let source = format!(

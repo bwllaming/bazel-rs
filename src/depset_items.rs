@@ -296,6 +296,32 @@ impl Ord for RunfilesItem {
     }
 }
 
+/// A CcCompilationContext.HeaderInfo (immutable, CcCompilationContext.java
+/// :797-800), compared by identity like its equals/hashCode over the
+/// identity token (:784-795; crate::cc_common::HeaderInfo's `id`).
+#[derive(Clone, Debug, Allocative)]
+pub(crate) struct HeaderInfoItem(pub Arc<crate::cc_common::HeaderInfo>);
+
+impl PartialEq for HeaderInfoItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+}
+
+impl Eq for HeaderInfoItem {}
+
+impl PartialOrd for HeaderInfoItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for HeaderInfoItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.id.cmp(&other.0.id)
+    }
+}
+
 /// A global `def` of a loaded `.bzl` file (StarlarkFunction.equals compares
 /// identity tokens, net/starlark/java/eval/StarlarkFunction.java:255-270).
 #[derive(Clone, Debug, Allocative)]
@@ -346,8 +372,8 @@ fn is_starlark_def(value: Value<'_>) -> bool {
 
 /// Starlark.isImmutable (net/starlark/java/eval/Starlark.java:156-167) and
 /// the classes' isImmutable overrides: String/Boolean/StarlarkInt/NoneType,
-/// Label, Artifact, SymlinkEntry, Depset, configured targets, Runfiles and
-/// StarlarkFunction are immutable; a Tuple when its elements are
+/// Label, Artifact, SymlinkEntry, Depset, configured targets, Runfiles,
+/// StarlarkFunction and CcCompilationContext.HeaderInfo are immutable; a Tuple when its elements are
 /// (Tuple.java); StarlarkList/Dict/StarlarkSet when frozen; a StarlarkInfo
 /// (struct or provider instance) when its provider is exported and every
 /// field value is immutable (StarlarkInfoNoSchema.java:196-208,
@@ -379,6 +405,7 @@ fn mutability(value: Value<'_>, depth: usize) -> Mutability {
         || Depset::from_value(value).is_some()
         || crate::starlark_types::TargetValue::from_value(value).is_some()
         || crate::runfiles::Runfiles::from_value(value).is_some()
+        || crate::cc_common::HeaderInfo::from_value(value).is_some()
         || is_starlark_def(value)
     {
         return Immutable;
@@ -528,6 +555,8 @@ pub(crate) fn snapshot(
         Item::Target(TargetItem(target.0.clone()))
     } else if let Some(runfiles) = crate::runfiles::Runfiles::from_value(value) {
         Item::Runfiles(RunfilesItem(Arc::new(runfiles.clone())))
+    } else if let Some(info) = crate::cc_common::HeaderInfo::from_value(value) {
+        Item::HeaderInfo(HeaderInfoItem(Arc::new(info.clone())))
     } else if is_starlark_def(value) {
         match functions(value) {
             Some(function) => Item::Function(FunctionItem(function)),

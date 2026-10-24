@@ -23,8 +23,11 @@ Depset.fromDirectAndTransitive checks each direct element in turn
    values`; then a top-level list or dict is `depsets cannot contain items of
    type 'list'` (`'dict'`). isImmutable (`net/starlark/java/eval/Starlark.java:156-167`
    and the classes' overrides): strings, bools, ints, None, Labels, Files,
-   SymlinkEntry, depsets, configured targets, runfiles and StarlarkFunctions
-   (`def`s, also closures and lambdas) are immutable; a tuple when its
+   SymlinkEntry, depsets, configured targets, runfiles, StarlarkFunctions
+   (`def`s, also closures and lambdas) and CcCompilationContext.HeaderInfo
+   (`CcCompilationContext.java:797-800`; snapshotted as its identity, so a
+   CcInfo inside a struct or provider element — rules_rust's
+   `depset(deps)` of DepVariantInfo — is accepted) are immutable; a tuple when its
    elements are; a list, dict or set only when frozen (so one created in the
    current analysis is mutable, one from a dependency's provider is not); a
    `struct()` or Starlark provider instance when its provider is exported
@@ -37,7 +40,7 @@ Depset.fromDirectAndTransitive checks each direct element in turn
    `:455-480`): `struct()` values and provider instances are both `struct`
    (StructApi) and may be mixed; also `NoneType`, `depset`, `Target`,
    `runfiles`, `function`, `File`, `string`, `Label`, `int`, `bool`, `tuple`,
-   `SymlinkEntry`.
+   `SymlinkEntry`, `HeaderInfo`.
 
 ## Struct and provider elements (N49)
 
