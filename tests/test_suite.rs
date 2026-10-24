@@ -58,6 +58,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "build_other",
             "build_suite_and_test",
             "nobuild_explicit",
+            "build_sharded",
         ],
     ),
     (
@@ -79,6 +80,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "tests_only_size",
             "tests_only_lib",
             "tests_only_excluded",
+            "tests_only_sharded",
         ],
     ),
     (
@@ -104,6 +106,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "noexpand_test",
             "consumer_lib_alias",
             "consumer_lib_alias_chain",
+            "consumer_sharded",
         ],
     ),
     ("test", &["test_explicit", "test_all"]),

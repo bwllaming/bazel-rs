@@ -1126,21 +1126,17 @@ pub(crate) const TEST_RUNNER_ATTRIBUTES: [(&str, &str); 7] = [
     ),
 ];
 
-/// The test properties of a test rule (TestTargetProperties;
-/// RuleConfiguredTargetBuilder.initializeTestProvider's shard_count checks,
-/// analysis/RuleConfiguredTargetBuilder.java:470-484) and its location;
-/// `None` for any other rule.
-fn test_rule_info_of(
-    label: &Label,
-    rule: &Rule,
-) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+/// The loading-time test properties of a test rule (TestTargetProperties,
+/// analysis/test/TestTargetProperties.java:81-135): size, timeout, the
+/// taggable `flaky`/`local`, `tags` and the rule class; `None` for any other
+/// rule. Never fails: `shard_count` is the plain value, unchecked (-1 when
+/// unspecified or a select()); [`test_rule_info_of`] checks it.
+fn test_rule_properties(rule: &Rule) -> Option<crate::test_command::TestRuleInfo> {
     use crate::custom_rule::AttrValue;
     use crate::test_command::{TestRuleInfo, TestSize, TestTimeout};
-    let Some(custom) = &rule.custom else {
-        return Ok(None);
-    };
+    let custom = rule.custom.as_ref()?;
     if !custom.declaration.builtin.kind.test {
-        return Ok(None);
+        return None;
     }
     let target = &custom.declaration.builtin.target;
     let string = |name: &str| match target.attrs.get(name) {
@@ -1155,7 +1151,57 @@ fn test_rule_info_of(
     let timeout = string("timeout")
         .and_then(|timeout| TestTimeout::parse(&timeout))
         .unwrap_or(size.default_timeout());
-    if target.configurable.contains_key("shard_count") {
+    let shard_count = match target.attrs.get("shard_count") {
+        Some(AttrValue::Int(count)) => *count,
+        _ => -1,
+    };
+    Some(TestRuleInfo {
+        rule_class: target.rule_class.clone(),
+        size,
+        timeout,
+        flaky: boolean("flaky"),
+        shard_count,
+        local: boolean("local"),
+        tags: target.tags.clone(),
+    })
+}
+
+/// A test rule's Rule.getRuleTags (packages/Rule.java:752-765), what its
+/// TestTagsProvider carries (analysis/RuleConfiguredTargetBuilder.java:189-192);
+/// `None` for any other rule. Tags only: no shard_count is read.
+fn rule_tags_of(rule: &Rule) -> Option<BTreeSet<String>> {
+    test_rule_properties(rule).map(|info| info.rule_tags())
+}
+
+/// How [`test_rule_info_of`] treats a select() in `shard_count`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShardSelect {
+    /// The native test runner needs the shard count of a test it runs
+    /// (`test`, `run` of a test): an explicit error.
+    Reject,
+    /// The target pattern phase's TestFilter reads no shard count
+    /// (pkgcache/TestFilter.java:59-80): -1 stands in for it.
+    Ignore,
+}
+
+/// The test properties of a test rule ([`test_rule_properties`]) with
+/// RuleConfiguredTargetBuilder.initializeTestProvider's shard_count checks
+/// (analysis/RuleConfiguredTargetBuilder.java:470-484) and its location;
+/// `None` for any other rule.
+fn test_rule_info_of(
+    label: &Label,
+    rule: &Rule,
+    shard_select: ShardSelect,
+) -> Result<Option<(crate::test_command::TestRuleInfo, Option<String>)>, String> {
+    use crate::custom_rule::AttrValue;
+    let Some(info) = test_rule_properties(rule) else {
+        return Ok(None);
+    };
+    let Some(custom) = &rule.custom else {
+        return Ok(None);
+    };
+    let target = &custom.declaration.builtin.target;
+    if shard_select == ShardSelect::Reject && target.configurable.contains_key("shard_count") {
         return Err(located(
             rule.location.as_deref(),
             format!(
@@ -1163,42 +1209,27 @@ fn test_rule_info_of(
             ),
         ));
     }
-    let shard_count = match target.attrs.get("shard_count") {
-        Some(AttrValue::Int(count)) => {
-            let attribute_error = |message: &str| {
-                located(
-                    rule.location.as_deref(),
-                    format!(
-                        "in shard_count attribute of {} rule {}: {message}",
-                        target.rule_class,
-                        crate::rule_declarations::canonical_form(label)
-                    ),
-                )
-            };
-            if *count < 0 {
-                return Err(attribute_error("Must not be negative."));
-            }
-            if *count > 50 {
-                return Err(attribute_error(
-                    "Having more than 50 shards is indicative of poor test organization. Please reduce the number of shards.",
-                ));
-            }
-            *count
+    if let Some(AttrValue::Int(count)) = target.attrs.get("shard_count") {
+        let attribute_error = |message: &str| {
+            located(
+                rule.location.as_deref(),
+                format!(
+                    "in shard_count attribute of {} rule {}: {message}",
+                    target.rule_class,
+                    crate::rule_declarations::canonical_form(label)
+                ),
+            )
+        };
+        if *count < 0 {
+            return Err(attribute_error("Must not be negative."));
         }
-        _ => -1,
-    };
-    Ok(Some((
-        TestRuleInfo {
-            rule_class: target.rule_class.clone(),
-            size,
-            timeout,
-            flaky: boolean("flaky"),
-            shard_count,
-            local: boolean("local"),
-            tags: target.tags.clone(),
-        },
-        rule.location.clone(),
-    )))
+        if *count > 50 {
+            return Err(attribute_error(
+                "Having more than 50 shards is indicative of poor test organization. Please reduce the number of shards.",
+            ));
+        }
+    }
+    Ok(Some((info, rule.location.clone())))
 }
 
 /// The tags a test_suite filters a test rule with (TestTargetUtils
@@ -8278,7 +8309,20 @@ impl Engine {
         let Target::Rule(rule) = self.target(label)? else {
             return Ok(None);
         };
-        test_rule_info_of(label, &rule)
+        test_rule_info_of(label, &rule, ShardSelect::Reject)
+    }
+
+    /// [`Self::test_rule_info`] for the target pattern phase's filters
+    /// (FilteringPolicies.FILTER_TESTS, TestFilter): a select() in
+    /// `shard_count` is no error there; a `build` never runs the test.
+    fn test_filter_info(
+        &mut self,
+        label: &Label,
+    ) -> Result<Option<crate::test_command::TestRuleInfo>, String> {
+        let Target::Rule(rule) = self.target(label)? else {
+            return Ok(None);
+        };
+        Ok(test_rule_info_of(label, &rule, ShardSelect::Ignore)?.map(|(info, _)| info))
     }
 
     /// TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java
@@ -8377,7 +8421,7 @@ impl Engine {
                 // FilterTests (pkgcache/FilteringPolicies.java:81-87).
                 let mut kept = BTreeSet::new();
                 for label in targets {
-                    if self.test_rule_info(&label)?.is_some() || self.is_test_suite(&label)? {
+                    if self.test_filter_info(&label)?.is_some() || self.is_test_suite(&label)? {
                         kept.insert(label);
                     }
                 }
@@ -8412,8 +8456,8 @@ impl Engine {
         // (pkgcache/TestFilter.java:128-170) over the test rules.
         let mut kept = BTreeSet::new();
         for label in tests {
-            match self.test_rule_info(&label)? {
-                Some((info, _)) if !(options.test_filter)(&info) => {
+            match self.test_filter_info(&label)? {
+                Some(info) if !(options.test_filter)(&info) => {
                     filtered.insert(label);
                 }
                 _ => {
@@ -10865,8 +10909,8 @@ impl Engine {
                         .unwrap_or_else(|| label.clone());
                     let target = self.target(&actual)?;
                     if let Target::Rule(member) = &target
-                        && let Some((info, _)) = test_rule_info_of(&actual, member)?
-                        && !matches_filters(&info.rule_tags(), &required, &excluded, true)
+                        && let Some(tags) = rule_tags_of(member)
+                        && !matches_filters(&tags, &required, &excluded, true)
                     {
                         continue;
                     }

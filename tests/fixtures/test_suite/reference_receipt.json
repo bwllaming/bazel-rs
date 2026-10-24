@@ -11,7 +11,7 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "6b534480ca279c775bb442e552ca3486200171eda89b25aac8be28f8b569902e",
+  "sha256": "b8a30623323b6062ae645729072ceb48538fec36ecb5f939e78c9a68980ade4f",
   "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
@@ -38,14 +38,15 @@
   "A non-test member (a library, an alias of a test, a source file) of an expanded suite: `ERROR: <loc>: in test_suite rule '//pkg:with_lib': expecting a test or a test_suite rule but '//pkg:lib' is not one.`, the rest builds, then `ERROR: command succeeded, but there were loading phase errors` (exit 1); under `test` also `WARNING: Target pattern parsing failed.`, the tests run, stdout `All tests passed but there were other errors during the build.` and `ERROR: command succeeded, but there were errors parsing the target pattern` (exit 1).",
   "Analyzed as a dependency: files [], default_runfiles [], data_runfiles = each member's files then data runfiles ([a_test.sh, a.txt, b_test.sh, m_test.sh]; nested [b_test.sh, a_test.sh, a.txt]; through an alias the test's), files_to_run.executable None, OutputGroupInfo present; ctx.files of a suite dependency is empty; a filegroup of a suite and --noexpand_test_suites build nothing; a non-test member is `in tests attribute of test_suite rule //pkg:with_lib: expecting a test or a test_suite rule but '//pkg:lib' is not one`, a file `... source file '//pkg:a.txt' is misplaced here (expected no files)`; a non-testonly dependent is the testonly error.",
   "`run` builds the target pattern phase's targets (BuildTool.evaluateTargetPatterns before RunCommand.validateTargets): a suite of one test runs that test (`run //pkg:fast` = a_test through test-setup.sh, stdout `Executing tests from //pkg:a_test`); several tests are `Only a single target can be run. Your target pattern //pkg:explicit expanded to the targets //pkg:a_test, //pkg:b_test, //pkg:m_test` (exit 2); an empty expansion (`//fu:empty`, also --build_tests_only of a library or with every test filtered, then after `WARNING: All specified test targets were excluded by filters`) is `No targets found to run` (exit 2); --noexpand_test_suites keeps the suite: `Cannot run target //pkg:fast: Not executable` (exit 2); a strict expansion error builds the rest, then `ERROR: command succeeded, but there were loading phase errors` and `ERROR: Build failed. Not running target` (exit 1).",
-  "An alias member that is no test: the expansion error names the alias (`... but '//fu:lib_alias' is not one.`, the Target), the analysis error the alias's actual (`in tests attribute of test_suite rule //fu:with_lib_alias: expecting a test or a test_suite rule but '//fu:lib' is not one`, AliasConfiguredTarget.getLabel = the end of the alias chain, also through two aliases)."
+  "An alias member that is no test: the expansion error names the alias (`... but '//fu:lib_alias' is not one.`, the Target), the analysis error the alias's actual (`in tests attribute of test_suite rule //fu:with_lib_alias: expecting a test or a test_suite rule but '//fu:lib' is not one`, AliasConfiguredTarget.getLabel = the end of the alias chain, also through two aliases).",
+  "A member test with a conditional select() in shard_count builds, is a suite member (data_runfiles [fu/sharded_test.sh]) and a --build_tests_only test."
  ],
  "known_divergences": [
   "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines; test summaries are compared with run times normalized.",
   "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
  ],
  "counts": {
-  "MATCH": 49
+  "MATCH": 52
  },
  "scratch_removed": true,
  "cases": {
@@ -76,7 +77,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 26.766,
+    "seconds": 17.031,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -120,7 +121,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 27.864,
+    "seconds": 18.573,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -156,7 +157,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 29.885,
+    "seconds": 18.234,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -188,7 +189,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 28.245,
+    "seconds": 18.048,
     "stdout": "//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -220,7 +221,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 27.421,
+    "seconds": 19.306,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -252,7 +253,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 28.582,
+    "seconds": 20.027,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -288,7 +289,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 27.423,
+    "seconds": 17.017,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -324,7 +325,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 26.753,
+    "seconds": 18.058,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -372,7 +373,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.481,
+    "seconds": 17.083,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:lib\tbazel-out/k8-fastbuild/bin/pkg/lib.txt\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 14 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -441,7 +442,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.538,
+    "seconds": 16.992,
     "stdout": "//other:o_test\tbazel-out/k8-fastbuild/bin/other/o_test.sh\n//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:lib\tbazel-out/k8-fastbuild/bin/pkg/lib.txt\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 18 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -493,7 +494,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.487,
+    "seconds": 17.174,
     "stdout": "//other:o_test\tbazel-out/k8-fastbuild/bin/other/o_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -535,7 +536,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.473,
+    "seconds": 20.549,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -593,7 +594,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.709,
+    "seconds": 19.411,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:lib\tbazel-out/k8-fastbuild/bin/pkg/lib.txt\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 14 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -648,7 +649,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.632,
+    "seconds": 17.524,
     "stdout": "//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -691,7 +692,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.681,
+    "seconds": 17.069,
     "stdout": "//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -724,7 +725,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.354,
+    "seconds": 0.356,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: All specified test targets were excluded by filters\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {}
@@ -757,7 +758,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 31.34,
+    "seconds": 17.056,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:lib\tbazel-out/k8-fastbuild/bin/pkg/lib.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -789,7 +790,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 24.803,
+    "seconds": 16.834,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -825,7 +826,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 24.999,
+    "seconds": 17.089,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -874,7 +875,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 29.517,
+    "seconds": 16.893,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\tbazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -920,7 +921,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 29.856,
+    "seconds": 16.554,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:m_test\tbazel-out/k8-fastbuild/bin/pkg/m_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -959,7 +960,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 29.644,
+    "seconds": 19.215,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -987,7 +988,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.472,
+    "seconds": 0.359,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {}
@@ -1009,7 +1010,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 28.893,
+    "seconds": 16.586,
     "stdout": "//pkg:a_test\tbazel-out/k8-fastbuild/bin/pkg/a_test.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/pkg/BUILD.bazel:76:11: in test_suite rule '//pkg:with_lib': expecting a test or a test_suite rule but '//pkg:lib' is not one.\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were loading phase errors\n",
     "outputs": null
@@ -1037,7 +1038,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 29.325,
+    "seconds": 16.653,
     "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -1064,7 +1065,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 28.933,
+    "seconds": 16.427,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:76:11: in tests attribute of test_suite rule //pkg:with_lib: expecting a test or a test_suite rule but '//pkg:lib' is not one\n",
     "outputs": null
@@ -1087,7 +1088,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.353,
+    "seconds": 0.358,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:125:9: in consumer rule //pkg:consumer_not_testonly: non-test target '//pkg:consumer_not_testonly' depends on testonly target '//pkg:implicit' and doesn't have testonly attribute set\n",
     "outputs": null
@@ -1110,7 +1111,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 17.095,
+    "seconds": 17.24,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {}
@@ -1133,7 +1134,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 16.957,
+    "seconds": 16.746,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {}
@@ -1155,7 +1156,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 19.257,
+    "seconds": 18.597,
     "stdout": "//pkg:a_test                                                             PASSED in 0.0s\n//pkg:b_test                                                             PASSED in 0.0s\n//pkg:m_test                                                             PASSED in 0.0s\n\nExecuted 3 out of 3 tests: 3 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\t<CACHE>/actions/c112f1d47f2fef7b9c6a010c65d41407ccbba55e58f172f3f0f2530bcd32d2a8/outputs/bazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\t<CACHE>/actions/c278b2e76f0062125e1a9fd8646b215abd3a2e7b28920ab109ddf41c47bae15b/outputs/bazel-out/k8-fastbuild/bin/pkg/m_test.sh\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -1178,7 +1179,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 19.448,
+    "seconds": 18.691,
     "stdout": "//pkg:a_test                                                             PASSED in 0.0s\n//pkg:b_test                                                             PASSED in 0.0s\n//pkg:m_test                                                             PASSED in 0.0s\n\nExecuted 3 out of 3 tests: 3 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\t<CACHE>/actions/c112f1d47f2fef7b9c6a010c65d41407ccbba55e58f172f3f0f2530bcd32d2a8/outputs/bazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:consumer\t<CACHE>/actions/2919ef52c11a6f7b8b5352a8c2e1b58d27b1868e144a5ab1d9b73055ed967fd3/outputs/bazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:lib\t<CACHE>/actions/f97686834fdc3bb7e46c19dc4748d37259bac893bcdc16444d5268477b10040d/outputs/bazel-out/k8-fastbuild/bin/pkg/lib.txt\n//pkg:m_test\t<CACHE>/actions/c278b2e76f0062125e1a9fd8646b215abd3a2e7b28920ab109ddf41c47bae15b/outputs/bazel-out/k8-fastbuild/bin/pkg/m_test.sh\nbazel-rs: 14 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -1201,7 +1202,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 22.914,
+    "seconds": 18.516,
     "stdout": "//pkg:a_test                                                             PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nAll tests passed but there were other errors during the build.\n\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/pkg/BUILD.bazel:76:11: in test_suite rule '//pkg:with_lib': expecting a test or a test_suite rule but '//pkg:lib' is not one.\nWARNING: Target pattern parsing failed.\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were errors parsing the target pattern\n",
     "outputs": null
@@ -1227,7 +1228,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 24.055,
+    "seconds": 18.67,
     "stdout": "//pkg:b_test                                                             PASSED in 0.0s\n//pkg:m_test                                                             PASSED in 0.0s\n\nExecuted 2 out of 2 tests: 2 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\n//pkg:b_test\t<CACHE>/actions/c112f1d47f2fef7b9c6a010c65d41407ccbba55e58f172f3f0f2530bcd32d2a8/outputs/bazel-out/k8-fastbuild/bin/pkg/b_test.sh\n//pkg:m_test\t<CACHE>/actions/c278b2e76f0062125e1a9fd8646b215abd3a2e7b28920ab109ddf41c47bae15b/outputs/bazel-out/k8-fastbuild/bin/pkg/m_test.sh\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -1250,7 +1251,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.35,
+    "seconds": 0.318,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/pkg/BUILD.bazel:95:11: in test_suite rule '//pkg:with_alias': expecting a test or a test_suite rule but '//pkg:a_alias' is not one.\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were loading phase errors\n",
     "outputs": null
@@ -1278,7 +1279,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 17.139,
+    "seconds": 16.818,
     "stdout": "//pkg:consumer_alias\tbazel-out/k8-fastbuild/bin/pkg/consumer_alias.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -1305,7 +1306,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.34,
+    "seconds": 0.353,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/pkg/BUILD.bazel:101:11: in test_suite rule '//pkg:with_file': expecting a test or a test_suite rule but '//pkg:a.txt' is not one.\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were loading phase errors\n",
     "outputs": null
@@ -1328,7 +1329,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.369,
+    "seconds": 0.372,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:101:11: in tests attribute of test_suite rule //pkg:with_file: source file '//pkg:a.txt' is misplaced here (expected no files)\n",
     "outputs": null
@@ -1352,8 +1353,8 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 19.578,
-    "stdout": "//pkg:a_test                                                             PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+    "seconds": 18.573,
+    "stdout": "//pkg:a_test                                                             PASSED in 0.1s\n\nExecuted 1 out of 1 test: 1 test passes.\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
    },
@@ -1375,7 +1376,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 38.341,
+    "seconds": 18.634,
     "stdout": "exec ${PAGER:-/usr/bin/less} \"$0\" || exit 1\nExecuting tests from //pkg:a_test\n-----------------------------------------------------------------------------\na_test\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: external/bazel_tools/tools/test/test-setup.sh pkg/a_test.sh\n",
     "outputs": null
@@ -1398,7 +1399,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 37.497,
+    "seconds": 19.911,
     "stdout": "exec ${PAGER:-/usr/bin/less} \"$0\" || exit 1\nExecuting tests from //other:o_test\n-----------------------------------------------------------------------------\no_test\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//other:o_test\t<CACHE>/actions/ab19e35209ee006e1af7dc7178eb811c94ca2a7de824c873c84bbb53f372908b/outputs/bazel-out/k8-fastbuild/bin/other/o_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: external/bazel_tools/tools/test/test-setup.sh other/o_test.sh\n",
     "outputs": null
@@ -1421,7 +1422,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.425,
+    "seconds": 0.368,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: Only a single target can be run. Your target pattern //pkg:explicit expanded to the targets //pkg:a_test, //pkg:b_test, //pkg:m_test\n",
     "outputs": null
@@ -1444,7 +1445,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 36.271,
+    "seconds": 16.418,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/pkg/BUILD.bazel:76:11: in test_suite rule '//pkg:with_lib': expecting a test or a test_suite rule but '//pkg:lib' is not one.\n//pkg:a_test\t<CACHE>/actions/34aa1578c968e30f4078527695f4bac2f38f19a5dc86d2f7d07247b1711e90af/outputs/bazel-out/k8-fastbuild/bin/pkg/a_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were loading phase errors\nbazel-rs: Build failed. Not running target\n",
     "outputs": null
@@ -1467,7 +1468,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.359,
+    "seconds": 0.326,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: No targets found to run\n",
     "outputs": null
@@ -1491,7 +1492,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.392,
+    "seconds": 0.336,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: Cannot run target //pkg:fast: Not executable\n",
     "outputs": null
@@ -1516,7 +1517,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.374,
+    "seconds": 0.323,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nWARNING: All specified test targets were excluded by filters\nbazel-rs: No targets found to run\n",
     "outputs": null
@@ -1540,7 +1541,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.349,
+    "seconds": 0.366,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: No targets found to run\n",
     "outputs": null
@@ -1563,7 +1564,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.339,
+    "seconds": 0.365,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nERROR: <WS>/fu/BUILD.bazel:26:11: in test_suite rule '//fu:with_lib_alias': expecting a test or a test_suite rule but '//fu:lib_alias' is not one.\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nERROR: command succeeded, but there were loading phase errors\n",
     "outputs": null
@@ -1586,7 +1587,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.328,
+    "seconds": 0.357,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/fu/BUILD.bazel:26:11: in tests attribute of test_suite rule //fu:with_lib_alias: expecting a test or a test_suite rule but '//fu:lib' is not one\n",
     "outputs": null
@@ -1609,12 +1610,109 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.358,
+    "seconds": 0.361,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/fu/BUILD.bazel:31:11: in tests attribute of test_suite rule //fu:with_lib_alias_chain: expecting a test or a test_suite rule but '//fu:lib' is not one\n",
     "outputs": null
    },
    "expected_message": "<WS>/fu/BUILD.bazel:31:11: in tests attribute of test_suite rule //fu:with_lib_alias_chain: expecting a test or a test_suite rule but '//fu:lib' is not one",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "consumer_sharded": {
+   "argv": [
+    "build",
+    "//fu:consumer_sharded"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.915,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //fu:consumer_sharded (80 packages loaded, 838 targets configured).\nINFO: Found 1 target...\nTarget //fu:consumer_sharded up-to-date:\n  bazel-bin/fu/consumer_sharded.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/consumer_sharded.txt": [
+      "0o555",
+      "ctx.files.deps=[]\nlabel=@@//fu:sharded\n  files=[]\n  default_runfiles=[]\n  data_runfiles=[\"fu/sharded_test.sh\"]\n  executable=None\n  output_groups=True\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 16.643,
+    "stdout": "//fu:consumer_sharded\tbazel-out/k8-fastbuild/bin/fu/consumer_sharded.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/consumer_sharded.txt": [
+      "0o555",
+      "ctx.files.deps=[]\nlabel=@@//fu:sharded\n  files=[]\n  default_runfiles=[]\n  data_runfiles=[\"fu/sharded_test.sh\"]\n  executable=None\n  output_groups=True\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_sharded": {
+   "argv": [
+    "build",
+    "//fu:sharded"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.946,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //fu:sharded_test (80 packages loaded, 836 targets configured).\nINFO: Found 1 target...\nTarget //fu:sharded_test up-to-date:\n  bazel-bin/fu/sharded_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/sharded_test.sh": [
+      "0o555",
+      "#!/bin/sh\necho sharded_test\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 16.682,
+    "stdout": "//fu:sharded_test\tbazel-out/k8-fastbuild/bin/fu/sharded_test.sh\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/sharded_test.sh": [
+      "0o555",
+      "#!/bin/sh\necho sharded_test\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "tests_only_sharded": {
+   "argv": [
+    "build",
+    "--build_tests_only",
+    "//fu:sharded"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.457,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //fu:sharded_test (80 packages loaded, 836 targets configured).\nINFO: Found 1 target...\nTarget //fu:sharded_test up-to-date:\n  bazel-bin/fu/sharded_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/sharded_test.sh": [
+      "0o555",
+      "#!/bin/sh\necho sharded_test\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 16.963,
+    "stdout": "//fu:sharded_test\tbazel-out/k8-fastbuild/bin/fu/sharded_test.sh\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/fu/sharded_test.sh": [
+      "0o555",
+      "#!/bin/sh\necho sharded_test\n"
+     ]
+    }
+   },
    "verdict": "MATCH",
    "exit_code_equal": true
   }

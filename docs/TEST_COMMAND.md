@@ -40,7 +40,9 @@ Explicit failures: coverage (`--collect_code_coverage`, not parsed),
 per-label `regex@N` forms of `--flaky_test_attempts`/`--runs_per_test`,
 `--check_tests_up_to_date`, `--print_relative_test_log_paths` (no
 convenience symlinks), other `--test_strategy` values, `--run_under` with a
-test under `run`, a `select()` in `shard_count`, `--keep_going` with a build
+test under `run`, a `select()` in `shard_count` of a test to run (`test`, `run`
+of a test; a build, the `--build_tests_only` filters and a test_suite's
+runfiles do not read the shard count), `--keep_going` with a build
 failure (the native build stops at the first failing action). (A `select()`
 in test_suite `tests` is a loading error: the attribute is not configurable.)
 
@@ -76,7 +78,7 @@ and `All tests passed but there were other errors during the build.`,
 (docs/NATIVE_BUILD_RULES.md, test_suite). `WARNING: All specified test
 targets were excluded by filters`; no tests: `ERROR: No test targets were
 found, yet testing was requested`, exit 4. Paired capture
-`tests/fixtures/test_suite` (49 genuine 9.3.0 cases, all MATCH, 8 of them
+`tests/fixtures/test_suite` (52 genuine 9.3.0 cases, all MATCH, 8 of them
 `run`; replayed by `tests/test_suite.rs`).
 `shard_count` is checked like RuleConfiguredTargetBuilder.initializeTestProvider
 (`Must not be negative.`, more than 50 shards).
