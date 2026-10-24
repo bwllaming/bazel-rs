@@ -598,9 +598,21 @@ impl Recorder {
     }
 
     /// Whether an event observed now goes to a frame of this thread
-    /// instead of the recorder ([`Self::observe`] and its siblings).
+    /// instead of the recorder ([`Self::observe`] and its siblings). A
+    /// loading worker (no-demand mode) only ever records inside its load
+    /// unit's frame (crate::package::evaluate_load_unit) or a capture in
+    /// it; so does the coordinator under no-demand (a discarded hint, the
+    /// `BAZEL_RS_LOADING_NO_DEMAND` test hook's units).
     fn redirected(&self) -> bool {
-        self.framed && in_frame()
+        if !self.framed {
+            return false;
+        }
+        let framed = in_frame();
+        debug_assert!(
+            framed || !crate::repository_demand::no_demand_active(),
+            "a no-demand thread recorded outside a frame"
+        );
+        framed
     }
 
     fn observe(&self, path: &Path, op: Op, outcome: Outcome) {

@@ -2077,6 +2077,11 @@ pub(crate) struct LoadUnit {
     /// coordinator's commit makes them count as materialized (W6 review
     /// F2).
     pub(crate) roots: Vec<String>,
+    /// What the load observed on a worker for the analysis snapshot's
+    /// recording (W6R; crate::observed_fs::unit_scope): it reaches the
+    /// recording with the coordinator's commit, at the sequential engine's
+    /// load, and never for a unit the build drops or re-runs inline.
+    pub(crate) observations: crate::observed_fs::Observations,
 }
 
 pub fn evaluate_in(
@@ -2084,6 +2089,8 @@ pub fn evaluate_in(
     package: &PackageId,
 ) -> Result<Package, String> {
     let unit = evaluate_load_unit(repositories, package);
+    // The direct path's load is its own commit.
+    crate::observed_fs::commit(unit.observations);
     // The direct path keeps the historical behavior: every buffered line
     // reaches stderr in order, immediately after the load (cache-hit
     // markers carry no lines of their own here).
@@ -2098,18 +2105,25 @@ pub fn evaluate_in(
 }
 
 /// [`evaluate_in`] with the load's print output buffered into the unit
-/// instead of written to stderr (P1 loading commit order).
+/// instead of written to stderr (P1 loading commit order). On a loading
+/// worker (no-demand mode) what the load observes for the analysis
+/// snapshot stays in the unit until its commit (W6R).
 pub(crate) fn evaluate_load_unit(
     repositories: Arc<RepositorySet>,
     package: &PackageId,
 ) -> LoadUnit {
+    let frame = crate::repository_demand::no_demand_active().then(crate::observed_fs::unit_scope);
     let prints = crate::loading::LoadPrints::default();
     let roots = crate::repository::UnitRoots::record();
     let result = evaluate_in_with_prints(repositories, package, &prints);
+    let roots = roots.finish();
     LoadUnit {
         result,
         prints: prints.take(),
-        roots: roots.finish(),
+        roots,
+        observations: frame
+            .map(crate::observed_fs::UnitScope::finish)
+            .unwrap_or_default(),
     }
 }
 

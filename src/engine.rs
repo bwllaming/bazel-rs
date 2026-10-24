@@ -2206,18 +2206,26 @@ impl Engine {
         package: &PackageId,
         unit: package::LoadUnit,
     ) -> Result<(), String> {
+        let package::LoadUnit {
+            result,
+            prints: unit_prints,
+            roots,
+            observations,
+        } = unit;
         // The roots this load obtained on a worker count as materialized
         // from its commit on, as at the sequential engine's load (W6
-        // review F2); an aborted unit's are the inline re-run's to note.
-        if !unit
-            .result
+        // review F2), and what it observed reaches the analysis snapshot's
+        // recording here (W6R); an aborted unit's are the inline re-run's
+        // to note and observe.
+        if !result
             .as_ref()
             .is_err_and(|error| crate::repository_demand::is_inline_rerun_sentinel(error))
         {
-            self.repositories.note_committed_roots(&unit.roots);
+            self.repositories.note_committed_roots(&roots);
+            crate::observed_fs::commit(observations);
         }
-        let (rules, prints) = match unit.result {
-            Ok(rules) => (rules, unit.prints),
+        let (rules, prints) = match result {
+            Ok(rules) => (rules, unit_prints),
             Err(error) => {
                 if crate::repository_demand::is_inline_rerun_sentinel(&error) {
                     // An inline-rerun sentinel: the no-demand guard (a
@@ -2228,14 +2236,14 @@ impl Engine {
                     // lines are dropped with the aborted evaluation; the
                     // inline re-run reproduces the sequential output, fetch
                     // output and genuine cycle messages included.
-                    let module_events = unit
-                        .prints
+                    let module_events = unit_prints
                         .into_iter()
                         .filter(|event| !matches!(event, crate::loading::LoadPrintEvent::Build(_)))
                         .collect();
                     self.emit_load_prints(module_events);
-                    let retried = self.load_package_attempt(package);
+                    let mut retried = self.load_package_attempt(package);
                     self.repositories.note_committed_roots(&retried.roots);
+                    crate::observed_fs::commit(std::mem::take(&mut retried.observations));
                     return match retried.result {
                         Ok(rules) => {
                             self.emit_load_prints(retried.prints);
@@ -2261,7 +2269,7 @@ impl Engine {
                         }
                     };
                 }
-                self.emit_load_prints(unit.prints);
+                self.emit_load_prints(unit_prints);
                 return Err(error);
             }
         };
@@ -6644,28 +6652,32 @@ impl Engine {
         let Some(prefetch) = &self.prefetch else {
             return;
         };
-        let guard = crate::repository_demand::no_demand();
-        let mut targets = Vec::new();
-        for (repository, pattern) in patterns {
-            if pattern.starts_with('-') {
-                break;
-            }
-            let all = match pattern.rsplit_once(':') {
-                Some((base, "all")) => {
-                    if base == "..." || base.ends_with("/...") {
-                        continue;
-                    }
-                    true
+        // A hint observes nothing for the analysis snapshot (W6R): the
+        // expansion's own lookups are recorded where it makes them.
+        let targets = crate::observed_fs::discard(|| {
+            let _guard = crate::repository_demand::no_demand();
+            let mut targets = Vec::new();
+            for (repository, pattern) in patterns {
+                if pattern.starts_with('-') {
+                    break;
                 }
-                Some((_, "*" | "all-targets")) => break,
-                _ => false,
-            };
-            if let Ok(label) = self.repositories.parse(pattern, repository, "") {
-                let name = (!all).then(|| label.name.clone());
-                targets.push((label.package_id(), name));
+                let all = match pattern.rsplit_once(':') {
+                    Some((base, "all")) => {
+                        if base == "..." || base.ends_with("/...") {
+                            continue;
+                        }
+                        true
+                    }
+                    Some((_, "*" | "all-targets")) => break,
+                    _ => false,
+                };
+                if let Ok(label) = self.repositories.parse(pattern, repository, "") {
+                    let name = (!all).then(|| label.name.clone());
+                    targets.push((label.package_id(), name));
+                }
             }
-        }
-        drop(guard);
+            targets
+        });
         prefetch.submit_targets(targets, 0);
     }
 
