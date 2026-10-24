@@ -80,8 +80,13 @@ owner-independent `ActionKey` at registration
 (`Context::register_action`): a SHA-256 over a framed encoding of the
 native action without its owner-numbered id, a symlink's progress message
 and the owner-specific remote gate (destructured exhaustively, so a new
-action field must choose), the rule's propagated execution-requirement tags
-on spawns, the inputs and outputs as (exec path, directory), each tool's
+action field must choose), the execution info as Bazel keys it — one map,
+`TargetUtils.getFilteredExecutionInfo`'s (`J/packages/TargetUtils.java:285-306`):
+the `execution_requirements` filtered to the legal keys
+(`TargetUtils.legalExecInfoKeys`), then each of the rule's propagated tags
+as `tag: ""` where no requirement has the key, so a `no-remote` tag and a
+`no-remote: ""` requirement key alike (the action itself keeps both parts
+as registered) — the inputs and outputs as (exec path, directory), each tool's
 runfiles tree as its directory and mapping (runfiles path -> exec path), and
 the action's exec group resolved to its execution platform (none without
 toolchain resolution) and exec properties — the group's name is not keyed.
@@ -154,13 +159,16 @@ File — one File every way (equal, one depset element), short_path
 `../somerepo/x.txt`, and an action input either way.
 
 `tests/shared_actions.rs` replays `tests/fixtures/shared_actions/reference_receipt.json`
-(25 cases: 22 MATCH, 3 declared divergences), sharing between targets: the
+(28 cases: 25 MATCH, 3 declared divergences), sharing between targets: the
 rules_python precompile shape (`declare_file(sibling = src)`, a tool with
 runfiles in the exec configuration, a param file, env and execution
 requirements, per-target progress messages) shared by two targets, built and
 `--nobuild`, with a consumer of both Files (two Files, one path, different
 owners, both action inputs); plain tags and exec groups of one platform
-shared; a declared file shared with an output-file target (owner of the
+shared; the execution info compared as one map (a `no-remote` tag and a
+`no-remote: ""` requirement shared, a requirement that is no execution
+requirement ignored, `no-remote: "1"` against the tag a conflict); a
+declared file shared with an output-file target (owner of the
 label's File: the predeclaring rule, either analysis order); conflicts for
 each compared part — arguments, an execution-requirement tag, mnemonic,
 environment, inputs, tool, exec properties of the target or of the group,

@@ -12473,22 +12473,27 @@ pub(crate) fn rule_execution_info(rule: &Rule) -> BTreeSet<String> {
         (None, None) => Vec::new(),
     };
     tags.into_iter()
-        .filter(|tag| {
-            [
-                "block-",
-                "requires-",
-                "no-",
-                "supports-",
-                "disable-",
-                "cpu:",
-                "resources:",
-            ]
-            .iter()
-            .any(|prefix| tag.starts_with(prefix))
-                || tag == "local"
-                || tag == "worker-key-mnemonic"
-        })
+        .filter(|tag| legal_execution_info_key(tag))
         .collect()
+}
+
+/// TargetUtils.legalExecInfoKeys (packages/TargetUtils.java:53-63): the
+/// tags that are execution requirements, and the `execution_requirements`
+/// keys a Starlark action keeps (TargetUtils.filter, :308-314).
+pub(crate) fn legal_execution_info_key(key: &str) -> bool {
+    [
+        "block-",
+        "requires-",
+        "no-",
+        "supports-",
+        "disable-",
+        "cpu:",
+        "resources:",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
+        || key == "local"
+        || key == "worker-key-mnemonic"
 }
 
 /// A native rule's explicit boolean attribute (False when unset).

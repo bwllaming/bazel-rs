@@ -56,7 +56,7 @@ def _compile_impl(ctx):
             mnemonic = ctx.attr.mnemonic,
             progress_message = "Compiling %{output} for %{label}",
             env = {"PYTHONHASHSEED": "0"} | ctx.attr.env,
-            execution_requirements = {"no-remote-exec": "1"},
+            execution_requirements = {"no-remote-exec": "1"} | ctx.attr.requirements,
         )
         outs.append(out)
     return [DefaultInfo(files = depset(outs))]
@@ -72,6 +72,7 @@ compile = rule(
         "mnemonic": attr.string(default = "PyCompile"),
         "env": attr.string_dict(),
         "extra_inputs": attr.label_list(allow_files = True),
+        "requirements": attr.string_dict(),
     },
 )
 

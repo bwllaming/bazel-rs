@@ -94,6 +94,27 @@ compile(
     tags = ["plain-tag"],
 )
 
+# The execution info is keyed as one map (TargetUtils.getFilteredExecutionInfo):
+# a requirement equal to :c_tags' propagated tag, a requirement that is no
+# execution requirement, and one whose value differs from the tag's.
+compile(
+    name = "c_req_tag",
+    srcs = ["__init__.py"],
+    requirements = {"no-remote": ""},
+)
+
+compile(
+    name = "c_req_illegal",
+    srcs = ["__init__.py"],
+    requirements = {"not-a-requirement": "1"},
+)
+
+compile(
+    name = "c_req_value",
+    srcs = ["__init__.py"],
+    requirements = {"no-remote": "1"},
+)
+
 # Writes: one declared file and one output-file target on one path.
 writer(
     name = "w_declared",

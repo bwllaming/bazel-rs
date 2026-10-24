@@ -54,6 +54,8 @@ const GROUPS: &[(&str, &[&str])] = &[
             "tree_shared",
             "runfiles_shared",
             "run_shared",
+            "shared_tag_requirement",
+            "shared_illegal_requirement",
         ],
     ),
     (
@@ -69,6 +71,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "conflict_props",
             "write_conflict",
             "groups_props",
+            "conflict_requirement_value",
         ],
     ),
     ("declared", &["prefix", "aspect_conflict", "expand_shared"]),
@@ -328,7 +331,9 @@ fn receipt_covers_the_fixture_and_every_case_once() {
 /// Identical actions of two targets on one output are shared: the
 /// rules_python precompile shape (a tool with runfiles, a param file, env
 /// and execution requirements, per-target progress messages), a consumer
-/// of both targets' Files, plain tags, exec groups of one platform, a
+/// of both targets' Files, plain tags, a propagated tag equal to another
+/// target's execution requirement (one merged map), a requirement that is
+/// no execution requirement, exec groups of one platform, a
 /// declared file shared with another rule's output-file target, two
 /// applications of one aspect (whose base targets' exec_properties are not
 /// the aspect actions'), a tree artifact, and a shared output as a runfile

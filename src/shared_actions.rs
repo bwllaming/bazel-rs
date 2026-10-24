@@ -263,7 +263,8 @@ impl Fingerprint {
 
     /// Every field of the native action but its owner-numbered id, the
     /// owner-specific remote gate and a symlink's progress message
-    /// (destructured exhaustively: a new field must choose).
+    /// (destructured exhaustively: a new field must choose); the propagated
+    /// tags and the execution requirements as Bazel's one merged map.
     fn action(&mut self, action: &Action) {
         let Action {
             id: _,
@@ -317,11 +318,45 @@ impl Fingerprint {
         self.extra(extra);
         self.flag(*shell_pad);
         self.flag(*executable_file);
-        self.strings(execution_info.iter());
+        self.execution_info(&extra.execution_info, execution_info);
         self.count(embedded_inputs.len());
         for (path, bytes) in embedded_inputs {
             self.path(path);
             self.bytes(bytes);
+        }
+    }
+
+    /// The execution info Bazel keys (SpawnAction.computeKey's
+    /// `fp.addStringMap(getExecutionInfo())`, analysis/actions/
+    /// SpawnAction.java:409): one map, TargetUtils.getFilteredExecutionInfo's
+    /// (packages/TargetUtils.java:285-306) — the `execution_requirements`
+    /// filtered to the legal keys (crate::engine::legal_execution_info_key),
+    /// then each propagated tag as `tag: ""` where no requirement has the
+    /// key, sorted (ImmutableSortedMap). So a `no-remote` tag of one target
+    /// and a `no-remote: ""` requirement of another key alike, and a
+    /// requirement that is no execution requirement is not keyed. The
+    /// action keeps both parts unfiltered (they decide its local execution
+    /// and cache key as before). C++ compiles key their toolchain's tool
+    /// requirements through the same filter (Bazel keeps them unfiltered):
+    /// they are not shareable across owners and one toolchain gives one
+    /// target's compiles one requirement set, so no decision differs.
+    fn execution_info(
+        &mut self,
+        requirements: &std::collections::BTreeMap<String, String>,
+        tags: &std::collections::BTreeSet<String>,
+    ) {
+        let mut merged = requirements
+            .iter()
+            .filter(|(key, _)| crate::engine::legal_execution_info_key(key))
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for tag in tags {
+            merged.entry(tag.as_str()).or_insert("");
+        }
+        self.count(merged.len());
+        for (key, value) in merged {
+            self.str(key);
+            self.str(value);
         }
     }
 
@@ -332,7 +367,9 @@ impl Fingerprint {
             param_files,
             inherited_environment,
             client_environment,
-            execution_info,
+            // Keyed with the propagated tags as one map
+            // ([`Fingerprint::execution_info`]).
+            execution_info: _,
             mnemonic,
             transform,
             constant_metadata,
@@ -349,11 +386,6 @@ impl Fingerprint {
         for (name, value) in client_environment {
             self.str(name);
             self.bytes(value.as_bytes());
-        }
-        self.count(execution_info.len());
-        for (key, value) in execution_info {
-            self.str(key);
-            self.str(value);
         }
         self.str(mnemonic);
         match transform {
@@ -580,6 +612,45 @@ mod tests {
         assert_eq!(
             base.sharing(&key(&tagged, "//p:b", Some("tools/data"), Some(&host))),
             Sharing::Conflict
+        );
+    }
+
+    /// TargetUtils.getFilteredExecutionInfo's merged map: the legal
+    /// requirements, then each tag where no requirement has its key.
+    #[test]
+    fn execution_info_is_keyed_as_bazels_merged_map() {
+        let keyed = |tags: &[&str], requirements: &[(&str, &str)]| {
+            let mut action = spawn("//p:a#0", "x");
+            action.execution_info = tags.iter().map(|tag| (*tag).to_owned()).collect();
+            action.extra.execution_info = requirements
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            key(&action, "//p:a", None, None)
+        };
+        let tag = keyed(&["no-remote"], &[]);
+        for same in [
+            keyed(&[], &[("no-remote", "")]),
+            keyed(&["no-remote"], &[("no-remote", "")]),
+            // Not an execution requirement: filtered out.
+            keyed(&["no-remote"], &[("foo", "bar")]),
+        ] {
+            assert_eq!(tag.sharing(&same), Sharing::Shared);
+        }
+        let valued = keyed(&[], &[("no-remote", "1")]);
+        assert_eq!(tag.sharing(&valued), Sharing::Conflict);
+        // A requirement's value wins over the tag's empty one.
+        assert_eq!(
+            valued.sharing(&keyed(&["no-remote"], &[("no-remote", "1")])),
+            Sharing::Shared
+        );
+        assert_eq!(
+            keyed(&[], &[]).sharing(&keyed(&[], &[("worker-key-mnemonic", "")])),
+            Sharing::Conflict
+        );
+        assert_eq!(
+            keyed(&[], &[]).sharing(&keyed(&[], &[("not-a-requirement", "1")])),
+            Sharing::Shared
         );
     }
 

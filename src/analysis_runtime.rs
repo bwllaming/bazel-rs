@@ -973,6 +973,9 @@ fn register_spawn(
     let environment = spawn_environment(context, options.env, options.use_default_shell_env)?;
     let extra = ActionExtra {
         inherited_environment: environment.inherited,
+        // As given: the shared-action key filters it to the legal keys and
+        // merges the propagated tags like TargetUtils.getFilteredExecutionInfo
+        // (crate::shared_actions).
         execution_info: match options.execution_requirements {
             Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
             _ => BTreeMap::new(),
