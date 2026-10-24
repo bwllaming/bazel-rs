@@ -468,7 +468,8 @@ oauth2token:all `--nobuild` 6.5 s against 4.0–4.2 s unset; B2 `--nobuild`
 11.1 s against 7.9–8.7 s); hits are unaffected. Follow-up: per-unit
 observation buffers merged only for committed units.
 
-**Diagnostics bypass the capture** (`snapshot::diag`): the PERF marks,
+**Diagnostics bypass the capture** (`snapshot::diag`; L2-W5h: never
+inside a forwarded line, which goes out whole under the same order lock): the PERF marks,
 `PERF-STAGE`, `PERF-PLAN`, the memory watchdog's lines and the
 `bazel-rs-snapshot:` lines write to the original stderr while a capture
 holds file descriptor 2; they are never part of the replayed bytes.
@@ -587,7 +588,7 @@ unit test drives the healing check on real publications (intact trees
 keep the snapshot).
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f, extended
-by L2-W5g): random sequences over a catalogue of 50 mutations (sources —
+by L2-W5g and L2-W5h): random sequences over a catalogue of 51 mutations (sources —
 same-size, mtime-restoring, future-stamped and backdated edits —,
 glob-matching and swap files, BUILD and `.bzl` edits, new and removed
 packages, `.go` files, symlink retargets and swaps of a package directory,
@@ -602,21 +603,39 @@ deletions and additions, the status command's output and stderr, damaged
 and deleted snapshots, concurrent runs of one command and of two
 different ones with stand-in snapshots that make a save collect (GC and
 refresh races), the `local_path_override` module's BUILD, `.bzl` and
-MODULE.bazel, failing builds and tests, a 2 s settle, and — in non-strict
+MODULE.bazel, failing builds and tests, a 2 s settle, — in non-strict
 verify mode only — byte and mode tampering of a store-tree file, which a
-hit must log as `first=taint` with `taint=repository-rule-executed`) and
-10 commands (`build` including a consumer of the generated repository's
-`glob(["sub/**"])`, `--nobuild //...`, `test --test_output=all`,
-`run --script_path`, the `--action_env`, status, `--repo_env` and
-override targets, a relative pattern run from a subpackage, the symlink
-swaps), the snapshot side in `on` or (30%) strict `verify` mode: every step
-byte-identical (the heal line aside), built outputs and MODULE.bazel.lock
-included. About half the steps run without `BAZEL_RS_SNAPSHOT_EXPLAIN`
+hit must log as `first=taint` with `taint=repository-rule-executed`, and
+— under `on`, L2-W5h — the generated repository's tool made
+non-executable after its consumer was warmed: when the lookup hits,
+exactly that step differs (the hit fails, the run without the snapshot
+repairs the tree), with exactly one heal naming `tree:mode` and the tool,
+and the next run is equal again) and 11 commands (`build` including a
+consumer of the generated repository's `glob(["sub/**"])` and one of its
+tool, `--nobuild //...`, `test --test_output=all`, `run --script_path`,
+the `--action_env`, status, `--repo_env` and override targets, a relative
+pattern run from a subpackage, the symlink swaps), the snapshot side in
+`on` or (30%) strict `verify` mode: every step byte-identical, built
+outputs and MODULE.bazel.lock included — a heal line is a difference
+(L2-W5h: before, it was dropped from every step), and no step may log a
+`healed` event but the tamper class's. About half the steps run without `BAZEL_RS_SNAPSHOT_EXPLAIN`
 — the production path, where the first failing check cancels the rest of
 the attempt — and take the outcome from the `PERF-SNAPSHOT` lines. 50
 steps in the gate (`BAZEL_RS_SNAPSHOT_FUZZ_STEPS`;
 `BAZEL_RS_SNAPSHOT_FUZZ_SEED` replays a sequence; the seed is printed, and
-a failure prints the seed and the steps).
+a failure prints the seed and the steps). L2-W5h offline: 16 runs, 3,600
+steps (seeds 5202 5404 5505 5606 5707 5808 5909 6010 6111 6212 6313 6414
+× 250, and 7101 7202 7303 7404 × 150 restricted to the tamper, failing,
+concurrent, damage and settle classes), all identical, 74 failing hits of
+the tamper class each healed once, no other heal. Its first batch found a
+real defect: under a Tee capture a diagnostics line (a `PERF` mark) could
+land between a forwarded `print`'s text and its newline — the print wrote
+them into the pipe as two pieces, the reader forwarded them as two chunks,
+and diagnostics write to the original stderr directly. Fixed: forwarded
+bytes go out whole lines at a time under the diagnostics stream's order
+lock (crate::snapshot::diag::ORDER; a partial line waits for its newline
+or the end of the pipe), and the reader never writes while holding the
+drain lock.
 
 Fixture 19 (L2-W6, module `verify_mode` of tests/snapshot.rs): every
 fixture again with `BAZEL_RS_SNAPSHOT=verify` (and

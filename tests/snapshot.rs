@@ -57,6 +57,8 @@ struct Twin {
     /// The working directory below the workspace (the mutation fuzz's
     /// relative patterns), else the workspace root.
     cwd: std::cell::RefCell<Option<&'static str>>,
+    /// The `healed` events seen so far ([`Twin::assert_healed`]).
+    heals: std::cell::Cell<usize>,
 }
 
 /// The two runs of one step.
@@ -102,6 +104,7 @@ impl Twin {
             workspace_rc: std::cell::Cell::new(false),
             explain: std::cell::Cell::new(true),
             cwd: std::cell::RefCell::new(None),
+            heals: std::cell::Cell::new(0),
         };
         for side in [ON, OFF] {
             fs::create_dir_all(twin.side(side).join("ws")).unwrap();
@@ -241,11 +244,42 @@ impl Twin {
         }
     }
 
-    /// [`Twin::run`], asserting identical output.
+    /// [`Twin::run`], asserting identical output — no heal line on either
+    /// side (L2-W5h: [`program_stderr`] keeps it) — and no new `healed`
+    /// event: a step that heals is one that tampered with a tree, which
+    /// runs through [`Twin::run`] and [`Twin::assert_healed`].
     fn same(&self, args: &[&str], env: &[(&str, &str)]) -> Pair {
         let pair = self.run(args, env);
         pair.assert_same(args);
+        self.assert_healed(0);
         pair
+    }
+
+    /// The `healed` events of the snapshot side's event log so far (both
+    /// generations).
+    fn healed_events(&self) -> Vec<String> {
+        let snapshots = self.side(ON).join("cache/snapshots");
+        ["events.log.1", "events.log"]
+            .iter()
+            .filter_map(|name| fs::read_to_string(snapshots.join(name)).ok())
+            .flat_map(|text| {
+                text.lines()
+                    .filter(|line| line.contains(" kind=healed "))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Exactly `count` `healed` events since the last call (L2-W5h); returns
+    /// them.
+    #[track_caller]
+    fn assert_healed(&self, count: usize) -> Vec<String> {
+        let events = self.healed_events();
+        let new: Vec<String> = events[self.heals.get().min(events.len())..].to_vec();
+        self.heals.set(events.len());
+        assert_eq!(new.len(), count, "unexpected heals: {new:#?}");
+        new
     }
 
     /// Run `args` until a run saves (at most twice: a cold run that executes
@@ -288,19 +322,19 @@ fn text(bytes: &[u8]) -> String {
 }
 
 /// The one line a failed hit prints when it removes its snapshot (the
-/// snapshot side's intended difference, crate::snapshot::hit).
+/// snapshot side's intended difference, crate::snapshot::hit) — only ever
+/// on a step that tampered with a tree (L2-W5h: [`program_stderr`] keeps
+/// it, so on any other step it is a difference).
 const HEAL_LINE: &str = "bazel-rs: removed the analysis snapshot of this build: ";
 
-/// stderr without the snapshot diagnostics, PERF lines and the heal line,
-/// test durations normalized.
+/// stderr without the snapshot diagnostics and PERF lines, test durations
+/// normalized. A heal line stays (L2-W5h: before, it was dropped on every
+/// step, so an unexpected heal went unnoticed).
 fn program_stderr(output: &Output) -> String {
     let stderr = text(&output.stderr);
     let mut kept = String::new();
     for line in stderr.split_inclusive('\n') {
-        if line.starts_with("bazel-rs-snapshot: ")
-            || line.starts_with("PERF")
-            || line.starts_with(HEAL_LINE)
-        {
+        if line.starts_with("bazel-rs-snapshot: ") || line.starts_with("PERF") {
             continue;
         }
         kept.push_str(line);
@@ -2172,6 +2206,12 @@ fn a_store_input_staged_by_the_test_runner_heals() {
         ) && stderr.contains("data.txt in the repository store"),
         "{stderr}"
     );
+    // The one heal of this fixture (L2-W5h).
+    let healed = twin.assert_healed(1);
+    assert!(
+        healed[0].contains(" reason=store-path:") && healed[0].contains("/data.txt ms="),
+        "{healed:?}"
+    );
     assert!(twin.snapshots().is_empty());
     // The next run repairs the tree like the run without the snapshot did.
     let repaired = Pair {
@@ -2631,14 +2671,12 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
             stderr.contains(&format!(" ({entry} {file}); the next build re-analyzes")),
             "{case:?}: {stderr}"
         );
-        let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
+        // Exactly one heal, naming the entry (L2-W5h).
+        let healed = twin.assert_healed(1);
         assert!(
-            log.lines()
-                .last()
-                .is_some_and(|line| line.contains(" kind=healed ")
-                    && line.contains(&format!(" reason=tree:{entry} "))
-                    && line.contains(&format!("/{file} ms="))),
-            "{log}"
+            healed[0].contains(&format!(" reason=tree:{entry} "))
+                && healed[0].contains(&format!("/{file} ms=")),
+            "{healed:?}"
         );
         // The next run repairs the tree like the run without the snapshot
         // did, and succeeds. (A test runs again either way: the failed
@@ -2717,23 +2755,25 @@ use_repo(ext, "extrepo")
     )
 }
 
-const FUZZ_REPOS: &str = r#"def _local(ctx):
+const FUZZ_REPOS: &str = r##"def _local(ctx):
     ctx.file("BUILD.bazel", "exports_files(['value'])\n")
     ctx.file("value", "value=%s\n" % ctx.getenv("W5_LOCAL", "unset"))
 
 local_rule = repository_rule(implementation = _local, local = True)
 
 def _gen(ctx):
-    ctx.file("BUILD.bazel", "exports_files(['sub/data.txt'])\nfilegroup(name = 'all', srcs = glob(['sub/**']), visibility = ['//visibility:public'])\n")
+    ctx.file("BUILD.bazel", "exports_files(['sub/data.txt', 'tool.sh'])\nfilegroup(name = 'all', srcs = glob(['sub/**']), visibility = ['//visibility:public'])\n")
     ctx.file("sub/data.txt", "generated %s\n" % ctx.attr.flavor)
     ctx.file("sub/deeper/more.txt", "more\n")
+    ctx.file("tool.sh", "#!/bin/sh\necho tool-%s > $1\n" % ctx.attr.flavor, executable = True)
 
 gen_rule = repository_rule(implementation = _gen, attrs = {"flavor": attr.string(default = "plain")})
-"#;
+"##;
 
 /// The fuzz's root BUILD file: the fixture's (the generated repository's
-/// nested file) plus a consumer of the repository's `glob(["sub/**"])`;
-/// `extra` adds a rule (a BUILD edit), `failing` makes the test fail.
+/// nested file) plus a consumer of the repository's `glob(["sub/**"])` and
+/// one of its tool; `extra` adds a rule (a BUILD edit), `failing` makes the
+/// test fail.
 fn fuzz_build(extra: bool, failing: bool) -> String {
     let mut build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
     if failing {
@@ -2741,6 +2781,11 @@ fn fuzz_build(extra: bool, failing: bool) -> String {
     }
     build.push_str(
         "\ngenrule(name = 'genall', srcs = ['@genrepo//:all'], outs = ['genall.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    // A consumer of the generated repository's tool (L2-W5h: the `on`
+    // tamper class makes the tool non-executable).
+    build.push_str(
+        "\ngenrule(name = 'tooluse', srcs = ['@genrepo//:tool.sh'], outs = ['tooluse.txt'], cmd = '$(location @genrepo//:tool.sh) $@')\n",
     );
     if extra {
         build.push_str("\ngenrule(name = 'extra', outs = ['extra.txt'], cmd = 'echo > $@')\n");
@@ -2964,10 +3009,16 @@ enum Special {
     /// A store tree tampered with (bytes or mode) under non-strict verify:
     /// a hit must log `first=taint` (L2-W5g).
     Tamper,
+    /// Under `on` (L2-W5h): the consumer of the generated repository's tool
+    /// is warmed, the tool made non-executable in both copies, the consumer
+    /// run: when the lookup hits, exactly this step differs (the hit fails,
+    /// the run without the snapshot repairs the tree), with exactly one
+    /// heal naming the tool's mode; the next run is equal again.
+    TamperOn,
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 51;
+const MUTATIONS: usize = 52;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3369,13 +3420,22 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             }
             name("store tree tampered (bytes or mode; verify mode)")
         }
+        50 => {
+            // L2-W5h: the tool of the generated repository made
+            // non-executable under `on` (the step tampers after warming).
+            special = Special::TamperOn;
+            name("store tree tool made non-executable under on (a failing consumer)")
+        }
         _ => name("no change"),
     };
     (name, special)
 }
 
 /// The commands of the fuzz ([`fuzz_command`]).
-const FUZZ_COMMANDS: usize = 10;
+const FUZZ_COMMANDS: usize = 11;
+/// The command consuming the generated repository's tool
+/// ([`Special::TamperOn`]).
+const TOOL_COMMAND: usize = 10;
 
 /// The fuzz's command `command` (below [`FUZZ_COMMANDS`]) and the
 /// directory it runs in below the workspace (`None`: the root).
@@ -3430,6 +3490,7 @@ fn fuzz_command(
             args
         }
         7 => vec!["build".into(), "//deps:d".into(), "//pkg:l".into()],
+        TOOL_COMMAND => vec!["build".into(), "//:tooluse".into()],
         8 => {
             // From a subpackage, with a relative pattern (L2-W5g).
             cwd = Some("pkg");
@@ -3518,12 +3579,18 @@ fn verify_log(twin: &Twin) -> Vec<String> {
 /// and `BAZEL_RS_SNAPSHOT_FUZZ_SEED` (default: from the clock; printed) — a
 /// failure prints the seed and the steps so far.
 ///
+/// L2-W5h: no step may heal (a heal line on stderr is a difference, a
+/// `healed` event fails the step) but the `on` tamper class's
+/// ([`Special::TamperOn`]: the generated repository's tool made
+/// non-executable after its consumer was warmed — when the lookup hits,
+/// exactly that step differs, the failing hit, with exactly one heal naming
+/// the tool's mode, and the next run is equal again).
+///
 /// Not in the catalogue under `on` (documented deviations, fixtures of
-/// their own): an in-place byte or mode edit of a store-tree file (a hit
-/// executes with the edited file, `a_hit_hashes_an_edited_tree_file_by_its_change_time`;
-/// a failure it causes heals, `a_failed_hit_on_a_tampered_store_tree_heals`)
-/// and a store-tree runfile made unreadable
-/// (`a_store_input_staged_by_the_test_runner_heals`).
+/// their own): an in-place byte edit of a store-tree file that does not
+/// fail its consumer (a hit executes with the edited file,
+/// `a_hit_hashes_an_edited_tree_file_by_its_change_time`) and a store-tree
+/// runfile made unreadable (`a_store_input_staged_by_the_test_runner_heals`).
 #[test]
 fn mutation_fuzz() {
     let steps: usize = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_STEPS")
@@ -3560,19 +3627,25 @@ fn mutation_fuzz() {
         let command = match previous {
             // A tampered tree is read by the default build's actions.
             _ if special == Special::Tamper => 0,
+            // The tool's consumer (L2-W5h).
+            _ if special == Special::TamperOn => TOOL_COMMAND,
             Some(command) if rng.percent(55) => command,
             _ => rng.below(FUZZ_COMMANDS),
         };
         previous = Some(command);
         let (args, cwd) = fuzz_command(&twin, command, &state);
-        let mode = if special == Special::Tamper || rng.percent(30) {
+        let mode = if special == Special::TamperOn {
+            ON
+        } else if special == Special::Tamper || rng.percent(30) {
             VERIFY
         } else {
             ON
         };
         twin.mode.set(mode);
         twin.strict.set(special != Special::Tamper);
-        twin.explain.set(rng.percent(50));
+        // The `on` tamper class reads the warm-up's outcome from EXPLAIN.
+        let explain = rng.percent(50);
+        twin.explain.set(explain || special == Special::TamperOn);
         *twin.cwd.borrow_mut() = cwd;
         let env_owned = state.env();
         let env: Vec<(&str, &str)> = env_owned
@@ -3595,8 +3668,71 @@ fn mutation_fuzz() {
             cwd.map(|cwd| format!(" in {cwd}")).unwrap_or_default(),
         ));
         let verify_lines = verify_log(&twin).len();
+        // What the `on` tamper class saw (L2-W5h).
+        let note = std::cell::Cell::new("");
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let pair = match special {
+                Special::TamperOn => {
+                    // Warm: the consumer's snapshot is saved (or hits).
+                    let mut warm = twin.same(&argv, &env);
+                    if warm.line("saved ").is_none() && warm.line("hit ").is_none() {
+                        warm = twin.same(&argv, &env);
+                    }
+                    let warmed = warm.line("saved ").is_some() || warm.line("hit ").is_some();
+                    // The tree of the current flavor (a MODULE.bazel edit
+                    // leaves the other flavor's tree behind, unused).
+                    let flavor = if state.on("module") { "spicy" } else { "plain" };
+                    twin.each(|root| {
+                        for tree in fuzz_trees(root) {
+                            let tool = tree.join("tool.sh");
+                            if fs::read_to_string(&tool)
+                                .is_ok_and(|script| script.contains(&format!("tool-{flavor} ")))
+                            {
+                                fs::set_permissions(&tool, fs::Permissions::from_mode(0o644))
+                                    .unwrap();
+                            }
+                        }
+                    });
+                    let failing = twin.run(&argv, &env);
+                    assert!(
+                        failing.off.status.success(),
+                        "{argv:?}: the run without the snapshot repairs the tree: {}",
+                        text(&failing.off.stderr)
+                    );
+                    if failing.line("hit ").is_some() {
+                        // The one differing step: the hit executes the
+                        // non-executable tool and fails; the failed hit's
+                        // check names the tool's mode and removes the
+                        // snapshot.
+                        assert!(!failing.on.status.success(), "{argv:?}: the hit succeeded");
+                        let stderr = text(&failing.on.stderr);
+                        assert!(
+                            stderr.contains(HEAL_LINE) && stderr.contains(" (mode tool.sh); "),
+                            "{argv:?}: {stderr}"
+                        );
+                        let healed = twin.assert_healed(1);
+                        assert!(
+                            healed[0].contains(" reason=tree:mode ")
+                                && healed[0].contains("/tool.sh ms="),
+                            "{healed:?}"
+                        );
+                        note.set("tamper-on: failing hit healed");
+                    } else {
+                        // A miss repairs the tree like the run without the
+                        // snapshot: equal, nothing healed.
+                        failing.assert_same(&argv);
+                        twin.assert_healed(0);
+                        note.set(if warmed {
+                            "tamper-on: miss (repaired)"
+                        } else {
+                            "tamper-on: not warmed"
+                        });
+                    }
+                    // Then equal again: the next run repairs the tree.
+                    let repaired = twin.same(&argv, &env);
+                    repaired.assert_success();
+                    repaired
+                }
                 Special::Concurrent => {
                     // Once in sequence (concurrent runs share the action
                     // cache: which of them executes an action first is a
@@ -3746,6 +3882,8 @@ fn mutation_fuzz() {
                     "{argv:?}: {lines:?}"
                 );
             }
+            // No heal but the `on` tamper class's own (L2-W5h).
+            twin.assert_healed(0);
             pair
         }));
         *twin.cwd.borrow_mut() = None;
@@ -3769,6 +3907,12 @@ fn mutation_fuzz() {
                 let what = fuzz_outcome(&pair);
                 *counts.entry(what).or_default() += 1;
                 log.last_mut().unwrap().push_str(&format!(" -> {what}"));
+                if !note.get().is_empty() {
+                    *counts.entry(note.get()).or_default() += 1;
+                    log.last_mut()
+                        .unwrap()
+                        .push_str(&format!(" ({})", note.get()));
+                }
             }
             Err(panic) => {
                 eprintln!(

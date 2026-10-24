@@ -25,7 +25,11 @@
 //!
 //! Stopping restores the original stderr first, then waits (bounded) until
 //! the reader saw the end of the pipe, so every byte written before the stop
-//! is on the original stderr before anything written after it. A process
+//! is on the original stderr before anything written after it. Forwarded
+//! bytes go out whole lines at a time under the diagnostics stream's order
+//! lock (crate::snapshot::diag::ORDER, L2-W5h): a diagnostics line never
+//! lands inside a forwarded line (a partial line waits for its newline or
+//! the end of the pipe). A process
 //! that still holds the pipe (a lingering child) keeps the reader alive: it
 //! is detached — it keeps forwarding — and the capture is incomplete, which
 //! keeps the run from being saved. A panic while any capture is active
@@ -159,7 +163,12 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
 }
 
 /// The reader thread of a capture: keeps up to `limit` bytes, forwards per
-/// `mode` (see [`Mode`]) until the pipe ends.
+/// `mode` (see [`Mode`]) until the pipe ends. What it forwards goes out
+/// whole lines at a time under crate::snapshot::diag's order lock (L2-W5h):
+/// a partial line waits for its newline — or the end of the pipe — so a
+/// diagnostics line never lands inside a forwarded one. It never writes
+/// while holding the drain state's lock, on which the stop waits (bounded;
+/// L2-W5h: before, a Shadow forward wrote under it).
 fn spawn_reader(
     mut reader: io::PipeReader,
     original: Arc<File>,
@@ -171,36 +180,47 @@ fn spawn_reader(
         .name("stderr-capture".to_owned())
         .spawn(move || {
             let mut chunk = vec![0u8; 64 << 10];
+            // Bytes to forward, up to their last newline.
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(count) => {
                         let chunk = &chunk[..count];
-                        if mode == Mode::Tee {
-                            let _ = (&*original).write_all(chunk);
-                        }
-                        let mut state = drained.lock();
-                        if state.forwarding {
-                            // Shadow, past the switch: straight through,
-                            // in order after the kept bytes (both are
-                            // written under the state's lock).
-                            let _ = (&*original).write_all(chunk);
-                        } else if state.bytes.len() + count <= limit {
-                            state.bytes.extend_from_slice(chunk);
-                        } else {
-                            state.overflowed = true;
-                            if mode == Mode::Shadow {
-                                // Never comparable now (a mismatch): what
-                                // the shadow analysis prints is the output.
-                                forward_kept(&mut state, &original);
-                                let _ = (&*original).write_all(chunk);
+                        let forward = {
+                            let mut state = drained.lock();
+                            if state.forwarding {
+                                // Shadow, past the switch: through, after
+                                // the kept bytes ([`forward_kept`] wrote
+                                // them under the order lock first).
+                                true
+                            } else if state.bytes.len() + count <= limit {
+                                state.bytes.extend_from_slice(chunk);
+                                mode == Mode::Tee
+                            } else {
+                                state.overflowed = true;
+                                if mode == Mode::Shadow {
+                                    // Never comparable now (a mismatch):
+                                    // what the shadow analysis prints is
+                                    // the output — the kept bytes first.
+                                    state.forwarding = true;
+                                    pending.extend_from_slice(&state.bytes);
+                                    true
+                                } else {
+                                    mode == Mode::Tee
+                                }
                             }
+                        };
+                        if forward {
+                            pending.extend_from_slice(chunk);
+                            forward_lines(&original, &mut pending, false);
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
+            forward_lines(&original, &mut pending, true);
             let mut state = drained.lock();
             state.finished = true;
             drained.finished.notify_all();
@@ -208,17 +228,59 @@ fn spawn_reader(
         .map(drop)
 }
 
-/// [`Mode::Shadow`]: write the kept bytes to the original stderr (once) and
-/// switch the reader to forwarding. Called under the state's lock, so no
-/// chunk can come between the kept bytes and the forwarded ones.
-fn forward_kept(state: &mut DrainState, original: &File) {
-    if !state.forwarding {
-        state.forwarding = true;
+/// Write `pending`'s whole lines — everything with `all` (the end of the
+/// pipe) — to `original` under the order lock, and drop them from it.
+fn forward_lines(original: &File, pending: &mut Vec<u8>, all: bool) {
+    let end = if all {
+        pending.len()
+    } else {
+        pending
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |at| at + 1)
+    };
+    if end == 0 {
+        return;
+    }
+    {
+        let _order = crate::snapshot::diag::ORDER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut original = original;
         let _ = original
-            .write_all(&state.bytes)
+            .write_all(&pending[..end])
             .and_then(|()| original.flush());
     }
+    pending.drain(..end);
+}
+
+/// [`Mode::Shadow`]: write the kept bytes to the original stderr (once) and
+/// switch the reader to forwarding. The order lock is taken first and held
+/// across the switch and the write — never the state's lock while writing
+/// — so no forwarded chunk can come before the kept bytes; `early` (a panic
+/// hook, the watchdog's exit) waits for the order lock briefly only.
+fn forward_kept(drained: &Drained, original: &File, early: bool) {
+    let order = if early {
+        crate::snapshot::diag::order_within(Duration::from_millis(50))
+    } else {
+        Some(
+            crate::snapshot::diag::ORDER
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    };
+    let kept = {
+        let mut state = drained.lock();
+        if state.forwarding {
+            // The reader switched first (an overflow) and forwards them.
+            return;
+        }
+        state.forwarding = true;
+        state.bytes.clone()
+    };
+    let mut original = original;
+    let _ = original.write_all(&kept).and_then(|()| original.flush());
+    drop(order);
 }
 
 impl Capture {
@@ -271,15 +333,18 @@ fn collect(
     bound: Duration,
     early: bool,
 ) -> Captured {
-    let state = drained.lock();
-    let (mut state, _) = drained
-        .finished
-        .wait_timeout_while(state, bound, |state| !state.finished)
-        .unwrap_or_else(PoisonError::into_inner);
-    let complete = state.finished;
+    let complete = {
+        let state = drained.lock();
+        let (state, _) = drained
+            .finished
+            .wait_timeout_while(state, bound, |state| !state.finished)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.finished
+    };
     if mode == Mode::Shadow && (early || !complete) {
-        forward_kept(&mut state, original);
+        forward_kept(drained, original, early);
     }
+    let mut state = drained.lock();
     let bytes = if complete {
         std::mem::take(&mut state.bytes)
     } else {
@@ -418,19 +483,19 @@ mod tests {
     }
 
     /// L2-W5g: a shadow capture over its limit forwards what it kept, then
-    /// everything after it, in order.
+    /// everything after it, in order (whole lines, L2-W5h).
     #[test]
     fn a_shadow_capture_forwards_once_it_overflows() {
         let mut rig = rig(Mode::Shadow, 8);
         rig.write(b"0123");
         rig.settle(|state| state.bytes.len() == 4);
-        rig.write(b"456789");
-        rig.wait_original(b"0123456789");
-        rig.write(b"xyz");
-        rig.wait_original(b"0123456789xyz");
+        rig.write(b"4567\n9");
+        rig.wait_original(b"01234567\n");
+        rig.write(b"xyz\n");
+        rig.wait_original(b"01234567\n9xyz\n");
         let captured = rig.stop(true, false);
         assert!(captured.complete && captured.overflowed && captured.forwarded);
-        assert_eq!(rig.original(), b"0123456789xyz");
+        assert_eq!(rig.original(), b"01234567\n9xyz\n");
     }
 
     /// L2-W5g: a shadow capture stopped while a process still holds the
@@ -444,10 +509,29 @@ mod tests {
         assert!(!captured.complete && captured.forwarded);
         assert_eq!(captured.bytes, b"abc");
         assert_eq!(rig.original(), b"abc");
-        rig.write(b"def");
-        rig.wait_original(b"abcdef");
+        rig.write(b"def\n");
+        rig.wait_original(b"abcdef\n");
         rig.writer = None;
         rig.settle(|state| state.finished);
+    }
+
+    /// L2-W5h: what a capture forwards goes out whole lines at a time (a
+    /// diagnostics line, written under the same order lock, never lands
+    /// inside one): a partial line waits for its newline or the end of the
+    /// pipe; the kept bytes are what arrived, as it arrived.
+    #[test]
+    fn forwarded_bytes_go_out_in_whole_lines() {
+        let mut rig = rig(Mode::Tee, 64);
+        rig.write(b"rules.bzl loaded");
+        rig.settle(|state| state.bytes.len() == 16);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(rig.original().is_empty());
+        rig.write(b"\nmacro for root\npart");
+        rig.wait_original(b"rules.bzl loaded\nmacro for root\n");
+        let captured = rig.stop(true, false);
+        assert_eq!(rig.original(), b"rules.bzl loaded\nmacro for root\npart");
+        assert_eq!(captured.bytes, b"rules.bzl loaded\nmacro for root\npart");
+        assert!(captured.complete && captured.forwarded);
     }
 
     /// L2-W5g: a shadow capture ended early (a panic, the memory watchdog's
@@ -465,11 +549,11 @@ mod tests {
     #[test]
     fn tee_forwards_everything_and_discard_nothing() {
         let mut tee = rig(Mode::Tee, 8);
-        tee.write(b"0123456789");
-        tee.wait_original(b"0123456789");
+        tee.write(b"01234567\n9");
+        tee.wait_original(b"01234567\n");
         let captured = tee.stop(true, true);
         assert!(captured.overflowed && captured.forwarded);
-        assert_eq!(tee.original(), b"0123456789");
+        assert_eq!(tee.original(), b"01234567\n9");
         let mut discard = rig(Mode::Discard, 8);
         discard.write(b"0123456789");
         discard.settle(|state| state.overflowed);
