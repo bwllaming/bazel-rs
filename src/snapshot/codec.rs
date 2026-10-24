@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -366,23 +366,35 @@ fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> V
 
 /// Decode an encoded request.
 pub fn decode(bytes: &[u8]) -> Result<PlannedRequest, String> {
+    decode_cancellable(bytes, &AtomicBool::new(false))
+}
+
+/// What [`decode_cancellable`] reports once `cancel` was set.
+pub const CANCELLED: &str = "planned actions: decoding cancelled";
+
+/// [`decode`], giving up before each NODES chunk once `cancel` is set (a
+/// snapshot hit attempt whose validation failed, crate::snapshot::hit).
+pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRequest, String> {
     let sections = sections(bytes)?;
     let meta: MetaOwned = postcard::from_bytes(sections.meta)
         .map_err(|error| format!("planned request outline: {error}"))?;
     let total: usize = sections.nodes.iter().map(|chunk| chunk.len()).sum();
+    let chunk = |chunk: &&[u8]| {
+        if cancel.load(Ordering::Relaxed) {
+            Err(CANCELLED.to_owned())
+        } else {
+            decode_chunk(chunk)
+        }
+    };
     let chunks: Vec<Result<Vec<PlannedAction>, String>> = if sections.nodes.len() > 1
         && total >= PARALLEL_DECODE_BYTES
     {
-        on_threads(&sections.nodes, |chunk| decode_chunk(chunk))
+        on_threads(&sections.nodes, chunk)
             .into_iter()
             .map(|chunk| chunk.unwrap_or_else(|| Err("planned actions: decoder panicked".into())))
             .collect()
     } else {
-        sections
-            .nodes
-            .iter()
-            .map(|chunk| decode_chunk(chunk))
-            .collect()
+        sections.nodes.iter().map(chunk).collect()
     };
     let mut nodes = Vec::with_capacity(chunks.iter().map(|c| c.as_ref().map_or(0, Vec::len)).sum());
     for chunk in chunks {

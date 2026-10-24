@@ -350,6 +350,29 @@ mod tests {
         assert!(leftovers.is_empty());
     }
 
+    /// A hit reads its sections by offset from the file it opened: garbage
+    /// collection (or a concurrent save's rename) removing the path meanwhile
+    /// never breaks it (L2-W5f).
+    #[test]
+    fn an_open_reader_survives_its_collection() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache = cache.path();
+        write_in_background(cache, &key(1), sections(b"plan"))
+            .commit()
+            .unwrap();
+        let reader = Reader::open(cache, &key(1)).unwrap().unwrap();
+        fs::remove_file(path(cache, &key(1))).unwrap();
+        // A newer snapshot of the key renamed into place meanwhile.
+        write_in_background(cache, &key(1), sections(b"newer"))
+            .commit()
+            .unwrap();
+        assert_eq!(reader.section(Section::Plan).unwrap(), b"plan");
+        assert_eq!(reader.section(Section::Inputs).unwrap(), b"in");
+        reader.touch();
+        let again = Reader::open(cache, &key(1)).unwrap().unwrap();
+        assert_eq!(again.section(Section::Plan).unwrap(), b"newer");
+    }
+
     #[test]
     fn an_uncommitted_write_leaves_nothing() {
         let cache = tempfile::tempdir().unwrap();

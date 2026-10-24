@@ -15,8 +15,9 @@
 //! * READDIR: the same pattern over the directory's stat key and the
 //!   projected listing digest.
 //! * CANON / READLINK: the resulting path is unchanged.
-//! * ENV: the digest of the process environment's value (names an option
-//!   fixes are part of the key, not checked).
+//! * ENV: the digest of the value in this command's repository environment
+//!   ([`Environment`]: the client environment with `--repo_env` applied,
+//!   the very map the full analysis reads; L2-W5f review F1).
 //! * INTEGRITY: the lstat key of every verified repository entry; a changed
 //!   or racy entry sends its repository to the existing tree verification
 //!   (counted here, not run).
@@ -26,10 +27,14 @@
 //!
 //! Policy (PLAN-L2 update 1, decision (1)): by default a hit validates per
 //! tree ([`Policy::PerTree`]: the observations outside verified repository
-//! trees and those at or below a symlink of a tree, plus each tree's root
-//! and manifest — a content-addressed tree whose root and manifest are
-//! unchanged stands for everything inside it, like Bazel trusting
-//! repository markers, but not for what its links reach: the glob walker and
+//! trees and those at or below a symlink of a tree, plus each tree's root,
+//! manifest and directories — a content-addressed tree whose root, manifest
+//! and directories are unchanged stands for everything inside it, like
+//! Bazel trusting repository markers: any file added, deleted or renamed in
+//! it changes a directory's key, a miss (L2-W5f review F3), and only an
+//! in-place edit of a file's bytes goes unseen until execution hashes the
+//! file by its change time (crate::digest_memo; the documented deviation).
+//! A tree does not stand for what its links reach: the glob walker and
 //! the BUILD lookups record a host directory listed through a tree's link
 //! under the logical path inside the tree); the existing
 //! `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` switch selects
@@ -42,7 +47,8 @@ use crate::observed_fs::{
     escape, listing_digest,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -53,6 +59,38 @@ use std::time::{Duration, Instant};
 
 const BLOCK: usize = 256;
 const EXAMPLES: usize = 20;
+
+/// The repository environment a recording's ENV observations are checked
+/// against: the client environment with `--repo_env` applied, in order
+/// (crate::repo_env::repository_environment) — exactly the map the full
+/// analysis's repository environment answers from
+/// (crate::repository_environment::FixedReader, the only source of ENV
+/// records, crate::observed_fs::note_env). Never the process environment:
+/// an option may set, remove or re-inherit a name, and the last entry wins
+/// (`--repo_env=X=v --repo_env=X` follows the client's `X` again; L2-W5f
+/// review F1, a reproduced false hit when such names were skipped as
+/// "fixed").
+#[derive(Clone, Debug, Default)]
+pub struct Environment<'a>(BTreeMap<&'a OsStr, &'a OsStr>);
+
+impl<'a> Environment<'a> {
+    /// The map of `entries` (name, value); a later duplicate name wins.
+    pub fn new(entries: &'a [(OsString, OsString)]) -> Self {
+        Self(
+            entries
+                .iter()
+                .map(|(name, value)| (name.as_os_str(), value.as_os_str()))
+                .collect(),
+        )
+    }
+
+    /// The SHA-256 of `name`'s value (`None`: unset), as recorded.
+    fn digest(&self, name: &OsStr) -> Option<[u8; 32]> {
+        self.0
+            .get(name)
+            .map(|value| -> [u8; 32] { Sha256::digest(value.as_bytes()).into() })
+    }
+}
 
 /// What a dry run found and how long it took.
 #[derive(Clone, Debug, Default)]
@@ -69,7 +107,7 @@ pub struct Report {
     /// Content checks that matched with a key settled now (a store would
     /// refresh the key).
     pub refreshable: usize,
-    /// Environment variables checked (fixed names excluded).
+    /// Environment variables checked.
     pub env: usize,
     /// Integrity entries checked.
     pub integrity: usize,
@@ -387,13 +425,13 @@ pub fn observations_inside_verified_trees(recording: &Recording) -> (usize, usiz
 /// The recording a per-tree summary policy would validate (PLAN-L2 §7 "when
 /// to escalate": repository tree checks above 20 ms on a hit): the
 /// observations outside the verified repository trees — a content-addressed
-/// tree whose root and manifest are unchanged stands for everything
-/// recorded inside it — and those at or below a symlink of a verified tree:
-/// the tree fixes the link, not what it reaches (the glob walker lists a
-/// host directory through a link, and `glob::is_subpackage` stats its BUILD
-/// files, under the logical path inside the tree; a header added to that
-/// host directory must be a miss) — plus per tree only the root and
-/// manifest integrity entries.
+/// tree whose root, manifest and directories are unchanged stands for
+/// everything recorded inside it — and those at or below a symlink of a
+/// verified tree: the tree fixes the link, not what it reaches (the glob
+/// walker lists a host directory through a link, and `glob::is_subpackage`
+/// stats its BUILD files, under the logical path inside the tree; a header
+/// added to that host directory must be a miss) — plus per tree only the
+/// root, manifest and directory integrity entries ([`is_per_tree_entry`]).
 pub fn per_tree_summary(recording: &Recording) -> Recording {
     let roots = verified_roots(recording);
     let links = tree_links(recording);
@@ -414,7 +452,7 @@ pub fn per_tree_summary(recording: &Recording) -> Recording {
             entries: repository
                 .entries
                 .iter()
-                .filter(|entry| is_head(repository, entry))
+                .filter(|entry| is_per_tree_entry(repository, entry))
                 .cloned()
                 .collect(),
         })
@@ -431,13 +469,20 @@ pub fn per_tree_summary(recording: &Recording) -> Recording {
     }
 }
 
-/// A tree's root or manifest entry (what the per-tree policy validates).
-fn is_head(repository: &RepositoryRecord, entry: &IntegrityEntry) -> bool {
+/// What the per-tree policy validates of a tree: its root, its manifest and
+/// every directory below the root (L2-W5f review F3). A file added,
+/// deleted or renamed anywhere in the tree changes its directory's lstat
+/// key (mtime and ctime), so such damage is a miss — the full analysis
+/// repairs the tree — instead of a hit that executes with a damaged tree;
+/// an in-place edit of a file's bytes keeps every directory key (the
+/// documented deviation: execution hashes the file by its change time).
+fn is_per_tree_entry(repository: &RepositoryRecord, entry: &IntegrityEntry) -> bool {
     entry.path == repository.root
         || repository
             .manifest
             .as_ref()
             .is_some_and(|manifest| entry.path == *manifest)
+        || matches!(entry.state, Ok((FileKind::Dir, _)))
 }
 
 /// Path order on raw bytes with `/` before every other byte: the order of
@@ -512,7 +557,7 @@ fn per_tree_summary_owned(mut recording: Recording) -> Recording {
         let entries = std::mem::take(&mut repository.entries);
         repository.entries = entries
             .into_iter()
-            .filter(|entry| is_head(repository, entry))
+            .filter(|entry| is_per_tree_entry(repository, entry))
             .collect();
     }
     recording
@@ -522,8 +567,8 @@ fn per_tree_summary_owned(mut recording: Recording) -> Recording {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Policy {
     /// Observations outside verified trees or at or below a tree's
-    /// symlinks, plus each tree's root and manifest (the default,
-    /// [`per_tree_summary`]).
+    /// symlinks, plus each tree's root, manifest and directories (the
+    /// default, [`per_tree_summary`]).
     PerTree,
     /// Every observation and every INTEGRITY entry (`--verify_repo_tampering`
     /// / `BAZEL_RS_VERIFY_REPOS=full`).
@@ -630,11 +675,12 @@ impl Tally {
 }
 
 /// Validate every observation of `recording` against the current
-/// filesystem and environment on `threads` scoped threads (never stops
-/// early; see the module docs). One thread runs inline, in place: no work
-/// list is built (an allocation in a large, fragmented heap can cost
-/// milliseconds — the record mode runs this at the end of a full analysis).
-pub fn dry_run(recording: &Recording, threads: usize) -> Report {
+/// filesystem and the repository environment `environment` on `threads`
+/// scoped threads (never stops early; see the module docs). One thread
+/// runs inline, in place: no work list is built (an allocation in a large,
+/// fragmented heap can cost milliseconds — the record mode runs this at the
+/// end of a full analysis).
+pub fn dry_run(recording: &Recording, threads: usize, environment: &Environment<'_>) -> Report {
     let started = Instant::now();
     let threads = threads.max(1);
     let items = || {
@@ -727,13 +773,8 @@ pub fn dry_run(recording: &Recording, threads: usize) -> Report {
     report.repositories_to_verify = stale_repositories.len();
     let env_started = Instant::now();
     for (name, observation) in &recording.env {
-        if observation.fixed {
-            continue;
-        }
         report.env += 1;
-        let digest = std::env::var_os(name)
-            .map(|value| -> [u8; 32] { Sha256::digest(value.as_bytes()).into() });
-        if digest != observation.digest {
+        if environment.digest(name) != observation.digest {
             report.mismatches += 1;
             if report.examples.len() < EXAMPLES {
                 report
@@ -889,7 +930,8 @@ fn integrity_state(state: &Result<(FileKind, StatKey), i32>) -> String {
 }
 
 /// Validate a snapshot's INPUTS for a hit (PLAN-L2 §1c): every check of
-/// [`dry_run`], stopping at the first mismatch, which is the error (the
+/// [`dry_run`] (environment digests against this command's repository
+/// `environment`), stopping at the first mismatch, which is the error (the
 /// reason a hit missed). A changed integrity entry misses (the full
 /// analysis repairs or re-verifies its tree); a racy one, or a manifest
 /// rewritten since the recording (a fingerprint refresh), verifies its tree
@@ -899,17 +941,15 @@ fn integrity_state(state: &Result<(FileKind, StatKey), i32>) -> String {
 /// found so far, so the reported mismatch is always the first failing
 /// check in that order (environment, observations by path, integrity
 /// entries), whatever the thread timing.
-pub fn validate_for_hit(recording: &Recording) -> Result<Validated, String> {
+pub fn validate_for_hit(
+    recording: &Recording,
+    environment: &Environment<'_>,
+) -> Result<Validated, String> {
     let started = Instant::now();
     let mut validated = Validated::default();
     for (name, observation) in &recording.env {
-        if observation.fixed {
-            continue;
-        }
         validated.checks += 1;
-        let digest = std::env::var_os(name)
-            .map(|value| -> [u8; 32] { Sha256::digest(value.as_bytes()).into() });
-        if digest != observation.digest {
+        if environment.digest(name) != observation.digest {
             return Err(format!("ENV {}: value changed", escape(name)));
         }
     }
@@ -1091,17 +1131,20 @@ mod tests {
             taints: BTreeMap::new(),
             plan_registered: None,
         };
-        let report = dry_run(&recording, 4);
+        let report = dry_run(&recording, 4, &Environment::default());
         assert_eq!(report.mismatches, 0, "{:?}", report.examples);
         assert_eq!(report.content_checks, 2);
         // A new file does not change a directories-only listing; a new
         // subdirectory and a content edit do.
         fs::write(root.join("new.go"), b"package x").unwrap();
-        assert_eq!(dry_run(&recording, 2).mismatches, 0);
+        assert_eq!(
+            dry_run(&recording, 2, &Environment::default()).mismatches,
+            0
+        );
         fs::create_dir(root.join("sub2")).unwrap();
         fs::write(root.join("BUILD"), b"y").unwrap();
         fs::write(root.join("missing"), b"").unwrap();
-        let report = dry_run(&recording, 1);
+        let report = dry_run(&recording, 1, &Environment::default());
         assert_eq!(report.mismatches, 3, "{:?}", report.examples);
     }
 
@@ -1184,7 +1227,9 @@ mod tests {
             .iter()
             .map(|entry| entry.path.to_str().unwrap())
             .collect();
-        assert_eq!(entries, ["/c/trees/a.json", "/c/trees/a"]);
+        // The root, the manifest and the directories (L2-W5f review F3):
+        // not the files, not the links.
+        assert_eq!(entries, ["/c/trees/a.json", "/c/trees/a", "/c/trees/a/lib"]);
         assert_eq!(Policy::Full.select(&recording).observations.len(), 10);
         // The owned selection (the save's) selects the same.
         let owned = Policy::PerTree.select_owned(recording.clone());
@@ -1222,10 +1267,7 @@ mod tests {
             )],
             env: vec![(
                 "BAZEL_RS_SURELY_UNSET_W5".into(),
-                EnvObservation {
-                    digest: None,
-                    fixed: false,
-                },
+                EnvObservation { digest: None },
             )],
             repositories: vec![RepositoryRecord {
                 kind: "direct",
@@ -1240,12 +1282,12 @@ mod tests {
             }],
             ..Recording::default()
         };
-        let validated = validate_for_hit(&recording).unwrap();
+        let validated = validate_for_hit(&recording, &Environment::default()).unwrap();
         assert_eq!(validated.checks, 3);
         assert_eq!(validated.content_checks, 1);
         assert!(validated.refresh.is_empty(), "{:?}", validated.refresh);
         fs::write(root.join("BUILD"), b"y").unwrap();
-        let error = validate_for_hit(&recording).unwrap_err();
+        let error = validate_for_hit(&recording, &Environment::default()).unwrap_err();
         assert!(error.contains("content changed"), "{error}");
         fs::write(root.join("BUILD"), b"x").unwrap();
         // A changed entry (a change within the timestamp granularity keeps
@@ -1254,7 +1296,7 @@ mod tests {
         if let Ok((_, key)) = &mut changed.repositories[0].entries[0].state {
             key.size += 1;
         }
-        let error = validate_for_hit(&changed).unwrap_err();
+        let error = validate_for_hit(&changed, &Environment::default()).unwrap_err();
         assert!(
             error.starts_with("INTEGRITY ") && error.contains("(repository r; recorded d:"),
             "{error}"
@@ -1262,12 +1304,74 @@ mod tests {
         // A racy entry of a tree without a manifest cannot be verified.
         let mut racy = recording.clone();
         racy.repositories[0].entries[0].racy = true;
-        let error = validate_for_hit(&racy).unwrap_err();
+        let error = validate_for_hit(&racy, &Environment::default()).unwrap_err();
         assert!(error.contains("without a manifest"), "{error}");
         let mut changed = recording.clone();
         changed.env[0].1.digest = Some([0; 32]);
-        let error = validate_for_hit(&changed).unwrap_err();
+        let error = validate_for_hit(&changed, &Environment::default()).unwrap_err();
         assert_eq!(error, "ENV BAZEL_RS_SURELY_UNSET_W5: value changed");
+    }
+
+    /// L2-W5f review F1: ENV digests are checked against the command's
+    /// repository environment, the map the full analysis reads — the last
+    /// `--repo_env` entry wins, so `--repo_env=X=v --repo_env=X` follows the
+    /// client's value (a name an option once set is not "fixed").
+    #[test]
+    fn environment_digests_follow_the_repository_environment() {
+        use crate::observed_fs::EnvObservation;
+        use crate::repo_env::{convert, repository_environment};
+        let options =
+            ["W5X=default", "W5X", "W5_SET=fixed", "=W5_GONE"].map(|v| convert(v).unwrap());
+        let client = |value: &str| {
+            [("W5X", value), ("W5_GONE", "g")]
+                .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+        };
+        let digest = |value: &str| Some(Sha256::digest(value.as_bytes()).into());
+        let recording = Recording {
+            env: vec![
+                (
+                    "W5X".into(),
+                    EnvObservation {
+                        digest: digest("one"),
+                    },
+                ),
+                (
+                    "W5_SET".into(),
+                    EnvObservation {
+                        digest: digest("fixed"),
+                    },
+                ),
+                ("W5_GONE".into(), EnvObservation { digest: None }),
+            ],
+            ..Recording::default()
+        };
+        let one = repository_environment(client("one"), &options, None);
+        assert_eq!(
+            validate_for_hit(&recording, &Environment::new(&one))
+                .unwrap()
+                .checks,
+            3
+        );
+        assert_eq!(
+            dry_run(&recording, 1, &Environment::new(&one)).mismatches,
+            0
+        );
+        // The client's value changed: the inherited name follows it.
+        let two = repository_environment(client("two"), &options, None);
+        assert_eq!(
+            validate_for_hit(&recording, &Environment::new(&two)).unwrap_err(),
+            "ENV W5X: value changed"
+        );
+        assert_eq!(
+            dry_run(&recording, 1, &Environment::new(&two)).mismatches,
+            1
+        );
+        // Without a client value the set value stands again (Inherit keeps it).
+        let unset = repository_environment(Vec::new(), &options, None);
+        assert_eq!(
+            validate_for_hit(&recording, &Environment::new(&unset)).unwrap_err(),
+            "ENV W5X: value changed"
+        );
     }
 
     /// On many threads the reported mismatch is still the first failing
@@ -1292,7 +1396,7 @@ mod tests {
             ..Recording::default()
         };
         for _ in 0..5 {
-            let error = validate_for_hit(&recording).unwrap_err();
+            let error = validate_for_hit(&recording, &Environment::default()).unwrap_err();
             assert!(
                 error.starts_with("STAT /nonexistent-w6/02500: recorded kind:f"),
                 "{error}"
@@ -1344,16 +1448,21 @@ mod tests {
             }],
             ..Recording::default()
         };
-        assert_eq!(validate_for_hit(&recording).unwrap().trees_verified, 0);
+        assert_eq!(
+            validate_for_hit(&recording, &Environment::default())
+                .unwrap()
+                .trees_verified,
+            0
+        );
         // The refresh: the same content view in a new file.
         publish(r#", "stat": {"dev": 1}"#);
-        let validated = validate_for_hit(&recording).unwrap();
+        let validated = validate_for_hit(&recording, &Environment::default()).unwrap();
         assert_eq!(validated.trees_verified, 1);
         // Just written: not settled, nothing to refresh yet.
         assert!(validated.refresh.is_empty(), "{:?}", validated.refresh);
         // The tree no longer matches the manifest: a miss.
         fs::write(tree.join("f"), b"y").unwrap();
-        let error = validate_for_hit(&recording).unwrap_err();
+        let error = validate_for_hit(&recording, &Environment::default()).unwrap_err();
         assert!(error.contains("does not match its manifest"), "{error}");
         // A changed root is a miss at once (the manifest recorded as it is):
         // another directory in its place (a new inode — timestamps alone
@@ -1364,9 +1473,58 @@ mod tests {
         fs::rename(&tree, temp.path().join("trees/old")).unwrap();
         fs::create_dir(&tree).unwrap();
         fs::write(tree.join("f"), b"x").unwrap();
-        let error = validate_for_hit(&recording).unwrap_err();
+        let error = validate_for_hit(&recording, &Environment::default()).unwrap_err();
         assert!(
             error.starts_with("INTEGRITY ") && error.contains("trees/abc: lstat changed"),
+            "{error}"
+        );
+    }
+
+    /// L2-W5f review F3: the per-tree policy keeps a tree's directories, so a
+    /// file added or deleted anywhere in it is a miss (its directory's key
+    /// moved); an in-place edit of a file's bytes is not (the documented
+    /// deviation: execution hashes it by its change time).
+    #[test]
+    fn per_tree_directories_see_added_and_deleted_files() {
+        use crate::observed_fs::{IntegrityEntry, RepositoryRecord};
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("trees/abc");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        fs::write(tree.join("sub/f"), b"x").unwrap();
+        let entry = |path: &Path| IntegrityEntry {
+            path: path.to_path_buf(),
+            state: Ok((
+                FileKind::of(fs::symlink_metadata(path).unwrap().file_type()),
+                key(path),
+            )),
+            racy: false,
+        };
+        let full = Recording {
+            repositories: vec![RepositoryRecord {
+                kind: "direct",
+                name: "r".into(),
+                root: tree.clone(),
+                manifest: None,
+                entries: vec![
+                    entry(&tree),
+                    entry(&tree.join("sub")),
+                    entry(&tree.join("sub/f")),
+                ],
+            }],
+            ..Recording::default()
+        };
+        let recording = Policy::PerTree.select(&full);
+        assert_eq!(recording.repositories[0].entries.len(), 2);
+        let environment = Environment::default();
+        assert!(validate_for_hit(&recording, &environment).is_ok());
+        // Past the timestamp granularity: the directory's times move.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        fs::write(tree.join("sub/f"), b"y").unwrap();
+        assert!(validate_for_hit(&recording, &environment).is_ok());
+        fs::remove_file(tree.join("sub/f")).unwrap();
+        let error = validate_for_hit(&recording, &environment).unwrap_err();
+        assert!(
+            error.starts_with("INTEGRITY ") && error.contains("abc/sub: lstat changed"),
             "{error}"
         );
     }

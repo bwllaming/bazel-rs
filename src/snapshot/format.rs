@@ -362,7 +362,6 @@ struct EnvWire<'a> {
     #[serde(borrow)]
     name: Bytes<'a>,
     digest: Option<[u8; 32]>,
-    fixed: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -437,6 +436,7 @@ struct InputsWire<'a> {
     replay: Vec<ReplayWire<'a>>,
     #[serde(borrow)]
     tables: Option<TablesWire<'a>>,
+    workspace_status: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -474,6 +474,11 @@ pub struct Inputs {
     pub recording: Recording,
     pub replay: Vec<ReplayRecord>,
     pub tables: Option<PinnedTables>,
+    /// Planning computed the workspace status (its command ran; under
+    /// `--nobuild` for a consumer of `ctx.info_file`, without placeholders
+    /// in the plan): a hit runs the command too, quietly, and misses when it
+    /// writes to stderr (L2-W5f review F2).
+    pub workspace_status: bool,
 }
 
 /// Interns paths into the front-coded path table.
@@ -529,6 +534,7 @@ pub fn encode_inputs(
     recording: &Recording,
     replay: &[ReplayRecord],
     tables: Option<&PinnedTables>,
+    workspace_status: bool,
 ) -> Vec<u8> {
     let mut table = PathTable::default();
     for (path, _) in &recording.observations {
@@ -594,7 +600,6 @@ pub fn encode_inputs(
         .map(|(name, observation)| EnvWire {
             name: Bytes(name.as_bytes()),
             digest: observation.digest,
-            fixed: observation.fixed,
         })
         .collect();
     let trees = recording
@@ -686,6 +691,7 @@ pub fn encode_inputs(
         trees,
         replay,
         tables,
+        workspace_status,
     })
     .expect("the inputs encode")
 }
@@ -748,10 +754,7 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
         .map(|env| {
             (
                 OsString::from_vec(env.name.0.to_vec()),
-                EnvObservation {
-                    digest: env.digest,
-                    fixed: env.fixed,
-                },
+                EnvObservation { digest: env.digest },
             )
         })
         .collect();
@@ -867,6 +870,7 @@ pub fn decode_inputs(bytes: &[u8]) -> Result<Inputs, String> {
         },
         replay,
         tables,
+        workspace_status: wire.workspace_status,
     })
 }
 
@@ -976,15 +980,11 @@ mod tests {
                     OsString::from("PATH"),
                     EnvObservation {
                         digest: Some([5; 32]),
-                        fixed: false,
                     },
                 ),
                 (
                     OsString::from_vec(b"X\xff".to_vec()),
-                    EnvObservation {
-                        digest: None,
-                        fixed: true,
-                    },
+                    EnvObservation { digest: None },
                 ),
             ],
             repositories: vec![RepositoryRecord {
@@ -1072,9 +1072,9 @@ mod tests {
     #[test]
     fn inputs_round_trip_byte_for_byte() {
         let (recording, records, tables) = sample();
-        let bytes = encode_inputs(&recording, &records, Some(&tables));
+        let bytes = encode_inputs(&recording, &records, Some(&tables), true);
         assert_eq!(
-            encode_inputs(&recording, &records, Some(&tables)),
+            encode_inputs(&recording, &records, Some(&tables), true),
             bytes,
             "deterministic"
         );
@@ -1097,7 +1097,13 @@ mod tests {
             assert_eq!(decoded.facilities, record.facilities);
             assert_eq!(decoded.elapsed, record.elapsed);
         }
-        let again = encode_inputs(&decoded.recording, &decoded.replay, decoded.tables.as_ref());
+        assert!(decoded.workspace_status);
+        let again = encode_inputs(
+            &decoded.recording,
+            &decoded.replay,
+            decoded.tables.as_ref(),
+            decoded.workspace_status,
+        );
         assert_eq!(again, bytes, "re-encoded");
         // Damage never panics.
         for cut in [0, 1, bytes.len() / 2, bytes.len() - 1] {

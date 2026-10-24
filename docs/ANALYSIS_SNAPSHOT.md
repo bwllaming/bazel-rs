@@ -1,4 +1,4 @@
-# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6)
+# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f)
 
 Design: PLAN-L2 §1a–§1e, §5, §6 and PLAN-L2 update 1 (§(a) pinned replay,
 §(b) printing protocol v1, decision (1) per-tree validation). Builds on the
@@ -65,13 +65,26 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    their checksums.
 3. **In parallel**, with file descriptor 2 captured and discarded (a
    replayed definition's `.bzl` closure may `print()`; that print is
-   already part of the recorded window bytes):
+   already part of the recorded window bytes — with replay records, a
+   capture that cannot start is a miss; a panic restores stderr first, so
+   its message is seen; L2-W5f review F5, F6). The first of the three to
+   fail cancels what the others have not started yet — the replay's
+   remaining definition loads and executions, the plan's remaining chunks
+   (F7) — so a miss's full analysis need not wait for the ~0.1 s replay;
+   under EXPLAIN everything runs to completion to name every mismatching
+   local repository:
    * **validation** (`snapshot::validate::validate_for_hit`, stopping at the
      first mismatch, which EXPLAIN names): per tree by default — the
      observations outside verified repository trees and those at or below a
-     tree's symlinks, the environment digests, and each tree's root and
-     manifest; everything under `--verify_repo_tampering` /
-     `BAZEL_RS_VERIFY_REPOS=full` (the policy is part of G). Settled stat
+     tree's symlinks, the environment digests, and each tree's root,
+     manifest and directories (L2-W5f review F3: any file added, deleted or
+     renamed in a tree moves a directory's key, a miss); everything under
+     `--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` (the policy is
+     part of G). The environment digests are compared with **this command's
+     repository environment** — the client environment with `--repo_env`
+     applied in order, the very map the full analysis reads (L2-W5f review
+     F1: `--repo_env=X=v --repo_env=X` makes `X` follow the client again;
+     such names were once skipped as "fixed", a reproduced false hit). Settled stat
      keys are trusted; racy or changed READ / READDIR observations are
      re-read and compared by content; a changed integrity entry misses; a
      racy one (a tree published, or its manifest refreshed, less than two
@@ -91,9 +104,14 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      (`snapshot::codec`, chunks decoded on threads for large plans).
    * **warm-up**: the digest table (crate::digest_memo) is loaded for the
      execution tail.
-4. The workspace status of the plan's status placeholders is computed
-   (quietly): a status command that now writes to stderr is a miss (a full
-   analysis would print it during planning, inside the window).
+4. The workspace status of the plan's status placeholders — or of a plan
+   whose planning computed it without any (`--nobuild` with a consumer of
+   `ctx.info_file`: the command still ran; the INPUTS section records it,
+   L2-W5f review F2) — is computed (quietly): a status command that now
+   writes to stderr is a miss (a full analysis would print it during
+   planning, inside the window, and never save the run) and the snapshot is
+   removed, so later runs run the command once again, in their full
+   analysis (this miss ran it twice).
 5. Nothing has printed so far: any mismatch, error or panic (caught) is a
    miss, and the command continues as a full analysis exactly as if no
    snapshot existed. EXPLAIN names the first failing check and, when their
@@ -105,21 +123,39 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    `run_tail` in src/main.rs).
 6. After a hit: keys a content check found settled are written back — the
    snapshot is rewritten in the background with the refreshed INPUTS — and
-   the file's modification time is set (LRU). When execution fails on an
-   input inside the repository store that no longer exists, the per-tree
-   validation trusted a damaged tree (the full analysis repairs trees): the
-   snapshot is removed and one line says so
-   (`bazel-rs: removed the analysis snapshot of this build: its input ... is missing from the repository store; the next build re-analyzes and repairs it`).
+   the file's modification time is set (LRU). When the command fails with
+   an error that names a path in the repository store at all — quoted or
+   not, existing or not, in the build part or after it (`test`'s test
+   runner staging a runfile, `run`'s preparation; L2-W5f review F4) — the
+   hit may have trusted a damaged tree (per tree, a file's own bytes and
+   mode are not validated, a local repository's replay does not look into
+   its published tree; the full analysis repairs both): the snapshot is
+   removed and one line says so (`bazel-rs: removed the analysis snapshot
+   of this build: its failure involves <path> in the repository store; the
+   next build re-analyzes and repairs it`). A failure that merely mentions a
+   store path costs one full analysis next time, never a repeated failure.
 
-**Repository tree files on a hit.** A hit does not verify repository
-trees beyond their heads. The execution phase hashes every action input:
-crate::digest_memo keys the files of the tree stores by their *change
-time*, so an in-place edit that keeps the size and restores the
-modification time is still re-hashed, and the action runs with the edited
-bytes (`tests/snapshot.rs::a_hit_hashes_an_edited_tree_file_by_its_change_time`)
-— where the full analysis would repair the tree first. That is the
-documented trade-off of per-tree validation (PLAN-L2 update 1, decision
-(1)); `--verify_repo_tampering` validates every entry.
+**Repository tree files on a hit (an accepted deviation, L2-W5f lead
+decision on review F3).** Per tree, a hit validates a repository tree's
+root, manifest and directories, not its files: a file added, deleted or
+renamed anywhere in a tree is a miss (its directory's lstat key moved; the
+full analysis repairs the tree, `a_file_or_directory_deleted_from_a_repository_tree_misses`),
+but an in-place edit of a file's bytes (or mode) keeps every directory key.
+The execution phase hashes every action input — crate::digest_memo keys the
+files of the tree stores by their *change time*, so an edit that keeps the
+size and restores the modification time is still re-hashed — and the action
+runs with the edited bytes (`a_hit_hashes_an_edited_tree_file_by_its_change_time`),
+where the full analysis would repair the tree first. Like Bazel, which
+trusts an external repository's files once its marker is up to date, a hit
+uses a tampered store file as it is; `--verify_repo_tampering` validates
+every entry. A file that became unreadable fails the hit once, then heals
+(step 6, `a_store_input_staged_by_the_test_runner_heals`). The directory
+entries cost the hit more checks — on ~/code 10,313 instead of 1,009
+(oauth2token) and 16,605 instead of 3,035 (B2), validated on 16 threads in
+35–62 ms on the loaded shared machine, beside a replay of 200–300 ms there —
+and INPUTS grows from 265 to 651 KB (oauth2token) and 389 to 953 KB (B2): the
+hit's wall stayed within the noise (0.60–0.70 s vs 0.60–0.78 s; B2
+0.34–0.48 s vs 0.33–0.39 s).
 
 ## Verify mode (L2-W6)
 
@@ -144,14 +180,31 @@ hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held ba
                              inputs and tree digests, identity, published root, definition, bound
                              attributes, output, host facilities (the mismatching repository is named)
        saveable              no taint, no pending lockfile write, a complete capture, planning succeeded
+        status                the full analysis computed the workspace status exactly when the snapshot did
   -> match: the hit's own window bytes print and the snapshot's plan executes (what `on` would run);
             the refreshed keys are written back
-     mismatch: every difference on the diagnostics stream (`bazel-rs-snapshot: verify ...`), the snapshot
-            removed (the next run analyzes and saves anew), nothing executed or saved, exit 70
+     mismatch: every difference on the diagnostics stream (`bazel-rs-snapshot: verify ...`), one line
+            appended to <cache>/snapshots/verify.log, the snapshot removed (the next run analyzes and
+            saves anew), nothing saved; then (the default, L2-W5f) what the full analysis printed while
+            planning prints and the FULL ANALYSIS's plan executes — the command's output and exit code
+            are those of a run without the snapshot; with BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1 (tests, CI)
+            nothing executes and the command exits 70
 ```
 
+`<cache>/snapshots/verify.log` (binary-safe: every field one token,
+`\xNN`-escaped) holds one line per mismatch:
+`<UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> targets=<patterns>`,
+the class of the first difference being one of `plan`, `window`, `taint`,
+`recording`, `env`, `replay`, `lockfile`, `status`, `analysis-failed`,
+`abandoned` or `cannot-verify` (a session that could not start: logged, the
+snapshot kept, the full analysis runs unverified; strict: exit 70). For a
+soak: `BAZEL_RS_SNAPSHOT=verify` (plus `BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the
+`verified` lines), then read the log.
+
 A full analysis that ends before planning completed (an error after the
-check point that the hit skipped) is a mismatch too (main reports it).
+check point that the hit skipped) is a mismatch too (main reports and logs
+it; the full analysis's own error is the command's, or exit 70 when
+strict).
 Observations or local repositories the snapshot holds but the full
 analysis did not make are reported as notes under EXPLAIN (a hit checks
 them needlessly; no failure). `BAZEL_RS_SNAPSHOT_EXPLAIN=1` adds a
@@ -159,10 +212,12 @@ them needlessly; no failure). `BAZEL_RS_SNAPSHOT_EXPLAIN=1` adds a
 time; `BAZEL_RS_TIMING=1` a `PERF-SNAPSHOT verify analysis_ms=...
 compare_ms=...` line.
 
-Two documented trade-offs of the per-tree validation show as mismatches
-in verify mode, as they should: a file deleted from a repository tree
-and an in-place edit of a tree file (the full analysis re-executes the
-repository rule to repair the tree: `taint repository-rule-executed`).
+The documented trade-offs of the per-tree validation show as mismatches
+in verify mode, as they should: an in-place edit of a tree file's bytes or
+mode (the full analysis re-executes the repository rule to repair the tree:
+`taint repository-rule-executed`; by default the full analysis's plan then
+executes, `verify_mismatches_execute_the_full_analysis_by_default`). A file
+deleted from a tree is a miss since L2-W5f.
 
 ## Syscall audit of the hit path (L2-W6)
 
@@ -226,7 +281,7 @@ fixed-width fields; no JSON):
 | Offset | Content |
 |---|---|
 | 0 | header, 352 bytes, little-endian: magic `BZRSSNP1`, format (u32), flags (u32), binary identity (32), G (32), created (i64 ns), section count (u32), reserved (u32), six section slots of kind (u32), reserved (u32), offset (u64), length (u64), blake3-128 of the section; blake3-128 of the header |
-| INPUTS | window start; paths sorted and front-coded (u16 shared prefix, suffix bytes); observations by path index; environment digests; repository trees with the integrity entries the policy validates; replay records (definition, bound attributes, names, identity digests, recorded output); the pinned tables |
+| INPUTS | window start; paths sorted and front-coded (u16 shared prefix, suffix bytes); observations by path index; environment digests (of the repository environment's values); repository trees with the integrity entries the policy validates (per tree: root, manifest, directories); replay records (definition, bound attributes, names, identity digests, recorded output); the pinned tables; whether planning computed the workspace status (format 2, L2-W5f) |
 | EVENTS | the window's stderr bytes |
 | PLAN | the planned request (docs/PLANNED_REQUEST.md) |
 | STATS | counts, sizes and times (diagnostics; a hit does not read it) |
@@ -276,9 +331,9 @@ its action; BUILD and `.bzl` edits miss then hit; glob-matching files miss,
 swap files hit; new `.go` files under `//...` hit, new packages miss;
 watched variables miss, inherited `--action_env` values re-key; options
 select their own snapshot; racy and mtime-restoring edits miss; lockfile and
-MODULE.bazel edits miss, lockfile writes do not save; a file deleted from a
-repository tree heals (per tree: a failing hit removes the snapshot; full:
-a miss); another binary misses; damaged files miss and are replaced;
+MODULE.bazel edits miss, lockfile writes do not save; a file or a
+directory deleted from a repository tree misses (per tree through the
+tree's directories, L2-W5f; full through the entry); another binary misses; damaged files miss and are replaced;
 concurrent saves; `--nobuild`, `test` and `run --script_path` hit; symlink
 retargets and `.bazelignore` edits miss; status command changes hit and
 re-run the consumer, a status command writing to stderr does not save;
@@ -288,13 +343,47 @@ repositories miss on a changed `JAVA_HOME`, a `swiftc` on `PATH` or a file
 added to the host directory a glob reads through their link; cross-repository
 store-tree links hit; an edited tree file is hashed by its change time.
 Unit tests cover the key, the exe.id record, the format (round trips,
-damage), the store (read back, damage, GC, uncommitted writes), the hit's
-validation and refresh, and the self-healing rule.
+damage), the store (read back, damage, GC, uncommitted writes, a reader
+surviving its collection), the hit's validation and refresh, the
+environment digests against the repository environment, the per-tree
+directories, the cancelled replay, the verify log and the self-healing
+rule.
+
+L2-W5f (the W5 review's follow-ups and test gaps): a `--repo_env` name set
+and then inherited again follows the client (F1, the reproduced false hit);
+a `--nobuild` consumer of `ctx.info_file` runs the status command on a hit
+and a noisy one misses and removes the snapshot (F2); a reused non-local
+rule misses on its `environ` variable and its watched workspace file; a
+reused extension on its environment variable and its file input; a
+`print()` in MODULE.bazel replays on a hit; `local_path_override` module
+and `file://` registry edits (BUILD, MODULE.bazel, the `local_path` source)
+miss; a new BUILD file in a globbed subdirectory misses; REPO.bazel
+`ignore_directories` edits miss; a store-tree runfile the test runner
+cannot read heals (F4); hit refreshes racing a concurrent save of the same
+key, and garbage collection during a hit, keep the store valid; verify
+mode's default executes the full analysis's plan on a mismatch and logs it.
+
+**Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f): random
+sequences over a catalogue of 33 mutations (sources, same-size and
+mtime-restoring edits, glob-matching and swap files, BUILD and `.bzl`
+edits, new and removed packages, `.go` files, symlink retargets,
+`.bazelignore`, REPO.bazel, a local rule's environment, `--action_env`,
+`--repo_env`, `--define`, `.bazelrc`, MODULE.bazel, lockfile edits and
+deletions, store-tree deletions and additions, the status command's output
+and stderr, damaged and deleted snapshots, concurrent runs, a
+`local_path_override` module, a 2 s settle) and 8 commands (`build`,
+`--nobuild //...`, `test --test_output=all`, `run --script_path`, the
+`--action_env`, status, `--repo_env` and override targets), the snapshot
+side in `on` or (30%) strict `verify` mode: every step byte-identical,
+built outputs included. 50 steps in the gate
+(`BAZEL_RS_SNAPSHOT_FUZZ_STEPS`; `BAZEL_RS_SNAPSHOT_FUZZ_SEED` replays a
+sequence; a failure prints the seed and the steps).
 
 Fixture 19 (L2-W6, module `verify_mode` of tests/snapshot.rs): every
-fixture again with `BAZEL_RS_SNAPSHOT=verify` on the snapshot side — every
-hit must also print its `verified` line; the two per-tree trade-offs above
-expect their mismatch (exit 70), the next run re-saves. L2-W6 also adds
+fixture again with `BAZEL_RS_SNAPSHOT=verify` (and
+`BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1`) on the snapshot side — every hit must
+also print its `verified` line; the per-tree trade-offs above expect their
+mismatch (exit 70), the next run re-saves. L2-W6 also adds
 fixtures for the W4 review: a failing `--workspace_status_command` on a hit
 of `build`, `test` and `run` (the failure layout of the decoded request);
 post-planning warnings printed by a hit; plans with analysis errors and

@@ -47,6 +47,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -468,6 +469,23 @@ fn replay_one(
 /// per definition, its records in recorded order). Never prints; every
 /// failure is a mismatch of its record.
 pub fn replay(tables: PinnedTables, context: &CaptureContext, records: &[ReplayRecord]) -> Report {
+    replay_until(tables, context, records, &AtomicBool::new(false))
+}
+
+/// The mismatch of a record [`replay_until`] skipped.
+pub const CANCELLED: &str = "the replay was cancelled";
+
+/// [`replay`], skipping every definition load and execution not started yet
+/// once `cancel` is set (a snapshot hit attempt whose validation failed,
+/// crate::snapshot::hit: the miss's full analysis need not wait): a skipped
+/// record's mismatch is [`CANCELLED`]. An execution in progress completes
+/// (its stage is removed as always).
+pub fn replay_until(
+    tables: PinnedTables,
+    context: &CaptureContext,
+    records: &[ReplayRecord],
+    cancel: &AtomicBool,
+) -> Report {
     let started = Instant::now();
     let children_before = children_cpu();
     let pinned_roots = tables.roots.len();
@@ -496,6 +514,28 @@ pub fn replay(tables: PinnedTables, context: &CaptureContext, records: &[ReplayR
             let results = &results;
             let source_cache = &source_cache;
             scope.spawn(move || {
+                let cancelled = |record: &ReplayRecord| Replayed {
+                    canonical: record.canonical.clone(),
+                    definition: source.to_string(),
+                    flags: record.flags(),
+                    mismatch: Some(CANCELLED.to_owned()),
+                    output_differs: false,
+                    output_bytes: 0,
+                    recorded: record.elapsed,
+                    wall: Duration::ZERO,
+                };
+                if cancel.load(Ordering::Relaxed) {
+                    let definition = Definition {
+                        source: source.to_string(),
+                        records: members.len(),
+                        wall: Duration::ZERO,
+                        cpu: None,
+                        error: Some(CANCELLED.to_owned()),
+                    };
+                    let replayed = members.iter().map(|record| cancelled(record)).collect();
+                    lock(results).push((definition, replayed));
+                    return;
+                }
                 let cpu_before = thread_cpu();
                 let loading = Instant::now();
                 let loaded = load_definition(repositories, source);
@@ -510,6 +550,9 @@ pub fn replay(tables: PinnedTables, context: &CaptureContext, records: &[ReplayR
                     Ok((rule, functions)) => members
                         .iter()
                         .map(|record| {
+                            if cancel.load(Ordering::Relaxed) {
+                                return cancelled(record);
+                            }
                             if rule.identity != record.identity {
                                 return Replayed {
                                     canonical: record.canonical.clone(),
@@ -754,6 +797,40 @@ R = repository_rule(implementation = _impl, local = True)
             fs::read_dir(workspace.cache().join("direct/stages"))
                 .unwrap()
                 .count(),
+            0
+        );
+    }
+
+    /// L2-W5f review F7: a cancelled replay starts nothing.
+    #[test]
+    fn a_cancelled_replay_skips_its_records() {
+        let workspace = Workspace::new();
+        let capture = Arc::new(ReplayCapture::default());
+        let repositories = RepositorySet::new(workspace.root.path().to_owned())
+            .with_source_cache(workspace.cache())
+            .with_repository_environment(workspace.environment("one", "a", "w"))
+            .with_replay_capture(capture.clone());
+        let canonical = repositories
+            .parse("@repo//:value", "", "")
+            .unwrap()
+            .repository;
+        repositories.root(&canonical).unwrap();
+        let records = capture.records();
+        let cancel = AtomicBool::new(true);
+        let report = replay_until(
+            capture.tables().unwrap(),
+            capture.context().unwrap(),
+            &records,
+            &cancel,
+        );
+        assert_eq!(report.matched(), 0);
+        assert_eq!(report.replayed[0].mismatch.as_deref(), Some(CANCELLED));
+        assert_eq!(report.definitions[0].error.as_deref(), Some(CANCELLED));
+        // Nothing was staged.
+        assert_eq!(
+            fs::read_dir(workspace.cache().join("direct/stages"))
+                .map(|entries| entries.count())
+                .unwrap_or(0),
             0
         );
     }

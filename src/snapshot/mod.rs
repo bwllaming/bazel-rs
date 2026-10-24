@@ -19,8 +19,13 @@
 //!   ([`diag`]). `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says on the diagnostics
 //!   stream why a lookup missed or why a run was not saved.
 //! * L2-W6: `BAZEL_RS_SNAPSHOT=verify` ([`verify`]): `on`, and every hit
-//!   also runs the full analysis in its shadow and compares the two (a
-//!   mismatch exits 70).
+//!   also runs the full analysis in its shadow and compares the two (L2-W5f:
+//!   a mismatch is logged to `<cache>/snapshots/verify.log` and the full
+//!   analysis's plan executes; `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` exits 70).
+//! * L2-W5f (the W5 review's follow-ups): ENV records validated against the
+//!   repository environment, the status flag of `--nobuild` plans, the
+//!   per-tree policy's directories, the store-path self-heal, a failed
+//!   check cancelling the rest of the attempt.
 //!
 //! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
 //! verify mode.
@@ -138,10 +143,11 @@ impl Scope {
         }
     }
 
-    /// The planned request of a successful planning.
-    pub fn planned(&mut self, request: &crate::request::PlannedRequest) {
+    /// The planned request of a successful planning; `workspace_status`:
+    /// planning computed the workspace status.
+    pub fn planned(&mut self, request: &crate::request::PlannedRequest, workspace_status: bool) {
         if let Some(save) = &mut self.save {
-            save.planned(request);
+            save.planned(request, workspace_status);
         }
     }
 
@@ -196,8 +202,8 @@ pub enum Checked {
 pub struct CheckInputs<'a> {
     pub key: key::Inputs<'a>,
     pub cache: &'a Path,
-    /// `--repo_env` (which names an option fixes).
-    pub repo_env: &'a [crate::repo_env::EnvVar],
+    /// The replay's options and the repository environment (also what the
+    /// ENV records are validated against).
     pub replay: hit::ReplayInputs,
     pub workspace_status: crate::workspace_status::WorkspaceStatusOptions,
     pub workspace: &'a Path,
@@ -279,12 +285,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                     started.elapsed().as_secs_f64() * 1000.0
                 ));
             }
-            Checked::Miss(Some(Box::new(save::start(
-                key,
-                inputs.cache,
-                inputs.repo_env,
-                explain,
-            ))))
+            Checked::Miss(Some(Box::new(save::start(key, inputs.cache, explain))))
         }
     }
 }

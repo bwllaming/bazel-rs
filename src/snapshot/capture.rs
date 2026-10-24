@@ -22,9 +22,11 @@
 //! is on the original stderr before anything written after it. A process
 //! that still holds the pipe (a lingering child) keeps the reader alive: it
 //! is detached — it keeps forwarding — and the capture is incomplete, which
-//! keeps the run from being saved. A panic while a [`Mode::Tee`] or
-//! [`Mode::Shadow`] capture is active restores stderr before the panic
-//! message prints (and marks the capture broken); the memory watchdog does
+//! keeps the run from being saved. A panic while any capture is active
+//! restores stderr before the panic message prints (a [`Mode::Tee`] or
+//! [`Mode::Shadow`] capture is then marked broken; a [`Mode::Discard`] one —
+//! a hit attempt, which catches the panic and misses — is not: L2-W5f review
+//! F6, the message is seen instead of swallowed); the memory watchdog does
 //! the same before it exits.
 
 use std::fs::File;
@@ -53,8 +55,10 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// Whether a panic or the watchdog's exit restores stderr first.
-    fn restores_for_exit(self) -> bool {
+    /// Whether ending the capture early (a panic, the watchdog's exit)
+    /// breaks it: the window's bytes are incomplete, the run is not saved.
+    /// A hit attempt's capture ([`Mode::Discard`]) holds no window bytes.
+    fn breaks_when_restored(self) -> bool {
         matches!(self, Self::Tee | Self::Shadow)
     }
 }
@@ -156,9 +160,7 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
     rustix::stdio::dup2_stderr(&writer).map_err(io::Error::from)?;
     drop(writer);
     crate::snapshot::diag::set_original(Some(original.clone()));
-    if mode.restores_for_exit() {
-        install_panic_hook();
-    }
+    install_panic_hook();
     *slot = Some(Active {
         original,
         mode,
@@ -212,22 +214,23 @@ fn finish(bound: Duration) -> Option<Captured> {
     })
 }
 
-/// Whether a [`Mode::Tee`] or [`Mode::Shadow`] capture is active.
-fn restorable_active() -> bool {
-    active()
-        .as_ref()
-        .is_some_and(|active| active.mode.restores_for_exit())
+/// The mode of the active capture, if any.
+fn active_mode() -> Option<Mode> {
+    active().as_ref().map(|active| active.mode)
 }
 
-/// End a [`Mode::Tee`] (or [`Mode::Shadow`]) capture now, before the
-/// process exits or a panic message prints: restore the original stderr and
-/// let the reader forward what is still in the pipe (briefly bounded). The
+/// End the active capture now, before the process exits or a panic message
+/// prints: restore the original stderr and let the reader forward what is
+/// still in the pipe (briefly bounded). A [`Mode::Tee`] or [`Mode::Shadow`]
 /// capture is broken: the run is not saved.
 pub fn restore_for_exit() {
-    if restorable_active() {
+    let Some(mode) = active_mode() else {
+        return;
+    };
+    if mode.breaks_when_restored() {
         BROKEN.store(true, Ordering::SeqCst);
-        let _ = finish(Duration::from_millis(200));
     }
+    let _ = finish(Duration::from_millis(200));
 }
 
 /// Whether a [`Mode::Tee`] capture of this process ended early

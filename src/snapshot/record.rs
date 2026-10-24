@@ -22,8 +22,7 @@
 
 use crate::observed_fs::{self, Op, Outcome, Recording, Taint, escape};
 use crate::registry_session::SessionHandle;
-use crate::repo_env::EnvVar;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -86,25 +85,22 @@ pub struct Session {
     command: String,
     dump: Option<PathBuf>,
     registry: Option<SessionHandle>,
+    /// The command's repository environment (the validation dry run's
+    /// ENV checks, crate::snapshot::validate::Environment).
+    environment: Vec<(OsString, OsString)>,
     reported: bool,
 }
 
-/// Start recording when `BAZEL_RS_SNAPSHOT=record`. `repo_env` decides
-/// which environment names an option fixes (not validated against the
-/// process environment).
-pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
+/// Start recording when `BAZEL_RS_SNAPSHOT=record`. `environment` is the
+/// command's repository environment (the client environment with
+/// `--repo_env` applied, crate::repo_env), which the validation dry run
+/// checks the ENV records against.
+pub fn start(command: &str, environment: &[(OsString, OsString)]) -> Option<Session> {
     // Other values: crate::snapshot::Mode::from_env reports them.
     if std::env::var_os(MODE_VAR)? != "record" {
         return None;
     }
-    let fixed: BTreeSet<OsString> = repo_env
-        .iter()
-        .filter_map(|value| match value {
-            EnvVar::Set(name, _) | EnvVar::Unset(name) => Some(OsString::from(name)),
-            EnvVar::Inherit(_) => None,
-        })
-        .collect();
-    if !observed_fs::open_window(fixed) {
+    if !observed_fs::open_window() {
         return None;
     }
     RECORD_MODE.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -122,6 +118,7 @@ pub fn start(command: &str, repo_env: &[EnvVar]) -> Option<Session> {
         command: command.to_owned(),
         dump: std::env::var_os(DUMP_VAR).map(PathBuf::from),
         registry: None,
+        environment: environment.to_vec(),
         reported: false,
     })
 }
@@ -208,8 +205,9 @@ impl Session {
         let validated = policy.select(&recording);
         let threads = knob("BAZEL_RS_SNAPSHOT_THREADS")
             .unwrap_or_else(|| crate::snapshot::validate::threads_for(&validated));
+        let environment = crate::snapshot::validate::Environment::new(&self.environment);
         let validations: Vec<_> = (0..repeats)
-            .map(|_| crate::snapshot::validate::dry_run(&validated, threads))
+            .map(|_| crate::snapshot::validate::dry_run(&validated, threads, &environment))
             .collect();
         let mut summary = summary(&self.command, &recording, policy, &validations);
         summary.push(plan_line(noted_plan()));
@@ -225,7 +223,7 @@ impl Session {
             };
             let selected = other.select(&recording);
             let threads = crate::snapshot::validate::threads_for(&selected);
-            let report = crate::snapshot::validate::dry_run(&selected, threads);
+            let report = crate::snapshot::validate::dry_run(&selected, threads, &environment);
             summary.push(validation_line(other, &report));
         }
         summary.extend(replay_summary(&records, &replays));
@@ -471,9 +469,8 @@ pub fn summary(
         recording.distinct_paths(),
         if projections.is_empty() { "none".to_owned() } else { projections },
     ));
-    let fixed = recording.env.iter().filter(|(_, env)| env.fixed).count();
     lines.push(format!(
-        "env: {} variables read (fixed by --repo_env: {fixed})",
+        "env: {} repository environment variables read",
         recording.env.len()
     ));
     let mut kinds: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
@@ -616,13 +613,12 @@ pub(crate) fn write_dump(
     for (name, env) in &recording.env {
         let _ = writeln!(
             text,
-            "ENV {} {}{}",
+            "ENV {} {}",
             escape(name),
             env.digest.map_or_else(
                 || "unset".to_owned(),
                 |digest| format!("sha256:{}", observed_fs::hex(&digest))
             ),
-            if env.fixed { " fixed" } else { "" }
         );
     }
     for repository in &recording.repositories {

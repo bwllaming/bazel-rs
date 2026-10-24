@@ -1,6 +1,6 @@
 //! `BAZEL_RS_SNAPSHOT=verify` (PLAN-L2 §1b layer 3 "shadow verify", PLAN-L2
 //! update 1 row W6): every snapshot hit also runs the full analysis, in its
-//! shadow, and compares the two before the hit executes.
+//! shadow, and compares the two before anything executes.
 //!
 //! ```text
 //! check point: hit (validated ∥ replayed ∥ decoded; nothing printed)
@@ -25,10 +25,16 @@
 //!          lockfile write, a complete capture, no planning error
 //!   -> match: the hit's own bytes print and the snapshot's plan executes
 //!      (what a user of `on` gets), refreshed keys are written back;
-//!      mismatch: every difference on the diagnostics stream, the snapshot
-//!      removed (the next run analyzes and saves anew, so a persistent
-//!      cause shows on every other run), nothing saved, nothing executed,
-//!      exit 70.
+//!      mismatch: every difference on the diagnostics stream, one line
+//!      appended to `<cache>/snapshots/verify.log` ([`LOG`]: time, command,
+//!      key, the first difference's class, the target patterns), the
+//!      snapshot removed (the next run analyzes and saves anew, so a
+//!      persistent cause shows on every other run), nothing saved — then
+//!      (L2-W5f, the default) what the full analysis printed while planning
+//!      prints and the FULL ANALYSIS's plan executes: the command's output
+//!      and exit code are those of a run without the snapshot. With
+//!      `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` ([`STRICT_VAR`]; tests and CI)
+//!      nothing executes and the command exits 70.
 //! ```
 //!
 //! A miss behaves exactly like `on` (the full analysis is saved), so a
@@ -36,11 +42,11 @@
 //! snapshot holds but the full analysis did not make are reported (EXPLAIN)
 //! but do not fail: they only cost a hit extra checks. A full analysis that
 //! ends before planning completed (an error the hit did not reproduce) is
-//! a mismatch too ([`exit_if_abandoned`], from main).
+//! a mismatch too ([`exit_if_abandoned`], from main: the full analysis's
+//! error is the command's, or exit 70 under the strict switch).
 
 use crate::observed_fs::{self, Op, Outcome, Recording, escape};
 use crate::registry_session::SessionHandle;
-use crate::repo_env::EnvVar;
 use crate::request::{Diagnostics, PlannedRequest};
 use crate::snapshot::capture::{self, Capture, Captured};
 use crate::snapshot::hit::{Evidence, Hit};
@@ -48,13 +54,22 @@ use crate::snapshot::key::Key;
 use crate::snapshot::replay::ReplayRecord;
 use crate::snapshot::validate::Policy;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsStr;
+use std::io::Write as _;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The exit code of a mismatch (EX_SOFTWARE).
+/// The exit code of a mismatch under [`STRICT_VAR`] (EX_SOFTWARE).
 pub const EXIT_MISMATCH: i32 = 70;
+/// `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1`: a mismatch exits [`EXIT_MISMATCH`]
+/// before anything executes (tests, CI). Unset (the default for a soak): a
+/// mismatch is reported and logged, and the full analysis's plan executes.
+pub const STRICT_VAR: &str = "BAZEL_RS_SNAPSHOT_VERIFY_STRICT";
+/// The mismatch log below the snapshot store root (`<cache>/snapshots/`):
+/// one line per mismatch, appended.
+pub const LOG: &str = "verify.log";
 /// How long the end of the shadow window waits for the capture's reader.
 const CAPTURE_BOUND: Duration = Duration::from_millis(500);
 /// Items shown per kind of difference.
@@ -64,6 +79,20 @@ const ACTIONS_SHOWN: usize = 3;
 /// Lines shown per side of a line diff.
 const DIFF_LINES: usize = 12;
 
+/// Whether [`STRICT_VAR`] is on.
+pub fn strict() -> bool {
+    crate::diagnostic_switch(std::env::var_os(STRICT_VAR))
+}
+
+/// What a mismatch's log line names besides the snapshot: the command and
+/// its target patterns (crate::snapshot::verify::start's caller, main).
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    pub command: String,
+    pub targets: Vec<String>,
+    pub explain: bool,
+}
+
 /// The shadow full analysis of one hit.
 pub struct Verify {
     hit: Option<Box<Hit>>,
@@ -71,14 +100,30 @@ pub struct Verify {
     window: Option<Captured>,
     registry: Option<SessionHandle>,
     started: Instant,
-    explain: bool,
+    context: Context,
+    strict: bool,
     concluded: bool,
+}
+
+/// How [`Verify::conclude`] decided.
+pub enum Concluded {
+    /// The full analysis agrees with the hit: the hit executes (its window
+    /// bytes print first, crate::main's `planned_hit`).
+    Agreed(Box<Hit>),
+    /// A mismatch, reported, logged and the snapshot removed (never under
+    /// [`STRICT_VAR`], which exits): what the full analysis printed while
+    /// planning is printed, and the caller executes the full analysis's
+    /// own planned request, unsaved.
+    Disagreed,
 }
 
 /// Start the shadow full analysis of `hit` at the snapshot check point:
 /// open the recording window and the replay capture, capture stderr. A
-/// session that cannot start is a verification failure (exit 70).
-pub fn start(hit: Box<Hit>, repo_env: &[EnvVar], explain: bool) -> Box<Verify> {
+/// session that cannot start cannot verify: under [`STRICT_VAR`] that is a
+/// verification failure (exit 70); otherwise it is logged and `None` is
+/// returned — the command runs the full analysis without comparing (the
+/// snapshot stays: nothing contradicted it).
+pub fn start(hit: Box<Hit>, context: Context) -> Option<Box<Verify>> {
     let key = hit.session.key().short();
     let mut verify = Box::new(Verify {
         hit: Some(hit),
@@ -86,7 +131,8 @@ pub fn start(hit: Box<Hit>, repo_env: &[EnvVar], explain: bool) -> Box<Verify> {
         window: None,
         registry: None,
         started: Instant::now(),
-        explain,
+        context,
+        strict: strict(),
         concluded: false,
     });
     let failure = if verify
@@ -95,7 +141,7 @@ pub fn start(hit: Box<Hit>, repo_env: &[EnvVar], explain: bool) -> Box<Verify> {
         .is_some_and(|hit| hit.evidence.is_none())
     {
         Some("the hit kept nothing to compare".to_owned())
-    } else if !observed_fs::open_window(crate::snapshot::save::fixed_names(repo_env)) {
+    } else if !observed_fs::open_window() {
         Some("the recording window was already open".to_owned())
     } else {
         crate::snapshot::replay::install();
@@ -104,16 +150,29 @@ pub fn start(hit: Box<Hit>, repo_env: &[EnvVar], explain: bool) -> Box<Verify> {
                 verify.capture = Some(capture);
                 None
             }
-            Err(error) => Some(format!("cannot capture stderr: {error}")),
+            Err(error) => {
+                observed_fs::close_window();
+                Some(format!("cannot capture stderr: {error}"))
+            }
         }
     };
-    if let Some(failure) = failure {
-        verify.concluded = true;
-        let mut report = Report::default();
-        report.mismatch(format!("cannot verify: {failure}"), Vec::new());
-        report.exit(&key, None);
-    }
-    verify
+    let Some(failure) = failure else {
+        return Some(verify);
+    };
+    verify.concluded = true;
+    let mut report = Report::default();
+    report.mismatch(
+        Class::CannotVerify,
+        format!("cannot verify: {failure}"),
+        Vec::new(),
+    );
+    let stored = verify
+        .hit
+        .as_ref()
+        .map(|hit| (hit.session.cache().to_path_buf(), *hit.session.key()));
+    // Nothing contradicts the snapshot: it stays (`None`: not removed).
+    report.conclude(&key, stored.as_ref(), false, &verify.context, verify.strict);
+    None
 }
 
 impl Verify {
@@ -135,13 +194,16 @@ impl Verify {
     /// with the diagnostics `failed`), what it printed, recorded and
     /// executed — with the hit. On a match the hit is returned for its own
     /// execution (its refreshed keys are being written back); on a mismatch
-    /// every difference is printed on the diagnostics stream and the process
-    /// exits with [`EXIT_MISMATCH`].
+    /// every difference is printed on the diagnostics stream, logged, the
+    /// snapshot removed, and — under [`STRICT_VAR`] the process exits with
+    /// [`EXIT_MISMATCH`] — what the full analysis printed while planning is
+    /// written to stderr: the caller executes the full analysis's plan.
     pub fn conclude(
         mut self,
         full: &Result<PlannedRequest, String>,
         failed: Option<&Diagnostics>,
-    ) -> Box<Hit> {
+        status_computed: bool,
+    ) -> Concluded {
         self.end_window();
         self.concluded = true;
         let analysis = self.started.elapsed();
@@ -162,17 +224,38 @@ impl Verify {
                     details.extend(failed.errors.iter().map(|e| format!("error: {e}")));
                 }
                 report.mismatch(
+                    Class::AnalysisFailed,
                     "the full analysis failed where the snapshot planned".to_owned(),
                     details,
                 );
             }
         }
         compare_window(&hit.window_stderr, self.window.as_ref(), &mut report);
+        if status_computed != inputs.workspace_status {
+            report.mismatch(
+                Class::Status,
+                format!(
+                    "the full analysis {} the workspace status, the snapshot {}",
+                    if status_computed {
+                        "computed"
+                    } else {
+                        "did not compute"
+                    },
+                    if inputs.workspace_status {
+                        "records it computed"
+                    } else {
+                        "records it not computed"
+                    }
+                ),
+                Vec::new(),
+            );
+        }
         let recording = observed_fs::recorder().map(|recorder| recorder.take());
         let observed = match recording {
             Some(recording) => {
                 if !recording.taints.is_empty() {
                     report.mismatch(
+                        Class::Taint,
                         "the full analysis would not be saved".to_owned(),
                         vec![crate::snapshot::save::taints(&recording.taints)],
                     );
@@ -182,7 +265,11 @@ impl Verify {
                 recording.observations.len()
             }
             None => {
-                report.mismatch("the full analysis recorded nothing".to_owned(), Vec::new());
+                report.mismatch(
+                    Class::Recording,
+                    "the full analysis recorded nothing".to_owned(),
+                    Vec::new(),
+                );
                 0
             }
         };
@@ -193,12 +280,14 @@ impl Verify {
         if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
             if session.updated_lockfile().is_some() {
                 report.mismatch(
+                    Class::Lockfile,
                     "the full analysis would write MODULE.bazel.lock".to_owned(),
                     Vec::new(),
                 );
             }
             if let Some((path, _)) = session.updated_hidden_lockfile() {
                 report.mismatch(
+                    Class::Lockfile,
                     format!(
                         "the full analysis would write the hidden lockfile {}",
                         escape(path.as_os_str())
@@ -209,11 +298,20 @@ impl Verify {
         }
         let compare = compared.elapsed();
         if !report.mismatches.is_empty() {
-            let store = (hit.session.cache().to_path_buf(), *hit.session.key());
-            report.exit(&key, Some(&store));
+            let stored = (hit.session.cache().to_path_buf(), *hit.session.key());
+            report.conclude(&key, Some(&stored), true, &self.context, self.strict);
+            // Not strict (it exited): what the full analysis printed while
+            // planning, then its own plan executes (the caller).
+            if let Some(window) = &self.window {
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr
+                    .write_all(&window.bytes)
+                    .and_then(|()| stderr.flush());
+            }
+            return Concluded::Disagreed;
         }
         let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
-        if self.explain {
+        if self.context.explain {
             observed_fs::diag(&format!(
                 "verified {key}: the full analysis agrees with the snapshot ({} actions, PLAN {} bytes, window stderr {} bytes, {} observations, {} local repositories) — full analysis {:.1} ms, comparison {:.1} ms",
                 hit.request.nodes.len(),
@@ -240,7 +338,7 @@ impl Verify {
         }
         drop(plan);
         hit.session.start_deferred_refresh(inputs);
-        hit
+        Concluded::Agreed(hit)
     }
 }
 
@@ -248,8 +346,8 @@ impl Verify {
 type Stored = (PathBuf, Key);
 
 /// A verify session that ended without [`Verify::conclude`]: its snapshot
-/// (main reports it, [`exit_if_abandoned`]).
-static ABANDONED: Mutex<Option<Stored>> = Mutex::new(None);
+/// and log context (main reports it, [`exit_if_abandoned`]).
+static ABANDONED: Mutex<Option<(Stored, Context, bool)>> = Mutex::new(None);
 
 impl Drop for Verify {
     fn drop(&mut self) {
@@ -257,9 +355,22 @@ impl Drop for Verify {
             return;
         }
         self.end_window();
+        if !self.strict {
+            // The full analysis ends here (its error follows, from main):
+            // what it printed so far is its output.
+            if let Some(window) = &self.window {
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr
+                    .write_all(&window.bytes)
+                    .and_then(|()| stderr.flush());
+            }
+        }
         if let Some(hit) = &self.hit {
-            *ABANDONED.lock().unwrap_or_else(PoisonError::into_inner) =
-                Some((hit.session.cache().to_path_buf(), *hit.session.key()));
+            *ABANDONED.lock().unwrap_or_else(PoisonError::into_inner) = Some((
+                (hit.session.cache().to_path_buf(), *hit.session.key()),
+                std::mem::take(&mut self.context),
+                self.strict,
+            ));
         }
     }
 }
@@ -267,9 +378,11 @@ impl Drop for Verify {
 /// main, when the command returned: a verify session whose full analysis
 /// never completed planning (the command ended first, with `error` if it
 /// failed) is a mismatch — the snapshot planned where the full analysis did
-/// not. Prints it and exits with [`EXIT_MISMATCH`].
+/// not. Prints and logs it and removes the snapshot; under [`STRICT_VAR`]
+/// exits with [`EXIT_MISMATCH`], else returns (the full analysis's result is
+/// the command's).
 pub fn exit_if_abandoned(error: Option<&str>) {
-    let Some(stored) = ABANDONED
+    let Some((stored, context, strict)) = ABANDONED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .take()
@@ -278,42 +391,124 @@ pub fn exit_if_abandoned(error: Option<&str>) {
     };
     let mut report = Report::default();
     report.mismatch(
+        Class::Abandoned,
         "the full analysis ended before planning completed".to_owned(),
         vec![match error {
             Some(error) => format!("error: {error}"),
             None => "without an error".to_owned(),
         }],
     );
-    report.exit(&stored.1.short(), Some(&stored));
+    report.conclude(&stored.1.short(), Some(&stored), true, &context, strict);
 }
 
-/// The differences found (each with its detail lines) and the notes.
+/// The class of a difference: the verify log names the first one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    /// The session could not start (no comparison).
+    CannotVerify,
+    /// The full analysis failed where the snapshot planned.
+    AnalysisFailed,
+    /// The full analysis ended before planning completed.
+    Abandoned,
+    /// The planned request differs from the PLAN section.
+    Plan,
+    /// What planning printed differs from the EVENTS section.
+    Window,
+    /// The full analysis would not be saved (a taint).
+    Taint,
+    /// An observation or a verified tree recorded now but not in the
+    /// snapshot, or with another outcome.
+    Recording,
+    /// An environment variable read now with another value, or not in
+    /// the snapshot.
+    Env,
+    /// A local repository rule's execution differs from its replay record.
+    Replay,
+    /// The full analysis would write a lockfile.
+    Lockfile,
+    /// The full analysis computed the workspace status where the snapshot
+    /// did not, or the reverse.
+    Status,
+}
+
+impl Class {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CannotVerify => "cannot-verify",
+            Self::AnalysisFailed => "analysis-failed",
+            Self::Abandoned => "abandoned",
+            Self::Plan => "plan",
+            Self::Window => "window",
+            Self::Taint => "taint",
+            Self::Recording => "recording",
+            Self::Env => "env",
+            Self::Replay => "replay",
+            Self::Lockfile => "lockfile",
+            Self::Status => "status",
+        }
+    }
+}
+
+/// The differences found (each with its class and detail lines) and the
+/// notes.
 #[derive(Default)]
 struct Report {
-    mismatches: Vec<(String, Vec<String>)>,
+    mismatches: Vec<(Class, String, Vec<String>)>,
     notes: Vec<String>,
 }
 
 impl Report {
-    fn mismatch(&mut self, title: String, details: Vec<String>) {
-        self.mismatches.push((title, details));
+    fn mismatch(&mut self, class: Class, title: String, details: Vec<String>) {
+        self.mismatches.push((class, title, details));
     }
 
-    /// Print every difference on the diagnostics stream, remove the
-    /// snapshot (`stored`) and exit.
-    fn exit(self, key: &str, stored: Option<&Stored>) -> ! {
-        let removed =
-            stored.is_some_and(|(cache, key)| crate::snapshot::store::remove(cache, key).is_ok());
+    /// Print every difference on the diagnostics stream, append the log
+    /// line, remove the snapshot (`stored`, when `remove`) and — `strict` —
+    /// exit with [`EXIT_MISMATCH`].
+    fn conclude(
+        self,
+        key: &str,
+        stored: Option<&Stored>,
+        remove: bool,
+        context: &Context,
+        strict: bool,
+    ) {
+        let removed = remove
+            && stored
+                .is_some_and(|(cache, key)| crate::snapshot::store::remove(cache, key).is_ok());
+        let class = self
+            .mismatches
+            .first()
+            .map_or("unknown", |(class, _, _)| class.name());
+        let logged = stored.and_then(|(cache, _)| {
+            let path = crate::snapshot::store::root(cache).join(LOG);
+            append_log(&path, &log_line(key, class, self.mismatches.len(), context)).ok()?;
+            Some(path)
+        });
+        let outcome = if strict {
+            format!("exit {EXIT_MISMATCH}, nothing executed or saved")
+        } else if self
+            .mismatches
+            .first()
+            .is_some_and(|(class, _, _)| *class == Class::CannotVerify)
+        {
+            "the full analysis runs unverified and unsaved".to_owned()
+        } else {
+            "the full analysis's result is the command's (nothing saved)".to_owned()
+        };
         observed_fs::diag(&format!(
-            "verify {key}: MISMATCH: the full analysis disagrees with the snapshot hit ({} difference(s)); exit {EXIT_MISMATCH}, nothing executed or saved{}",
+            "verify {key}: MISMATCH: the full analysis disagrees with the snapshot hit ({} difference(s), first: {class}); {outcome}{}{}",
             self.mismatches.len(),
             if removed {
                 "; the snapshot is removed (the next run analyzes and saves anew)"
             } else {
                 ""
-            }
+            },
+            logged
+                .map(|path| format!("; logged to {}", escape(path.as_os_str())))
+                .unwrap_or_default(),
         ));
-        for (title, details) in &self.mismatches {
+        for (_, title, details) in &self.mismatches {
             observed_fs::diag(&format!("verify mismatch: {title}"));
             for detail in details {
                 observed_fs::diag(&format!("verify   {detail}"));
@@ -322,9 +517,68 @@ impl Report {
         for note in &self.notes {
             observed_fs::diag(&format!("verify note: {note}"));
         }
-        crate::digest_memo::finish();
-        std::process::exit(EXIT_MISMATCH);
+        if strict {
+            crate::digest_memo::finish();
+            std::process::exit(EXIT_MISMATCH);
+        }
     }
+}
+
+/// The verify log's line for one mismatch: binary-safe (every field one
+/// token, crate::observed_fs::escape), space-separated:
+/// `<UTC time> <unix seconds> key=<short G> command=<command>
+/// first=<class> differences=<n> targets=<pattern> <pattern>...`.
+fn log_line(key: &str, class: &str, differences: usize, context: &Context) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    let targets: Vec<String> = context
+        .targets
+        .iter()
+        .map(|target| escape(OsStr::new(target)))
+        .collect();
+    format!(
+        "{} {now} key={key} command={} first={class} differences={differences} targets={}\n",
+        utc_timestamp(now),
+        escape(OsStr::new(&context.command)),
+        targets.join(" "),
+    )
+}
+
+/// Append `line` with one `write` (O_APPEND: concurrent commands never
+/// interleave within a line).
+fn append_log(path: &Path, line: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())
+}
+
+/// `seconds` since the epoch as `YYYY-MM-DDTHH:MM:SSZ` (UTC; Howard
+/// Hinnant's civil_from_days).
+fn utc_timestamp(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let of_day = seconds.rem_euclid(86_400);
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = shifted_month + if shifted_month < 10 { 3 } else { -9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        of_day / 3600,
+        (of_day % 3600) / 60,
+        of_day % 60
+    )
 }
 
 // ---- the planned request ---------------------------------------------------
@@ -370,6 +624,7 @@ fn compare_plan(
         Ok(encoded) => encoded,
         Err(error) => {
             report.mismatch(
+                Class::Plan,
                 "the full analysis's planned request cannot be encoded".to_owned(),
                 vec![error.to_string()],
             );
@@ -458,6 +713,7 @@ fn compare_plan(
         ));
     }
     report.mismatch(
+        Class::Plan,
         "the planned request differs from the snapshot's plan".to_owned(),
         details,
     );
@@ -539,6 +795,7 @@ fn printable(line: &str) -> String {
 fn compare_window(snapshot: &[u8], window: Option<&Captured>, report: &mut Report) {
     let Some(window) = window else {
         report.mismatch(
+            Class::Window,
             "the full analysis's stderr was not captured".to_owned(),
             Vec::new(),
         );
@@ -546,6 +803,7 @@ fn compare_window(snapshot: &[u8], window: Option<&Captured>, report: &mut Repor
     };
     if !window.complete {
         report.mismatch(
+            Class::Window,
             "a process kept the full analysis's captured stderr open (a lingering child?)"
                 .to_owned(),
             Vec::new(),
@@ -553,6 +811,7 @@ fn compare_window(snapshot: &[u8], window: Option<&Captured>, report: &mut Repor
     }
     if window.overflowed {
         report.mismatch(
+            Class::Window,
             format!(
                 "the full analysis printed more than {} bytes",
                 capture::LIMIT
@@ -571,6 +830,7 @@ fn compare_window(snapshot: &[u8], window: Option<&Captured>, report: &mut Repor
             &String::from_utf8_lossy(&window.bytes),
         ));
         report.mismatch(
+            Class::Window,
             "what planning printed differs from the snapshot's window stderr".to_owned(),
             details,
         );
@@ -643,6 +903,7 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
     }
     if !missing.is_empty() {
         report.mismatch(
+            Class::Recording,
             format!(
                 "incomplete recording: {} observation(s) recorded now but not in the snapshot",
                 missing.len()
@@ -652,6 +913,7 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
     }
     if !changed.is_empty() {
         report.mismatch(
+            Class::Recording,
             format!(
                 "{} observation(s) recorded now with another outcome than the snapshot's",
                 changed.len()
@@ -690,13 +952,14 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
                 escape(name)
             )),
             Some(recorded) if *recorded != observation => {
-                details.push(format!("ENV {}: another value or origin", escape(name)))
+                details.push(format!("ENV {}: another value", escape(name)))
             }
             Some(_) => {}
         }
     }
     if !details.is_empty() {
         report.mismatch(
+            Class::Env,
             "environment variables differ from the snapshot's".to_owned(),
             details,
         );
@@ -716,6 +979,7 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
         .collect();
     if !new_trees.is_empty() {
         report.mismatch(
+            Class::Recording,
             format!(
                 "incomplete recording: {} repository tree(s) verified now but not in the snapshot",
                 new_trees.len()
@@ -742,6 +1006,7 @@ fn compare_replays(snapshot: &[ReplayRecord], executed: &[ReplayRecord], report:
     for now in executed {
         let Some(old) = records.get(now.canonical.as_str()) else {
             report.mismatch(
+                Class::Replay,
                 format!(
                     "local repository {}: executed now but not replayed by the snapshot (incomplete recording)",
                     now.canonical
@@ -807,6 +1072,7 @@ fn compare_replays(snapshot: &[ReplayRecord], executed: &[ReplayRecord], report:
         }
         if !details.is_empty() {
             report.mismatch(
+                Class::Replay,
                 format!(
                     "local repository {}: its execution differs from the replay record",
                     now.canonical
@@ -895,38 +1161,63 @@ mod tests {
         ]);
         let mut report = Report::default();
         compare_recordings(&snapshot, &now, &mut report);
-        let titles: Vec<&str> = report.mismatches.iter().map(|(t, _)| t.as_str()).collect();
+        let titles: Vec<&str> = report
+            .mismatches
+            .iter()
+            .map(|(_, title, _)| title.as_str())
+            .collect();
         assert_eq!(titles.len(), 2, "{titles:?}");
         assert!(titles[0].starts_with("incomplete recording: 1 observation"));
-        assert_eq!(report.mismatches[0].1, ["READDIR[dirs] /ws/pkg"]);
-        assert!(report.mismatches[1].1[0].starts_with("READ /ws/BUILD: snapshot sha256:0101"));
+        assert_eq!(report.mismatches[0].2, ["READDIR[dirs] /ws/pkg"]);
+        assert!(report.mismatches[1].2[0].starts_with("READ /ws/BUILD: snapshot sha256:0101"));
         // Environment: a variable read now only, another digest.
         let mut snapshot = recording(Vec::new());
         snapshot.env = vec![(
             OsString::from("A"),
             EnvObservation {
                 digest: Some([1; 32]),
-                fixed: false,
             },
         )];
         let mut now = snapshot.clone();
         now.env[0].1.digest = None;
-        now.env.push((
-            OsString::from("B"),
-            EnvObservation {
-                digest: None,
-                fixed: false,
-            },
-        ));
+        now.env
+            .push((OsString::from("B"), EnvObservation { digest: None }));
         let mut report = Report::default();
         compare_recordings(&snapshot, &now, &mut report);
         assert_eq!(report.mismatches.len(), 1);
+        assert_eq!(report.mismatches[0].0, Class::Env);
         assert_eq!(
-            report.mismatches[0].1,
+            report.mismatches[0].2,
             [
-                "ENV A: another value or origin",
+                "ENV A: another value",
                 "ENV B read now but not in the snapshot (incomplete recording)"
             ]
+        );
+    }
+
+    /// The verify log: one binary-safe line per mismatch, appended.
+    #[test]
+    fn mismatches_append_one_binary_safe_log_line() {
+        assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00Z");
+        assert_eq!(utc_timestamp(1_792_800_000), "2026-10-24T00:00:00Z");
+        assert_eq!(utc_timestamp(951_782_400 + 86_399), "2000-02-29T23:59:59Z");
+        let context = Context {
+            command: "build".to_owned(),
+            targets: vec!["//a:b".to_owned(), "//x y:\n\u{e9}".to_owned()],
+            explain: false,
+        };
+        let line = log_line("0011", "plan", 2, &context);
+        assert!(line.ends_with(" key=0011 command=build first=plan differences=2 targets=//a:b //x\\x20y:\\x0a\\xc3\\xa9\n"), "{line}");
+        assert_eq!(line.matches('\n').count(), 1);
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("snapshots").join(LOG);
+        append_log(&path, &line).unwrap();
+        append_log(&path, &log_line("0022", "window", 1, &context)).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.lines().count(), 2, "{text}");
+        assert!(
+            text.lines().nth(1).unwrap().contains(" first=window "),
+            "{text}"
         );
     }
 

@@ -18,15 +18,12 @@
 
 use crate::observed_fs::{self, Taint};
 use crate::registry_session::SessionHandle;
-use crate::repo_env::EnvVar;
 use crate::request::PlannedRequest;
 use crate::snapshot::capture::{self, Capture, Captured};
 use crate::snapshot::format::{self, Section, Stats};
 use crate::snapshot::key::Key;
 use crate::snapshot::store;
 use crate::snapshot::validate::Policy;
-use std::collections::BTreeSet;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -50,23 +47,8 @@ pub struct Save {
     finished: bool,
 }
 
-/// The environment names whose repository-environment value an option
-/// fixes (`--repo_env=NAME=VALUE`, `--repo_env==NAME`): part of the key,
-/// not checked (crate::observed_fs::open_window).
-pub(crate) fn fixed_names(repo_env: &[EnvVar]) -> BTreeSet<OsString> {
-    repo_env
-        .iter()
-        .filter_map(|value| match value {
-            EnvVar::Set(name, _) | EnvVar::Unset(name) => Some(OsString::from(name)),
-            EnvVar::Inherit(_) => None,
-        })
-        .collect()
-}
-
-/// Start recording at the snapshot check point. `repo_env` decides which
-/// environment names an option fixes (crate::snapshot::record::start).
-pub fn start(key: Key, cache: &Path, repo_env: &[EnvVar], explain: bool) -> Save {
-    let fixed = fixed_names(repo_env);
+/// Start recording at the snapshot check point.
+pub fn start(key: Key, cache: &Path, explain: bool) -> Save {
     let mut save = Save {
         key,
         cache: cache.to_path_buf(),
@@ -80,7 +62,7 @@ pub fn start(key: Key, cache: &Path, repo_env: &[EnvVar], explain: bool) -> Save
         saved_note: String::new(),
         finished: false,
     };
-    if !observed_fs::open_window(fixed) {
+    if !observed_fs::open_window() {
         save.skipped = Some("the recording window was already open".to_owned());
         return save;
     }
@@ -116,19 +98,25 @@ impl Save {
 
     /// The planned request of a successful planning (after the hand-over):
     /// decide, encode the plan, and write in the background — where the
-    /// recording is also taken, selected and encoded.
-    pub fn planned(&mut self, request: &PlannedRequest) {
+    /// recording is also taken, selected and encoded. `workspace_status`:
+    /// planning computed the workspace status (a hit computes it too,
+    /// crate::snapshot::format::Inputs::workspace_status).
+    pub fn planned(&mut self, request: &PlannedRequest, workspace_status: bool) {
         self.end_window();
         if self.skipped.is_some() {
             return;
         }
-        match self.prepare(request) {
+        match self.prepare(request, workspace_status) {
             Ok(pending) => self.pending = Some(pending),
             Err(reason) => self.skip(reason),
         }
     }
 
-    fn prepare(&mut self, request: &PlannedRequest) -> Result<store::Pending, String> {
+    fn prepare(
+        &mut self,
+        request: &PlannedRequest,
+        workspace_status: bool,
+    ) -> Result<store::Pending, String> {
         let started = Instant::now();
         let window = self
             .window
@@ -210,7 +198,8 @@ impl Save {
                 .map(|repository| repository.entries.len())
                 .sum();
             let selected = policy.select_owned(recording);
-            let inputs = format::encode_inputs(&selected, &records, tables.as_ref());
+            let inputs =
+                format::encode_inputs(&selected, &records, tables.as_ref(), workspace_status);
             let stats = Stats {
                 observations: observations as u64,
                 validated: selected.observations.len() as u64,

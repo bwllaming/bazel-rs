@@ -32,14 +32,24 @@ thread_local! {
     /// The `BAZEL_RS_SNAPSHOT` value of the snapshot side of this test's
     /// twins (`on`; fixture 19 runs every fixture again with `verify`).
     static MODE: std::cell::Cell<&'static str> = const { std::cell::Cell::new(ON) };
+    /// Verify mode with `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` (a mismatch
+    /// exits 70; the fixtures' default), else the soak default (a mismatch
+    /// is logged and the full analysis's plan executes).
+    static STRICT: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 /// Two copies of a workspace (with its cache and home) that run under one
 /// path: `<base>/run`.
 struct Twin {
     base: tempfile::TempDir,
-    /// The snapshot side's `BAZEL_RS_SNAPSHOT` ([`MODE`]).
-    mode: &'static str,
+    /// The snapshot side's `BAZEL_RS_SNAPSHOT` ([`MODE`]; the mutation fuzz
+    /// switches it per step).
+    mode: std::cell::Cell<&'static str>,
+    /// [`STRICT`].
+    strict: bool,
+    /// Read the workspace `.bazelrc` (`--nosystem_rc --nohome_rc`) instead
+    /// of `--ignore_all_rc_files` (the mutation fuzz).
+    workspace_rc: std::cell::Cell<bool>,
 }
 
 /// The two runs of one step.
@@ -58,7 +68,9 @@ impl Twin {
             .unwrap();
         let twin = Self {
             base,
-            mode: MODE.with(std::cell::Cell::get),
+            mode: std::cell::Cell::new(MODE.with(std::cell::Cell::get)),
+            strict: STRICT.with(std::cell::Cell::get),
+            workspace_rc: std::cell::Cell::new(false),
         };
         for side in [ON, OFF] {
             fs::create_dir_all(twin.side(side).join("ws")).unwrap();
@@ -92,6 +104,16 @@ impl Twin {
     fn write(&self, path: &str, content: &str) {
         self.each(|root| {
             let path = root.join("ws").join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        });
+    }
+
+    /// Write `content` at `path` below the copies' roots (beside the
+    /// workspace: `<run>/<path>` while a copy runs).
+    fn write_beside(&self, path: &str, content: &str) {
+        self.each(|root| {
+            let path = root.join(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, content).unwrap();
         });
@@ -135,7 +157,11 @@ impl Twin {
         command
             .args(["--kill-after=5s", "180s"])
             .arg(binary)
-            .arg("--ignore_all_rc_files")
+            .args(if self.workspace_rc.get() {
+                &["--nosystem_rc", "--nohome_rc"][..]
+            } else {
+                &["--ignore_all_rc_files"][..]
+            })
             .arg(format!("--cache-dir={}", self.cache().display()))
             .args(args)
             .current_dir(self.ws())
@@ -146,8 +172,11 @@ impl Twin {
             .env("LC_ALL", "C");
         if snapshot {
             command
-                .env("BAZEL_RS_SNAPSHOT", self.mode)
+                .env("BAZEL_RS_SNAPSHOT", self.mode.get())
                 .env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1");
+            if self.mode.get() == VERIFY && self.strict {
+                command.env("BAZEL_RS_SNAPSHOT_VERIFY_STRICT", "1");
+            }
         }
         command.envs(env.iter().copied());
         command
@@ -171,7 +200,7 @@ impl Twin {
         Pair {
             on,
             off,
-            mode: self.mode,
+            mode: self.mode.get(),
         }
     }
 
@@ -187,6 +216,15 @@ impl Twin {
     #[track_caller]
     fn save(&self, args: &[&str], env: &[(&str, &str)]) {
         if self.same(args, env).line("saved ").is_none() {
+            self.same(args, env).assert_saved();
+        }
+    }
+
+    /// After `previous` (a miss): run `args` once more unless `previous`
+    /// saved; that run must save.
+    #[track_caller]
+    fn settle(&self, previous: &Pair, args: &[&str], env: &[(&str, &str)]) {
+        if previous.line("saved ").is_none() {
             self.same(args, env).assert_saved();
         }
     }
@@ -767,15 +805,25 @@ def _gen(ctx):
 gen_rule = repository_rule(implementation = _gen)
 "#;
 
-/// Fixture 10: a file deleted from a repository tree. Per tree (the
-/// default) the tree's root and manifest are unchanged: a hit whose action
-/// fails on the missing input removes the snapshot with a one-line hint;
-/// the next run repairs the tree, then saves and hits. With full
-/// validation (`BAZEL_RS_VERIFY_REPOS=full`) it is a miss at once.
+/// Make `path` writable for its owner without touching it when it already
+/// is (a chmod moves the change time, which the per-tree validation sees).
+fn writable(path: &Path) {
+    let mode = fs::metadata(path).unwrap().permissions().mode();
+    if mode & 0o200 == 0 {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o200)).unwrap();
+    }
+}
+
+/// Fixture 10 (L2-W5f review F3): a file or a directory deleted from a
+/// repository tree misses at once — per tree (the default) because the
+/// policy keeps the tree's directories, whose lstat keys a deletion
+/// changes; with full validation (`BAZEL_RS_VERIFY_REPOS=full`) through
+/// the entry itself — and the full analysis repairs the tree, then saves
+/// and hits.
 #[test]
-fn a_file_deleted_from_a_repository_tree_heals() {
+fn a_file_or_directory_deleted_from_a_repository_tree_misses() {
     let build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
-    for full in [false, true] {
+    for (full, directory) in [(false, false), (false, true), (true, false)] {
         let twin = fixture();
         twin.write("repos.bzl", NESTED_REPOS);
         twin.write("BUILD.bazel", &build);
@@ -786,10 +834,11 @@ fn a_file_deleted_from_a_repository_tree_heals() {
         };
         twin.same(BUILD_ALL, env)
             .assert_not_saved("repository-rule-executed");
-        // A racy tree head (published, or its manifest refreshed, less than
-        // two seconds before the recording) is verified against its manifest
-        // on every hit, which would see the deletion at once: let the hit
-        // settle the keys first (it rewrites the snapshot).
+        // A racy tree head or directory (published, or its manifest
+        // refreshed, less than two seconds before the recording) is
+        // verified against its manifest on every hit, which would see the
+        // deletion at once: let the hit settle the keys first (it rewrites
+        // the snapshot), so the directory keys alone must catch it.
         std::thread::sleep(std::time::Duration::from_millis(2200));
         twin.same(BUILD_ALL, env).assert_saved();
         std::thread::sleep(std::time::Duration::from_millis(2200));
@@ -799,57 +848,23 @@ fn a_file_deleted_from_a_repository_tree_heals() {
         twin.write("pkg/in.txt", "input changed\n");
         twin.each(|root| {
             let file = generated_tree(root).join("sub/data.txt");
-            let directory = file.parent().unwrap().to_path_buf();
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
-            fs::remove_file(file).unwrap();
+            let sub = file.parent().unwrap().to_path_buf();
+            if directory {
+                writable(sub.parent().unwrap());
+                writable(&sub);
+                fs::remove_dir_all(&sub).unwrap();
+            } else {
+                writable(&sub);
+                fs::remove_file(file).unwrap();
+            }
         });
-        if full {
-            let miss = twin.same(BUILD_ALL, env);
+        let miss = twin.same(BUILD_ALL, env);
+        miss.assert_success();
+        if full && !directory {
             miss.assert_miss("sub/data.txt");
-            twin.same(BUILD_ALL, env).assert_saved();
-            twin.same(BUILD_ALL, env).assert_hit();
-            continue;
+        } else {
+            miss.assert_miss("INTEGRITY ");
         }
-        let stale = twin.run(BUILD_ALL, env);
-        if twin.mode == VERIFY {
-            // Verify mode compares the hit with a full analysis, which
-            // repairs the tree (it executes the rule again): the documented
-            // per-tree trade-off is a mismatch, and the snapshot goes.
-            assert!(stale.line("hit ").is_some(), "{:?}", stale.explain());
-            stale.assert_verify_mismatch("repository-rule-executed");
-            assert!(twin.snapshots().is_empty());
-            // Nothing executed on the snapshot side (the other side ran the
-            // edited input's action): it catches up, then both agree.
-            let next = twin.run(BUILD_ALL, env);
-            next.assert_success()
-                .assert_miss("no snapshot")
-                .assert_saved();
-            assert!(
-                next.stderr().contains("1 actions executed"),
-                "{}",
-                next.stderr()
-            );
-            twin.same(BUILD_ALL, env).assert_hit();
-            continue;
-        }
-        stale.assert_hit();
-        assert!(!stale.on.status.success());
-        let stderr = text(&stale.on.stderr);
-        assert!(
-            stderr.contains("bazel-rs: removed the analysis snapshot of this build"),
-            "{stderr}"
-        );
-        assert!(stale.off.status.success(), "{}", text(&stale.off.stderr));
-        assert!(twin.snapshots().is_empty());
-        // The next run repairs the tree like the full analysis that ran
-        // instead of the stale hit.
-        let repaired = Pair {
-            on: twin.run_side(ON, BUILD_ALL, env),
-            off: stale.off,
-            mode: twin.mode,
-        };
-        repaired.assert_same(BUILD_ALL);
-        repaired.assert_success().assert_miss("no snapshot");
         twin.same(BUILD_ALL, env).assert_saved();
         twin.same(BUILD_ALL, env).assert_hit();
     }
@@ -889,7 +904,7 @@ fn a_hit_hashes_an_edited_tree_file_by_its_change_time() {
         assert_eq!(fs::metadata(&file).unwrap().len(), metadata.len());
     });
     let edited = twin.run(BUILD_ALL, &[]);
-    if twin.mode == VERIFY {
+    if twin.mode.get() == VERIFY {
         // The full analysis repairs the tree (the rule runs again): verify
         // mode reports the documented trade-off as a mismatch.
         assert!(edited.line("hit ").is_some(), "{:?}", edited.explain());
@@ -953,7 +968,7 @@ fn another_binary_misses() {
     let pair = Pair {
         off: twin.run_side(OFF, BUILD_ALL, &[]),
         on: output,
-        mode: twin.mode,
+        mode: twin.mode.get(),
     };
     pair.assert_same(BUILD_ALL);
     pair.assert_miss("no snapshot").assert_saved();
@@ -1030,7 +1045,7 @@ fn concurrent_saves_of_one_key_leave_a_valid_snapshot() {
         let pair = Pair {
             on,
             off: off.clone(),
-            mode: twin.mode,
+            mode: twin.mode.get(),
         };
         pair.assert_same(BUILD_ALL);
         // Both miss and save, unless one started after the other saved
@@ -1582,6 +1597,1266 @@ fn a_test_writes_the_lockfile_and_saves_next_time() {
     twin.same(args, &[]).assert_hit().assert_success();
 }
 
+// ---- L2-W5f: review follow-ups and test gaps ------------------------------
+
+const ENVIRON_REPOS: &str = r#"def _environ(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", "X=%s\n" % ctx.os.environ.get("W5X", "unset"))
+
+environ_rule = repository_rule(implementation = _environ, environ = ["W5X"])
+"#;
+
+/// The single output file of a successful `build` (stdout's first line is
+/// `<label>\t<path>`), read while `side` is in place.
+fn built_output(twin: &Twin, side: &str, output: &Output) -> String {
+    let stdout = text(&output.stdout);
+    let path = stdout
+        .lines()
+        .next()
+        .and_then(|line| line.split_once('\t'))
+        .map(|(_, path)| path.to_owned())
+        .unwrap_or_default();
+    twin.with_side(side, || fs::read_to_string(&path).unwrap_or_default())
+}
+
+/// L2-W5f review F1 (a reproduced false hit): a non-local rule's `environ`
+/// variable that `--repo_env` sets and then inherits again
+/// (`--repo_env=W5X=default --repo_env=W5X`: the last entry wins, the
+/// client's value) is validated against the command's repository
+/// environment: a new client value misses, and the rule's output follows
+/// it. A name only set (`--repo_env=W5_SET=v`) ignores the client.
+#[test]
+fn a_reinherited_repo_env_name_follows_the_client() {
+    let twin = fixture();
+    twin.write("environ/repos.bzl", ENVIRON_REPOS);
+    twin.write(
+        "environ/BUILD.bazel",
+        "genrule(name = 'g', srcs = ['@envrepo//:v.txt'], outs = ['g.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\ner = use_repo_rule('//environ:repos.bzl', 'environ_rule')\ner(name = 'envrepo')\n"
+        ),
+    );
+    let args = &[
+        "build",
+        "--repo_env=W5X=default",
+        "--repo_env=W5X",
+        "//environ:g",
+    ];
+    let one = [("W5X", "one")];
+    twin.save(args, &one);
+    let hit = twin.same(args, &one);
+    hit.assert_hit();
+    assert_eq!(built_output(&twin, ON, &hit.on), "X=one\n");
+    let two = [("W5X", "two")];
+    let changed = twin.same(args, &two);
+    changed
+        .assert_success()
+        .assert_miss("ENV W5X: value changed");
+    assert_eq!(built_output(&twin, ON, &changed.on), "X=two\n");
+    twin.save(args, &two);
+    twin.same(args, &two).assert_hit();
+    // Without a client value the set value stands (Inherit keeps it).
+    let unset = twin.same(args, &[]);
+    unset.assert_miss("ENV W5X: value changed");
+    assert_eq!(built_output(&twin, ON, &unset.on), "X=default\n");
+    // A name an option only sets: the client's value does not matter.
+    let set = &["build", "--repo_env=W5X=fixed", "//environ:g"];
+    twin.save(set, &one);
+    let fixed = twin.same(set, &two);
+    fixed.assert_hit();
+    assert_eq!(built_output(&twin, ON, &fixed.on), "X=fixed\n");
+}
+
+/// L2-W5f review F2: under `--nobuild` planning runs the status command
+/// for a target that consumes `ctx.info_file` although the plan holds no
+/// status placeholder. A hit runs it too (quietly, before anything
+/// prints), and a status command that now writes to stderr is a miss whose
+/// full analysis prints it.
+#[test]
+fn a_nobuild_status_consumer_runs_the_status_command_on_a_hit() {
+    let twin = fixture();
+    twin.write("stable.txt", "one\n");
+    twin.each(|root| {
+        write_executable_script(
+            &root.join("ws/status.sh"),
+            "#!/bin/sh\necho ran >> ran.log\necho STABLE_W5 $(cat stable.txt)\n[ -e noisy ] && echo 'status: now noisy' >&2\nexit 0\n",
+            0o755,
+        );
+    });
+    let status = format!(
+        "--workspace_status_command={}",
+        twin.ws().join("status.sh").display()
+    );
+    let args = &["build", "--nobuild", status.as_str(), "//:stamped"];
+    let runs = |side: &str| {
+        fs::read_to_string(twin.side(side).join("ws/ran.log"))
+            .unwrap_or_default()
+            .lines()
+            .count()
+    };
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    twin.write("noisy", "");
+    let noisy = twin.same(args, &[]);
+    noisy
+        .assert_success()
+        .assert_miss("the workspace status command wrote")
+        .assert_not_saved("workspace-status-stderr");
+    assert!(
+        noisy.stderr().contains("status: now noisy"),
+        "{}",
+        noisy.stderr()
+    );
+    // The snapshot cannot hit while the command writes to stderr: removed,
+    // so a noisy command runs once per command again.
+    assert!(twin.snapshots().is_empty());
+    twin.same(args, &[])
+        .assert_miss("no snapshot")
+        .assert_not_saved("workspace-status-stderr");
+    twin.each(|root| fs::remove_file(root.join("ws/noisy")).unwrap());
+    twin.same(args, &[]).assert_saved();
+    twin.same(args, &[]).assert_hit();
+    // The command ran once per command on both sides — a hit runs it, too —
+    // but for the noisy miss's attempt (and, in verify mode, each hit's
+    // shadow full analysis: two hits).
+    let extra = if twin.mode.get() == VERIFY { 3 } else { 1 };
+    assert_eq!(runs(ON), runs(OFF) + extra, "{} {}", runs(ON), runs(OFF));
+}
+
+const WATCHING_REPOS: &str = r#"def _watching(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", "%s|%s\n" % (ctx.os.environ.get("W5_GEN", "unset"), ctx.read(Label("//watch:watched.txt")).strip()))
+
+watching_rule = repository_rule(implementation = _watching, environ = ["W5_GEN"])
+"#;
+
+/// Test gap (L2-W5f): a reused NON-local rule whose `environ` variable or
+/// watched workspace file (`ctx.read` of a label) changes misses — the
+/// full analysis re-executes it — and its output follows.
+#[test]
+fn a_reused_rule_misses_on_its_environ_variable_or_watched_file() {
+    let twin = fixture();
+    twin.write("watch/repos.bzl", WATCHING_REPOS);
+    twin.write("watch/watched.txt", "first\n");
+    twin.write(
+        "watch/BUILD.bazel",
+        "exports_files(['watched.txt'])\ngenrule(name = 'w', srcs = ['@watching//:v.txt'], outs = ['w.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\nwr = use_repo_rule('//watch:repos.bzl', 'watching_rule')\nwr(name = 'watching')\n"
+        ),
+    );
+    let args = &["build", "//watch:w"];
+    let one = [("W5_GEN", "one")];
+    twin.save(args, &one);
+    twin.same(args, &one).assert_hit();
+    let two = [("W5_GEN", "two")];
+    let changed = twin.same(args, &two);
+    changed.assert_success().assert_miss("ENV W5_GEN");
+    assert_eq!(built_output(&twin, ON, &changed.on), "two|first\n");
+    twin.save(args, &two);
+    twin.same(args, &two).assert_hit();
+    twin.write("watch/watched.txt", "second\n");
+    let edited = twin.same(args, &two);
+    edited.assert_success().assert_miss("watched.txt");
+    assert_eq!(built_output(&twin, ON, &edited.on), "two|second\n");
+    twin.save(args, &two);
+    twin.same(args, &two).assert_hit();
+}
+
+const INPUT_EXTENSION: &str = r#"def _repo(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", ctx.attr.content)
+
+_repo_rule = repository_rule(implementation = _repo, attrs = {"content": attr.string()})
+
+def _ext(module_ctx):
+    data = module_ctx.read(module_ctx.path(Label("//ext:input.txt"))).strip()
+    _repo_rule(name = "extrepo", content = "%s|%s\n" % (module_ctx.getenv("W5_EXT", "unset"), data))
+
+ext = module_extension(implementation = _ext)
+"#;
+
+/// Test gap (L2-W5f): a reused module extension (its lockfile entry) whose
+/// environment variable or file input changes misses — the full analysis
+/// evaluates it again — and the repository it generates follows.
+#[test]
+fn a_reused_extension_misses_on_its_environment_or_file_input() {
+    let twin = fixture();
+    twin.write("ext/ext.bzl", INPUT_EXTENSION);
+    twin.write("ext/input.txt", "first\n");
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\next = use_extension('//ext:ext.bzl', 'ext')\nuse_repo(ext, 'extrepo')\n"
+        ),
+    );
+    twin.write(
+        "ext/BUILD.bazel",
+        "exports_files(['input.txt'])\ngenrule(name = 'e', srcs = ['@extrepo//:v.txt'], outs = ['e.txt'], cmd = 'cp $< $@')\n",
+    );
+    let args = &["build", "//ext:e"];
+    let one = [("W5_EXT", "one")];
+    // Cold: the extension is evaluated, the lockfile written; then saved.
+    for _ in 0..3 {
+        if twin.same(args, &one).line("saved ").is_some() {
+            break;
+        }
+    }
+    twin.same(args, &one).assert_hit();
+    let two = [("W5_EXT", "two")];
+    let changed = twin.same(args, &two);
+    changed.assert_success().assert_miss("W5_EXT");
+    assert_eq!(built_output(&twin, ON, &changed.on), "two|first\n");
+    for _ in 0..3 {
+        if twin.same(args, &two).line("saved ").is_some() {
+            break;
+        }
+    }
+    twin.same(args, &two).assert_hit();
+    twin.write("ext/input.txt", "second\n");
+    let edited = twin.same(args, &two);
+    edited.assert_success().assert_miss("input.txt");
+    assert_eq!(built_output(&twin, ON, &edited.on), "two|second\n");
+}
+
+/// Test gap (L2-W5f): a `print()` in MODULE.bazel is part of what planning
+/// printed: a hit replays it (and a MODULE.bazel edit misses).
+#[test]
+fn module_file_prints_replay_on_a_hit() {
+    let twin = fixture();
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\nprint(\"module file says hi\")\n"),
+    );
+    twin.save(BUILD_ALL, &[]);
+    for _ in 0..2 {
+        let hit = twin.same(BUILD_ALL, &[]);
+        hit.assert_hit().assert_success();
+        assert!(
+            hit.stderr().contains("module file says hi"),
+            "{}",
+            hit.stderr()
+        );
+    }
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\nprint(\"module file says bye\")\n"),
+    );
+    let edited = twin.same(BUILD_ALL, &[]);
+    edited.assert_miss("MODULE.bazel");
+    assert!(
+        edited.stderr().contains("module file says bye"),
+        "{}",
+        edited.stderr()
+    );
+}
+
+/// Test gap (L2-W5f): edits to a `local_path_override` module (its BUILD
+/// file, its MODULE.bazel) and to a `file://` registry (a module's
+/// MODULE.bazel there, the `local_path` source it points at) miss.
+#[test]
+fn local_override_and_file_registry_edits_miss() {
+    let twin = fixture();
+    // A local_path_override module beside the workspace.
+    twin.write_beside(
+        "localdep/MODULE.bazel",
+        "module(name = 'localdep', version = '1.0')\n",
+    );
+    twin.write_beside(
+        "localdep/BUILD.bazel",
+        "genrule(name = 'l', outs = ['l.txt'], cmd = 'echo one > $@', visibility = ['//visibility:public'])\n",
+    );
+    // A file:// registry beside the workspace, its module a local_path source.
+    twin.write_beside(
+        "registry/bazel_registry.json",
+        r#"{"module_base_path": "."}"#,
+    );
+    twin.write_beside(
+        "registry/modules/w5reg/metadata.json",
+        r#"{"versions": ["1.0"]}"#,
+    );
+    twin.write_beside(
+        "registry/modules/w5reg/1.0/MODULE.bazel",
+        "module(name = 'w5reg', version = '1.0')\n",
+    );
+    twin.write_beside(
+        "registry/modules/w5reg/1.0/source.json",
+        r#"{"type": "local_path", "path": "src/w5reg"}"#,
+    );
+    twin.write_beside(
+        "registry/src/w5reg/MODULE.bazel",
+        "module(name = 'w5reg', version = '1.0')\n",
+    );
+    twin.write_beside(
+        "registry/src/w5reg/BUILD.bazel",
+        "genrule(name = 'r', outs = ['r.txt'], cmd = 'echo one > $@', visibility = ['//visibility:public'])\n",
+    );
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\nbazel_dep(name = 'localdep', version = '1.0')\nlocal_path_override(module_name = 'localdep', path = '../localdep')\nbazel_dep(name = 'w5reg', version = '1.0')\n"
+        ),
+    );
+    twin.write(
+        "deps/BUILD.bazel",
+        "genrule(name = 'd', srcs = ['@localdep//:l', '@w5reg//:r'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    let registry = format!("--registry=file://{}/registry", twin.run_root().display());
+    let args = &["build", registry.as_str(), "//deps:d"];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    let edits: [(&str, &str, &str); 4] = [
+        (
+            "localdep/BUILD.bazel",
+            "genrule(name = 'l', outs = ['l.txt'], cmd = 'echo two > $@', visibility = ['//visibility:public'])\n",
+            "localdep/BUILD.bazel",
+        ),
+        (
+            "localdep/MODULE.bazel",
+            "module(name = 'localdep', version = '1.0')\n# edited\n",
+            "localdep/MODULE.bazel",
+        ),
+        (
+            "registry/src/w5reg/BUILD.bazel",
+            "genrule(name = 'r', outs = ['r.txt'], cmd = 'echo two > $@', visibility = ['//visibility:public'])\n",
+            "w5reg/BUILD.bazel",
+        ),
+        (
+            "registry/modules/w5reg/1.0/MODULE.bazel",
+            "module(name = 'w5reg', version = '1.0')\n# edited\n",
+            "w5reg/1.0/MODULE.bazel",
+        ),
+    ];
+    for (path, content, reason) in edits {
+        twin.write_beside(path, content);
+        let edited = twin.same(args, &[]);
+        edited.assert_success().assert_miss(reason);
+        twin.settle(&edited, args, &[]);
+        twin.same(args, &[]).assert_hit();
+    }
+}
+
+/// Test gap (L2-W5f): a new BUILD file inside a directory a recursive glob
+/// descends into makes it a subpackage the glob stops at: a miss, and the
+/// glob's result changes.
+#[test]
+fn a_new_build_file_in_a_globbed_subdirectory_misses() {
+    let twin = fixture();
+    twin.write(
+        "gl/BUILD.bazel",
+        "genrule(name = 'g', srcs = glob(['**/*.txt']), outs = ['g.list'], cmd = 'echo $(SRCS) > $@')\n",
+    );
+    twin.write("gl/a.txt", "a\n");
+    twin.write("gl/sub/b.txt", "b\n");
+    let args = &["build", "//gl:g"];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    twin.write("gl/sub/BUILD.bazel", "exports_files(['b.txt'])\n");
+    let edited = twin.same(args, &[]);
+    edited.assert_success().assert_miss("gl/sub");
+    let listed = built_output(&twin, ON, &edited.on);
+    assert!(!listed.contains("b.txt"), "{listed}");
+    twin.settle(&edited, args, &[]);
+    twin.same(args, &[]).assert_hit();
+}
+
+/// Test gap (L2-W5f): an edit of REPO.bazel's `ignore_directories()`
+/// misses (`//...` sees another set of packages).
+#[test]
+fn repo_file_ignore_directories_edits_miss() {
+    let twin = fixture();
+    twin.write("REPO.bazel", "ignore_directories(['other'])\n");
+    let args = &["build", "--nobuild", "//..."];
+    twin.save(args, &[]);
+    twin.same(args, &[]).assert_hit();
+    twin.write("REPO.bazel", "ignore_directories([])\n");
+    let edited = twin.same(args, &[]);
+    edited.assert_success().assert_miss("REPO.bazel");
+    twin.settle(&edited, args, &[]);
+    twin.same(args, &[]).assert_hit();
+}
+
+/// L2-W5f review F4: a hit whose command fails on a path in the repository
+/// store — here the test runner staging a runfile of a verified store tree
+/// that became unreadable (per tree, a file's own mode is not validated;
+/// the failure comes after the build part succeeded), the error naming an
+/// existing path — removes the snapshot with a one-line hint; the next run
+/// repairs the tree like the run without the snapshot did, and passes.
+/// (Verify mode's shadow full analysis repairs the tree first: the
+/// documented per-tree trade-off is a mismatch there.)
+#[test]
+fn a_store_input_staged_by_the_test_runner_heals() {
+    let twin = fixture();
+    twin.write(
+        "heal/BUILD.bazel",
+        "load('//:rules.bzl', 'script_test')\nscript_test(name = 'gen_test', size = 'small', data = ['@genrepo//:data.txt'], script = '#!/bin/bash\\necho gen-test-ran\\n')\n",
+    );
+    let args = &["test", "//heal:gen_test"];
+    twin.save(args, &[]);
+    // Settled keys (no racy tree head verifies the tree on the hit).
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(args, &[]).assert_hit().assert_success();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(args, &[]).assert_hit().assert_success();
+    let tree_file = |root: &Path| -> PathBuf {
+        fs::read_dir(root.join("cache/repositories/direct/trees"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path().join("data.txt"))
+            .find(|path| path.exists())
+            .expect("the generated repository's data.txt")
+    };
+    twin.each(|root| {
+        fs::set_permissions(tree_file(root), fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    let stale = twin.run(args, &[]);
+    assert!(stale.line("hit ").is_some(), "{:?}", stale.explain());
+    assert!(stale.off.status.success(), "{}", text(&stale.off.stderr));
+    if twin.mode.get() == VERIFY {
+        stale.assert_verify_mismatch("repository-rule-executed");
+        let next = twin.run(args, &[]);
+        next.assert_success().assert_miss("no snapshot");
+        twin.settle(&next, args, &[]);
+        twin.same(args, &[]).assert_hit().assert_success();
+        return;
+    }
+    assert!(!stale.on.status.success());
+    let stderr = text(&stale.on.stderr);
+    assert!(
+        stderr.contains(
+            "bazel-rs: removed the analysis snapshot of this build: its failure involves "
+        ) && stderr.contains("data.txt in the repository store"),
+        "{stderr}"
+    );
+    assert!(twin.snapshots().is_empty());
+    // The next run repairs the tree like the run without the snapshot did.
+    let repaired = Pair {
+        on: twin.run_side(ON, args, &[]),
+        off: stale.off,
+        mode: twin.mode.get(),
+    };
+    repaired.assert_same(args);
+    repaired.assert_success().assert_miss("no snapshot");
+    twin.settle(&repaired, args, &[]);
+    twin.same(args, &[]).assert_hit().assert_success();
+}
+
+/// Test gap (L2-W5f): hits that rewrite their snapshot (racy keys settled)
+/// racing a concurrent save of the same key: every process succeeds with
+/// the snapshot-less output, and the store ends with one valid snapshot.
+#[test]
+fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
+    let twin = fixture();
+    twin.same(BUILD_ALL, &[])
+        .assert_not_saved("repository-rule-executed");
+    let off = twin.run_side(OFF, BUILD_ALL, &[]);
+    for round in 0..3 {
+        // A fresh save (its keys racy: the next hits refresh them), then
+        // two hits and one process whose snapshot was removed under it.
+        let saved = twin.run_side(ON, BUILD_ALL, &[]);
+        let saved = Pair {
+            on: saved,
+            off: off.clone(),
+            mode: twin.mode.get(),
+        };
+        saved.assert_same(BUILD_ALL);
+        let outputs = twin.with_side(ON, || {
+            let spawn = || {
+                twin.command(BUILD_ALL, &[], true)
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .unwrap()
+            };
+            let mut children = vec![spawn(), spawn()];
+            if round % 2 == 0 {
+                for file in fs::read_dir(twin.cache().join("snapshots/v1"))
+                    .unwrap()
+                    .flatten()
+                {
+                    let _ = fs::remove_file(file.path());
+                }
+            }
+            children.push(spawn());
+            children
+                .into_iter()
+                .map(|child| child.wait_with_output().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for on in outputs {
+            let pair = Pair {
+                on,
+                off: off.clone(),
+                mode: twin.mode.get(),
+            };
+            pair.assert_same(BUILD_ALL);
+            assert!(
+                pair.line("hit ").is_some()
+                    || pair.line("saved ").is_some()
+                    || pair.line("not saved").is_some(),
+                "{:?}",
+                pair.explain()
+            );
+        }
+        assert!(twin.snapshots().len() <= 1, "{:?}", twin.snapshots());
+    }
+    // Whatever won, the next run is a hit or saves, then hits.
+    let next = twin.same(BUILD_ALL, &[]);
+    if next.line("hit ").is_none() {
+        twin.same(BUILD_ALL, &[]).assert_hit();
+    }
+    assert_eq!(twin.snapshots().len(), 1);
+}
+
+/// Test gap (L2-W5f): garbage collection during a hit. A hit holds its
+/// snapshot open (sections are read by offset), so another process's save
+/// that collects it as the least recently used of more than the store's 16
+/// never breaks it; a refresh written after the collection is a valid
+/// snapshot again.
+#[test]
+fn garbage_collection_during_a_hit_never_breaks_it() {
+    let twin = warmed(BUILD_ALL, &[]);
+    twin.same(BUILD_ALL, &[]).assert_hit();
+    let off = twin.run_side(OFF, BUILD_ALL, &[]);
+    for round in 0..3 {
+        // Fifteen newer snapshots of other keys (never read: stand-ins), the
+        // hit's own made the least recently used.
+        {
+            let store = twin.side(ON).join("cache/snapshots/v1");
+            for entry in fs::read_dir(&store).unwrap().flatten() {
+                if entry.path().extension().is_some_and(|ext| ext == "snap") {
+                    fs::File::options()
+                        .write(true)
+                        .open(entry.path())
+                        .unwrap()
+                        .set_modified(
+                            std::time::SystemTime::now() - std::time::Duration::from_secs(600),
+                        )
+                        .unwrap();
+                }
+            }
+            for n in 0..15 {
+                fs::write(
+                    store.join(format!("0000000000000000000000000000{n:04}.snap")),
+                    b"x",
+                )
+                .unwrap();
+            }
+        }
+        let outputs = twin.with_side(ON, || {
+            let hit = twin
+                .command(BUILD_ALL, &[], true)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            // A save of another key collects the oldest snapshot meanwhile.
+            let define = format!("--define=w5gc={round}");
+            let save = twin
+                .command(&["build", define.as_str(), "//:all_inputs"], &[], true)
+                .output()
+                .unwrap();
+            (hit.wait_with_output().unwrap(), save)
+        });
+        assert!(outputs.1.status.success(), "{}", text(&outputs.1.stderr));
+        let pair = Pair {
+            on: outputs.0,
+            off: off.clone(),
+            mode: twin.mode.get(),
+        };
+        pair.assert_same(BUILD_ALL);
+        assert!(twin.snapshots().len() <= 16, "{}", twin.snapshots().len());
+        // Back to one snapshot of this key (hit, or saved again).
+        for entry in fs::read_dir(twin.side(ON).join("cache/snapshots/v1"))
+            .unwrap()
+            .flatten()
+        {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("0000000000000000")
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let next = twin.same(BUILD_ALL, &[]);
+        next.assert_success();
+        if next.line("hit ").is_none() {
+            twin.same(BUILD_ALL, &[]).assert_hit();
+        }
+    }
+}
+
+/// L2-W5f, verify mode's default (no `BAZEL_RS_SNAPSHOT_VERIFY_STRICT`): a
+/// mismatch — the documented in-place-edit trade-off: the full analysis
+/// repairs the tree the hit trusted — prints the differences on the
+/// diagnostics stream, appends one line to `<cache>/snapshots/verify.log`,
+/// removes the snapshot and executes the FULL ANALYSIS's plan: output and
+/// exit code are those of the run without the snapshot.
+#[test]
+fn verify_mismatches_execute_the_full_analysis_by_default() {
+    MODE.with(|mode| mode.set(VERIFY));
+    STRICT.with(|strict| strict.set(false));
+    let build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
+    let twin = fixture();
+    twin.write("repos.bzl", NESTED_REPOS);
+    twin.write("BUILD.bazel", &build);
+    twin.same(BUILD_ALL, &[])
+        .assert_not_saved("repository-rule-executed");
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_saved();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_hit();
+    twin.each(|root| {
+        let file = generated_tree(root).join("sub/data.txt");
+        let metadata = fs::metadata(&file).unwrap();
+        let mode = metadata.permissions().mode();
+        let modified = metadata.modified().unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&file, "GENERATED\n").unwrap();
+        let handle = fs::File::options().write(true).open(&file).unwrap();
+        handle.set_modified(modified).unwrap();
+        drop(handle);
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+    });
+    // Byte-identical to the run without the snapshot, exit code included.
+    let mismatch = twin.same(BUILD_ALL, &[]);
+    mismatch.assert_success();
+    assert!(mismatch.line("hit ").is_some(), "{:?}", mismatch.explain());
+    let line = mismatch.line("verify ").unwrap_or_default();
+    assert!(
+        line.contains("MISMATCH") && line.contains("first: taint") && line.contains("logged to"),
+        "{line}"
+    );
+    assert!(twin.snapshots().is_empty());
+    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log")).unwrap();
+    assert_eq!(log.lines().count(), 1, "{log}");
+    assert!(
+        log.contains(" command=build first=taint ") && log.ends_with(" targets=//:all_inputs\n"),
+        "{log}"
+    );
+    // The next run analyzes and saves anew, then hits (verified).
+    twin.same(BUILD_ALL, &[])
+        .assert_miss("no snapshot")
+        .assert_saved();
+    twin.same(BUILD_ALL, &[]).assert_hit();
+}
+
+// ---- the mutation fuzz (L2-W5f) --------------------------------------------
+
+/// A deterministic random sequence (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+
+    fn percent(&mut self, chance: u64) -> bool {
+        self.next() % 100 < chance
+    }
+}
+
+const FUZZ_MODULE: &str = r#"module(name = "snapshot_fuzz")
+
+lr = use_repo_rule("//:repos.bzl", "local_rule")
+lr(name = "localrepo")
+
+gr = use_repo_rule("//:repos.bzl", "gen_rule")
+gr(name = "genrepo")
+
+er = use_repo_rule("//environ:repos.bzl", "environ_rule")
+er(name = "envrepo")
+
+bazel_dep(name = "localdep", version = "1.0")
+local_path_override(module_name = "localdep", path = "../localdep")
+"#;
+
+const FUZZ_REPOS: &str = r#"def _local(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['value'])\n")
+    ctx.file("value", "value=%s\n" % ctx.getenv("W5_LOCAL", "unset"))
+
+local_rule = repository_rule(implementation = _local, local = True)
+
+def _gen(ctx):
+    ctx.file("BUILD.bazel", "exports_files(['sub/data.txt'])\n")
+    ctx.file("sub/data.txt", "generated\n")
+    ctx.file("sub/deeper/more.txt", "more\n")
+
+gen_rule = repository_rule(implementation = _gen)
+"#;
+
+/// The mutation fuzz's workspace: the fixture with a nested generated
+/// repository (a verified store tree to tamper with), a `--repo_env`
+/// repository, a `local_path_override` module beside the workspace, a
+/// status command, a symlink, `.bazelrc`, `.bazelignore` and `REPO.bazel`.
+fn fuzz_fixture() -> Twin {
+    let twin = fixture();
+    twin.write("MODULE.bazel", FUZZ_MODULE);
+    twin.write("repos.bzl", FUZZ_REPOS);
+    twin.write(
+        "BUILD.bazel",
+        &ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt"),
+    );
+    twin.write("environ/repos.bzl", ENVIRON_REPOS);
+    twin.write(
+        "environ/BUILD.bazel",
+        "genrule(name = 'g', srcs = ['@envrepo//:v.txt'], outs = ['g.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.write_beside(
+        "localdep/MODULE.bazel",
+        "module(name = 'localdep', version = '1.0')\n",
+    );
+    twin.write_beside("localdep/BUILD.bazel", &localdep_build(0));
+    twin.write(
+        "deps/BUILD.bazel",
+        "genrule(name = 'd', srcs = ['@localdep//:l', '//pkg:in.txt'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    twin.write("pkg/other.txt", "other\n");
+    twin.write(
+        "pkg/BUILD.bazel",
+        "exports_files(['in.txt', 'link.txt'])\ngenrule(name = 'l', srcs = ['link.txt'], outs = ['l.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.each(|root| std::os::unix::fs::symlink("in.txt", root.join("ws/pkg/link.txt")).unwrap());
+    twin.write("stable.txt", "one\n");
+    twin.each(|root| {
+        write_executable_script(
+            &root.join("ws/status.sh"),
+            "#!/bin/sh\necho STABLE_W5 $(cat stable.txt)\n[ -e noisy ] && echo 'status: noisy' >&2\nexit 0\n",
+            0o755,
+        );
+    });
+    twin.write(".bazelrc", "");
+    twin.write(".bazelignore", "");
+    twin.write("REPO.bazel", "");
+    twin.workspace_rc.set(true);
+    twin
+}
+
+fn localdep_build(variant: usize) -> String {
+    format!(
+        "genrule(name = 'l', outs = ['l.txt'], cmd = 'echo localdep-{variant} > $@', visibility = ['//visibility:public'])\n"
+    )
+}
+
+/// The published store tree of the generated repository, if fetched (by
+/// its BUILD file: the tree may be damaged).
+fn fuzz_tree(root: &Path) -> Option<PathBuf> {
+    fs::read_dir(root.join("cache/repositories/direct/trees"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            fs::read_to_string(path.join("BUILD.bazel"))
+                .is_ok_and(|build| build.contains("sub/data.txt"))
+        })
+}
+
+/// What the fuzz holds besides the files: the client environment and
+/// the options of the next commands.
+#[derive(Default)]
+struct FuzzState {
+    local: usize,
+    inherited: usize,
+    repo_env: usize,
+    define: Option<usize>,
+    toggles: std::collections::BTreeMap<&'static str, bool>,
+    added: usize,
+}
+
+impl FuzzState {
+    fn toggle(&mut self, name: &'static str) -> bool {
+        let value = self.toggles.entry(name).or_default();
+        *value = !*value;
+        *value
+    }
+
+    fn env(&self) -> Vec<(&'static str, String)> {
+        let mut env = vec![
+            ("W5_LOCAL", ["a", "b"][self.local % 2].to_owned()),
+            ("W5_INHERITED", ["x", "y"][self.inherited % 2].to_owned()),
+        ];
+        match self.repo_env % 3 {
+            0 => env.push(("W5X", "one".to_owned())),
+            1 => env.push(("W5X", "two".to_owned())),
+            _ => {}
+        }
+        env
+    }
+}
+
+/// Apply one random mutation of the catalogue (the same to both copies);
+/// returns its name. `concurrent` asks for the step's command to run twice
+/// at once on the snapshot side.
+fn mutate(
+    twin: &Twin,
+    rng: &mut Rng,
+    state: &mut FuzzState,
+    step: usize,
+    concurrent: &mut bool,
+) -> String {
+    let choice = rng.below(33);
+    let name = |text: &str| format!("#{choice} {text}");
+    match choice {
+        0 => {
+            twin.write("pkg/in.txt", &format!("input {step}\n"));
+            name("edit pkg/in.txt")
+        }
+        1 => {
+            twin.write("pkg/in.txt", &format!("input {:02}\n", step % 100));
+            name("same-size edit pkg/in.txt")
+        }
+        2 => {
+            // A same-size edit that restores the modification time.
+            let flip = state.toggle("mtime");
+            twin.each(|root| {
+                let path = root.join("ws/pkg/BUILD.bazel");
+                let text = fs::read_to_string(&path).unwrap();
+                let modified = fs::metadata(&path).unwrap().modified().unwrap();
+                let text = text.trim_end_matches(['#', 'a', 'b', '\n']).to_owned();
+                fs::write(
+                    &path,
+                    format!("{text}\n#{}\n", if flip { 'a' } else { 'b' }),
+                )
+                .unwrap();
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+            });
+            name("mtime-restoring edit pkg/BUILD.bazel")
+        }
+        3 => {
+            state.added += 1;
+            twin.write(&format!("data/f{}.txt", state.added), "added\n");
+            name("add a globbed data file")
+        }
+        4 => {
+            if state.added > 0 {
+                let added = state.added;
+                twin.each(|root| {
+                    let _ = fs::remove_file(root.join(format!("ws/data/f{added}.txt")));
+                });
+                state.added -= 1;
+            }
+            name("delete a globbed data file")
+        }
+        5 => {
+            twin.write(&format!("data/.f{step}.txt.swp"), "swap");
+            name("add a swap file")
+        }
+        6 => {
+            let extra = state.toggle("extra-rule");
+            let build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
+            twin.write(
+                "BUILD.bazel",
+                &if extra {
+                    format!("{build}\ngenrule(name = 'extra', outs = ['extra.txt'], cmd = 'echo > $@')\n")
+                } else {
+                    build
+                },
+            );
+            name("BUILD edit")
+        }
+        7 => {
+            let loud = state.toggle("rules-print");
+            twin.write(
+                "rules.bzl",
+                &if loud {
+                    RULES.replace("rules.bzl loaded", "rules.bzl loaded (edited)")
+                } else {
+                    RULES.to_owned()
+                },
+            );
+            name(".bzl edit")
+        }
+        8 => {
+            twin.write(
+                &format!("newpkg{step}/BUILD.bazel"),
+                "genrule(name = 'n', outs = ['n.txt'], cmd = 'echo > $@')\n",
+            );
+            name("new package")
+        }
+        9 => {
+            twin.each(|root| {
+                for entry in fs::read_dir(root.join("ws")).unwrap().flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("newpkg") {
+                        fs::remove_dir_all(entry.path()).unwrap();
+                    }
+                }
+            });
+            name("remove the new packages")
+        }
+        10 => {
+            twin.write(&format!("other/extra{step}.go"), "package other\n");
+            name("add a .go file")
+        }
+        11 => {
+            let other = state.toggle("link");
+            twin.each(|root| {
+                let link = root.join("ws/pkg/link.txt");
+                fs::remove_file(&link).unwrap();
+                std::os::unix::fs::symlink(if other { "other.txt" } else { "in.txt" }, &link)
+                    .unwrap();
+            });
+            name("retarget a symlink")
+        }
+        12 => {
+            let ignore = state.toggle("bazelignore");
+            twin.write(".bazelignore", if ignore { "other\n" } else { "" });
+            name(".bazelignore edit")
+        }
+        13 => {
+            let ignore = state.toggle("repo-file");
+            twin.write(
+                "REPO.bazel",
+                if ignore {
+                    "ignore_directories(['other'])\n"
+                } else {
+                    "ignore_directories([])\n"
+                },
+            );
+            name("REPO.bazel ignore_directories edit")
+        }
+        14 => {
+            state.local += 1;
+            name("W5_LOCAL (a local rule's input)")
+        }
+        15 => {
+            state.inherited += 1;
+            name("W5_INHERITED (--action_env)")
+        }
+        16 => {
+            state.repo_env += 1;
+            name("W5X (--repo_env re-inherited)")
+        }
+        17 => {
+            state.define = match state.define {
+                Some(_) => None,
+                None => Some(step % 3),
+            };
+            name("--define")
+        }
+        18 => {
+            let rc = state.toggle("bazelrc");
+            twin.write(".bazelrc", if rc { "build --define=rc=1\n" } else { "" });
+            name(".bazelrc edit")
+        }
+        19 => {
+            let comment = state.toggle("module");
+            twin.write(
+                "MODULE.bazel",
+                &if comment {
+                    format!("{FUZZ_MODULE}# edited\n")
+                } else {
+                    FUZZ_MODULE.to_owned()
+                },
+            );
+            name("MODULE.bazel edit")
+        }
+        20 => {
+            twin.each(|root| {
+                let path = root.join("ws/MODULE.bazel.lock");
+                if let Ok(text) = fs::read_to_string(&path) {
+                    fs::write(&path, format!("{}\n", text.trim_end())).unwrap();
+                }
+            });
+            name("lockfile edit")
+        }
+        21 => {
+            twin.each(|root| {
+                let _ = fs::remove_file(root.join("ws/MODULE.bazel.lock"));
+            });
+            name("lockfile deleted")
+        }
+        22 => {
+            twin.each(|root| {
+                if let Some(tree) = fuzz_tree(root) {
+                    let _ = fs::remove_file(tree.join("sub/data.txt"));
+                }
+            });
+            name("store tree: a file deleted")
+        }
+        23 => {
+            twin.each(|root| {
+                if let Some(tree) = fuzz_tree(root) {
+                    let _ = fs::remove_dir_all(tree.join("sub/deeper"));
+                }
+            });
+            name("store tree: a directory deleted")
+        }
+        24 => {
+            twin.each(|root| {
+                if let Some(tree) = fuzz_tree(root) {
+                    let _ = fs::write(tree.join(format!("sub/added{step}.txt")), "added\n");
+                }
+            });
+            name("store tree: a file added")
+        }
+        25 => {
+            twin.write("stable.txt", &format!("{step}\n"));
+            name("status command output")
+        }
+        26 => {
+            if state.toggle("noisy") {
+                twin.write("noisy", "");
+            } else {
+                twin.each(|root| {
+                    let _ = fs::remove_file(root.join("ws/noisy"));
+                });
+            }
+            name("status command stderr toggled")
+        }
+        27 => {
+            if let Some(file) = twin.snapshots().first() {
+                let mut bytes = fs::read(file).unwrap();
+                let at = (step * 7919) % bytes.len();
+                bytes[at] ^= 0x5a;
+                fs::write(file, bytes).unwrap();
+            }
+            name("a snapshot damaged")
+        }
+        28 => {
+            for file in twin.snapshots() {
+                let _ = fs::remove_file(file);
+            }
+            name("the snapshots deleted")
+        }
+        29 => {
+            *concurrent = true;
+            name("concurrent runs")
+        }
+        30 => {
+            twin.write_beside("localdep/BUILD.bazel", &localdep_build(step));
+            name("local_path_override module edit")
+        }
+        31 => {
+            std::thread::sleep(std::time::Duration::from_millis(2100));
+            name("settle (2 s)")
+        }
+        _ => name("no change"),
+    }
+}
+
+/// The commands of the fuzz ([`fuzz_command`]).
+const FUZZ_COMMANDS: usize = 8;
+
+/// The fuzz's command `command` (below [`FUZZ_COMMANDS`]).
+fn fuzz_command(twin: &Twin, command: usize, state: &FuzzState) -> Vec<String> {
+    let define = state.define.map(|n| format!("--define=fz={n}"));
+    let mut args: Vec<String> = match command {
+        0 => vec!["build".into(), "//:all_inputs".into()],
+        1 => vec!["build".into(), "--nobuild".into(), "//...".into()],
+        2 => vec![
+            "test".into(),
+            "--test_output=all".into(),
+            "//:pass_test".into(),
+        ],
+        3 => vec![
+            "build".into(),
+            "--action_env=W5_INHERITED".into(),
+            "//:env_echo".into(),
+        ],
+        4 => vec![
+            "build".into(),
+            format!(
+                "--workspace_status_command={}",
+                twin.ws().join("status.sh").display()
+            ),
+            "//:stamped".into(),
+        ],
+        5 => vec![
+            "run".into(),
+            format!(
+                "--script_path={}",
+                twin.run_root().join("home/run.sh").display()
+            ),
+            "//:tool".into(),
+        ],
+        6 => vec![
+            "build".into(),
+            "--repo_env=W5X=default".into(),
+            "--repo_env=W5X".into(),
+            "//environ:g".into(),
+        ],
+        _ => vec!["build".into(), "//deps:d".into(), "//pkg:l".into()],
+    };
+    if let Some(define) = define {
+        args.insert(1, define);
+    }
+    args
+}
+
+/// L2-W5f: random sequences of ~30 kinds of mutation (sources, globs,
+/// BUILD and `.bzl` files, packages, symlinks, `.bazelignore`,
+/// `REPO.bazel`, the environment of local rules, `--action_env` and
+/// `--repo_env`, options and `.bazelrc`, MODULE.bazel and the lockfile,
+/// store-tree tampering (deletions and additions: per tree they are
+/// misses), the status command, damaged or deleted snapshots, concurrent
+/// runs, a `local_path_override` module) and commands (`build`,
+/// `--nobuild //...`, `test`, `run --script_path`), each step run with the
+/// snapshot (`on`, or `verify` with the strict switch) and without: every
+/// step byte-identical. `BAZEL_RS_SNAPSHOT_FUZZ_STEPS` (default 50) and
+/// `BAZEL_RS_SNAPSHOT_FUZZ_SEED` (default: from the clock; printed) — a
+/// failure prints the seed and the steps so far.
+///
+/// Not in the catalogue (documented deviations, fixtures of their own): an
+/// in-place edit of a store-tree file's bytes (a hit executes with the
+/// edited bytes, `a_hit_hashes_an_edited_tree_file_by_its_change_time`) and
+/// a store-tree file made unreadable (the hit fails once, then heals,
+/// `a_store_input_staged_by_the_test_runner_heals`).
+#[test]
+fn mutation_fuzz() {
+    let steps: usize = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_STEPS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(50);
+    let seed: u64 = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_SEED")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                | 1
+        });
+    println!("mutation fuzz: seed {seed}, {steps} steps");
+    let mut rng = Rng(seed);
+    let twin = fuzz_fixture();
+    let mut state = FuzzState::default();
+    let mut log: Vec<String> = Vec::new();
+    let mut counts = std::collections::BTreeMap::<&str, usize>::new();
+    let mut previous: Option<usize> = None;
+    for step in 0..steps {
+        let mut concurrent = false;
+        // Mostly a mutation, sometimes none; the command mostly the previous
+        // one (hits need a repeated command), sometimes another.
+        let mutation = if step == 0 {
+            "#- cold".to_owned()
+        } else if rng.percent(70) {
+            mutate(&twin, &mut rng, &mut state, step, &mut concurrent)
+        } else {
+            "#- no change".to_owned()
+        };
+        let command = match previous {
+            Some(command) if rng.percent(55) => command,
+            _ => rng.below(FUZZ_COMMANDS),
+        };
+        previous = Some(command);
+        let args = fuzz_command(&twin, command, &state);
+        let mode = if rng.percent(30) { VERIFY } else { ON };
+        twin.mode.set(mode);
+        let env_owned = state.env();
+        let env: Vec<(&str, &str)> = env_owned
+            .iter()
+            .map(|(name, value)| (*name, value.as_str()))
+            .collect();
+        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        log.push(format!("step {step}: {mutation}; {mode} {argv:?} {env:?}"));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if concurrent {
+                // Once in sequence (concurrent runs share the action cache:
+                // which of them executes an action first is a race), then
+                // twice at once on the snapshot side.
+                twin.same(&argv, &env);
+                let off = twin.run_side(OFF, &argv, &env);
+                let outputs = twin.with_side(ON, || {
+                    let children: Vec<_> = (0..2)
+                        .map(|_| {
+                            twin.command(&argv, &env, true)
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped())
+                                .spawn()
+                                .unwrap()
+                        })
+                        .collect();
+                    children
+                        .into_iter()
+                        .map(|child| child.wait_with_output().unwrap())
+                        .collect::<Vec<_>>()
+                });
+                let mut pairs: Vec<Pair> = outputs
+                    .into_iter()
+                    .map(|on| Pair {
+                        on,
+                        off: off.clone(),
+                        mode,
+                    })
+                    .collect();
+                for pair in &pairs {
+                    pair.assert_same(&argv);
+                }
+                pairs.pop().unwrap()
+            } else {
+                let pair = twin.same(&argv, &env);
+                // What the build wrote (stdout's `<label>\t<path>` lines).
+                if argv[0] == "build" {
+                    let outputs = |side: &str, output: &Output| -> Vec<(String, Vec<u8>)> {
+                        let stdout = text(&output.stdout);
+                        twin.with_side(side, || {
+                            stdout
+                                .lines()
+                                .filter_map(|line| line.split_once('\t'))
+                                .map(|(_, path)| {
+                                    (path.to_owned(), fs::read(path).unwrap_or_default())
+                                })
+                                .collect()
+                        })
+                    };
+                    assert_eq!(
+                        outputs(ON, &pair.on),
+                        outputs(OFF, &pair.off),
+                        "{argv:?}: the outputs differ"
+                    );
+                }
+                pair
+            }
+        }));
+        match outcome {
+            Ok(pair) => {
+                let what = if pair.line("verified ").is_some() {
+                    "verified hit"
+                } else if pair.line("hit ").is_some() {
+                    "hit"
+                } else if pair.line("saved ").is_some() {
+                    "miss, saved"
+                } else {
+                    "miss"
+                };
+                *counts.entry(what).or_default() += 1;
+                log.last_mut().unwrap().push_str(&format!(" -> {what}"));
+            }
+            Err(panic) => {
+                eprintln!(
+                    "mutation fuzz failed (seed {seed}, BAZEL_RS_SNAPSHOT_FUZZ_SEED={seed}):\n{}",
+                    log.join("\n")
+                );
+                std::panic::resume_unwind(panic);
+            }
+        }
+    }
+    println!("{}", log.join("\n"));
+    println!("mutation fuzz: seed {seed}: {counts:?}");
+}
+
 /// Fixture 19 (PLAN-L2 §7, L2-W6): every fixture again with
 /// `BAZEL_RS_SNAPSHOT=verify` on the snapshot side. A miss saves as with
 /// `on`; every hit also runs the full analysis in its shadow, which must
@@ -1640,8 +2915,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn a_file_deleted_from_a_repository_tree_heals() {
-        verified(super::a_file_deleted_from_a_repository_tree_heals);
+    fn a_file_or_directory_deleted_from_a_repository_tree_misses() {
+        verified(super::a_file_or_directory_deleted_from_a_repository_tree_misses);
     }
 
     #[test]
@@ -1722,6 +2997,61 @@ mod verify_mode {
     #[test]
     fn a_test_writes_the_lockfile_and_saves_next_time() {
         verified(super::a_test_writes_the_lockfile_and_saves_next_time);
+    }
+
+    #[test]
+    fn a_reinherited_repo_env_name_follows_the_client() {
+        verified(super::a_reinherited_repo_env_name_follows_the_client);
+    }
+
+    #[test]
+    fn a_nobuild_status_consumer_runs_the_status_command_on_a_hit() {
+        verified(super::a_nobuild_status_consumer_runs_the_status_command_on_a_hit);
+    }
+
+    #[test]
+    fn a_reused_rule_misses_on_its_environ_variable_or_watched_file() {
+        verified(super::a_reused_rule_misses_on_its_environ_variable_or_watched_file);
+    }
+
+    #[test]
+    fn a_reused_extension_misses_on_its_environment_or_file_input() {
+        verified(super::a_reused_extension_misses_on_its_environment_or_file_input);
+    }
+
+    #[test]
+    fn module_file_prints_replay_on_a_hit() {
+        verified(super::module_file_prints_replay_on_a_hit);
+    }
+
+    #[test]
+    fn local_override_and_file_registry_edits_miss() {
+        verified(super::local_override_and_file_registry_edits_miss);
+    }
+
+    #[test]
+    fn a_new_build_file_in_a_globbed_subdirectory_misses() {
+        verified(super::a_new_build_file_in_a_globbed_subdirectory_misses);
+    }
+
+    #[test]
+    fn repo_file_ignore_directories_edits_miss() {
+        verified(super::repo_file_ignore_directories_edits_miss);
+    }
+
+    #[test]
+    fn a_store_input_staged_by_the_test_runner_heals() {
+        verified(super::a_store_input_staged_by_the_test_runner_heals);
+    }
+
+    #[test]
+    fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
+        verified(super::hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot);
+    }
+
+    #[test]
+    fn garbage_collection_during_a_hit_never_breaks_it() {
+        verified(super::garbage_collection_during_a_hit_never_breaks_it);
     }
 }
 

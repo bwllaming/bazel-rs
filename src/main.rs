@@ -431,7 +431,7 @@ fn run() -> Result<(), String> {
     let mut snapshot = bazel_rs::snapshot::Scope::default();
     match bazel_rs::snapshot::Mode::from_env() {
         bazel_rs::snapshot::Mode::Record => {
-            snapshot.record = bazel_rs::snapshot::record::start(&command, &rc_options.repo_env);
+            snapshot.record = bazel_rs::snapshot::record::start(&command, &repository_environment);
         }
         mode @ (bazel_rs::snapshot::Mode::On | bazel_rs::snapshot::Mode::Verify)
             if builds(&command) =>
@@ -465,7 +465,6 @@ fn run() -> Result<(), String> {
                                 == bazel_rs::repository_store::VerifyMode::Full,
                         },
                         cache: &cache,
-                        repo_env: &rc_options.repo_env,
                         replay: bazel_rs::snapshot::hit::ReplayInputs {
                             options: resolver_options.clone(),
                             environment: repository_environment.clone(),
@@ -478,13 +477,17 @@ fn run() -> Result<(), String> {
                         bazel_rs::snapshot::Checked::Hit(hit) if verify => {
                             // The full analysis runs below, in the hit's
                             // shadow; plan_request compares and hands the
-                            // hit back for its own execution.
+                            // hit back for its own execution (or, on a
+                            // mismatch, executes the full analysis's plan).
                             bazel_rs::perf_mark("snapshot.hit");
-                            snapshot.verify = Some(bazel_rs::snapshot::verify::start(
+                            snapshot.verify = bazel_rs::snapshot::verify::start(
                                 hit,
-                                &rc_options.repo_env,
-                                bazel_rs::snapshot::explain(),
-                            ));
+                                bazel_rs::snapshot::verify::Context {
+                                    command: command.clone(),
+                                    targets: targets.to_vec(),
+                                    explain: bazel_rs::snapshot::explain(),
+                                },
+                            );
                         }
                         bazel_rs::snapshot::Checked::Hit(hit) => {
                             // The saved plan executes exactly like a planned
@@ -965,7 +968,11 @@ fn plan_request(
     let request = engine.plan_request(spec);
     snapshot.end_window();
     let request = request.and_then(bazel_rs::snapshot::codec::hand_over);
-    let status = bazel_rs::request::StatusSource::Planned(engine.take_workspace_status());
+    let computed = engine.take_workspace_status();
+    // Planning ran the workspace status command (a hit runs it too: the
+    // snapshot records it, crate::snapshot::format::Inputs).
+    let status_computed = computed.is_some();
+    let status = bazel_rs::request::StatusSource::Planned(computed);
     let failed = request.is_err().then(|| bazel_rs::request::Diagnostics {
         warnings: engine.take_warnings(),
         errors: engine.take_errors(),
@@ -973,15 +980,23 @@ fn plan_request(
     release_engine(engine);
     if let Some(verify) = snapshot.verify.take() {
         // Compared before its diagnostics are taken (they are part of the
-        // planned request's encoding).
-        let hit = (*verify).conclude(&request, failed.as_ref());
-        bazel_rs::perf_mark("snapshot.verified");
-        drop(request);
-        return planned_hit(hit, snapshot);
+        // planned request's encoding). A mismatch (reported, logged, the
+        // snapshot removed; strict: exit 70) executes this full analysis's
+        // own plan below, unsaved.
+        match (*verify).conclude(&request, failed.as_ref(), status_computed) {
+            bazel_rs::snapshot::verify::Concluded::Agreed(hit) => {
+                bazel_rs::perf_mark("snapshot.verified");
+                drop(request);
+                return planned_hit(hit, snapshot);
+            }
+            bazel_rs::snapshot::verify::Concluded::Disagreed => {
+                bazel_rs::perf_mark("snapshot.verify_mismatch");
+            }
+        }
     }
     let (diagnostics, request) = match request {
         Ok(mut request) => {
-            snapshot.planned(&request);
+            snapshot.planned(&request, status_computed);
             (request.take_diagnostics(), Ok(request))
         }
         Err(error) => (failed.unwrap_or_default(), Err(error)),
@@ -3120,7 +3135,9 @@ fn warn(warning: &str) {
 fn main() {
     let result = run();
     // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended
-    // before planning completed is a mismatch (exit 70).
+    // before planning completed is a mismatch (reported and logged; the
+    // full analysis's result stands, or exit 70 under
+    // BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1).
     bazel_rs::snapshot::verify::exit_if_abandoned(result.as_ref().err().map(String::as_str));
     // Save the digest memo's new records (if any), also after a failure.
     bazel_rs::digest_memo::finish();
@@ -3128,6 +3145,10 @@ fn main() {
     // exit path, idempotent, silent unless enabled.
     bazel_rs::loading::module_timings::report();
     if let Err(error) = result {
+        // A snapshot hit whose build part succeeded, failing afterwards on
+        // a path in the repository store (`test` staging a runfile from a
+        // damaged tree): the snapshot goes (crate::snapshot::hit).
+        bazel_rs::snapshot::hit::heal_after_failure(&error);
         let error = located(&error);
         eprintln!("bazel-rs: {error}");
         // A sandbox setup failure is an environmental failure of the

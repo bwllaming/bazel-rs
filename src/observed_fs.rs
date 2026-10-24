@@ -30,7 +30,7 @@
 //! its observations.
 
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
@@ -306,14 +306,18 @@ pub struct Observation {
     pub outcome: Outcome,
 }
 
-/// One environment variable read during the window, as a digest.
+/// One environment variable read during the window, as a digest: the value
+/// of the command's repository environment (the client environment with
+/// `--repo_env` applied, crate::repo_env — the only environment the window
+/// reads, crate::repository_environment), which a hit validates against the
+/// repository environment of its own command line
+/// (crate::snapshot::validate::Environment; L2-W5f review F1: an option
+/// that sets a name does not fix it — a later `--repo_env=NAME` inherits
+/// the client's value again).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EnvObservation {
     /// SHA-256 of the value's bytes; `None` when unset.
     pub digest: Option<[u8; 32]>,
-    /// The value is fixed by `--repo_env=NAME=VALUE` / `=NAME` (an option,
-    /// part of the snapshot key), not read from the process environment.
-    pub fixed: bool,
 }
 
 /// One entry of a verified repository tree (INTEGRITY).
@@ -447,7 +451,6 @@ pub struct Recorder {
     started: Instant,
     shards: Vec<Shard>,
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
-    fixed_env: BTreeSet<OsString>,
     repositories: Mutex<Vec<RepositoryRecord>>,
     repository_roots: Mutex<HashMap<PathBuf, Claim>>,
     taints: Mutex<BTreeMap<Taint, TaintRecord>>,
@@ -525,13 +528,12 @@ pub fn listing_digest(entries: &mut [(OsString, u8)]) -> [u8; 32] {
 }
 
 impl Recorder {
-    fn new(window_start_ns: i64, fixed_env: BTreeSet<OsString>) -> Self {
+    fn new(window_start_ns: i64) -> Self {
         Self {
             window_start_ns,
             started: Instant::now(),
             shards: (0..SHARDS).map(|_| Mutex::default()).collect(),
             env: Mutex::default(),
-            fixed_env,
             repositories: Mutex::default(),
             repository_roots: Mutex::default(),
             taints: Mutex::default(),
@@ -795,7 +797,6 @@ impl Recorder {
     fn observe_env(&self, name: &OsStr, value: Option<&OsStr>) {
         let observation = EnvObservation {
             digest: value.map(|value| sha256(value.as_bytes())),
-            fixed: self.fixed_env.contains(name),
         };
         let mut env = lock(&self.env);
         match env.get(name) {
@@ -1039,12 +1040,10 @@ fn restat_manifest(record: &mut RepositoryRecord, window_start_ns: i64) {
 
 // ---- the window ------------------------------------------------------------
 
-/// Open the process's recording window (once per process). `fixed_env` are
-/// the environment names whose repository-environment value an option fixes
-/// (`--repo_env=NAME=VALUE`, `--repo_env==NAME`). Returns false when a window
-/// was already opened.
-pub fn open_window(fixed_env: BTreeSet<OsString>) -> bool {
-    if RECORDER.set(Recorder::new(now_ns(), fixed_env)).is_err() {
+/// Open the process's recording window (once per process). Returns false
+/// when a window was already opened.
+pub fn open_window() -> bool {
+    if RECORDER.set(Recorder::new(now_ns())).is_err() {
         return false;
     }
     let _ = fs::symlink_metadata(MARKER_OPEN);
@@ -1224,16 +1223,6 @@ pub fn read_dir_projected(
     }
 }
 
-/// [`std::env::var_os`], recording ENV (a digest of the value).
-pub fn env_var(name: impl AsRef<OsStr>) -> Option<OsString> {
-    let name = name.as_ref();
-    let value = std::env::var_os(name);
-    if let Some(recorder) = active() {
-        recorder.observe_env(name, value.as_deref());
-    }
-    value
-}
-
 // ---- semantic records ------------------------------------------------------
 
 /// Record that `bytes` were read from `path` by code that must keep its own
@@ -1278,7 +1267,11 @@ pub fn note_read_digest(path: &Path, opened: &fs::Metadata, sha256: [u8; 32]) {
 }
 
 /// Record an environment value the repository environment observed (ENV,
-/// digest only; crate::repository_environment).
+/// digest only; crate::repository_environment). The only ENV records: a
+/// hit validates them against its own command's repository environment
+/// (crate::snapshot::validate::Environment), so a value must come from
+/// that map (the client environment with `--repo_env` applied), never from
+/// the process environment directly.
 pub fn note_env(name: &OsStr, value: Option<&OsStr>) {
     if let Some(recorder) = active() {
         recorder.observe_env(name, value);
@@ -1414,7 +1407,7 @@ mod tests {
         let path = temp.path().join("bad");
         fs::write(&path, [0xff, 0xfe]).unwrap();
         let std_error = fs::read_to_string(&path).unwrap_err();
-        let recorder = Recorder::new(now_ns(), BTreeSet::new());
+        let recorder = Recorder::new(now_ns());
         let bytes = recorder.read(&path).unwrap();
         let ours = String::from_utf8(bytes)
             .map_err(|_| {
@@ -1437,7 +1430,7 @@ mod tests {
         fs::write(root.join("dir/f.go"), b"x").unwrap();
         fs::create_dir(root.join("dir/sub")).unwrap();
         std::os::unix::fs::symlink("a", root.join("link")).unwrap();
-        let recorder = Recorder::new(now_ns(), BTreeSet::new());
+        let recorder = Recorder::new(now_ns());
         assert_eq!(recorder.read(&root.join("a")).unwrap(), b"alpha");
         assert_eq!(recorder.read(&root.join("link")).unwrap(), b"alpha");
         let missing = recorder.read(&root.join("missing")).unwrap_err();
@@ -1498,14 +1491,14 @@ mod tests {
             .unwrap()
             .metadata()
             .unwrap();
-        let memo = Recorder::new(now_ns(), BTreeSet::new());
+        let memo = Recorder::new(now_ns());
         memo.read_digest(
             &root.join("a"),
             &fs::metadata(root.join("a")).unwrap(),
             digest,
         );
         memo.read_digest(&root.join("link"), &opened, digest);
-        let facade = Recorder::new(now_ns(), BTreeSet::new());
+        let facade = Recorder::new(now_ns());
         facade.read(&root.join("a")).unwrap();
         facade.read(&root.join("link")).unwrap();
         let (memo, facade) = (memo.snapshot(), facade.snapshot());
@@ -1536,7 +1529,7 @@ mod tests {
     fn conflicting_outcomes_are_unstable() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("f");
-        let recorder = Recorder::new(now_ns(), BTreeSet::new());
+        let recorder = Recorder::new(now_ns());
         recorder.observe(&path, Op::Stat, Outcome::Error(2));
         recorder.observe(&path, Op::Stat, Outcome::Error(2));
         assert!(recorder.snapshot().taints.is_empty());
@@ -1557,7 +1550,7 @@ mod tests {
         let manifest = temp.path().join("manifests/abc.json");
         fs::create_dir_all(manifest.parent().unwrap()).unwrap();
         fs::write(&manifest, b"{\"v\": 1}").unwrap();
-        let recorder = Recorder::new(now_ns(), BTreeSet::new());
+        let recorder = Recorder::new(now_ns());
         let manifest_key = |recording: &Recording| {
             recording.repositories[0]
                 .entries

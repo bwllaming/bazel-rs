@@ -17,7 +17,9 @@ and off.
 Loading, module resolution and analysis read the filesystem and the
 environment only through `observed_fs::{read, read_to_string, read_staged,
 sha256_file, metadata, symlink_metadata, exists, is_file, is_dir,
-canonicalize, read_link, read_dir_projected, env_var}`. Each performs exactly
+canonicalize, read_link, read_dir_projected}` and the environment only
+through the repository environment (crate::repository_environment, which
+records what it reads with `observed_fs::note_env`). Each performs exactly
 the system call of the `std` function it replaces and returns its result
 unchanged. Outside the recording window the cost is one relaxed atomic load.
 
@@ -31,7 +33,7 @@ caller actually used:
 | LSTAT | the type class; a symlink's target |
 | READDIR | the digest of the projected `(name, type)` entries, the directory's stat key before and after the listing, `racy` |
 | CANON / READLINK | the resulting path or the errno |
-| ENV | a digest of the value (never the value); names fixed by `--repo_env=NAME=VALUE` / `=NAME` are marked as such |
+| ENV | a digest of the repository environment's value (never the value): the client environment with `--repo_env` applied, which a hit validates against its own command's repository environment (L2-W5f: no name counts as "fixed" — the last `--repo_env` entry wins) |
 
 Listings are projected to what the caller uses, so unrelated changes do not
 invalidate a snapshot: package discovery (`//x/...`, toolchain patterns)
