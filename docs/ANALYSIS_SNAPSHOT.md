@@ -391,8 +391,9 @@ snapshot event of every command with the snapshot on — in `on` and
 `verify` mode alike, plus `record`'s report — so the soak has a
 denominator: every lookup's hit or miss with the attempt's wall time, every
 save, every full analysis that was not saved, verify mode's outcome of
-every hit (`verified`, or `mismatch` with verify.log holding the details),
-every failed hit that removed its snapshot (`healed`, step 6) and every
+every hit (`verified`, or `mismatch` with verify.log and, L2-W5i,
+verify-details.log holding the details), every failed hit that removed its
+snapshot (`healed`, step 6) or kept it (`heal-kept`, L2-W5i) and every
 snapshot garbage collection evicted (`evicted`: an `absent` miss of an
 evicted key is no snapshot that was never saved). A reason that repeats
 shows without EXPLAIN — a tool that writes into a store tree's directory,
