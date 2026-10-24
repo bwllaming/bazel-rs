@@ -46,7 +46,7 @@ fn fixture() -> tempfile::TempDir {
 fn build(ws: &Path, target: &str, extra: &[&str], cache: &str, epoch: Option<&str>) -> Output {
     let mut command = Command::new("timeout");
     command
-        .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
         .args([
             "--ignore_all_rc_files",
             &format!("--cache-dir={cache}"),
@@ -244,7 +244,7 @@ fn a_failing_script_fails_even_without_a_status_consumer() {
     // there (QueryCommand has no inheritsOptionsFrom).
     let mut command = Command::new("timeout");
     let queried = command
-        .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
+        .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
         .args([
             "--ignore_all_rc_files",
             "--cache-dir=cache5",

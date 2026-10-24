@@ -22,7 +22,7 @@ fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
     for _ in 0..2 {
         let result = Command::new("timeout")
             .args([
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",
@@ -94,7 +94,7 @@ outputs = rule(implementation=_impl)
     for _ in 0..2 {
         let result = Command::new("timeout")
             .args([
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

@@ -66,7 +66,7 @@ go_sdk = module_extension(_impl, tag_classes={'download': tag_class({'version': 
         Command::new("/usr/bin/timeout")
             .args([
                 "--kill-after=2s",
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

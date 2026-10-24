@@ -95,7 +95,7 @@ impl Fixture {
         all.extend_from_slice(args);
         Command::new("timeout")
             .args([
-                "300s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

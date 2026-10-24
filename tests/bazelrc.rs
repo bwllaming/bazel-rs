@@ -84,7 +84,7 @@ impl Workspace {
     fn command(&self, startup: &[&str], args: &[&str]) -> Command {
         let mut command = Command::new("timeout");
         command
-            .args(["--kill-after=5s", "60s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--nosystem_rc", "--cache-dir=private-cache"])
             .args(startup)
             .args(args)

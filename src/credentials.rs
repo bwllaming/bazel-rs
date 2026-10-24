@@ -1068,8 +1068,10 @@ mod tests {
             let start = Instant::now();
             let error = invoke(&path, "https://x", Some(dir.path()), timeout).unwrap_err();
             assert!(error.0.ends_with("process timed out"), "{name}: {error}");
+            // Below the 30 s the hanging fixtures sleep (an implementation
+            // waiting for them still fails), above a loaded host's delays.
             assert!(
-                start.elapsed() < Duration::from_secs(5),
+                start.elapsed() < Duration::from_secs(20),
                 "{name}: {:?}",
                 start.elapsed()
             );

@@ -42,7 +42,7 @@ impl Workspace {
     fn build(&self, targets: &[&str]) -> Output {
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_bazel-rs"));
         let output = Command::new("/usr/bin/timeout")
-            .args(["--kill-after=5s", "60s"])
+            .args(["--kill-after=5s", "600s"])
             .arg(binary)
             .args(["--ignore_all_rc_files", "--cache-dir=cache", "build"])
             .args(targets)

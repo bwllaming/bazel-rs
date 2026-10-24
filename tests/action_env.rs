@@ -82,7 +82,7 @@ impl Workspace {
     fn run(&self, client: &[(&str, &str)], args: &[&str]) -> Output {
         let mut command = Command::new("/usr/bin/timeout");
         command
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())

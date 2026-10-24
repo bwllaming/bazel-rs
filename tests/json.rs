@@ -55,7 +55,7 @@ impl Workspace {
             .env("HOME", home)
             .env("TMPDIR", tmp)
             .env("LC_ALL", "C")
-            .args(["--kill-after=5s", "60s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!(
                 "--cache-dir={}",

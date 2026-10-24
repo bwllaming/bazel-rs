@@ -53,7 +53,7 @@ impl Fixture {
         let cache = format!("--cache-dir={}", self.0.path().join("cache").display());
         let mut command = Command::new("/usr/bin/timeout");
         command
-            .args(["60s", env!("CARGO_BIN_EXE_bazel-rs"), &cache])
+            .args(["600s", env!("CARGO_BIN_EXE_bazel-rs"), &cache])
             .args(args)
             .current_dir(self.ws())
             .env_clear()

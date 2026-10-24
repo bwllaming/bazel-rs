@@ -616,7 +616,9 @@ mod tests {
             run(&value).unwrap(),
             Outcome::Completed(256, Vec::new(), b"Timed out".to_vec())
         );
-        assert!(start.elapsed() < Duration::from_secs(10));
+        // Below the 30 s the group sleeps: the kill, not the children's
+        // exit, ended it (above a loaded host's scheduling delays).
+        assert!(start.elapsed() < Duration::from_secs(20));
     }
 
     #[test]

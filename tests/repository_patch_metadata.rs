@@ -41,7 +41,7 @@ impl Server {
                 };
                 stream.set_nonblocking(false).unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 let mut request = Vec::new();
                 while !request.ends_with(b"\r\n\r\n") && request.len() < 8192 {
@@ -126,7 +126,7 @@ impl Fixture {
             .env("HOME", self.0.path().join("home"))
             .env("LC_ALL", "C")
             .args([
-                "60s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

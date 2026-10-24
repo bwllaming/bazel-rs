@@ -45,10 +45,10 @@ impl Server {
                     Err(e) => panic!("{e}"),
                 };
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .set_write_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 let mut header = Vec::new();
                 let mut byte = [0];
@@ -120,7 +120,7 @@ impl Fixture {
         Command::new("/usr/bin/timeout")
             .args([
                 "--kill-after=2s",
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

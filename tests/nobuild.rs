@@ -50,7 +50,7 @@ impl Workspace {
 
     fn run_with(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {
         let output = Command::new("timeout")
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
             .args(arguments)

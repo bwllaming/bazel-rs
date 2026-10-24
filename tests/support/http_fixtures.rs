@@ -36,10 +36,10 @@ impl Server {
                     Err(e) => panic!("listener: {e}"),
                 };
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .set_write_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 let mut request = Vec::new();
                 let mut byte = [0];

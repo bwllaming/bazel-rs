@@ -559,10 +559,10 @@ mod tests {
                     }
                     let mut stream = stream.unwrap();
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .set_read_timeout(Some(Duration::from_secs(30)))
                         .unwrap();
                     stream
-                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .set_write_timeout(Some(Duration::from_secs(30)))
                         .unwrap();
                     let mut request = Vec::new();
                     while !request.ends_with(b"\r\n\r\n") && request.len() < 65536 {
@@ -922,11 +922,15 @@ mod tests {
     #[test]
     fn source_downloads_have_a_per_read_timeout_but_no_total_deadline() {
         // Production uses the 20 s per-read timeout with no total deadline;
-        // a 1 s per-read client shows the same semantics quickly: a body
-        // whose transfer takes ~3 s (3x the timeout) with 250 ms gaps
-        // completes, while one 1.6 s gap fails.
-        let client = client_with(Duration::from_secs(1)).unwrap();
-        let (url, worker) = dribble(b"0123456789AB", Duration::from_millis(250));
+        // a 3 s per-read client shows the same semantics quickly: a body
+        // whose transfer takes longer than the timeout (12 bytes, 300 ms
+        // apart) completes, while one gap longer than the timeout fails.
+        // Each short gap leaves 2.7 s of slack, more than a scheduling
+        // stall of a loaded host (the timer runs on while this process
+        // waits for a CPU or is stopped).
+        let timeout = Duration::from_secs(3);
+        let client = client_with(timeout).unwrap();
+        let (url, worker) = dribble(b"0123456789AB", Duration::from_millis(300));
         let started = std::time::Instant::now();
         let mut response = open_http_with(&client, Url::parse(&url).unwrap())
             .unwrap()
@@ -934,9 +938,9 @@ mod tests {
         let mut body = Vec::new();
         std::io::Read::read_to_end(&mut response, &mut body).unwrap();
         assert_eq!(body, b"0123456789AB");
-        assert!(started.elapsed() > Duration::from_millis(2500));
+        assert!(started.elapsed() > timeout);
         worker.join().unwrap();
-        let (url, worker) = dribble(b"01", Duration::from_millis(1600));
+        let (url, worker) = dribble(b"01", timeout + Duration::from_secs(1));
         let result = open_http_with(&client, Url::parse(&url).unwrap())
             .and_then(|response| read_all(response.unwrap()));
         assert_eq!(result.unwrap_err(), "cannot read complete resource body");

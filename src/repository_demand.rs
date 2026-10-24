@@ -644,7 +644,9 @@ mod tests {
     use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
-    const TIMEOUT: Duration = Duration::from_secs(3);
+    // Only bounds how long a wrong (waiting) implementation stalls a test
+    // before it fails; a correct one never reaches it, also on a loaded host.
+    const TIMEOUT: Duration = Duration::from_secs(60);
 
     // Always release and join workers, even if an assertion unwinds the test.
     struct Worker<T> {

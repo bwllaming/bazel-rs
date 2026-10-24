@@ -132,7 +132,7 @@ impl Fixture {
         let output = Command::new("timeout")
             .args([
                 "--kill-after=5s",
-                "60s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

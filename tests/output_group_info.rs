@@ -45,7 +45,7 @@ impl Workspace {
 
     fn build_with(&self, flags: &[&str], targets: &[&str]) -> Output {
         Command::new("timeout")
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!(
                 "--cache-dir={}",

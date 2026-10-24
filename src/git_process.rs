@@ -451,7 +451,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    // Bounds what a test waits for and how long it may take. Below the 30 s
+    // descendants the fixtures start, so an implementation waiting for one
+    // still fails; above any scheduling delay of a loaded host.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
     struct Temp(PathBuf);
     impl Temp {

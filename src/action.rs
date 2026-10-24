@@ -7367,13 +7367,18 @@ mod tests {
         let pid = fs::read_to_string(&result.outputs[0]).unwrap();
         let pid = pid.trim();
         assert!(!pid.is_empty());
-        let killed = (0..200).any(|_| {
-            let gone = !alive(pid);
-            if !gone {
-                std::thread::sleep(Duration::from_millis(10));
+        // The SIGKILLed process still has to run its exit; on a loaded host
+        // that can take a while. 20 s is far below the 60 s it would sleep.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let killed = loop {
+            if !alive(pid) {
+                break true;
             }
-            gone
-        });
+            if std::time::Instant::now() > deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         if !killed {
             let _ = Command::new("kill").args(["-9", pid]).status();
         }

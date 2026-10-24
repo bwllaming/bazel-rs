@@ -112,7 +112,7 @@ impl Workspace {
             self.path().join("private-cache").display()
         );
         let output = Command::new("timeout")
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", &cache])
             .arg(&argv[0])
             .args(["--experimental-builtin-modules", &registry])

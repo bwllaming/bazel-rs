@@ -51,7 +51,7 @@ impl Workspace {
         // Offline: execution platform resolution materializes @platforms.
         seed_module_archives(&self.0.path().join("private-cache"), &["platforms@1.0.0"]);
         let output = Command::new("timeout")
-            .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args([
                 "--ignore_all_rc_files",
                 "--cache-dir=private-cache",

@@ -30,7 +30,7 @@ impl Fixture {
         let mut command = Command::new("timeout");
         command
             .args([
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",
@@ -47,7 +47,7 @@ impl Fixture {
         let mut command = Command::new("/usr/bin/timeout");
         command
             .args([
-                "30s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",

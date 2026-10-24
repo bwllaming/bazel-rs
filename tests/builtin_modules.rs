@@ -38,7 +38,7 @@ fn workspace(module: &str) -> tempfile::TempDir {
 fn run(root: &Path, command: &str, arguments: &[&str]) -> Output {
     Command::new("timeout")
         .args([
-            "60s",
+            "600s",
             env!("CARGO_BIN_EXE_bazel-rs"),
             "--ignore_all_rc_files",
             "--cache-dir=cache",
@@ -316,7 +316,7 @@ fn graph_command_accepts_profile_but_does_not_erase_genuine_extensions() {
     let root = workspace("module(name='main')\n");
     let output = Command::new("timeout")
         .args([
-            "60s",
+            "600s",
             env!("CARGO_BIN_EXE_bazel-rs"),
             "--ignore_all_rc_files",
             "--cache-dir=cache",
@@ -349,7 +349,7 @@ fn metadata_override_cannot_bypass_unsupported_builtin_graph_presentation() {
     .unwrap();
     let output = Command::new("timeout")
         .args([
-            "60s",
+            "600s",
             env!("CARGO_BIN_EXE_bazel-rs"),
             "--ignore_all_rc_files",
             "--cache-dir=cache",

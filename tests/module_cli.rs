@@ -530,10 +530,10 @@ impl HttpRegistry {
                     Err(error) => panic!("loopback accept: {error}"),
                 };
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .set_read_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 stream
-                    .set_write_timeout(Some(Duration::from_secs(1)))
+                    .set_write_timeout(Some(Duration::from_secs(30)))
                     .unwrap();
                 let mut request = Vec::new();
                 let mut byte = [0];

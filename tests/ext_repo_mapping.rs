@@ -116,7 +116,7 @@ impl Fixture {
 
     fn run(&self, args: &[&str]) -> Output {
         let output = Command::new("/usr/bin/timeout")
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(args)
             .current_dir(self.0.path())

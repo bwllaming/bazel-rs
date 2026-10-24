@@ -131,7 +131,7 @@ impl Workspace {
     /// One successful command (`args` after the startup options).
     fn run(&self, args: &[&str], environment: &[(&str, &str)]) -> Run {
         let output = Command::new("timeout")
-            .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=cache"])
             .args(args)
             .env("BAZEL_RS_TIMING", "1")

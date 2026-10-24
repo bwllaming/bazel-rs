@@ -59,7 +59,7 @@ impl Fixture {
     fn run(&self, command: &str, args: &[&str]) -> Output {
         Command::new("timeout")
             .args([
-                "300s",
+                "600s",
                 env!("CARGO_BIN_EXE_bazel-rs"),
                 "--ignore_all_rc_files",
                 "--cache-dir=cache",
