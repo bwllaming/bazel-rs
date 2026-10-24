@@ -375,12 +375,13 @@ line has the same fields:
 | `verified` | verify mode: the shadow analysis agreed | - | analysis and comparison |
 | `mismatch` | verify mode: it disagreed (`path`: the first differing path) | the first difference's class | - |
 | `healed` | a failed hit removed its snapshot (`path`: the first differing entry) | `<store-path\|tree>:<entry>` | the trees' check |
-| `evicted` | garbage collection removed the snapshot of `key`; `detail` names the save that collected it | `count` or `bytes` | - |
+| `evicted` | garbage collection removed the snapshot of `key` (`command=-` and no targets: those of the evicted snapshot are not known there); `detail` names the save that collected it | `count` or `bytes` | - |
 | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (no key) | eligible: `yes`, `no`, `unless-pruned` | - |
 
 `scripts/snapshot_soak_report.py <cache dir>` (`--json` for a JSON object)
 prints the counts per mode and kind, misses and unsaved runs by reason,
-the number of keys and per key the hit rate on unchanged re-runs (hits
+the number of keys (those seen only in an eviction counted apart) and
+per key the hit rate on unchanged re-runs (hits
 over the lookups after the key's first save that missed for no input:
 `absent` without a removal since the save, `unreadable`, `capture`,
 `panic`, `other` — a miss naming a changed input, or an `absent` miss

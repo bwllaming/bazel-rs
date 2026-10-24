@@ -146,7 +146,7 @@ def analyze(events, verify_lines, store=None):
         info = keys.setdefault(key, {'key': key, 'command': None, 'targets': [], 'lookups': 0, 'hits': 0,
                                      'changed': 0, 'unexplained': 0, 'after_removal': 0, 'before_save': 0,
                                      'saves': 0, 'not_saved': collections.Counter(), 'events': []})
-        if event.get('command', '-') != '-' and info['command'] is None:
+        if event.get('command', '-') != '-' and info['command'] is None and event.get('kind') != 'evicted':
             info['command'] = unescape(event['command'])
             info['targets'] = event.get('targets', [])
         info['events'].append(event)
@@ -208,8 +208,14 @@ def analyze(events, verify_lines, store=None):
             if ms is not None:
                 latencies[('all', 'all')].append(ms)
                 latencies[(event.get('mode', '-'), unescape(event.get('command', '-')))].append(ms)
+    # Keys seen only in evictions (snapshots saved before the log began, or
+    # by another binary) are counted, not listed.
+    evicted_only = [info for info in keys.values()
+                    if all(e.get('kind') == 'evicted' for e in info['events'])]
+    listed = [info for info in keys.values() if info not in evicted_only]
     report = {
         'events': len(events),
+        'evicted_only_keys': len(evicted_only),
         'span': [events[0]['time'], events[-1]['time']] if events else None,
         'counts': {f'{mode}/{kind}': n for (mode, kind), n in sorted(counts.items())},
         'misses': dict(misses.most_common()),
@@ -217,7 +223,7 @@ def analyze(events, verify_lines, store=None):
         'keys': [
             {name: value for name, value in info.items() if name != 'events'}
             | {'not_saved': dict(info['not_saved'])}
-            for info in keys.values()
+            for info in listed
         ],
         'verified_by_command': dict(collections.Counter(
             unescape(e.get('command', '-')) for e in events if e.get('kind') == 'verified')),
@@ -260,7 +266,9 @@ def render(report, cache):
     if report['not_saved']:
         lines.append('not saved by reason: ' + ', '.join(f'{k} {v}' for k, v in report['not_saved'].items()))
     lines.append('')
-    lines.append(f"keys: {len(report['keys'])}")
+    lines.append(f"keys: {len(report['keys'])}" + (
+        f" (and {report['evicted_only_keys']} seen only when garbage collection evicted them)"
+        if report['evicted_only_keys'] else ''))
     lines.append('  hit rate on unchanged re-runs per key (lookups after the first save; changed = a miss naming '
                  'an input; unexplained = absent without a removal, unreadable, capture, panic, other):')
     for info in sorted(report['keys'], key=lambda info: -info['lookups']):

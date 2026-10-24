@@ -32,7 +32,11 @@ CURRENT = "".join([
     line(7, "saved", "k1", ms="800.0"),
     line(8, "hit", "k1", ms="140.0"),
     # Evicted by another key's save: the next `absent` is explained.
-    line(9, "evicted", "k1", reason="count", path="/c/snapshots/v1/k1.snap", detail="by:k2,kept:16,bytes:1"),
+    line(9, "evicted", "k1", command="-", reason="count", path="/c/snapshots/v1/k1.snap",
+         detail="by:k2,kept:16,bytes:1", targets=""),
+    # A key seen only in an eviction (saved before the log began).
+    line(9, "evicted", "k0", command="-", reason="count", path="/c/snapshots/v1/k0.snap",
+         detail="by:k2,kept:16,bytes:1", targets=""),
     line(10, "miss", "k1", reason="absent", ms="30.0"),
     line(11, "saved", "k1", ms="700.0"),
     # Lost: absent after a save without a removal.
@@ -101,7 +105,7 @@ class SoakReportTests(unittest.TestCase):
         self.assertEqual(counts["verify/verified"], 1)
         self.assertEqual(counts["verify/mismatch"], 1)
         self.assertEqual(counts["record/recorded"], 1)
-        self.assertEqual(self.report["events"], 25)
+        self.assertEqual(self.report["events"], 26)
         self.assertEqual(self.report["misses"]["absent"], 4)
         self.assertEqual(self.report["not_saved"], {"repository-rule-executed": 1})
 
@@ -115,6 +119,7 @@ class SoakReportTests(unittest.TestCase):
         self.assertEqual(k1["command"], "build")
         self.assertEqual(k1["not_saved"], {"repository-rule-executed": 1})
         self.assertEqual(len(self.report["keys"]), 3)
+        self.assertEqual(self.report["evicted_only_keys"], 1)
 
     def test_always_miss_patterns_need_three_misses_without_a_hit(self):
         runs = self.report["always_miss"]
@@ -141,7 +146,8 @@ class SoakReportTests(unittest.TestCase):
         with redirect_stdout(out):
             self.assertEqual(report.main([str(self.cache)]), 0)
         text = out.getvalue()
-        for expected in ("on/hit", "keys: 3", "hit rate on unchanged re-runs 75.0% (3/4)",
+        for expected in ("on/hit", "keys: 3 (and 1 seen only when garbage collection evicted them)",
+                         "hit rate on unchanged re-runs 75.0% (3/4)",
                          "always-miss patterns", "3 x integrity /c/repositories/trees/ab/sub",
                          "heals by reason: tree:mode 1", "verified hits by command: run 1",
                          VERIFY.rstrip("\n"), "p50 140.0, p95 310.0", "store: 2 snapshot(s), 1024 bytes"):

@@ -14,7 +14,7 @@
 //! | `verified` | verify mode: the shadow analysis agreed (crate::snapshot::verify) | - | analysis and comparison |
 //! | `mismatch` | verify mode: it disagreed (verify.log has the details) | the first difference's class | - |
 //! | `healed` | a failed hit removed its snapshot (crate::snapshot::hit) | `<rule>:<entry>` | the trees' check |
-//! | `evicted` | garbage collection removed a snapshot (crate::snapshot::store) | `count` or `bytes` | - |
+//! | `evicted` | garbage collection removed a snapshot (crate::snapshot::store; `command=-`, no targets) | `count` or `bytes` | - |
 //! | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (crate::snapshot::record) | eligible: `yes`, `no`, `unless-pruned` | - |
 //!
 //! A heal's rule is `store-path` (its error named a path in the repository
@@ -331,10 +331,17 @@ impl Context {
     }
 
     /// Garbage collection removed the snapshot of `key` (at `path`): over
-    /// the store's count (`count`) or byte budget (`bytes`).
+    /// the store's count (`count`) or byte budget (`bytes`). The line names
+    /// no command or targets (`command=-`, the evicted snapshot's are not
+    /// known here); `detail` names the save that collected it.
     pub fn log_evicted(&self, key: &str, reason: &str, path: &Path, detail: &str) {
         let path = escape(path.as_os_str());
-        self.log(&Event {
+        Self {
+            command: String::new(),
+            targets: Vec::new(),
+            ..self.clone()
+        }
+        .log(&Event {
             kind: "evicted",
             key,
             reason: Some(reason),
@@ -725,8 +732,13 @@ mod tests {
             ],
             "{text}"
         );
+        // An eviction names no command or targets (they are the evicted
+        // snapshot's, not the collecting save's).
         assert!(
-            text.lines().all(|line| line.ends_with(" targets=//:t")),
+            text.lines().all(|line| line.ends_with(" targets=//:t")
+                || (line.contains(" kind=evicted ")
+                    && line.contains(" command=- ")
+                    && line.ends_with(" targets="))),
             "{text}"
         );
     }

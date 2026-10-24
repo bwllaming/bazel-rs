@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(events.lines().count(), 1, "{events}");
         assert!(
             events.contains(&format!(
-                " kind=evicted mode=on key={} command=build reason=count path=",
+                " kind=evicted mode=on key={} command=- reason=count path=",
                 key(6).short()
             )) && events.contains(&format!(" detail=by:{},kept:16,", key(40).short())),
             "{events}"
