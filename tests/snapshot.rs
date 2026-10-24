@@ -1617,7 +1617,23 @@ fn map_each_plans_are_never_saved() {
     assert!(twin.snapshots().is_empty());
 }
 
-const TOOLED_RULES: &str = r#"def _tooled(ctx):
+/// The package prints nothing while it is analyzed (no `//:rules.bzl`,
+/// whose top level prints): its save runs under BAZEL_RS_TIMING, whose
+/// diagnostics lines are written beside the stderr capture and could land
+/// inside a printed line (the capture forwards a print's text and its
+/// newline as they arrive; the known interleave of tests/snapshot.rs'
+/// mutation fuzz).
+const TOOLED_RULES: &str = r#"def _tool(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, ctx.attr.script, is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tool = rule(implementation = _tool, executable = True, attrs = {
+    "script": attr.string(),
+    "data": attr.label_list(allow_files = True),
+})
+
+def _tooled(ctx):
     outs = []
     for name in ["one", "two"]:
         out = ctx.actions.declare_file(ctx.label.name + "." + name)
@@ -1628,10 +1644,9 @@ const TOOLED_RULES: &str = r#"def _tooled(ctx):
 tooled = rule(implementation = _tooled, attrs = {"tool": attr.label(executable = True, cfg = "target")})
 "#;
 
-const TOOLED_BUILD: &str = r#"load("//:rules.bzl", "script_binary")
-load(":defs.bzl", "tooled")
+const TOOLED_BUILD: &str = r#"load(":defs.bzl", "tool", "tooled")
 
-script_binary(
+tool(
     name = "tool",
     data = ["data.txt"],
     script = '#!/bin/bash\ncat "$0.runfiles/_main/tooled/data.txt" > "$1"\n',
