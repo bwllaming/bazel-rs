@@ -649,12 +649,14 @@ impl RepositorySet {
     }
 
     /// Whether phase-1 package prefetch (crate::prefetch) may run against
-    /// this set: never for a pinned (replaying) set or one that records for
-    /// replay — their root/mapping capture must see exactly the sequential
-    /// demands.
+    /// this set: never for a pinned (replaying) set. A set that records for
+    /// replay (the analysis snapshot's capture of local repository rules)
+    /// allows it (W6R): its root/mapping capture records inside replay
+    /// scopes, which only the coordinator opens (group preparation and
+    /// local executions are coordinator-only; [`Self::replay_scope`]), so
+    /// it sees exactly the sequential demands.
     pub(crate) fn prefetch_allowed(&self) -> bool {
         self.state.pinned.is_none()
-            && self.state.replay.is_none()
             // Workers never resolve the module graph (a lazily resolving
             // worker could fetch outside the guard).
             && self.state.resolved.get().is_some_and(Result::is_ok)
@@ -746,6 +748,13 @@ impl RepositorySet {
     /// the `root()` and `mapping()` results until the guard drops are
     /// pinned (definition loads of repository rules, local executions).
     fn replay_scope(&self) -> Option<crate::snapshot::replay::Scope> {
+        // Phase-1 prefetch runs beside the record mode's capture (W6R):
+        // a loading worker never opens a scope (it cannot prepare a group
+        // or execute a local rule: the no-demand sentinel).
+        debug_assert!(
+            !crate::repository_demand::no_demand_active(),
+            "a replay scope on a no-demand thread"
+        );
         self.state
             .replay
             .is_some()

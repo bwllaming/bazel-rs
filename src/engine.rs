@@ -11359,21 +11359,31 @@ impl Engine {
     }
 
     /// Start phase-1 package prefetch (crate::prefetch) for a build's
-    /// analysis: with more than one loading thread, outside the analysis
-    /// snapshot's recording and replay, once the module graph is resolved
-    /// (workers never resolve it). The packages loaded so far (the target
-    /// patterns') settle it and seed its queue.
+    /// analysis: with more than one loading thread, outside the replay of
+    /// local repository rules (a pinned repository set), once the module
+    /// graph is resolved (workers never resolve it). The packages loaded so
+    /// far (the target patterns') settle it and seed its queue.
+    ///
+    /// Also while the analysis snapshot records (W6R): what a worker
+    /// observes reaches the recording with its unit's commit, a memo hit
+    /// or a counting root (crate::observed_fs frames), so a recording is
+    /// the threads-1 one; `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off
+    /// while recording (diagnostics; not part of the snapshot key).
     fn start_prefetch(&mut self, labels: &[Label]) {
         self.stop_prefetch();
         if self.loading_phase_threads <= 1
             || !self.repositories.prefetch_allowed()
-            || crate::observed_fs::recording()
             // The inline-fallback test hook loads every package itself.
             || std::env::var_os("BAZEL_RS_LOADING_NO_DEMAND").is_some()
             || std::env::var_os("BAZEL_RS_DEBUG_NO_PREFETCH").is_some()
+            || (crate::observed_fs::recording()
+                && std::env::var_os("BAZEL_RS_SNAPSHOT_PREFETCH").is_some_and(|value| value == "0"))
         {
             return;
         }
+        // The repository store's path is computed on the coordinator (its
+        // first computation is recorded, W6R); it is with the module graph.
+        let _ = self.repositories.source_cache_path();
         let Some(prefetch) = crate::prefetch::Prefetcher::start(
             self.repositories.clone(),
             self.loading_phase_threads,

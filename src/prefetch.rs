@@ -556,7 +556,10 @@ impl Prefetcher {
                 .filter(|entry| matches!(entry, Entry::Done { blocked: None, .. }))
                 .count();
             let counts = &state.counts;
-            eprintln!(
+            // The diagnostics stream: never part of what an analysis
+            // snapshot captures of planning's stderr (W6R: prefetch runs
+            // while a snapshot records).
+            crate::snapshot::diag::line_fmt(format_args!(
                 "PERF-PREFETCH workers={workers} loaded={} aborted={} retried={} taken={} waited={} wait={:.3}s missed={} unused={unused}",
                 counts.loaded,
                 counts.aborted,
@@ -565,7 +568,7 @@ impl Prefetcher {
                 counts.waited,
                 counts.wait_micros as f64 / 1e6,
                 counts.missed
-            );
+            ));
         }
         state.entries.clear();
     }

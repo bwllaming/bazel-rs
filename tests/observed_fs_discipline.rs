@@ -75,6 +75,9 @@ const DIAGNOSTIC_ENV: &[&str] = &[
     "BAZEL_RS_DIGEST_MEMO",
     // perf-w0a: the retained-memory breakdown (stderr only).
     "BAZEL_RS_TIMING_ALLOC",
+    // W6R: phase-1 prefetch off while the analysis snapshot records (a
+    // diagnostics switch; every recording is the same with it).
+    "BAZEL_RS_SNAPSHOT_PREFETCH",
 ];
 const DIAGNOSTIC_ENV_PREFIXES: &[&str] = &["BAZEL_RS_DEBUG_"];
 
