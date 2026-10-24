@@ -1260,10 +1260,8 @@ where
             .tempdir_in(&trees)
             .map(Scratch::new)
             .map_err(|e| e.to_string())?;
-        quarantine(&destination, &trash.path().join("tree"))?;
         quarantine(&manifest_path, &trash.path().join("manifest"))?;
-        fs::rename(stage.path(), &destination)
-            .map_err(|e| format!("cannot publish direct repository: {e}"))?;
+        install_tree(stage.path(), &destination, &trash.path().join("tree"))?;
         // These are two atomic renames, not an atomic pair. A failure/crash leaves
         // missing metadata, which forces repair on the next evaluated invocation.
         metadata_stage
@@ -1442,6 +1440,36 @@ fn quarantine(path: &Path, target: &Path) -> Result<(), String> {
             .map_err(|e| format!("cannot quarantine {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// Put the finished `stage` in place as `destination`. An existing
+/// destination (a republication: a corrupt tree of this identity, or an
+/// intact one whose manifest is upgraded) is swapped with the stage in one
+/// step, `renameat2(RENAME_EXCHANGE)`, so that a reader in another process —
+/// an action running through a link into the tree (crate::action
+/// `stage_tree_link`), a command reading the repository — always finds a
+/// tree at that path, never none; the replaced tree, now at the stage path,
+/// then moves into the publisher's quarantine `trash` (if that fails, the
+/// stage's own cleanup removes it there). A filesystem that cannot exchange
+/// gets the quarantine first and the stage renamed after it, which leaves
+/// the path briefly without a tree.
+fn install_tree(stage: &Path, destination: &Path, trash: &Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if optional_metadata(destination)?.is_some()
+        && rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            stage,
+            rustix::fs::CWD,
+            destination,
+            rustix::fs::RenameFlags::EXCHANGE,
+        )
+        .is_ok()
+    {
+        let _ = fs::rename(stage, trash);
+        return Ok(());
+    }
+    quarantine(destination, trash)?;
+    fs::rename(stage, destination).map_err(|e| format!("cannot publish direct repository: {e}"))
 }
 
 fn regular_metadata(metadata: &fs::Metadata) -> Result<(), String> {
@@ -2963,6 +2991,80 @@ mod tests {
         assert!(!later.exists());
         no_stages(cache.path());
         crate::repository_ctx::remove_tree(cache.path()).unwrap();
+    }
+
+    /// Republishing over an existing tree swaps the stage in with one
+    /// exchange (renameat2 RENAME_EXCHANGE): a reader in another process —
+    /// an action running through a link into the tree — always finds the
+    /// tree's files at their paths. Quarantining the old tree first and
+    /// renaming the stage after it left a window without any tree between
+    /// the two renames.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn republication_never_leaves_the_tree_path_without_a_tree() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cache = temp();
+        // Only where the filesystem can exchange (the fallback has the
+        // window).
+        let (a, b) = (cache.path().join("a"), cache.path().join("b"));
+        fs::create_dir(&a).unwrap();
+        fs::create_dir(&b).unwrap();
+        let (cwd, exchange) = (rustix::fs::CWD, rustix::fs::RenameFlags::EXCHANGE);
+        if let Err(error) = rustix::fs::renameat_with(cwd, &a, cwd, &b, exchange) {
+            eprintln!("skipped: no RENAME_EXCHANGE in /tmp/opencode ({error})");
+            return;
+        }
+        fs::remove_dir(&a).unwrap();
+        fs::remove_dir(&b).unwrap();
+        let (tree, _) = publish_recorded(cache.path(), br#"{"version":1}"#, write).unwrap();
+        let data = tree.join("data");
+        /// Stops the watcher however the test ends (a panic included).
+        struct Stop(std::sync::Arc<AtomicBool>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let stop = Stop(std::sync::Arc::new(AtomicBool::new(false)));
+        let watcher = {
+            let (stop, data) = (std::sync::Arc::clone(&stop.0), data.clone());
+            std::thread::spawn(move || {
+                let (mut looks, mut missing) = (0_u64, 0_u64);
+                while !stop.load(Ordering::Relaxed) {
+                    looks += 1;
+                    missing += u64::from(fs::symlink_metadata(&data).is_err());
+                }
+                (looks, missing)
+            })
+        };
+        for round in 1..=100 {
+            let recorded = format!(r#"{{"version":1,"n":{round}}}"#);
+            let (again, _) = materialize(
+                cache.path(),
+                "test-key",
+                b"spec",
+                b"",
+                |_, _| Ok(false),
+                |stage| {
+                    write(stage).map(|inputs| Executed {
+                        inputs,
+                        recorded: recorded.clone().into_bytes(),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(again, tree);
+        }
+        drop(stop);
+        let (looks, missing) = watcher.join().unwrap();
+        // Every round republished (the manifest carries the last probes).
+        assert_eq!(
+            recorded_probes(cache.path(), &tree),
+            br#"{"version":1,"n":100}"#
+        );
+        assert_eq!(missing, 0, "{missing} of {looks} looks found no tree");
+        assert_eq!(fs::read(&data).unwrap(), [0, 255, 128, 10]);
+        no_stages(cache.path());
     }
 
     fn metadata_path(cache: &Path, tree: &Path) -> PathBuf {

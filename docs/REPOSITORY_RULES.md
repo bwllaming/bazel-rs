@@ -595,9 +595,18 @@ separate atomic renames; missing metadata after interruption forces reevaluation
 and repair. The cache is user-owned and published trees must remain immutable
 within a library invocation.
 
-A replaced tree and its manifest are first renamed into a private
-`direct/trees/.trash-*` quarantine, which is deleted once the new publication is
-in place. Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
+A replaced manifest is first renamed into a private `direct/trees/.trash-*`
+quarantine, which is deleted once the new publication is in place. A replaced
+tree is swapped with the finished stage in one step (`renameat2` with
+`RENAME_EXCHANGE`) and then moved from the stage path into that quarantine, so a
+reader in another process — an action running through a link into the tree
+(docs/HARDLINK_STAGING.md, "Executables aliasing repository files"), a command
+reading the repository — never finds the tree's path empty; quarantining the
+tree first and renaming the stage after it left a window without any tree
+between the two renames, which remains only as the fallback for a filesystem
+that cannot exchange. Test:
+`republication_never_leaves_the_tree_path_without_a_tree`.
+Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
 as rules_python's `python_repository` does for the interpreter's `lib/`), so
 quarantines and stages are deleted like `fresh_stage` deletes an interrupted
 stage: directories are made writable first and symlinks are never followed. A
