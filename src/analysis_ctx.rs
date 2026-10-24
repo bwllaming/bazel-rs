@@ -676,8 +676,10 @@ pub(crate) fn alloc_aspect<'v>(
 }
 
 /// The attribute getters an aspect context shares with a rule context,
-/// minus `outputs` (an aspect context has none) and with the aspect's own
-/// (empty) `executable` struct (StarlarkRuleContext.java:275-285).
+/// minus `outputs` (an aspect context has none) and with an empty
+/// `executable` struct (a parity gap: Bazel's lists the aspect's own
+/// executable attributes, StarlarkRuleContext.java:270-285; docs/ASPECTS.md
+/// "Divergences").
 #[starlark_module]
 fn aspect_properties(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
@@ -700,8 +702,10 @@ fn aspect_properties(builder: &mut MethodsBuilder) {
     fn actions<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "actions", heap)
     }
-    /// StarlarkRuleContext.getExecutable (:692-697): the aspect's own
-    /// attributes are never executable, so the struct is empty.
+    /// StarlarkRuleContext.getExecutable (:692-697) of an aspect lists its
+    /// own executable label attributes; natively the struct is empty (a
+    /// parity gap, docs/ASPECTS.md "Divergences": `ctx.attr._tool[DefaultInfo]
+    /// .files_to_run` reaches the tool).
     #[starlark(attribute)]
     fn executable<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         rule_ctx(this)?.scope.check_current()?;

@@ -756,6 +756,113 @@ fn aspect_actions_stage_their_tools_runfiles() {
     );
 }
 
+/// PA-1 follow-up B6 F1 (integration-21): an aspect attached to an
+/// attribute (`aspects = [...]`, planned while its consumer's prerequisites
+/// are: the PlanState Engine::prepare builds for an aspect-applied
+/// dependency) and propagating further through `attr_aspects` runs the
+/// tool its base targets' rule actions run (`ctx.rule.attr.tool`): one
+/// FilesToRunProvider, so one runfiles tree and ONE shared input group for
+/// the two rule actions and the two aspect actions — the aspect commits use
+/// the build's group memo, not one of their own.
+const ATTR_ASPECT_DEFS: &str = r##"SCRIPT = """#!/bin/sh
+{ (cd $0.runfiles && find . \\( -type f -o -type l \\) | LC_ALL=C sort); echo "out=$(basename $1)"; } > $1
+"""
+
+def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, SCRIPT, is_executable = True)
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+tool = rule(_tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _base(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".base")
+    ctx.actions.run(outputs = [out], executable = ctx.executable.tool, arguments = [out.path])
+    return [DefaultInfo(files = depset([out], transitive = [dep[DefaultInfo].files for dep in ctx.attr.deps]))]
+
+base = rule(_base, attrs = {
+    "tool": attr.label(executable = True, cfg = "target"),
+    "deps": attr.label_list(),
+})
+
+def _via_tool(target, ctx):
+    out = ctx.actions.declare_file(target.label.name + ".aspect")
+    ctx.actions.run(outputs = [out], executable = ctx.rule.attr.tool[DefaultInfo].files_to_run, arguments = [out.path])
+    return [OutputGroupInfo(aspect_out = depset([out], transitive = [dep[OutputGroupInfo].aspect_out for dep in ctx.rule.attr.deps]))]
+
+via_tool = aspect(_via_tool, attr_aspects = ["deps"])
+
+def _top(ctx):
+    return [DefaultInfo(files = depset(transitive = [dep[OutputGroupInfo].aspect_out for dep in ctx.attr.deps]))]
+
+top = rule(_top, attrs = {"deps": attr.label_list(aspects = [via_tool])})
+"##;
+
+const ATTR_ASPECT_BUILD: &str = r#"load(":defs.bzl", "base", "tool", "top")
+tool(name = "tool", data = ["d.txt"])
+base(name = "c", tool = ":tool")
+base(name = "b", tool = ":tool", deps = [":c"])
+top(name = "t", deps = [":b"])
+"#;
+
+#[test]
+fn attribute_aspects_share_the_tool_group_of_rule_actions() {
+    let ws = Workspace::new();
+    let package = "attr_aspect";
+    ws.file(&format!("{package}/defs.bzl"), ATTR_ASPECT_DEFS, 0o644);
+    ws.file(&format!("{package}/BUILD.bazel"), ATTR_ASPECT_BUILD, 0o644);
+    ws.file(&format!("{package}/d.txt"), "tool-data\n", 0o644);
+    let output = ws
+        .command(
+            &[
+                "build",
+                &format!("//{package}:t"),
+                &format!("//{package}:b"),
+            ],
+            "",
+        )
+        .env("BAZEL_RS_TIMING", "1")
+        .env("BAZEL_RS_DUMP_ACTIONS", "1")
+        .output()
+        .unwrap();
+    success(&output);
+    let tree = format!("./_main/{package}/d.txt\n./_main/{package}/tool\n./_repo_mapping\n");
+    for name in ["b.base", "c.base", "b.aspect", "c.aspect"] {
+        let exec = format!("bazel-out/k8-fastbuild/bin/{package}/{name}");
+        assert_eq!(
+            fs::read_to_string(single(&ws, &exec)).unwrap(),
+            format!("{tree}out={name}\n"),
+            "{name}"
+        );
+    }
+    // Four holders of one group: the aspect actions found the rule
+    // actions' group in the build's memo.
+    let text = stderr(&output);
+    assert!(
+        text.contains("holders=4 refs=4 distinct=1 ") && text.contains(" listed_tree_actions=0"),
+        "{}",
+        text.lines()
+            .filter(|line| line.starts_with("PERF-GROUPS"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // The dump lists the same tree entries for a rule's and an aspect's action.
+    let dump = |id_end: &str| -> Vec<String> {
+        let mut lines = text
+            .lines()
+            .skip_while(|line| !(line.starts_with("ACTION ") && line.ends_with(id_end)));
+        lines.next().expect(id_end);
+        lines
+            .take_while(|line| line.starts_with("  "))
+            .filter(|line| line.contains(".runfiles/"))
+            .map(str::to_owned)
+            .collect()
+    };
+    let (rule, aspect) = (dump(&format!("//{package}:b#0")), dump("via_tool#0"));
+    assert!(!rule.is_empty());
+    assert_eq!(rule, aspect);
+}
+
 #[test]
 fn python_empty_files_and_obscured_symlinks() {
     let ws = Workspace::new();

@@ -192,3 +192,32 @@ identity unchanged, and depset snapshots taken from either agree.
   (identical providers), so cross-consumer `Target` equality differs.
 - `--aspect_filters` does not exist in Bazel 9.3 (probed in the reference
   tree); nothing to implement.
+- **An aspect attribute's `cfg` is ignored (parity gap, recorded in
+  integration-21, not fixed).** Every label attribute of an aspect is planned
+  in the base target's configuration (`Engine::plan_aspect_application`
+  resolves `aspect.declaration.attrs` with `base_key.config`). Bazel applies
+  each attribute's transition per aspect — `cfg = "exec"`
+  (ExecutionTransitionFactory), an exec group's, a Starlark transition — with
+  the aspect's own toolchain context and execution platform
+  (`AspectFunction.java:811-838`, `DependencyResolutionHelpers.java:581-605`,
+  `DependencyProducer.java:184-219`). Repro `/tmp/opencode/oracle-aspect-exec/ws`
+  (`build --aspects=//:defs.bzl%a //:b`, an aspect printing its
+  `cfg = "exec"` tool's path): genuine `bazel-out/k8-opt-exec/bin/tool`,
+  native `bazel-out/k8-fastbuild/bin/tool`. Fixing it changes the keys of
+  every aspect action with such a tool once; ~/code plans no aspect-owned
+  action today (every A/B dump), so nothing there depends on it. The rule's
+  attributes an aspect reads through `ctx.rule.attr` keep their own
+  configuration (planned with the base rule's edges).
+- **`ctx.executable` of an aspect is always empty (parity gap, not fixed).**
+  The aspect context's `executable` is an empty struct
+  (`analysis_ctx::aspect_properties`, whose comment assumes an aspect's own
+  attributes are never executable; the backing struct analysis.rs builds has
+  no `executable` entry), so `ctx.executable._tool` fails with
+  `'struct' value has no field or method '_tool'`. Bazel builds an aspect's
+  `attributesCollection` from the main aspect's attributes
+  (`StarlarkRuleContext.java:270-285`), and `getExecutable` (:692-697) lists its
+  executable label attributes. Aspects that run their tools reach them
+  through `ctx.attr._tool[DefaultInfo].files_to_run` (or
+  `ctx.rule.attr.<tool>`), which work; the tests (tests/runfiles_trees.rs
+  `aspect_actions_stage_their_tools_runfiles`,
+  `attribute_aspects_share_the_tool_group_of_rule_actions`) use those forms.
