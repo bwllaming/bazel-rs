@@ -303,6 +303,63 @@ pub fn in_scope() -> bool {
     SCOPE.with(|depth| depth.get() > 0)
 }
 
+/// A `root()` or `mapping()` lookup of a repository set that records for
+/// replay ([`lookups`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lookup {
+    Root(String),
+    Mapping(String),
+}
+
+thread_local! {
+    /// The open [`lookups`] logs of this thread, innermost last.
+    static LOOKUPS: std::cell::RefCell<Vec<Vec<Lookup>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` noting the `root()` and `mapping()` lookups it makes of a
+/// repository set that records for replay (W6R: the definition `.bzl`
+/// cache keeps them with a module, and a hit inside a replay [`scope`]
+/// repeats them, so the pinned tables are the uncached loader's whatever
+/// scope the module was first evaluated in).
+pub fn lookups<R>(f: impl FnOnce() -> R) -> (R, Vec<Lookup>) {
+    /// Closes the log, also when `f` unwinds.
+    struct Log(usize);
+    impl Drop for Log {
+        fn drop(&mut self) {
+            let _ = LOOKUPS.try_with(|logs| {
+                if let Ok(mut logs) = logs.try_borrow_mut() {
+                    logs.truncate(self.0);
+                }
+            });
+        }
+    }
+    let depth = LOOKUPS.with(|logs| {
+        let mut logs = logs.borrow_mut();
+        logs.push(Vec::new());
+        logs.len() - 1
+    });
+    let guard = Log(depth);
+    let result = f();
+    let log = LOOKUPS.with(|logs| logs.borrow_mut().get_mut(depth).map(std::mem::take));
+    drop(guard);
+    (result, log.unwrap_or_default())
+}
+
+/// Note `lookup` in this thread's innermost [`lookups`] log, if any.
+pub(crate) fn note_lookup(lookup: impl FnOnce() -> Lookup) {
+    LOOKUPS.with(|logs| {
+        if let Ok(mut logs) = logs.try_borrow_mut()
+            && let Some(log) = logs.last_mut()
+        {
+            let lookup = lookup();
+            if !log.contains(&lookup) {
+                log.push(lookup);
+            }
+        }
+    });
+}
+
 // ---- replay ----------------------------------------------------------------
 
 /// One replayed record.

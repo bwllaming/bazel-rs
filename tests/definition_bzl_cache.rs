@@ -84,6 +84,10 @@ make = repository_rule(_impl)
     }
 
     fn run(&self, cache: &str, uncached: bool) -> Output {
+        self.run_env(cache, uncached, &[])
+    }
+
+    fn run_env(&self, cache: &str, uncached: bool, env: &[(&str, &str)]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
         command
             .arg("--ignore_all_rc_files")
@@ -95,6 +99,9 @@ make = repository_rule(_impl)
             .current_dir(&self.0);
         if uncached {
             command.env("BAZEL_RS_DEBUG_NO_DEFINITION_CACHE", "1");
+        }
+        for (key, value) in env {
+            command.env(key, value);
         }
         command.output().unwrap()
     }
@@ -146,4 +153,97 @@ fn shared_definition_modules_replay_the_uncached_output() {
             "{round}: {text}"
         );
     }
+}
+
+/// W6R: the definition cache stays on while the analysis snapshot records
+/// local repository rules for replay. A module the cache serves inside a
+/// replay scope repeats the `root()`/`mapping()` lookups of its first
+/// evaluation, so the pinned tables a replay loads definitions from — and
+/// every other recorded input — are the uncached loader's, and every
+/// replay matches. Here every repository is a `local = True` rule (replayed
+/// on every run): the warm run reuses both extensions' lockfile entries,
+/// each group loading `lib.bzl` (and `util.bzl`) — the second from the
+/// cache.
+#[test]
+fn recording_with_the_definition_cache_pins_what_the_uncached_loader_pins() {
+    let ws = Workspace::new();
+    let lib = fs::read_to_string(ws.0.join("lib.bzl")).unwrap();
+    ws.file(
+        "lib.bzl",
+        &lib.replace(
+            "repository_rule(_impl)",
+            "repository_rule(_impl, local = True)",
+        ),
+    );
+    // The warm-up runs without the snapshot (a hit would skip the
+    // definition loads), the measured runs in the record mode: both
+    // explicit, whatever the default.
+    for round in ["cold", "warm"] {
+        let output = ws.run_env("cache", false, &[("BAZEL_RS_SNAPSHOT", "off")]);
+        assert!(output.status.success(), "{round}: {}", stderr(&output));
+    }
+    let dumps = tempfile::tempdir().unwrap();
+    let record = |uncached: bool| {
+        let dump = dumps.path().join(if uncached {
+            "uncached.txt"
+        } else {
+            "cached.txt"
+        });
+        let output = ws.run_env(
+            "cache",
+            uncached,
+            &[
+                ("BAZEL_RS_SNAPSHOT", "record"),
+                ("BAZEL_RS_SNAPSHOT_DUMP", dump.to_str().unwrap()),
+            ],
+        );
+        assert!(output.status.success(), "{uncached}: {}", stderr(&output));
+        let text = stderr(&output);
+        assert!(
+            text.contains("bazel-rs-snapshot: replay dry-run: 3/3 matching"),
+            "uncached={uncached}: {text}"
+        );
+        let dump = fs::read_to_string(&dump).unwrap();
+        let lines: Vec<String> = dump
+            .lines()
+            .filter(|line| {
+                [
+                    "INPUTS-CANONICAL ",
+                    "OBS ",
+                    "ENV ",
+                    "REPO ",
+                    "INT ",
+                    "ROOT ",
+                    "MAPPING ",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+                    || (line.starts_with("TAINT ") && !line.starts_with("TAINT test-hook "))
+                    || line.starts_with("REPLAY ")
+            })
+            .map(|line| {
+                let line = line.strip_suffix(" racy").unwrap_or(line);
+                line.split(' ')
+                    .filter(|part| !part.starts_with("recorded:") && !part.starts_with("replay:"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("REPLAY ") && line.contains(" match "))
+                .count(),
+            3,
+            "{lines:#?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.starts_with("MAPPING ")),
+            "{lines:#?}"
+        );
+        lines
+    };
+    let cached = record(false);
+    let uncached = record(true);
+    assert_eq!(cached, uncached);
 }

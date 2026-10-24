@@ -880,14 +880,36 @@ impl RepositorySet {
     }
 
     /// Whether definition loads may share the definition `.bzl` cache: not
-    /// while root and mapping results are pinned or captured for the
-    /// analysis snapshot's replay records (a reused module would skip the
-    /// lookups the capture expects).
+    /// while root and mapping results are pinned (a replaying set must
+    /// fail on every unpinned lookup). While they are captured for the
+    /// analysis snapshot's replay records the cache keeps each module's
+    /// `root()`/`mapping()` lookups and a hit inside a replay scope repeats
+    /// them (W6R; crate::snapshot::replay::lookups), so the pinned tables
+    /// are the uncached loader's.
     pub(crate) fn definition_cache_allowed(&self) -> bool {
         self.state.pinned.is_none()
-            && self.state.replay.is_none()
             // The uncached loader, for A/B checks of the cache.
             && std::env::var_os("BAZEL_RS_DEBUG_NO_DEFINITION_CACHE").is_none()
+    }
+
+    /// Repeat `lookups` of a definition module the definition `.bzl` cache
+    /// serves, inside a replay scope (see [`Self::definition_cache_allowed`]):
+    /// each pins what the module's first evaluation pinned. The lookups
+    /// already happened in this invocation, so nothing is evaluated anew.
+    pub(crate) fn repeat_lookups(&self, lookups: &[crate::snapshot::replay::Lookup]) {
+        if self.capturing().is_none() {
+            return;
+        }
+        for lookup in lookups {
+            match lookup {
+                crate::snapshot::replay::Lookup::Root(name) => {
+                    let _ = self.root(name);
+                }
+                crate::snapshot::replay::Lookup::Mapping(name) => {
+                    let _ = self.mapping(name);
+                }
+            }
+        }
     }
 
     /// The module-phase `.bzl` globals (crate::package::module_bzl_globals),
@@ -1695,6 +1717,11 @@ impl RepositorySet {
                 .ok_or_else(|| format!("repository @@{repository} is {NOT_PINNED}"));
         }
         let root = self.external_root(repository)?;
+        if self.state.replay.is_some() {
+            crate::snapshot::replay::note_lookup(|| {
+                crate::snapshot::replay::Lookup::Root(repository.to_owned())
+            });
+        }
         if let Some(capture) = self.capturing() {
             capture.note_root(repository, root, || {
                 self.is_repository_rule_generated(repository)
@@ -1828,6 +1855,11 @@ impl RepositorySet {
                 });
         }
         let mapping = self.unpinned_mapping(repository)?;
+        if self.state.replay.is_some() {
+            crate::snapshot::replay::note_lookup(|| {
+                crate::snapshot::replay::Lookup::Mapping(repository.to_owned())
+            });
+        }
         if let Some(capture) = self.capturing() {
             capture.note_mapping(repository, mapping, || self.isolated_imports(repository));
         }

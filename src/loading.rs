@@ -905,6 +905,10 @@ struct CachedDefinitionBzl {
     /// Its top-level `print()` lines: printed again at every reuse, as a
     /// fresh definition loader prints them on every load.
     prints: Vec<String>,
+    /// The `root()`/`mapping()` lookups entering and evaluating it made of
+    /// a repository set that records for replay (W6R): a reuse inside a
+    /// replay scope repeats them, pinning what the evaluation pinned.
+    lookups: Vec<crate::snapshot::replay::Lookup>,
 }
 
 /// The definition `.bzl` modules a repository set (one invocation)
@@ -1230,6 +1234,9 @@ struct Loader<'a> {
     /// The load-statement mapping records of entered, not yet finished
     /// modules (for the definition cache).
     entered_mappings: HashMap<Label, Vec<RecordedRepoMapping>>,
+    /// The replay-capture lookups entering them made (for the definition
+    /// cache, W6R).
+    entered_lookups: HashMap<Label, Vec<crate::snapshot::replay::Lookup>>,
 }
 
 enum Work {
@@ -1272,6 +1279,7 @@ impl<'a> Loader<'a> {
             prints: None,
             definitions: false,
             entered_mappings: HashMap::new(),
+            entered_lookups: HashMap::new(),
         }
     }
 
@@ -1380,6 +1388,7 @@ impl<'a> Loader<'a> {
                         // its load statements' mapping records), then its
                         // loads, then its evaluation's records at reuse.
                         crate::loading::module_timings::record_hit();
+                        self.repositories.repeat_lookups(&cached.lookups);
                         self.sources
                             .insert(label.to_string(), cached.source.clone());
                         self.repo_mappings
@@ -1395,14 +1404,17 @@ impl<'a> Loader<'a> {
                         let enter_started = std::time::Instant::now();
                         let recorded = self.repo_mappings.len();
                         // What a cache entry's hits replay (W6R).
-                        let (entered, observations) =
-                            self.capture_shared(|loader| loader.enter_module(&label));
+                        let ((entered, observations), entered_lookups) =
+                            self.definition_lookups(|loader| {
+                                loader.capture_shared(|loader| loader.enter_module(&label))
+                            });
                         let (path, ast, dependencies) = entered.or_else(|error| {
                             self.failed(&label, error, Vec::new(), Vec::new(), observations.clone())
                         })?;
                         if self.definitions {
                             self.entered_mappings
                                 .insert(label.clone(), self.repo_mappings[recorded..].to_vec());
+                            self.entered_lookups.insert(label.clone(), entered_lookups);
                         }
                         crate::loading::module_timings::record_enter(
                             &label.to_string(),
@@ -1558,8 +1570,11 @@ impl<'a> Loader<'a> {
                         continue;
                     }
                     let self_time = std::time::Instant::now();
-                    let (finished, evaluated) =
-                        self.capture_shared(|loader| loader.finish_module(&label, &path, *ast));
+                    let ((finished, evaluated), evaluated_lookups) =
+                        self.definition_lookups(|loader| {
+                            loader
+                                .capture_shared(|loader| loader.finish_module(&label, &path, *ast))
+                        });
                     let observations = crate::observed_fs::Captured::join(entered, evaluated);
                     let (frozen, visibility, prints) = match finished {
                         Ok(finished) => finished,
@@ -1572,6 +1587,12 @@ impl<'a> Loader<'a> {
                     {
                         let enter_mappings =
                             self.entered_mappings.remove(&label).unwrap_or_default();
+                        let mut lookups = self.entered_lookups.remove(&label).unwrap_or_default();
+                        for lookup in evaluated_lookups {
+                            if !lookups.contains(&lookup) {
+                                lookups.push(lookup);
+                            }
+                        }
                         self.repositories.definition_bzl_cache().insert(
                             label.clone(),
                             CachedDefinitionBzl {
@@ -1583,6 +1604,7 @@ impl<'a> Loader<'a> {
                                 enter_mappings,
                                 eval_mappings: self.repo_mappings[own_mappings..].to_vec(),
                                 prints: prints.clone(),
+                                lookups,
                             },
                         );
                     }
@@ -1659,6 +1681,21 @@ impl<'a> Loader<'a> {
             crate::observed_fs::capture(|| f(self))
         } else {
             (f(self), None)
+        }
+    }
+
+    /// Run `f` on this loader noting the replay capture's lookups it makes
+    /// when this loader publishes to the definition `.bzl` cache under a
+    /// repository set that records for replay (W6R,
+    /// [`CachedDefinitionBzl::lookups`]); none otherwise.
+    fn definition_lookups<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Vec<crate::snapshot::replay::Lookup>) {
+        if self.definitions && self.repositories.records_for_replay() {
+            crate::snapshot::replay::lookups(|| f(self))
+        } else {
+            (f(self), Vec::new())
         }
     }
 
