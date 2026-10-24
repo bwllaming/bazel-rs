@@ -225,6 +225,81 @@ class SoakReportTests(unittest.TestCase):
             self.assertEqual(report.main([empty]), 2)
 
 
+class ExitCheckAndArchiveTests(unittest.TestCase):
+    """L2-W5i: the soak's exit thresholds against a report, and the archive a
+    daily run keeps (the cache's logs hold ~7,500 events)."""
+
+    def statuses(self, result):
+        return [(check["check"].split(" (")[0].split(" >=")[0], check["status"]) for check in result["exit_check"]]
+
+    def test_the_exit_check_names_what_is_not_met_yet(self):
+        with tempfile.TemporaryDirectory() as cache:
+            snapshots = Path(cache) / "snapshots"
+            (snapshots / "v1").mkdir(parents=True)
+            (snapshots / "events.log").write_text(CURRENT.replace("<CACHE>", cache))
+            result = report.analyze(*report.load(cache), report.Places(cache))
+        self.assertEqual(self.statuses(result), [
+            ("days with commands", "not yet"), ("verified hits", "not yet"),
+            ("a MODULE.bazel / lockfile change", "not yet"),
+            ("a branch switch touching BUILD/.bzl files", "look"),
+            ("a bazel-rs upgrade", "not yet"),
+            ("no mismatch, heal or cannot-verify you did not cause", "look"),
+            ("no SUSPECT always-miss pattern", "look"), ("hit rate on unchanged re-runs", "look"),
+            ("local <= replay on", "look"), ("hit p95 <= 1 s", "ok"), ("store <= 1 GiB", "ok")])
+
+    def test_a_soak_that_meets_every_threshold(self):
+        lines = []
+        for day in range(7):
+            for n in range(45):
+                command = "test" if n < 8 else ("run" if n < 10 else "build")
+                key = f"k{n % 21}"
+                seconds = day * 86400 + n * 60
+                binary = "aaaa" if day < 3 else "bbbb"
+                lines += [line(seconds, "saved", key, mode="verify", command=command, ms="900.0",
+                               detail=f"bytes:1,actions:1,replays:1,binary:{binary}"),
+                          line(seconds + 1, "hit", key, mode="verify", command=command, ms="150.0",
+                               detail="replay:100.0,local:5.0"),
+                          line(seconds + 2, "verified", key, mode="verify", command=command, ms="7000.0")]
+        lines.append(line(7 * 86400, "miss", "k0", mode="verify", reason="read", path="/ws/MODULE.bazel"))
+        lines.append(line(7 * 86400 + 1, "miss", "k1", mode="verify", reason="read", path="/ws/pkg/BUILD.bazel"))
+        events = [report.parse_line(text) for text in lines]
+        result = report.analyze(events, [], {"snapshots": 16, "bytes": 1 << 29, "logs": {}}, (), report.Places("/c"))
+        self.assertEqual([status for _, status in self.statuses(result)],
+                         ["ok", "ok", "ok", "look", "ok", "ok", "ok", "ok", "ok", "ok", "ok"],
+                         result["exit_check"])
+        text = report.render(result, "/c")
+        self.assertIn("soak exit check (docs/ANALYSIS_SNAPSHOT.md \"Soak\"; this cache): 10 of 11 met, 0 not yet, "
+                      "1 to look at", text)
+        self.assertIn("[ok     ] a bazel-rs upgrade (two binaries among the saves): 2 binaries (aaaa, bbbb)", text)
+
+    def test_the_archive_keeps_every_line_once(self):
+        with tempfile.TemporaryDirectory() as cache, tempfile.TemporaryDirectory() as archive:
+            snapshots = Path(cache) / "snapshots"
+            snapshots.mkdir()
+            first = line(1, "miss", "k1", reason="absent")
+            second = line(2, "saved", "k1")
+            (snapshots / "events.log.1").write_text(first)
+            (snapshots / "events.log").write_text(second + line(3, "hit", "k1")[:20])  # a line being written
+            (snapshots / "verify-details.log").write_text(OLDER + "  verify mismatch: plan\n")
+            self.assertEqual(report.archive_logs(snapshots, Path(archive)),
+                             {"events.log": 2, "verify.log": 0, "verify-details.log": 1})
+            self.assertEqual(report.archive_logs(snapshots, Path(archive)),
+                             {"events.log": 0, "verify.log": 0, "verify-details.log": 0})
+            # Rotated: the oldest generation is gone; the same event twice
+            # (two commands in one second) is archived twice; the completed
+            # line now.
+            third = line(3, "hit", "k1")
+            (snapshots / "events.log.1").write_text(second + third)
+            (snapshots / "events.log").write_text(third)
+            self.assertEqual(report.archive_logs(snapshots, Path(archive))["events.log"], 2)
+            self.assertEqual((Path(archive) / "events.log").read_text(), first + second + third + third)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(report.main(["--archive", archive, cache]), 0)
+            self.assertIn("events: 4 ", out.getvalue())
+            self.assertIn("  " + OLDER.rstrip("\n") + " (verify.log line rotated away)", out.getvalue())
+
+
 def events_of(*specs, key="k", command="build", targets="//a:b", mode="on"):
     """Parsed events of one key from `(kind, reason, path, detail)` specs, a second apart."""
     return [report.parse_line(line(seconds, kind, key, mode=mode, command=command, reason=reason, path=path,

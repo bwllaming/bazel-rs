@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarize the analysis snapshot's soak logs of one cache (L2-W5h, L2-W5i).
 
-usage: snapshot_soak_report.py [--json] [--workspace DIR] CACHE_DIR
+usage: snapshot_soak_report.py [--json] [--workspace DIR] [--archive DIR] CACHE_DIR
 
 Reads `<cache>/snapshots/events.log`, `verify.log` and `verify-details.log`
 (each after its rotated generation `<name>.1`; crate::snapshot::telemetry
@@ -48,8 +48,14 @@ set aside), and prints:
   * the store: snapshot files and bytes, those set aside in `mismatched/`, the
     logs' sizes.
 
-`--json` prints the same as one JSON object. Exit status 0 (2 when the cache
-has no snapshot logs).
+  * the soak's exit check: each threshold of docs/ANALYSIS_SNAPSHOT.md "Soak"
+    with its value here and `ok`, `not yet` or `look` (a person must judge it).
+
+The cache is only read. `--archive DIR` (L2-W5i) first appends the cache's log
+lines that DIR does not hold yet to DIR/events.log, verify.log and
+verify-details.log (never rotated) and reports over DIR: run it daily during a
+soak, since the cache's logs keep only ~7,500 events. `--json` prints the same
+as one JSON object. Exit status 0 (2 when there are no snapshot logs).
 """
 import argparse
 import collections
@@ -57,6 +63,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 EVENTS_LOG = 'events.log'
@@ -76,6 +83,9 @@ OUTPUT_TREES = {'bazel-out', 'bazel-bin', 'bazel-testlogs', 'bazel-genfiles', 'b
 # Not-saved classes worth reporting when a key is never saved (every taint and `failed` are expected:
 # the guide's "not problems", e.g. `network`).
 UNEXPECTED_NOT_SAVED = {'capture', 'too-large', 'incomplete', 'other'}
+# The soak's exit thresholds (docs/ANALYSIS_SNAPSHOT.md "Soak", L2-W5i).
+EXIT = {'days': 7, 'verified': 300, 'verified_keys': 20, 'verified_test': 50, 'verified_run': 10,
+        'hit_rate': 0.90, 'local_above': 0.01, 'hit_p95_ms': 1000.0, 'store_bytes': 1 << 30}
 
 
 def unescape(token):
@@ -411,6 +421,7 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
         },
         'store': store,
     }
+    report['exit_check'] = exit_check(report, events)
     return report
 
 
@@ -444,6 +455,92 @@ def local_tree(events):
     return {'hits': len(pairs), 'p50': percentile(values, 0.5), 'p95': percentile(values, 0.95),
             'max': max(values) if values else None, 'local_above_replay': above,
             'share_above': (above / len(pairs)) if pairs else None}
+
+
+def detail_text(detail):
+    """A `detail=` of `name:value,...` pairs as strings (`binary:` of a save)."""
+    fields = {}
+    for part in unescape(detail or '-').split(','):
+        name, sep, value = part.partition(':')
+        if sep:
+            fields[name] = value
+    return fields
+
+
+def basename(path):
+    return path.rstrip('/').rsplit('/', 1)[-1]
+
+
+def exit_check(report, events):
+    """The soak's exit thresholds (docs/ANALYSIS_SNAPSHOT.md "Soak") against
+    this report: a list of `{'check', 'value', 'status'}`, status `ok`, `not
+    yet` (soak on) or `look` (a person must judge it: explain each, or it
+    fails)."""
+    def item(check, value, status):
+        return {'check': check, 'value': value, 'status': status}
+
+    checks = []
+    # UTC days with a lookup (from the unix seconds).
+    days = sorted({time.strftime('%Y-%m-%d', time.gmtime(e['seconds'])) for e in events
+                   if e.get('kind') in ('hit', 'miss')})
+    checks.append(item(f"days with commands >= {EXIT['days']}", len(days),
+                       'ok' if len(days) >= EXIT['days'] else 'not yet'))
+    verified = report['verified_by_command']
+    total = sum(verified.get(command, 0) for command in ('build', 'test', 'run'))
+    keys = len({e.get('key') for e in events if e.get('kind') == 'verified'})
+    met = (total >= EXIT['verified'] and keys >= EXIT['verified_keys']
+           and verified.get('test', 0) >= EXIT['verified_test'] and verified.get('run', 0) >= EXIT['verified_run'])
+    checks.append(item(f"verified hits >= {EXIT['verified']} on >= {EXIT['verified_keys']} keys, test >= "
+                       f"{EXIT['verified_test']}, run >= {EXIT['verified_run']}",
+                       f"{total} on {keys} keys (build {verified.get('build', 0)}, test {verified.get('test', 0)}, "
+                       f"run {verified.get('run', 0)})", 'ok' if met else 'not yet'))
+    misses = [e for e in events if e.get('kind') == 'miss']
+    lockfile = sum(1 for e in misses if basename(unescape(e.get('path', '-'))) in ('MODULE.bazel', 'MODULE.bazel.lock')
+                   or unescape(e.get('path', '-')).endswith('.MODULE.bazel'))
+    pending = report['not_saved'].get('lockfile-write-pending', 0)
+    checks.append(item('a MODULE.bazel / lockfile change (a miss naming one)',
+                       f'{lockfile} miss(es) naming one ({pending} run(s) not saved for lockfile-write-pending)',
+                       'ok' if lockfile else 'not yet'))
+    build = [e for e in misses if basename(unescape(e.get('path', '-'))) in ('BUILD', 'BUILD.bazel')
+             or unescape(e.get('path', '-')).endswith('.bzl')]
+    checks.append(item('a branch switch touching BUILD/.bzl files (confirm one was a switch)',
+                       f"{len(build)} miss(es) naming a BUILD or .bzl file on {len({e.get('key') for e in build})} "
+                       f"key(s)", 'look' if build else 'not yet'))
+    binaries = sorted({detail_text(e.get('detail')).get('binary') for e in events if e.get('kind') == 'saved'}
+                      - {None})
+    checks.append(item('a bazel-rs upgrade (two binaries among the saves)',
+                       f"{len(binaries)} binar{'y' if len(binaries) == 1 else 'ies'}"
+                       + (f" ({', '.join(binaries)})" if binaries else ''),
+                       'ok' if len(binaries) >= 2 else 'not yet'))
+    mismatches = collections.Counter(e.get('reason', '-') for e in events if e.get('kind') == 'mismatch')
+    cannot = mismatches.pop('cannot-verify', 0)
+    heals = sum(report['heals'].values())
+    checks.append(item('no mismatch, heal or cannot-verify you did not cause (explain each)',
+                       f"mismatches {sum(mismatches.values())}"
+                       + (' (' + ', '.join(f'{k} {v}' for k, v in mismatches.most_common()) + ')' if mismatches else '')
+                       + f", heals {heals}, cannot-verify {cannot}",
+                       'ok' if not mismatches and not heals and not cannot else 'look'))
+    suspect = sum(1 for run in report['always_miss'] if run['class'] == 'suspect')
+    checks.append(item('no SUSPECT always-miss pattern', suspect, 'ok' if suspect == 0 else 'look'))
+    rate = report['hit_rate_unchanged']['rate']
+    checks.append(item(f"hit rate on unchanged re-runs >= {100 * EXIT['hit_rate']:.0f}%",
+                       '-' if rate is None else f'{100 * rate:.1f}%',
+                       'not yet' if rate is None else ('ok' if rate >= EXIT['hit_rate'] else 'look')))
+    local = report['local_tree']
+    checks.append(item(f"local <= replay on >= {100 * (1 - EXIT['local_above']):.0f}% of hits",
+                       '-' if local['share_above'] is None else
+                       f"local > replay on {local['local_above_replay']} of {local['hits']} "
+                       f"({100 * local['share_above']:.1f}%)",
+                       'not yet' if local['share_above'] is None else
+                       ('ok' if local['share_above'] <= EXIT['local_above'] else 'look')))
+    p95 = (report['hit_latency_ms'].get('all/all') or {}).get('p95')
+    checks.append(item(f"hit p95 <= {EXIT['hit_p95_ms'] / 1000:.0f} s", '-' if p95 is None else f'{p95:.0f} ms',
+                       'not yet' if p95 is None else ('ok' if p95 <= EXIT['hit_p95_ms'] else 'look')))
+    store = report['store']
+    if store is not None:
+        checks.append(item('store <= 1 GiB', f"{store['bytes'] / (1 << 20):.1f} MiB",
+                           'ok' if store['bytes'] <= EXIT['store_bytes'] else 'look'))
+    return checks
 
 
 def pair_details(verify_lines, details):
@@ -586,15 +683,80 @@ def render(report, cache):
         lines.append(f"set aside by verify mismatches (snapshots/mismatched/, the 3 newest kept): "
                      f"{len(aside['snapshots'])} snapshot(s), {aside['bytes']} bytes"
                      + (': ' + ', '.join(aside['snapshots']) if aside['snapshots'] else ''))
+    checks = report.get('exit_check') or []
+    if checks:
+        lines.append('')
+        statuses = collections.Counter(check['status'] for check in checks)
+        lines.append('soak exit check (docs/ANALYSIS_SNAPSHOT.md "Soak"; this cache): '
+                     + ('all met' if statuses['ok'] == len(checks) else
+                        f"{statuses['ok']} of {len(checks)} met, {statuses['not yet']} not yet, "
+                        f"{statuses['look']} to look at"))
+        for check in checks:
+            lines.append(f"  [{check['status']:7}] {check['check']}: {check['value']}")
     return '\n'.join(lines) + '\n'
 
 
-def load(cache):
-    """`(events, verify_lines, store, details)` of the cache's logs and store."""
+def whole_lines(path):
+    """The lines of `path` that end with a newline (a line being appended right
+    now is left for the next run)."""
+    try:
+        text = path.read_text(encoding='utf-8', errors='surrogateescape')
+    except OSError:
+        return []
+    lines = text.split('\n')
+    return lines[:-1]
+
+
+def units(name, lines):
+    """A log's units: its lines, or for verify-details.log its blocks."""
+    if name != VERIFY_DETAILS_LOG:
+        return [line + '\n' for line in lines if line]
+    blocks = []
+    for line in lines:
+        if line.startswith('  ') and blocks:
+            blocks[-1] += line + '\n'
+        elif line.strip():
+            blocks.append(line + '\n')
+    return blocks
+
+
+def archive_logs(snapshots, directory):
+    """Append to `directory`/<log> the lines (verify-details.log: blocks) of
+    the cache's logs, both generations, that the archive does not hold yet —
+    counted, so an event logged twice is archived twice — in their order
+    (L2-W5i: the logs keep ~7,500 events, the archive the whole soak). Returns
+    the units appended per log."""
+    directory.mkdir(parents=True, exist_ok=True)
+    appended = {}
+    for name in (EVENTS_LOG, VERIFY_LOG, VERIFY_DETAILS_LOG):
+        current = units(name, whole_lines(snapshots / (name + '.1')) + whole_lines(snapshots / name))
+        target = directory / name
+        held = collections.Counter(units(name, whole_lines(target)))
+        new = []
+        for unit in current:
+            if held[unit] > 0:
+                held[unit] -= 1
+            else:
+                new.append(unit)
+        if new:
+            with open(target, 'a', encoding='utf-8', errors='surrogateescape') as out:
+                out.write(''.join(new))
+        appended[name] = len(new)
+    return appended
+
+
+def load(cache, archive=None):
+    """`(events, verify_lines, store, details)` of the cache's logs — or, with
+    `archive`, of the archive after the cache's new lines were added to it —
+    and the cache's store."""
     snapshots = Path(cache) / 'snapshots'
-    events = [e for e in (parse_line(l) for l in read_generations(snapshots, EVENTS_LOG)) if e is not None]
-    verify_lines = [l for l in read_generations(snapshots, VERIFY_LOG) if l.strip()]
-    details = parse_details(read_generations(snapshots, VERIFY_DETAILS_LOG))
+    logs = snapshots
+    if archive is not None:
+        archive_logs(snapshots, Path(archive))
+        logs = Path(archive)
+    events = [e for e in (parse_line(l) for l in read_generations(logs, EVENTS_LOG)) if e is not None]
+    verify_lines = [l for l in read_generations(logs, VERIFY_LOG) if l.strip()]
+    details = parse_details(read_generations(logs, VERIFY_DETAILS_LOG))
     return events, verify_lines, store_size(snapshots), details
 
 
@@ -603,9 +765,12 @@ def main(argv=None):
     ap.add_argument('--json', action='store_true', help='print the report as JSON')
     ap.add_argument('--workspace', help='the workspace of the cache (its `bazel-*` entries are output trees; '
                                         'default: the parent of a cache named bazel-rs-out)')
+    ap.add_argument('--archive', metavar='DIR',
+                    help="first append the cache's new log lines to DIR (one file per log, never rotated), then "
+                         "report over DIR: run it daily during a soak (the logs keep ~7,500 events)")
     ap.add_argument('cache')
     a = ap.parse_args(argv)
-    events, verify_lines, store, details = load(a.cache)
+    events, verify_lines, store, details = load(a.cache, a.archive)
     report = analyze(events, verify_lines, store, details, Places(a.cache, a.workspace))
     if a.json:
         sys.stdout.write(json.dumps(report, indent=1, default=str) + '\n')

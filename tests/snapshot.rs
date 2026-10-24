@@ -2522,6 +2522,18 @@ fn the_event_log_names_each_outcome() {
         read.contains("/run/ws/BUILD.bazel ms=") && read.contains(" detail=READ\\x20"),
         "{read}"
     );
+    // L2-W5i: a save names the binary (the first 8 bytes of its identity),
+    // so the soak report sees an upgrade.
+    let saved = log.lines().nth(5).unwrap();
+    let binary = field(saved, "detail=")
+        .split(',')
+        .find_map(|part| part.strip_prefix("binary:"))
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        binary.len() == 16 && binary.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{saved}"
+    );
     // Lookups and saves carry their wall time.
     for line in log.lines() {
         let ms = field(line, "ms=");

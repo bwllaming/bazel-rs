@@ -407,7 +407,7 @@ line has the same fields:
 |---|---|---|---|
 | `hit` | a lookup hit (in verify mode before its shadow analysis); `detail` splits the time (key, inputs, validate, replay, local, decode, status) | - | the attempt, key included |
 | `miss` | a lookup missed; `detail` is the reason EXPLAIN prints | its class (below) | the attempt |
-| `saved` | a full analysis was saved; `detail`: bytes, actions, replays | - | check point to rename |
+| `saved` | a full analysis was saved; `detail`: bytes, actions, replays, binary (the first 8 bytes of the binary identity, L2-W5i: the soak report sees an upgrade) | - | check point to rename |
 | `not-saved` | a full analysis was not saved | its class (below) | - |
 | `verified` | verify mode: the shadow analysis agreed | - | analysis and comparison |
 | `mismatch` | verify mode: it disagreed (`path`: the first differing path; verify.log and verify-details.log hold the rest) | the first difference's class | - |
@@ -418,7 +418,10 @@ line has the same fields:
 
 `scripts/snapshot_soak_report.py <cache dir>` (`--json` for a JSON object;
 `--workspace <dir>` names the cache's workspace when the cache is not its
-`bazel-rs-out`) prints the counts per mode and kind, misses and unsaved
+`bazel-rs-out`; `--archive <dir>`, L2-W5i, first appends the cache's log
+lines the directory does not hold yet — counted, so an event logged twice
+is kept twice; a line being written is left for the next run — and
+reports over the whole archive) prints the counts per mode and kind, misses and unsaved
 runs by reason, the number of keys (those seen only in an eviction counted
 apart), the hit rate on unchanged re-runs over all keys and per key (hits
 over the lookups once a snapshot of the key exists — saved, hit, or read by
@@ -438,7 +441,8 @@ latency's p50 and p95 per mode and command, the local-tree check of the
 hits with local repositories (L2-W5i, from the hit's `local:` and
 `replay:` times: p50, p95, max, and on how many hits the check took longer
 than the replay it runs beside — then it is on the attempt's critical
-path), and the store's size (and what `mismatched/` holds).
+path), the store's size (and what `mismatched/` holds), and the soak exit
+check (each threshold of the "Soak" section below with its value).
 
 An **always-miss pattern** is at least three consecutive misses of one key
 with the same reason and path and no hit between them. L2-W5i (the W5h
@@ -494,6 +498,108 @@ mode (the full analysis re-executes the repository rule to repair the tree:
 `taint repository-rule-executed`; by default the full analysis's plan then
 executes, `verify_mismatches_execute_the_full_analysis_by_default`). A file
 deleted from a tree is a miss since L2-W5f.
+
+## Soak (L2-W5h, L2-W5i: the user's guide and the exit thresholds)
+
+The snapshot stays **off by default** until a user soak in verify mode
+meets the exit thresholds at the end of this section. Per cache:
+
+1. **Binary**: bazel-rs from `perf-snapshot-w4` with the L2-W5i commits or
+   later (or an integration that carries them).
+2. **Switch it on** (shell profile or per command):
+   `export BAZEL_RS_SNAPSHOT=verify`. Optional:
+   `export BAZEL_RS_SNAPSHOT_EXPLAIN=1` (adds `bazel-rs-snapshot: …` lines
+   on stderr: why a lookup missed, `verified …`). Do **not** set
+   `BAZEL_RS_SNAPSHOT_VERIFY_STRICT`: by default a mismatch is logged and
+   the full analysis's plan executes, so every command's result is that of
+   a run without the snapshot. Verify mode runs a full analysis on every hit
+   too (no speedup during the soak; measured on ~/code: oauth2token build
+   8.4 s vs 7.1 s without the snapshot, B2 `--nobuild` 13.1 vs 12.3 s — the
+   shadow analysis records, which turns prefetching off); a miss saves the
+   snapshot like `on`. (`BAZEL_RS_SNAPSHOT=on` later gives ~0.5 s hits.)
+3. **Logs**, in `<cache>/snapshots/` (`<cache>` is `--cache-dir`, default
+   `<workspace>/bazel-rs-out`, e.g. `~/code/bazel-rs-out/snapshots/`):
+   `events.log`, `verify.log` and `verify-details.log`, each at most 1 MiB
+   plus one rotated `<name>.1`, and `mismatched/` (the 3 newest snapshots a
+   verify mismatch set aside). The two generations of `events.log` hold
+   only about **7,500 events** (≈ 280 bytes each; a command logs one to
+   three, plus evictions): a busy week rotates the oldest away.
+4. **Run the report daily** (Python ≥ 3.9; it only reads the cache):
+   `python3 <bazel-rs checkout>/scripts/snapshot_soak_report.py --archive ~/bazel-rs-soak/<name> <cache> > ~/bazel-rs-soak/<name>/report-$(date +%F).txt`.
+   `--archive` first appends the cache's new log lines to that directory
+   (one file per log, never rotated), then reports over the whole archive,
+   so nothing rotates away before it is counted. **One report — and one
+   archive — per cache**: another workspace or `--cache-dir` has its own
+   logs. Add `--workspace <dir>` when the cache is not
+   `<workspace>/bazel-rs-out` (its `bazel-*` entries are output trees for
+   the SUSPECT classification). `--json` prints the report as JSON.
+5. **Send** (after a few days, and at the end): the archive directory (the
+   logs and the daily reports) — without an archive, the logs **including
+   the rotated `.1` files** — plus `<cache>/snapshots/mismatched/` if it
+   holds anything, and every `bazel-rs-snapshot: verify … MISMATCH` line
+   your terminal showed (copied verbatim: it names the first difference,
+   where the snapshot went and where the details were logged).
+6. **On a mismatch** nothing is needed for the command itself: its output
+   and exit code are those of the full analysis, and the next run analyzes
+   and saves anew. Keep the evidence: the set-aside snapshot in
+   `<cache>/snapshots/mismatched/` (only the 3 newest are kept — copy it
+   out if more mismatches follow) and `verify-details.log` (that mismatch's
+   block: every difference); note what you did just before (an edit, a
+   branch switch, a fetch, something under `<cache>/repositories`), and send
+   them.
+7. **What counts as a problem** (please report it with the lines):
+   * any `kind=mismatch` event / verify.log line — the snapshot planned
+     something else than a full analysis — except `first=taint
+     taint=repository-rule-executed` right after you edited files under
+     `<cache>/repositories` yourself; and any `cannot-verify`;
+   * a **SUSPECT** always-miss pattern in the report (a command that keeps
+     missing on a path in the cache or an output tree, or on no input; the
+     reason and path say why, e.g. a tool writing into a repository tree),
+     and `kind=miss reason=local-tree` repeating on one path;
+   * a hit rate on unchanged re-runs below 100 % for a command you re-ran
+     unchanged — misses counted `unexplained` (`absent` right after a save
+     with no eviction, heal or mismatch, `unreadable`, `capture`, `panic`,
+     `other`);
+   * a key the report marks "please report" among the keys never saved
+     (`capture`, `too-large`, `incomplete`, `other`, no not-saved event);
+   * any `kind=healed` you did not cause by touching `<cache>/repositories`;
+   * a command whose output or exit code differs from the same command with
+     `BAZEL_RS_SNAPSHOT` unset.
+
+   **Not** problems: misses naming what you just changed (`read`,
+   `readdir`, `stat`, `env`, …; the report's "likely your edits" patterns),
+   `absent` after an `evicted` (the store keeps 16 snapshots / 1 GiB),
+   `not-saved` for `lockfile-write-pending` (the run after a lockfile
+   change), `repository-rule-executed` (after a fetch), `network` or
+   another taint, `failed` (failed commands are never saved), keys never
+   saved for those reasons, and `heal-kept` (a failed hit whose trees all
+   verified: the failure was the build's own).
+8. **Escape hatch**: unset `BAZEL_RS_SNAPSHOT` (or `=off`) — exactly the
+   previous behaviour; deleting `<cache>/snapshots/` drops every snapshot
+   and log; one run with the snapshot off repairs a tampered repository
+   tree.
+
+**Exit thresholds** — all of them, per cache, read from the final report's
+"soak exit check" (each threshold with its value and `ok`, `not yet` or
+`look`, which needs a person: explain it, or it fails):
+
+* ≥ 7 working days (UTC days with commands) and ≥ 300 verified hits across
+  `build`, `test` and `run`, on ≥ 20 keys, of them ≥ 50 `test` and ≥ 10
+  `run`;
+* the period includes at least one MODULE.bazel / lockfile change (a miss
+  naming one), one branch switch touching BUILD / `.bzl` files (the report
+  counts the misses naming them; confirm one was a switch) and one bazel-rs
+  upgrade (two binaries among the saves: `binary:` in a save's detail,
+  L2-W5i);
+* zero mismatches, heals and `cannot-verify` not caused by the user;
+* zero SUSPECT always-miss patterns;
+* hit rate ≥ 90 % on unchanged re-runs (over all keys; a hit then mismatch
+  is counted apart);
+* the local-tree check no slower than the replay beside it on ≥ 99 % of
+  the hits with local repositories;
+* hit p95 ≤ 1 s (the attempt's wall, every hit);
+* store ≤ 1 GiB per cache (`v1/`; its garbage collection keeps 16
+  snapshots / 1 GiB; `mismatched/` adds at most 3 files).
 
 ## Syscall audit of the hit path (L2-W6, L2-W5g)
 

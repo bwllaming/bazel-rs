@@ -195,7 +195,13 @@ impl Save {
             ms(checked_at),
             ms(plan_at - checked_at),
         );
-        self.saved_counts = format!("actions:{plan_nodes},replays:{}", records.len());
+        // L2-W5i: the binary's identity too (its first 8 bytes), so the soak
+        // report sees a bazel-rs upgrade (every key moves with the binary).
+        self.saved_counts = format!(
+            "actions:{plan_nodes},replays:{},binary:{}",
+            records.len(),
+            observed_fs::hex(&self.key.binary[..8])
+        );
         // The recording is no input of execution: taken, selected and
         // encoded on the writer thread while the actions run.
         Ok(store::write_with(&self.cache, &self.key, move || {
