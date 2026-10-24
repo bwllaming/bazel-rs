@@ -211,6 +211,19 @@ the encoding of oauth2token:all `--nobuild` and of oauth2token/... build is iden
 `eligible=yes` for oauth2token:all `--nobuild`, oauth2token/... build and B2 (`plan check: build-info-callback
 registered 8 (12 on B2), 0 in the plan`).
 
+With PA-1's shared input groups (format 2; integration-21 stage 3, ~/code 916008a5, release binary,
+`BAZEL_RS_SNAPSHOT_ROUNDTRIP=1 BAZEL_RS_TIMING=1`):
+
+| | actions | encoded | GROUPS table | encode / decode |
+|---|---|---|---|---|
+| oauth2token/... build | 694 | 10.45 MB | 1 group, 347 B (138 holders planned) | 13 ms / 4 ms |
+| `//src/beyondwork.ai/pythonworker/...` `--nobuild` | 2,637 | 82.08 MB (3 chunks) | 5 groups, 3,171 B (20,504 holders planned, 7 groups / 1,868 entries before the reachability prune) | 127 ms / 36 ms |
+
+The table is negligible next to the actions' own inputs: on pythonworker the runfiles tree and manifest actions
+of `//src/beyondwork.ai/pythonworker/cmd:cmd` (about 32,000 entries each) and the Go SDK actions (about 6,000
+inputs each) hold most of the 82 MB. The analysis snapshot of that request is 83.5 MB; a hit decodes it in
+92–126 ms (0.18–0.34 s per hit, 250 MB peak; the full analysis: 15.6–16.3 s, 3.27 GB).
+
 ## Gates
 
 Unit tests: `snapshot::codec::tests` (every planned shape round-trips byte for byte, non-UTF-8 paths, the
