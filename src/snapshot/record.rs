@@ -587,7 +587,10 @@ pub fn summary(
     lines
 }
 
-fn write_dump(
+/// Write the text dump (`BAZEL_RS_SNAPSHOT_DUMP`): the record mode's, and
+/// a hit's INPUTS (crate::snapshot::hit, for the syscall audit of the hit
+/// path).
+pub(crate) fn write_dump(
     path: &std::path::Path,
     recording: &Recording,
     summary: &[String],

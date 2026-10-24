@@ -48,8 +48,24 @@ private cache; the second is audited) and once more with a full `build`.
 `--workspace DIR` audits another workspace instead (pass the bazel-rs arguments
 after `--`; it must not be ~/code's default cache).
 
+`--hit` (L2-W6) audits the HIT path of BAZEL_RS_SNAPSHOT=on instead: each
+command runs with the snapshot on until a run saved, then once more under
+strace, which must be a hit; with BAZEL_RS_SNAPSHOT_DUMP the hit writes the
+INPUTS it validates and replays (same dump format). Audited: everything from
+the check point (/.bazel-rs-snapshot-marker/hit-begin, before the key) to
+the hit's execution (/.bazel-rs-snapshot-marker/hit-end, before the window
+bytes print; after it the actions execute, which is execution). Every path
+touched there outside the cache dir (the snapshot store, exe.id, the
+repository store and its stages, the digest table), /proc and the other
+process paths must be covered by the hit's INPUTS — an observation (a READ
+for a file opened for reading), a listed directory, the resolution chain of
+a CANON record, a path inside a verified tree (not below its links) or a
+pinned root (the replay's definition loads) — except the executions of the
+replayed impure local rules (between their replay-exec markers) and the
+processes started there (a replayed `execute`, the workspace status).
+
 usage: snapshot_fs_audit.py [--binary BIN] [--workspace DIR] [--cache DIR]
-                            [--keep] [--report FILE] [-- ARG...]
+                            [--hit] [--keep] [--report FILE] [-- ARG...]
 Exit 0 iff no unrecorded path was found (and every run succeeded).
 """
 import argparse
@@ -77,6 +93,9 @@ MARKER_REPLAY_BEGIN = '/.bazel-rs-snapshot-marker/replay-begin'
 MARKER_REPLAY_END = '/.bazel-rs-snapshot-marker/replay-end'
 MARKER_REPLAY_EXEC = '/.bazel-rs-snapshot-marker/replay-exec/'
 MARKER_REPLAY_EXEC_END = '/.bazel-rs-snapshot-marker/replay-exec-end'
+# The hit path (crate::snapshot::check .. src/main.rs before the hit executes).
+MARKER_HIT_BEGIN = '/.bazel-rs-snapshot-marker/hit-begin'
+MARKER_HIT_END = '/.bazel-rs-snapshot-marker/hit-end'
 
 # Process and system paths that are no inputs of planning: /proc, /sys (cgroup
 # CPU quota for available_parallelism), /dev, the window markers, and the host
@@ -468,6 +487,89 @@ def audit(log, dump, cwd, cache, extra_ignored, replay=None, stats=None):
     return touched, [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(unrecorded.items())]
 
 
+def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
+    """(touched, unrecorded) of the hit section (MARKER_HIT_BEGIN to
+    MARKER_HIT_END), against the hit's INPUTS dump; `stats` (a dict) gets
+    the replayed executions seen and the processes started."""
+    events = parse_strace(log, cwd)
+    start = end = None
+    for i, (_, _, paths, _, _) in enumerate(events):
+        for _, p in paths:
+            if p == MARKER_HIT_BEGIN and start is None:
+                start = i
+            if p == MARKER_HIT_END and start is not None and end is None:
+                end = i
+    if start is None or end is None:
+        return None, ['hit markers not found in the trace (was the run a hit of BAZEL_RS_SNAPSHOT=on?)']
+    recorded = load_dump(dump)
+    ancestors = set(recorded.ancestors)
+    for path in recorded.canonicalized:
+        ancestors |= realpath_chain(path)
+    impure, pinned = load_replay(dump)
+    ignored = [str(Path(cache).resolve())] + [str(Path(p).resolve()) for p in extra_ignored]
+    process = {}
+    started = set()
+    for i, (tid, name, _, line, result) in enumerate(events):
+        pid = process.setdefault(tid, tid)
+        if name in ('clone', 'clone3', 'fork', 'vfork') and result and result[0] > 0:
+            child = result[0]
+            process[child] = pid if 'CLONE_THREAD' in line else child
+        elif name == 'execve' and start < i < end:
+            started.add(pid)
+
+    def covered(kind, p, line, opened, pid, read):
+        if kind == 'dir':
+            fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
+            logical = opened.get((pid, int(fd.group(1)))) if fd else None
+            if logical is not None:
+                p = logical
+        if p in IGNORED_EXACT or p.startswith(IGNORED_PREFIXES):
+            return p, None
+        if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
+            return p, None
+        if recorded.in_tree(p, pinned):
+            return p, True
+        if read:
+            return p, p in recorded.reads
+        if kind == 'dir':
+            return p, p in recorded.readdirs
+        return p, p in recorded.observed or p in ancestors
+
+    current = {}
+    opened = {}
+    unrecorded = {}
+    touched = executions = 0
+    for tid, name, paths, line, result in events[start + 1:end]:
+        pid = process.get(tid, tid)
+        if pid in started:
+            continue
+        execs = [p for _, p in paths if p.startswith(MARKER_REPLAY_EXEC) or p == MARKER_REPLAY_EXEC_END]
+        if execs:
+            if execs[0] == MARKER_REPLAY_EXEC_END:
+                current.pop(tid, None)
+            else:
+                current[tid] = unescape_dump(execs[0][len(MARKER_REPLAY_EXEC):])
+                executions += 1
+            continue
+        if tid in current and impure.get(current[tid], False):
+            continue
+        if name in ('openat', 'open', 'openat2') and result and result[0] >= 0 and paths:
+            opened[(pid, result[0])] = paths[0][1]
+        # A replayed execution's reads need no record (the replay compares
+        # what it produced); validation's and the definition loads' do.
+        read = tid not in current and reads_file(name, line, result)
+        for kind, p in paths:
+            p, ok = covered(kind, p, line, opened, pid, read)
+            if ok is None:
+                continue
+            touched += 1
+            if not ok:
+                unrecorded.setdefault(p, ('UNREAD ' + name if read else name, line.strip()))
+    if stats is not None:
+        stats.update(executions=executions, processes=len(started))
+    return touched, [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(unrecorded.items())]
+
+
 def prepare_fixture(base):
     workspace = base / 'workspace'
     shutil.copytree(FIXTURE, workspace, symlinks=True)
@@ -476,21 +578,77 @@ def prepare_fixture(base):
     return workspace
 
 
-def run(binary, workspace, cache, args, dump, log, tmp):
+def run(binary, workspace, cache, args, dump, log, tmp, mode='record'):
+    """One run; under strace when `log` is set (the dump only then)."""
     env = {
         'PATH': '/usr/bin:/bin',
         'HOME': str(tmp / 'home'),
         'TMPDIR': str(tmp / 'tmp'),
-        'BAZEL_RS_SNAPSHOT': 'record',
-        'BAZEL_RS_SNAPSHOT_DUMP': str(dump),
+        'BAZEL_RS_SNAPSHOT': mode,
+        'BAZEL_RS_SNAPSHOT_EXPLAIN': '1',
     }
+    if log is not None:
+        env['BAZEL_RS_SNAPSHOT_DUMP'] = str(dump)
     for d in ('home', 'tmp'):
         (tmp / d).mkdir(parents=True, exist_ok=True)
-    argv = ['strace', '-f', '-y', '-qq', '-s', '4096', '-e', 'trace=%file,getdents64,%process', '-o', str(log),
-            str(binary), '--ignore_all_rc_files', f'--cache-dir={cache}'] + args
+    trace = [] if log is None else ['strace', '-f', '-y', '-qq', '-s', '4096', '-e',
+                                    'trace=%file,getdents64,%process', '-o', str(log)]
+    argv = trace + [str(binary), '--ignore_all_rc_files', f'--cache-dir={cache}'] + args
     proc = subprocess.run(argv, cwd=workspace, env=env, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, timeout=3600)
     return proc
+
+
+def audit_hit_runs(a, workspace, cache, base, warmups, runs, lines):
+    """--hit: the warm-ups, then per command: runs until one saved (at most
+    four), then the audited hit. True iff every audit was clean."""
+    ok = True
+    for i, args in enumerate(warmups):
+        proc = run(Path(a.binary), workspace, cache, args, None, None, base, mode='on')
+        lines.append(f'warm-up {i}: {" ".join(args)} -> rc={proc.returncode}')
+    for i, args in enumerate(runs):
+        saved = False
+        for attempt in range(4):
+            proc = run(Path(a.binary), workspace, cache, args, None, None, base, mode='on')
+            explain = [l for l in proc.stderr.splitlines() if l.startswith('bazel-rs-snapshot:')]
+            if proc.returncode != 0:
+                lines.append(f'run {i}: {" ".join(args)} -> rc={proc.returncode}')
+                lines.append(proc.stderr[-4000:])
+                break
+            if any(' saved ' in l or l.startswith('bazel-rs-snapshot: hit ') for l in explain):
+                saved = True
+                break
+        if not saved:
+            ok = False
+            lines.append(f'run {i}: {" ".join(args)}: never saved (cannot audit a hit)')
+            lines.extend('  ' + l for l in explain)
+            continue
+        dump = base / f'hit-dump-{i}.txt'
+        log = base / f'hit-strace-{i}.log'
+        proc = run(Path(a.binary), workspace, cache, args, dump, log, base, mode='on')
+        lines.append(f'hit run {i}: {" ".join(args)} -> rc={proc.returncode}')
+        explain = [l for l in proc.stderr.splitlines() if l.startswith('bazel-rs-snapshot:')]
+        lines.extend('  ' + l for l in explain)
+        if proc.returncode != 0 or not any(l.startswith('bazel-rs-snapshot: hit ') for l in explain):
+            ok = False
+            lines.append('  not a hit')
+            lines.append(proc.stderr[-4000:])
+            continue
+        stats = {}
+        touched, unrecorded = audit_hit(log.read_text(errors='surrogateescape'), dump, str(workspace), cache,
+                                        [base / 'home', base / 'tmp', dump] + a.ignore, stats)
+        if touched is None:
+            ok = False
+            lines.extend('  ' + u for u in unrecorded)
+            continue
+        lines.append(f'  hit path: {touched} path touches outside the cache ({stats["executions"]} replayed '
+                     f'executions, {stats["processes"]} processes started, impure executions exempt); '
+                     f'unrecorded: {len(unrecorded)}')
+        for u in unrecorded[:200]:
+            lines.append('    HIT-UNRECORDED ' + u)
+        if unrecorded:
+            ok = False
+    return ok
 
 
 def main():
@@ -501,6 +659,7 @@ def main():
     ap.add_argument('--keep', action='store_true')
     ap.add_argument('--report', default=None)
     ap.add_argument('--ignore', action='append', default=[], help='extra path prefix to ignore (e.g. a private HOME)')
+    ap.add_argument('--hit', action='store_true', help='audit the hit path of BAZEL_RS_SNAPSHOT=on (L2-W6)')
     ap.add_argument('args', nargs='*')
     a = ap.parse_args()
     if shutil.which('strace') is None:
@@ -526,6 +685,13 @@ def main():
         cache = Path(a.cache).resolve() if a.cache else base / 'cache'
         if str(cache).startswith('/home/coder/code'):
             sys.exit('refusing a cache dir inside ~/code')
+        if a.hit:
+            if not a.workspace:
+                # Snapshots cover build, test and run (query never hits).
+                runs = runs[:2]
+            ok = audit_hit_runs(a, workspace, cache, base, warmups, runs, lines) and ok
+            runs = []
+            warmups = []
         for i, args in enumerate(warmups + runs):
             dump = base / f'dump-{i}.txt'
             log = base / f'strace-{i}.log'

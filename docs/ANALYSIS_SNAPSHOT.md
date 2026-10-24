@@ -164,6 +164,29 @@ in verify mode, as they should: a file deleted from a repository tree
 and an in-place edit of a tree file (the full analysis re-executes the
 repository rule to repair the tree: `taint repository-rule-executed`).
 
+## Syscall audit of the hit path (L2-W6)
+
+`scripts/snapshot_fs_audit.py --hit` (PLAN-L2 §1b layer 2 for the hit
+path) runs each command with `BAZEL_RS_SNAPSHOT=on` until a run saved,
+then once more under `strace -f`; that run must be a hit, and with
+`BAZEL_RS_SNAPSHOT_DUMP=<file>` the hit writes the INPUTS it validates and
+replays (the record mode's dump format). Audited: from the check point
+(`/.bazel-rs-snapshot-marker/hit-begin`, before the key) to the hit's
+execution (`.../hit-end`, before the window bytes print; after it the
+actions execute, which is execution). Every path touched there outside
+the cache directory (the snapshot store, `exe.id`, the repository store and
+its stages, the digest table), `/proc` and the other process paths must be
+covered by the hit's INPUTS — an observation (a READ for a file opened for
+reading), a listed directory, a CANON record's resolution chain, a path
+inside a verified tree (not below its links) or a pinned root (the
+replay's definition loads) — except inside the executions of the replayed
+impure local rules and in the processes started there (a replayed
+`execute`, the workspace status). Clean (L2-W6): the default fixture
+(`build --nobuild //...`, `build //...`: 173 touches each), the snapshot
+fixture with a replayed local rule (118 touches, 1 replay), and ~/code
+oauth2token/... build (3,767 touches, 45 replayed executions, 1 process)
+and B2 `--nobuild` (5,623 touches).
+
 ## What is saved, and when
 
 On a miss (`snapshot::save`), the check point opens the recording window

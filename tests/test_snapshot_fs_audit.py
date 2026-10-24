@@ -200,6 +200,47 @@ class SnapshotAuditTests(unittest.TestCase):
         self.assertIsNone(touched)
         self.assertTrue(problems)
 
+    def test_the_hit_path_touches_only_its_inputs_the_store_and_impure_executions(self):
+        trace = (
+            '1 statx(AT_FDCWD</ws>, "/ws/before-the-check-point", 0, 0x1) = 0\n'
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-begin", 0x1, 0) = -1 ENOENT\n'
+            # The store and the binary's identity.
+            '1 openat(AT_FDCWD</ws>, "/proc/self/exe", O_RDONLY|O_CLOEXEC) = 3</bin/bazel-rs>\n'
+            '1 openat(AT_FDCWD</ws>, "/cache/snapshots/v1/k.snap", O_RDONLY|O_CLOEXEC) = 3</cache/snapshots/v1/k.snap>\n'
+            # Validation: a recorded read, a recorded stat, a verified tree.
+            '1 openat(AT_FDCWD</ws>, "/ws/BUILD.bazel", O_RDONLY|O_CLOEXEC) = 3</ws/BUILD.bazel>\n'
+            '1 statx(AT_FDCWD</ws>, "/ws/pkg", 0, 0x1) = 0\n'
+            '1 statx(AT_FDCWD</ws>, "/ext/root/sub/file", 0, 0x1) = 0\n'
+            # A replay's definition load (a pinned root) and an impure execution.
+            '2 openat(AT_FDCWD</ws>, "/pinned/local/defs.bzl", O_RDONLY|O_CLOEXEC) = 4</pinned/local/defs.bzl>\n'
+            '2 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec/impure+jdk", 0x1, 0) = -1 ENOENT\n'
+            '2 statx(AT_FDCWD</ws>, "/usr/lib/jvm/release", 0, 0x1) = 0\n'
+            '2 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/replay-exec-end", 0x1, 0) = -1 ENOENT\n'
+            # The dump itself (ignored), then an unrecorded read.
+            '1 openat(AT_FDCWD</ws>, "/dump.txt", O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0666) = 5</dump.txt>\n'
+            '1 openat(AT_FDCWD</ws>, "/ws/stat-only-read", O_RDONLY|O_CLOEXEC) = 3</ws/stat-only-read>\n'
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-end", 0x1, 0) = -1 ENOENT\n'
+            # Execution.
+            '1 statx(AT_FDCWD</ws>, "/ws/an-action-input", 0, 0x1) = 0\n'
+        )
+        dump_text = DUMP + (
+            "OBS /ws/stat-only-read STAT kind:f\n"
+            "ROOT local+repo /pinned/local generated:1\n"
+            "REPLAY impure+jdk not-replayed definition:y flags:environ,execute,which output:0 recorded:50 replay:- root:/c/u\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            dump = Path(temp) / "dump.txt"
+            dump.write_text(dump_text)
+            stats = {}
+            touched, unrecorded = audit.audit_hit(trace, dump, "/ws", "/cache", ["/dump.txt"], stats)
+            self.assertEqual([u.split()[:2] for u in unrecorded], [["/ws/stat-only-read", "[UNREAD"]])
+            self.assertEqual(stats["executions"], 1)
+            self.assertEqual(touched, 5)
+            # No markers: an error.
+            touched, problems = audit.audit_hit("1 statx(AT_FDCWD, \"/x\", 0) = 0\n", dump, "/ws", "/cache", [])
+        self.assertIsNone(touched)
+        self.assertTrue(problems)
+
 
 if __name__ == "__main__":
     unittest.main()

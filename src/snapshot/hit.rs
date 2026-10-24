@@ -134,6 +134,19 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         inputs: started.elapsed(),
         ..Timings::default()
     };
+    // `BAZEL_RS_SNAPSHOT_DUMP=<file>`: the INPUTS this attempt validates and
+    // replays, as text (scripts/snapshot_fs_audit.py `--hit` checks every
+    // path the hit path touches against it).
+    if let Some(dump) = std::env::var_os(crate::snapshot::record::DUMP_VAR) {
+        let _ = crate::snapshot::record::write_dump(
+            Path::new(&dump),
+            &inputs.recording,
+            &[format!("hit inputs of {}", attempt.key.short())],
+            &inputs.replay,
+            inputs.tables.as_ref(),
+            None,
+        );
+    }
     // Validation, replay and decoding in parallel. They print nothing, but a
     // replayed definition's `.bzl` closure may `print()` (already part of
     // the recorded window bytes): swallowed.

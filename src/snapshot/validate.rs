@@ -1355,11 +1355,15 @@ mod tests {
         fs::write(tree.join("f"), b"y").unwrap();
         let error = validate_for_hit(&recording).unwrap_err();
         assert!(error.contains("does not match its manifest"), "{error}");
-        // A changed root is a miss at once (the manifest recorded as it is).
+        // A changed root is a miss at once (the manifest recorded as it is):
+        // another directory in its place (a new inode — timestamps alone
+        // may not move within the clock's granularity).
         fs::write(tree.join("f"), b"x").unwrap();
         let mut recording = recording;
         recording.repositories[0].entries[0] = entry(&manifest, FileKind::File);
-        fs::write(tree.join("g"), b"new").unwrap();
+        fs::rename(&tree, temp.path().join("trees/old")).unwrap();
+        fs::create_dir(&tree).unwrap();
+        fs::write(tree.join("f"), b"x").unwrap();
         let error = validate_for_hit(&recording).unwrap_err();
         assert!(
             error.starts_with("INTEGRITY ") && error.contains("trees/abc: lstat changed"),
