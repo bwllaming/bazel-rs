@@ -1017,6 +1017,14 @@ impl FilesToRun {
     pub(crate) fn same(&self, other: &Self) -> bool {
         self.id == other.id
     }
+
+    /// The provider's identity ([`Self::same`]): unique in the process and
+    /// never reused, and a provider is never changed once created, so two
+    /// values with one identity are copies of one provider (their runfiles,
+    /// executable and repository mapping manifest are the same).
+    pub(crate) fn identity(&self) -> u64 {
+        self.id
+    }
 }
 
 impl fmt::Display for FilesToRun {

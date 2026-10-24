@@ -204,6 +204,7 @@ fn groups<'a>(
         ("action_planning.producers", &state.producers),
         ("action_planning.nodes", &state.nodes),
         ("action_planning.source_inputs", &state.source_inputs),
+        ("action_planning.input_groups", &state.input_groups),
         ("action_planning.delegations", &state.delegations),
         (
             "action_planning.native_output_groups",
@@ -942,11 +943,23 @@ fields!(crate::configured_attributes::ConfigMatching {
     constraints
 });
 
-// Planned actions.
+// Planned actions. A shared input group (PA-1) counts once, toward the
+// first bucket that reaches it (`action_planning.nodes`).
 fields!(crate::scheduler::PlannedAction {
     action,
-    dependencies
+    dependencies,
+    groups
 });
+fields!(crate::scheduler::InputGroup {
+    root,
+    inputs,
+    dependencies,
+    tree_inputs,
+    constant_metadata,
+    empty_files,
+    sources
+});
+fields!(super::SourceInputs { own, groups });
 fields!(crate::scheduler::Dependency {
     action_id,
     destination

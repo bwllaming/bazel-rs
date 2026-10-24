@@ -465,6 +465,167 @@ fn tool_runfiles_trees_are_staged_into_actions() {
     );
 }
 
+/// PA-1: rules whose actions use one tool (`tool`: data, a generated file
+/// and an external file; `py`: Python sources with generated empty
+/// `__init__.py` runfiles). Each action lists its tool's runfiles: `one`
+/// and `two` share the tree as one input group, `inside` also has an input
+/// inside the tree (the tool's MANIFEST, so the tree is listed in that
+/// action), and `deferred` expands a directory when it executes (its
+/// command line is completed then, keeping the empty files).
+const SHARED_DEFS: &str = r##"LIST = "(cd $2.runfiles && find . \\( -type f -o -type l \\) | LC_ALL=C sort) > $1; echo \"args=$3\" >> $1"
+
+def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, "#!/bin/sh\n", is_executable = True)
+    gen = ctx.actions.declare_file(ctx.label.name + ".gen")
+    ctx.actions.write(gen, "generated\n")
+    rf = ctx.runfiles(files = ctx.files.data + [gen])
+    if ctx.attr.python:
+        rf = py_internal.merge_runfiles_with_generated_inits_empty_files_supplier(ctx = ctx, runfiles = rf)
+    return [DefaultInfo(executable = exe, runfiles = rf)]
+
+tool = rule(_tool, executable = True, attrs = {
+    "data": attr.label_list(allow_files = True),
+    "python": attr.bool(),
+})
+
+def _twice(ctx):
+    tool = ctx.attr.tool[DefaultInfo].files_to_run
+    exe = ctx.executable.tool
+    outs = []
+    for name in ["one", "two"]:
+        out = ctx.actions.declare_file(ctx.label.name + "." + name)
+        ctx.actions.run_shell(outputs = [out], tools = [tool], command = LIST, arguments = [out.path, exe.path])
+        outs.append(out)
+    inside = ctx.actions.declare_file(ctx.label.name + ".inside")
+    ctx.actions.run_shell(
+        outputs = [inside],
+        inputs = [tool.runfiles_manifest],
+        tools = [tool],
+        command = LIST,
+        arguments = [inside.path, exe.path],
+    )
+    outs.append(inside)
+    tree = ctx.actions.declare_directory(ctx.label.name + ".dir")
+    ctx.actions.run_shell(outputs = [tree], command = "mkdir -p $1 && echo x > $1/f.txt", arguments = [tree.path])
+    deferred = ctx.actions.declare_file(ctx.label.name + ".deferred")
+    args = ctx.actions.args()
+    args.add(deferred.path)
+    args.add(exe.path)
+    args.add_all([tree])
+    ctx.actions.run_shell(outputs = [deferred], inputs = [tree], tools = [tool], command = LIST, arguments = [args])
+    outs.append(deferred)
+    return [DefaultInfo(files = depset(outs))]
+
+twice = rule(_twice, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+"##;
+
+const SHARED_BUILD: &str = r#"load(":defs.bzl", "tool", "twice")
+tool(name = "tool", data = ["d.txt", "@ext//data:fg"])
+tool(name = "pytool", data = ["//py:srcs"], python = True)
+twice(name = "t", tool = ":tool")
+twice(name = "py", tool = ":pytool")
+"#;
+
+#[test]
+fn actions_sharing_a_tool_list_its_runfiles_tree() {
+    let ws = Workspace::new();
+    let package = "tools/build_defs/python/shared";
+    ws.file(&format!("{package}/defs.bzl"), SHARED_DEFS, 0o644);
+    ws.file(&format!("{package}/BUILD.bazel"), SHARED_BUILD, 0o644);
+    ws.file(&format!("{package}/d.txt"), "shared-data\n", 0o644);
+    let output = ws
+        .command(
+            &[
+                "build",
+                &format!("//{package}:t"),
+                &format!("//{package}:py"),
+            ],
+            "",
+        )
+        .env("BAZEL_RS_DUMP_ACTIONS", "1")
+        .env("BAZEL_RS_TIMING", "1")
+        .output()
+        .unwrap();
+    success(&output);
+    let text = stderr(&output);
+    // Every output, by its name in the package.
+    let content = |name: &str| {
+        let exec = format!("bazel-out/k8-fastbuild/bin/{package}/{name}");
+        fs::read_to_string(single(&ws, &exec)).unwrap()
+    };
+    let tool_tree = format!(
+        "./_main/{package}/d.txt\n./_main/{package}/tool\n./_main/{package}/tool.gen\n./_repo_mapping\n./ext+/data/e.txt\n"
+    );
+    assert_eq!(content("t.one"), format!("{tool_tree}args=\n"));
+    assert_eq!(content("t.two"), format!("{tool_tree}args=\n"));
+    assert_eq!(
+        content("t.inside"),
+        format!("./MANIFEST\n{tool_tree}args=\n")
+    );
+    assert_eq!(
+        content("t.deferred"),
+        format!("{tool_tree}args=bazel-out/k8-fastbuild/bin/{package}/t.dir/f.txt\n")
+    );
+    let py_tree = format!(
+        "./_main/py/__init__.py\n./_main/py/__pycache__/c.pyc\n./_main/py/a/__init__.py\n./_main/py/a/b/__init__.py\n./_main/py/a/b/m.py\n./_main/py/a/x.so\n./_main/py/top.py\n./_main/{package}/pytool\n./_main/{package}/pytool.gen\n./_repo_mapping\n"
+    );
+    assert_eq!(content("py.one"), format!("{py_tree}args=\n"));
+    assert_eq!(content("py.two"), format!("{py_tree}args=\n"));
+    assert_eq!(
+        content("py.deferred"),
+        format!("{py_tree}args=bazel-out/k8-fastbuild/bin/{package}/py.dir/f.txt\n")
+    );
+    // The action dump lists every action's tree entries, each its own.
+    let dump = |id: &str| -> Vec<String> {
+        let mut lines = text
+            .lines()
+            .skip_while(|line| *line != format!("ACTION {id}"));
+        lines.next().expect(id);
+        lines
+            .take_while(|line| line.starts_with("  "))
+            .filter(|line| line.starts_with("  input ") || line.starts_with("  generated "))
+            .map(str::to_owned)
+            .collect()
+    };
+    let (one, two) = (
+        dump(&format!("//{package}:t#0")),
+        dump(&format!("//{package}:t#1")),
+    );
+    assert_eq!(one, two);
+    let tree = format!("bazel-out/k8-fastbuild/bin/{package}/tool.runfiles");
+    for entry in [
+        format!("<WS>/{package}/d.txt -> {tree}/_main/{package}/d.txt"),
+        format!("<WS>/ext/data/e.txt -> {tree}/ext+/data/e.txt"),
+        format!("generated //{package}:tool#1[0] -> {tree}/_main/{package}/tool.gen"),
+        format!("generated //{package}:tool#repo_mapping[0] -> {tree}/_repo_mapping"),
+    ] {
+        assert!(
+            one.iter()
+                .any(|line| normalize(&ws, line).trim().ends_with(&entry)),
+            "{entry}: {one:?}"
+        );
+    }
+    let inside = dump(&format!("//{package}:t#2"));
+    assert!(
+        inside
+            .iter()
+            .any(|line| line.ends_with(&format!("-> {tree}/MANIFEST"))),
+        "{inside:?}"
+    );
+    assert!(one.iter().all(|line| inside.contains(line)), "{inside:?}");
+    // Two shared trees (the tools'), held by the 2 x 3 actions that need no
+    // listing; the `inside` actions list theirs.
+    assert!(
+        text.contains("holders=6 refs=6 distinct=2 ") && text.contains(" listed_tree_actions=2"),
+        "{}",
+        text.lines()
+            .filter(|line| line.starts_with("PERF-GROUPS"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
 #[test]
 fn python_empty_files_and_obscured_symlinks() {
     let ws = Workspace::new();

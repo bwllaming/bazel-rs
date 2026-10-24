@@ -162,6 +162,15 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
 /// [`encode`], with its sizes and time.
 pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), EncodeError> {
     let start = Instant::now();
+    // PA-1's shared input groups (PlannedAction::groups, never serialized
+    // per node) have no encoding here: a request holding one is not
+    // encoded rather than encoded without its groups.
+    if let Some(node) = request.nodes.iter().find(|node| !node.groups.is_empty()) {
+        return Err(EncodeError::NotSerializable(format!(
+            "action '{}': shared input groups have no encoding",
+            node.action.id
+        )));
+    }
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
     let encode_chunk = |chunk: &[PlannedAction]| {
@@ -986,12 +995,14 @@ mod tests {
                 destination: raw(b"bazel-out/k8-fastbuild/bin/pkg/\xfeout"),
             }],
             deferred: None,
+            groups: Vec::new(),
         };
         let nodes = vec![
             PlannedAction {
                 action: process,
                 dependencies: Vec::new(),
                 deferred: Some(command_line(None)),
+                groups: Vec::new(),
             },
             transform(
                 "symlink",
@@ -1073,6 +1084,7 @@ mod tests {
                     },
                     extra_param_files: Vec::new(),
                 })),
+                groups: Vec::new(),
             },
         ];
         PlannedRequest {

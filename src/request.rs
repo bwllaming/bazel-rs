@@ -528,11 +528,11 @@ fn dump_actions(nodes: &[PlannedAction], path: &Path) -> std::io::Result<()> {
     for node in nodes {
         let action = &node.action;
         let environment = crate::action::resolved_environment(action);
-        let inputs: Vec<String> = action
-            .inputs
-            .iter()
+        // The node's listed inputs (PA-1: its shared groups' after its own).
+        let inputs: Vec<String> = node
+            .inputs()
             .map(|(_, destination)| destination.to_string_lossy().into_owned())
-            .chain(node.dependencies.iter().map(destination))
+            .chain(node.all_dependencies().map(destination))
             .collect();
         let mut requirements: Vec<&str> =
             action.execution_info.iter().map(String::as_str).collect();
@@ -592,10 +592,11 @@ pub fn dump_action_graph(nodes: &[PlannedAction]) {
         if !action.command.is_empty() {
             eprintln!("  command {}", action.command);
         }
-        for (source, destination) in &action.inputs {
+        // The listed inputs: a node's shared groups after its own (PA-1).
+        for (source, destination) in node.inputs() {
             eprintln!("  input {} -> {}", source.display(), destination.display());
         }
-        for dependency in &node.dependencies {
+        for dependency in node.all_dependencies() {
             eprintln!(
                 "  generated {}[{}] -> {}",
                 dependency.action_id,
@@ -686,6 +687,7 @@ mod tests {
                 })
                 .collect(),
             deferred: None,
+            groups: Vec::new(),
         }
     }
 

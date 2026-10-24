@@ -138,6 +138,37 @@ different remote key (tests/remote_cache.rs
 package targets, so `query` does not list them (tests/runfiles_trees.rs
 `query_never_lists_runfiles_artifacts`).
 
+### One shared input group per tool tree (PA-1)
+
+Planning keeps a tool's tree once, as Bazel's spawns hold the tool's one
+runfiles tree artifact: `tool_runfiles_tree` (crate::analysis_runtime) returns
+one `Arc<ToolRunfilesTree>` per FilesToRunProvider identity while any
+registration holds it, and the commit expands it once per build into a
+`scheduler::InputGroup` (its planted source inputs, generated inputs, tree
+and constant-metadata inputs, empty files, every source path and whether its
+namespace is valid) that every planned action using the tool holds
+(`PlannedAction::groups`, memoized by tree identity). A group stays shared
+only when listing it could change nothing but the list
+(`scheduler::groups_apart`: a process action, valid groups with unrelated
+roots, no path of the action itself at, above or below a root, and the
+action's own part validates); otherwise the tree is listed in the action as
+before. Everything observable is the listed form: the action dumps
+(`BAZEL_RS_DUMP_ACTIONS`, `--native-action-dump`) print a node's own inputs
+then each group's (`PlannedAction::inputs`/`all_dependencies`), the scheduler
+validates exactly the listed node (`validate_node`) and a dispatched job lists
+its groups in the action right before it executes (sources after its own,
+generated inputs after its own, empty files re-added after a deferred command
+line), so keys, staging and outputs are unchanged. On ~/code every rules_python
+`py_library` registers one PyCompile action per source with the exec
+interpreter as its tool: `build --nobuild //src/beyondwork.ai/pythonworker/...`
+listed 36.8 million tree entries in 24,009 planned actions (27.5 GB) and now
+holds 7 groups of 1,868 entries (`PERF-GROUPS` under `BAZEL_RS_TIMING`; tests
+`actions_sharing_a_tool_list_its_runfiles_tree`, scheduler
+`grouped_nodes_*`). Staging is per executed action as before: a cache-hit
+action still checks and keys every listed input (about 20 ms for a 3,000-file
+workspace-source tree, mostly the per-input ancestor checks workspace files
+keep).
+
 ## `run` (runtime/commands/RunCommand.java)
 
 `bazel-rs run [build and run options] TARGET [-- ARGS...]`: `run` inherits the

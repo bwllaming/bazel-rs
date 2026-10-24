@@ -14,7 +14,7 @@ use crate::platforms::{ConstraintSettingInfo, ConstraintValueInfo, PlatformInfo}
 use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
 use crate::request::PlannedRequest;
-use crate::scheduler::{Dependency, PlannedAction};
+use crate::scheduler::{self, Dependency, PlannedAction};
 use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
 use crate::starlark_types::File;
 use crate::toolchains::{
@@ -223,7 +223,16 @@ struct ActionPlanning {
     nodes: Vec<PlannedAction>,
     /// Every source input of every action, before execroot planting drops
     /// main-repository inputs under ignored top-level entries.
-    source_inputs: BTreeMap<String, Vec<PathBuf>>,
+    source_inputs: BTreeMap<String, SourceInputs>,
+    /// The shared input group of each tool runfiles tree an action of this
+    /// build used, by the tree's identity (PA-1,
+    /// crate::analysis_runtime::ToolRunfilesTree::identity): expanded once,
+    /// held by every action that uses the tool.
+    input_groups: HashMap<u64, Arc<scheduler::InputGroup>>,
+    /// Actions whose tool runfiles trees are listed in the action instead
+    /// (the groups could not stay shared, crate::scheduler::groups_apart):
+    /// reported by PERF-GROUPS.
+    listed_tree_actions: usize,
     /// Requested keys delegating to the key a rule transition analyzed them
     /// under (Engine::rule_delegations), waiting for that key to be planned
     /// (flush_delegations).
@@ -510,7 +519,7 @@ struct PlanState<'a> {
     pub aspect_target_identities: &'a mut AspectTargetIdentities,
     pub nodes: &'a mut Vec<PlannedAction>,
     pub producers: &'a mut Producers,
-    pub source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
+    pub source_inputs: &'a mut BTreeMap<String, SourceInputs>,
     pub client_environment: &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     pub status_client_environment:
         &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
@@ -9315,7 +9324,7 @@ impl Engine {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
+            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs).into());
             let mut action = registered.action;
             // A spawn's propagated tags are its base rule's (an aspect's
             // RuleContext.getRule), set at registration (keyed,
@@ -10183,6 +10192,8 @@ impl Engine {
             status_client_environment,
             runfiles_nodes,
             workspace_status,
+            input_groups,
+            listed_tree_actions,
             ..
         } = state;
         let mut snapshot = snapshot;
@@ -10338,7 +10349,7 @@ impl Engine {
                 self.build_info_actions.insert(registered.action.id.clone());
             }
             self.resolve_build_info(workspace_status, &mut registered)?;
-            let mut inputs = registered
+            let own = registered
                 .inputs
                 .iter()
                 .map(|file| {
@@ -10354,49 +10365,42 @@ impl Engine {
             // (SpawnInputExpander.addSingleRunfilesTreeToInputs,
             // exec/SpawnInputExpander.java:87-135); empty files are
             // empty parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER).
+            // PA-1: each tree is expanded once per build into a shared
+            // input group that every action using the tool holds, like the
+            // one runfiles tree artifact Bazel's spawns hold; a tree listed
+            // twice is one group.
+            let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
             for tree in &registered.runfiles_trees {
-                for (path, file) in &tree.mapping {
-                    let destination = Path::new(&tree.directory).join(path);
-                    match file {
-                        Some(file) => {
-                            let mut artifact = self
-                                .indexed_artifact(
-                                    file,
-                                    artifact_index,
-                                    workspace_status,
-                                    nodes,
-                                    producers,
-                                    client_environment,
-                                    status_client_environment,
-                                )?
-                                .ok_or_else(|| {
-                                    format!(
-                                        "{}: tool runfile has no declared artifact: {}",
-                                        rule.label, file.path
-                                    )
-                                })?;
-                            artifact.exec = destination;
-                            inputs.push(artifact);
-                        }
-                        None => {
-                            if !registered
-                                .action
-                                .extra
-                                .param_files
-                                .iter()
-                                .any(|(existing, _)| *existing == destination)
-                            {
-                                registered
-                                    .action
-                                    .extra
-                                    .param_files
-                                    .push((destination, Vec::new()));
-                            }
-                        }
+                let group = match input_groups.get(&tree.identity) {
+                    Some(group) => Arc::clone(group),
+                    None => {
+                        let mut resolve = |file: &File| {
+                            self.indexed_artifact(
+                                file,
+                                artifact_index,
+                                workspace_status,
+                                nodes,
+                                producers,
+                                client_environment,
+                                status_client_environment,
+                            )
+                        };
+                        let (artifacts, empty_files) =
+                            runfiles_tree_entries(tree, &rule.label, &mut resolve)?;
+                        let group = Arc::new(runfiles_input_group(
+                            Path::new(&tree.directory),
+                            artifacts,
+                            empty_files,
+                            &main_ignored,
+                        ));
+                        input_groups.insert(tree.identity, Arc::clone(&group));
+                        group
                     }
+                };
+                if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) {
+                    groups.push(group);
                 }
             }
-            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
             // The action's exec group decides its execution platform and
             // exec properties (RuleContext.getActionOwner(execGroup)).
             let execution = action_execution
@@ -10406,8 +10410,68 @@ impl Engine {
                 self.action_executions
                     .insert(registered.action.id.clone(), execution.clone());
             }
-            let empties: Vec<(PathBuf, Vec<u8>)> = registered
-                .action
+            let mut action = registered.action;
+            // The spawn's propagated tags are set at registration
+            // (crate::analysis_runtime::Context::register_action, keyed).
+            if action.write.is_none() && action.extra.transform.is_none() {
+                action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
+            }
+            // The groups stay shared when listing them could change nothing
+            // but the list (crate::scheduler::groups_apart): no entry would
+            // be dropped as a duplicate and the listed action validates
+            // exactly when its own part does. Otherwise they are listed in
+            // the action, as without sharing.
+            let shared_groups = !groups.is_empty() && {
+                list_artifacts(&mut action, &own);
+                scheduler::groups_apart(&action, &groups)
+                    && action::validate_structure(&action).is_ok()
+            };
+            if shared_groups {
+                source_inputs.insert(
+                    action.id.clone(),
+                    SourceInputs {
+                        own: source_paths(&own),
+                        groups: groups.clone(),
+                    },
+                );
+                let mut planned = plan_action(action, own, &main_ignored, client_environment)?;
+                planned.groups = groups;
+                planned.deferred = registered.deferred;
+                nodes.push(planned);
+                continue;
+            }
+            if !groups.is_empty() {
+                *listed_tree_actions += 1;
+            }
+            let mut inputs = own;
+            for tree in &registered.runfiles_trees {
+                let mut resolve = |file: &File| {
+                    self.indexed_artifact(
+                        file,
+                        artifact_index,
+                        workspace_status,
+                        nodes,
+                        producers,
+                        client_environment,
+                        status_client_environment,
+                    )
+                };
+                let (artifacts, empty_files) =
+                    runfiles_tree_entries(tree, &rule.label, &mut resolve)?;
+                inputs.extend(artifacts);
+                for destination in empty_files {
+                    if !action
+                        .extra
+                        .param_files
+                        .iter()
+                        .any(|(existing, _)| *existing == destination)
+                    {
+                        action.extra.param_files.push((destination, Vec::new()));
+                    }
+                }
+            }
+            source_inputs.insert(action.id.clone(), source_paths(&inputs).into());
+            let empties: Vec<(PathBuf, Vec<u8>)> = action
                 .extra
                 .param_files
                 .iter()
@@ -10420,12 +10484,6 @@ impl Engine {
                 })
                 .cloned()
                 .collect();
-            let mut action = registered.action;
-            // The spawn's propagated tags are set at registration
-            // (crate::analysis_runtime::Context::register_action, keyed).
-            if action.write.is_none() && action.extra.transform.is_none() {
-                action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
-            }
             let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
             // A deferred command line recomputes the parameter files;
             // the runfiles empty files are kept.
@@ -10779,7 +10837,7 @@ impl Engine {
                 ..Action::default()
             };
             let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
-            source_inputs.insert(action.id.clone(), source_paths(&action_inputs));
+            source_inputs.insert(action.id.clone(), source_paths(&action_inputs).into());
             nodes.push(plan_action(
                 action,
                 action_inputs,
@@ -11356,6 +11414,9 @@ impl Engine {
             }
             crate::plan_timings::report(&labels, &edges);
         }
+        if crate::plan_timings::enabled() {
+            report_input_groups(&state.nodes, state.listed_tree_actions);
+        }
         // W0-A: retained-memory breakdown (BAZEL_RS_TIMING_ALLOC=1 only).
         alloc_report::report_if_enabled(self, &state, &plan, &configured);
         // N58: the top-level aspects of `--aspects` (and the appended
@@ -11465,6 +11526,8 @@ impl Engine {
             aspect_target_identities,
             target_identities,
             views,
+            input_groups,
+            listed_tree_actions: _,
         } = state;
         // The top-level lookups below: a workspace status File no target
         // registered (only possible under --nobuild, which plans no status
@@ -11800,8 +11863,7 @@ impl Engine {
                     .get(&id)
                     .ok_or_else(|| format!("missing producing action: {id}"))?;
                 todo.extend(
-                    node.dependencies
-                        .iter()
+                    node.all_dependencies()
                         .map(|dependency| dependency.action_id.clone()),
                 );
             }
@@ -11876,8 +11938,43 @@ impl Engine {
                 }
             }
         }
+        // PA-1: a node's source inputs are its own followed by its shared
+        // groups' (SourceInputs::listed). A group none of whose sources is
+        // a source directory or a missing file adds nothing to either check
+        // below, so only a node holding such a group lists them all.
+        let mut flagged_groups: HashSet<*const scheduler::InputGroup> = HashSet::new();
+        let mut seen_groups: HashSet<*const scheduler::InputGroup> = HashSet::new();
+        for sources in nodes
+            .iter()
+            .filter_map(|node| source_inputs.get(&node.action.id))
+        {
+            for group in &sources.groups {
+                if seen_groups.insert(Arc::as_ptr(group))
+                    && group
+                        .sources
+                        .iter()
+                        .any(|real| !directory(real).is_empty() || missing(real).is_some())
+                {
+                    flagged_groups.insert(Arc::as_ptr(group));
+                }
+            }
+        }
+        let source_paths_of = |node: &PlannedAction| -> Vec<&PathBuf> {
+            match source_inputs.get(&node.action.id) {
+                None => Vec::new(),
+                Some(sources)
+                    if sources
+                        .groups
+                        .iter()
+                        .any(|group| flagged_groups.contains(&Arc::as_ptr(group))) =>
+                {
+                    sources.listed()
+                }
+                Some(sources) => sources.own.iter().collect(),
+            }
+        };
         for node in &nodes {
-            for real in source_inputs.get(&node.action.id).into_iter().flatten() {
+            for real in source_paths_of(node) {
                 for label in directory(real) {
                     unsupported.push(format!(
                         "{}: source directory '{label}' as an action input is not supported by the native profile",
@@ -11931,10 +12028,8 @@ impl Engine {
             .map(|(key, rule)| (key.action_owner(top), rule))
             .collect::<BTreeMap<_, _>>();
         for node in &nodes {
-            let absent = source_inputs
-                .get(&node.action.id)
+            let absent = source_paths_of(node)
                 .into_iter()
-                .flatten()
                 .filter_map(|real| missing(real))
                 .collect::<Vec<_>>();
             if absent.is_empty() {
@@ -11996,6 +12091,7 @@ impl Engine {
                     aspect_target_identities,
                     target_identities,
                     views,
+                    input_groups,
                 ),
             ));
         }
@@ -12597,6 +12693,171 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// `PERF-GROUPS` (BAZEL_RS_TIMING, PA-1): the planned actions holding shared
+/// input groups (`holders`, `refs` group references), the distinct groups
+/// and their entries, the entries the holders would list without sharing
+/// (`listed_entries`), and the actions whose trees are listed instead
+/// (`listed_tree_actions`, crate::scheduler::groups_apart).
+fn report_input_groups(nodes: &[PlannedAction], listed_tree_actions: usize) {
+    let entries = |group: &scheduler::InputGroup| {
+        group.inputs.len() + group.dependencies.len() + group.empty_files.len()
+    };
+    let mut distinct: HashMap<*const scheduler::InputGroup, usize> = HashMap::new();
+    let (mut holders, mut refs, mut listed) = (0usize, 0usize, 0usize);
+    for node in nodes.iter().filter(|node| !node.groups.is_empty()) {
+        holders += 1;
+        for group in &node.groups {
+            refs += 1;
+            listed += entries(group);
+            distinct.insert(Arc::as_ptr(group), entries(group));
+        }
+    }
+    eprintln!(
+        "PERF-GROUPS nodes={} holders={holders} refs={refs} distinct={} distinct_entries={} listed_entries={listed} listed_tree_actions={listed_tree_actions}",
+        nodes.len(),
+        distinct.len(),
+        distinct.values().sum::<usize>(),
+    );
+}
+
+/// The source inputs of one planned action (ActionPlanning::source_inputs):
+/// its own, then its shared input groups' (PA-1), which every action using
+/// the group holds instead of a copy.
+#[derive(Default)]
+struct SourceInputs {
+    own: Vec<PathBuf>,
+    groups: Vec<Arc<scheduler::InputGroup>>,
+}
+
+impl From<Vec<PathBuf>> for SourceInputs {
+    fn from(own: Vec<PathBuf>) -> Self {
+        SourceInputs {
+            own,
+            groups: Vec::new(),
+        }
+    }
+}
+
+impl SourceInputs {
+    /// Every source path of the action's listed inputs, deduplicated in
+    /// order: [`source_paths`] over the own inputs followed by the groups'.
+    fn listed(&self) -> Vec<&PathBuf> {
+        let mut paths: Vec<&PathBuf> = self.own.iter().collect();
+        if self.groups.is_empty() {
+            return paths;
+        }
+        let mut seen: HashSet<&Path> = self.own.iter().map(PathBuf::as_path).collect();
+        for group in &self.groups {
+            for path in &group.sources {
+                if seen.insert(path) {
+                    paths.push(path);
+                }
+            }
+        }
+        paths
+    }
+}
+
+/// The artifacts of a tool's runfiles tree staged at their tree paths
+/// (SpawnInputExpander.addSingleRunfilesTreeToInputs,
+/// exec/SpawnInputExpander.java:87-135; N23f) and the tree paths of its
+/// empty files (parameter-file-like inputs without content,
+/// VirtualActionInput.EMPTY_MARKER), in the tree's order. `resolve` is the
+/// build's artifact lookup ([`Engine::indexed_artifact`]).
+fn runfiles_tree_entries(
+    tree: &crate::analysis_runtime::ToolRunfilesTree,
+    label: &Label,
+    resolve: &mut dyn FnMut(&File) -> Result<Option<Artifact>, String>,
+) -> Result<(Vec<Artifact>, Vec<PathBuf>), String> {
+    let mut artifacts = Vec::new();
+    let mut empty_files = Vec::new();
+    for (path, file) in &tree.mapping {
+        let destination = Path::new(&tree.directory).join(path);
+        match file {
+            Some(file) => {
+                let mut artifact = resolve(file)?.ok_or_else(|| {
+                    format!(
+                        "{label}: tool runfile has no declared artifact: {}",
+                        file.path
+                    )
+                })?;
+                artifact.exec = destination;
+                artifacts.push(artifact);
+            }
+            None => empty_files.push(destination),
+        }
+    }
+    Ok((artifacts, empty_files))
+}
+
+/// The shared input group of a tool's runfiles tree (PA-1): its entries
+/// ([`runfiles_tree_entries`]) as [`plan_action`] lists inputs — a
+/// generated artifact as a dependency, a planted source as a source input,
+/// constant-metadata and tree artifacts marked — plus every source path and
+/// whether its namespace is valid on its own
+/// (crate::scheduler::group_namespace_valid). A tree's destinations are
+/// distinct (one per tree path), so every entry is listed.
+fn runfiles_input_group(
+    root: &Path,
+    artifacts: Vec<Artifact>,
+    empty_files: Vec<PathBuf>,
+    main_ignored: &IgnoredSubdirectories,
+) -> scheduler::InputGroup {
+    let tree_inputs: Vec<PathBuf> = artifacts
+        .iter()
+        .filter(|artifact| artifact.directory)
+        .map(|artifact| artifact.exec.clone())
+        .collect();
+    let namespace = scheduler::group_namespace_valid(
+        root,
+        artifacts
+            .iter()
+            .map(|artifact| artifact.exec.as_path())
+            .chain(empty_files.iter().map(PathBuf::as_path))
+            .collect(),
+    );
+    let sources = source_paths(&artifacts);
+    let mut inputs = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut constant_metadata = Vec::new();
+    for artifact in artifacts {
+        if artifact.constant_metadata {
+            constant_metadata.push(artifact.exec.clone());
+        }
+        if let Some((action_id, output_index)) = artifact.producer {
+            dependencies.push(Dependency {
+                action_id,
+                output_index,
+                destination: artifact.exec,
+            });
+        } else if planted(&artifact, main_ignored) {
+            inputs.push((artifact.real, artifact.exec));
+        }
+    }
+    // A tree input is listed (a planted source or a generated input), as
+    // validate_structure requires of the executed action.
+    let listed: HashSet<&Path> = inputs
+        .iter()
+        .map(|(_, destination)| destination.as_path())
+        .chain(dependencies.iter().map(|d| d.destination.as_path()))
+        .collect();
+    let valid = namespace
+        && tree_inputs
+            .iter()
+            .all(|tree| listed.contains(tree.as_path()));
+    drop(listed);
+    scheduler::InputGroup {
+        root: root.to_path_buf(),
+        inputs,
+        dependencies,
+        tree_inputs,
+        constant_metadata,
+        empty_files,
+        sources,
+        valid,
+    }
+}
+
 /// The planning state a runfiles support's nodes are registered in, and
 /// what registering the workspace status files on first need takes
 /// ([`Engine::ensure_workspace_status`]).
@@ -12605,7 +12866,7 @@ struct RunfilesPlanning<'a> {
     declared: &'a mut Declared,
     producers: &'a mut Producers,
     nodes: &'a mut Vec<PlannedAction>,
-    source_inputs: &'a mut BTreeMap<String, Vec<PathBuf>>,
+    source_inputs: &'a mut BTreeMap<String, SourceInputs>,
     workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     status_client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
@@ -12732,6 +12993,7 @@ impl Engine {
             },
             dependencies: Vec::new(),
             deferred: None,
+            groups: Vec::new(),
         });
         let repo_mapping_artifact = planning.output(key, &id, repo_mapping)?;
         // The tree mapping; conflicts are reported by the manifest action.
@@ -12794,7 +13056,7 @@ impl Engine {
             )?;
             planning
                 .source_inputs
-                .insert(id.clone(), source_paths(&inputs));
+                .insert(id.clone(), source_paths(&inputs).into());
             planning.nodes.push(planned);
             Some(planning.output(key, &id, &input_manifest)?)
         } else {
@@ -12827,7 +13089,7 @@ impl Engine {
                 )?;
                 planning
                     .source_inputs
-                    .insert(tree_id.clone(), source_paths(&tree_inputs));
+                    .insert(tree_id.clone(), source_paths(&tree_inputs).into());
                 planning.nodes.push(planned);
                 Some(planning.output(key, &tree_id, &tree_file)?)
             }
@@ -12947,6 +13209,7 @@ impl Engine {
                     },
                     dependencies: Vec::new(),
                     deferred: None,
+                    groups: Vec::new(),
                 }
             };
             nodes.push(placeholder(
@@ -13185,6 +13448,21 @@ impl Engine {
     }
 }
 
+/// Every artifact of `inputs` listed in `action` at its execution path,
+/// the way [`plan_action`] validates them; tree artifact inputs are staged
+/// and keyed as directories.
+fn list_artifacts(action: &mut Action, inputs: &[Artifact]) {
+    action.inputs = inputs
+        .iter()
+        .map(|artifact| (artifact.real.clone(), artifact.exec.clone()))
+        .collect();
+    action.extra.tree_inputs = inputs
+        .iter()
+        .filter(|artifact| artifact.directory)
+        .map(|artifact| artifact.exec.clone())
+        .collect();
+}
+
 fn plan_action(
     mut action: Action,
     inputs: Vec<Artifact>,
@@ -13199,16 +13477,7 @@ fn plan_action(
             client_environment.get_or_init(crate::action_env::client_environment),
         );
     }
-    action.inputs = inputs
-        .iter()
-        .map(|artifact| (artifact.real.clone(), artifact.exec.clone()))
-        .collect();
-    // Tree artifact inputs are staged and keyed as directories.
-    action.extra.tree_inputs = inputs
-        .iter()
-        .filter(|artifact| artifact.directory)
-        .map(|artifact| artifact.exec.clone())
-        .collect();
+    list_artifacts(&mut action, &inputs);
     action::validate_structure(&action)?;
     action.inputs.clear();
     // Inputs at one execution path must be one artifact without its owner
@@ -13276,11 +13545,7 @@ fn plan_action(
             action.inputs.push((artifact.real, artifact.exec));
         }
     }
-    Ok(PlannedAction {
-        action,
-        dependencies,
-        deferred: None,
-    })
+    Ok(PlannedAction::new(action, dependencies))
 }
 
 /// Load-time gates and pre-dependency gaps: native rules that loading

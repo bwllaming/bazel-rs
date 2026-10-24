@@ -80,7 +80,7 @@ pub struct KeyedParts<'a> {
     /// The tools' runfiles trees: Bazel's mandatory inputs include each
     /// tool's runfiles tree artifact; natively its directory and mapping
     /// (runfiles path -> exec path), compared without owner like files.
-    pub runfiles_trees: &'a [ToolRunfilesTree],
+    pub runfiles_trees: &'a [std::sync::Arc<ToolRunfilesTree>],
     pub execution: KeyedExecution<'a>,
     /// Contents or command lines completed when the action executes
     /// (deferred tree-artifact expansion): Bazel keys the unexpanded
@@ -576,9 +576,12 @@ mod tests {
         let inputs = [file("p/in.txt", "//p:in.txt")];
         let outputs = [file("bazel-out/k8-fastbuild/bin/p/out", owner)];
         let trees = tree
-            .map(|target| ToolRunfilesTree {
-                directory: "bazel-out/k8-opt-exec/bin/tool.runfiles".to_owned(),
-                mapping: [("_main/data".to_owned(), Some(file(target, "//tools:data")))].into(),
+            .map(|target| {
+                std::sync::Arc::new(ToolRunfilesTree {
+                    identity: 0,
+                    directory: "bazel-out/k8-opt-exec/bin/tool.runfiles".to_owned(),
+                    mapping: [("_main/data".to_owned(), Some(file(target, "//tools:data")))].into(),
+                })
             })
             .into_iter()
             .collect::<Vec<_>>();

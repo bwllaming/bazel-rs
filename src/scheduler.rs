@@ -153,6 +153,226 @@ pub struct PlannedAction {
     pub action: crate::action::Action,
     pub dependencies: Vec<Dependency>,
     pub deferred: Option<Deferred>,
+    /// Shared input groups (PA-1): inputs listed after the action's own
+    /// ones, each group held by every action that uses it ([`InputGroup`]).
+    /// Never serialized per node: serde's `rc` support would write each
+    /// group once per holder (crate::snapshot::codec).
+    #[serde(skip)]
+    pub groups: Vec<Arc<InputGroup>>,
+}
+
+/// Inputs shared by many planned actions (PA-1): a tool's runfiles tree
+/// expanded once per build, held by every action that uses the tool — the
+/// way Bazel's spawns hold the one runfiles tree artifact of a tool, rather
+/// than one copy of its entries per action. A node's inputs are its own
+/// followed by each group's, in order: its source inputs
+/// [`PlannedAction::inputs`], its generated inputs
+/// [`PlannedAction::all_dependencies`], and the tree inputs,
+/// constant-metadata inputs and empty files ([`PlannedAction::flattened`]
+/// is the node with the groups listed in its action). The planner shares a
+/// group only when no other path of the action is, contains or lies below
+/// the group's root, so listing the entries changes nothing else: no entry
+/// is a duplicate to drop and the namespace checks of the listed action
+/// pass exactly when [`InputGroup::valid`] and the action's own pass
+/// ([`validate_node`]).
+#[derive(Debug)]
+pub struct InputGroup {
+    /// The directory every destination lies below (the runfiles tree).
+    pub root: PathBuf,
+    /// Source inputs (path, destination), in order.
+    pub inputs: Vec<(PathBuf, PathBuf)>,
+    /// Generated inputs, in order.
+    pub dependencies: Vec<Dependency>,
+    /// Destinations of tree artifacts (crate::action::ActionExtra::tree_inputs).
+    pub tree_inputs: Vec<PathBuf>,
+    /// Destinations of constant-metadata inputs
+    /// (crate::action::ActionExtra::constant_metadata).
+    pub constant_metadata: Vec<PathBuf>,
+    /// Empty files (runfiles empty files): parameter files without content.
+    pub empty_files: Vec<PathBuf>,
+    /// Every source input's path, also the ones execroot planting drops,
+    /// first occurrences in order (the engine's missing-input and
+    /// source-directory checks).
+    pub sources: Vec<PathBuf>,
+    /// Every destination (also of the source inputs planting drops) is a
+    /// relative normal path strictly below `root`, none is or contains
+    /// another ([`group_namespace_valid`]), and every tree input is a
+    /// listed input.
+    pub valid: bool,
+}
+
+/// The namespace part of [`InputGroup::valid`] for a group below `root`:
+/// every path of `paths` (the destinations of every input, also of the
+/// source inputs planting drops, and the empty files) is a relative normal
+/// path strictly below `root`, and none is or contains another.
+pub fn group_namespace_valid(root: &Path, mut paths: Vec<&Path>) -> bool {
+    if paths.iter().any(|path| {
+        action::validate_relative(path).is_err() || *path == root || !path.starts_with(root)
+    }) {
+        return false;
+    }
+    // In component order a path sorts directly before the paths below it:
+    // adjacent pairs find any path equal to or containing another.
+    paths.sort();
+    !paths.windows(2).any(|pair| pair[1].starts_with(pair[0]))
+}
+
+/// Whether the groups of an action whose own part is `action` can stay
+/// shared: every group is valid, no two groups' roots are equal or nested,
+/// and no path of the action itself (input and embedded input
+/// destinations, outputs, parameter files) is, contains or lies below a
+/// group's root. Only process actions share groups.
+pub fn groups_apart(action: &Action, groups: &[Arc<InputGroup>]) -> bool {
+    let related = |a: &Path, b: &Path| a.starts_with(b) || b.starts_with(a);
+    if action.write.is_some() || action.extra.transform.is_some() {
+        return false;
+    }
+    for (index, group) in groups.iter().enumerate() {
+        if !group.valid
+            || groups[..index]
+                .iter()
+                .any(|other| related(&other.root, &group.root))
+        {
+            return false;
+        }
+    }
+    let own = action
+        .inputs
+        .iter()
+        .map(|(_, destination)| destination)
+        .chain(
+            action
+                .embedded_inputs
+                .iter()
+                .map(|(destination, _)| destination),
+        )
+        .chain(&action.outputs)
+        .chain(action.extra.param_files.iter().map(|(path, _)| path));
+    for path in own {
+        if groups.iter().any(|group| related(path, &group.root)) {
+            return false;
+        }
+    }
+    true
+}
+
+impl PlannedAction {
+    /// A node without shared input groups.
+    pub fn new(action: Action, dependencies: Vec<Dependency>) -> Self {
+        PlannedAction {
+            action,
+            dependencies,
+            deferred: None,
+            groups: Vec::new(),
+        }
+    }
+
+    /// The node's source inputs: its action's, then each group's.
+    pub fn inputs(&self) -> impl Iterator<Item = &(PathBuf, PathBuf)> {
+        self.action
+            .inputs
+            .iter()
+            .chain(self.groups.iter().flat_map(|group| group.inputs.iter()))
+    }
+
+    /// The node's generated inputs: its own, then each group's.
+    pub fn all_dependencies(&self) -> impl Iterator<Item = &Dependency> {
+        self.dependencies.iter().chain(
+            self.groups
+                .iter()
+                .flat_map(|group| group.dependencies.iter()),
+        )
+    }
+
+    /// The node with every group listed in its action and dependencies:
+    /// exactly the node planning lists without sharing.
+    pub fn flattened(&self) -> PlannedAction {
+        let mut node = PlannedAction {
+            action: self.action.clone(),
+            dependencies: self.all_dependencies().cloned().collect(),
+            deferred: self.deferred.clone(),
+            groups: Vec::new(),
+        };
+        list_groups(&mut node.action, &self.groups);
+        if self
+            .groups
+            .iter()
+            .any(|group| !group.empty_files.is_empty())
+            && let Some(inner) = node.deferred.take()
+        {
+            // A deferred command line replaces the parameter files; the
+            // empty files stay (as the planner keeps them,
+            // Deferred::with_extra_param_files).
+            let empty_files = self
+                .groups
+                .iter()
+                .flat_map(|group| group.empty_files.iter())
+                .map(|path| (path.clone(), Vec::new()))
+                .collect();
+            node.deferred = Some(inner.with_extra_param_files(empty_files));
+        }
+        node
+    }
+}
+
+/// List the groups' source inputs, tree inputs, constant-metadata inputs
+/// and empty files in `action`, after its own.
+fn list_groups(action: &mut Action, groups: &[Arc<InputGroup>]) {
+    for group in groups {
+        action.inputs.extend(group.inputs.iter().cloned());
+        action
+            .extra
+            .tree_inputs
+            .extend(group.tree_inputs.iter().cloned());
+        action
+            .extra
+            .constant_metadata
+            .extend(group.constant_metadata.iter().cloned());
+    }
+    list_empty_files(action, groups);
+}
+
+fn list_empty_files(action: &mut Action, groups: &[Arc<InputGroup>]) {
+    for group in groups {
+        action.extra.param_files.extend(
+            group
+                .empty_files
+                .iter()
+                .map(|path| (path.clone(), Vec::new())),
+        );
+    }
+}
+
+/// The source path of a generated input in [`validate_node`]'s synthetic
+/// action (validate_structure inspects destinations only).
+const GENERATED_SOURCE: &str = "__scheduler_generated_source__";
+
+/// `action::validate_structure` of a node as it executes: its action with
+/// its generated inputs, every group listed. A node whose groups are
+/// apart ([`groups_apart`]) is checked without listing them: its own part
+/// and each group's namespace ([`InputGroup::valid`]) decide, exactly as
+/// the listed action would; any other node is listed and checked as is.
+pub fn validate_node(node: &PlannedAction) -> Result<(), String> {
+    let generated = |dependency: &Dependency| {
+        (
+            PathBuf::from(GENERATED_SOURCE),
+            dependency.destination.clone(),
+        )
+    };
+    let mut synthetic = node.action.clone();
+    synthetic
+        .inputs
+        .extend(node.dependencies.iter().map(generated));
+    if node.groups.is_empty() {
+        return action::validate_structure(&synthetic);
+    }
+    if groups_apart(&synthetic, &node.groups) && action::validate_structure(&synthetic).is_ok() {
+        return Ok(());
+    }
+    let mut listed = node.action.clone();
+    list_groups(&mut listed, &node.groups);
+    listed.inputs.extend(node.all_dependencies().map(generated));
+    action::validate_structure(&listed)
 }
 
 struct Graph {
@@ -184,8 +404,7 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
         .map(|(id, &position)| (id, &nodes[position]))
         .collect();
     let checks = action::try_map_ordered(&ordered, |&(id, node)| {
-        let mut synthetic = node.action.clone();
-        for dependency in &node.dependencies {
+        for dependency in node.all_dependencies() {
             let producer = index
                 .get(&dependency.action_id)
                 .map(|&position| &nodes[position])
@@ -203,25 +422,22 @@ fn validate(nodes: Vec<PlannedAction>, jobs: usize) -> Result<Graph, String> {
                     producer.action.outputs.len()
                 ));
             }
-            // validate_structure inspects destinations only, never these paths.
-            synthetic.inputs.push((
-                PathBuf::from("__scheduler_generated_source__"),
-                dependency.destination.clone(),
-            ));
         }
-        action::validate_structure(&synthetic).map_err(|e| format!("action '{id}': {e}"))
+        validate_node(node).map_err(|e| format!("action '{id}': {e}"))
     });
     let mut remaining = BTreeMap::new();
     let mut consumers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for ((id, node), check) in ordered.into_iter().zip(checks) {
         check?;
-        for dependency in &node.dependencies {
+        let mut count = 0;
+        for dependency in node.all_dependencies() {
             consumers
                 .entry(dependency.action_id.clone())
                 .or_default()
                 .push(id.clone());
+            count += 1;
         }
-        remaining.insert(id.clone(), node.dependencies.len());
+        remaining.insert(id.clone(), count);
     }
     let ready: BTreeSet<_> = remaining
         .iter()
@@ -316,21 +532,28 @@ where
         return (id, None);
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // The groups' inputs are listed in the action now, for this one
+        // execution (PA-1): their sources after the action's own, their
+        // generated inputs after its own generated ones.
+        let groups = std::mem::take(&mut node.groups);
+        list_groups(&mut node.action, &groups);
         let mut listings = TreeListings::new();
-        for (dependency, producer) in std::mem::take(&mut node.dependencies)
-            .into_iter()
-            .zip(&producers)
-        {
+        let dependencies = std::mem::take(&mut node.dependencies);
+        let shared = groups.iter().flat_map(|group| group.dependencies.iter());
+        for (dependency, producer) in dependencies.iter().chain(shared).zip(&producers) {
             if let Some(listing) = producer.trees.get(&dependency.output_index) {
                 listings.insert(dependency.destination.clone(), listing.clone());
             }
             node.action.inputs.push((
                 producer.outputs[dependency.output_index].clone(),
-                dependency.destination,
+                dependency.destination.clone(),
             ));
         }
         if let Some(deferred) = &node.deferred {
             deferred.apply(&listings, &mut node.action)?;
+            // The deferred command line replaced the parameter files; the
+            // groups' empty files stay.
+            list_empty_files(&mut node.action, &groups);
         }
         let result = execute(cache, &node.action)?;
         if result.outputs.len() != node.action.outputs.len() {
@@ -427,8 +650,7 @@ where
                     }
                 }
                 let producers = node
-                    .dependencies
-                    .iter()
+                    .all_dependencies()
                     .map(|dependency| Arc::clone(&results[&dependency.action_id]))
                     .collect();
                 job_sender
@@ -544,6 +766,7 @@ mod tests {
             },
             dependencies: vec![],
             deferred: None,
+            groups: Vec::new(),
         }
     }
 
@@ -1017,6 +1240,230 @@ mod tests {
         );
         assert!(execute_graph(&fixture.cache(), vec![], 0).is_err());
         assert!(!fixture.cache().exists());
+    }
+
+    /// A group below `root`: sources `(path, destination)`, generated
+    /// inputs `(producer, destination)`, empty files.
+    fn group(
+        root: &str,
+        sources: &[(&Path, &str)],
+        generated: &[(&str, &str)],
+        empty: &[&str],
+    ) -> Arc<InputGroup> {
+        let inputs: Vec<(PathBuf, PathBuf)> = sources
+            .iter()
+            .map(|(path, destination)| (path.to_path_buf(), destination.into()))
+            .collect();
+        let dependencies: Vec<Dependency> = generated
+            .iter()
+            .map(|(producer, destination)| dependency(producer, 0, destination))
+            .collect();
+        let empty_files: Vec<PathBuf> = empty.iter().map(PathBuf::from).collect();
+        let mut paths: Vec<&Path> = inputs.iter().map(|(_, d)| d.as_path()).collect();
+        paths.extend(dependencies.iter().map(|d| d.destination.as_path()));
+        paths.extend(empty_files.iter().map(PathBuf::as_path));
+        let valid = group_namespace_valid(Path::new(root), paths);
+        Arc::new(InputGroup {
+            root: root.into(),
+            sources: inputs.iter().map(|(path, _)| path.clone()).collect(),
+            inputs,
+            dependencies,
+            tree_inputs: Vec::new(),
+            constant_metadata: Vec::new(),
+            empty_files,
+            valid,
+        })
+    }
+
+    /// The scheduler's validation of a node before PA-1: its listed action
+    /// with every generated input's destination.
+    fn listed_validation(node: &PlannedAction) -> Result<(), String> {
+        let listed = node.flattened();
+        let mut synthetic = listed.action.clone();
+        for dependency in &listed.dependencies {
+            synthetic.inputs.push((
+                PathBuf::from(GENERATED_SOURCE),
+                dependency.destination.clone(),
+            ));
+        }
+        action::validate_structure(&synthetic)
+    }
+
+    #[test]
+    fn grouped_nodes_validate_exactly_like_their_listed_form() {
+        let source = Path::new("/nonexistent/source");
+        let tool = group(
+            "tool.runfiles",
+            &[
+                (source, "tool.runfiles/_main/a"),
+                (source, "tool.runfiles/_main/b"),
+            ],
+            &[("producer", "tool.runfiles/_main/gen")],
+            &["tool.runfiles/_main/__init__.py"],
+        );
+        let mut consumer = node("consumer");
+        consumer.groups = vec![tool.clone()];
+        let cases: Vec<(PlannedAction, bool)> = vec![
+            // Apart: decided without listing.
+            (consumer.clone(), true),
+            // An output inside the tree, an input equal to an entry, an
+            // input containing the tree, a parameter file in it.
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.action.outputs = vec!["tool.runfiles/_main/a".into()];
+                    n
+                },
+                false,
+            ),
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.action
+                        .inputs
+                        .push((source.into(), "tool.runfiles/_main/b".into()));
+                    n
+                },
+                false,
+            ),
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.action
+                        .inputs
+                        .push((source.into(), "tool.runfiles".into()));
+                    n
+                },
+                false,
+            ),
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.action
+                        .extra
+                        .param_files
+                        .push(("tool.runfiles/_main/__init__.py".into(), Vec::new()));
+                    n
+                },
+                false,
+            ),
+            // A group whose own entries overlap, a group whose root holds
+            // another group's.
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.groups = vec![group(
+                        "t.runfiles",
+                        &[(source, "t.runfiles/x"), (source, "t.runfiles/x/y")],
+                        &[],
+                        &[],
+                    )];
+                    n
+                },
+                false,
+            ),
+            (
+                {
+                    let mut n = consumer.clone();
+                    n.groups = vec![
+                        tool.clone(),
+                        group(
+                            "tool.runfiles/_main",
+                            &[(source, "tool.runfiles/_main/c")],
+                            &[],
+                            &[],
+                        ),
+                    ];
+                    n
+                },
+                false,
+            ),
+        ];
+        for (index, (node, apart)) in cases.into_iter().enumerate() {
+            assert_eq!(
+                groups_apart(&node.action, &node.groups),
+                apart,
+                "case {index}"
+            );
+            assert_eq!(
+                validate_node(&node),
+                listed_validation(&node),
+                "case {index}"
+            );
+        }
+        // Only the listed form of an invalid case reports its error.
+        let mut overlapping = consumer.clone();
+        overlapping.action.outputs = vec!["tool.runfiles/_main/a".into()];
+        assert!(
+            validate_node(&overlapping)
+                .unwrap_err()
+                .contains("overlapping input/output path 'tool.runfiles/_main/a'")
+        );
+    }
+
+    #[test]
+    fn grouped_nodes_execute_with_the_keys_of_their_listed_form() {
+        let fixture = Fixture::new();
+        let data = fixture.0.join("data");
+        fs::write(&data, "data").unwrap();
+        let mut producer = node("producer");
+        producer.action.command = "printf generated > out".into();
+        let tool = group(
+            "tool.runfiles",
+            &[(&data, "tool.runfiles/_main/data")],
+            &[("producer", "tool.runfiles/_main/gen")],
+            &["tool.runfiles/_main/__init__.py"],
+        );
+        let list = "(cd tool.runfiles && find . -type f | LC_ALL=C sort && cat _main/data _main/gen) > out";
+        let mut plain = node("plain");
+        plain.action.command = list.into();
+        plain.groups = vec![tool.clone()];
+        // A deferred command line replaces the parameter files; the
+        // group's empty files stay.
+        let mut deferred = node("deferred");
+        deferred.action.command = format!("{list}; echo \"$1\" >> out");
+        deferred.action.shell_pad = true;
+        deferred.groups = vec![tool];
+        // A command line expanding to `completed` without parameter files.
+        deferred.deferred = Some(Deferred::new(DeferredSpec::CommandLine {
+            spec: crate::command_line::CommandLineSpec {
+                executable: Vec::new(),
+                parts: vec![crate::command_line::Part {
+                    groups: vec![crate::command_line::Group::Strings(vec![
+                        "completed".into(),
+                    ])],
+                    flag_per_line: false,
+                    param: None,
+                }],
+                primary_output: "out".into(),
+                max_length: crate::command_line::MIN_PARAM_FILE_SIZE,
+            },
+            progress: "Action out".into(),
+            extra_param_files: Vec::new(),
+        }));
+        let grouped = vec![producer.clone(), plain, deferred];
+        let first = execute_graph(&fixture.cache(), grouped.clone(), 2).unwrap();
+        assert!(first.values().all(|result| !result.cache_hit));
+        let expected = "./_main/__init__.py\n./_main/data\n./_main/gen\ndatagenerated";
+        assert_eq!(
+            fs::read_to_string(&first["plain"].outputs[0]).unwrap(),
+            expected
+        );
+        assert_eq!(
+            fs::read_to_string(&first["deferred"].outputs[0]).unwrap(),
+            format!("{expected}completed\n")
+        );
+        // The listed nodes are the same actions: every one is a cache hit.
+        let listed: Vec<PlannedAction> = grouped.iter().map(PlannedAction::flattened).collect();
+        assert!(listed.iter().all(|node| node.groups.is_empty()));
+        assert_eq!(listed[1].action.inputs.len(), 1);
+        assert_eq!(listed[1].dependencies.len(), 1);
+        assert_eq!(listed[1].action.extra.param_files.len(), 1);
+        let second = execute_graph(&fixture.cache(), listed, 2).unwrap();
+        assert!(second.values().all(|result| result.cache_hit));
+        for (id, result) in first {
+            assert_eq!(result.outputs, second[&id].outputs);
+        }
     }
 
     #[test]

@@ -117,8 +117,8 @@ pub struct RegisteredAction {
     /// `default-exec-group` unless `ctx.actions.run`/`run_shell` chose one,
     /// crate::exec_groups::ActionExecGroups::determine).
     pub exec_group: String,
-    /// Runfiles trees of the spawn's tools (N23f).
-    pub runfiles_trees: Vec<ToolRunfilesTree>,
+    /// Runfiles trees of the spawn's tools (N23f), shared ([`tool_runfiles_tree`]).
+    pub runfiles_trees: Vec<Arc<ToolRunfilesTree>>,
     /// An actions.transform_{version,info}_file registration (N63): the
     /// Starlark translation callback (StarlarkActionFactory
     /// .transformBuildInfoFile :501-534 keeps the function the same way)
@@ -599,8 +599,8 @@ pub(crate) struct Registration {
     /// The exec group (N35): `default-exec-group` unless run/run_shell chose
     /// one (crate::exec_groups::ActionExecGroups::determine).
     pub exec_group: String,
-    /// Runfiles trees of the spawn's tools (N23f).
-    pub runfiles_trees: Vec<ToolRunfilesTree>,
+    /// Runfiles trees of the spawn's tools (N23f), shared ([`tool_runfiles_tree`]).
+    pub runfiles_trees: Vec<Arc<ToolRunfilesTree>>,
     /// An actions.transform_{version,info}_file registration (N63).
     pub build_info: Option<BuildInfoAction>,
     /// ActionAnalysisMetadata.isShareable: whether an equal action of
@@ -615,11 +615,32 @@ pub(crate) struct Registration {
 /// below `<executable>.runfiles` (SpawnInputExpander.addSingleRunfilesTreeToInputs,
 /// exec/SpawnInputExpander.java:87-135): every mapping entry, never the
 /// MANIFEST (:212).
-#[derive(Clone, Debug)]
+///
+/// One shared value per tool (PA-1): every action that uses a tool holds
+/// the same `Arc` ([`tool_runfiles_tree`]), as Bazel's spawns hold the one
+/// runfiles tree artifact of the tool; the planner expands it into one
+/// shared input group (crate::scheduler::InputGroup).
+#[derive(Debug)]
 pub struct ToolRunfilesTree {
+    /// The identity of the FilesToRunProvider the tree is of
+    /// (crate::runfiles::FilesToRun::identity): equal identities are the
+    /// same tree.
+    pub identity: u64,
     /// The exec path of the runfiles directory.
     pub directory: String,
     pub mapping: crate::runfiles::RunfilesMapping,
+}
+
+/// The runfiles trees computed in this process, by FilesToRunProvider
+/// identity ([`tool_runfiles_tree`]). Weak: a tree lives as long as an
+/// action registration or the planner holds it, and is computed again
+/// after that (a memo only saves work).
+fn tool_trees() -> &'static Mutex<std::collections::HashMap<u64, std::sync::Weak<ToolRunfilesTree>>>
+{
+    static TREES: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<u64, std::sync::Weak<ToolRunfilesTree>>>,
+    > = std::sync::OnceLock::new();
+    TREES.get_or_init(Default::default)
 }
 
 pub(crate) fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
@@ -921,7 +942,7 @@ fn register_spawn(
     context: &Context,
     options: SpawnOptions<'_>,
     mut inputs: Vec<File>,
-    mut runfiles_trees: Vec<ToolRunfilesTree>,
+    mut runfiles_trees: Vec<Arc<ToolRunfilesTree>>,
     executable: Vec<String>,
     command: String,
     program: Option<String>,
@@ -1034,15 +1055,33 @@ fn register_spawn(
 /// The runfiles tree a FilesToRunProvider with runfiles support attaches to
 /// a spawn (StarlarkAction.Builder.addTool(FilesToRunProvider) adds the
 /// runfiles tree artifact, RuleConfiguredTargetBuilder.java:144-152).
+/// Computed once per provider (by identity) while any action holds it: a
+/// tool used by thousands of actions (the Python interpreter of every
+/// PyCompile action) is one mapping, not one per action.
 pub(crate) fn tool_runfiles_tree(
     files_to_run: &crate::runfiles::FilesToRun,
-) -> Option<ToolRunfilesTree> {
+) -> Option<Arc<ToolRunfilesTree>> {
     let runfiles = files_to_run.runfiles.as_ref().filter(|r| !r.is_empty())?;
     let executable = files_to_run.executable.as_ref()?;
-    Some(ToolRunfilesTree {
+    let identity = files_to_run.identity();
+    let lock = || tool_trees().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(tree) = lock().get(&identity).and_then(std::sync::Weak::upgrade) {
+        return Some(tree);
+    }
+    // Computed outside the lock: two threads may both compute one tree, the
+    // same value either way.
+    let tree = Arc::new(ToolRunfilesTree {
+        identity,
         directory: format!("{}.runfiles", executable.path),
         mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest.as_ref(), None),
-    })
+    });
+    let mut trees = lock();
+    // Forget the trees nobody holds any more before the table grows.
+    if trees.len() >= 1024 && trees.len().is_power_of_two() {
+        trees.retain(|_, tree| tree.strong_count() > 0);
+    }
+    trees.insert(identity, Arc::downgrade(&tree));
+    Some(tree)
 }
 
 fn declared_name(context: &Context, filename: &str, sibling: Value<'_>) -> anyhow::Result<String> {
@@ -1348,11 +1387,11 @@ fn action_tools(
     tools: Value<'_>,
     function: &str,
     groups: &GroupArguments,
-) -> anyhow::Result<(Vec<File>, Vec<ToolRunfilesTree>)> {
+) -> anyhow::Result<(Vec<File>, Vec<Arc<ToolRunfilesTree>>)> {
     const WANT: &str = "expected value of type 'File, FilesToRunProvider or Depset of Files' for a member of parameter 'tools' but";
     let mut files = Vec::new();
     let mut trees = Vec::new();
-    let attach = |files: &mut Vec<File>, trees: &mut Vec<ToolRunfilesTree>, file: &File| {
+    let attach = |files: &mut Vec<File>, trees: &mut Vec<Arc<ToolRunfilesTree>>, file: &File| {
         if let Some(files_to_run) = context.runfiles.executables.borrow().get(file) {
             files.extend(files_to_run.files.iter().cloned());
             trees.extend(tool_runfiles_tree(files_to_run));
@@ -1959,6 +1998,57 @@ mod tests {
     use super::*;
     use starlark::environment::Module;
     use starlark::syntax::{AstModule, Dialect};
+
+    /// PA-1: one tool's runfiles tree is one shared value while held; a
+    /// provider of the same runfiles under another identity has its own.
+    #[test]
+    fn a_tools_runfiles_tree_is_shared_by_identity() {
+        let file = |path: &str, is_source: bool| File {
+            path: path.into(),
+            short_path: path
+                .trim_start_matches("bazel-out/k8-fastbuild/bin/")
+                .into(),
+            owner: "//p:t".into(),
+            is_source,
+            is_directory: false,
+        };
+        let mut builder = crate::runfiles::RunfilesBuilder::default();
+        builder.add_artifact(file("p/data.txt", true));
+        let runfiles = builder.build().unwrap();
+        // A FullFilesToRunProvider, then another one of the same contents.
+        let full = || {
+            let mut provider = crate::runfiles::FilesToRun::default();
+            provider.kind = crate::runfiles::FilesToRunKind::Full;
+            provider.executable = Some(file("bazel-out/k8-fastbuild/bin/p/tool", false));
+            provider.runfiles = Some(runfiles.clone());
+            provider
+        };
+        let provider = full();
+        let first = tool_runfiles_tree(&provider).unwrap();
+        let again = tool_runfiles_tree(&provider.clone()).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(first.identity, provider.identity());
+        assert_eq!(
+            first.directory,
+            "bazel-out/k8-fastbuild/bin/p/tool.runfiles"
+        );
+        assert_eq!(
+            first.mapping.keys().collect::<Vec<_>>(),
+            ["_main/p/data.txt"]
+        );
+        let separate = tool_runfiles_tree(&full()).unwrap();
+        assert!(!Arc::ptr_eq(&first, &separate));
+        assert_eq!(separate.mapping, first.mapping);
+        // Released by its last holder, a tree is computed again.
+        let identity = first.identity;
+        drop((first, again));
+        let fresh = tool_runfiles_tree(&provider).unwrap();
+        assert_eq!(fresh.identity, identity);
+        // No runfiles: no tree.
+        assert!(
+            tool_runfiles_tree(&crate::runfiles::FilesToRun::single(file("p/x", true))).is_none()
+        );
+    }
 
     fn write_context() -> Context {
         Context {

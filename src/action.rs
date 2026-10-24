@@ -565,7 +565,7 @@ fn frame_count(hash: &mut Sha256, count: usize) {
     frame(hash, &(count as u64).to_le_bytes());
 }
 
-fn validate_relative(path: &Path) -> Result<(), String> {
+pub(crate) fn validate_relative(path: &Path) -> Result<(), String> {
     let bytes = path.as_os_str().as_bytes();
     if bytes.is_empty()
         || bytes.contains(&0)

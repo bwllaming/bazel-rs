@@ -115,6 +115,7 @@ fn staging_benchmark() {
 },
             dependencies: Vec::new(),
             deferred: None,
+            groups: Vec::new(),
         })
         .collect();
     let cache = scratch.path().join("cache");
