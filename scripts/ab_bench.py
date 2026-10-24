@@ -399,6 +399,19 @@ def parse_env(pairs):
     return env
 
 
+def absolutize(args):
+    """Make every path argument absolute against the harness's own working directory.
+
+    The binaries run with cwd=<workspace>, so a relative cache, output, lockfile or binary path
+    would otherwise resolve INSIDE the workspace (a relative HOME/TMPDIR under --out, a relative
+    --cache-dir or --native-lockfile)."""
+    for name in ('a', 'b', 'cache_a', 'cache_b', 'out', 'lockfile_seed', 'lockfile_dir', 'workspace'):
+        value = getattr(args, name, None)
+        if value:
+            setattr(args, name, str(Path(value).resolve()))
+    return args
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--a', help='baseline binary (side A)')
@@ -429,14 +442,16 @@ def main(argv=None):
     ap.add_argument('--compare-only', action='store_true',
                     help='rebuild report.json from the files in OUT without running anything')
     ap.add_argument('targets', nargs='*')
-    args = ap.parse_args(argv)
+    args = absolutize(ap.parse_args(argv))
 
     workspace = Path(args.workspace)
     out = Path(args.out)
     caches = {'a': args.cache_a, 'b': args.cache_b}
-    for path in (args.cache_a, args.cache_b, args.out):
-        resolved = Path(path).resolve()
-        if resolved == workspace.resolve() or str(resolved).startswith(str(workspace.resolve()) + os.sep):
+    for path in (args.cache_a, args.cache_b, args.out, args.lockfile_dir):
+        if not path:
+            continue
+        resolved = Path(path)
+        if resolved == workspace or str(resolved).startswith(str(workspace) + os.sep):
             sys.exit(f'refusing: {path} is inside the workspace {workspace}')
     sides = list(args.sides)
     config = {'argv': sys.argv if argv is None else argv, 'mode': args.mode, 'warmups': args.warmups,

@@ -4,6 +4,7 @@ and the --compare-only report over synthetic run files (no binary runs)."""
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -211,6 +212,36 @@ class CompareOnlyTests(unittest.TestCase):
                 ab.main(["--workspace", str(workspace), "--cache-a", str(workspace / "bazel-rs-out"),
                          "--cache-b", "/tmp/elsewhere", "--out", "/tmp/elsewhere-out", "--compare-only"])
             self.assertIn("inside the workspace", str(refused.exception.code))
+
+    def test_relative_paths_are_absolute_before_any_use(self):
+        # The binaries run with cwd=<workspace>; relative paths must be resolved against the
+        # harness's cwd first, or caches/HOME/lockfiles would land inside the workspace.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            workspace = base / "ws"
+            workspace.mkdir()
+            harness = base / "h"
+            harness.mkdir()
+            before = os.getcwd()
+            os.chdir(harness)
+            try:
+                args = ab.absolutize(ab.argparse.Namespace(
+                    a="bin-a", b=None, cache_a="ca", cache_b="cb", out="out", lockfile_seed=None,
+                    lockfile_dir="locks", workspace=str(workspace)))
+                self.assertEqual(args.cache_a, str(harness / "ca"))
+                self.assertEqual(args.out, str(harness / "out"))
+                self.assertEqual(args.lockfile_dir, str(harness / "locks"))
+                self.assertEqual(args.a, str(harness / "bin-a"))
+                self.assertIsNone(args.b)
+                for extra in ([], ["--lockfile-dir", "../ws/locks"]):
+                    cache = "../ws/cache" if not extra else "ca"
+                    with self.assertRaises(SystemExit) as refused:
+                        ab.main(["--workspace", str(workspace), "--cache-a", cache, "--cache-b", "cb",
+                                 "--out", "out", "--compare-only"] + extra)
+                    self.assertIn("inside the workspace", str(refused.exception.code))
+                self.assertEqual(sorted(p.name for p in workspace.iterdir()), [])
+            finally:
+                os.chdir(before)
 
 
 if __name__ == "__main__":
