@@ -631,7 +631,7 @@ process-wide memo (`FileDigestMemo`):
 - bounded: at 65,536 entries it starts over;
 - in front of the persistent digest table (docs/DIGEST_MEMO.md;
   integration-20): a digest the memo does not hold comes from
-  `digest_memo::opened_sha256` — `<cache>/digests/v1.dmemo`'s when that
+  `digest_memo::opened_sha256` — `<cache>/digests/v2.dmemo`'s when that
   records the path in exactly the opened file's state (external ctime key;
   never under `--verify_repo_tampering`), otherwise the opened file is
   read and a settled read that kept its stat is recorded there — so a

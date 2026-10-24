@@ -1,4 +1,4 @@
-# Persistent file-digest memo (`<cache>/digests/v1.dmemo`)
+# Persistent file-digest memo (`<cache>/digests/v2.dmemo`)
 
 Every bazel-rs command is a fresh process (there is no server), so the per-process digest memos of the
 executor (docs/HARDLINK_STAGING.md, `action::digest_memo`) start empty on every command: a warm no-op build
@@ -16,7 +16,7 @@ forbids `unsafe`):
 | bytes | header field |
 |---|---|
 | 0..8 | magic `BZRSDMEM` |
-| 8..12 | format version (u32, 1) |
+| 8..12 | format version (u32, 2) |
 | 12..16 | record size (u32, 88) |
 | 16..24 | record count (u64) |
 | 24..32 | first 8 bytes of the blake3 hash of the body (u64) |
@@ -46,6 +46,14 @@ The format version (also in the file names, `v<version>.dmemo`, so that binaries
 their own tables) must be bumped with any narrowing of the trusted areas or of what a record may vouch
 for (a stronger key, a stricter rule for what is recorded or trusted): a record does not say which rule
 admitted it, so the records an older binary wrote under the broader rule would otherwise stay trusted.
+Version 2 (fix-digest-memo) is such a bump, and a necessary one: a version-1 table can hold wrong
+digests. The executor's per-process memo answered by stat key alone, also for a new file that had
+reused a deleted file's inode number inside the same timestamp tick, and recorded such an answer as
+TRUSTED — for a file outside the cache (a source saved during a build) under the new file's own path
+and change-time key, so that later commands kept reading the deleted file's digest for it (a scratch
+run against 0363050: 1,862 of 2,000 such files recorded wrong, every one found by a fresh table); its
+owned files also counted as settled by their modification time alone. `v1.dmemo` is ignored from
+version 2 on (the first command re-hashes what it reads once) and can be deleted.
 `Table::lookup` also re-checks the one rule a path shows: a birth-time (OWNED) key counts only for a blob
 or a published output. That voids the records written before L2-W1 (995d70b) narrowed the recorded areas
 from any `repositories/<kind>/trees/<identity>/` to the four tree stores, and before the tree stores' files
@@ -64,23 +72,37 @@ were keyed by change time (both while the format was unreleased; unit test
   OWNED): the executor hardlinks blobs constantly and every `link()` moves the inode's ctime, so the
   ctime is left out, as in the per-process memo. The slot holds the statx birth time instead: `link()`
   leaves it alone and an inode number reused for a new file gets a new one, so equal sizes and
-  modification times (tools that fix mtimes, archive extraction) can never alias a deleted file. Where
+  modification times (tools that fix mtimes, archive extraction) cannot alias a deleted file — once the
+  birth time is settled: a new file created inside the same timestamp tick gets the same one (the
+  executor's outputs are racy when published; see "What is recorded" for what vouches for them). Where
   the filesystem reports no birth time such files are not persisted. A birth-time key of any other path
   is neither recorded nor answered (`Table::remember`, `Table::lookup`).
 
 ## What is recorded
 
-- Only a file that was settled when it was read: its mtime and ctime (mtime only for blobs and
-  published outputs) at least 2 s older than the start of the read ("racy git", the margin of
-  `action::RACY_MARGIN` and `repository_store`'s fingerprints) and unchanged after the read. A later
-  in-place change then necessarily carries a different timestamp.
-- Or a file the executor wrote itself and made read-only (TRUSTED: a published output), and other paths
-  of an inode the process hashed (a published output and its blob). Never a repository tree file: those
-  only as read in a settled state. A published output is hashed right after the action's process
-  exited, inside the racy window, so nothing of the action may write it afterwards: the executor kills
-  what is left of the action's process group before it hashes the outputs (`action::kill_leftovers`,
-  as Bazel's process-wrapper does); only a process that left the group (`setsid`, a daemon) could
-  still change an output after its TRUSTED record was made.
+- Only a file that was settled when it was read: its mtime and ctime (for blobs and published
+  outputs mtime and birth time) at least 2 s older than the start of the read ("racy git", the margin
+  of `digest_memo::RACY_MARGIN`, used by the executor's per-process memo too, and `repository_store`'s
+  fingerprints) and unchanged after the read. A later
+  in-place change, and a new file that reuses the inode number, then necessarily carry a different
+  timestamp. A modification time alone settles nothing (`touch -d`, archive extraction and `cp -p`
+  give new files old ones).
+- Or (TRUSTED) what the executor knows of a path without having read it there, and only from
+  knowledge that belongs to that path's file: another path of a state it read settled (a published
+  output and its blob), and the content it established on that very path — a blob it validated (read
+  it, or found its record) or created (from an output it read in exactly the linked state, or by a
+  copy hashed while written; the blob's name is its content), and a published output linked to such a
+  blob in the state the blob was established in. Never a stat key alone (a racy state of another
+  file, or of a file since deleted: the executor's per-process memo answers for a racy state only at
+  the path where the content was established, and forgets it whenever it removes or replaces that path,
+  `action::DigestMemo`), and never a repository tree file: those only as read in a settled state. A
+  published output is hashed right after the action's process exited, inside the racy window, so
+  nothing of the action may write it afterwards: the executor kills what is left of the action's
+  process group before it hashes the outputs (`action::kill_leftovers`, as Bazel's process-wrapper
+  does); only a process that left the group (`setsid`, a daemon) could still change an output after its
+  TRUSTED record was made. Its blob keeps the inode number from being reused, and this process drops
+  its unsaved records of a path it removes (`Table::forget`: an invalid blob, an action entry that is
+  published again).
 - Only paths that recur across commands: files outside the cache root, and below it published action
   outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and the files of the repository tree stores
   (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`); never execution roots
@@ -92,7 +114,7 @@ were keyed by change time (both while the format was unreleased; unit test
 At the end of a command (`digest_memo::finish`, also before `run`'s exec and on failures), only when the
 process hashed files whose digests the table did not hold yet. TRUSTED records ride along with such a save
 but never cause one: the workspace status is published anew by every build, and a no-op build must write
-nothing. A save takes the fs2 lock `digests/v1.lock`, re-reads the file, merges (per path and kind the newer
+nothing. A save takes the fs2 lock `digests/v2.lock`, re-reads the file, merges (per path and kind the newer
 file state wins: the larger change slot, then mtime, then this save's record), drops the records of the
 oldest epochs once there are more than 2^20 records (about 88 MiB) down to 7/8 of that, and replaces the
 file through a temporary file and a rename. Readers never lock. Two processes saving at once lose no
@@ -165,7 +187,10 @@ the change time — and so does the executor, for every repository tree file:
   L2-W1: an edit made while a command runs, after the command looked at the file, is not re-detected by
   that command. The table only supplies a file's first digest in exactly the state it was recorded in:
   for a blob or a published output the same device, inode, size, modification time and birth time, for
-  a repository tree file the same device, inode, size, modification time and change time.
+  a repository tree file the same device, inode, size, modification time and change time. (Since
+  fix-digest-memo the per-process digest memo answers only for a state it observed: a settled one on
+  any path of the inode, a racy one only at the path where the content was established;
+  docs/HARDLINK_STAGING.md, "Per-process memos".)
 - **Blobs and published outputs** (`cas/`, `actions/`) have no second check: they are read-only, and an
   in-place edit that keeps their size, mtime and mode (after a `chmod`) is trusted by later commands
   too, where before the table only the rest of the command trusted it (as the per-process memo always
@@ -181,7 +206,7 @@ the change time — and so does the executor, for every repository tree file:
 - `BAZEL_RS_DIGEST_MEMO=off`: the table is neither read nor written (the per-process memos stay). It
   does not repair stale records: they stay in the file untouched, and once the variable is unset the
   table trusts them again.
-- Deleting `<cache>/digests/` (or just `v1.dmemo`) drops every record: the next command re-hashes what
+- Deleting `<cache>/digests/` (or just `v2.dmemo`) drops every record: the next command re-hashes what
   it reads and writes a new table. This is the way to discard records, for instance after editing files
   below the cache by hand.
 - `BAZEL_RS_TIMING=1` prints two `PERF-DMEMO` lines at the end: load outcome, records, bytes and load time;
@@ -221,3 +246,21 @@ Shared, loaded machine (overlayfs, 48-CPU quota): indicative, interleaved where 
   1,383–1,386 MB). B2 `--nobuild`: registry trees 0 files hashed (0.091 s over 34 trees), `bazel_tools`
   0 (0.003 s), recorded inputs 0 files hashed with `recorded_check` 0.008 s over 352 (`path_sha256`
   now opens each recorded file once: no measurable change).
+
+## fix-digest-memo (version 2): stale per-process answers (~/code 14bd7e2, lockfile c7a0c3df…)
+
+- Repro (4,000 write actions, 8-byte outputs alternating one shared and unique contents, fresh cache per
+  build): the 0363050 release published an old blob as a new action's output in 10 of 40 builds (1–5
+  outputs each; a second, warm build served the same wrong outputs from the action cache); after the fix
+  0 of 60. Unit test `a_new_file_never_inherits_a_deleted_files_digest`: 2,800–3,150 stale digests at
+  0363050 (inode numbers reused 1,690–1,800 times of 1,800), 0 after; `outputs_of_one_size_are_published_with_their_own_content`
+  150–170 of 600 wrong outputs, 0 after.
+- Persistence: a scratch run against 0363050 (2,000 files outside the cache, each created in the tick an
+  execution-root output was deleted) recorded 1,862 wrong TRUSTED records, every one answered by a fresh
+  table; unit test `stale_states_never_reach_the_persistent_table` (no record of a racy file at all).
+- Cost (private caches, release builds, interleaved; shared machine): warm `oauth2token/...` build tail
+  (no dump) 0.164–0.215 s (median 0.180) before, 0.150–0.263 s (median 0.182) after, peak RSS 1,321–1,326
+  MB both, 1 file hashed both. Cold tail (689 actions executed on the warm repositories, no table) 44.4 /
+  36.2 s before, 35.3 / 33.3 s after, hashing the same 9.3k files / 956.5 MB; the next warm build reads
+  only the volatile status on both. A cold build records 33,090 records (32,656 before: blobs validated
+  in a racy state now ride along as TRUSTED).

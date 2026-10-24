@@ -1,5 +1,5 @@
 //! L2-W2 CLI coverage (docs/DIGEST_MEMO.md): the persistent file-digest
-//! memo `<cache>/digests/v1.dmemo`. A later process takes the digests of
+//! memo `<cache>/digests/v2.dmemo`. A later process takes the digests of
 //! unchanged inputs and outputs from it instead of reading them; a no-op
 //! build writes nothing; an edited input is read again — also when the edit
 //! keeps the size and restores the modification time (the change time
@@ -120,7 +120,7 @@ impl Workspace {
     }
 
     fn table(&self) -> PathBuf {
-        self.path().join("cache/digests/v1.dmemo")
+        self.path().join("cache/digests/v2.dmemo")
     }
 
     fn build(&self, environment: &[(&str, &str)]) -> Run {
@@ -582,4 +582,105 @@ fn record_mode_records_reads_the_digest_memo_answered() {
                 .join("\n")
         );
     }
+}
+
+/// A rule of `count` write actions whose outputs `f<index>.txt` all have
+/// 8 bytes: even ones share one content (from the second on, its blob
+/// already exists, so the output in the execution root is not linked into
+/// the store and goes away with its execution root), odd ones are unique.
+const MANY_WRITES: &str = r#"def _pad(i, width):
+    s = str(i)
+    return "0" * (width - len(s)) + s
+
+def _impl(ctx):
+    outs = []
+    for i in range(ctx.attr.count):
+        out = ctx.actions.declare_file("%s/f%s.txt" % (ctx.label.name, _pad(i, 5)))
+        ctx.actions.write(out, "dupdupdu" if i % 2 == 0 else "u" + _pad(i, 7))
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+many = rule(implementation = _impl, attrs = {"count": attr.int()})
+"#;
+
+/// The published outputs of `//:w` in `stdout` that do not hold their own
+/// action's bytes: (name, bytes found).
+fn wrong_writes(stdout: &str) -> (usize, Vec<(String, String)>) {
+    let mut seen = 0;
+    let mut wrong = Vec::new();
+    for path in stdout
+        .lines()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(_, path)| PathBuf::from(path))
+    {
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let index: usize = name[1..6].parse().unwrap();
+        let expected = if index.is_multiple_of(2) {
+            "dupdupdu".to_owned()
+        } else {
+            format!("u{index:07}")
+        };
+        let found = fs::read_to_string(&path).unwrap();
+        seen += 1;
+        if found != expected {
+            wrong.push((name, found));
+        }
+    }
+    (seen, wrong)
+}
+
+/// Thousands of concurrent write actions with outputs of one size: an
+/// output deleted with its execution root and a new one created inside the
+/// same timestamp tick get the same inode number and identical timestamps
+/// (birth time included). The executor's per-process digest memo used to
+/// answer for the new output with the deleted one's digest, and the old
+/// content's blob was published as the new action's output — in about one
+/// of four cold builds of 4,000 such actions (0363050), and every later
+/// build took the wrong output from the action cache. Every published
+/// output has its own action's bytes, in cold builds on fresh caches and
+/// in a warm build after them.
+#[test]
+fn outputs_of_one_size_keep_their_own_bytes() {
+    const COUNT: usize = 4000;
+    let workspace = Workspace::new();
+    workspace.write("MODULE.bazel", "module(name = 'many_writes')\n");
+    workspace.write("defs.bzl", MANY_WRITES);
+    workspace.write(
+        "BUILD.bazel",
+        &format!("load(':defs.bzl', 'many')\nmany(name = 'w', count = {COUNT})\n"),
+    );
+    let build = |cache: &str| {
+        let output = Command::new("timeout")
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
+            .args(["build", "//:w"])
+            .current_dir(workspace.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        assert!(output.status.success(), "{stderr}");
+        (String::from_utf8_lossy(&output.stdout).into_owned(), stderr)
+    };
+    for round in 0..4 {
+        let (stdout, stderr) = build(&format!("cache-{round}"));
+        assert!(
+            stderr.contains(&format!("{COUNT} actions executed")),
+            "{stderr}"
+        );
+        let (seen, wrong) = wrong_writes(&stdout);
+        assert_eq!(seen, COUNT, "{stdout}");
+        assert!(
+            wrong.is_empty(),
+            "cold build {round}: {} outputs hold another action's bytes, first: {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+    }
+    let (stdout, stderr) = build("cache-3");
+    assert!(
+        stderr.contains(&format!("0 actions executed, {COUNT} cache hits")),
+        "{stderr}"
+    );
+    let (seen, wrong) = wrong_writes(&stdout);
+    assert_eq!((seen, wrong), (COUNT, Vec::new()));
 }

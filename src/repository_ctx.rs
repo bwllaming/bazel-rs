@@ -735,7 +735,7 @@ pub(crate) fn recorded_file_state(host: &Path) -> Option<String> {
 }
 
 /// A file whose mtime and ctime are this much older than the moment hashing
-/// starts may be memoized ("racy git", like `action::RACY_MARGIN` and
+/// starts may be memoized ("racy git", like `digest_memo::RACY_MARGIN` and
 /// `repository_store::RACY_MARGIN`): a later in-place change then
 /// necessarily carries a different timestamp.
 const RACY_MARGIN: Duration = Duration::from_secs(2);

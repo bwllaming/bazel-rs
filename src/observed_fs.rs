@@ -43,7 +43,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// The racy window (`action::RACY_MARGIN`, `repository_store::RACY_MARGIN`):
+/// The racy window (`digest_memo::RACY_MARGIN`, `repository_store::RACY_MARGIN`):
 /// a file whose mtime or ctime is younger than this relative to the window
 /// start could still be rewritten without changing its stat key, so it is
 /// re-validated by content until a later check settles it.

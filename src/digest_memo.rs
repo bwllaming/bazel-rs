@@ -1,6 +1,6 @@
 //! Persistent file-digest memo (PLAN-L2 E1b/E2): the SHA-256 of a file by
 //! its path and stat key, kept across processes in one binary table per
-//! cache, `<cache>/digests/v1.dmemo`, like Bazel's DigestUtils cache
+//! cache, `<cache>/digests/v2.dmemo`, like Bazel's DigestUtils cache
 //! (vfs/DigestUtils.java:36-60: a digest is reused while the file keeps its
 //! node id, change time, modification time and size) made persistent,
 //! because every bazel-rs command is a fresh process.
@@ -43,11 +43,15 @@
 //! edit there that kept the size and restored the modification time.
 //!
 //! A record is added only for a file that was settled when it was hashed:
-//! its mtime and ctime (mtime only for the executor's own files, as above)
-//! at least [`RACY_MARGIN`] older than the start of the read ("racy git": a
-//! later in-place change then necessarily carries a different timestamp), or
-//! for a file the executor wrote itself and made read-only (trusted; never a
-//! repository tree file). Only paths that recur across processes are
+//! its mtime and ctime (for the executor's own files, as above, its mtime
+//! and birth time) at least [`RACY_MARGIN`] older than the start of the
+//! read ("racy git": a later in-place change, and a new file that reuses the
+//! inode number, then necessarily carry a different timestamp), or
+//! ([`TRUSTED`]) for what the executor established of that very path: a
+//! blob it validated or created, an output it published linked to such a
+//! blob, another path of a settled state it read — never a racy state on
+//! the strength of its stat key alone, and never a repository tree file.
+//! Only paths that recur across processes are
 //! recorded ([`Area`]): files outside the cache, and below it published
 //! action outputs (`actions/...`), store blobs (`cas/<blob>`) and the files
 //! of the repository tree stores
@@ -56,13 +60,13 @@
 //! and extensions (`modextwd/`, `direct/stages/`), stages or temporary names.
 //!
 //! The table is saved only when this process hashed files whose digests it
-//! did not hold yet: under the fs2 lock `v1.lock` the current file is read
+//! did not hold yet: under the fs2 lock `v2.lock` the current file is read
 //! again, merged (per path and kind the newer file state wins: the larger
 //! change slot, then mtime, then this save), trimmed to the oldest epochs
 //! above [`RECORD_LIMIT`] records, and replaced through a temporary file and
 //! a rename. Records the process derived from what it already knew — an
-//! output it published (TRUSTED), another path of an inode it hashed — ride
-//! along with such a save but never cause one: the volatile workspace status
+//! output it published (TRUSTED), another path of a settled state it read —
+//! ride along with such a save but never cause one: the volatile workspace status
 //! is published anew by every build, and a no-op build must write nothing.
 //! Readers never lock. A
 //! missing, truncated, corrupt or foreign-version file reads as empty: it
@@ -102,7 +106,17 @@ const MAGIC: [u8; 8] = *b"BZRSDMEM";
 /// any `repositories/<kind>/trees/<id>/` to the four tree stores, and before
 /// the tree stores' files were keyed by change time (both while the format
 /// was unreleased).
-const VERSION: u32 = 1;
+///
+/// Version 2 (fix-digest-memo): a version-1 table can hold wrong digests.
+/// The executor's per-process memo answered by stat key alone, also for a
+/// new file that reused a deleted file's inode number inside the same
+/// timestamp tick, and recorded such an answer as [`TRUSTED`] (for a file
+/// outside the cache, for instance a source saved during a build); its
+/// owned files counted as settled by their modification time alone. Since
+/// then a trusted record is derived only from a settled state or from
+/// content this process established on that very path (crate::action,
+/// `DigestMemo`), and an owned file is settled by its birth time as well.
+const VERSION: u32 = 2;
 const HEADER_BYTES: usize = 32;
 const RECORD_BYTES: usize = 88;
 /// Records kept per cache (~88 MiB). A save above it drops the records of
@@ -110,13 +124,14 @@ const RECORD_BYTES: usize = 88;
 pub const RECORD_LIMIT: usize = 1 << 20;
 /// "Racy git": a digest is recorded only for a file whose timestamps are at
 /// least this much older than the start of its read (the same margin as
-/// action::RACY_MARGIN and repository_store's fingerprints).
+/// the executor's per-process digest memo, crate::action, and
+/// repository_store's fingerprints).
 pub const RACY_MARGIN: Duration = Duration::from_secs(2);
 /// The table's directory below the cache root.
 pub const DIRECTORY: &str = "digests";
-const TABLE_NAME: &str = "v1.dmemo";
-const LOCK_NAME: &str = "v1.lock";
-const TEMPORARY_PREFIX: &str = ".v1.dmemo.";
+const TABLE_NAME: &str = "v2.dmemo";
+const LOCK_NAME: &str = "v2.lock";
+const TEMPORARY_PREFIX: &str = ".v2.dmemo.";
 /// Temporary files of interrupted saves older than this are removed.
 const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
 const READ_BUFFER_BYTES: usize = 1 << 20;
@@ -124,10 +139,13 @@ const READ_BUFFER_BYTES: usize = 1 << 20;
 /// Record flag: one of the executor's own files ([`Area::Owned`]); the
 /// change slot holds its birth time.
 pub const OWNED: u32 = 1;
-/// Record flag: derived from what the process already knew (an output the
-/// executor wrote itself and made read-only, or another path of an inode it
-/// hashed) rather than from hashing a settled file; such records never cause
-/// a save by themselves.
+/// Record flag: derived from what the process already knew rather than from
+/// hashing a settled file at that path: the content the executor
+/// established on that very path (a blob it validated or created, an output
+/// it published linked to such a blob), or another path of a settled state
+/// it read (a published output and its blob). Never a racy state on the
+/// strength of its stat key alone (version 2, see [`VERSION`]). Such records
+/// never cause a save by themselves.
 pub const TRUSTED: u32 = 2;
 
 const PATH_AT: usize = 0;
@@ -229,26 +247,39 @@ impl Key {
 }
 
 /// Whether a file with `metadata` was settled at `start`: its mtime and
-/// ctime (only mtime for one of the executor's own files, `owned`, whose
-/// ctime every link() moves) at least [`RACY_MARGIN`] older. A future
+/// ctime at least [`RACY_MARGIN`] older — for one of the executor's own
+/// files (`owned`), whose ctime every link() moves, its mtime and birth time
+/// (its ctime where the filesystem reports no birth time). A file changed or
+/// created after `start` then necessarily carries a later timestamp, so no
+/// other content can ever show a settled state, not even after its inode
+/// number is reused; a modification time alone settles nothing (`touch -d`,
+/// `cp -p` and archive extraction give new files old ones). A future
 /// timestamp is never settled.
 pub fn settled(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
-    let mut times = vec![(metadata.mtime(), metadata.mtime_nsec())];
-    if !owned {
-        times.push((metadata.ctime(), metadata.ctime_nsec()));
-    }
-    times.into_iter().all(|(seconds, nanoseconds)| {
-        u64::try_from(seconds)
-            .ok()
-            .and_then(|seconds| {
-                UNIX_EPOCH.checked_add(Duration::new(
-                    seconds,
-                    nanoseconds.clamp(0, 999_999_999) as u32,
-                ))
-            })
-            .and_then(|time| time.checked_add(RACY_MARGIN))
-            .is_some_and(|time| time <= start)
-    })
+    let birth = owned
+        .then(|| metadata.created().ok().and_then(system_nanos))
+        .flatten();
+    let change = match birth {
+        Some(birth) => (
+            birth.div_euclid(1_000_000_000),
+            birth.rem_euclid(1_000_000_000),
+        ),
+        None => (metadata.ctime(), metadata.ctime_nsec()),
+    };
+    [(metadata.mtime(), metadata.mtime_nsec()), change]
+        .into_iter()
+        .all(|(seconds, nanoseconds)| {
+            u64::try_from(seconds)
+                .ok()
+                .and_then(|seconds| {
+                    UNIX_EPOCH.checked_add(Duration::new(
+                        seconds,
+                        nanoseconds.clamp(0, 999_999_999) as u32,
+                    ))
+                })
+                .and_then(|time| time.checked_add(RACY_MARGIN))
+                .is_some_and(|time| time <= start)
+        })
 }
 
 /// The first 8 bytes (little-endian) of the blake3 hash of the path's bytes.
@@ -503,7 +534,7 @@ pub struct Table {
 }
 
 impl Table {
-    /// The table of the cache `cache` (`<cache>/digests/v1.dmemo`), read on
+    /// The table of the cache `cache` (`<cache>/digests/v2.dmemo`), read on
     /// first use.
     pub fn new(cache: &Path) -> Self {
         Self::with_limit(cache, RECORD_LIMIT)
@@ -610,9 +641,11 @@ impl Table {
 
     /// Record that `path` in the state `key` has `sha256`. The caller
     /// vouches that the file was settled when it was hashed, or (`trusted`)
-    /// that the executor wrote it and made it read-only, or that it is
-    /// another path of an inode recorded so; trusted records never cause a
-    /// save by themselves. Paths that do not recur ([`Area::Transient`]), a
+    /// that it established this content on this very path (a blob it
+    /// validated or created, an output it published linked to such a blob)
+    /// or that the state is another path of a settled one it read — never a
+    /// racy state by its stat key alone ([`TRUSTED`]); trusted records never
+    /// cause a save by themselves. Paths that do not recur ([`Area::Transient`]), a
     /// birth-time key of any path but an [`Area::Owned`] one, a trusted
     /// repository tree file ([`Area::Tree`]), records the loaded file
     /// already holds and anything beyond the record limit are ignored.
@@ -651,6 +684,23 @@ impl Table {
             },
         );
         STATS.remembered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Drop this process's not yet saved records of `path`: the caller is
+    /// about to remove or replace the file there (an invalid store blob, an
+    /// action entry published again), so they may describe a state that a
+    /// new file created in the same timestamp tick could show again.
+    pub fn forget(&self, path: &Path) {
+        let hash = path_hash(path);
+        let mut fresh = self.fresh();
+        for owned in [false, true] {
+            if fresh
+                .get(&(hash, owned))
+                .is_some_and(|record| !record.saved)
+            {
+                fresh.remove(&(hash, owned));
+            }
+        }
     }
 
     /// Merge this process's new records into the file (see the module
@@ -1366,7 +1416,7 @@ mod tests {
         let table = encode_table(&record);
         assert_eq!(table.len(), 32 + 88);
         assert_eq!(&table[0..8], b"BZRSDMEM");
-        assert_eq!(table[8..12], [1, 0, 0, 0]);
+        assert_eq!(table[8..12], [2, 0, 0, 0]);
         assert_eq!(table[12..16], [88, 0, 0, 0]);
         assert_eq!(table[16..24], [1, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(table[24..32], blake3::hash(&record).as_bytes()[..8]);
@@ -1462,7 +1512,7 @@ mod tests {
             "repositories/trees/abc.json",
             "actions/k1",
             "locks/k1.lock",
-            "digests/v1.dmemo",
+            "digests/v2.dmemo",
         ];
         for (index, name) in recorded.iter().chain(&ignored).enumerate() {
             table.remember(
@@ -1623,8 +1673,15 @@ mod tests {
             now + RACY_MARGIN + Duration::from_secs(1),
             false
         ));
-        // An old mtime with a fresh ctime (what every link() to a store blob
-        // leaves) is settled only for an owned file (a blob, an output).
+        assert!(settled(
+            &metadata,
+            now + RACY_MARGIN + Duration::from_secs(1),
+            true
+        ));
+        // An old mtime settles nothing: a fresh ctime (also what every
+        // link() to a store blob leaves) or a fresh birth time (`touch -d`,
+        // `cp -p`, an extracted archive: a new file, maybe on the inode
+        // number of one deleted a moment ago).
         File::options()
             .write(true)
             .open(&path)
@@ -1632,7 +1689,7 @@ mod tests {
             .set_modified(now - Duration::from_secs(60))
             .unwrap();
         let metadata = fs::symlink_metadata(&path).unwrap();
-        assert!(settled(&metadata, SystemTime::now(), true));
+        assert!(!settled(&metadata, SystemTime::now(), true));
         assert!(!settled(&metadata, SystemTime::now(), false));
         // A future timestamp is never settled.
         File::options()
@@ -1965,7 +2022,10 @@ mod tests {
         let mut corrupt_body = good.clone();
         *corrupt_body.last_mut().unwrap() ^= 1;
         let mut foreign_version = good.clone();
-        foreign_version[8] = 2;
+        foreign_version[8..12].copy_from_slice(&(VERSION + 1).to_le_bytes());
+        // A version-1 table (it can hold wrong digests: see VERSION).
+        let mut older_version = good.clone();
+        older_version[8..12].copy_from_slice(&(VERSION - 1).to_le_bytes());
         let mut foreign_size = good.clone();
         foreign_size[12] = 96;
         let mut wrong_count = good.clone();
@@ -1981,6 +2041,7 @@ mod tests {
             ("corrupt body", corrupt_body),
             ("magic", [b"BZRSDMEN".as_slice(), &good[8..]].concat()),
             ("version", foreign_version),
+            ("older version", older_version),
             ("record size", foreign_size),
             ("count", wrong_count),
             ("unsorted", encode_table(&swapped)),

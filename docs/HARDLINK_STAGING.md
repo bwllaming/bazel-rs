@@ -91,12 +91,15 @@ with the recorded digest and mode.
 **Digests.** Inputs are hashed by streaming (the previous executor held every
 input in memory). A process-wide memo keyed like Bazel's
 `DigestUtils.CacheKey` (`vfs/DigestUtils.java:36-60`: device, inode, size,
-mtime, ctime) avoids re-hashing a shared input for every action. Files outside
-the cache are memoized only when their timestamps are at least 2 s older than
-the start of hashing ("racy git"), so a same-size rewrite within the
-filesystem's timestamp granularity is never missed; files the cache owns are
-keyed without ctime and memoized when written. Since L2-W2 the digests also
-persist across commands, there keyed with the ctime of repository tree files
+mtime, ctime) avoids re-hashing a shared input for every action. A state read
+is remembered only when it was settled: its timestamps at least 2 s older
+than the start of hashing ("racy git"), so neither a same-size rewrite nor a
+new file that reuses the inode number can show it again. Files the cache owns
+are keyed without ctime (every link() moves it) and with their birth time
+instead, which must be settled as well; what the executor itself produces
+(blobs, published outputs) it remembers in a racy state only by path
+("Per-process memos" below). Since L2-W2 the digests also persist across
+commands, there keyed with the ctime of repository tree files
 (docs/DIGEST_MEMO.md).
 
 ## Per-process memos (L2-W1)
@@ -149,6 +152,42 @@ a copy or tree file whose bytes no longer match fails the action
 re-checked after its process ran. Execution roots (`work/`), the
 working areas of repository rules and module extensions, and every path
 outside the cache keep the full checks on every use.
+
+**The digest memo answers only for a file state it observed**
+(fix-digest-memo, `action::DigestMemo`). A file deleted and replaced by one
+of the same size inside one timestamp tick usually passes its inode number
+on at once, with identical modification, change and birth times (always on
+overlayfs). The memo used to answer by that stat key alone, for any path, and
+it remembered an output it had just hashed for publication unconditionally
+(and any owned file whose modification time was old): an output in an
+execution root whose content's blob already existed is not linked into the
+store and goes away with the execution root, so a new output of the same size
+created in the same tick by another action got its digest, and the old
+content's blob was published as that action's output — in about one of four
+cold builds of 4,000 equal-size write actions, and every later build took
+the wrong output from the action cache. Now:
+
+* a state read when it was settled (modification and change time, for a
+  cache-owned file modification and birth time, at least 2 s older than the
+  read) answers for every path of its inode: no file created or changed after
+  the read can show it again;
+* a racy state answers only at the path where this process established the
+  content: a blob it validated or created (its name is its content) and a
+  published output linked to such a blob. Every removal or replacement of
+  such a path by the process forgets it: an invalid blob removed by
+  `blob_valid` or `check_staged`, a store candidate renamed over a blob, an
+  action entry removed to be published again (`forget_published`);
+* an output being published is hashed without being remembered by its path
+  (the execution root goes away); its state is handed to the blob it is
+  linked into (`ensure_blob_hashed`), so it is still read once.
+
+The persistent memo receives trusted records only from such knowledge (a
+settled state, or content established on that path), never from a stat key
+alone; see docs/DIGEST_MEMO.md, "What is recorded". Unit tests
+`a_new_file_never_inherits_a_deleted_files_digest`,
+`outputs_of_one_size_are_published_with_their_own_content`,
+`stale_states_never_reach_the_persistent_table`; CLI test
+`outputs_of_one_size_keep_their_own_bytes` (tests/digest_memo.rs).
 
 ## Cache keys
 
@@ -204,10 +243,12 @@ written into the execution root and published through this store.)
   `failed_hardlinks_fall_back_to_copies`, `emlink_hardlink_failures_fall_back_to_copies`).
 * A blob removed between its validity check and the link (a concurrent
   damaged-blob removal) is ensured once more and linked again.
-* The digest memo trusts a cache-owned file (blob, published output) by its
-  mtime alone, since every link() to it bumps its ctime (keyed by inode,
-  size, mtime and birth time). Since L2-W2 such digests also persist across
-  commands; repository tree files persist only with their ctime, because a
+* The digest memo keys a cache-owned file (blob, published output) without
+  its ctime, since every link() to it bumps that (keyed by inode, size, mtime
+  and birth time; settled by mtime and birth time): an in-place edit that
+  restores size and mtime is not seen, as for the staged-inode check above.
+  Since L2-W2 such digests also persist across commands; repository tree
+  files persist only with their ctime, because a
   command verifies only the trees it materializes (docs/DIGEST_MEMO.md,
   "Trust").
 

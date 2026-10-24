@@ -55,7 +55,16 @@
 //! - cache-owned directories in `actions/`, `cas/` and the repository tree
 //!   stores (never the execution roots under `work/`, nor the working areas
 //!   of repository rules and module extensions) are lstat'ed once to
-//!   establish that they are real directories (`no_linked_ancestor`).
+//!   establish that they are real directories (`no_linked_ancestor`);
+//! - a file's digest is remembered only for a state this process observed
+//!   (`DigestMemo`): a settled state (timestamps at least 2 s older than
+//!   the read, crate::digest_memo::RACY_MARGIN) for every path of its
+//!   inode, a racy one only at the path where this process established the
+//!   content — a store blob it validated or created, an output it
+//!   published — until it removes or replaces that path. A stat key alone
+//!   never vouches for a racy file: a file deleted and replaced by one of
+//!   the same size inside one timestamp tick passes its inode number and
+//!   timestamps on.
 //!
 //! Only bazel-rs writes these areas, so an edit made there while a command
 //! runs, after its first look, is not seen again by that command (the next
@@ -102,19 +111,17 @@ const MANIFEST_FORMAT: &str = "native-action-v8";
 const CAS: &str = "cas";
 /// Read and copy buffer for streamed digests.
 const BUFFER_BYTES: usize = 1 << 20;
-/// A digest of a file outside the cache is memoized only when its mtime and
-/// ctime are this much older than the start of hashing ("racy git"): a later
-/// in-place change then necessarily carries a different timestamp.
-const RACY_MARGIN: Duration = Duration::from_secs(2);
 // Caps of the per-process memos. A memo starts over when it would exceed
 // its cap, which is always safe: a memo only saves work, and consumers keep
 // what they took from it (shared trees are Arcs, inputs are copies). Their
 // worst-case footprints at the caps (32-byte digests, absolute paths of
 // 160-230 bytes as on ~/code, hash-table and B-tree slack included): digest
-// memo ~45 MB, tree memo ~110 MB, file memo ~85 MB, directory memo ~60 MB.
-// The warm `oauth2token/...` build (689 actions) fills about 3% of them:
-// 8.9k digests, 958 tree entries, 7.4k store files, 7.3k directories.
-/// File states with a known digest (88 bytes each, no allocation).
+// memo ~45 MB of settled states plus ~85 MB of produced files, tree memo
+// ~110 MB, file memo ~85 MB, directory memo ~60 MB. The warm
+// `oauth2token/...` build (689 actions) fills about 3% of them: 8.9k
+// digests, 958 tree entries, 7.4k store files, 7.3k directories.
+/// Settled file states with a known digest (88 bytes each, no allocation),
+/// and files the process produced (a path and 88 bytes each).
 const DIGEST_MEMO_LIMIT: usize = 1 << 18;
 /// Entries (files plus directories) of memoized published trees.
 const TREE_MEMO_LIMIT: usize = 1 << 18;
@@ -846,110 +853,228 @@ fn real_directory(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, Str
 
 /// Identity of a file state for the digest memo, after Bazel's
 /// DigestUtils.CacheKey (vfs/DigestUtils.java:36-60: node id, change time,
-/// modification time and size). Files owned by the cache (store blobs,
-/// published outputs, repository tree files: everything below the cache
-/// root) leave out the change time: hardlinking a blob updates it
-/// constantly, while its bytes are immutable and verified. They keep their
-/// birth time in its place (`(0, 0)` where the filesystem reports none):
-/// link() leaves it alone, and an inode number reused for a new file gets a
-/// new one, so equal sizes and modification times (tools that fix mtimes)
-/// cannot alias it with a deleted file. (The persistent memo keys
-/// repository tree files by their change time: [`hash_file_from`].)
+/// modification time and size). The executor's own files (`owned`: store
+/// blobs, published outputs and execution-root outputs, below the cache
+/// root) leave out the change time: every link() to a blob moves it
+/// (staging links blobs constantly), while their bytes stay the same. They
+/// keep their birth time in its place (`(0, 0)` where the filesystem
+/// reports none): link() leaves it alone, and a new file gets a new one —
+/// a later one only once the state is settled ([`settled`]). The kind is
+/// part of the key, so a birth time never matches a change time. (The
+/// persistent memo keys repository tree files by their change time:
+/// [`hash_file_from`].)
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct FileKey {
+    owned: bool,
     device: u64,
     inode: u64,
     size: u64,
     mtime: (i64, i64),
-    /// The change time, or a cache-owned file's birth time.
+    /// The change time, or an owned file's birth time.
     ctime: (i64, i64),
+}
+
+/// A file's birth time as (seconds, nanoseconds), where the filesystem
+/// reports one.
+fn birth_time(metadata: &fs::Metadata) -> Option<(i64, i64)> {
+    let birth = metadata
+        .created()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
+    Some((
+        i64::try_from(birth.as_secs()).ok()?,
+        i64::from(birth.subsec_nanos()),
+    ))
 }
 
 fn file_key(metadata: &fs::Metadata, owned: bool) -> FileKey {
     FileKey {
+        owned,
         device: metadata.dev(),
         inode: metadata.ino(),
         size: metadata.size(),
         mtime: (metadata.mtime(), metadata.mtime_nsec()),
         ctime: if owned {
-            metadata
-                .created()
-                .ok()
-                .and_then(|birth| birth.duration_since(SystemTime::UNIX_EPOCH).ok())
-                .and_then(|birth| {
-                    Some((
-                        i64::try_from(birth.as_secs()).ok()?,
-                        i64::from(birth.subsec_nanos()),
-                    ))
-                })
-                .unwrap_or((0, 0))
+            birth_time(metadata).unwrap_or((0, 0))
         } else {
             (metadata.ctime(), metadata.ctime_nsec())
         },
     }
 }
 
-fn digest_memo() -> &'static Mutex<HashMap<FileKey, Sha256Digest>> {
-    static MEMO: OnceLock<Mutex<HashMap<FileKey, Sha256Digest>>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+/// The per-process digest memo. It answers only for a file state this
+/// process observed (or produced), never for another file that merely
+/// shows the same stat: a file deleted and replaced by one of the same size
+/// inside one timestamp tick usually passes its inode number on at once
+/// (always on overlayfs), with identical timestamps, birth time included.
+#[derive(Default)]
+struct DigestMemo {
+    /// States read when they were settled ([`settled`]): no file created
+    /// or changed after that read can show such a state again, so it names
+    /// one inode with one content for good and answers for every path of
+    /// that inode (a published output and its blob).
+    settled: HashMap<FileKey, Sha256Digest>,
+    /// By path, racy states whose content this process established on that
+    /// very path ([`remember_produced`]): a store blob it validated or
+    /// created (the name is the content's digest; this process removes an
+    /// invalid blob and only ever creates valid ones) and a published output
+    /// it linked to such a blob. They answer for that path only, and
+    /// whenever this process removes or replaces the path it forgets them
+    /// ([`forget_produced`], [`forget_published`]).
+    produced: HashMap<PathBuf, (FileKey, Sha256Digest)>,
+    /// The produced paths below each action entry (`actions/<key>`).
+    entries: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
-fn memoized_digest(key: &FileKey) -> Option<Sha256Digest> {
-    digest_memo()
+fn digest_memo() -> std::sync::MutexGuard<'static, DigestMemo> {
+    static MEMO: OnceLock<Mutex<DigestMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(DigestMemo::default()))
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .get(key)
-        .copied()
 }
 
-fn remember_digest(key: FileKey, digest: Sha256Digest) {
-    let mut memo = digest_memo().lock().unwrap_or_else(|e| e.into_inner());
-    if memo.len() >= DIGEST_MEMO_LIMIT {
-        memo.clear();
+/// The digest this process knows for `path` in the state `key`, and
+/// whether it knows it from a settled state.
+fn memoized(path: &Path, key: &FileKey) -> Option<(Sha256Digest, bool)> {
+    let memo = digest_memo();
+    if let Some(digest) = memo.settled.get(key) {
+        return Some((*digest, true));
     }
-    memo.insert(key, digest);
+    memo.produced
+        .get(path)
+        .filter(|(state, _)| state == key)
+        .map(|(_, digest)| (*digest, false))
 }
 
-fn timestamp(seconds: i64, nanoseconds: i64) -> Option<SystemTime> {
-    let seconds = u64::try_from(seconds).ok()?;
-    SystemTime::UNIX_EPOCH.checked_add(Duration::new(seconds, nanoseconds as u32))
+fn memoized_digest(path: &Path, key: &FileKey) -> Option<Sha256Digest> {
+    memoized(path, key).map(|(digest, _)| digest)
 }
 
-/// Whether a file's timestamps are old enough that a change made after
-/// `start` could not reproduce them. A file the cache owns (store blob,
-/// published output) is judged by its mtime only, like its memo key: every
-/// link() to it bumps its ctime, while its bytes are immutable and verified.
-fn racy_safe(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
-    let mut times = vec![(metadata.mtime(), metadata.mtime_nsec())];
-    if !owned {
-        times.push((metadata.ctime(), metadata.ctime_nsec()));
+/// Remember the digest of a settled state ([`DigestMemo::settled`]).
+fn remember_settled(key: FileKey, digest: Sha256Digest) {
+    let mut memo = digest_memo();
+    if memo.settled.len() >= DIGEST_MEMO_LIMIT {
+        memo.settled.clear();
     }
-    times.into_iter().all(|(seconds, nanoseconds)| {
-        timestamp(seconds, nanoseconds)
-            .and_then(|time| time.checked_add(RACY_MARGIN))
-            .is_some_and(|time| time <= start)
-    })
+    memo.settled.insert(key, digest);
+}
+
+/// Remember that `path` — a store blob this process validated or created,
+/// or (`entry`: its action entry) a published output it linked to such a
+/// blob — has `digest` in the state `key` ([`DigestMemo::produced`]).
+fn remember_produced(path: &Path, key: FileKey, digest: Sha256Digest, entry: Option<&Path>) {
+    let mut memo = digest_memo();
+    if memo.produced.len() >= DIGEST_MEMO_LIMIT && !memo.produced.contains_key(path) {
+        memo.produced.clear();
+        memo.entries.clear();
+    }
+    if memo
+        .produced
+        .insert(path.to_path_buf(), (key, digest))
+        .is_none()
+        && let Some(entry) = entry
+    {
+        memo.entries
+            .entry(entry.to_path_buf())
+            .or_default()
+            .push(path.to_path_buf());
+    }
+}
+
+/// This process is about to remove or replace `path` (an invalid store
+/// blob): forget what it knew of the file there, also its not yet saved
+/// persistent record and its file memo entry.
+fn forget_produced(path: &Path) {
+    digest_memo().produced.remove(path);
+    if let Some(table) = digest_table() {
+        table.forget(path);
+    }
+    file_memo()
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(path);
+}
+
+/// This process is about to remove the action entry `entry`
+/// (`actions/<key>`, to publish it again): forget the published outputs it
+/// produced below it, also their not yet saved persistent records.
+fn forget_published(entry: &Path) {
+    let paths = {
+        let mut memo = digest_memo();
+        let paths = memo.entries.remove(entry).unwrap_or_default();
+        for path in &paths {
+            memo.produced.remove(path);
+        }
+        paths
+    };
+    if let Some(table) = digest_table() {
+        for path in &paths {
+            table.forget(path);
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: the persistent digest memo this thread's executor uses
+    /// instead of the installed one ([`digest_table`]).
+    static TEST_TABLE: std::cell::Cell<Option<&'static crate::digest_memo::Table>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The persistent digest memo of this command (crate::digest_memo::installed).
+fn digest_table() -> Option<&'static crate::digest_memo::Table> {
+    #[cfg(test)]
+    if let Some(table) = TEST_TABLE.with(std::cell::Cell::get) {
+        return Some(table);
+    }
+    crate::digest_memo::installed()
+}
+
+/// Whether a file state was settled at `start`: its modification time and
+/// its change time — for one of the executor's own files (`owned`) its
+/// birth time instead, or where the filesystem reports none its change
+/// time — at least crate::digest_memo::RACY_MARGIN older ("racy git",
+/// crate::digest_memo::settled). A file changed or created after `start`
+/// necessarily carries a later timestamp, so no other content can ever show
+/// a settled state again, not even after its inode number is reused. An
+/// owned file is not judged by its change time, which every link() to it
+/// moves while its bytes stay the same; and a modification time alone never
+/// settles a file (`touch -d`, `cp -p` and archive extraction give new
+/// files old ones).
+fn settled(metadata: &fs::Metadata, start: SystemTime, owned: bool) -> bool {
+    crate::digest_memo::settled(metadata, start, owned)
 }
 
 /// Streamed SHA-256 of a regular file. The file must not change while it is
-/// read. `trusted` memoizes regardless of timestamps: files this executor
-/// has just written and made read-only.
+/// read. `publishing`: an execution-root output being published, hashed
+/// without being remembered by its path (see [`hash_file_from`]).
+#[cfg(test)]
 fn hash_file(
     path: &Path,
     owned: bool,
-    trusted: bool,
+    publishing: bool,
 ) -> Result<(Sha256Digest, fs::Metadata), String> {
     let before = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
-    hash_file_from(path, before, owned, trusted)
+    hash_file_from(path, before, owned, publishing)
 }
 
 /// [`hash_file`] with `before`, the caller's lstat of `path` (taken just
 /// before: the file must not change from then on). The digest comes from
-/// the per-process memo (any path of the inode), else from the persistent
-/// memo of this path in exactly this state (crate::digest_memo, when the
-/// command installed one), else from reading the file; a settled or trusted
-/// result enters both (the persistent one only for paths that recur across
-/// processes: never an execution root).
+/// the per-process memo ([`DigestMemo`]: a settled state of the inode on
+/// any path, or what this process produced at this very path), else from
+/// the persistent memo of this path in exactly this state (crate::digest_memo,
+/// when the command installed one), else from reading the file; the state
+/// read is remembered when it was settled ([`settled`]), in the persistent
+/// memo as well for paths that recur across processes (never an execution
+/// root).
+///
+/// `publishing`: `path` is an execution-root output being published. Its
+/// path goes away with the execution root, so neither memo is consulted by
+/// it or remembers it; the caller passes the returned state on to the blob
+/// it links ([`ensure_blob_hashed`]), and the published path is remembered
+/// once it links that blob ([`remember_published`]).
 ///
 /// The persistent memo keys a file of a repository tree store by its change
 /// time, unlike the per-process memo (crate::digest_memo::Area::Tree): this
@@ -964,11 +1089,11 @@ fn hash_file_from(
     path: &Path,
     before: fs::Metadata,
     owned: bool,
-    trusted: bool,
+    publishing: bool,
 ) -> Result<(Sha256Digest, fs::Metadata), String> {
     let key = file_key(&before, owned);
     // (table, its key, whether `path` is a repository tree file).
-    let table = crate::digest_memo::installed().and_then(|table| {
+    let table = digest_table().filter(|_| !publishing).and_then(|table| {
         let tree = owned && table.area(path) == crate::digest_memo::Area::Tree;
         Some((
             table,
@@ -976,12 +1101,13 @@ fn hash_file_from(
             tree,
         ))
     });
-    if let Some(digest) = memoized_digest(&key) {
-        // An inode this process already knows, maybe through another path
-        // (a published output and its blob): remember it under this one
+    if let Some((digest, settled_state)) = memoized(path, &key) {
+        // A settled state this process read, maybe through another path (a
+        // published output and its blob): record it under this one too
         // (trusted: derived knowledge, which never causes a save by itself).
-        // Not a tree file (see above).
-        if let Some((table, table_key, false)) = &table {
+        // Not a tree file (see above). A produced path was recorded when it
+        // was produced.
+        if settled_state && let Some((table, table_key, false)) = &table {
             table.remember(path, *table_key, digest.0, true);
         }
         return Ok((digest, before));
@@ -989,8 +1115,12 @@ fn hash_file_from(
     if let Some((table, table_key, _)) = &table
         && let Some(sha256) = table.lookup(path, table_key)
     {
+        // A record of this path in exactly this state. It answers for other
+        // paths of the inode only once the state is settled.
         let digest = Sha256Digest(sha256);
-        remember_digest(key, digest);
+        if settled(&before, SystemTime::now(), owned) {
+            remember_settled(key, digest);
+        }
         return Ok((digest, before));
     }
     crate::digest_memo::count_hashed(crate::digest_memo::Use::Action, before.size());
@@ -1022,44 +1152,70 @@ fn hash_file_from(
         ));
     }
     let digest = Sha256Digest(hash.finalize().into());
-    let memoized = trusted || racy_safe(&after, start, owned);
-    if memoized {
-        remember_digest(key, digest);
+    let settled_state = settled(&after, start, owned);
+    if settled_state {
+        remember_settled(key, digest);
     }
     match table {
         // A tree file: settled by its change time as well, which the read
         // left unchanged; never trusted.
         Some((table, table_key, true)) => {
-            if racy_safe(&after, start, false)
+            if settled(&after, start, false)
                 && crate::digest_memo::Key::of(&after, false) == Some(table_key)
             {
                 table.remember(path, table_key, digest.0, false);
             }
         }
-        Some((table, table_key, false)) if memoized => {
-            table.remember(path, table_key, digest.0, trusted);
+        Some((table, table_key, false)) if settled_state => {
+            table.remember(path, table_key, digest.0, false);
         }
         _ => {}
     }
     Ok((digest, before))
 }
 
-/// After publication: record `digest`, the content of the published output
-/// `path`, in the persistent memo when this process hashed exactly its
-/// inode (the execution-root file it was linked from, or its store blob),
-/// so that the next command's cache check does not read it again.
-fn remember_published(path: &Path, digest: Sha256Digest) {
-    let Some(table) = crate::digest_memo::installed() else {
-        return;
-    };
+/// After publication: `path`, a published output file below the action
+/// entry `entry` with the content of `input` (its digest and executable
+/// bits), is remembered ([`remember_owned`]) — so that its consumers in
+/// this process and the next command's cache check do not read it again —
+/// when it is the inode of that content's store blob in the state this
+/// process validated or created the blob in: the blob is the proof of its
+/// content, and keeps the inode number from being reused. Otherwise (a
+/// filesystem without hardlinks) it is read when it is used.
+fn remember_published(cas: &Path, entry: &Path, path: &Path, input: &Input) {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return;
     };
-    if !metadata.is_file() || memoized_digest(&file_key(&metadata, true)) != Some(digest) {
-        return;
+    if metadata.is_file()
+        && memoized_digest(&blob_path(cas, input), &file_key(&metadata, true)) == Some(input.digest)
+    {
+        remember_owned(path, &metadata, input.digest, Some(entry));
     }
-    if let Some(key) = crate::digest_memo::Key::of(&metadata, true) {
-        table.remember(path, key, digest.0, true);
+}
+
+/// Remember that the cache-owned file `path` — a store blob this process
+/// validated or created, or (`entry`: its action entry) a published output
+/// linked to such a blob — has `digest` in the state `metadata` (its lstat,
+/// taken after this process established the content): a settled state for
+/// every path of its inode, a racy one by this path only
+/// ([`DigestMemo::produced`]); and in the persistent memo (trusted: derived
+/// from what this process knows; it never causes a save by itself).
+fn remember_owned(
+    path: &Path,
+    metadata: &fs::Metadata,
+    digest: Sha256Digest,
+    entry: Option<&Path>,
+) {
+    let key = file_key(metadata, true);
+    if settled(metadata, SystemTime::now(), true) {
+        remember_settled(key, digest);
+    } else {
+        remember_produced(path, key, digest, entry);
+    }
+    if let Some(table) = digest_table()
+        && let Some(table_key) = crate::digest_memo::Key::of(metadata, true)
+    {
+        table.remember(path, table_key, digest.0, true);
     }
 }
 
@@ -1253,9 +1409,10 @@ fn read_input(path: &Path, root: Option<&Path>, follow: bool) -> Result<Input, S
 }
 
 /// read_input for a path already checked to be a regular file.
-fn read_regular(path: &Path, owned: bool, trusted: bool) -> Result<Input, String> {
+#[cfg(test)]
+fn read_regular(path: &Path, owned: bool, publishing: bool) -> Result<Input, String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
-    read_regular_from(path, metadata, owned, trusted)
+    read_regular_from(path, metadata, owned, publishing)
 }
 
 /// [`read_regular`] with `metadata`, the caller's lstat of `path` (taken
@@ -1264,19 +1421,31 @@ fn read_regular_from(
     path: &Path,
     metadata: fs::Metadata,
     owned: bool,
-    trusted: bool,
+    publishing: bool,
 ) -> Result<Input, String> {
-    let (digest, metadata) = hash_file_from(path, metadata, owned, trusted)?;
+    read_regular_state(path, metadata, owned, publishing).map(|(input, _)| input)
+}
+
+/// [`read_regular_from`], with the state the file was read in (for an
+/// output being published: [`ensure_blob_hashed`]).
+fn read_regular_state(
+    path: &Path,
+    metadata: fs::Metadata,
+    owned: bool,
+    publishing: bool,
+) -> Result<(Input, FileKey), String> {
+    let (digest, metadata) = hash_file_from(path, metadata, owned, publishing)?;
     if !metadata.is_file() {
         return Err(format!("expected regular file: '{}'", path.display()));
     }
-    Ok(Input {
+    let input = Input {
         path: path.to_path_buf(),
         digest,
         size: metadata.size(),
         executable: metadata.permissions().mode() & 0o111,
         mode: metadata.permissions().mode() & 0o7777,
-    })
+    };
+    Ok((input, file_key(&metadata, owned)))
 }
 
 /// Inputs (or tree files) per helper thread of [`try_map_ordered`]: fewer
@@ -1455,11 +1624,21 @@ where
 /// Walk a directory without following symlinks. Entries are visited in byte
 /// order; a symlink or special file below the root is an explicit error.
 /// `normalize` makes every file OUTPUT_MODE before it is read (completed
-/// tree outputs, ActionOutputMetadataStore.java:245-281); such files are the
-/// executor's own and are memoized as trusted. The files are read after the
-/// walk ([`try_map_ordered`]); the first failure in walk order is reported,
-/// exactly as if each file were read when the walk reached it.
+/// tree outputs, ActionOutputMetadataStore.java:245-281); such files are
+/// outputs being published (see [`hash_file_from`]). The files are read
+/// after the walk ([`try_map_ordered`]); the first failure in walk order is
+/// reported, exactly as if each file were read when the walk reached it.
 fn read_tree(root: &Path, cache: Option<&Path>, normalize: bool) -> Result<Tree, String> {
+    read_tree_states(root, cache, normalize).map(|(tree, _)| tree)
+}
+
+/// [`read_tree`], with the state each file was read in when `normalize`d
+/// (the outputs being published: [`ensure_blob_hashed`]), by its name.
+fn read_tree_states(
+    root: &Path,
+    cache: Option<&Path>,
+    normalize: bool,
+) -> Result<(Tree, BTreeMap<PathBuf, FileKey>), String> {
     #[cfg(test)]
     TREE_WALKS.with(|walks| walks.set(walks.get() + 1));
     real_directory(root, cache)?;
@@ -1507,19 +1686,27 @@ fn read_tree(root: &Path, cache: Option<&Path>, normalize: bool) -> Result<Tree,
         Ok(())
     };
     let walked = walk();
-    let inputs = try_map_ordered(&files, |(_, path, metadata)| match metadata {
-        Some(metadata) => read_regular_from(path, metadata.clone(), owned, normalize),
-        None => read_regular(path, owned, normalize),
+    let inputs = try_map_ordered(&files, |(_, path, metadata)| {
+        let metadata = match metadata {
+            Some(metadata) => metadata.clone(),
+            None => fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?,
+        };
+        read_regular_state(path, metadata, owned, normalize)
     });
     let mut tree = Tree {
         files: BTreeMap::new(),
         directories,
     };
-    for ((child, _, _), input) in files.into_iter().zip(inputs) {
-        tree.files.insert(child, input?);
+    let mut states = BTreeMap::new();
+    for ((child, _, _), read) in files.into_iter().zip(inputs) {
+        let (input, state) = read?;
+        if normalize {
+            states.insert(child.clone(), state);
+        }
+        tree.files.insert(child, input);
     }
     walked?;
-    Ok(tree)
+    Ok((tree, states))
 }
 
 /// Published tree artifacts by path ([`published_output`]), read once per
@@ -2517,7 +2704,10 @@ fn copy_verified(source: &Path, target: &Path, expected: Sha256Digest) -> Result
 }
 
 /// Whether the blob for `input` is present and intact: a read-only regular
-/// file with the right size and digest. A damaged blob is removed.
+/// file with the right size and digest. A damaged blob is removed. An
+/// intact blob's digest is known by its path from then on
+/// ([`remember_owned`]): its name is its content, and this process forgets
+/// it whenever it removes or replaces the blob.
 fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
     let metadata = match fs::symlink_metadata(blob) {
         Ok(metadata) => metadata,
@@ -2527,8 +2717,19 @@ fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
     let intact = metadata.is_file()
         && metadata.permissions().mode() & 0o7777 == blob_mode(input)
         && metadata.size() == input.size
-        && hash_file(blob, true, false).is_ok_and(|(digest, _)| digest == input.digest);
+        && match memoized_digest(blob, &file_key(&metadata, true)) {
+            Some(digest) => digest == input.digest,
+            None => {
+                let intact = hash_file_from(blob, metadata.clone(), true, false)
+                    .is_ok_and(|(digest, _)| digest == input.digest);
+                if intact {
+                    remember_owned(blob, &metadata, input.digest, None);
+                }
+                intact
+            }
+        };
     if !intact {
+        forget_produced(blob);
         remove_stale(blob)?;
     }
     Ok(intact)
@@ -2551,6 +2752,20 @@ fn in_repository_store(root: &Path, path: &Path) -> bool {
 /// [`in_repository_store`]), otherwise by one verified copy. Concurrent
 /// creators agree on the first linked inode.
 fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String> {
+    ensure_blob_hashed(cas, input, root, None)
+}
+
+/// [`ensure_blob`] for an input whose digest this process computed by
+/// reading its file in the state `hashed` (an output being published): a
+/// blob linked from that very state is not read again. A blob this process
+/// creates is known by its path from then on ([`remember_owned`]), in the
+/// state its content was established in (read, or copied while hashed).
+fn ensure_blob_hashed(
+    cas: &Path,
+    input: &Input,
+    root: &Path,
+    hashed: Option<FileKey>,
+) -> Result<PathBuf, String> {
     let blob = blob_path(cas, input);
     if blob_valid(&blob, input)? {
         return Ok(blob);
@@ -2568,15 +2783,23 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
         && !in_repository_store(root, &input.path)
         && input.mode == blob_mode(input)
         && hard_link(&input.path, &candidate).is_ok();
-    if linked {
-        let (digest, _) = hash_file(&candidate, true, false)?;
-        if digest != input.digest {
-            let _ = fs::remove_file(&candidate);
-            return Err(format!(
-                "input '{}' changed while it was being staged",
-                input.path.display()
-            ));
+    let state = if linked {
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|e| io_error("cannot inspect", &candidate, e))?;
+        // The input's own inode: read again unless this process read exactly
+        // this state of it (the caller, or the memo of the input's path).
+        let key = file_key(&metadata, true);
+        if hashed != Some(key) && memoized_digest(&input.path, &key) != Some(input.digest) {
+            let (digest, _) = hash_file_from(&candidate, metadata.clone(), true, false)?;
+            if digest != input.digest {
+                let _ = fs::remove_file(&candidate);
+                return Err(format!(
+                    "input '{}' changed while it was being staged",
+                    input.path.display()
+                ));
+            }
         }
+        metadata
     } else {
         copy_verified(&input.path, &candidate, input.digest)?;
         if input.executable != 0 {
@@ -2587,24 +2810,55 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
                 .map_err(|e| io_error("cannot seal", &candidate, e))?;
         }
         set_mode(&candidate, blob_mode(input))?;
-        let metadata = fs::symlink_metadata(&candidate)
-            .map_err(|e| io_error("cannot inspect", &candidate, e))?;
-        remember_digest(file_key(&metadata, true), input.digest);
-    }
-    let published = match fs::hard_link(&candidate, &blob) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            if blob_valid(&blob, input)? {
-                Ok(())
-            } else {
-                fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e))
-            }
-        }
-        // A filesystem without hardlinks still allows a rename.
-        Err(_) => fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e)),
+        fs::symlink_metadata(&candidate).map_err(|e| io_error("cannot inspect", &candidate, e))?
     };
-    let _ = fs::remove_file(&candidate);
-    published.map(|()| blob)
+    let stored = store_candidate(&candidate, &blob, || blob_valid(&blob, input));
+    if stored? {
+        remember_created(&blob, &state, input.digest);
+    }
+    Ok(blob)
+}
+
+/// Move the store candidate `candidate` into place as `blob` (a hardlink;
+/// over an invalid blob, or where hardlinks fail, a rename) and remove the
+/// candidate's name. Whether `blob` is now the candidate's inode: not when a
+/// concurrent creator's blob is there and `valid`.
+fn store_candidate(
+    candidate: &Path,
+    blob: &Path,
+    valid: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    let rename = || {
+        // Replaced: whatever this process knew of the file there is void.
+        forget_produced(blob);
+        fs::rename(candidate, blob)
+            .map(|()| true)
+            .map_err(|e| io_error("cannot store", blob, e))
+    };
+    let stored = match fs::hard_link(candidate, blob) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => match valid() {
+            Ok(true) => Ok(false),
+            Ok(false) => rename(),
+            Err(error) => Err(error),
+        },
+        // A filesystem without hardlinks still allows a rename.
+        Err(_) => rename(),
+    };
+    let _ = fs::remove_file(candidate);
+    stored
+}
+
+/// `blob`, which this process just created as the inode it established
+/// the content `digest` of in the state `state`, is known by its path from
+/// now on ([`remember_owned`]) when it still shows that state.
+fn remember_created(blob: &Path, state: &fs::Metadata, digest: Sha256Digest) {
+    if let Ok(metadata) = fs::symlink_metadata(blob)
+        && metadata.is_file()
+        && file_key(&metadata, true) == file_key(state, true)
+    {
+        remember_owned(blob, &metadata, digest, None);
+    }
 }
 
 /// A failed [`link_or_copy_detail`]: the blob vanished (neither linkable
@@ -2862,6 +3116,7 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
                     state(&execroot.join(&file.destination)).or_else(|| state(&file.blob));
                 let changed = current.is_some_and(|current| current != file.state);
                 if changed && state(&file.blob).is_some() {
+                    forget_produced(&file.blob);
                     let _ = fs::remove_file(&file.blob);
                 }
                 changed
@@ -2902,11 +3157,13 @@ fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
     // The execution root is the process's: always checked in full.
     regular_file(source, None)?;
     set_mode(source, OUTPUT_MODE)?;
-    let input = read_regular(source, true, true)?;
+    let metadata =
+        fs::symlink_metadata(source).map_err(|e| io_error("cannot inspect", source, e))?;
+    let (input, state) = read_regular_state(source, metadata, true, true)?;
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
-    let blob = ensure_blob(cas, &input, root)?;
+    let blob = ensure_blob_hashed(cas, &input, root, Some(state))?;
     if hard_link(&blob, target).is_ok() || fs::rename(source, target).is_ok() {
         count_link(true);
     } else {
@@ -2919,7 +3176,7 @@ fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
 /// replace each file by its store blob's inode and make directories
 /// read-only deepest first, the root TREE_ROOT_MODE.
 fn publish_tree(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result<Tree, String> {
-    let tree = read_tree(source, Some(root), true)?;
+    let (tree, states) = read_tree_states(source, Some(root), true)?;
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
@@ -2931,7 +3188,8 @@ fn publish_tree(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
             path: path.clone(),
             ..input.clone()
         };
-        let blob = ensure_blob(cas, &input, root)?;
+        // Renamed with its tree: still the inode in the state it was read in.
+        let blob = ensure_blob_hashed(cas, &input, root, states.get(name).copied())?;
         let same = |a: &Path, b: &Path| -> bool {
             match (fs::symlink_metadata(a), fs::symlink_metadata(b)) {
                 (Ok(a), Ok(b)) => a.ino() == b.ino() && a.dev() == b.dev(),
@@ -3596,19 +3854,13 @@ fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, Str
     let candidate = temporary(cas, &input.digest.hex());
     crate::spawn_lock::exclusive(executable != 0, || write_file(&candidate, bytes, 0))?;
     set_mode(&candidate, blob_mode(&input))?;
-    let published = match fs::hard_link(&candidate, &blob) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            if blob_valid(&blob, &input)? {
-                Ok(())
-            } else {
-                fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e))
-            }
-        }
-        Err(_) => fs::rename(&candidate, &blob).map_err(|e| io_error("cannot store", &blob, e)),
-    };
-    let _ = fs::remove_file(&candidate);
-    published.map(|()| blob)
+    let state =
+        fs::symlink_metadata(&candidate).map_err(|e| io_error("cannot inspect", &candidate, e))?;
+    if store_candidate(&candidate, &blob, || blob_valid(&blob, &input))? {
+        // The bytes this process wrote.
+        remember_created(&blob, &state, input.digest);
+    }
+    Ok(blob)
 }
 
 /// `action` with its embedded inputs stored in the content-addressed store
@@ -3767,9 +4019,10 @@ pub fn execute_with_remote(
     if let Some(listings) = cache_valid(&cached, key, outputs, &action.extra.tree_outputs, &root) {
         return Ok(result(listings, true, false));
     }
-    // This entry's trees are no longer what the memo holds: they are removed
-    // now and published again below.
+    // This entry's trees and files are no longer what the memos hold: they
+    // are removed now and published again below.
     forget_trees(&cached);
+    forget_published(&cached);
     remove_stale(&cached)?;
     let work = fresh_work(&work_parent, key)?;
     let execroot = work.0.join("execroot");
@@ -4070,7 +4323,7 @@ pub fn execute_with_remote(
     let mut listings = BTreeMap::new();
     // Published tree outputs, for the tree memo once the entry is in place.
     let mut published_trees = Vec::new();
-    // Published regular files and their digests, for the persistent memo.
+    // Published regular files and their contents, for the digest memos.
     let mut published_files = Vec::new();
     for name in outputs {
         let source = execroot.join(name);
@@ -4143,10 +4396,11 @@ pub fn execute_with_remote(
             // regular output unreadable. Normalize before reading its bytes,
             // but never chmod a symlink or a path through a linked ancestor.
             let input = publish_file(&cas, &root, &source, &target)?;
-            published_files.push((name, input.digest));
+            let digest = input.digest;
+            published_files.push((name, input));
             Ok(Output {
                 name: hex_name,
-                digest: input.digest.hex(),
+                digest: digest.hex(),
                 mode: OUTPUT_MODE,
                 tree: None,
                 symlink: None,
@@ -4170,15 +4424,15 @@ pub fn execute_with_remote(
     fs::rename(&completed, &cached).map_err(|e| io_error("cannot publish action", &cached, e))?;
     // What a consumer would read from the published entry: the same files,
     // digests and (normalized) modes at their published paths.
-    for (name, digest) in &published_files {
-        remember_published(&cached.join("outputs").join(name), *digest);
+    for (name, input) in &published_files {
+        remember_published(&cas, &cached, &cached.join("outputs").join(name), input);
     }
     for (name, tree) in published_trees {
         let path = cached.join("outputs").join(name);
         if published_output(Some(&root), &path) {
             let tree = relocated(tree, &path);
             for input in tree.files.values() {
-                remember_published(&input.path, input.digest);
+                remember_published(&cas, &cached, &input.path, input);
             }
             remember_tree(path, Arc::new(tree));
         }
@@ -6012,7 +6266,7 @@ mod tests {
             ("repositories/trees", false, false),
             ("repositories", false, false),
             ("work/k/execroot/file", false, false),
-            ("digests/v1.dmemo", false, false),
+            ("digests/v2.dmemo", false, false),
         ] {
             let path = root.join(relative);
             assert_eq!(owned_area(&path, root), owned, "owned area {relative}");
@@ -6812,52 +7066,231 @@ mod tests {
         );
     }
 
+    /// The per-process digest memo remembers a state it read only when the
+    /// state was settled — by its modification and change time, for an
+    /// owned file by its modification and birth time (an old modification
+    /// time alone settles nothing) — and then for every path of the inode;
+    /// what this process produced it remembers by that path alone, until it
+    /// removes or replaces the file there.
     #[test]
-    fn digest_memo_trusts_only_settled_or_owned_files() {
+    fn digest_memo_remembers_settled_states_and_produced_paths() {
         let fixture = Fixture::new();
         let path = fixture.0.join("fresh");
         fs::write(&path, b"fresh").unwrap();
         let (value, metadata) = hash_file(&path, false, false).unwrap();
         assert_eq!(value, digest(b"fresh"));
         // Just written: a same-size rewrite could keep the timestamps.
-        assert_eq!(memoized_digest(&file_key(&metadata, false)), None);
+        assert_eq!(memoized(&path, &file_key(&metadata, false)), None);
+        // An output being published is never remembered by its path.
         let (_, metadata) = hash_file(&path, true, true).unwrap();
-        assert_eq!(
-            memoized_digest(&file_key(&metadata, true)),
-            Some(digest(b"fresh"))
-        );
+        assert_eq!(memoized(&path, &file_key(&metadata, true)), None);
         let old = SystemTime::now() - Duration::from_secs(60);
-        assert!(!racy_safe(&fs::metadata(&path).unwrap(), old, false));
-        assert!(racy_safe(
-            &fs::metadata(&path).unwrap(),
-            SystemTime::now() + RACY_MARGIN + Duration::from_secs(1),
-            false
-        ));
-        // An old mtime with a fresh ctime (as every link() to a store blob
-        // leaves): settled for a cache-owned file, racy for any other.
+        let later = SystemTime::now() + crate::digest_memo::RACY_MARGIN + Duration::from_secs(1);
+        assert!(!settled(&fs::metadata(&path).unwrap(), old, false));
+        assert!(settled(&fs::metadata(&path).unwrap(), later, false));
+        assert!(settled(&fs::metadata(&path).unwrap(), later, true));
+        // An old mtime with a fresh ctime and birth time (a `touch -d`, an
+        // extracted archive, `cp -p`): racy for every file.
         File::options()
             .write(true)
             .open(&path)
             .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(60))
+            .set_modified(old)
             .unwrap();
         let metadata = fs::metadata(&path).unwrap();
-        assert!(racy_safe(&metadata, SystemTime::now(), true));
-        assert!(!racy_safe(&metadata, SystemTime::now(), false));
+        assert!(!settled(&metadata, SystemTime::now(), true));
+        assert!(!settled(&metadata, SystemTime::now(), false));
+        let (_, metadata) = hash_file(&path, true, false).unwrap();
+        assert_eq!(memoized(&path, &file_key(&metadata, true)), None);
+        // A settled file (this crate's manifest): remembered for every path
+        // of its inode, by its kind of key only.
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let (value, metadata) = hash_file(&manifest, false, false).unwrap();
+        let key = file_key(&metadata, false);
+        assert_eq!(memoized(&manifest, &key), Some((value, true)));
+        assert_eq!(
+            memoized(&fixture.0.join("a-link"), &key),
+            Some((value, true))
+        );
+        assert_eq!(memoized(&manifest, &file_key(&metadata, true)), None);
+        // Produced: by its path only, until it is forgotten.
         let blob = fixture.0.join("blob");
         fs::write(&blob, b"blob").unwrap();
-        File::options()
-            .write(true)
-            .open(&blob)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(60))
-            .unwrap();
-        fs::hard_link(&blob, fixture.0.join("blob-link")).unwrap();
-        let (_, metadata) = hash_file(&blob, true, false).unwrap();
-        assert_eq!(
-            memoized_digest(&file_key(&metadata, true)),
-            Some(digest(b"blob"))
+        let metadata = fs::metadata(&blob).unwrap();
+        let key = file_key(&metadata, true);
+        remember_owned(&blob, &metadata, digest(b"blob"), None);
+        assert_eq!(memoized(&blob, &key), Some((digest(b"blob"), false)));
+        assert_eq!(memoized(&fixture.0.join("blob-link"), &key), None);
+        forget_produced(&blob);
+        assert_eq!(memoized(&blob, &key), None);
+        // A published output below its action entry, until the entry goes.
+        let entry = fixture.0.join("entry");
+        let output = entry.join("outputs/out");
+        fs::create_dir_all(output.parent().unwrap()).unwrap();
+        fs::hard_link(&blob, &output).unwrap();
+        remember_owned(&output, &metadata, digest(b"blob"), Some(&entry));
+        assert_eq!(memoized(&output, &key), Some((digest(b"blob"), false)));
+        forget_published(&entry);
+        assert_eq!(memoized(&output, &key), None);
+    }
+
+    /// A file's digest is never served for another file: a file that is
+    /// read, then deleted and replaced (at another path) by a file of the
+    /// same size inside the same timestamp tick usually gets the deleted
+    /// file's inode number and identical timestamps, birth time included
+    /// (always on this overlayfs), so a memo keyed by the inode's stat alone
+    /// answers for it. Covered: an execution-root output read for
+    /// publication, a cache-owned file with an old (`touch -d`)
+    /// modification time, and the replacement read as a file outside the
+    /// cache (change-time key) after a cache-owned (birth-time key) read.
+    /// Before the fix: about 1,800 of 1,800 inode numbers reused and
+    /// thousands of stale digests.
+    #[test]
+    fn a_new_file_never_inherits_a_deleted_files_digest() {
+        let fixture = Fixture::new();
+        let old = SystemTime::now() - Duration::from_secs(60);
+        // (owned, publishing)
+        let reads: [(bool, bool); 3] = [(true, true), (true, false), (false, false)];
+        let (mut reused, mut stale) = (0, Vec::new());
+        for round in 0..300 {
+            for (variant, &(owned, publishing)) in reads.iter().enumerate() {
+                for old_mtime in [false, true] {
+                    let write = |path: &Path, bytes: &[u8]| {
+                        write_file(path, bytes, 0).unwrap();
+                        if old_mtime {
+                            File::options()
+                                .write(true)
+                                .open(path)
+                                .unwrap()
+                                .set_modified(old)
+                                .unwrap();
+                        }
+                        set_mode(path, OUTPUT_MODE).unwrap();
+                    };
+                    let name = format!("{round}-{variant}-{old_mtime}");
+                    let deleted = fixture.0.join(format!("deleted-{name}"));
+                    write(&deleted, b"dupdupdu");
+                    // (The previous round's files were deleted as well.)
+                    if read_regular(&deleted, owned, publishing).unwrap().digest
+                        != digest(b"dupdupdu")
+                    {
+                        stale.push(format!("{name}: first read"));
+                    }
+                    let inode = ino(&deleted);
+                    fs::remove_file(&deleted).unwrap();
+                    let new = fixture.0.join(format!("new-{name}"));
+                    write(&new, b"u0000001");
+                    reused += usize::from(ino(&new) == inode);
+                    for (owned, publishing) in reads {
+                        let found = read_regular(&new, owned, publishing).unwrap().digest;
+                        if found != digest(b"u0000001") {
+                            stale.push(format!(
+                                "{name}: read as owned={owned} publishing={publishing}"
+                            ));
+                        }
+                    }
+                    fs::remove_file(&new).unwrap();
+                }
+            }
+        }
+        eprintln!("inode numbers reused: {reused} of {}", 300 * 3 * 2);
+        assert!(
+            stale.is_empty(),
+            "{} stale digests (inode numbers reused {reused} times), first: {:?}",
+            stale.len(),
+            &stale[..stale.len().min(5)]
         );
+    }
+
+    /// The executor's path: write actions run one after another, outputs of
+    /// one size alternating between a content whose blob already exists
+    /// (its execution-root file is not linked into the store and goes away
+    /// with the execution root) and a new one. Every published output has
+    /// its own action's bytes, and a second process (fresh memos) finds
+    /// every entry valid.
+    #[test]
+    fn outputs_of_one_size_are_published_with_their_own_content() {
+        let fixture = Fixture::new();
+        let content = |index: usize| {
+            if index.is_multiple_of(2) {
+                b"dupdupdu".to_vec()
+            } else {
+                format!("u{index:07}").into_bytes()
+            }
+        };
+        let mut wrong = Vec::new();
+        for index in 0..600 {
+            let mut action = fixture.write_action(content(index));
+            action.id = format!("write-{index}");
+            action.outputs = vec![format!("out/f{index:05}").into()];
+            let result = execute(&fixture.cache(), &action).unwrap();
+            let published = fs::read(&result.outputs[0]).unwrap();
+            if published != content(index) {
+                wrong.push((index, String::from_utf8_lossy(&published).into_owned()));
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} outputs published with another action's bytes, first: {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+    }
+
+    /// No digest of a file this process did not observe reaches the
+    /// persistent memo: a file outside the cache (a source being saved)
+    /// that reuses the inode number of an execution-root output read for
+    /// publication and removed with its execution root, in the same
+    /// timestamp tick, is read for its own bytes and — racy — not recorded.
+    /// Before the fix, the stale per-process answer was recorded (trusted)
+    /// for the new file and the next process read it from the table (1,862
+    /// of 2,000 such files in a scratch run against 0363050).
+    #[test]
+    fn stale_states_never_reach_the_persistent_table() {
+        use crate::digest_memo::{Key, Table};
+        let fixture = Fixture::new();
+        let cache = fixture.cache();
+        let work = cache.join("work/x");
+        let outside = fixture.0.join("outside");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let table: &'static Table = Box::leak(Box::new(Table::new(&cache)));
+        TEST_TABLE.with(|cell| cell.set(Some(table)));
+        let mut wrong = Vec::new();
+        for round in 0..500 {
+            let deleted = work.join(format!("a{round}"));
+            write_file(&deleted, b"dupdupdu", 0).unwrap();
+            set_mode(&deleted, OUTPUT_MODE).unwrap();
+            read_regular(&deleted, true, true).unwrap();
+            fs::remove_file(&deleted).unwrap();
+            let new = outside.join(format!("b{round}"));
+            write_file(&new, b"u0000001", 0).unwrap();
+            if read_regular(&new, false, false).unwrap().digest != digest(b"u0000001") {
+                wrong.push(round);
+            }
+        }
+        // A settled file read and hashed: a record that makes the table
+        // worth saving (trusted records only ride along). No other test of
+        // this process reads it.
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock");
+        read_regular(&manifest, false, false).unwrap();
+        TEST_TABLE.with(|cell| cell.set(None));
+        assert!(matches!(
+            table.save(),
+            Ok(crate::digest_memo::Saved::Written { .. })
+        ));
+        let reloaded = Table::new(&cache);
+        let recorded = (0..500)
+            .filter(|round| {
+                let path = outside.join(format!("b{round}"));
+                let key = Key::of(&fs::symlink_metadata(&path).unwrap(), false).unwrap();
+                reloaded.lookup(&path, &key).is_some()
+            })
+            .count();
+        assert!(wrong.is_empty(), "stale digests in rounds {wrong:?}");
+        assert_eq!(recorded, 0, "racy files were recorded");
+        let key = Key::of(&fs::symlink_metadata(&manifest).unwrap(), false).unwrap();
+        assert!(reloaded.lookup(&manifest, &key).is_some());
     }
 
     /// A process an action leaves behind in its group (here a background
