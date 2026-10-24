@@ -28,8 +28,33 @@
 //! The recorder is sharded by path hash so the parallel loading workers never
 //! contend on one lock; every path is stored once (interned) with the list of
 //! its observations.
+//!
+//! **Frames (W6R).** Phase-1 prefetch and pattern-loading workers load
+//! packages the build may never commit, and fill invocation-wide memos the
+//! coordinator hits later. What they observe must reach the recording
+//! exactly where the sequential engine (one loading thread) would have
+//! observed it, never earlier and never not at all. So a thread records
+//! into the innermost open frame instead of the recorder:
+//! * a load unit's frame ([`unit_scope`]) is committed by the coordinator
+//!   with the unit ([`commit`]) and dropped with an unused or aborted one;
+//! * an attached capture ([`capture`]) keeps what a memo's miss observed
+//!   with the memo entry ([`Captured`]) and hands it to the enclosing frame
+//!   (or the recorder); every hit of the entry replays it ([`replay`]);
+//! * a detached capture ([`capture_detached`]) keeps a warm-reuse probe's
+//!   observations with its publication only, replayed when the published
+//!   root begins to count for the sequential engine;
+//! * a discard frame ([`discard`]) drops what a coordinator-side hint
+//!   observes.
+//!
+//! The recorder is a set keyed by (path, op): the first outcome wins and a
+//! second one makes the run Unstable, so neither the order nor the time of
+//! a merge matters — only which events are merged. A rule follows: a
+//! memo a worker can fill and whose hit skips the miss path's
+//! observations must carry a [`Captured`] (docs/ANALYSIS_SNAPSHOT_RECORDING.md,
+//! "Recording with phase-1 prefetch").
 
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -40,7 +65,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The racy window (`digest_memo::RACY_MARGIN`, `repository_store::RACY_MARGIN`):
@@ -69,9 +94,22 @@ const TAINT_DETAILS: usize = 1000;
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    /// Unit tests: a window of this thread only ([`tests_support::record_this_thread`]),
+    /// so a test records without opening the process-global window other
+    /// tests would see.
+    static THREAD_RECORDER: std::cell::Cell<Option<&'static Recorder>> =
+        const { std::cell::Cell::new(None) };
+}
+
 /// The recorder while the window is open.
 #[inline]
 fn active() -> Option<&'static Recorder> {
+    #[cfg(test)]
+    if let Some(recorder) = THREAD_RECORDER.with(std::cell::Cell::get) {
+        return Some(recorder);
+    }
     if RECORDING.load(Ordering::Relaxed) {
         RECORDER.get()
     } else {
@@ -82,6 +120,10 @@ fn active() -> Option<&'static Recorder> {
 /// Whether the recording window is open.
 #[inline]
 pub fn recording() -> bool {
+    #[cfg(test)]
+    if THREAD_RECORDER.with(std::cell::Cell::get).is_some() {
+        return true;
+    }
     RECORDING.load(Ordering::Relaxed)
 }
 
@@ -449,6 +491,9 @@ enum Claim {
 pub struct Recorder {
     window_start_ns: i64,
     started: Instant,
+    /// Observations made inside an open frame of the observing thread go
+    /// to the frame (the window's recorder; see the module docs).
+    framed: bool,
     shards: Vec<Shard>,
     env: Mutex<BTreeMap<OsString, EnvObservation>>,
     repositories: Mutex<Vec<RepositoryRecord>>,
@@ -532,6 +577,7 @@ impl Recorder {
         Self {
             window_start_ns,
             started: Instant::now(),
+            framed: false,
             shards: (0..SHARDS).map(|_| Mutex::default()).collect(),
             env: Mutex::default(),
             repositories: Mutex::default(),
@@ -542,7 +588,31 @@ impl Recorder {
         }
     }
 
+    /// A recorder whose observations go to the observing thread's open
+    /// frame, if any (the window's; see the module docs).
+    fn framed(window_start_ns: i64) -> Self {
+        Self {
+            framed: true,
+            ..Self::new(window_start_ns)
+        }
+    }
+
+    /// Whether an event observed now goes to a frame of this thread
+    /// instead of the recorder ([`Self::observe`] and its siblings).
+    fn redirected(&self) -> bool {
+        self.framed && in_frame()
+    }
+
     fn observe(&self, path: &Path, op: Op, outcome: Outcome) {
+        if self.redirected() {
+            push_event(Event::Observe(path.to_path_buf(), op, outcome));
+            return;
+        }
+        self.store_observation(path, op, outcome);
+    }
+
+    /// [`Self::observe`] into the recorder itself.
+    fn store_observation(&self, path: &Path, op: Op, outcome: Outcome) {
         let mut shard = lock(&self.shards[shard_of(path)]);
         let conflict = match shard.get_mut(path) {
             Some(observations) => match observations.iter().find(|seen| seen.op == op) {
@@ -565,11 +635,20 @@ impl Recorder {
         };
         drop(shard);
         if let Some(conflict) = conflict {
-            self.taint(Taint::Unstable, conflict);
+            self.store_taint(Taint::Unstable, conflict);
         }
     }
 
     fn taint(&self, kind: Taint, detail: String) {
+        if self.redirected() {
+            push_event(Event::Taint(kind, detail));
+            return;
+        }
+        self.store_taint(kind, detail);
+    }
+
+    /// [`Self::taint`] into the recorder itself.
+    fn store_taint(&self, kind: Taint, detail: String) {
         let mut taints = lock(&self.taints);
         let record = taints.entry(kind).or_default();
         record.count += 1;
@@ -605,7 +684,7 @@ impl Recorder {
         }
         drop(taints);
         for (kind, detail) in blockers {
-            self.taint(kind, detail);
+            self.store_taint(kind, detail);
         }
     }
 
@@ -795,15 +874,27 @@ impl Recorder {
     }
 
     fn observe_env(&self, name: &OsStr, value: Option<&OsStr>) {
-        let observation = EnvObservation {
-            digest: value.map(|value| sha256(value.as_bytes())),
-        };
+        self.observe_env_digest(name, value.map(|value| sha256(value.as_bytes())));
+    }
+
+    /// [`Self::observe_env`] of a value already digested.
+    fn observe_env_digest(&self, name: &OsStr, digest: Option<[u8; 32]>) {
+        let observation = EnvObservation { digest };
+        if self.redirected() {
+            push_event(Event::Env(name.to_owned(), observation));
+            return;
+        }
+        self.store_env(name, observation);
+    }
+
+    /// [`Self::observe_env_digest`] into the recorder itself.
+    fn store_env(&self, name: &OsStr, observation: EnvObservation) {
         let mut env = lock(&self.env);
         match env.get(name) {
             Some(seen) if *seen == observation => {}
             Some(_) => {
                 drop(env);
-                self.taint(
+                self.store_taint(
                     Taint::Unstable,
                     format!("ENV {}: two values in one run", escape(name)),
                 );
@@ -827,6 +918,7 @@ impl Recorder {
         observations.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.op.cmp(&y.op)));
         let mut repositories = lock(&self.repositories).clone();
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
+        self.restat_manifests(&mut repositories);
         let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
             .iter()
             .filter(|(_, claim)| **claim == Claim::Crossing)
@@ -882,6 +974,7 @@ impl Recorder {
         });
         let mut repositories = std::mem::take(&mut *lock(&self.repositories));
         repositories.sort_by(|a, b| a.root.cmp(&b.root));
+        self.restat_manifests(&mut repositories);
         let mut crossed: Vec<PathBuf> = lock(&self.repository_roots)
             .iter()
             .filter(|(_, claim)| **claim == Claim::Crossing)
@@ -977,7 +1070,38 @@ impl Recorder {
     /// walked it — the manifest is stat'ed again when the record is stored
     /// and on every later owner claim (each verification claims after its
     /// refresh), so a hit never compares against a key the window replaced.
+    ///
+    /// Inside a frame the claim is an event: the tree is walked here, on
+    /// the observing thread (unless the recorder already has the tree's
+    /// owner, whose record a later claim only restats), and the claim is
+    /// decided when the event reaches the recorder ([`Self::apply_claim`]).
     fn claim_tree(
+        &self,
+        claim: Claim,
+        kind: &'static str,
+        name: &str,
+        root: &Path,
+        manifest: Option<&Path>,
+    ) {
+        if self.redirected() {
+            let owned = lock(&self.repository_roots).get(root) == Some(&Claim::Owner);
+            let record = (claim != Claim::Local && !owned)
+                .then(|| self.walk_tree(kind, name, root, manifest));
+            push_event(Event::Claim(ClaimEvent {
+                claim,
+                kind,
+                name: name.to_owned(),
+                root: root.to_path_buf(),
+                manifest: manifest.map(Path::to_path_buf),
+                record,
+            }));
+            return;
+        }
+        self.store_claim(claim, kind, name, root, manifest);
+    }
+
+    /// [`Self::claim_tree`] into the recorder itself.
+    fn store_claim(
         &self,
         claim: Claim,
         kind: &'static str,
@@ -1015,6 +1139,368 @@ impl Recorder {
             repositories.push(record);
         }
     }
+
+    /// A claim event reaching the recorder: [`Self::store_claim`] with the
+    /// record walked when the claim was made.
+    fn apply_claim(&self, event: ClaimEvent) {
+        let ClaimEvent {
+            claim,
+            kind,
+            name,
+            root,
+            manifest,
+            record,
+        } = event;
+        if record.is_none() && claim != Claim::Local {
+            // Walked by nobody: the recorder had the owner when the claim
+            // was made (an owner's claim is never replaced, so this is the
+            // owner-again case), or unexpectedly not — then walk now.
+            self.store_claim(claim, kind, &name, &root, manifest.as_deref());
+            return;
+        }
+        let mut roots = lock(&self.repository_roots);
+        match (roots.get(&root), claim) {
+            (None, _) | (Some(Claim::Crossing), Claim::Owner | Claim::Local) => {}
+            (Some(Claim::Owner), Claim::Owner) => {
+                let mut repositories = lock(&self.repositories);
+                if let Some(record) = repositories
+                    .iter_mut()
+                    .find(|repository| repository.root == root)
+                {
+                    restat_manifest(record, self.window_start_ns);
+                }
+                return;
+            }
+            (Some(_), _) => return,
+        }
+        roots.insert(root.clone(), claim);
+        let mut repositories = lock(&self.repositories);
+        repositories.retain(|repository| repository.root != root);
+        if let Some(mut record) = record {
+            restat_manifest(&mut record, self.window_start_ns);
+            repositories.push(record);
+        }
+    }
+
+    /// One event of a frame or a captured set reaching the recorder.
+    fn apply_event(&self, event: Event) {
+        match event {
+            Event::Observe(path, op, outcome) => self.store_observation(&path, op, outcome),
+            Event::Taint(kind, detail) => self.store_taint(kind, detail),
+            Event::Env(name, observation) => self.store_env(&name, observation),
+            Event::Claim(claim) => self.apply_claim(claim),
+        }
+    }
+
+    /// A load unit's observations ([`commit`]): its events, and the
+    /// captured sets it replayed (each at most once).
+    fn apply_events(&self, events: Events) {
+        for event in events.events {
+            self.apply_event(event);
+        }
+        for child in &events.children {
+            self.replay_captured(child);
+        }
+    }
+
+    /// A captured set reaching the recorder ([`replay`]): its events and
+    /// those of the sets it holds — once; a later replay is a no-op.
+    fn replay_captured(&self, captured: &Captured) {
+        if captured.recorded.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        for event in &captured.events.events {
+            self.apply_event(event.clone());
+        }
+        for child in &captured.events.children {
+            self.replay_captured(child);
+        }
+    }
+
+    /// Every manifest entry of `repositories` at the manifest's current
+    /// lstat: a warm-reuse probe that lost its publication race (W6R: its
+    /// observations are dropped with it) may have refreshed a manifest
+    /// after the owner's claim was walked, and a dropped claim no longer
+    /// restats it ([`Self::claim_tree`]).
+    fn restat_manifests(&self, repositories: &mut [RepositoryRecord]) {
+        for record in repositories {
+            restat_manifest(record, self.window_start_ns);
+        }
+    }
+}
+
+// ---- frames (W6R) ----------------------------------------------------------
+
+/// One event observed inside a frame, held until it reaches the recorder.
+#[derive(Clone, Debug)]
+enum Event {
+    Observe(PathBuf, Op, Outcome),
+    Taint(Taint, String),
+    Env(OsString, EnvObservation),
+    Claim(ClaimEvent),
+}
+
+/// A repository tree claim observed inside a frame ([`Recorder::claim_tree`]).
+#[derive(Clone, Debug)]
+struct ClaimEvent {
+    claim: Claim,
+    kind: &'static str,
+    name: String,
+    root: PathBuf,
+    manifest: Option<PathBuf>,
+    /// The REPO record walked by the observing thread; `None` for a local
+    /// claim, or when the recorder already had the tree's owner.
+    record: Option<RepositoryRecord>,
+}
+
+/// The events of a frame, and the captured sets it replayed or whose
+/// capture it enclosed (each once).
+#[derive(Debug, Default)]
+struct Events {
+    events: Vec<Event>,
+    children: Vec<Arc<Captured>>,
+}
+
+impl Events {
+    fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.children.is_empty()
+    }
+
+    fn add_child(&mut self, child: Arc<Captured>) {
+        if !self.children.iter().any(|known| Arc::ptr_eq(known, &child)) {
+            self.children.push(child);
+        }
+    }
+
+    fn append(&mut self, other: Events) {
+        self.events.extend(other.events);
+        for child in other.children {
+            self.add_child(child);
+        }
+    }
+}
+
+/// What a memo's miss observed ([`capture`]), kept with the memo entry, or
+/// what a warm-reuse probe observed ([`capture_detached`]), kept with its
+/// publication: replayed ([`replay`]) wherever the sequential engine's
+/// lookup hits the entry or obtains the published root — into the hitting
+/// unit's frame, or into the recorder, where it lands at most once.
+#[derive(Debug)]
+pub struct Captured {
+    events: Events,
+    /// Its events reached the recorder.
+    recorded: AtomicBool,
+}
+
+impl Captured {
+    fn new(events: Events) -> Arc<Self> {
+        Arc::new(Self {
+            events,
+            recorded: AtomicBool::new(false),
+        })
+    }
+
+    /// Both sets as one (`None` when both are empty).
+    pub fn join(
+        first: Option<Arc<Captured>>,
+        second: Option<Arc<Captured>>,
+    ) -> Option<Arc<Captured>> {
+        match (first, second) {
+            (Some(first), Some(second)) => {
+                let mut events = Events::default();
+                events.add_child(first);
+                events.add_child(second);
+                Some(Self::new(events))
+            }
+            (one, None) | (None, one) => one,
+        }
+    }
+}
+
+/// A load unit's observations ([`unit_scope`]): committed by the
+/// coordinator with the unit ([`commit`]), dropped with it otherwise.
+#[derive(Debug, Default)]
+pub struct Observations(Events);
+
+impl Observations {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+thread_local! {
+    /// This thread's open frames, innermost last: a load unit's
+    /// ([`unit_scope`]) or a capture's ([`capture`], [`capture_detached`],
+    /// [`discard`]); what closes a frame decides where its events go.
+    static FRAMES: RefCell<Vec<Events>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether this thread has an open frame.
+fn in_frame() -> bool {
+    FRAMES.with(|frames| !frames.borrow().is_empty())
+}
+
+/// Add `event` to this thread's innermost frame (see [`Recorder::redirected`]).
+fn push_event(event: Event) {
+    FRAMES.with(|frames| {
+        if let Some(frame) = frames.borrow_mut().last_mut() {
+            frame.events.push(event);
+        }
+    });
+}
+
+/// Hand `captured` to this thread's innermost frame; `Err` (with it) when
+/// none is open.
+fn to_frame(captured: Arc<Captured>) -> Result<(), Arc<Captured>> {
+    FRAMES.with(|frames| match frames.borrow_mut().last_mut() {
+        Some(frame) => {
+            frame.add_child(captured);
+            Ok(())
+        }
+        None => Err(captured),
+    })
+}
+
+/// One open frame of this thread; closed (with everything opened above it)
+/// when dropped unfinished — a panic or an early return discards it.
+struct FrameGuard {
+    depth: usize,
+    open: bool,
+}
+
+impl FrameGuard {
+    /// Open a frame while recording; `None` otherwise.
+    fn open() -> Option<Self> {
+        if !recording() {
+            return None;
+        }
+        let depth = FRAMES.with(|frames| {
+            let mut frames = frames.borrow_mut();
+            frames.push(Events::default());
+            frames.len() - 1
+        });
+        Some(Self { depth, open: true })
+    }
+
+    /// Close the frame: its events.
+    fn close(mut self) -> Events {
+        self.open = false;
+        FRAMES.with(|frames| {
+            let mut frames = frames.borrow_mut();
+            debug_assert_eq!(frames.len(), self.depth + 1, "frames close innermost first");
+            frames.truncate(self.depth + 1);
+            frames.pop().unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        if self.open {
+            let _ = FRAMES.try_with(|frames| {
+                if let Ok(mut frames) = frames.try_borrow_mut() {
+                    frames.truncate(self.depth);
+                }
+            });
+        }
+    }
+}
+
+/// A load unit's frame (crate::package::evaluate_load_unit on a loading
+/// worker): what the unit observes stays in it until [`UnitScope::finish`]
+/// hands it to the unit.
+pub struct UnitScope(Option<FrameGuard>);
+
+/// Open a load unit's frame on this thread while recording (an inert scope
+/// otherwise).
+pub fn unit_scope() -> UnitScope {
+    UnitScope(FrameGuard::open())
+}
+
+impl UnitScope {
+    /// Close the frame: what the unit observed, for its commit.
+    pub fn finish(self) -> Observations {
+        Observations(self.0.map(FrameGuard::close).unwrap_or_default())
+    }
+}
+
+/// Commit a load unit's observations where the sequential engine loads the
+/// package (Engine::commit_load_unit): into this thread's innermost frame,
+/// else into the recorder (each captured set it holds at most once).
+pub fn commit(observations: Observations) {
+    if observations.is_empty() {
+        return;
+    }
+    let events = FRAMES.with(|frames| match frames.borrow_mut().last_mut() {
+        Some(frame) => {
+            frame.append(observations.0);
+            None
+        }
+        None => Some(observations.0),
+    });
+    if let Some(events) = events
+        && let Some(recorder) = active()
+    {
+        recorder.apply_events(events);
+    }
+}
+
+/// Run `f` capturing what it observes (a memo's miss): the set is handed to
+/// the enclosing frame (or the recorder) when `f` returns, as if observed
+/// there, and returned for the memo entry, whose hits [`replay`] it.
+/// `None` while not recording or when `f` observed nothing.
+pub fn capture<R>(f: impl FnOnce() -> R) -> (R, Option<Arc<Captured>>) {
+    let Some(frame) = FrameGuard::open() else {
+        return (f(), None);
+    };
+    let result = f();
+    let events = frame.close();
+    if events.is_empty() {
+        return (result, None);
+    }
+    let captured = Captured::new(events);
+    replay(&captured);
+    (result, Some(captured))
+}
+
+/// [`capture`] that hands nothing to the enclosing frame: a warm-reuse
+/// probe's observations travel with its publication only
+/// (crate::repository_demand::DemandSlot::observations).
+pub fn capture_detached<R>(f: impl FnOnce() -> R) -> (R, Option<Arc<Captured>>) {
+    let Some(frame) = FrameGuard::open() else {
+        return (f(), None);
+    };
+    let result = f();
+    let events = frame.close();
+    (result, (!events.is_empty()).then(|| Captured::new(events)))
+}
+
+/// Run `f` dropping what it observes (a coordinator-side hint).
+pub fn discard<R>(f: impl FnOnce() -> R) -> R {
+    let frame = FrameGuard::open();
+    let result = f();
+    if let Some(frame) = frame {
+        drop(frame.close());
+    }
+    result
+}
+
+/// Replay what a memo entry or a publication captured where the sequential
+/// engine hits it: into this thread's innermost frame, else into the
+/// recorder (at most once there).
+pub fn replay(captured: &Arc<Captured>) {
+    if let Err(captured) = to_frame(captured.clone())
+        && let Some(recorder) = active()
+    {
+        recorder.replay_captured(&captured);
+    }
+}
+
+/// [`replay`] of an optional set.
+pub fn replay_some(captured: Option<&Arc<Captured>>) {
+    if let Some(captured) = captured {
+        replay(captured);
+    }
 }
 
 /// The manifest entry of `record` at the manifest's current lstat (see
@@ -1043,7 +1529,7 @@ fn restat_manifest(record: &mut RepositoryRecord, window_start_ns: i64) {
 /// Open the process's recording window (once per process). Returns false
 /// when a window was already opened.
 pub fn open_window() -> bool {
-    if RECORDER.set(Recorder::new(now_ns())).is_err() {
+    if RECORDER.set(Recorder::framed(now_ns())).is_err() {
         return false;
     }
     let _ = fs::symlink_metadata(MARKER_OPEN);
@@ -1278,6 +1764,20 @@ pub fn note_env(name: &OsStr, value: Option<&OsStr>) {
     }
 }
 
+/// The digest [`note_env`] records for `value` (W6R: the repository
+/// environment keeps it with its entry and records it at every lookup,
+/// crate::repository_environment).
+pub fn env_digest(value: Option<&OsStr>) -> Option<[u8; 32]> {
+    value.map(|value| sha256(value.as_bytes()))
+}
+
+/// [`note_env`] of a value's [`env_digest`].
+pub fn note_env_digest(name: &OsStr, digest: Option<[u8; 32]>) {
+    if let Some(recorder) = active() {
+        recorder.observe_env_digest(name, digest);
+    }
+}
+
 /// Record a taint. `detail` is only formatted while recording.
 pub fn taint(kind: Taint, detail: impl FnOnce() -> String) {
     if let Some(recorder) = active() {
@@ -1399,9 +1899,299 @@ pub fn diag(line: &str) {
     crate::snapshot::diag::line(&format!("bazel-rs-snapshot: {line}"));
 }
 
+/// Unit tests: a recording window of one thread.
+#[cfg(test)]
+pub(crate) mod tests_support {
+    use super::*;
+
+    /// This thread's window, open until dropped.
+    pub(crate) struct ThreadWindow {
+        pub(crate) recorder: &'static Recorder,
+    }
+
+    /// Open a window of this thread only: what this thread observes goes
+    /// to the returned recorder (frames included), nothing else changes
+    /// for other threads.
+    pub(crate) fn record_this_thread() -> ThreadWindow {
+        let recorder: &'static Recorder = Box::leak(Box::new(Recorder::framed(now_ns())));
+        THREAD_RECORDER.with(|cell| cell.set(Some(recorder)));
+        ThreadWindow { recorder }
+    }
+
+    impl Drop for ThreadWindow {
+        fn drop(&mut self) {
+            THREAD_RECORDER.with(|cell| cell.set(None));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::tests_support::record_this_thread;
     use super::*;
+
+    fn paths_of(recording: &Recording) -> Vec<(String, &'static str)> {
+        recording
+            .observations
+            .iter()
+            .map(|(path, observation)| (path.display().to_string(), observation.op.name()))
+            .collect()
+    }
+
+    /// W6R: a load unit's frame reaches the recorder only through its
+    /// commit; a dropped frame (an unused or aborted unit), and the
+    /// captures inside it, record nothing.
+    #[test]
+    fn a_frame_reaches_the_recorder_only_through_its_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("f");
+        fs::write(&file, b"x").unwrap();
+        let window = record_this_thread();
+        let unit = unit_scope();
+        read(&file).unwrap();
+        let (_, captured) = capture(|| exists(temp.path().join("g")));
+        assert!(captured.is_some());
+        assert!(window.recorder.snapshot().observations.is_empty());
+        let observations = unit.finish();
+        assert!(window.recorder.snapshot().observations.is_empty());
+        commit(observations);
+        let file_text = file.display().to_string();
+        let missing = temp.path().join("g").display().to_string();
+        assert_eq!(
+            paths_of(&window.recorder.snapshot()),
+            [(file_text, "READ"), (missing.clone(), "STAT")]
+        );
+        // Dropped: nothing, captures included.
+        let window = record_this_thread();
+        {
+            let _unit = unit_scope();
+            read(&file).unwrap();
+            let _ = capture(|| exists(temp.path().join("h")));
+        }
+        assert!(!in_frame());
+        assert!(window.recorder.snapshot().observations.is_empty());
+        // Outside every frame: at once.
+        exists(temp.path().join("g"));
+        assert_eq!(paths_of(&window.recorder.snapshot()), [(missing, "STAT")]);
+    }
+
+    /// The recorder is a set: an outcome a frame brings that conflicts
+    /// with the recorded one makes the run Unstable at the commit, like
+    /// two observations on one thread.
+    #[test]
+    fn a_conflicting_outcome_at_the_commit_is_unstable() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("late");
+        let window = record_this_thread();
+        let unit = unit_scope();
+        assert!(!exists(&path));
+        let observations = unit.finish();
+        fs::write(&path, b"now").unwrap();
+        assert!(exists(&path));
+        assert!(window.recorder.taints().is_empty());
+        commit(observations);
+        let taints = window.recorder.taints();
+        assert_eq!(taints[&Taint::Unstable].count, 1, "{taints:?}");
+        // The same outcome again: no conflict.
+        let unit = unit_scope();
+        assert!(exists(&path));
+        commit(unit.finish());
+        assert_eq!(window.recorder.taints()[&Taint::Unstable].count, 1);
+    }
+
+    /// Claims made inside frames merge to the recording the same claims
+    /// make in any order outside them: the owner's record wins over a
+    /// crossing's, whether the crossing came first or reached the recorder
+    /// first.
+    #[test]
+    fn crossing_and_owner_claims_merge_alike_in_either_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("trees/abc");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("BUILD.bazel"), b"").unwrap();
+        let manifest = temp.path().join("manifests/abc.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(&manifest, b"{}").unwrap();
+        let other = temp.path().join("trees/def");
+        fs::create_dir_all(&other).unwrap();
+        let other_manifest = temp.path().join("manifests/def.json");
+        fs::write(&other_manifest, b"{}").unwrap();
+        let shape = |recording: Recording| {
+            (
+                recording
+                    .repositories
+                    .iter()
+                    .map(|record| (record.kind, record.name.clone(), record.entries.clone()))
+                    .collect::<Vec<_>>(),
+                recording.crossed,
+            )
+        };
+        let owner = || repository_tree("direct", "abc", &root, Some(&manifest));
+        let crossing = || {
+            crossed_tree("direct", "abc", &root, &manifest);
+            crossed_tree("direct", "def", &other, &other_manifest);
+        };
+        let reference = {
+            let window = record_this_thread();
+            owner();
+            crossing();
+            shape(window.recorder.snapshot())
+        };
+        assert_eq!(reference.0.len(), 2);
+        assert_eq!(reference.1, std::slice::from_ref(&other));
+        type Order = fn(&dyn Fn(), &dyn Fn());
+        let orders: [Order; 4] = [
+            // The crossing in a frame committed first, the owner after.
+            |owner, crossing| {
+                let unit = unit_scope();
+                crossing();
+                commit(unit.finish());
+                owner();
+            },
+            // The owner first, a crossing's frame after.
+            |owner, crossing| {
+                owner();
+                let unit = unit_scope();
+                crossing();
+                commit(unit.finish());
+            },
+            // Both in frames, the owner's committed last.
+            |owner, crossing| {
+                let first = unit_scope();
+                crossing();
+                let first = first.finish();
+                let second = unit_scope();
+                owner();
+                let second = second.finish();
+                commit(first);
+                commit(second);
+            },
+            // The owner's frame committed first.
+            |owner, crossing| {
+                let first = unit_scope();
+                owner();
+                let first = first.finish();
+                commit(first);
+                let second = unit_scope();
+                crossing();
+                commit(second.finish());
+            },
+        ];
+        for (index, order) in orders.iter().enumerate() {
+            let window = record_this_thread();
+            order(&owner, &crossing);
+            assert_eq!(
+                shape(window.recorder.snapshot()),
+                reference,
+                "order {index}"
+            );
+        }
+    }
+
+    /// A captured set lands in the recorder at most once, however many
+    /// frames hold it and in whatever order they commit (a taint inside it
+    /// counts once, as on one thread); replays into frames stay there.
+    #[test]
+    fn a_captured_set_replays_once_per_sink() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        let first = unit_scope();
+        let (_, captured) = capture(|| {
+            exists(temp.path().join("a"));
+            taint(Taint::CrossRepositorySymlink, || "inside".to_owned());
+        });
+        let captured = captured.unwrap();
+        let first = first.finish();
+        let second = unit_scope();
+        replay(&captured);
+        replay(&captured);
+        let second = second.finish();
+        assert_eq!(second.0.children.len(), 1);
+        assert!(window.recorder.snapshot().observations.is_empty());
+        commit(second);
+        commit(first);
+        replay(&captured);
+        let recording = window.recorder.snapshot();
+        assert_eq!(recording.observations.len(), 1);
+        assert_eq!(
+            recording.taints[&Taint::CrossRepositorySymlink].count,
+            1,
+            "{:?}",
+            recording.taints
+        );
+        // Joined sets replay their parts once too.
+        let window = record_this_thread();
+        let unit = unit_scope();
+        let (_, one) = capture(|| exists(temp.path().join("one")));
+        let (_, two) = capture(|| exists(temp.path().join("two")));
+        drop(unit);
+        let joined = Captured::join(one.clone(), two).unwrap();
+        replay(&joined);
+        replay(one.as_ref().unwrap());
+        assert_eq!(window.recorder.snapshot().observations.len(), 2);
+    }
+
+    /// A detached capture (a warm-reuse probe) hands nothing to the frame
+    /// around it: what it observed reaches the recorder only where its
+    /// set is replayed.
+    #[test]
+    fn detached_captures_do_not_forward() {
+        let temp = tempfile::tempdir().unwrap();
+        let window = record_this_thread();
+        let unit = unit_scope();
+        exists(temp.path().join("unit"));
+        let (_, detached) = capture_detached(|| {
+            exists(temp.path().join("probe"));
+            // An attached capture inside it goes to the detached set.
+            let _ = capture(|| exists(temp.path().join("nested")));
+        });
+        let detached = detached.unwrap();
+        commit(unit.finish());
+        let unit_path = temp.path().join("unit").display().to_string();
+        assert_eq!(
+            paths_of(&window.recorder.snapshot()),
+            [(unit_path.clone(), "STAT")]
+        );
+        replay(&detached);
+        let mut seen: Vec<String> = paths_of(&window.recorder.snapshot())
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        seen.sort();
+        let mut expected: Vec<String> = ["nested", "probe", "unit"]
+            .iter()
+            .map(|name| temp.path().join(name).display().to_string())
+            .collect();
+        expected.sort();
+        assert_eq!(seen, expected);
+        // A discard frame drops everything, its captures' forwarding too.
+        let window = record_this_thread();
+        let kept = discard(|| {
+            exists(temp.path().join("hint"));
+            capture(|| exists(temp.path().join("memo"))).1
+        });
+        assert!(window.recorder.snapshot().observations.is_empty());
+        replay(kept.as_ref().unwrap());
+        assert_eq!(window.recorder.snapshot().observations.len(), 1);
+    }
+
+    /// Outside a window every frame operation is inert: nothing is
+    /// captured, committed or replayed, and no frame stays open.
+    #[test]
+    fn frames_are_inert_when_not_recording() {
+        let temp = tempfile::tempdir().unwrap();
+        let unit = unit_scope();
+        exists(temp.path().join("a"));
+        let (_, captured) = capture(|| exists(temp.path().join("b")));
+        let (_, detached) = capture_detached(|| exists(temp.path().join("c")));
+        discard(|| exists(temp.path().join("d")));
+        assert!(captured.is_none() && detached.is_none());
+        assert!(!in_frame());
+        let observations = unit.finish();
+        assert!(observations.is_empty());
+        commit(observations);
+        assert!(!in_frame());
+    }
 
     #[test]
     fn invalid_utf8_error_matches_std() {
