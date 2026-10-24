@@ -197,7 +197,10 @@ build-wide workspace file-state memo would be its own design). An aspect's actio
 follow-up B6 the aspect commit dropped them, and the deferred completion of
 a command line expanding tree artifacts; test
 `aspect_actions_stage_their_tools_runfiles`, its outputs byte-identical to
-genuine Bazel 9.3.0's).
+genuine Bazel 9.3.0's). A planned request (docs/PLANNED_REQUEST.md, the
+analysis snapshot's PLAN section) encodes each group once — a table its
+holders index, the `valid` flag recomputed when decoded — and never the
+trees, the memos, the identities or the action keys (integration-21).
 
 ## `run` (runtime/commands/RunCommand.java)
 

@@ -394,10 +394,12 @@ fn plan_line(plan: Option<Result<crate::snapshot::codec::Stats, String>>) -> Str
         None => "plan: no planned request (planning did not complete)".to_owned(),
         Some(Err(reason)) => format!("plan: cannot be encoded: {reason}"),
         Some(Ok(stats)) => format!(
-            "plan: {} actions, encoded {} bytes ({} outline, {} action chunk(s)); encode {} ms, decode {} ms",
+            "plan: {} actions, encoded {} bytes ({} outline, {} shared input group(s) in {}, {} action chunk(s)); encode {} ms, decode {} ms",
             stats.nodes,
             stats.bytes,
             stats.meta_bytes,
+            stats.groups,
+            stats.group_bytes,
             stats.chunks,
             millis(stats.encode),
             stats.decode.map_or_else(|| "-".to_owned(), millis),

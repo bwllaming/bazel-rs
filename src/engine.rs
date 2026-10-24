@@ -12913,17 +12913,9 @@ fn runfiles_input_group(
         }
     }
     // A tree input is listed (a planted source or a generated input), as
-    // validate_structure requires of the executed action.
-    let listed: HashSet<&Path> = inputs
-        .iter()
-        .map(|(_, destination)| destination.as_path())
-        .chain(dependencies.iter().map(|d| d.destination.as_path()))
-        .collect();
-    let valid = namespace
-        && tree_inputs
-            .iter()
-            .all(|tree| listed.contains(tree.as_path()));
-    drop(listed);
+    // validate_structure requires of the executed action (the predicate a
+    // decoded group's flag is recomputed with, InputGroup::listed_valid).
+    let valid = namespace && scheduler::tree_inputs_listed(&inputs, &dependencies, &tree_inputs);
     scheduler::InputGroup {
         root: root.to_path_buf(),
         inputs,

@@ -12,7 +12,7 @@
 //! | 8 | format version (u32) |
 //! | 12 | section count (u32) |
 //! | 16 | section table: per section its kind (u32) and length (u64) |
-//! | … | the sections in table order: one `META` (everything but the actions), then the actions in `NODES` chunks of at most [`CHUNK`] actions |
+//! | … | the sections in table order: one `META` (everything but the actions), one `GROUPS` (the shared input groups, each once), then the actions in `NODES` chunks of at most [`CHUNK`] actions |
 //!
 //! The section framing is decoded without copying (borrowed slices), so a
 //! reader can inspect the META section without touching the actions, and
@@ -24,30 +24,55 @@
 //! binary's identity), so the derives sit directly on the in-memory types:
 //! no mirror types, no migrations.
 //!
+//! PA-1's shared input groups (crate::scheduler::InputGroup: a tool's
+//! runfiles tree expanded once per build, held by every action using the
+//! tool) are encoded ONCE: the GROUPS section is the table of the distinct
+//! groups in first-seen order (the nodes in order, each node's groups in
+//! order; built sequentially by pointer before the chunks encode in
+//! parallel), and every NODES element is `(action, indices into the table)`
+//! (PlannedAction::groups is never serialized per node: serde's `rc`
+//! support would write each group once per holder — ~36.8 M entries on
+//! ~/code's pythonworker instead of 1,868). Decoding builds the table first,
+//! one `Arc` per entry, and every holder shares it, in its own group order;
+//! an index out of range, a group listed twice by one action and a group
+//! no action holds are errors. A group's `valid` flag is never encoded: the
+//! scheduler's validation trusts it (scheduler::validate_node), so a
+//! decoded group recomputes it from what it lists
+//! (InputGroup::listed_valid).
+//!
 //! What the encoding leaves out, by design: an action's resolved client
 //! environment values (re-resolved by crate::request finalize on every run,
 //! and never written to disk), the workspace status (placeholders, expanded
-//! by finalize) and an Args `map_each` function (an in-memory Starlark
-//! value: a request that still needs one cannot be encoded,
-//! [`EncodeError::NotSerializable`]).
+//! by finalize), an Args `map_each` function (an in-memory Starlark value:
+//! a request that still needs one cannot be encoded,
+//! [`EncodeError::NotSerializable`]), and everything PA-1 keeps in process
+//! (per-process identities and memos, docs/PLANNED_REQUEST.md): the tool
+//! runfiles trees (crate::analysis_runtime::ToolRunfilesTree), the
+//! planner's tree memo (crate::engine's ActionPlanning::input_groups and its
+//! ExpandedTree entries), the shared-action keys
+//! (crate::shared_actions::ActionKey, RegisteredAction::key) and the
+//! FilesToRunProvider identities (crate::runfiles::FilesToRun); none of
+//! them has a serde derive.
 
 use crate::request::PlannedRequest;
-use crate::scheduler::PlannedAction;
+use crate::scheduler::{Dependency, InputGroup, PlannedAction};
 use serde::de::{Deserializer, Visitor};
 use serde::ser::{Error as _, Serializer};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// The container magic.
 pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// The container format version (bumped with any layout change; the store
-/// also keys snapshots by the binary's identity).
-pub const FORMAT: u32 = 1;
+/// also keys snapshots by the binary's identity). 2: the GROUPS section
+/// (PA-1's shared input groups, integration-21).
+pub const FORMAT: u32 = 2;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -60,6 +85,7 @@ pub const MAX_THREADS: usize = 8;
 
 const SECTION_META: u32 = 1;
 const SECTION_NODES: u32 = 2;
+const SECTION_GROUPS: u32 = 3;
 
 /// Why a request cannot be encoded.
 #[derive(Debug)]
@@ -83,6 +109,9 @@ pub struct Stats {
     pub nodes: usize,
     pub bytes: usize,
     pub meta_bytes: usize,
+    /// The distinct shared input groups (the GROUPS table) and its bytes.
+    pub groups: usize,
+    pub group_bytes: usize,
     pub chunks: usize,
     pub encode: Duration,
     pub decode: Option<Duration>,
@@ -162,26 +191,26 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
 /// [`encode`], with its sizes and time.
 pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), EncodeError> {
     let start = Instant::now();
-    // PA-1's shared input groups (PlannedAction::groups, never serialized
-    // per node) have no encoding here: a request holding one is not
-    // encoded rather than encoded without its groups.
-    if let Some(node) = request.nodes.iter().find(|node| !node.groups.is_empty()) {
-        return Err(EncodeError::NotSerializable(format!(
-            "action '{}': shared input groups have no encoding",
-            node.action.id
-        )));
-    }
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
-    let encode_chunk = |chunk: &[PlannedAction]| {
-        postcard::to_stdvec(chunk)
+    // The shared input groups, each once, and every node's indices into
+    // the table: sequential, before the chunks encode on other threads.
+    let (table, indices) = group_table(&request.nodes);
+    let groups = postcard::to_stdvec(&table_of(&table))
+        .map_err(|error| postcard_error(error, "the shared input groups"))?;
+    let encode_chunk = |(chunk, indices): &(&[PlannedAction], &[Vec<u32>])| {
+        postcard::to_stdvec(&chunk_elements(chunk, indices))
             .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(chunk, error)))
     };
-    let parts: Vec<&[PlannedAction]> = request.nodes.chunks(CHUNK).collect();
+    let parts: Vec<(&[PlannedAction], &[Vec<u32>])> = request
+        .nodes
+        .chunks(CHUNK)
+        .zip(indices.chunks(CHUNK))
+        .collect();
     // Chunks encode independently (the same bytes on any thread): a large
     // plan encodes them on a few scoped threads (the analysis snapshot's
     // save, L2-W5, encodes on the main thread before execution).
-    let chunks = on_threads(&parts, |chunk| encode_chunk(chunk))
+    let chunks = on_threads(&parts, encode_chunk)
         .into_iter()
         .map(|chunk| {
             chunk.unwrap_or_else(|| {
@@ -191,20 +220,23 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let sections = 1 + chunks.len();
+    let sections = 2 + chunks.len();
     let mut bytes = Vec::with_capacity(
-        16 + 12 * sections + meta.len() + chunks.iter().map(Vec::len).sum::<usize>(),
+        16 + 12 * sections + meta.len() + groups.len() + chunks.iter().map(Vec::len).sum::<usize>(),
     );
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&FORMAT.to_le_bytes());
     bytes.extend_from_slice(&(sections as u32).to_le_bytes());
     bytes.extend_from_slice(&SECTION_META.to_le_bytes());
     bytes.extend_from_slice(&(meta.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&SECTION_GROUPS.to_le_bytes());
+    bytes.extend_from_slice(&(groups.len() as u64).to_le_bytes());
     for chunk in &chunks {
         bytes.extend_from_slice(&SECTION_NODES.to_le_bytes());
         bytes.extend_from_slice(&(chunk.len() as u64).to_le_bytes());
     }
     bytes.extend_from_slice(&meta);
+    bytes.extend_from_slice(&groups);
     for chunk in &chunks {
         bytes.extend_from_slice(chunk);
     }
@@ -212,11 +244,163 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
         nodes: request.nodes.len(),
         bytes: bytes.len(),
         meta_bytes: meta.len(),
+        groups: table.len(),
+        group_bytes: groups.len(),
         chunks: chunks.len(),
         encode: start.elapsed(),
         decode: None,
     };
     Ok((bytes, stats))
+}
+
+/// The GROUPS table of `nodes`: every distinct shared input group (by
+/// pointer) once, in first-seen order — the nodes in order, each node's
+/// groups in order — and each node's indices into it, in its group order.
+fn group_table(nodes: &[PlannedAction]) -> (Vec<&InputGroup>, Vec<Vec<u32>>) {
+    let mut positions: HashMap<*const InputGroup, u32> = HashMap::new();
+    let mut table: Vec<&InputGroup> = Vec::new();
+    let indices = nodes
+        .iter()
+        .map(|node| {
+            node.groups
+                .iter()
+                .map(|group| {
+                    *positions.entry(Arc::as_ptr(group)).or_insert_with(|| {
+                        // A planned group is shared only when valid
+                        // (scheduler::groups_apart), and the decoder's
+                        // recomputed flag must agree.
+                        debug_assert!(
+                            group.valid && group.listed_valid(),
+                            "internal error: shared input group {} is encoded but not valid",
+                            group.root.display()
+                        );
+                        table.push(group);
+                        u32::try_from(table.len() - 1).expect("fewer than 2^32 shared input groups")
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    (table, indices)
+}
+
+/// Whether two shared input groups encode alike: equal in every encoded
+/// field (BAZEL_RS_SNAPSHOT=verify compares a snapshot's plan by value,
+/// crate::snapshot::verify).
+pub(crate) fn same_group(a: &InputGroup, b: &InputGroup) -> bool {
+    std::ptr::eq(a, b)
+        || postcard::to_stdvec(&GroupOut::of(a)).ok() == postcard::to_stdvec(&GroupOut::of(b)).ok()
+}
+
+/// The GROUPS section's content: each group field by field ([`GroupOut`]).
+fn table_of<'a>(table: &[&'a InputGroup]) -> Vec<GroupOut<'a>> {
+    table.iter().map(|group| GroupOut::of(group)).collect()
+}
+
+/// A NODES section's content: each action with its indices into the GROUPS
+/// table (a bare PlannedAction never encodes its groups).
+fn chunk_elements<'a>(
+    nodes: &'a [PlannedAction],
+    indices: &'a [Vec<u32>],
+) -> Vec<(&'a PlannedAction, &'a [u32])> {
+    nodes
+        .iter()
+        .zip(indices)
+        .map(|(node, indices)| (node, indices.as_slice()))
+        .collect()
+}
+
+/// One shared input group in the GROUPS table, borrowed for encoding:
+/// every field of [`InputGroup`] but `valid`, which a decoded group
+/// recomputes ([`GroupIn::into_group`]); field order is the order of
+/// [`GroupIn`].
+#[derive(Serialize)]
+struct GroupOut<'a> {
+    #[serde(with = "path")]
+    root: &'a Path,
+    #[serde(with = "path_pairs")]
+    inputs: &'a [(PathBuf, PathBuf)],
+    dependencies: &'a [Dependency],
+    #[serde(with = "paths")]
+    tree_inputs: &'a [PathBuf],
+    #[serde(with = "paths")]
+    constant_metadata: &'a [PathBuf],
+    #[serde(with = "paths")]
+    empty_files: &'a [PathBuf],
+    #[serde(with = "paths")]
+    sources: &'a [PathBuf],
+}
+
+impl<'a> GroupOut<'a> {
+    fn of(group: &'a InputGroup) -> Self {
+        // Every field by name (no `..`): a new field of InputGroup is a
+        // compile error here until the encoding carries it.
+        let InputGroup {
+            root,
+            inputs,
+            dependencies,
+            tree_inputs,
+            constant_metadata,
+            empty_files,
+            sources,
+            valid: _,
+        } = group;
+        GroupOut {
+            root,
+            inputs,
+            dependencies,
+            tree_inputs,
+            constant_metadata,
+            empty_files,
+            sources,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct GroupIn {
+    #[serde(with = "path")]
+    root: PathBuf,
+    #[serde(with = "path_pairs")]
+    inputs: Vec<(PathBuf, PathBuf)>,
+    dependencies: Vec<Dependency>,
+    #[serde(with = "paths")]
+    tree_inputs: Vec<PathBuf>,
+    #[serde(with = "paths")]
+    constant_metadata: Vec<PathBuf>,
+    #[serde(with = "paths")]
+    empty_files: Vec<PathBuf>,
+    #[serde(with = "paths")]
+    sources: Vec<PathBuf>,
+}
+
+impl GroupIn {
+    /// The decoded group, its `valid` flag recomputed from what it lists:
+    /// never taken from the bytes, since the scheduler's validation trusts
+    /// it (a tampered destination must fail validation, not pass it).
+    fn into_group(self) -> InputGroup {
+        let GroupIn {
+            root,
+            inputs,
+            dependencies,
+            tree_inputs,
+            constant_metadata,
+            empty_files,
+            sources,
+        } = self;
+        let mut group = InputGroup {
+            root,
+            inputs,
+            dependencies,
+            tree_inputs,
+            constant_metadata,
+            empty_files,
+            sources,
+            valid: false,
+        };
+        group.valid = group.listed_valid();
+        group
+    }
 }
 
 /// The first action of `chunk` that cannot be encoded and why, for the
@@ -258,21 +442,33 @@ fn encodes_to(request: &PlannedRequest, bytes: &[u8]) -> Result<bool, String> {
     if encoded(&meta_of(request))? != sections.meta {
         return Ok(false);
     }
-    let chunks: Vec<&[PlannedAction]> = request.nodes.chunks(CHUNK).collect();
+    // The table rebuilt from the request (first-seen order), then every
+    // chunk with its nodes' indices into it.
+    let (table, indices) = group_table(&request.nodes);
+    if encoded(&table_of(&table))? != sections.groups {
+        return Ok(false);
+    }
+    let chunks: Vec<(&[PlannedAction], &[Vec<u32>])> = request
+        .nodes
+        .chunks(CHUNK)
+        .zip(indices.chunks(CHUNK))
+        .collect();
     if chunks.len() != sections.nodes.len() {
         return Ok(false);
     }
-    for (chunk, section) in chunks.into_iter().zip(sections.nodes) {
-        if encoded(chunk)? != section {
+    for ((chunk, indices), section) in chunks.into_iter().zip(sections.nodes) {
+        if encoded(&chunk_elements(chunk, indices))? != section {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// The container's sections, borrowed: the META section and the NODES chunks.
+/// The container's sections, borrowed: the META section, the GROUPS table
+/// and the NODES chunks.
 pub struct Sections<'a> {
     pub meta: &'a [u8],
+    pub groups: &'a [u8],
     pub nodes: Vec<&'a [u8]>,
 }
 
@@ -316,11 +512,13 @@ pub fn sections(bytes: &[u8]) -> Result<Sections<'_>, String> {
         table.push((kind, length));
     }
     let mut meta = None;
+    let mut groups = None;
     let mut nodes = Vec::new();
     for (kind, length) in table {
         let body = take(&mut rest, length, "section")?;
         match kind {
             SECTION_META if meta.is_none() => meta = Some(body),
+            SECTION_GROUPS if groups.is_none() => groups = Some(body),
             SECTION_NODES => nodes.push(body),
             _ => return Err(format!("unexpected section kind {kind}")),
         }
@@ -330,12 +528,48 @@ pub fn sections(bytes: &[u8]) -> Result<Sections<'_>, String> {
     }
     Ok(Sections {
         meta: meta.ok_or_else(|| "missing META section".to_owned())?,
+        groups: groups.ok_or_else(|| "missing GROUPS section".to_owned())?,
         nodes,
     })
 }
 
-fn decode_chunk(chunk: &[u8]) -> Result<Vec<PlannedAction>, String> {
-    postcard::from_bytes(chunk).map_err(|error| format!("planned actions: {error}"))
+/// The GROUPS table: one `Arc` per entry, each flag recomputed.
+fn decode_groups(section: &[u8]) -> Result<Vec<Arc<InputGroup>>, String> {
+    let table: Vec<GroupIn> =
+        postcard::from_bytes(section).map_err(|error| format!("shared input groups: {error}"))?;
+    Ok(table
+        .into_iter()
+        .map(|group| Arc::new(group.into_group()))
+        .collect())
+}
+
+/// One NODES chunk, every action's groups resolved into `table` (the
+/// decoded holders share its `Arc`s, in each action's own group order).
+fn decode_chunk(chunk: &[u8], table: &[Arc<InputGroup>]) -> Result<Vec<PlannedAction>, String> {
+    let elements: Vec<(PlannedAction, Vec<u32>)> =
+        postcard::from_bytes(chunk).map_err(|error| format!("planned actions: {error}"))?;
+    elements
+        .into_iter()
+        .map(|(mut node, indices)| {
+            for (position, &index) in indices.iter().enumerate() {
+                let group = table.get(index as usize).ok_or_else(|| {
+                    format!(
+                        "planned actions: action '{}' holds shared input group {index} of {}",
+                        node.action.id,
+                        table.len()
+                    )
+                })?;
+                if indices[..position].contains(&index) {
+                    return Err(format!(
+                        "planned actions: action '{}' holds shared input group {index} twice",
+                        node.action.id
+                    ));
+                }
+                node.groups.push(Arc::clone(group));
+            }
+            Ok(node)
+        })
+        .collect()
 }
 
 /// `work` over `items`, results in item order, on min(items, available
@@ -387,12 +621,13 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
     let sections = sections(bytes)?;
     let meta: MetaOwned = postcard::from_bytes(sections.meta)
         .map_err(|error| format!("planned request outline: {error}"))?;
+    let groups = decode_groups(sections.groups)?;
     let total: usize = sections.nodes.iter().map(|chunk| chunk.len()).sum();
     let chunk = |chunk: &&[u8]| {
         if cancel.load(Ordering::Relaxed) {
             Err(CANCELLED.to_owned())
         } else {
-            decode_chunk(chunk)
+            decode_chunk(chunk, &groups)
         }
     };
     let chunks: Vec<Result<Vec<PlannedAction>, String>> = if sections.nodes.len() > 1
@@ -409,6 +644,17 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
     for chunk in chunks {
         nodes.extend(chunk?);
     }
+    // Every entry is some action's (the encoder writes only held groups).
+    if let Some(index) = groups
+        .iter()
+        .position(|group| Arc::strong_count(group) == 1)
+    {
+        return Err(format!(
+            "shared input groups: group {index} of {} is held by no action",
+            groups.len()
+        ));
+    }
+    drop(groups);
     Ok(PlannedRequest {
         command: meta.command,
         execute: meta.execute,
@@ -499,10 +745,12 @@ pub fn hand_over(request: PlannedRequest) -> Result<PlannedRequest, String> {
     };
     drop(bytes);
     perf_line(&format!(
-        "nodes={} bytes={} meta={} chunks={} encode_ms={:.3} decode_ms={} roundtrip={}",
+        "nodes={} bytes={} meta={} groups={} group_bytes={} chunks={} encode_ms={:.3} decode_ms={} roundtrip={}",
         stats.nodes,
         stats.bytes,
         stats.meta_bytes,
+        stats.groups,
+        stats.group_bytes,
         stats.chunks,
         stats.encode.as_secs_f64() * 1000.0,
         stats.decode.map_or_else(
@@ -1400,6 +1648,312 @@ mod tests {
             postcard::from_bytes::<Vec<AttrValue>>(&bytes).unwrap(),
             values
         );
+    }
+
+    /// A shared input group below `root` (PA-1, crate::scheduler::InputGroup):
+    /// planted sources (one non-UTF-8), a generated tree input, a
+    /// constant-metadata input, an empty file, and a source planting
+    /// dropped; `tag` makes groups of one root differ.
+    fn input_group(root: &str, tag: &str) -> Arc<InputGroup> {
+        let below = |rest: &[u8]| {
+            let mut bytes = format!("{root}/").into_bytes();
+            bytes.extend_from_slice(rest);
+            raw(&bytes)
+        };
+        let mut group = InputGroup {
+            root: root.into(),
+            inputs: vec![
+                (raw(b"/ws/tools/\xffdata"), below(b"_main/tools/\xffdata")),
+                (
+                    PathBuf::from(format!("/ws/tools/{tag}")),
+                    below(format!("_main/tools/{tag}").as_bytes()),
+                ),
+            ],
+            dependencies: vec![Dependency {
+                action_id: "//pkg:gen".into(),
+                output_index: 0,
+                destination: below(b"_main/pkg/dir"),
+            }],
+            tree_inputs: vec![below(b"_main/pkg/dir")],
+            constant_metadata: vec![below(b"_main/tools/\xffdata")],
+            empty_files: vec![below(b"_main/tools/__init__.py")],
+            sources: vec![
+                raw(b"/ws/tools/\xffdata"),
+                PathBuf::from(format!("/ws/tools/{tag}")),
+                PathBuf::from("/ws/unplanted"),
+            ],
+            valid: false,
+        };
+        group.valid = group.listed_valid();
+        assert!(group.valid, "{group:?}");
+        Arc::new(group)
+    }
+
+    /// A process action holding `groups` (in this order).
+    fn holder(index: usize, groups: &[&Arc<InputGroup>]) -> PlannedAction {
+        PlannedAction {
+            action: Action {
+                id: format!("//pkg:h#{index}"),
+                command: "cat tool.runfiles/_main/tools/data > out".into(),
+                outputs: vec![PathBuf::from(format!("bazel-out/h{index}.out"))],
+                shell_strict: true,
+                ..Action::default()
+            },
+            dependencies: Vec::new(),
+            deferred: None,
+            groups: groups.iter().map(|group| Arc::clone(group)).collect(),
+        }
+    }
+
+    /// The sample with `nodes` instead of its actions.
+    fn with_nodes(nodes: Vec<PlannedAction>) -> PlannedRequest {
+        PlannedRequest { nodes, ..sample() }
+    }
+
+    /// The decoded GROUPS table of an encoding.
+    fn table(bytes: &[u8]) -> Vec<Arc<InputGroup>> {
+        decode_groups(sections(bytes).unwrap().groups).unwrap()
+    }
+
+    /// PA-1 x L2-W4: each shared input group is encoded once (GROUPS, in
+    /// first-seen order) and every holder indexes it; decoded, the holders
+    /// share one `Arc` per group in their own group order, the flag is
+    /// recomputed, and every node lists exactly what it listed before.
+    #[test]
+    fn shared_input_groups_encode_once_and_decode_shared() {
+        let (tool, other) = (
+            input_group("tool.runfiles", "a"),
+            input_group("other.runfiles", "b"),
+        );
+        let mut nodes = sample().nodes;
+        nodes.push(holder(0, &[&tool]));
+        nodes.push(holder(1, &[&other, &tool]));
+        nodes.push(holder(2, &[&tool]));
+        let request = with_nodes(nodes);
+        let (bytes, stats) = encode_with_stats(&request).unwrap();
+        assert_eq!(encode(&request).unwrap(), bytes, "deterministic");
+        assert_eq!((stats.groups, table(&bytes).len()), (2, 2));
+        // First-seen order: `tool` (holder 0), then `other` (holder 1).
+        assert!(same_group(&table(&bytes)[0], &tool));
+        assert!(same_group(&table(&bytes)[1], &other));
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(encode(&decoded).unwrap(), bytes, "re-encoded");
+        assert!(encodes_to(&decoded, &bytes).unwrap());
+        let held = |index: usize| &decoded.nodes[request.nodes.len() - 3 + index].groups;
+        assert_eq!(held(0).len(), 1);
+        assert_eq!(held(1).len(), 2);
+        assert!(Arc::ptr_eq(&held(0)[0], &held(1)[1]));
+        assert!(Arc::ptr_eq(&held(0)[0], &held(2)[0]));
+        assert!(!Arc::ptr_eq(&held(1)[0], &held(1)[1]));
+        // One Arc per group: the table is gone, its holders keep it.
+        assert_eq!(Arc::strong_count(&held(0)[0]), 3);
+        assert_eq!(Arc::strong_count(&held(1)[0]), 1);
+        assert!(same_group(&held(1)[0], &other) && same_group(&held(1)[1], &tool));
+        assert!(held(0)[0].valid && held(1)[0].valid);
+        // Every node's listed form (its inputs, dependencies, tree and
+        // constant-metadata inputs, empty files) is the planned one's.
+        for (planned, decoded) in request.nodes.iter().zip(&decoded.nodes) {
+            assert_eq!(
+                postcard::to_stdvec(&planned.flattened()).unwrap(),
+                postcard::to_stdvec(&decoded.flattened()).unwrap(),
+                "{}",
+                planned.action.id
+            );
+            assert!(decoded.flattened().groups.is_empty());
+        }
+        // The nodes without groups encode as before plus an empty index list.
+        assert!(
+            decoded.nodes[..request.nodes.len() - 3]
+                .iter()
+                .all(|node| node.groups.is_empty())
+        );
+    }
+
+    /// The encoding grows with the DISTINCT groups, not with their holders:
+    /// one more holder of a group costs its one-byte index, one more
+    /// distinct group costs the group.
+    #[test]
+    fn encoded_size_grows_with_distinct_groups_not_holders() {
+        let tool = input_group("tool.runfiles", "a");
+        let size = |holders: usize, groups: &[&Arc<InputGroup>]| {
+            encode(&with_nodes(
+                (0..holders).map(|index| holder(index, groups)).collect(),
+            ))
+            .unwrap()
+            .len()
+        };
+        let group_bytes = postcard::to_stdvec(&GroupOut::of(&tool)).unwrap().len();
+        assert!(group_bytes > 100, "{group_bytes}");
+        // Without groups, with one group held by 1 and by 100 actions.
+        let (bare_1, bare_100) = (size(1, &[]), size(100, &[]));
+        let (held_1, held_100) = (size(1, &[&tool]), size(100, &[&tool]));
+        assert_eq!(held_1 - bare_1, group_bytes + 1);
+        assert_eq!(held_100 - bare_100, group_bytes + 100);
+        // A second distinct group (same shape, other content).
+        let other = input_group("tool.runfiles", "b");
+        let two = encode(&with_nodes(
+            (0..100)
+                .map(|index| holder(index, &[if index % 2 == 0 { &tool } else { &other }]))
+                .collect(),
+        ))
+        .unwrap();
+        assert_eq!(table(&two).len(), 2);
+        assert_eq!(two.len() - bare_100, 2 * group_bytes + 100);
+    }
+
+    /// A group's `valid` flag is never decoded but recomputed: a tampered
+    /// destination escaping the tree fails the scheduler's validation of
+    /// its holder instead of passing the "groups apart" shortcut that
+    /// trusts the flag.
+    #[test]
+    fn a_tampered_escaping_group_destination_fails_validation() {
+        let tool = input_group("tool.runfiles", "a");
+        let request = with_nodes(vec![holder(0, &[&tool])]);
+        let mut bytes = encode(&request).unwrap();
+        let decoded = decode(&bytes).unwrap();
+        assert!(decoded.nodes[0].groups[0].valid);
+        assert_eq!(crate::scheduler::validate_node(&decoded.nodes[0]), Ok(()));
+        // `tool.runfiles/_main/tools/a` -> `tool.runfiles/../../tools/a`
+        // (same length: the postcard framing stays intact).
+        let groups = sections(&bytes).unwrap().groups;
+        let start = groups.as_ptr() as usize - bytes.as_ptr() as usize;
+        let needle = b"tool.runfiles/_main/tools/a";
+        let at = start
+            + groups
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .expect("the destination is in the GROUPS section");
+        bytes[at + "tool.runfiles/".len()..at + "tool.runfiles/".len() + 5]
+            .copy_from_slice(b"../..");
+        let tampered = decode(&bytes).unwrap();
+        let group = &tampered.nodes[0].groups[0];
+        assert_eq!(
+            group.inputs[1].1,
+            PathBuf::from("tool.runfiles/../../tools/a")
+        );
+        assert!(!group.valid);
+        let error = crate::scheduler::validate_node(&tampered.nodes[0]).unwrap_err();
+        assert!(
+            error.contains("unsafe mapped path 'tool.runfiles/../../tools/a'"),
+            "{error}"
+        );
+    }
+
+    /// A container with these sections (the framing of [`encode`]).
+    fn container(sections: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&FORMAT.to_le_bytes());
+        bytes.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+        for (kind, body) in sections {
+            bytes.extend_from_slice(&kind.to_le_bytes());
+            bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());
+        }
+        for (_, body) in sections {
+            bytes.extend_from_slice(body);
+        }
+        bytes
+    }
+
+    /// The GROUPS table and the actions' indices are checked: exactly one
+    /// GROUPS section, every index in range, no group twice in one action,
+    /// no group held by no action.
+    #[test]
+    fn damaged_group_tables_are_refused() {
+        let (tool, other) = (
+            input_group("tool.runfiles", "a"),
+            input_group("other.runfiles", "b"),
+        );
+        let meta = postcard::to_stdvec(&meta_of(&sample())).unwrap();
+        let one = postcard::to_stdvec(&table_of(&[&tool])).unwrap();
+        let two = postcard::to_stdvec(&table_of(&[&tool, &other])).unwrap();
+        let node = holder(0, &[]);
+        let nodes = |indices: &[u32]| postcard::to_stdvec(&vec![(&node, indices)]).unwrap();
+        let decoded = |sections: &[(u32, &[u8])]| decode(&container(sections));
+        // The well-formed container decodes.
+        let fine = decoded(&[
+            (SECTION_META, &meta),
+            (SECTION_GROUPS, &one),
+            (SECTION_NODES, &nodes(&[0])),
+        ])
+        .unwrap();
+        assert!(same_group(&fine.nodes[0].groups[0], &tool));
+        for (sections, expected) in [
+            (
+                vec![(SECTION_META, &meta[..]), (SECTION_NODES, &nodes(&[])[..])],
+                "missing GROUPS section",
+            ),
+            (
+                vec![
+                    (SECTION_META, &meta[..]),
+                    (SECTION_GROUPS, &one[..]),
+                    (SECTION_GROUPS, &one[..]),
+                ],
+                "unexpected section kind 3",
+            ),
+            (
+                vec![
+                    (SECTION_META, &meta[..]),
+                    (SECTION_GROUPS, &one[..]),
+                    (SECTION_NODES, &nodes(&[1])[..]),
+                ],
+                "holds shared input group 1 of 1",
+            ),
+            (
+                vec![
+                    (SECTION_META, &meta[..]),
+                    (SECTION_GROUPS, &two[..]),
+                    (SECTION_NODES, &nodes(&[1, 1])[..]),
+                ],
+                "holds shared input group 1 twice",
+            ),
+            (
+                vec![
+                    (SECTION_META, &meta[..]),
+                    (SECTION_GROUPS, &two[..]),
+                    (SECTION_NODES, &nodes(&[1])[..]),
+                ],
+                "group 0 of 2 is held by no action",
+            ),
+            (
+                vec![
+                    (SECTION_META, &meta[..]),
+                    (SECTION_GROUPS, &one[..one.len() - 1]),
+                    (SECTION_NODES, &nodes(&[0])[..]),
+                ],
+                "shared input groups: ",
+            ),
+        ] {
+            let error = decoded(&sections).map(|_| ()).unwrap_err();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
+    /// The round trip's check sees a group whose content or holder order
+    /// differs from the encoding's.
+    #[test]
+    fn the_round_trip_check_compares_the_group_table() {
+        let (tool, other) = (
+            input_group("tool.runfiles", "a"),
+            input_group("other.runfiles", "b"),
+        );
+        let request = with_nodes(vec![holder(0, &[&tool, &other]), holder(1, &[&other])]);
+        let bytes = encode(&request).unwrap();
+        assert!(encodes_to(&request, &bytes).unwrap());
+        let changed = with_nodes(vec![
+            holder(0, &[&tool, &input_group("other.runfiles", "c")]),
+            holder(1, &[&other]),
+        ]);
+        assert!(!encodes_to(&changed, &bytes).unwrap());
+        let reordered = with_nodes(vec![holder(0, &[&other, &tool]), holder(1, &[&other])]);
+        assert!(!encodes_to(&reordered, &bytes).unwrap());
+        // Equal content in a separate Arc per holder encodes one group per
+        // allocation: the planner shares by pointer, and so does the table.
+        let copied = with_nodes(vec![
+            holder(0, &[&tool, &other]),
+            holder(1, &[&input_group("other.runfiles", "b")]),
+        ]);
+        assert!(!encodes_to(&copied, &bytes).unwrap());
+        assert_eq!(table(&encode(&copied).unwrap()).len(), 3);
     }
 
     #[test]

@@ -1617,6 +1617,72 @@ fn map_each_plans_are_never_saved() {
     assert!(twin.snapshots().is_empty());
 }
 
+const TOOLED_RULES: &str = r#"def _tooled(ctx):
+    outs = []
+    for name in ["one", "two"]:
+        out = ctx.actions.declare_file(ctx.label.name + "." + name)
+        ctx.actions.run(outputs = [out], executable = ctx.executable.tool, arguments = [out.path])
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+tooled = rule(implementation = _tooled, attrs = {"tool": attr.label(executable = True, cfg = "target")})
+"#;
+
+const TOOLED_BUILD: &str = r#"load("//:rules.bzl", "script_binary")
+load(":defs.bzl", "tooled")
+
+script_binary(
+    name = "tool",
+    data = ["data.txt"],
+    script = '#!/bin/bash\ncat "$0.runfiles/_main/tooled/data.txt" > "$1"\n',
+)
+
+tooled(name = "use", tool = ":tool")
+"#;
+
+/// PA-1 x L2-W4 (integration-21): a tool's runfiles tree is ONE shared
+/// input group of every action using the tool (crate::scheduler::InputGroup);
+/// the snapshot encodes it once (the plan's GROUPS table) and a hit executes
+/// the decoded holders exactly like the full analysis — also after an edit
+/// of a file in the tree, which reruns them with the new content.
+#[test]
+fn shared_tool_runfiles_groups_save_and_hit() {
+    let twin = fixture();
+    twin.write("tooled/defs.bzl", TOOLED_RULES);
+    twin.write("tooled/BUILD.bazel", TOOLED_BUILD);
+    twin.write("tooled/data.txt", "data one\n");
+    let args = &["build", "//tooled:use"];
+    twin.save(args, &[]);
+    // The plan holds one group, held by both tool actions.
+    let timed = twin.run_side(OFF, args, &[("BAZEL_RS_TIMING", "1")]);
+    let groups = text(&timed.stderr)
+        .lines()
+        .find(|line| line.starts_with("PERF-GROUPS "))
+        .map(str::to_owned)
+        .unwrap_or_default();
+    assert!(
+        groups.contains(" holders=2 refs=2 distinct=1 "),
+        "{groups}\n{}",
+        text(&timed.stderr)
+    );
+    for _ in 0..2 {
+        let hit = twin.same(args, &[]);
+        hit.assert_hit().assert_success();
+        assert!(
+            hit.stderr().contains("0 actions executed"),
+            "{}",
+            hit.stderr()
+        );
+        assert_eq!(built_output(&twin, ON, &hit.on), "data one\n");
+    }
+    twin.write("tooled/data.txt", "data two\n");
+    let edited = twin.same(args, &[]);
+    edited.assert_hit().assert_success();
+    assert_eq!(built_output(&twin, ON, &edited.on), "data two\n");
+    assert_eq!(built_output(&twin, OFF, &edited.off), "data two\n");
+    twin.same(args, &[]).assert_hit();
+}
+
 /// L2-W6: `test` writes MODULE.bazel.lock like every command (genuine
 /// Bazel 9.3 does; it exited before the write): the run that wrote it is
 /// not saved, the next one is.
@@ -3876,6 +3942,11 @@ mod verify_mode {
     #[test]
     fn nobuild_test_and_run_hit() {
         verified(super::nobuild_test_and_run_hit);
+    }
+
+    #[test]
+    fn shared_tool_runfiles_groups_save_and_hit() {
+        verified(super::shared_tool_runfiles_groups_save_and_hit);
     }
 
     #[test]

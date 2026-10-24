@@ -175,6 +175,11 @@ pub struct PlannedAction {
 /// is a duplicate to drop and the namespace checks of the listed action
 /// pass exactly when [`InputGroup::valid`] and the action's own pass
 /// ([`validate_node`]).
+///
+/// A planned request encodes each group once, in a table its holders
+/// index (crate::snapshot::codec); there is deliberately no serde derive:
+/// with serde's `rc` feature an `Arc<InputGroup>` would serialize once per
+/// holder.
 #[derive(Debug)]
 pub struct InputGroup {
     /// The directory every destination lies below (the runfiles tree).
@@ -197,8 +202,35 @@ pub struct InputGroup {
     /// Every destination (also of the source inputs planting drops) is a
     /// relative normal path strictly below `root`, none is or contains
     /// another ([`group_namespace_valid`]), and every tree input is a
-    /// listed input.
+    /// listed input ([`tree_inputs_listed`]). Never encoded: a decoded
+    /// group recomputes it ([`InputGroup::listed_valid`]), as
+    /// [`validate_node`] trusts it.
     pub valid: bool,
+}
+
+impl InputGroup {
+    /// [`InputGroup::valid`] recomputed from what the group lists: the
+    /// namespace of its inputs', dependencies' and empty files'
+    /// destinations, and its tree inputs listed. A decoded group's
+    /// (crate::snapshot::codec). The planner's flag also covers the
+    /// destinations of the source inputs planting dropped, a superset: a
+    /// group planned valid is valid here too, and a group that is not
+    /// valid here fails the listed validation of every holder.
+    pub fn listed_valid(&self) -> bool {
+        group_namespace_valid(
+            &self.root,
+            self.inputs
+                .iter()
+                .map(|(_, destination)| destination.as_path())
+                .chain(
+                    self.dependencies
+                        .iter()
+                        .map(|dependency| dependency.destination.as_path()),
+                )
+                .chain(self.empty_files.iter().map(PathBuf::as_path))
+                .collect(),
+        ) && tree_inputs_listed(&self.inputs, &self.dependencies, &self.tree_inputs)
+    }
 }
 
 /// The namespace part of [`InputGroup::valid`] for a group below `root`:
@@ -215,6 +247,27 @@ pub fn group_namespace_valid(root: &Path, mut paths: Vec<&Path>) -> bool {
     // adjacent pairs find any path equal to or containing another.
     paths.sort();
     !paths.windows(2).any(|pair| pair[1].starts_with(pair[0]))
+}
+
+/// The rest of [`InputGroup::valid`]: every tree input of a group is a
+/// listed input (a source input or a generated one), as validate_structure
+/// requires of the executed action.
+pub fn tree_inputs_listed(
+    inputs: &[(PathBuf, PathBuf)],
+    dependencies: &[Dependency],
+    tree_inputs: &[PathBuf],
+) -> bool {
+    if tree_inputs.is_empty() {
+        return true;
+    }
+    let listed: std::collections::HashSet<&Path> = inputs
+        .iter()
+        .map(|(_, destination)| destination.as_path())
+        .chain(dependencies.iter().map(|d| d.destination.as_path()))
+        .collect();
+    tree_inputs
+        .iter()
+        .all(|tree| listed.contains(tree.as_path()))
 }
 
 /// Whether the groups of an action whose own part is `action` can stay

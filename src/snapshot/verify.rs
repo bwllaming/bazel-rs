@@ -657,9 +657,26 @@ fn compare_plan(
         ));
     }
     let mut differing = 0;
+    // PA-1's shared input groups are not part of a node's own encoding:
+    // compared by value too, once per pair of groups (thousands of holders
+    // share a few groups).
+    let mut same_groups: HashMap<(usize, usize), bool> = HashMap::new();
+    let mut groups_equal = |old: &crate::scheduler::PlannedAction,
+                            new: &crate::scheduler::PlannedAction| {
+        old.groups.len() == new.groups.len()
+            && old.groups.iter().zip(&new.groups).all(|(a, b)| {
+                *same_groups
+                    .entry((
+                        std::sync::Arc::as_ptr(a).addr(),
+                        std::sync::Arc::as_ptr(b).addr(),
+                    ))
+                    .or_insert_with(|| crate::snapshot::codec::same_group(a, b))
+            })
+    };
     for (index, (old, new)) in snapshot.nodes.iter().zip(&full.nodes).enumerate() {
         let same = old.action.id == new.action.id
-            && postcard::to_stdvec(old).ok() == postcard::to_stdvec(new).ok();
+            && postcard::to_stdvec(old).ok() == postcard::to_stdvec(new).ok()
+            && groups_equal(old, new);
         if same {
             continue;
         }

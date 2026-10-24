@@ -37,7 +37,7 @@ same pipeline and keep the analysis diagnostics in the engine (`take_warnings`/`
 |---|---|
 | `command` | `Build`; `Test { build, tests }` (the targets built, and every test to run after the test filters with its `TestRuleInfo` and location — both as the target pattern phase selected them, test suites expanded); `Run { label, test }` (the target the phase selected — a suite of one test is that test —, its test properties, looked up before planning while the target is loaded, for `run` of a test; an error surfaces where `run_test` read it before). A phase that reported a test-suite expansion error fails the command after its build; it is not part of the request: such a run is never saved as a snapshot (docs/ANALYSIS_SNAPSHOT.md) |
 | `execute` | false under `--nobuild` |
-| `nodes` | the reachable planned actions in plan order (the `BAZEL_RS_DUMP_ACTIONS` order), with the workspace status nodes as placeholders at their position |
+| `nodes` | the reachable planned actions in plan order (the `BAZEL_RS_DUMP_ACTIONS` order), with the workspace status nodes as placeholders at their position; a node's shared input groups (PA-1, `PlannedAction::groups`: a tool's runfiles tree expanded once per build, docs/RUNFILES_TREES.md) are one `Arc` per group held by every node using the tool |
 | `requested`, `aspect_reports`, `non_empty_targets` | the reported artifacts as `Produced { real, producer }` (where `--nobuild` reports them / which action output publishes them) |
 | `run_plans` | per run/test target with an executable: the executable (exec path, short path), the built runfiles tree's MANIFEST, the runfiles mapping, the run settings, and an index into `configurations` |
 | `configurations` | per configuration a run plan uses: the output directory mnemonic, the action environment and the `--test_env` environment (what `build_requests` read from the configuration table) |
@@ -86,7 +86,7 @@ actions the plan kept taint the run. The record mode reports
 
 ```
 bazel-rs-snapshot: plan check: build-info-callback registered 8 (8 distinct), 0 in the plan; map-each-deferred registered 0 (0 distinct), 0 in the plan
-bazel-rs-snapshot: plan: 689 actions, encoded N bytes (M outline, K action chunk(s)); encode A ms, decode B ms
+bazel-rs-snapshot: plan: 689 actions, encoded N bytes (M outline, G shared input group(s) in T, K action chunk(s)); encode A ms, decode B ms
 ```
 
 and `eligible=` no longer has the `unless-pruned` value once the plan decided (it remains only for a run whose
@@ -103,7 +103,7 @@ little-endian:
 | 8 | format (u32) |
 | 12 | section count (u32) |
 | 16 | per section: kind (u32), length (u64) |
-| … | one META section (everything but the actions), then the actions in NODES chunks of at most 1,024 |
+| … | one META section (everything but the actions), one GROUPS section (the shared input groups, each once), then the actions in NODES chunks of at most 1,024 |
 
 The framing decodes without copying (borrowed slices); chunks of plans of 4 MiB and more decode on scoped
 threads. The derives sit on the in-memory types (no mirror types): snapshots never survive a binary change.
@@ -114,6 +114,33 @@ The encoding is deterministic: no hash order, no per-process ids, no status byte
 L2-W5 embeds these bytes as the PLAN section of its snapshot file (docs/ANALYSIS_SNAPSHOT.md);
 large plans encode their chunks on scoped threads (the same bytes on any thread).
 
+**Shared input groups (format 2, integration-21).** PA-1's `InputGroup`s are encoded once: the GROUPS section is
+the table of the distinct groups (by pointer) in first-seen order — the nodes in order, each node's groups in
+order — built sequentially before the chunks encode, and every NODES element is `(action, indices into the
+table)`. `PlannedAction::groups` is `#[serde(skip)]` and `InputGroup` has no serde derive: with serde's `rc`
+feature (enabled) a derived `Arc<InputGroup>` would be written once per holder — 20,501 holders and 36.8 M
+entries on ~/code's pythonworker instead of 7 groups of 1,868 entries — and the byte-identical round trip would
+still pass. Decoding builds the table first (one `Arc` per entry) and every holder shares it in its own group
+order; an index out of range, one group twice in an action and a group no action holds are errors, and the
+round trip's check (`encodes_to`) rebuilds and compares the table. A group's `valid` flag (the scheduler's
+"groups apart" shortcut trusts it, `scheduler::validate_node`) is never encoded: a decoded group recomputes it
+from what it lists (`InputGroup::listed_valid`: its inputs', dependencies' and empty files' namespace, its tree
+inputs listed), so a tampered destination fails validation instead of passing the shortcut. Verify mode
+compares the groups by value (once per pair of groups).
+
+### What the encoding leaves out
+
+* An action's resolved client environment values (finalize re-resolves them on every run; they are never
+  written to disk) and the workspace status (placeholders, expanded by finalize).
+* An Args `map_each` function (an in-memory Starlark value: the request is not encodable, below).
+* A shared input group's `valid` flag (recomputed on decode, above).
+* Everything PA-1 keeps in process, keyed by per-process identities that a restoring process would reuse
+  for other values: the tool runfiles trees (`analysis_runtime::ToolRunfilesTree` and its memo), the
+  planner's tree memo (`ActionPlanning::input_groups` and its `ExpandedTree` entries), the shared-action keys
+  (`shared_actions::ActionKey`, `RegisteredAction::key`: in-process digests, their bytes also depend on
+  `tree_digest`) and the FilesToRunProvider identities (`runfiles::FilesToRun`). None of them has a serde
+  derive; a hit never re-expands a tree.
+
 ## Switches
 
 | Variable | Effect |
@@ -121,7 +148,7 @@ large plans encode their chunks on scoped threads (the same bytes on any thread)
 | `BAZEL_RS_SNAPSHOT_ROUNDTRIP=1` | every full-analysis request is encoded, the planned request dropped, the encoding decoded, and the decoded request re-encoded section by section (it must be identical, else an internal error); the **decoded** request executes. The CLI harnesses that clear the environment forward it like `BAZEL_RS_VERIFY_*` (tests/support/verify_env.rs), so `cargo test` with it exported executes every build of the suite from a decoded plan. Its cost on B2: about 0.1 s and +75–85 MB of peak RSS (the 44.7 MB encoding and a chunk's re-encoding alive with the decoded plan). |
 | `BAZEL_RS_SNAPSHOT_PLAN_OUT=<file>` | write the encoding to the file (the determinism gate compares it across thread counts and jitter seeds) |
 | `BAZEL_RS_SNAPSHOT=record` | also encodes and decodes once for the report's `plan:` line |
-| `BAZEL_RS_TIMING=1` with any of the above | a `PERF-PLAN nodes=… bytes=… meta=… chunks=… encode_ms=… decode_ms=… roundtrip=0|1` line |
+| `BAZEL_RS_TIMING=1` with any of the above | a `PERF-PLAN nodes=… bytes=… meta=… groups=… group_bytes=… chunks=… encode_ms=… decode_ms=… roundtrip=0|1` line |
 | `BAZEL_RS_DEBUG_ENGINE_DROP=inline\|leak` | measurement switches for freeing the engine (below) |
 
 Without a switch nothing is encoded.
@@ -185,8 +212,12 @@ registered 8 (12 on B2), 0 in the plan`).
 Unit tests: `snapshot::codec::tests` (every planned shape round-trips byte for byte, non-UTF-8 paths, the
 embedded blob, no client environment values, decoded completions expand like the planned ones, fixed chunks
 and the parallel decode, damaged encodings refused, `map_each` unencodable and a blocker, unknown blobs
-refused) and `request::tests` (status placeholders on success, the failure layout, no status needed without
-placeholders, the inherited environment). CLI tests: tests/planned_request.rs — byte-identical output with
+refused; the shared input groups: encoded once and shared again when decoded, the size grows with the distinct
+groups and not with their holders, a tampered escaping destination fails the scheduler's validation, damaged
+group tables refused, the round-trip check compares the table) and `request::tests` (status placeholders on
+success, the failure layout, no status needed without placeholders, the inherited environment). tests/snapshot.rs
+`shared_tool_runfiles_groups_save_and_hit` (and its verify-mode twin): a tool's tree shared by two actions is
+saved, hit and verified, and an edit of a file in it reruns both holders. CLI tests: tests/planned_request.rs — byte-identical output with
 and without the round trip for build, `--nobuild`, test, run of a binary and of a test, cache hits and a
 failing status command; the encoded request identical across `--loading_phase_threads` 1/8/32 and jitter
 seeds 7/40/99 (build, `--nobuild`, test); the record mode's build-info eligibility on bazel_tools'
