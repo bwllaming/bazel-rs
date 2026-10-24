@@ -395,10 +395,13 @@ spelling differs.
 
 Security posture: repository rules are trusted code, as in Bazel. `execute` and
 `which` run host programs with the user's credentials, environment, network and
-filesystem access; this is not a sandbox. Supervision only: the child leads its
-own process group, which is SIGKILLed with kill(2) on the group after the leader
-exits or on timeout (Bazel would keep orphans that hold its pipes and then
-block on them); output is captured whole like Bazel's
+filesystem access; this is not a sandbox. Supervision only: the command runs
+under the native process-wrapper (docs/PROCESS_WRAPPER.md), a child subreaper,
+in its own process group; the command and its group are SIGKILLed on timeout,
+and after the command has exited every process it left — also those that left
+its group (`setsid` daemons, double forks) — is killed and reaped, like Bazel's
+process-wrapper (`TerminateAndWaitForAll`), so no descendant keeps the captured
+pipes open; output is captured whole like Bazel's
 (StarlarkExecutionResult.java:201-203); there are no call-count, timeout or
 argument-size caps (N32).
 
@@ -486,8 +489,9 @@ inputs) remain; the former 16 MiB input cap was removed in N32.
   rule or extension can therefore read secrets such as tokens from the
   environment; Bazel behaves the same, but this is new for bazel-rs.
 * `repository_ctx.execute` runs host programs. If bazel-rs itself is killed
-  (for example Ctrl-C), a running child process may be orphaned; normal
-  completion, timeouts and output overflow kill the child's process group.
+  (for example Ctrl-C), the process-wrapper kills the running command and
+  everything it started; normal completion and timeouts kill every process the
+  command left (docs/PROCESS_WRAPPER.md).
 * Label `read()` calls (unless `watch = "no"`) and host-path reads/watches are
   recorded as file inputs. Label templates are not: their existing `templates`
   entry (canonical label and full bytes) already keys their content, so

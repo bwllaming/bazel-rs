@@ -84,7 +84,6 @@ Builds execute trusted shell commands locally; this is not a security sandbox.
 ";
 
 fn run() -> Result<(), String> {
-    bazel_rs::perf_mark("main.start");
     let mut argv = std::env::args_os();
     let path_to_binary = argv
         .next()
@@ -101,13 +100,15 @@ fn run() -> Result<(), String> {
     // The sandbox worker (crate::sandbox): the executor starts this binary
     // with the hidden `__sandbox-worker` subcommand where Bazel starts its
     // linux-sandbox tool. Dispatched before anything else: the worker is not
-    // a bazel command and shares none of the client state.
+    // a bazel command and shares none of the client state (no diagnostics
+    // either: its stderr is the action's).
     if args
         .first()
         .is_some_and(|arg| arg == bazel_rs::sandbox::WORKER_ARG)
     {
         std::process::exit(bazel_rs::sandbox::worker_main(&args[1..]));
     }
+    bazel_rs::perf_mark("main.start");
     let line = bazelrc::split_command_line(args)?;
     let cache = line.cache_dir.clone().map(PathBuf::from);
     let command = line.command.clone().unwrap_or_else(|| "help".into());
@@ -3276,6 +3277,22 @@ fn warn(warning: &str) {
 }
 
 fn main() {
+    // The process-wrapper (crate::process_wrapper): the executor starts this
+    // binary with the hidden `__process-wrapper` subcommand where Bazel
+    // starts its process-wrapper tool, to supervise one spawn. Dispatched
+    // before anything else, on the raw arguments (a repository command's
+    // argv need not be UTF-8): it is not a bazel command, shares none of the
+    // client state and prints nothing (its stderr is the spawn's).
+    let mut raw = std::env::args_os().skip(1);
+    if raw
+        .next()
+        .is_some_and(|arg| arg == bazel_rs::process_wrapper::ARG)
+    {
+        std::process::exit(bazel_rs::process_wrapper::main(&raw.collect::<Vec<_>>()));
+    }
+    // This process is the CLI binary: spawns run under its re-executed
+    // process-wrapper.
+    bazel_rs::process_wrapper::enable();
     let result = run();
     // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended
     // before planning completed is a mismatch (reported and logged; the

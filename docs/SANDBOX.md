@@ -93,14 +93,18 @@ genuine Bazel 9.3.0 on this host cannot register `linux-sandbox` either and
 falls back to processwrapper-sandbox, which isolates nothing). The closest
 Bazel-faithful design that still makes out-of-sandbox writes FAIL is a
 Landlock ruleset (Linux LSM, ABI 4 on this kernel) applied by a sandbox
-worker process immediately before exec'ing the action — exactly the point
+worker process immediately before it starts the action — exactly the point
 where linux-sandbox applies its namespace setup:
 
 - The executor starts its own binary as the hidden `__sandbox-worker`
   subcommand (the role the linux-sandbox binary fills as the spawn's
   argv[0]), with the action's cwd and environment. The worker applies the
-  ruleset and execs the action through `spawn_lock::exec`; the action's exit
-  status is the worker's.
+  ruleset to itself and then starts and supervises the action, which
+  inherits it, exactly like the process-wrapper (docs/PROCESS_WRAPPER.md): a
+  child subreaper that, once the action has exited, kills and reaps every
+  process it left — the effect of linux-sandbox's PID namespace ending with
+  its pid 1. The action's exact wait status reaches the executor through the
+  worker's control channel.
 - Every write-ish filesystem access (`AccessFs::from_write`: write, remove,
   mkdir/mknod/symlink, cross-directory refer, truncate) is denied everywhere
   except the paths linux-sandbox keeps writable: the action's execroot,

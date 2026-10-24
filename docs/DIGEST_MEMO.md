@@ -97,10 +97,11 @@ were keyed by change time (both while the format was unreleased; unit test
   the path where the content was established, and forgets it whenever it removes or replaces that path,
   `action::DigestMemo`), and never a repository tree file: those only as read in a settled state. A
   published output is hashed right after the action's process exited, inside the racy window, so
-  nothing of the action may write it afterwards: the executor kills what is left of the action's
-  process group before it hashes the outputs (`action::kill_leftovers`, as Bazel's process-wrapper
-  does); only a process that left the group (`setsid`, a daemon) could still change an output after its
-  TRUSTED record was made. Its blob keeps the inode number from being reused, and this process drops
+  nothing of the action may write it afterwards: the action's supervisor kills and reaps every process
+  the action left — also those that left its process group (`setsid`, a daemon) — before the executor
+  hashes the outputs (docs/PROCESS_WRAPPER.md, as Bazel's process-wrapper does); only a process that
+  escaped the supervisor itself could still change an output after its TRUSTED record was made. Its
+  blob keeps the inode number from being reused, and this process drops
   its unsaved records of a path it removes (`Table::forget`: an invalid blob, an action entry that is
   published again).
 - Only paths that recur across commands: files outside the cache root, and below it published action

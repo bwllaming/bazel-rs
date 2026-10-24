@@ -80,6 +80,17 @@ pub fn spawn(command: &mut Command) -> io::Result<Child> {
     Ok(child)
 }
 
+/// [`spawn`] for a spawn supervisor (crate::process_wrapper): the start is
+/// guarded the same way, but the supervisor's own process group is not
+/// registered with the memory watchdog — a watchdog kill of the supervisor
+/// would orphan the command it supervises. The supervisor reports the
+/// command's PID and the executor registers the command's group instead.
+#[allow(clippy::disallowed_methods)]
+pub fn spawn_supervisor(command: &mut Command) -> io::Result<Child> {
+    let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
+    command.spawn()
+}
+
 /// The process-group id of `pid` from /proc/<pid>/stat (field 5; the
 /// comm field may contain spaces/parens, so parse after the last ')').
 /// None off Linux or when the process is already gone.

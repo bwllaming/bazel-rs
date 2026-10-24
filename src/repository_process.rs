@@ -10,16 +10,22 @@
 //! the client environment plus explicit overrides, and full filesystem/network
 //! access, exactly like Bazel's local execution. The discipline here is only
 //! about supervision: argv is passed without a shell (Bazel never inserts one;
-//! a shell runs only when argv[0] names one), stdin is empty, the child leads
-//! its own process group, which is SIGKILLed with kill(2) on `-group`
-//! after the leader exits or on deadline (process-wrapper likewise kills
-//! `-child_pid` after the child, process-wrapper-legacy.cc:150-154), and
-//! captured output is buffered without a size cap like Bazel's
-//! (StarlarkExecutionResult.java:201-203): the result is a Starlark string,
-//! so the memory is inherent. A child that escapes its process
-//! group is not contained. Unlike process-wrapper the child does not call
-//! `setsid()` or force `umask(022)` (no unsafe pre-exec hooks here). If the
-//! native process itself is killed (e.g. Ctrl-C), a running child may orphan.
+//! a shell runs only when argv[0] names one), stdin is empty, and the command
+//! runs under the native process-wrapper (crate::process_wrapper): a child
+//! subreaper that starts it in its own process group, SIGKILLs the command
+//! and its group at the deadline, and — after a normal exit too — kills and
+//! reaps every process the command leaves, also those that left its group
+//! (`setsid` daemons, double forks), exactly like Bazel's process-wrapper
+//! (process-wrapper-legacy.cc:53-62,138-156, TerminateAndWaitForAll in
+//! process-tools-linux.cc:24-55); if the native process itself dies (e.g.
+//! Ctrl-C) the process-wrapper kills the command too. Captured output is
+//! buffered without a size cap like Bazel's (StarlarkExecutionResult.java:
+//! 201-203): the result is a Starlark string, so the memory is inherent.
+//! Unlike process-wrapper the child does not call `setsid()` or force
+//! `umask(022)` (no unsafe pre-exec hooks here). The library's in-process
+//! users (unit tests) start the command directly with the former group
+//! discipline: its group is SIGKILLed after the leader exits or at the
+//! deadline, and a process that left the group is not reached.
 
 #![deny(unsafe_code)]
 
@@ -32,6 +38,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+use crate::process_wrapper::{Launch, Spawned};
 
 const POLL: Duration = Duration::from_millis(5);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -199,61 +207,29 @@ impl Capture {
     }
 }
 
-/// Run one command. `Err` is a native-profile failure (supervision
-/// failure); spawn failures and timeouts are results, like Bazel.
-pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
-    if request.timeout.is_zero() {
-        return Err("execute() timeout must be positive".into());
-    }
-    let deadline = Instant::now()
-        .checked_add(request.timeout)
-        .ok_or("execute() timeout is too large")?;
-    let Some(first) = request.argv.first().cloned() else {
-        // process-wrapper exits with EXIT_FAILURE after its usage text.
-        return Ok(Outcome::Completed(1, Vec::new(), usage()));
-    };
-    let spawn = |program: &Path, shell: bool| -> io::Result<Child> {
-        let mut command = Command::new(if shell { Path::new("/bin/sh") } else { program });
-        if shell {
-            // glibc execvp runs a file that fails with ENOEXEC through /bin/sh.
-            command.arg(program);
-        } else {
-            command.arg0(OsStr::from_bytes(&first));
-        }
-        command
-            .args(request.argv[1..].iter().map(|arg| OsStr::from_bytes(arg)))
-            .env_clear()
-            .envs(request.environment.iter().map(|(name, value)| {
-                (
-                    OsString::from_vec(name.clone()),
-                    OsString::from_vec(value.clone()),
-                )
-            }))
-            .current_dir(request.working_directory)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0);
-        crate::spawn_lock::spawn(&mut command)
-    };
-    // glibc __execvpe (posix/execvpe.c): EACCES, ENOENT, ESTALE, ENOTDIR,
-    // ENODEV and ETIMEDOUT continue the search; any other error (e.g.
-    // ETXTBSY) returns immediately with that errno. Only an exhausted search
-    // reports EACCES if it was seen, otherwise the last error.
-    let mut child = None;
+/// glibc __execvpe's search (posix/execvpe.c) over `candidates` for the
+/// program named `first`, starting each candidate with `spawn` (`true`: as a
+/// script through /bin/sh, after ENOEXEC): EACCES, ENOENT, ESTALE, ENOTDIR,
+/// ENODEV and ETIMEDOUT continue the search; any other error (e.g. ETXTBSY)
+/// ends it with that errno. Only an exhausted search reports EACCES if it was
+/// seen, otherwise the last error. The process-wrapper runs it for a
+/// supervised execute (crate::process_wrapper), the executor itself for a
+/// direct one.
+pub(crate) fn search(
+    candidates: &[PathBuf],
+    first: &[u8],
+    mut spawn: impl FnMut(&Path, bool) -> io::Result<Child>,
+) -> Result<Child, i32> {
     let mut failure = ENOENT;
     let mut denied = false;
     let mut hard = false;
-    for candidate in candidates(request, &first) {
-        let spawned = match spawn(&candidate, false) {
-            Err(error) if error.raw_os_error() == Some(ENOEXEC) => spawn(&candidate, true),
+    for candidate in candidates {
+        let spawned = match spawn(candidate, false) {
+            Err(error) if error.raw_os_error() == Some(ENOEXEC) => spawn(candidate, true),
             result => result,
         };
         match spawned {
-            Ok(spawned) => {
-                child = Some(spawned);
-                break;
-            }
+            Ok(child) => return Ok(child),
             Err(error) => {
                 let errno = error.raw_os_error().unwrap_or(ENOENT);
                 denied |= errno == EACCES;
@@ -271,17 +247,79 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
             }
         }
     }
-    let Some(mut child) = child else {
-        let errno = if denied && !hard { EACCES } else { failure };
-        return Ok(Outcome::Completed(
-            1,
-            Vec::new(),
-            execvp_failure(&first, errno),
-        ));
+    Err(if denied && !hard { EACCES } else { failure })
+}
+
+/// Run one command. `Err` is a native-profile failure (supervision
+/// failure); spawn failures and timeouts are results, like Bazel.
+pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
+    if request.timeout.is_zero() {
+        return Err("execute() timeout must be positive".into());
+    }
+    let deadline = Instant::now()
+        .checked_add(request.timeout)
+        .ok_or("execute() timeout is too large")?;
+    let Some(first) = request.argv.first().cloned() else {
+        // process-wrapper exits with EXIT_FAILURE after its usage text.
+        return Ok(Outcome::Completed(1, Vec::new(), usage()));
     };
-    let group = child.id();
-    let stdout = child.stdout.take().ok_or("execute() stdout pipe missing");
-    let stderr = child.stderr.take().ok_or("execute() stderr pipe missing");
+    let environment = || {
+        request.environment.iter().map(|(name, value)| {
+            (
+                OsString::from_vec(name.clone()),
+                OsString::from_vec(value.clone()),
+            )
+        })
+    };
+    let candidates = candidates(request, &first);
+    let started = if crate::process_wrapper::enabled() {
+        // Bazel runs the command through its process-wrapper, which searches
+        // like execvp and kills every process the command leaves.
+        let mut launch = Launch::execvp(&candidates, &request.argv);
+        launch
+            .command()
+            .env_clear()
+            .envs(environment())
+            .current_dir(request.working_directory)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        launch
+            .start()
+            .map_err(|error| error.raw_os_error().unwrap_or(ENOENT))
+    } else {
+        search(&candidates, &first, |program, shell| {
+            let mut command = Command::new(if shell { Path::new("/bin/sh") } else { program });
+            if shell {
+                // glibc execvp runs a file that fails with ENOEXEC through /bin/sh.
+                command.arg(program);
+            } else {
+                command.arg0(OsStr::from_bytes(&first));
+            }
+            command
+                .args(request.argv[1..].iter().map(|arg| OsStr::from_bytes(arg)))
+                .env_clear()
+                .envs(environment())
+                .current_dir(request.working_directory)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .process_group(0);
+            crate::spawn_lock::spawn(&mut command)
+        })
+        .map(Spawned::direct)
+    };
+    let mut child = match started {
+        Ok(child) => child,
+        Err(errno) => {
+            return Ok(Outcome::Completed(
+                1,
+                Vec::new(),
+                execvp_failure(&first, errno),
+            ));
+        }
+    };
+    let stdout = child.take_stdout().ok_or("execute() stdout pipe missing");
+    let stderr = child.take_stderr().ok_or("execute() stderr pipe missing");
     let captures = match (stdout, stderr) {
         (Ok(stdout), Ok(stderr)) => {
             Capture::start(stdout).and_then(|out| Capture::start(stderr).map(|err| (out, err)))
@@ -314,15 +352,14 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
             }
         }
     }
-    // Kill the whole group even after a normal leader exit, then reap.
-    let killed = crate::git_process::kill_group(group);
-    if killed.is_err() {
-        let _ = child.kill();
+    // At the deadline (or after a wait error) the command and its group are
+    // killed; what it leaves is killed once it is gone, also after a normal
+    // exit (the process-wrapper's TerminateAndWaitForAll, or the group kill
+    // of a direct start). Then reap.
+    if status.is_none() {
+        child.kill();
     }
     let waited = child.wait();
-    if let Err(error) = killed {
-        errors.push(error);
-    }
     match waited {
         Ok(exit) if status.is_none() && !timed_out && errors.is_empty() => status = Some(exit),
         Ok(_) => {}

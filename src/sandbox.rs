@@ -450,8 +450,9 @@ fn absolute(path: &Path) -> PathBuf {
 
 /// Wraps one action command line in the sandbox worker: the executor starts
 /// its own binary as `__sandbox-worker` (the role the linux-sandbox binary
-/// fills as the spawn's argv[0]) and the worker execs the action under the
-/// Landlock ruleset. The writable set is the paths Bazel's linux-sandbox keeps
+/// fills as the spawn's argv[0]; crate::process_wrapper::Launch::sandbox_worker)
+/// and the worker runs and supervises the action under the Landlock ruleset.
+/// The writable set is the paths Bazel's linux-sandbox keeps
 /// writable for the spawn; the caller has already created the execroot and
 /// tmp directories and resolved the action environment (TMPDIR/TEST_TMPDIR
 /// are read from the worker's own environment, which is the action's).
@@ -528,13 +529,14 @@ pub fn wrap(
 }
 
 /// The worker entry point (main dispatches `__sandbox-worker` here): apply the
-/// Landlock ruleset, then exec the action. A sandbox setup failure is written
-/// to the setup-error file and reported with exit code 126 (the
-/// infrastructure-failure channel; the exec that follows never returns, so
-/// every other exit status is the action's own) — the counterpart of
-/// AbstractSandboxSpawnRunner.runSpawn's sandbox.createFileSystem failure
-/// ("Could not copy inputs into sandbox", an EnvironmentalExecException, not
-/// the action's).
+/// Landlock ruleset, then start and supervise the action
+/// (crate::process_wrapper). A sandbox setup failure — including an action
+/// that cannot be started — is written to the setup-error file and reported
+/// with exit code 126 before the action exists (the infrastructure-failure
+/// channel; the action's own status travels in the control channel's end
+/// report) — the counterpart of AbstractSandboxSpawnRunner.runSpawn's
+/// sandbox.createFileSystem failure ("Could not copy inputs into sandbox", an
+/// EnvironmentalExecException, not the action's).
 pub fn worker_main(args: &[String]) -> i32 {
     match worker(args) {
         Ok(code) => code,
@@ -616,18 +618,23 @@ fn worker(args: &[String]) -> Result<i32, String> {
         config.writable, config.blocked, config.deny_network
     ));
     restrict(&config, &debug)?;
-    // The action's exit status is the worker's: crate::spawn_lock::exec
-    // replaces this process. The worker was started with the action's cwd and
-    // environment already set; argv[0] spelling is the executor's, whose
-    // arguments these are.
+    // The worker stays the action's parent and supervises it exactly like the
+    // process-wrapper (crate::process_wrapper): a child subreaper that, once
+    // the action has exited, kills every process it left — also those that
+    // left its process group — the way linux-sandbox's PID namespace ends
+    // with its pid 1 (linux-sandbox-pid1.cc:811-814). The action inherits the
+    // ruleset, the worker's cwd and environment (the executor set them); the
+    // argv[0] spelling is the executor's, whose arguments these are. The
+    // action's exact wait status reaches the executor through the control
+    // channel.
     let mut command = Command::new(&arguments[0]);
     command.args(&arguments[1..]);
     if let Some(arg0) = &config.arg0 {
         use std::os::unix::process::CommandExt;
         command.arg0(arg0);
     }
-    let error = crate::spawn_lock::exec(&mut command);
-    Err(format!("cannot execute '{}': {error}", arguments[0]))
+    crate::process_wrapper::run_supervised(&mut command)
+        .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]))
 }
 
 fn path(argument: &Option<&String>) -> Result<PathBuf, String> {

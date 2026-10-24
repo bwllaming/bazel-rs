@@ -917,44 +917,40 @@ impl Runner<'_> {
         // spawn's own status).
         let (strategy, deny_network) = self.strategy(unit)?;
         let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
-        let mut command = if sandboxed {
-            let mut command = std::process::Command::new("/proc/self/exe");
-            command.args(self.worker_args(
+        // The test runs under a supervisor (the process-wrapper or the
+        // sandbox worker, crate::process_wrapper) in its own process group:
+        // once it has exited, every process it left is killed and reaped —
+        // also daemons that left its group (setsid; embedded databases'
+        // `pg_ctl start`) — like Bazel's process-wrapper and linux-sandbox.
+        let mut launch = if sandboxed {
+            crate::process_wrapper::Launch::sandbox_worker(self.worker_args(
                 env,
                 execroot,
                 args,
                 SETUP_EXEC_PATH,
                 &args[0],
                 deny_network,
-            ));
-            {
-                use std::os::unix::process::CommandExt;
-                command.process_group(0);
-            }
-            command
+            ))
         } else {
-            let mut command = std::process::Command::new(execroot.join(SETUP_EXEC_PATH));
-            {
-                use std::os::unix::process::CommandExt;
-                command.arg0(&args[0]);
-                command.process_group(0);
-            }
-            command.args(&args[1..]);
-            command
+            crate::process_wrapper::Launch::new(
+                execroot.join(SETUP_EXEC_PATH),
+                Some(std::ffi::OsStr::new(&args[0])),
+                &args[1..],
+            )
         };
-        command
+        launch
+            .command()
             .env_clear()
             .envs(env)
             // PosixLocalEnvProvider.rewriteLocalEnv (exec/local/PosixLocalEnvProvider.java:44-60).
             .env("TMPDIR", tmpdir)
             .current_dir(execroot)
-            .stdin(std::process::Stdio::null())
             .stdout(log)
             .stderr(err);
         let start = Instant::now();
-        let mut child = crate::spawn_lock::spawn(&mut command)
+        let mut child = launch
+            .start()
             .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
-        let pid = child.id();
         let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
         let mut timed_out = false;
         let mut terminated_at = None;
@@ -968,19 +964,20 @@ impl Runner<'_> {
             }
             let elapsed = start.elapsed();
             if !timed_out && elapsed >= timeout {
+                // SIGTERM to the test's process group, SIGKILL after the
+                // grace period (the process-wrapper's --timeout and
+                // --kill_delay, process-tools.cc:93-111).
                 timed_out = true;
                 terminated_at = Some(Instant::now());
-                signal_group(pid, rustix::process::Signal::TERM);
+                child.terminate();
             } else if let Some(at) = terminated_at
                 && at.elapsed() >= TERMINATION_GRACE
             {
-                signal_group(pid, rustix::process::Signal::KILL);
+                child.kill();
                 terminated_at = None;
             }
             std::thread::sleep(Duration::from_millis(10));
         };
-        // Kill any process the test left behind in its group.
-        signal_group(pid, rustix::process::Signal::KILL);
         // A sandbox setup failure is an infrastructure failure of the attempt
         // (crate::sandbox), not a test result.
         if sandboxed
@@ -1064,30 +1061,26 @@ impl Runner<'_> {
                 (millis / 1000).to_string(),
                 exit_code.to_string(),
             ];
-            let mut command = if sandboxed {
-                let mut command = std::process::Command::new("/proc/self/exe");
+            let mut launch = if sandboxed {
                 let mut arguments = vec![XML_EXEC_PATH.to_owned()];
                 arguments.extend(xml_arguments.iter().cloned());
-                command.args(self.worker_args(
+                crate::process_wrapper::Launch::sandbox_worker(self.worker_args(
                     &xml_env,
                     execroot,
                     &arguments,
                     XML_EXEC_PATH,
                     XML_EXEC_PATH,
                     deny_network,
-                ));
-                command
+                ))
             } else {
-                let mut command = std::process::Command::new(execroot.join(XML_EXEC_PATH));
-                {
-                    use std::os::unix::process::CommandExt;
-                    command.arg0(XML_EXEC_PATH);
-                    command.process_group(0);
-                }
-                command.args(&xml_arguments);
-                command
+                crate::process_wrapper::Launch::new(
+                    execroot.join(XML_EXEC_PATH),
+                    Some(std::ffi::OsStr::new(XML_EXEC_PATH)),
+                    &xml_arguments,
+                )
             };
-            command
+            launch
+                .command()
                 .env_clear()
                 .envs(&xml_env)
                 .env(
@@ -1099,8 +1092,11 @@ impl Runner<'_> {
                         .unwrap_or("/tmp"),
                 )
                 .current_dir(execroot)
-                .stdin(std::process::Stdio::null());
-            let output = crate::spawn_lock::output(&mut command)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let output = launch
+                .start()
+                .and_then(crate::process_wrapper::Spawned::wait_with_output)
                 .map_err(|e| format!("cannot start {XML_EXEC_PATH}: {e}"))?;
             if !output.status.success() {
                 return Err(format!(
@@ -1193,13 +1189,6 @@ fn rename_attempt(execroot: &Path, base: &str, number: usize) -> Result<PathBuf,
     Ok(PathBuf::from(base)
         .join("test_attempts")
         .join(format!("{prefix}.log")))
-}
-
-/// Send a signal to the test's process group (kill(2) on `-PGID`, like the
-/// former `kill -SIG -- -PGID` helper; errors are ignored as before, ESRCH
-/// once the group is gone).
-fn signal_group(pid: u32, signal: rustix::process::Signal) {
-    let _ = crate::git_process::signal_group(pid, signal);
 }
 
 /// `--test_output=streamed`: the test log after its header, copied to

@@ -129,7 +129,10 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
 * command: `[test-setup.sh exec path, executable runfiles path, args, --test_arg...]`
   (TestStrategy.expandedArgsFromAction, analysis/test/TestStrategy.java:176-205),
   stdout to `test.log`, stderr to `test.err` (appended to the log), stdin
-  `/dev/null`, its own process group.
+  `/dev/null`, its own process group, under the process-wrapper or sandbox
+  worker (docs/PROCESS_WRAPPER.md): once the test has exited, every process it
+  left — also daemons that left its group (`setsid`, e.g. embedded PostgreSQL)
+  — is killed and reaped, like Bazel's process-wrapper.
 * environment (TestPolicy.computeTestEnvironment, exec/TestPolicy.java:56-101;
   DEFAULT_LOCAL_POLICY; TestRunnerAction.setupEnvVariables, :745-830): `TZ=UTC`,
   `TEST_SRCDIR`/`JAVA_RUNFILES`/`PYTHON_RUNFILES`/`RUNFILES_DIR` (relative
@@ -149,7 +152,8 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   makes them absolute and sets `HOME`, `USER`, `BAZEL_TEST`, `GTEST_*`.
 * timeout (`size`/`timeout`, `--test_timeout`): SIGTERM to the process group,
   SIGKILL after 15 s (`--local_termination_grace_seconds`), status TIMEOUT,
-  exit code 142 in test.xml.
+  exit code 142 in test.xml; what the test left is killed afterwards as after a
+  normal exit.
 * after the process: `TEST_PREMATURE_EXIT_FILE` turns a pass into a failure
   (`-- Test exited prematurely (TEST_PREMATURE_EXIT_FILE exists) --`); a
   passing sharded test that did not touch `TEST_SHARD_STATUS_FILE` is an action

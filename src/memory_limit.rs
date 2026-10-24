@@ -20,7 +20,10 @@
 //! A watchdog thread polls `/proc/self/statm` every 250 ms. RSS over
 //! 75% of the cap warns ONCE; RSS over the cap sets the stop flag,
 //! SIGKILLs every live child process group registered through
-//! `crate::spawn_lock::spawn` (reusing `crate::git_process::kill_group`),
+//! `crate::spawn_lock::spawn` or, for a supervised spawn, the command's
+//! group its supervisor reported (crate::process_wrapper; the supervisor
+//! itself then kills what the command left, and every supervisor kills
+//! its command when this process exits) (reusing `crate::git_process::kill_group`),
 //! prints `bazel-rs: memory limit of {cap} MB exceeded (killed)` and
 //! exits with code 33 — Bazel's own OOM exit code
 //! (ExitCode.java: OUT_OF_MEMORY = 33), so callers that special-case a
@@ -77,6 +80,15 @@ pub fn register_live_group(group: u32) {
         && !groups.contains(&group)
     {
         groups.push(group);
+    }
+}
+
+/// Drop a registered group once its spawn has ended (a supervised spawn,
+/// crate::process_wrapper: the supervisor has killed and reaped every
+/// process of it, so the ID may be reused and must not be swept later).
+pub fn unregister_live_group(group: u32) {
+    if let Ok(mut groups) = LIVE_GROUPS.lock() {
+        groups.retain(|registered| *registered != group);
     }
 }
 
@@ -443,6 +455,11 @@ mod tests {
         let groups = live_groups();
         assert_eq!(groups.iter().filter(|g| **g == 4_200_001).count(), 1);
         assert!(groups.contains(&4_200_002));
+        // An ended supervised spawn leaves the registry.
+        register_live_group(4_200_003);
+        unregister_live_group(4_200_003);
+        assert!(!live_groups().contains(&4_200_003));
+        assert!(live_groups().contains(&4_200_002));
         // Killing a group with no members is ESRCH = success, never an
         // error that could block the watchdog exit.
         assert!(crate::git_process::kill_group(4_200_001).is_ok());

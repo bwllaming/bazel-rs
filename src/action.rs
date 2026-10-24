@@ -93,7 +93,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
@@ -3838,37 +3838,6 @@ fn create_log(path: &Path) -> Result<File, String> {
         .map_err(|e| io_error("cannot create action log", path, e))
 }
 
-/// Once an action's process (the leader of its own process group) has
-/// exited, kill what is left of its group, like Bazel's process-wrapper
-/// ("The child is done for, but may have grandchildren that we still have to
-/// kill.": `kill(-child_pid, SIGKILL)` after the wait,
-/// process-wrapper-legacy.cc WaitForChild; its linux-sandbox ends a PID
-/// namespace instead). No process of the action can then change a staged
-/// input after `check_staged` or an output after it was hashed and
-/// published: published digests are trusted for the rest of the command and,
-/// through the persistent digest memo, by later commands. The exited leader
-/// is left unreaped until the caller's wait, so its PID, the group's ID,
-/// cannot be reused by another process in between. A process that left the
-/// group (setsid, setpgid) is not reached, as with the process-wrapper.
-fn kill_leftovers(child: &std::process::Child) {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
-    let Some(pid) = i32::try_from(child.id()).ok().and_then(Pid::from_raw) else {
-        return;
-    };
-    loop {
-        match waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
-        ) {
-            Ok(_) => break,
-            Err(rustix::io::Errno::INTR) => continue,
-            // Not waitable: leave the group alone rather than risk a reused ID.
-            Err(_) => return,
-        }
-    }
-    let _ = crate::git_process::kill_group(child.id());
-}
-
 // On Linux an executable can transiently remain open for writing in another
 // concurrently spawned child, even after our own write has closed its fd.
 // crate::spawn_lock removes that race for every executable this process writes
@@ -4665,16 +4634,26 @@ pub fn execute_with_remote(
             .map_err(|error| format!("action '{}': {error}", action.id))?;
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         let environment = resolved_environment(action);
-        let mut command = if sandboxed {
+        // Every spawn runs under a supervisor that outlives it (Bazel's
+        // process-wrapper or linux-sandbox; crate::process_wrapper): a child
+        // subreaper that, once the action has exited, kills and reaps every
+        // process the action left — also those that left its process group
+        // (setsid daemons, double forks) — before the outputs are checked,
+        // hashed and published, so no process of the action can change a
+        // staged input after `check_staged` or an output after it was hashed
+        // (published digests are trusted for the rest of the command and,
+        // through the persistent digest memo, by later commands). The action
+        // leads its own process group, which the memory watchdog kills on a
+        // ceiling hit (crate::memory_limit).
+        let mut launch = if sandboxed {
             // The executor starts its own binary (/proc/self/exe) as the
             // sandbox worker (the role linux-sandbox fills as the spawn's
             // argv[0], SandboxedSpawnStrategy.exec ->
             // LinuxSandboxCommandLineBuilder.buildForCommand) with the
             // action's cwd and environment; the worker applies the sandbox
-            // and execs the action. The wrapped argv carries the action's own
-            // arguments after --.
-            let mut command = Command::new("/proc/self/exe");
-            command.args(crate::sandbox::wrap(
+            // and supervises the action. The wrapped argv carries the
+            // action's own arguments after --.
+            crate::process_wrapper::Launch::sandbox_worker(crate::sandbox::wrap(
                 &execroot,
                 &tmp,
                 &environment,
@@ -4682,44 +4661,30 @@ pub fn execute_with_remote(
                 &argv,
                 &work.0,
                 None,
-            ));
-            command
+            ))
         } else if action.executable_file && !argv[0].starts_with('/') {
             // Bazel runs a File executable by its execution path, relative
             // to the execution root; argv[0] keeps that spelling.
-            use std::os::unix::process::CommandExt;
-            let mut command = Command::new(execroot.join(&argv[0]));
-            command.arg0(&argv[0]);
-            command.args(&argv[1..]);
-            command
+            crate::process_wrapper::Launch::new(
+                execroot.join(&argv[0]),
+                Some(OsStr::new(&argv[0])),
+                &argv[1..],
+            )
         } else {
-            let mut command = Command::new(&argv[0]);
-            command.args(&argv[1..]);
-            command
+            crate::process_wrapper::Launch::new(&argv[0], None, &argv[1..])
         };
+        let command = launch.command();
         command.current_dir(&execroot).env_clear();
-        {
-            // Its own process group: the memory watchdog kills live
-            // groups on a ceiling hit (crate::memory_limit), and a
-            // group also keeps an action's descendants addressable.
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
         // Exactly resolved_environment (ActionEnvironment.resolve,
         // ActionEnvironment.java:113-122), the remote key's environment;
         // then PosixLocalEnvProvider's TMPDIR, last.
         command.envs(&environment);
         command
             .env("TMPDIR", &tmp)
-            .stdin(Stdio::null())
             .stdout(Stdio::from(stdout.try_clone().map_err(|e| e.to_string())?))
             .stderr(Stdio::from(stderr.try_clone().map_err(|e| e.to_string())?));
-        let mut child = retry_spawn(
-            || crate::spawn_lock::spawn(&mut command),
-            std::thread::sleep,
-        )
-        .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
-        kill_leftovers(&child);
+        let mut child = retry_spawn(|| launch.start(), std::thread::sleep)
+            .map_err(|e| format!("cannot execute action '{}': {e}", action.id))?;
         let status = child
             .wait()
             .map_err(|e| format!("cannot wait for action '{}': {e}", action.id))?;
@@ -5014,6 +4979,7 @@ pub fn execute_with_remote(
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+    use std::process::Command;
     use std::sync::{Arc, Barrier};
 
     include!("../tests/support/executable_script.rs");

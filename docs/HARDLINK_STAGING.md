@@ -226,15 +226,15 @@ never trusted, so every cache executes its actions once more; the keys stay
   N59, but the Landlock sandbox leaves metadata operations unrestricted and
   denies nothing for `standalone`/`no-sandbox` actions or a store below a
   sandbox-writable root such as `/tmp`; docs/SANDBOX.md).
-* Once the action's process exits, whatever is left of its process group is
-  killed before its staged inputs are re-checked and its outputs hashed
-  (`kill_leftovers`; Bazel's process-wrapper also kills the group after the
-  wait, `process-wrapper-legacy.cc` `WaitForChild`, and its linux-sandbox ends
-  a PID namespace), so a background process the action started cannot change
-  a published output whose digest this command and, through the persistent
-  digest memo, later commands trust. A process that left the group (`setsid`,
-  a daemon) and keeps writing an output can still change the published inode
-  (previously the published copy was taken after exit).
+* Once the action's process exits, every process it left — its process group
+  and the descendants that left the group (`setsid`, a daemon) — is killed and
+  reaped by the action's supervisor before its staged inputs are re-checked and
+  its outputs hashed (docs/PROCESS_WRAPPER.md; Bazel's process-wrapper is a
+  child subreaper that does the same, `process-wrapper-legacy.cc`
+  `WaitForChild` and `TerminateAndWaitForAll`, and its linux-sandbox ends a PID
+  namespace), so a background process the action started cannot change a
+  published output whose digest this command and, through the persistent
+  digest memo, later commands trust.
 * Inside the action every input is a regular file; Bazel's sandboxes show
   symlinks. `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
