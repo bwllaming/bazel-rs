@@ -624,8 +624,20 @@ impl Recorder {
     }
 
     /// [`Self::observe`] into the recorder itself.
+    ///
+    /// `Path` equality ignores a trailing separator (`root.join("")` of an
+    /// empty package spells `root/`), so two spellings of one path share
+    /// an entry: it keeps the byte-wise smallest spelling seen, whatever
+    /// order the observations come in (W6R: workers' units reach the
+    /// recorder in another order than one loading thread's loads).
     fn store_observation(&self, path: &Path, op: Op, outcome: Outcome) {
         let mut shard = lock(&self.shards[shard_of(path)]);
+        if let Some((spelled, _)) = shard.get_key_value(path)
+            && path.as_os_str().as_bytes() < spelled.as_os_str().as_bytes()
+            && let Some((_, observations)) = shard.remove_entry(path)
+        {
+            shard.insert(path.to_path_buf(), observations);
+        }
         let conflict = match shard.get_mut(path) {
             Some(observations) => match observations.iter().find(|seen| seen.op == op) {
                 Some(seen) if seen.outcome == outcome => None,
@@ -2192,6 +2204,31 @@ mod tests {
         assert!(window.recorder.snapshot().observations.is_empty());
         replay(kept.as_ref().unwrap());
         assert_eq!(window.recorder.snapshot().observations.len(), 1);
+    }
+
+    /// Two spellings of one path (`Path` equality ignores a trailing
+    /// separator) share one entry with the smallest spelling, in either
+    /// order, so the recording does not depend on which came first.
+    #[test]
+    fn a_path_spelled_two_ways_keeps_its_smallest_spelling_in_any_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("d");
+        fs::create_dir(&dir).unwrap();
+        let slashed = PathBuf::from(format!("{}/", dir.display()));
+        assert_eq!(dir, slashed);
+        for order in [[&dir, &slashed], [&slashed, &dir]] {
+            let recorder = Recorder::new(now_ns());
+            for path in order {
+                recorder.observe(path, Op::Stat, Outcome::Kind(FileKind::Dir));
+                recorder.observe(path, Op::Canon, Outcome::Path(dir.clone()));
+            }
+            for recording in [recorder.snapshot(), recorder.take()] {
+                assert_eq!(recording.observations.len(), 2);
+                for (path, _) in &recording.observations {
+                    assert_eq!(path.as_os_str(), dir.as_os_str());
+                }
+            }
+        }
     }
 
     /// Outside a window every frame operation is inert: nothing is
