@@ -93,6 +93,9 @@ pub struct Timings {
     pub inputs: Duration,
     pub validation: Duration,
     pub replay: Duration,
+    /// Checking the local repositories' published trees (beside the
+    /// replay, L2-W5h).
+    pub local_trees: Duration,
     /// Reading, checking and decoding the PLAN section.
     pub decode: Duration,
     pub status: Duration,
@@ -204,6 +207,19 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                     replayed
                 })
             });
+            // Beside the replay (L2-W5h): each local repository's published
+            // tree still holds what its execution produced. The replay
+            // reproduces an execution in a fresh stage; the build reads the
+            // published tree, which nothing else on the hit looks into.
+            let local = (!inputs.replay.is_empty()).then(|| {
+                let records = &inputs.replay;
+                let (cancel, failed) = (&cancel, &failed);
+                scope.spawn(move || {
+                    let checked = check_local_trees(records, cancel, explain);
+                    failed(checked.is_err());
+                    checked
+                })
+            });
             let warm = scope.spawn(|| {
                 // The execution tail looks up action inputs in the digest
                 // table: load it now, beside the replay.
@@ -224,43 +240,64 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                     .join()
                     .unwrap_or_else(|_| Err("the replay panicked".to_owned()))
             });
+            let local = local.map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err("the check of the local repositories' trees panicked".to_owned())
+                })
+            });
             let _ = warm.join();
-            (validation, plan, replay)
+            (validation, plan, replay, local)
         })
     }));
     let captured = capture.map(|capture| capture.stop(Duration::from_millis(200)));
-    let (validation, plan, replay) = match parallel {
+    let (validation, plan, replay, local) = match parallel {
         Ok(results) => results,
         Err(_) => return miss("the validation panicked"),
     };
-    // EXPLAIN names the first failing check and, when their replay differs
-    // too, the mismatching local repositories (both ran to completion). A
-    // replay cancelled by another failure (F7) is no reason of its own.
-    let replay_failure = match &replay {
+    // EXPLAIN names the first failing check and, when their replay or their
+    // published trees differ too, the mismatching local repositories (all
+    // ran to completion). A replay or tree check cancelled by another
+    // failure (F7) is no reason of its own.
+    let failure = |result: &Option<Result<(usize, Duration), String>>| match result {
         Some(Err(reason)) if reason != crate::snapshot::replay::CANCELLED => Some(reason.clone()),
         _ => None,
     };
-    let validated: Validated = match (validation, replay_failure) {
-        (Ok(validated), None) => validated,
-        (Ok(_), Some(replay)) => return miss(replay),
-        (Err(first), None) => return miss(first),
-        (Err(first), Some(replay)) => return miss(format!("{first}; and {replay}")),
+    let failures: Vec<String> = [failure(&replay), failure(&local)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let validated: Validated = match validation {
+        Ok(validated) if failures.is_empty() => validated,
+        Ok(_) => return miss(failures.join("; and ")),
+        Err(first) => {
+            return miss(
+                std::iter::once(first)
+                    .chain(failures)
+                    .collect::<Vec<_>>()
+                    .join("; and "),
+            );
+        }
     };
     timings.validation = validated.elapsed;
+    // Cancelled while the validation, the replay and the trees passed: the
+    // plan failed, and its error is the reason.
+    for cancelled in [&replay, &local] {
+        if let Some(Err(cancelled)) = cancelled {
+            plan.as_ref()
+                .map_err(|error| format!("unreadable plan: {error}"))?;
+            return miss(cancelled.clone());
+        }
+    }
     let replayed = match replay {
         Some(Ok((count, wall))) => {
             timings.replay = wall;
             count
         }
-        // Cancelled while the validation passed: the plan failed, and its
-        // error is the reason.
-        Some(Err(cancelled)) => {
-            plan.as_ref()
-                .map_err(|error| format!("unreadable plan: {error}"))?;
-            return miss(cancelled);
-        }
-        None => 0,
+        _ => 0,
     };
+    if let Some(Ok((_, wall))) = local {
+        timings.local_trees = wall;
+    }
     let (request, plan_bytes, kept_plan, decode) =
         plan.map_err(|error| format!("unreadable plan: {error}"))?;
     timings.decode = decode;
@@ -308,7 +345,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     reader.touch();
     timings.total = started.elapsed();
     let summary = format!(
-        "hit {}: {} checks validated ({} content checks, {} trees verified) in {} ms on {} thread(s); {} local repositories replayed in {} ms; {} actions ({} bytes) decoded in {} ms; window stderr {} bytes{}; total {} ms",
+        "hit {}: {} checks validated ({} content checks, {} trees verified) in {} ms on {} thread(s); {} local repositories replayed in {} ms, their published trees checked in {} ms; {} actions ({} bytes) decoded in {} ms; window stderr {} bytes{}; total {} ms",
         attempt.key.short(),
         validated.checks,
         validated.content_checks,
@@ -317,6 +354,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         validated.threads,
         replayed,
         millis(timings.replay),
+        millis(timings.local_trees),
         request.nodes.len(),
         plan_bytes,
         millis(timings.decode),
@@ -440,17 +478,96 @@ fn replay_records(
             records.len()
         ));
     }
-    for record in records {
-        if !std::fs::symlink_metadata(&record.root).is_ok_and(|metadata| metadata.is_dir()) {
-            return Err(format!(
-                "local repository {}: its published tree {} is missing",
-                record.canonical,
-                record.root.display()
-            ));
-        }
-    }
     Ok((records.len(), report.wall))
 }
+
+/// Threads checking the local repositories' published trees at most.
+const LOCAL_TREE_THREADS: usize = 4;
+
+/// Check every local repository's published tree against its execution
+/// (L2-W5h; crate::repository_store::verify_local_publication: the manifest
+/// beside it must record the execution's identity and tree digest, and the
+/// tree verify against it — content, modes, links; trusted by stat outside
+/// the racy window, every file read under `--verify_repo_tampering`) on up
+/// to [`LOCAL_TREE_THREADS`] threads, beside the replay. A tree that differs
+/// is a miss naming its first differing entry: the full analysis repairs it
+/// (re-executes the rule and republishes the tree), so a tampered local
+/// repository never reaches execution — before, a hit used it as it was,
+/// and only a failure it caused healed. Stops at the first mismatch (or
+/// when `cancel` is set) unless `explain`, which names every mismatch.
+/// Returns the number of trees checked and the wall time.
+fn check_local_trees(
+    records: &[crate::snapshot::replay::ReplayRecord],
+    cancel: &AtomicBool,
+    explain: bool,
+) -> Result<(usize, Duration), String> {
+    let started = Instant::now();
+    let total = records.len();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mismatches = std::sync::Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, LOCAL_TREE_THREADS)
+        .min(total);
+    let work = || {
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            if index >= total || cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let record = &records[index];
+            if let Err(mismatch) =
+                crate::repository_store::verify_local_publication(&record.root, &record.execution)
+            {
+                if !explain {
+                    // Stop the others: no index is handed out past the end.
+                    next.store(total, Ordering::Relaxed);
+                }
+                mismatches
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((
+                        index,
+                        format!(
+                            "local repository {}: {LOCAL_TREE_DIFFERS}{} {}",
+                            record.canonical,
+                            mismatch.class,
+                            crate::observed_fs::escape(mismatch.path.as_os_str())
+                        ),
+                    ));
+            }
+        }
+    };
+    if threads <= 1 {
+        work();
+    } else {
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(work);
+            }
+        });
+    }
+    let mut mismatches = mismatches
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mismatches.sort();
+    if let Some((_, first)) = mismatches.first() {
+        let mut reason = first.clone();
+        if mismatches.len() > 1 {
+            reason.push_str(&format!(" (and {} more)", mismatches.len() - 1));
+        }
+        return Err(reason);
+    }
+    if cancel.load(Ordering::Relaxed) && !explain {
+        return Err(crate::snapshot::replay::CANCELLED.to_owned());
+    }
+    Ok((total, started.elapsed()))
+}
+
+/// What a local repository's tree mismatch says before its first differing
+/// entry (crate::snapshot::telemetry classifies it as `local-tree`).
+pub const LOCAL_TREE_DIFFERS: &str = "its published tree differs from its manifest: ";
 
 /// Rewrite the snapshot with the keys the validation settled (PLAN-L2 §1c:
 /// "if any keys were refreshed, rewrite the file in the background"): the

@@ -244,7 +244,7 @@ class SnapshotAuditTests(unittest.TestCase):
     def test_hit_path_cache_touches_need_a_safe_class_or_coverage(self):
         """L2-W5g: inside the cache dir a touch must be of a safe class (the
         snapshot store, the digest table, the store's directories, a
-        replay's stage, a local root's existence, a verified tree) or be
+        replay's stage, a local repository's tree, a verified tree) or be
         covered by the INPUTS (the hidden lockfile); anything else is
         reported."""
         stage, local, tree, other = "a" * 32, "b" * 64, "c" * 64, "d" * 64
@@ -259,6 +259,9 @@ class SnapshotAuditTests(unittest.TestCase):
             f'2 mkdir("/cache/repositories/direct/stages/{stage}", 0777) = 0\n'
             f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/stages/{stage}/BUILD.bazel", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 5</x>\n'
             f'2 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}", 0, 0x1) = 0\n'
+            f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/manifests/{local}.json", O_RDONLY|O_CLOEXEC) = 6</x>\n'
+            f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}/BUILD.bazel", O_RDONLY|O_CLOEXEC) = 7</x>\n'
+            f'3 statx(AT_FDCWD</ws>, "/cache/repositories/direct/manifests/{other}.json", 0, 0x1) = 0\n'
             f'1 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{tree}/sub", 0, 0x1) = 0\n'
             '1 openat(AT_FDCWD</ws>, "/cache/hidden-lockfiles/h/MODULE.bazel.lock", O_RDONLY|O_CLOEXEC) = 3</x>\n'
             '1 openat(AT_FDCWD</ws>, "/cache/repositories/direct/specs/x", O_RDONLY|O_CLOEXEC) = 3</x>\n'
@@ -278,14 +281,17 @@ class SnapshotAuditTests(unittest.TestCase):
             dump.write_text(dump_text)
             stats = {}
             touched, unrecorded = audit.audit_hit(trace, dump, "/ws", "/cache", [], stats)
-        self.assertEqual(touched, 2)
+        self.assertEqual(touched, 3)
         self.assertEqual([u.split()[:2] for u in unrecorded], [
+            ["CACHE", f"/cache/repositories/direct/manifests/{other}.json"],
             ["CACHE", "/cache/repositories/direct/specs/x"],
             ["CACHE", f"/cache/repositories/direct/trees/{other}/f"],
         ])
+        # L2-W5h: a local repository's tree and its manifest (checked on
+        # every hit).
         self.assertEqual(stats["cache"], {
             "snapshot-store": 2, "cache-root": 1, "store-directories": 1, "digest-table": 1,
-            "replay-stage": 3, "local-root": 1, "verified-tree": 1, "covered-input": 1,
+            "replay-stage": 3, "local-tree": 3, "verified-tree": 1, "covered-input": 1,
         })
 
 

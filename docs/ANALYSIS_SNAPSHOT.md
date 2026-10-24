@@ -101,8 +101,18 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    * **replay** of every `local = True` repository rule the recorded run
      executed (`snapshot::replay`), against the pinned repository set,
      with **this command line's** resolver options and repository
-     environment: every replay must reproduce its identity inputs and tree,
-     print nothing, and its published tree must still exist.
+     environment: every replay must reproduce its identity inputs and tree
+     and print nothing.
+   * **local trees** (L2-W5h), beside the replay: each such repository's
+     published tree — the one the build reads — must still hold what its
+     execution produced (crate::repository_store::verify_local_publication:
+     the manifest beside it records the execution's identity and tree
+     digest, and the tree verifies against it — content, modes and links,
+     trusted by stat outside the racy window, every file read under
+     `--verify_repo_tampering`), on up to 4 threads; a difference is a miss
+     naming the first differing entry (`local repository <name>: its
+     published tree differs from its manifest: <entry> <path>`, events.log
+     reason `local-tree`), and the full analysis repairs the tree.
    * **plan**: the PLAN section read, checked and decoded
      (`snapshot::codec`, chunks decoded on threads for large plans).
    * **warm-up**: the digest table (crate::digest_memo) is loaded for the
@@ -130,9 +140,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    the build part, in the tests (`test` before it exits 3) or after the
    build part (`test`'s test runner staging a runfile, `run`'s
    preparation) — the hit may have trusted a damaged tree (per tree, a
-   file's own bytes and mode are not validated, a local repository's
-   replay does not look into its published tree; the full analysis repairs
-   both), so the snapshot is removed, and one line says so, when
+   store tree file's own bytes and mode are not validated, and execution
+   itself may have changed a local repository's tree checked before it;
+   the full analysis repairs both), so the snapshot is removed, and one
+   line says so, when
    * the error names a path in the repository store at all — quoted or
      not, existing or not (L2-W5f review F4: `bazel-rs: removed the
      analysis snapshot of this build: its failure involves <path> in the
@@ -160,32 +171,42 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    whose path is the differing entry's.
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
-decision on review F3; corrected and narrowed by L2-W5g).** Per tree, a
-hit validates a repository tree's root, manifest and directories, not its
-files: a file added, deleted or renamed anywhere in a tree is a miss (its
-directory's lstat key moved; the full analysis repairs the tree,
+decision on review F3; corrected and narrowed by L2-W5g and L2-W5h).**
+Per tree, a hit validates a store tree's root, manifest and directories,
+not its files: a file added, deleted or renamed anywhere in a tree is a
+miss (its directory's lstat key moved; the full analysis repairs the tree,
 `a_file_or_directory_deleted_from_a_repository_tree_misses`), but an
-in-place edit of a file's bytes or mode keeps every directory key. A local
-(`local = True`) repository's replay reproduces its identity inputs and
-tree digests in a fresh stage and checks that its published tree exists,
-but does not look into the published tree either. So **a hit does not see
-byte or mode tampering of a file in a store tree or in a local
-repository's published tree that execution uses** (an action input, a
-tool, a test's or `run`'s runfile): it executes with the tampered file,
-where a run without the snapshot repairs the tree first (its warm probe
-sees the mode, size or change time differ, re-executes the rule and
-republishes the tree). The L2-W5f re-review reproduced the consequence
-before L2-W5g: `chmod 644` on a store-tree tool failed its genrule with
+in-place edit of a file's bytes or mode keeps every directory key. So **a
+hit does not see byte or mode tampering of a file in a store tree that
+execution uses** (an action input, a tool, a test's or `run`'s runfile):
+it executes with the tampered file, where a run without the snapshot
+repairs the tree first (its warm probe sees the mode, size or change time
+differ, re-executes the rule and republishes the tree). A local (`local =
+True`) repository's published tree no longer belongs here (L2-W5h): every
+hit checks it against the replayed execution (step 3, *local trees*), so
+its tampering is a miss and the full analysis repairs it
+(`a_tampered_local_repository_misses`, the reviewer's chmod and in-place
+cases in both modes). Such a tree's manifest carries no stat fingerprints
+(its files are younger than the racy window when it is published, and a
+local tree is never reused), so the check hashes its files: on ~/code 45
+trees, 151 entries, 68 KB, 3–12 ms on up to 4 threads beside a replay of
+120–150 ms — the attempt did not get slower (oauth2token build 144.5 →
+144.1 ms, B2 `--nobuild` 141.4 → 141.5 ms, means of 6 hits each). No
+always-miss: after executing all 689 oauth2token actions sandboxed and
+again unsandboxed (`--spawn_strategy=standalone`, action cache emptied)
+and its test unsandboxed with `--nocache_test_results`, every later lookup
+hit. The L2-W5f re-review reproduced the store-tree consequence before
+L2-W5g: `chmod 644` on a store-tree tool failed its genrule with
 `Permission denied` (exit 1) on every `on` run while the snapshot-less run
 repaired the tree and exited 0; an in-place edit of a test's store
-runfile failed the test on every `on` run; the same for both in a
-`local = True` repository's published tree — only failures whose error
-named an absolute store path healed. Since L2-W5g a failed hit verifies
-the snapshot's trees (step 6): such a failure happens once, the snapshot
-goes, and the next run's full analysis repairs the tree and succeeds
-(`a_failed_hit_on_a_tampered_store_tree_heals`,
-`a_failed_hit_on_a_tampered_local_repository_heals`). **What persists
-under `on` is tampering that does not fail the command**: the execution
+runfile failed the test on every `on` run (the same in a `local = True`
+repository's published tree, which L2-W5h turned into a miss) — only
+failures whose error named an absolute store path healed. Since L2-W5g a
+failed hit verifies the snapshot's trees (step 6): such a failure happens
+once, the snapshot goes, and the next run's full analysis repairs the tree
+and succeeds (`a_failed_hit_on_a_tampered_store_tree_heals`). **What
+persists under `on` is store-tree tampering that does not fail the
+command**: the execution
 phase hashes every action input — crate::digest_memo keys the files of the
 tree stores by their *change time*, so an edit that keeps the size and
 restores the modification time is still re-hashed — so the action runs
@@ -196,17 +217,10 @@ program `run` starts replaces bazel-rs's process, so its failure is never
 seen. Like Bazel, which trusts an external repository's files once its
 marker is up to date, a hit uses a tampered store file as it is.
 `BAZEL_RS_SNAPSHOT=verify` avoids it: the shadow full analysis repairs the
-tree before the hit executes — for a store tree that is a mismatch
-(`first=taint`, the full analysis's plan executes), for a local repository
-it is silent (its re-execution republishes the repaired tree and still
-matches the replay record, so the hit is verified and executes with the
-repaired tree). For store trees `--verify_repo_tampering` /
+tree before the hit executes — a mismatch (`first=taint`, the full
+analysis's plan executes). `--verify_repo_tampering` /
 `BAZEL_RS_VERIFY_REPOS=full` avoids it too (every INTEGRITY entry
-validated: the tampered file is a miss, which repairs the tree); a local
-repository's published files have no INTEGRITY entries (the analysis STATs
-them, which records the kind only), so there the tampering is unseen
-under that policy as well (checked by L2-W5g with the reviewer's chmod and
-in-place cases). The directory
+validated: the tampered file is a miss, which repairs the tree). The directory
 entries cost the hit more checks — on ~/code 10,313 instead of 1,009
 (oauth2token) and 16,605 instead of 3,035 (B2), validated on 16 threads in
 35–62 ms on the loaded shared machine, beside a replay of 200–300 ms there —
@@ -388,7 +402,7 @@ by the INPUTS like any workspace path, or it is reported (`CACHE <path>`):
 | `digest-table` | `digests/` | crate::digest_memo: a record holds a file's stat key with its digest and is used only while the file's current stat matches it |
 | `replay-stage` | `repositories/direct/stages/<slug>`, `repositories/direct/locks/stage-<slug>` | a replayed local rule's private stage, created fresh under its lock, compared (identity inputs and tree digests) and removed: nothing in it is trusted |
 | `verified-tree` | published store trees and manifests the INPUTS cover (REPO roots and manifests, INTEGRITY entries, paths inside a verified tree not below its links) | the per-tree validation's subject (a racy tree is verified against its manifest) |
-| `local-root` | a replayed local repository's published root (REPLAY `root:`) | stat'ed for existence only; its files are not read by the hit (a failed hit verifies them, step 6) |
+| `local-tree` | a replayed local repository's published tree (REPLAY `root:` and below) and its manifest (`repositories/direct/manifests/<identity>.json`) | the subject of the hit's local tree check (L2-W5h; `local-root` before: the root's existence only): read and compared with the replayed execution, a difference is a miss |
 | `covered-input` | any other cache path the INPUTS cover | an input like a workspace file: the hidden lockfile (`hidden-lockfiles/<hash>/MODULE.bazel.lock`), a READ observation a racy hit re-reads |
 
 The `--hit` report prints the counts per class (`inside the cache: N
@@ -404,7 +418,14 @@ store tree (`build //:all_inputs`: 161 — `replay-stage` 61,
 `local-root` 262, `covered-input` 79, `snapshot-store` 6, `digest-table`
 2). The first ~/code run found three store directories on realpath chains
 (`repositories/trees`, `repositories/builtins`, `.../builtins/trees`) the
-class list had missed: added to `store-directories`.
+class list had missed: added to `store-directories`. L2-W5h (the local
+tree check, the event log): clean again — the default fixture 15–16 cache
+touches (`snapshot-store` 10 with the event log's append), the fixture
+with a local rule 192 (`local-tree` 45, `replay-stage` 61, `verified-tree`
+21, ...; 96 outside), ~/code oauth2token/... build 18,949 (`local-tree`
+1,653, `verified-tree` 11,783, `replay-stage` 2,265, `store-directories`
+2,236, `cache-root` 921, `covered-input` 79, `snapshot-store` 10,
+`digest-table` 2; 3,764 outside, 45 replayed executions, 1 process).
 
 ## What is saved, and when
 
@@ -554,15 +575,16 @@ forwarding (an overflow, an early end, an incomplete stop: the capture's
 reader and stop driven on a private pipe — a deterministic end-to-end case
 would need a full analysis that prints differently from its own snapshot).
 Verification-based healing (L2-W5g): the reviewer's cases — a tool made
-non-executable (`chmod 644`) and a test's runfile edited in place, each in
-a store tree and in a local repository's published tree — fail the hit
-once, remove the snapshot (one line, a `kind=healed` log line), and the
-next run repairs the tree and succeeds like the run without the snapshot
-(`a_failed_hit_on_a_tampered_store_tree_heals`,
-`a_failed_hit_on_a_tampered_local_repository_heals`; under verify the
-store tree's repair is a mismatch, the local repository's silent); a unit
-test drives the check on real publications (intact trees keep the
-snapshot).
+non-executable (`chmod 644`) and a test's runfile edited in place in a
+store tree — fail the hit once, remove the snapshot (one line naming the
+first differing entry, a `kind=healed` log line), and the next run
+repairs the tree and succeeds like the run without the snapshot
+(`a_failed_hit_on_a_tampered_store_tree_heals`; under verify a mismatch);
+in a local repository's published tree the same cases are a miss of the
+lookup since L2-W5h, in both modes (`a_tampered_local_repository_misses`:
+the miss names the entry, events.log `reason=local-tree`, no heal); a
+unit test drives the healing check on real publications (intact trees
+keep the snapshot).
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f, extended
 by L2-W5g): random sequences over a catalogue of 50 mutations (sources —

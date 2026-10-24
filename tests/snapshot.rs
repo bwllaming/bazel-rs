@@ -2546,16 +2546,18 @@ fn tamper(root: &Path, case: Tamper) {
 }
 
 /// L2-W5g, verification-based healing (the reviewer's cases): a byte or
-/// mode edit of a tree file a hit's execution uses is invisible to the
-/// hit's validation; the command fails (the tool: `Permission denied`; the
-/// test: exit 3), and the failed hit verifies the snapshot's trees — a
-/// store tree as its store's warm check does, a local repository's
-/// published tree against its execution — removes the snapshot and says so
-/// in one line, so the next run's full analysis repairs the tree and
-/// succeeds like the run without the snapshot (which repaired it at once).
-/// Verify mode: the shadow full analysis repairs the tree before the hit
-/// executes — a store tree's repair is a mismatch, a local repository's is
-/// silent (the hit is verified and passes).
+/// mode edit of a store tree's file a hit's execution uses is invisible to
+/// the hit's validation; the command fails (the tool: `Permission denied`;
+/// the test: exit 3), and the failed hit verifies the snapshot's trees as
+/// their store's warm check does, removes the snapshot and says so in one
+/// line naming the first differing entry (L2-W5h), so the next run's full
+/// analysis repairs the tree and succeeds like the run without the
+/// snapshot (which repaired it at once). Verify mode: the shadow full
+/// analysis repairs the tree before the hit executes — a mismatch.
+///
+/// L2-W5h: a local repository's published tree is checked on every hit
+/// (`local`): the same tampering is a miss naming the differing entry, and
+/// the full analysis repairs the tree — never a failed hit, in either mode.
 fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
     for case in [Tamper::ChmodTool, Tamper::EditRunfile] {
         let twin = tamper_fixture(local);
@@ -2570,6 +2572,38 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
         std::thread::sleep(std::time::Duration::from_millis(2200));
         twin.same(args, &[]).assert_hit().assert_success();
         twin.each(|root| tamper(root, case));
+        // The first differing entry the heal or the miss names (L2-W5h).
+        let (entry, file) = match case {
+            Tamper::ChmodTool => ("mode", "tool.sh"),
+            Tamper::EditRunfile => ("content", "data.txt"),
+        };
+        if local {
+            let repaired = twin.same(args, &[]);
+            repaired.assert_success().assert_miss(&format!(
+                "its published tree differs from its manifest: {entry} "
+            ));
+            assert!(
+                repaired
+                    .line("miss ")
+                    .is_some_and(|line| line.ends_with(&format!("/{file}"))),
+                "{case:?}: {:?}",
+                repaired.explain()
+            );
+            assert!(!text(&repaired.on.stderr).contains(HEAL_LINE));
+            let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
+            let misses: Vec<&str> = log
+                .lines()
+                .filter(|line| line.contains(" kind=miss ") && line.contains(" reason=local-tree "))
+                .collect();
+            assert!(
+                misses.len() == 1 && misses[0].contains(&format!("/{file} ms=")),
+                "{case:?}: {log}"
+            );
+            assert!(!log.contains(" kind=healed "), "{case:?}: {log}");
+            twin.settle(&repaired, args, &[]);
+            twin.same(args, &[]).assert_hit().assert_success();
+            continue;
+        }
         let failed = twin.run(args, &[]);
         assert!(
             failed.line("hit ").is_some(),
@@ -2578,15 +2612,10 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
         );
         assert!(failed.off.status.success(), "{}", text(&failed.off.stderr));
         if twin.mode.get() == VERIFY {
-            if local {
-                failed.assert_same(args);
-                failed.assert_hit().assert_success();
-            } else {
-                failed.assert_verify_mismatch("repository-rule-executed");
-                twin.same(args, &[])
-                    .assert_success()
-                    .assert_miss("no snapshot");
-            }
+            failed.assert_verify_mismatch("repository-rule-executed");
+            twin.same(args, &[])
+                .assert_success()
+                .assert_miss("no snapshot");
             continue;
         }
         assert!(!failed.on.status.success(), "{case:?}: the hit succeeded");
@@ -2598,10 +2627,6 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
         );
         assert!(twin.snapshots().is_empty(), "{case:?}");
         // L2-W5h: the heal names the first differing entry.
-        let (entry, file) = match case {
-            Tamper::ChmodTool => ("mode", "tool.sh"),
-            Tamper::EditRunfile => ("content", "data.txt"),
-        };
         assert!(
             stderr.contains(&format!(" ({entry} {file}); the next build re-analyzes")),
             "{case:?}: {stderr}"
@@ -2636,8 +2661,10 @@ fn a_failed_hit_on_a_tampered_store_tree_heals() {
     a_failed_hit_on_a_tampered_tree_heals(false);
 }
 
+/// L2-W5h: a local repository's tampered tree is a miss of the next
+/// lookup (see [`a_failed_hit_on_a_tampered_tree_heals`]).
 #[test]
-fn a_failed_hit_on_a_tampered_local_repository_heals() {
+fn a_tampered_local_repository_misses() {
     a_failed_hit_on_a_tampered_tree_heals(true);
 }
 
@@ -4113,8 +4140,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn a_failed_hit_on_a_tampered_local_repository_heals() {
-        verified(super::a_failed_hit_on_a_tampered_local_repository_heals);
+    fn a_tampered_local_repository_misses() {
+        verified(super::a_tampered_local_repository_misses);
     }
 
     #[test]

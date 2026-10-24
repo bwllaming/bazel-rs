@@ -85,9 +85,13 @@ safe by construction, or be covered like any other path:
   * verified-tree: a published store tree or manifest the INPUTS cover (a
     REPO root or manifest, an INTEGRITY entry, a path inside a verified
     tree not below its links) — the per-tree validation's subject;
-  * local-root: a replayed local repository's published root (REPLAY
-    root:), stat'ed for existence only (its files are not read by the hit;
-    a failed hit verifies them, crate::snapshot::hit).
+  * local-tree: a replayed local repository's published tree (REPLAY
+    root:, and everything below it) and its manifest beside it
+    (`repositories/direct/manifests/<identity>.json`): read on every hit to
+    check the tree against the replayed execution (L2-W5h: the manifest
+    must record the execution's identity and tree digest, the tree verify
+    against it; a difference is a miss) — the subject of that check, never
+    trusted by it.
 Any other path under the cache dir is an input like a workspace file: it
 must be covered by the INPUTS (counted as `covered-input`: e.g. the hidden
 lockfile, a READ observation the validation re-reads when racy) or it is
@@ -628,7 +632,10 @@ STORE_DIRECTORIES = {'/repositories', '/repositories/trees', '/repositories/dire
 
 
 def load_local_roots(path):
-    """The replayed local repositories' published roots (REPLAY ... root:)."""
+    """The replayed local repositories' published roots (REPLAY ... root:)
+    and their manifests (`<store>/direct/manifests/<identity>.json` beside
+    `<store>/direct/trees/<identity>`, as crate::repository_store::
+    verify_local_publication finds them)."""
     roots = set()
     for line in Path(path).read_text().splitlines():
         parts = line.split(' ')
@@ -636,7 +643,9 @@ def load_local_roots(path):
             for part in parts:
                 if part.startswith('root:'):
                     roots.add(unescape_dump(part[len('root:'):]))
-    return roots
+    manifests = {os.path.join(os.path.dirname(os.path.dirname(root)), 'manifests', os.path.basename(root) + '.json')
+                 for root in roots}
+    return roots | manifests
 
 
 def cache_class(rel, p, recorded, pinned, local_roots):
@@ -652,8 +661,8 @@ def cache_class(rel, p, recorded, pinned, local_roots):
         return 'store-directories'
     if STAGE.match(rel):
         return 'replay-stage'
-    if p in local_roots:
-        return 'local-root'
+    if p in local_roots or any(p.startswith(root + '/') for root in local_roots):
+        return 'local-tree'
     if (TREE.match(rel) or MANIFEST.match(rel)) and (p in recorded.observed or recorded.in_tree(p, pinned)):
         return 'verified-tree'
     return None

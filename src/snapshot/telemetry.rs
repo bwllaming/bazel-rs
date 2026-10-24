@@ -361,7 +361,9 @@ impl Context {
 /// `unreadable`, `env`, a validation operation in lower case (`read`,
 /// `readdir`, `stat`, `lstat`, `canon`, `readlink`, `integrity`), `tree`
 /// (a tree verified against its manifest did not match), `replay`,
-/// `status-stderr`, `capture`, `panic` or `other`.
+/// `local-tree` (a local repository's published tree differs, L2-W5h; the
+/// path of its first differing entry), `status-stderr`, `capture`, `panic`
+/// or `other`.
 pub fn classify_miss(reason: &str) -> (&'static str, Option<String>) {
     // `<OP> <escaped path>: ...` (an escaped path holds no space).
     let operation_path = |rest: &str| -> Option<String> {
@@ -394,6 +396,28 @@ pub fn classify_miss(reason: &str) -> (&'static str, Option<String>) {
                 .and_then(|(_, rest)| rest.split(" does not match").next())
                 .map(|path| escape(OsStr::new(path))),
         ),
+        // `local repository <name>: its published tree differs from its
+        // manifest: <entry class> <escaped path>` (L2-W5h).
+        _ if reason.starts_with("local repository ")
+            && reason
+                .split("; and ")
+                .next()
+                .is_some_and(|first| first.contains(crate::snapshot::hit::LOCAL_TREE_DIFFERS)) =>
+        {
+            let first = reason.split("; and ").next().unwrap_or_default();
+            let entry = first
+                .split_once(crate::snapshot::hit::LOCAL_TREE_DIFFERS)
+                .map(|(_, entry)| entry)
+                .unwrap_or_default();
+            (
+                "local-tree",
+                entry
+                    .split(' ')
+                    .nth(1)
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned),
+            )
+        }
         _ if reason.starts_with("local repository ")
             || reason.contains(" local repositories replayed")
             || reason.starts_with("replay records") =>
@@ -507,6 +531,16 @@ mod tests {
                 None,
             ),
             ("1 of 2 local repositories replayed", "replay", None),
+            (
+                "local repository +local_rule+tools: its published tree differs from its manifest: mode /c/repositories/direct/trees/ab/tool\\x20x.sh",
+                "local-tree",
+                Some("/c/repositories/direct/trees/ab/tool\\x20x.sh"),
+            ),
+            (
+                "local repository +r+a: its published tree differs from its manifest: content /c/a (and 1 more); and local repository +r+b: the identity inputs differ",
+                "local-tree",
+                Some("/c/a"),
+            ),
             (
                 "ENV X: value changed; and local repository +r+x: the identity inputs differ",
                 "env",
