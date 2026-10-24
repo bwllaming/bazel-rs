@@ -346,9 +346,11 @@ fn rejections_are_bazel_messages_or_explicit_native_gaps() {
             "//pkg:dir_not_input",
             "Action pkg/o failed: Failed to expand directory <generated file pkg/d>. Either add the directory as an input of the action",
         ),
+        // A declared symlink (like the declared `o`) without a generating
+        // action (tests/fixtures/unresolved_symlinks err_no_action).
         (
             "//pkg:declare_symlink",
-            "not supported by the native profile",
+            "The following files have no generating action:\npkg/o\npkg/s",
         ),
         (
             "//pkg:transform",

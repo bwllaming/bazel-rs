@@ -207,6 +207,7 @@ mod tests {
             owner: String::new(),
             is_source: false,
             is_directory: false,
+            is_symlink: false,
         }
     }
 

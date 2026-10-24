@@ -263,6 +263,11 @@ pub struct ActionExtra {
     /// Outputs (members of `Action::outputs`) that are tree artifacts.
     #[serde(with = "crate::snapshot::codec::path_set")]
     pub tree_outputs: BTreeSet<PathBuf>,
+    /// Outputs (members of `Action::outputs`) that are unresolved symlink
+    /// artifacts (ctx.actions.declare_symlink): executing an action with one
+    /// is an explicit native gap ([`unresolved_symlink_gap`]).
+    #[serde(with = "crate::snapshot::codec::path_set")]
+    pub symlink_outputs: BTreeSet<PathBuf>,
     /// Input destinations that are tree artifacts (directories); every other
     /// input must be a regular file.
     #[serde(with = "crate::snapshot::codec::path_set")]
@@ -304,6 +309,42 @@ pub struct ActionExtra {
     /// rebuild the consumer (ActionKeyComputer skips constant metadata).
     #[serde(with = "crate::snapshot::codec::paths")]
     pub constant_metadata: Vec<PathBuf>,
+}
+
+/// SymlinkTargetType (vfs/SymlinkTargetType.java): the `target_type` of an
+/// unresolved symlink, part of UnresolvedSymlinkAction's key by name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum SymlinkTargetType {
+    Unspecified,
+    File,
+    Directory,
+}
+
+impl SymlinkTargetType {
+    /// The enum constant's `name()`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Unspecified => "UNSPECIFIED",
+            Self::File => "FILE",
+            Self::Directory => "DIRECTORY",
+        }
+    }
+}
+
+/// The explicit execution gap of an action creating unresolved symlink
+/// artifacts (`outputs`, ctx.actions.declare_symlink): their creation,
+/// caching and staging are not modelled natively. `None` for any other
+/// action.
+pub fn unresolved_symlink_gap(action: &Action) -> Option<String> {
+    let output = action.extra.symlink_outputs.iter().next()?;
+    let target = match &action.extra.transform {
+        Some(Transform::UnresolvedSymlink { target, .. }) => format!(" -> '{target}'"),
+        _ => String::new(),
+    };
+    Some(format!(
+        "creating the unresolved symlink artifact '{}'{target} (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)",
+        output.display()
+    ))
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -371,6 +412,18 @@ pub enum Transform {
     /// of the computed status, or the failing node of a failed status; it
     /// never executes.
     WorkspaceStatus { volatile: bool },
+    /// UnresolvedSymlinkAction (analysis/actions/UnresolvedSymlinkAction.java,
+    /// ctx.actions.symlink(target_path = ...)): the only output, an
+    /// unresolved symlink artifact, is a symlink with the literal `target`;
+    /// keyed by the target and its type (computeKey :92-99), no inputs.
+    /// Creating it — and staging such artifacts as inputs, runfiles and
+    /// outputs — is an explicit native gap ([`unresolved_symlink_gap`]).
+    UnresolvedSymlink {
+        target: String,
+        target_type: SymlinkTargetType,
+        /// The expanded progress message (not keyed, like Bazel).
+        progress: String,
+    },
     /// SourceManifestAction (SOURCE_SYMLINKS, analysis/SourceManifestAction.java):
     /// the `<executable>.runfiles_manifest` lines `path target` of a runfiles
     /// tree, sorted by path. Each entry names the input destination it links
@@ -2262,6 +2315,15 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             }
         }
         Some(Transform::Unsupported { .. }) => check_one_output(action, "unsupported")?,
+        Some(Transform::UnresolvedSymlink { .. }) => {
+            check_one_output(action, "unresolved symlink")?;
+            if !action.inputs.is_empty() || !action.extra.tree_outputs.is_empty() {
+                return Err("unresolved symlink action has no inputs and a symlink output".into());
+            }
+            if !action.extra.symlink_outputs.contains(&action.outputs[0]) {
+                return Err("unresolved symlink action output must be a symlink artifact".into());
+            }
+        }
         // The registration-time shape; planning rewrites it into a Template
         // (crate::engine::resolve_build_info) before plan_action validates
         // the template input.
@@ -2684,6 +2746,20 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         (None, _, Some(Transform::Unsupported { message })) => {
             frame(&mut hash, b"unsupported");
             frame(&mut hash, message.as_bytes());
+        }
+        (
+            None,
+            _,
+            Some(Transform::UnresolvedSymlink {
+                target,
+                target_type,
+                ..
+            }),
+        ) => {
+            // UnresolvedSymlinkAction.computeKey (:92-99).
+            frame(&mut hash, b"unresolved-symlink");
+            frame(&mut hash, target.as_bytes());
+            frame(&mut hash, target_type.name().as_bytes());
         }
         (None, _, Some(Transform::BuildInfo { volatile })) => {
             // Replaced during planning (crate::engine); keyed like the
@@ -3868,6 +3944,8 @@ fn run_transform(
                 .to_owned(),
         ),
         Transform::Unsupported { message } => Err(message.clone()),
+        Transform::UnresolvedSymlink { .. } => Err(unresolved_symlink_gap(action)
+            .unwrap_or_else(|| "unresolved symlink action without a symlink output".to_owned())),
         Transform::RunfilesManifest { entries } => {
             let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();
             sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
@@ -4360,6 +4438,11 @@ pub fn execute_with_remote(
     action: &Action,
     remote: Option<&crate::remote_cache::RemoteCache>,
 ) -> Result<ActionResult, String> {
+    // Unresolved symlink outputs are never created, cached or staged
+    // natively: the action fails before any cache lookup.
+    if let Some(message) = unresolved_symlink_gap(action) {
+        return Err(message);
+    }
     let embedded;
     let action = if action.embedded_inputs.is_empty() {
         action
@@ -7309,6 +7392,59 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             execute(&fixture.cache(), &action)
                 .unwrap_err()
                 .contains("explicit gap")
+        );
+    }
+
+    /// UnresolvedSymlinkAction: one symlink output, no inputs, keyed by the
+    /// literal target and its type; executing it (or any action with an
+    /// unresolved symlink output) is an explicit gap before any cache work.
+    #[test]
+    fn unresolved_symlinks_are_planned_but_not_executed() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.command.clear();
+        action.inputs.clear();
+        action.extra.transform = Some(Transform::UnresolvedSymlink {
+            target: "../x".into(),
+            target_type: SymlinkTargetType::Unspecified,
+            progress: "Creating symlink out/result".into(),
+        });
+        assert!(
+            validate_structure(&action)
+                .unwrap_err()
+                .contains("output must be a symlink artifact")
+        );
+        action.extra.symlink_outputs = action.outputs.iter().cloned().collect();
+        validate_structure(&action).unwrap();
+        let key = |action: &Action| prepare(action, None).unwrap().key;
+        let unspecified = key(&action);
+        let mut directory = action.clone();
+        directory.extra.transform = Some(Transform::UnresolvedSymlink {
+            target: "../x".into(),
+            target_type: SymlinkTargetType::Directory,
+            progress: String::new(),
+        });
+        let mut other = action.clone();
+        other.extra.transform = Some(Transform::UnresolvedSymlink {
+            target: "../y".into(),
+            target_type: SymlinkTargetType::Unspecified,
+            progress: "Creating symlink out/result".into(),
+        });
+        assert_ne!(unspecified, key(&directory));
+        assert_ne!(unspecified, key(&other));
+        let error = execute(&fixture.cache(), &action).unwrap_err();
+        assert_eq!(
+            error,
+            "creating the unresolved symlink artifact 'out/result' -> '../x' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)"
+        );
+        assert!(!fixture.cache().join("actions").exists());
+        // A spawn whose output is a declared symlink.
+        let mut spawn = fixture.action();
+        spawn.extra.symlink_outputs = spawn.outputs.iter().cloned().collect();
+        assert!(
+            execute(&fixture.cache(), &spawn)
+                .unwrap_err()
+                .starts_with("creating the unresolved symlink artifact 'out/result' (")
         );
     }
     fn ino(path: &Path) -> u64 {

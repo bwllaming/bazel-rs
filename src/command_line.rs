@@ -168,6 +168,7 @@ pub(crate) fn tree_child(tree: &File, relative: &std::path::Path) -> File {
     let relative = relative.to_string_lossy();
     File {
         is_directory: false,
+        is_symlink: false,
         path: format!("{}/{relative}", tree.path),
         short_path: format!("{}/{relative}", tree.short_path),
         owner: tree.owner.clone(),

@@ -866,6 +866,7 @@ fn location_map(
             &output.to_string(),
             [File {
                 is_directory: false,
+                is_symlink: false,
                 path: output
                     .generated_exec_path(output_root)
                     .to_string_lossy()
@@ -2133,6 +2134,7 @@ fn analyze_inner(
             // configuration's executable lives in its exec root).
             Ok(crate::runfiles::DefaultExecutable::new(File {
                 is_directory: false,
+                is_symlink: false,
                 path: output
                     .generated_exec_path(target.output_root)
                     .to_string_lossy()
@@ -2970,6 +2972,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
         );
         deps.get_mut("//pkg:dep").unwrap().files.push(File {
             is_directory: false,
+            is_symlink: false,
             path: "pkg/dep".into(),
             short_path: "pkg/dep".into(),
             owner: "//pkg:dep".into(),
@@ -3017,6 +3020,7 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             owner: "//pkg:dep".into(),
             is_source: false,
             is_directory: false,
+            is_symlink: false,
         };
         // RuleContext.java:1975-1993: no file to build, or none matching.
         let expected =

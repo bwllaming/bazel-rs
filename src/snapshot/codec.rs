@@ -1064,21 +1064,23 @@ pub(crate) mod file {
             owner,
             is_source,
             is_directory,
+            is_symlink,
         } = value;
-        (path, short_path, owner, is_source, is_directory).serialize(serializer)
+        (path, short_path, owner, is_source, is_directory, is_symlink).serialize(serializer)
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<File, D::Error> {
-        let (path, short_path, owner, is_source, is_directory) =
-            <(String, String, String, bool, bool)>::deserialize(deserializer)?;
+        let (path, short_path, owner, is_source, is_directory, is_symlink) =
+            <(String, String, String, bool, bool, bool)>::deserialize(deserializer)?;
         Ok(File {
             path,
             short_path,
             owner,
             is_source,
             is_directory,
+            is_symlink,
         })
     }
 }
@@ -1137,6 +1139,7 @@ mod tests {
             owner: "//pkg:t".into(),
             is_source: false,
             is_directory: true,
+            is_symlink: false,
         }
     }
 
@@ -1207,6 +1210,7 @@ mod tests {
             shell_strict: true,
             extra: ActionExtra {
                 tree_outputs: BTreeSet::from([PathBuf::from("bazel-out/t")]),
+                symlink_outputs: BTreeSet::new(),
                 tree_inputs: BTreeSet::from([PathBuf::from("pkg/dir")]),
                 param_files: vec![("pkg/p.params".into(), vec![0, 255, b'\n'])],
                 inherited_environment: BTreeSet::from(["PATH".to_owned()]),

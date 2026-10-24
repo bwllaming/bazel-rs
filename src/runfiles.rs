@@ -1799,6 +1799,7 @@ fn merge_executable(runfiles: Runfiles, executable: Option<&File>) -> anyhow::Re
 fn suffixed(file: &File, suffix: &str, owner: &str) -> File {
     File {
         is_directory: false,
+        is_symlink: false,
         path: format!("{}{suffix}", file.path),
         short_path: format!("{}{suffix}", file.short_path),
         owner: owner.to_owned(),
@@ -1957,6 +1958,7 @@ mod tests {
     fn file(path: &str, owner: &str) -> File {
         File {
             is_directory: false,
+            is_symlink: false,
             path: format!("bazel-out/x/bin/{path}"),
             short_path: path.to_owned(),
             owner: owner.to_owned(),
@@ -1977,6 +1979,7 @@ mod tests {
     fn source(path: &str, owner: &str) -> File {
         File {
             is_directory: false,
+            is_symlink: false,
             path: path.to_owned(),
             short_path: path
                 .strip_prefix("external/")

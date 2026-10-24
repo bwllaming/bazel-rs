@@ -1,0 +1,77 @@
+load(":defs.bzl", "consumer", "errors", "link", "probe", "runner", "spawn_link")
+
+# A relative, an absolute and a dangling target; a nested path; target_type.
+link(
+    name = "rel",
+    target = "data.txt",
+)
+
+link(
+    name = "abs",
+    target = "/bin/sh",
+)
+
+link(
+    name = "dangling",
+    target = "../does/not/exist",
+)
+
+link(
+    name = "nested",
+    link = "node_modules/.store/pkg@1/node_modules/pkg",
+    target = "../../../../data.txt",
+    target_type = "directory",
+)
+
+spawn_link(
+    name = "spawned",
+    target = "data.txt",
+)
+
+probe(
+    name = "probe",
+    deps = [
+        ":rel",
+        ":abs",
+        ":dangling",
+        ":nested",
+        ":spawned",
+    ],
+)
+
+consumer(
+    name = "consumer",
+    deps = [
+        ":rel",
+        ":dangling",
+        ":nested",
+        ":spawned",
+    ],
+)
+
+runner(
+    name = "show",
+    data = [
+        ":rel",
+        ":nested",
+    ],
+)
+
+[
+    errors(
+        name = "err_" + mode,
+        mode = mode,
+        tags = ["manual"],
+    )
+    for mode in [
+        "file_then_symlink",
+        "symlink_then_file",
+        "target_file_on_symlink",
+        "target_path_on_file",
+        "is_executable",
+        "bad_target_type",
+        "both_targets",
+        "no_action",
+        "target_path_int",
+    ]
+]

@@ -585,6 +585,7 @@ mod tests {
             owner: "//p:r".to_owned(),
             is_source: false,
             is_directory: false,
+            is_symlink: false,
         }
     }
 

@@ -1883,6 +1883,7 @@ x['nested'].append(4)
             ] {
                 let file = heap.alloc(crate::starlark_types::File {
                     is_directory: false,
+                    is_symlink: false,
                     path: path.into(),
                     short_path: short_path.into(),
                     owner: owner.into(),
@@ -1895,6 +1896,7 @@ x['nested'].append(4)
             }
             let mut file = crate::starlark_types::File {
                 is_directory: false,
+                is_symlink: false,
                 path: "x".into(),
                 short_path: "x".into(),
                 owner: "\0".repeat(600_000),

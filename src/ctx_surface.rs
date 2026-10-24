@@ -2157,6 +2157,7 @@ mod tests {
             owner: String::new(),
             is_source: false,
             is_directory: false,
+            is_symlink: false,
         };
         let mut locations = crate::location_expander::LocationMap::default();
         locations.add("//p:src", [file("p/src")]);

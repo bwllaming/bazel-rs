@@ -670,6 +670,7 @@ mod tests {
                     module.heap(),
                     crate::starlark_types::File {
                         is_directory: false,
+                        is_symlink: false,
                         path: "pkg/file with $ spaces".into(),
                         short_path: "pkg/file with $ spaces".into(),
                         owner: "//pkg:rule".into(),

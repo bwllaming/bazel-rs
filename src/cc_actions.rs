@@ -1289,6 +1289,7 @@ mod tests {
                     owner: String::new(),
                     is_source: true,
                     is_directory: false,
+                    is_symlink: false,
                 },
             )
         };
@@ -1321,6 +1322,7 @@ mod tests {
                     owner: String::new(),
                     is_source: true,
                     is_directory: false,
+                    is_symlink: false,
                 },
             ),
             "c++-module-deps-scanning"

@@ -46,6 +46,10 @@ mod owned {
         pub is_source: bool,
         /// A tree artifact (ctx.actions.declare_directory).
         pub is_directory: bool,
+        /// An unresolved symlink artifact (ctx.actions.declare_symlink;
+        /// Artifact.isSymlink, SpecialArtifactType.UNRESOLVED_SYMLINK): a
+        /// distinct artifact from a file declared at the same path.
+        pub is_symlink: bool,
     }
 
     /// A File's root (actions/ArtifactRoot.java; Starlark type `root`,
@@ -725,6 +729,9 @@ impl<'v> StarlarkValue<'v> for File {
             "extension" => heap.alloc(basename.rsplit_once('.').map_or("", |(_, ext)| ext)),
             "is_source" => heap.alloc(self.is_source),
             "is_directory" => heap.alloc(self.is_directory),
+            // FileApi.isSymlink (starlarkbuildapi/FileApi.java:99-106): the
+            // declared kind (ctx.actions.declare_symlink).
+            "is_symlink" => heap.alloc(self.is_symlink),
             "root" => heap.alloc(FileRoot {
                 path: self.root_path(),
                 is_source: self.is_source,
@@ -756,6 +763,7 @@ impl<'v> StarlarkValue<'v> for File {
             "extension",
             "is_source",
             "is_directory",
+            "is_symlink",
             "owner",
             "root",
         ]
@@ -2274,6 +2282,7 @@ mod tests {
     fn file(path: &str) -> File {
         File {
             is_directory: false,
+            is_symlink: false,
             path: path.to_owned(),
             short_path: path.to_owned(),
             owner: "//pkg:rule".to_owned(),
@@ -2772,6 +2781,7 @@ copies = [Label(main), Label(external)]
             let label = crate::label::Label::parse_canonical(owner).unwrap();
             let source = File {
                 is_directory: false,
+                is_symlink: false,
                 path: label.source_exec_path().to_string_lossy().into_owned(),
                 short_path: label.short_path().to_string_lossy().into_owned(),
                 owner: owner.into(),
@@ -2783,6 +2793,7 @@ copies = [Label(main), Label(external)]
             let output = label.with_name(&format!("generated/{name}")).unwrap();
             let generated = File {
                 is_directory: false,
+                is_symlink: false,
                 path: output
                     .generated_exec_path(crate::label::GENERATED_EXEC_ROOT)
                     .to_string_lossy()
@@ -2892,6 +2903,7 @@ copies = [Label(main), Label(external)]
         ] {
             let file = File {
                 is_directory: false,
+                is_symlink: false,
                 path: path.into(),
                 short_path: short_path.into(),
                 owner: owner.into(),
@@ -2949,6 +2961,7 @@ copies = [Label(main), Label(external)]
         let frozen = Module::with_temp_heap(|module| {
             let external = File {
                 is_directory: false,
+                is_symlink: false,
                 path: "external/dep+/pkg/input".into(),
                 short_path: "../dep+/pkg/input".into(),
                 owner: "@@dep+//pkg:rule".into(),
@@ -3233,6 +3246,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
     fn file_and_target_reprs_follow_their_configured_class() {
         let generated = File {
             is_directory: false,
+            is_symlink: false,
             path: "bazel-out/k8-fastbuild/bin/pkg/out.txt".into(),
             short_path: "pkg/out.txt".into(),
             owner: "//pkg:rule".into(),
@@ -3241,6 +3255,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         assert_eq!(generated.to_string(), "<generated file pkg/out.txt>");
         let external_source = File {
             is_directory: false,
+            is_symlink: false,
             path: "external/dep+/pkg/in.txt".into(),
             short_path: "../dep+/pkg/in.txt".into(),
             owner: "@@dep+//pkg:in.txt".into(),
@@ -3249,6 +3264,7 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
         assert_eq!(external_source.to_string(), "<source file pkg/in.txt>");
         let external_generated = File {
             is_directory: false,
+            is_symlink: false,
             path: "bazel-out/k8-fastbuild/bin/external/dep+/pkg/out.txt".into(),
             short_path: "../dep+/pkg/out.txt".into(),
             owner: "@@dep+//pkg:rule".into(),

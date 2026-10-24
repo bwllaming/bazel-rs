@@ -142,6 +142,7 @@ impl Artifact {
         };
         File {
             is_directory: directory,
+            is_symlink: false,
             path: exec.into_owned(),
             short_path,
             owner: owner.to_owned(),
@@ -151,6 +152,19 @@ impl Artifact {
 
     fn file(&self) -> File {
         File::clone(&self.file)
+    }
+
+    /// The artifact as an unresolved symlink artifact
+    /// (ctx.actions.declare_symlink) when `symlink`: its File is the
+    /// declared symlink File.
+    fn with_symlink(mut self, symlink: bool) -> Self {
+        if symlink {
+            self.file = Arc::new(File {
+                is_symlink: true,
+                ..File::clone(&self.file)
+            });
+        }
+        self
     }
 }
 
@@ -10813,6 +10827,7 @@ impl Engine {
                     &output.to_string(),
                     [File {
                         is_directory: false,
+                        is_symlink: false,
                         path: path.to_string_lossy().into_owned(),
                         short_path: output.generated_short_path(),
                         owner: rule.label.to_string(),
@@ -12835,7 +12850,8 @@ fn register_action_outputs(
                     .build_info
                     .as_ref()
                     .is_some_and(|build_info| build_info.volatile),
-            );
+            )
+            .with_symlink(file.is_symlink);
             verify_declared_file(file, &artifact);
             register_artifact(artifact_index, file, &artifact);
             if first.is_none() || predeclared(&exec) {
@@ -13180,6 +13196,7 @@ impl RunfilesPlanning<'_> {
 fn suffixed_file(file: &File, suffix: &str) -> File {
     File {
         is_directory: false,
+        is_symlink: false,
         path: format!("{}{suffix}", file.path),
         short_path: format!("{}{suffix}", file.short_path),
         owner: file.owner.clone(),
@@ -14108,6 +14125,7 @@ mod tests {
                 owner: owner.to_owned(),
                 is_source: false,
                 is_directory: false,
+                is_symlink: false,
             })
             .collect::<Vec<_>>();
         let key = crate::shared_actions::ActionKey::of(
@@ -14248,6 +14266,7 @@ mod tests {
                 owner: "//p:b".to_owned(),
                 is_source: false,
                 is_directory: false,
+                is_symlink: false,
             })
             .collect::<Vec<_>>();
         let registered = crate::analysis_runtime::RegisteredAction {
@@ -14320,6 +14339,7 @@ mod tests {
         let exec = output.generated_exec_path(crate::label::GENERATED_EXEC_ROOT);
         let declared = File {
             is_directory: false,
+            is_symlink: false,
             path: exec.to_string_lossy().into_owned(),
             short_path: output.generated_short_path(),
             owner: "//external/dep:rule".into(),
@@ -15819,6 +15839,7 @@ m = macro(implementation=emit)
             owner: String::new(),
             is_source: true,
             is_directory: false,
+            is_symlink: false,
         }
     }
 
@@ -16290,6 +16311,7 @@ m = macro(implementation=emit)
                 owner: "//pkg:in".into(),
                 is_source: true,
                 is_directory: false,
+                is_symlink: false,
             }],
         );
         let parse = |text: &str| Label::parse(text, "pkg");

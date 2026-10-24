@@ -209,6 +209,7 @@ mod tests {
         for owner in owners {
             builder.add_artifact(File {
                 is_directory: false,
+                is_symlink: false,
                 path: "x".into(),
                 short_path: "x".into(),
                 owner: (*owner).to_owned(),

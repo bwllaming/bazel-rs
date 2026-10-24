@@ -883,6 +883,7 @@ mod tests {
     fn file() -> File {
         File {
             is_directory: false,
+            is_symlink: false,
             path: "pkg/input.txt".to_owned(),
             short_path: "pkg/input.txt".to_owned(),
             owner: "//pkg:input.txt".to_owned(),
@@ -1787,6 +1788,7 @@ template = platform_common.TemplateVariableInfo({})
     fn set_payloads_keep_first_encounter_order_through_freeze_and_reowning() {
         let generated = File {
             is_directory: false,
+            is_symlink: false,
             path: "bazel-rs-out/bin/pkg/generated.txt".into(),
             short_path: "pkg/generated.txt".into(),
             owner: "//pkg:producer".into(),
@@ -1794,6 +1796,7 @@ template = platform_common.TemplateVariableInfo({})
         };
         let second_source = File {
             is_directory: false,
+            is_symlink: false,
             path: "pkg/second.txt".into(),
             short_path: "pkg/second.txt".into(),
             owner: "//pkg:second.txt".into(),

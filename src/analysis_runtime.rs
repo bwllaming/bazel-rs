@@ -94,6 +94,7 @@ pub(crate) fn workspace_status_file(name: &str) -> File {
         owner: String::new(),
         is_source: false,
         is_directory: false,
+        is_symlink: false,
     }
 }
 
@@ -257,10 +258,23 @@ impl Context {
 
     /// Declare a regular file or a tree artifact (directory) output.
     pub(crate) fn declare_kind(&self, name: &str, directory: bool) -> anyhow::Result<File> {
+        self.declare_artifact(name, directory, false)
+    }
+
+    /// Declare an unresolved symlink output (StarlarkActionFactory.declareSymlink,
+    /// :194-225): a symlink artifact, distinct from a file or directory
+    /// declared at the same path (a different SpecialArtifact, so such a pair
+    /// leaves one of them without a generating action, like Bazel).
+    pub(crate) fn declare_symlink(&self, name: &str) -> anyhow::Result<File> {
+        self.declare_artifact(name, false, true)
+    }
+
+    fn declare_artifact(&self, name: &str, directory: bool, symlink: bool) -> anyhow::Result<File> {
         self.sync_default_executable();
         let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
         let file = File {
             is_directory: directory,
+            is_symlink: symlink,
             path: output
                 .generated_exec_path(&self.output_root)
                 .to_string_lossy()
@@ -299,6 +313,7 @@ impl Context {
         let relative = shareable_relative_path(path)?;
         let file = File {
             is_directory: false,
+            is_symlink: false,
             path: if relative.is_empty() {
                 root.to_owned()
             } else {
@@ -419,6 +434,11 @@ impl Context {
         extra.tree_outputs = outputs
             .iter()
             .filter(|file| file.is_directory)
+            .map(|file| file.path.clone().into())
+            .collect();
+        extra.symlink_outputs = outputs
+            .iter()
+            .filter(|file| file.is_symlink)
             .map(|file| file.path.clone().into())
             .collect();
         let mut action = Action {
@@ -1305,19 +1325,21 @@ fn action_methods(builder: &mut MethodsBuilder) {
             context.declare_shareable(&root, path)?,
         ))
     }
-    /// StarlarkActionFactory.declareSymlink (:194-225): unresolved symlink
-    /// artifacts are not modelled (explicit).
+    /// StarlarkActionFactory.declareSymlink (:194-225): an unresolved
+    /// symlink artifact (`--allow_unresolved_symlinks` defaults to true and
+    /// is not a modelled option), relative to the package or to `sibling`'s
+    /// directory. ctx.actions.symlink(target_path = ...) or a spawn creates
+    /// it; executing such an action is an explicit native gap
+    /// (docs/ACTIONS_PARAMS.md).
     fn declare_symlink<'v>(
         this: Value<'v>,
         filename: &str,
         #[starlark(default = NoneType)] sibling: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
-        action_receiver(this, eval, false)?;
-        let _ = sibling;
-        bail!(
-            "actions.declare_symlink('{filename}'): unresolved symlink artifacts are not supported by the native profile (docs/ACTIONS_PARAMS.md)"
-        )
+        let context = action_receiver(this, eval, false)?;
+        let name = declared_name(context, filename, sibling)?;
+        Ok(alloc_file(eval.heap(), context.declare_symlink(&name)?))
     }
     fn write<'v>(
         this: Value<'v>,
@@ -1659,26 +1681,36 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
 
 #[starlark_module]
 fn file_action_methods(builder: &mut MethodsBuilder) {
-    /// StarlarkActionFactory.symlink (:254-354) with target_file: the output
-    /// observes the target's bytes and permission bits. target_path needs an
-    /// unresolved symlink output (declare_symlink), which is unsupported.
-    /// `use_exec_root_for_source` (undocumented, default unbound) is
-    /// restricted to the internal API allowlist whenever it is passed
-    /// (:270-275); genuine links a source target through the execution
-    /// root then (SymlinkAction.toArtifact :110-122), which the native
-    /// profile has no persistent counterpart of: its symlink names the
-    /// source file itself, the same file the execution root's entry is.
+    /// StarlarkActionFactory.symlink (:254-354). With target_file the output
+    /// observes the target's bytes and permission bits (SymlinkAction). With
+    /// target_path the output is an unresolved symlink artifact
+    /// (declare_symlink) and the action an UnresolvedSymlinkAction
+    /// (analysis/actions/UnresolvedSymlinkAction.java): mnemonic
+    /// `UnresolvedSymlink`, keyed by the literal target and target type,
+    /// no inputs; executing it is an explicit native gap
+    /// (Transform::UnresolvedSymlink). `use_exec_root_for_source`
+    /// (undocumented, default unbound) is restricted to the internal API
+    /// allowlist whenever it is passed (:270-275); genuine links a source
+    /// target through the execution root then (SymlinkAction.toArtifact
+    /// :110-122), which the native profile has no persistent counterpart
+    /// of: its symlink names the source file itself, the same file the
+    /// execution root's entry is.
     fn symlink<'v>(
         this: Value<'v>,
         #[starlark(require = named)] output: Value<'v>,
         #[starlark(require = named, default = NoneType)] target_file: Value<'v>,
-        #[starlark(require = named, default = NoneType)] target_path: Value<'v>,
-        #[starlark(require = named, default = NoneType)] target_type: Value<'v>,
+        #[starlark(require = named)] target_path: Option<Value<'v>>,
+        #[starlark(require = named)] target_type: Option<Value<'v>>,
         #[starlark(require = named, default = false)] is_executable: bool,
         #[starlark(require = named)] progress_message: Option<Value<'v>>,
         #[starlark(require = named)] use_exec_root_for_source: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
+        // The `String or None` parameters are checked when the call binds
+        // (StarlarkActionFactoryApi.symlink), before the body.
+        let target_path = string_or_none(target_path, "symlink", "target_path")?;
+        let target_type = string_or_none(target_type, "symlink", "target_type")?;
+        let progress_message = string_or_none(progress_message, "symlink", "progress_message")?;
         let context = action_receiver(this, eval, false)?;
         if let Some(value) = use_exec_root_for_source {
             crate::subrule_fragments::private_api(eval).map_err(|e| anyhow!("{e}"))?;
@@ -1693,16 +1725,68 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             bail!("Exactly one of \"target_file\" or \"target_path\" is required");
         }
         let output = unpack_file(output)?;
-        if target_file.is_none() {
-            // Every declarable native output is a file or directory.
-            bail!(
-                "symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)"
-            );
+        // AbstractAction.getProgressMessage (actions/AbstractAction.java:380-400):
+        // "Creating symlink %{output}" unless given. `progress_message`
+        // is declared string-or-NoneType (StarlarkActionFactoryApi), so
+        // an explicit None is the absent value, like run/run_shell.
+        let progress = progress_message
+            .unwrap_or_else(|| "Creating symlink %{output}".to_owned())
+            .replace("%{label}", &context.label.to_string())
+            .replace("%{output}", crate::runfiles::root_relative(&output));
+        if let Some(target_path) = target_path {
+            if !output.is_symlink {
+                bail!(
+                    "symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)"
+                );
+            }
+            if is_executable {
+                bail!("\"is_executable\" cannot be True when using \"target_path\"");
+            }
+            // SymlinkTargetType (vfs/SymlinkTargetType.java): UNSPECIFIED
+            // unless "file" or "directory".
+            let target_type = match target_type.as_deref() {
+                None => crate::action::SymlinkTargetType::Unspecified,
+                Some("file") => crate::action::SymlinkTargetType::File,
+                Some("directory") => crate::action::SymlinkTargetType::Directory,
+                Some(_) => bail!("\"target_type\" must be one of \"file\" or \"directory\""),
+            };
+            context.register_action(Registration {
+                outputs: vec![output],
+                inputs: Vec::new(),
+                command: String::new(),
+                write: None,
+                program: None,
+                arguments: Vec::new(),
+                environment: BTreeMap::new(),
+                extra: ActionExtra {
+                    // UnresolvedSymlinkAction.getMnemonic (:107-110).
+                    mnemonic: "UnresolvedSymlink".to_owned(),
+                    transform: Some(Transform::UnresolvedSymlink {
+                        target: target_path,
+                        target_type,
+                        progress: progress.replace("%{input}", ""),
+                    }),
+                    ..ActionExtra::default()
+                },
+                deferred: None,
+                exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+                shell_pad: false,
+                executable_file: false,
+                runfiles_trees: Vec::new(),
+                build_info: None,
+                shareable: true,
+            })?;
+            return Ok(NoneType);
         }
-        if !target_type.is_none() {
+        if target_type.is_some() {
             bail!("\"target_type\" cannot be used with \"target_file\"");
         }
         let target = unpack_file(target_file)?;
+        if output.is_symlink {
+            bail!(
+                "symlink() with \"target_file\" param requires that \"output\" be declared as a file or directory, not a symlink (did you mean to use declare_file() or declare_directory() instead of declare_symlink()?)"
+            );
+        }
         if target.is_directory != output.is_directory {
             let kind = |directory: bool| if directory { "directory" } else { "file" };
             bail!(
@@ -1714,15 +1798,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
         if is_executable && output.is_directory {
             bail!("symlink() with \"output\" directory param cannot be executable");
         }
-        // AbstractAction.getProgressMessage (actions/AbstractAction.java:380-400):
-        // "Creating symlink %{output}" unless given. `progress_message`
-        // is declared string-or-NoneType (StarlarkActionFactoryApi), so
-        // an explicit None is the absent value, like run/run_shell.
-        let progress = string_or_none(progress_message, "symlink", "progress_message")?
-            .unwrap_or_else(|| "Creating symlink %{output}".to_owned())
-            .replace("%{label}", &context.label.to_string())
-            .replace("%{output}", crate::runfiles::root_relative(&output))
-            .replace("%{input}", crate::runfiles::root_relative(&target));
+        let progress = progress.replace("%{input}", crate::runfiles::root_relative(&target));
         context.register_action(Registration {
             outputs: vec![output],
             inputs: vec![target.clone()],
@@ -2117,6 +2193,7 @@ mod tests {
             owner: "//p:t".into(),
             is_source,
             is_directory: false,
+            is_symlink: false,
         };
         let mut builder = crate::runfiles::RunfilesBuilder::default();
         builder.add_artifact(file("p/data.txt", true));

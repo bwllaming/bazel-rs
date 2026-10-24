@@ -448,6 +448,7 @@ impl Fingerprint {
     fn extra(&mut self, extra: &ActionExtra) {
         let ActionExtra {
             tree_outputs,
+            symlink_outputs,
             tree_inputs,
             param_files,
             inherited_environment,
@@ -478,6 +479,12 @@ impl Fingerprint {
             Some(transform) => self.transform(transform),
         }
         self.paths(constant_metadata.iter());
+        // Only actions with unresolved symlink outputs key them, last (every
+        // other action's key is unchanged).
+        if !symlink_outputs.is_empty() {
+            self.tag(9);
+            self.paths(symlink_outputs.iter());
+        }
     }
 
     fn transform(&mut self, transform: &Transform) {
@@ -528,6 +535,15 @@ impl Fingerprint {
             Transform::WorkspaceStatus { volatile } => {
                 self.tag(8);
                 self.flag(*volatile);
+            }
+            Transform::UnresolvedSymlink {
+                target,
+                target_type,
+                progress: _,
+            } => {
+                self.tag(9);
+                self.str(target);
+                self.str(target_type.name());
             }
             Transform::RunfilesManifest { entries } => {
                 self.tag(6);
@@ -582,6 +598,7 @@ mod tests {
             owner: owner.to_owned(),
             is_source: !path.starts_with("bazel-out/"),
             is_directory: false,
+            is_symlink: false,
         }
     }
 
