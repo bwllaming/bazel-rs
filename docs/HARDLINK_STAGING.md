@@ -193,6 +193,7 @@ written into the execution root and published through this store.)
 * Inside the action every input is a regular file; Bazel's sandboxes show
   symlinks. `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
+  One exception (below): an executable aliasing a repository file.
 * The store persists one copy of each distinct input/output content; there is
   no store garbage collection (native has no cache GC) and no sweep of
   `.tmp-*` files a killed process left (docs/ROADMAP.md, milestone 3).
@@ -207,6 +208,39 @@ written into the execution root and published through this store.)
   commands; repository tree files persist only with their ctime, because a
   command verifies only the trees it materializes (docs/DIGEST_MEMO.md,
   "Trust").
+
+## Executables aliasing repository files
+
+A process's File executable that is a generated artifact (staged below
+`bazel-out/`, run by its execution path) and resolves — through published
+symlink outputs — to a file of a published repository tree is staged as an
+absolute symlink to that tree file instead of a hardlinked blob
+(`stage_tree_link`). A program that finds its installation through its own
+resolved path then finds it complete in the repository tree, as Bazel's
+symlinked sandboxes and execroot resolve such an alias into
+`<output_base>/external/<repo>`: CPython searches `lib/python3.X/` upwards
+from `realpath(argv[0])` (`Modules/getpath.py`). rules_python's PyCompile
+action runs `bazel-out/<exec>/bin/external/rules_python+/python/private/python3`,
+an `actions.symlink` of the hermetic interpreter
+(`py_exec_tools_toolchain.bzl` `current_interpreter_executable`); staged as a
+blob it resolved to itself and failed with `Could not find platform
+independent libraries <prefix>` / `No module named 'encodings'`, sandboxed or
+standalone. Genuine Bazel 9.3.0 builds the same fixture (worker, local and
+processwrapper-sandbox strategies).
+
+The key is unchanged (staging only). The tree file's size and mode must still
+match the keyed input when it is linked, and its inode state is re-checked
+after the process like a blob's; a modification fails the action, but the
+tree's file is never removed (the executor removes only `cas/` blobs).
+Executables at their own path (`external/<repo>/...`) keep hardlink staging:
+their declared installation is staged around them, mirroring the repository.
+Through the link a process can write to the tree file or, if the repository
+left them writable, next to it (a Python without rules_python's read-only
+`lib/` writes `__pycache__` there, as it does into Bazel's `external/`); the
+store's verification then makes the repository re-execute on the next
+command. Tests: `generated_executables_aliasing_tree_files_resolve_into_the_tree`
+(unit, standalone), `tests/tree_executables.rs` (CLI, sandboxed and
+standalone).
 
 ## Benchmark
 

@@ -1213,6 +1213,21 @@ fn store_file_by_components(root: &Path, path: &Path) -> bool {
         && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
+/// Whether `path` is a file of a published repository tree below the
+/// canonical cache root (a [`store_file`] that is no `cas/` blob), spelled
+/// exactly as its normal components.
+fn repository_tree_file(root: &Path, path: &Path) -> bool {
+    let tree_file = |rest: &[u8]| repository_tree_rest(rest).is_some_and(|below| !below.is_empty());
+    let (root_bytes, bytes) = (root.as_os_str().as_bytes(), path.as_os_str().as_bytes());
+    if !plain(root_bytes) {
+        return relative_names(path, root).is_some_and(|names| tree_file(&names))
+            && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str();
+    }
+    plain(bytes)
+        && plain_rest(root_bytes, bytes)
+            .is_some_and(|rest| !has_parent_name(rest) && tree_file(rest))
+}
+
 /// Digest and mode of a regular file; `root` (the canonical cache root)
 /// enables following published symlink outputs when `follow` is set. A file
 /// of the cache's immutable stores is read once per process ([`file_memo`]).
@@ -2684,11 +2699,15 @@ fn inode_state(metadata: &fs::Metadata) -> InodeState {
     }
 }
 
-/// A staged input file: its destination, store blob and inode state.
+/// A staged input file: its destination, the file it shares its inode with
+/// (a store blob, or the repository tree file a link names) and its state.
 struct StagedFile {
     destination: PathBuf,
     blob: PathBuf,
     state: InodeState,
+    /// A `cas/` blob, which a modification removes; never a repository
+    /// tree's file ([`stage_tree_link`]).
+    removable: bool,
 }
 
 fn stage_file(
@@ -2710,21 +2729,74 @@ fn stage_file(
         destination: destination.to_path_buf(),
         blob,
         state: inode_state(&metadata),
+        removable: true,
+    });
+    Ok(())
+}
+
+/// Stage the process's executable `input`, a generated artifact (an
+/// `actions.symlink` alias) of a published repository tree's file, as an
+/// absolute symlink to that file instead of a hardlinked blob. A program
+/// that finds its installation through its own resolved path then finds it
+/// complete in the tree, as Bazel's symlinked sandbox and execroot resolve
+/// such an alias into `external/<repo>`: CPython searches `lib/python3.X`
+/// from `realpath(argv[0])` (Modules/getpath.py), and rules_python's
+/// PyCompile runs `bazel-out/.../python/private/python3`, an alias of the
+/// interpreter (`current_interpreter_executable`) whose blob, staged there,
+/// resolved to itself: `Could not find platform independent libraries`.
+/// Repository trees are immutable and verified like blobs; the keyed state
+/// is checked at staging and after the process ([`check_staged`]).
+fn stage_tree_link(
+    input: &Input,
+    execroot: &Path,
+    destination: &Path,
+    staged: &mut Vec<StagedFile>,
+) -> Result<(), String> {
+    let target = execroot.join(destination);
+    if let Some(parent) = target.parent() {
+        ensure_directory(parent)?;
+    }
+    std::os::unix::fs::symlink(&input.path, &target)
+        .map_err(|e| io_error("cannot link", &target, e))?;
+    let metadata = fs::symlink_metadata(&input.path)
+        .map_err(|e| io_error("cannot inspect", &input.path, e))?;
+    if !metadata.is_file()
+        || metadata.size() != input.size
+        || metadata.permissions().mode() & 0o7777 != input.mode
+    {
+        return Err(format!(
+            "input '{}' changed while it was being staged",
+            input.path.display()
+        ));
+    }
+    staged.push(StagedFile {
+        destination: destination.to_path_buf(),
+        blob: input.path.clone(),
+        state: inode_state(&metadata),
+        removable: false,
     });
     Ok(())
 }
 
 /// Stage every input: files as store hardlinks, tree directories as real
-/// (writable) directories holding hardlinked files.
+/// (writable) directories holding hardlinked files. `alias` is the
+/// process's executable when it is a generated artifact: if it resolves to
+/// a repository tree's file it becomes a link to it ([`stage_tree_link`]).
 fn stage_inputs(
     cas: &Path,
     root: &Path,
     inputs: &BTreeMap<PathBuf, Staged>,
     execroot: &Path,
+    alias: Option<&Path>,
 ) -> Result<Vec<StagedFile>, String> {
     let mut staged = Vec::new();
     for (name, input) in inputs {
         match input {
+            Staged::File(input)
+                if alias == Some(name.as_path()) && repository_tree_file(root, &input.path) =>
+            {
+                stage_tree_link(input, execroot, name, &mut staged)?
+            }
             Staged::File(input) => stage_file(cas, root, input, execroot, name, &mut staged)?,
             Staged::Tree(tree) => {
                 ensure_directory(&execroot.join(name))?;
@@ -2756,7 +2828,7 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
         if let Some(current) = current
             && current != file.state
         {
-            if state(&file.blob).is_some() {
+            if file.removable && state(&file.blob).is_some() {
                 let _ = fs::remove_file(&file.blob);
             }
             modified.push(file.destination.display().to_string());
@@ -3728,7 +3800,16 @@ pub fn execute_with_remote(
     // writes and transforms read the verified input files directly, and a
     // remote hit runs nothing.
     let staged = if process && remote_hit.is_none() {
-        stage_inputs(&cas, &root, inputs, &execroot)?
+        // A File executable that is a generated artifact (below bazel-out/,
+        // run by its execution path): an actions.symlink alias whose
+        // repository tree file is linked, not hardlinked (stage_tree_link).
+        let alias = action
+            .program
+            .as_deref()
+            .filter(|_| action.executable_file)
+            .map(|program| Path::new(program.strip_prefix("./").unwrap_or(program)))
+            .filter(|program| program.starts_with("bazel-out"));
+        stage_inputs(&cas, &root, inputs, &execroot, alias)?
     } else {
         Vec::new()
     };
@@ -6281,6 +6362,80 @@ mod tests {
                 .unwrap_err()
                 .contains("symlink is not allowed")
         );
+    }
+
+    /// A process's File executable that is a generated alias of a
+    /// repository tree's file (an actions.symlink output: rules_python's
+    /// interpreter executable) is staged as a symlink to that file, so a
+    /// program resolving its own path (CPython's prefix search; here
+    /// `readlink -f "$0"`) finds its installation in the tree. At its own
+    /// execution path the file stays a hardlinked blob with only declared
+    /// inputs beside it. Writing through the link fails the action like any
+    /// modified input, and the tree's file is never removed as a damaged
+    /// blob.
+    #[test]
+    fn generated_executables_aliasing_tree_files_resolve_into_the_tree() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let tree = root.join("repositories/direct/trees/abc");
+        fs::create_dir_all(tree.join("lib")).unwrap();
+        fs::create_dir_all(tree.join("bin")).unwrap();
+        fs::write(tree.join("lib/landmark"), b"in the tree\n").unwrap();
+        let tool = tree.join("bin/tool");
+        let writer = tree.join("bin/writer");
+        write_executable_script(
+            &tool,
+            "#!/bin/sh\nhome=$(dirname \"$(dirname \"$(readlink -f \"$0\")\")\")\ncat \"$home/lib/landmark\" > out/result\n",
+            0o755,
+        );
+        write_executable_script(
+            &writer,
+            "#!/bin/sh\nprintf x >> \"$0\"\ntouch out/result\n",
+            0o755,
+        );
+        let alias = |source: &Path, name: &str| {
+            let mut link = fixture.action();
+            link.id = format!("alias-{name}");
+            link.command.clear();
+            link.inputs = vec![(
+                source.to_path_buf(),
+                format!("external/repo/bin/{name}").into(),
+            )];
+            link.outputs = vec![format!("bazel-out/bin/tools/{name}").into()];
+            link.extra.transform = Some(Transform::Symlink {
+                target: format!("external/repo/bin/{name}").into(),
+                require_executable: true,
+                progress: "Creating symlink".into(),
+            });
+            execute(&fixture.cache(), &link).unwrap().outputs[0].clone()
+        };
+        let run = |id: &str, source: PathBuf, program: &str| {
+            let mut action = fixture.action();
+            action.id = id.into();
+            action.command.clear();
+            action.program = Some(program.into());
+            action.executable_file = true;
+            action.inputs = vec![(source, program.into())];
+            execute(&fixture.cache(), &action)
+        };
+        let ran = run("alias", alias(&tool, "tool"), "bazel-out/bin/tools/tool").unwrap();
+        assert_eq!(fs::read(&ran.outputs[0]).unwrap(), b"in the tree\n");
+        let direct = run("direct", tool.clone(), "external/repo/bin/tool").unwrap_err();
+        assert!(direct.contains("lib/landmark: No such file"), "{direct}");
+        let wrote = run(
+            "writer",
+            alias(&writer, "writer"),
+            "bazel-out/bin/tools/writer",
+        )
+        .unwrap_err();
+        assert!(
+            wrote.contains(
+                "input dependency bazel-out/bin/tools/writer was modified during execution."
+            ),
+            "{wrote}"
+        );
+        assert!(writer.is_file());
     }
 
     /// A read-only file of a repository tree (rules_python's interpreter
