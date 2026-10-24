@@ -365,8 +365,13 @@ natively `Engine::check_target_compatibility`:
   `cross_libs` cc_library targets and `//src/python/baseimage:image`'s
   select() of cpu constraints plus `os:linux`).
 * An incompatible target fails explicitly at its analysis, naming the target
-  platform and the unmet constraints with Bazel's reason text
-  (TopLevelConstraintSemantics.formatIncompatibilityReasons): `//pkg:x is
+  platform, the unmet constraints and the non-matching config_settings with
+  Bazel's reason text (TopLevelConstraintSemantics.formatIncompatibilityReasons;
+  both lists sorted by label and deduplicated like
+  `IncompatiblePlatformProvider.incompatibleDueToConstraintsAndConfigSettings`,
+  `analysis/IncompatiblePlatformProvider.java:113-125`, so `[os:macos,
+  cpu:aarch64]` reads `constraints [@@platforms//cpu:aarch64,
+  @@platforms//os:osx]`): `//pkg:x is
   incompatible with its target platform: target platform
   (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64;
   skipping incompatible targets (IncompatiblePlatformProvider) is not

@@ -7307,7 +7307,9 @@ impl Engine {
     /// (ConstraintCollection.validateConstraints) and config_setting errors
     /// are validation errors at the rule's location. A compatible target is
     /// analyzed as usual; an incompatible one fails explicitly, naming the
-    /// target platform and the unmet constraints in Bazel's words
+    /// target platform, the unmet constraints and the non-matching
+    /// config_settings (each sorted and deduplicated like
+    /// IncompatiblePlatformProvider) in Bazel's words
     /// (TopLevelConstraintSemantics.formatIncompatibilityReasons): Bazel
     /// makes it an IncompatiblePlatformProvider target that wildcard patterns
     /// skip and an explicit request rejects, which the native profile does
@@ -7327,6 +7329,10 @@ impl Engine {
         // The toolchain rule's own target_compatible_with is a toolchain
         // resolution input (platform_prerequisite_attributes).
         if matches!(rule.kind, RuleKind::Native("toolchain")) {
+            return Ok(());
+        }
+        // Most targets do not set the attribute: no condition map for them.
+        if !configured_attributes::has_native_value(rule, "target_compatible_with") {
             return Ok(());
         }
         let conditions = conditions.iter().cloned().collect::<BTreeMap<_, _>>();
@@ -7413,7 +7419,7 @@ impl Engine {
         } else {
             Some(self.target_platform(config, configured, plan)?)
         };
-        let unmet = platform.as_ref().map_or_else(Vec::new, |platform| {
+        let mut unmet = platform.as_ref().map_or_else(Vec::new, |platform| {
             constraints
                 .iter()
                 .filter(|value| platform.constraints.get(&value.setting).as_ref() != Some(*value))
@@ -7422,6 +7428,17 @@ impl Engine {
         if unmet.is_empty() && not_matching.is_empty() {
             return unprovided_error(unprovided.as_ref(), provider_error);
         }
+        // IncompatiblePlatformProvider.incompatibleDueToConstraintsAndConfigSettings
+        // (analysis/IncompatiblePlatformProvider.java:113-125): the unmet
+        // constraints sorted by label and the non-matching config_settings
+        // sorted (Label.compareTo: repository, package, name — the native
+        // Label order), each without duplicates (a constraint value listed
+        // directly and through an alias is one ConstraintValueInfo; a label
+        // has one setting, so equal values are adjacent once sorted).
+        unmet.sort_by(|left, right| left.label.cmp(&right.label));
+        unmet.dedup();
+        not_matching.sort();
+        not_matching.dedup();
         // TopLevelConstraintSemantics.formatIncompatibilityReasons (:316-351).
         let mut reasons = Vec::new();
         if let Some(platform) = platform.as_ref().filter(|_| !unmet.is_empty()) {

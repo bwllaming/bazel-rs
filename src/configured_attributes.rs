@@ -878,12 +878,26 @@ pub fn configured_native_value(
             return Ok(resolved.value.filter(|_| resolved.explicit));
         }
     }
-    let target = match (&rule.native, &rule.custom) {
+    Ok(native_target(rule).and_then(|target| target.attrs.get(name).cloned()))
+}
+
+/// Whether `rule` sets the built-in (native) attribute `name`, plainly or
+/// with a select(): when it does not, [`configured_native_value`] is
+/// `Ok(None)`, so a caller can skip building its select() conditions.
+pub fn has_native_value(rule: &Rule, name: &str) -> bool {
+    native_target(rule).is_some_and(|target| {
+        target.attrs.contains_key(name) || target.configurable.contains_key(name)
+    })
+}
+
+/// The built-in attributes of `rule`: a native rule's, or a Starlark rule's
+/// built-in part.
+fn native_target(rule: &Rule) -> Option<&crate::native_rules::NativeTarget> {
+    match (&rule.native, &rule.custom) {
         (Some(native), _) => Some(&**native),
         (None, Some(custom)) => Some(&custom.declaration.builtin.target),
         (None, None) => None,
-    };
-    Ok(target.and_then(|target| target.attrs.get(name).cloned()))
+    }
 }
 
 #[cfg(test)]

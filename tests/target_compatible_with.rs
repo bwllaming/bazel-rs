@@ -196,6 +196,16 @@ fn check(name: &str, case: &Value) {
             stderr.contains(message),
             "{name}: missing {message:?} in {stderr}"
         );
+        // Genuine's incompatibility reason (the text after `<--` of its
+        // dependency chain, TopLevelConstraintSemantics
+        // .formatIncompatibilityReasons) is the native message's, verbatim.
+        if let Some(reason) = case["genuine_reason"].as_str() {
+            let expected = format!("is incompatible with its target platform:{reason};");
+            assert!(
+                stderr.contains(&expected),
+                "{name}: missing {expected:?} in {stderr}"
+            );
+        }
         return;
     }
     assert_eq!(case["verdict"], "MATCH", "{name}");
