@@ -57,14 +57,23 @@ impl UnitRoots {
         }
     }
 
-    /// Run `probe` in its own scope: its result and the roots it obtained
-    /// on this thread (a warm-reuse probe's recorded-input check demands
-    /// the roots its inputs name), which the enclosing scope does not
-    /// see.
-    fn during<R>(probe: impl FnOnce() -> R) -> (R, Vec<String>) {
+    /// Run `probe` in its own scope: its result and what it obtained on
+    /// this thread — the roots it obtained (a warm-reuse probe's
+    /// recorded-input check demands the roots its inputs name), which the
+    /// enclosing scope does not see, and what it observed for the
+    /// analysis snapshot, in a detached capture (W6R): both are stored
+    /// with the root it publishes and count where that root does
+    /// ([`DirectRuntime::mark_sequential`]).
+    fn during<R>(probe: impl FnOnce() -> R) -> (R, crate::repository_demand::Obtained) {
         let scope = Self::record();
-        let result = probe();
-        (result, scope.finish())
+        let (result, observations) = crate::observed_fs::capture_detached(probe);
+        (
+            result,
+            crate::repository_demand::Obtained {
+                keys: scope.finish(),
+                observations,
+            },
+        )
     }
 
     /// The recorded repositories, in name order.
@@ -212,11 +221,16 @@ impl DirectRuntime {
     /// the sequential engine runs instead of that probe demands them. A
     /// root that already counted had its own marked when it began to
     /// count. Only filled slots count; nothing is evaluated.
+    ///
+    /// What each publishing probe observed reaches the analysis snapshot's
+    /// recording here, with the root (W6R, [`DemandSlot::observations`]):
+    /// the sequential engine's evaluation of the root observes the same.
     fn mark_sequential(&self, slot: &DemandSlot<PathBuf>) {
         if slot.ready().is_none() {
             return;
         }
         slot.note_sequential();
+        crate::observed_fs::replay_some(slot.observations());
         let mut pending: Vec<&str> = slot.obtained().iter().map(String::as_str).collect();
         while let Some(canonical) = pending.pop() {
             let Some(obtained) = self.root_slot(canonical) else {
@@ -226,6 +240,7 @@ impl DirectRuntime {
                 continue;
             }
             obtained.note_sequential();
+            crate::observed_fs::replay_some(obtained.observations());
             pending.extend(obtained.obtained().iter().map(String::as_str));
         }
     }

@@ -1315,6 +1315,13 @@ impl Captured {
             (one, None) | (None, one) => one,
         }
     }
+
+    /// An empty set, distinct from every other (tests of who stores
+    /// which set).
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Arc<Self> {
+        Self::new(Events::default())
+    }
 }
 
 /// A load unit's observations ([`unit_scope`]): committed by the

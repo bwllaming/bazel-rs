@@ -175,6 +175,30 @@ fn probe_wait() -> Duration {
     PROBE_WAIT
 }
 
+/// What a reuse-only probe obtained on its thread besides its value
+/// ([`DemandSlot::get_or_probe_obtaining`]): stored with the value exactly
+/// when the probe's value is the slot's publication.
+#[derive(Debug, Default)]
+pub struct Obtained {
+    /// The keys of the values it obtained while it probed (W6 review F2
+    /// follow-up: the roots a warm-reuse probe's recorded-input check
+    /// demanded).
+    pub keys: Vec<String>,
+    /// What it observed for the analysis snapshot, in a detached capture
+    /// (W6R, crate::observed_fs::capture_detached): replayed where the
+    /// published value begins to count for the sequential engine.
+    pub observations: Option<std::sync::Arc<crate::observed_fs::Captured>>,
+}
+
+impl From<Vec<String>> for Obtained {
+    fn from(keys: Vec<String>) -> Self {
+        Self {
+            keys,
+            observations: None,
+        }
+    }
+}
+
 /// A single demand result, allowing callers to borrow the cached value.
 ///
 /// The evaluator never runs under a lock. Recursive demand fails with a cycle
@@ -204,6 +228,11 @@ pub struct DemandSlot<T> {
     /// review F2 follow-up). Set before the value is published; empty for
     /// a value an evaluator computed.
     obtained: OnceLock<Vec<String>>,
+    /// What the probe that published this value observed for the
+    /// analysis snapshot ([`Obtained::observations`]; W6R). Set before the
+    /// value is published, with `obtained`; never for an evaluator's value
+    /// (the evaluating thread recorded what it observed).
+    observations: OnceLock<std::sync::Arc<crate::observed_fs::Captured>>,
     /// Test instrumentation: how many top-level probers started waiting
     /// for another thread's probe of this slot.
     #[cfg(test)]
@@ -275,6 +304,7 @@ impl<T> DemandSlot<T> {
             probed: Condvar::new(),
             sequential: AtomicBool::new(false),
             obtained: OnceLock::new(),
+            observations: OnceLock::new(),
             #[cfg(test)]
             waits: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -285,6 +315,13 @@ impl<T> DemandSlot<T> {
     /// it, or the probe obtained nothing.
     pub fn obtained(&self) -> &[String] {
         self.obtained.get().map_or(&[], Vec::as_slice)
+    }
+
+    /// What the probe that published this value observed (see the
+    /// `observations` field); `None` when no probe published it, or the
+    /// probe observed nothing (not recording).
+    pub fn observations(&self) -> Option<&std::sync::Arc<crate::observed_fs::Captured>> {
+        self.observations.get()
     }
 
     /// The successfully computed value once the sequential engine has
@@ -397,20 +434,23 @@ impl<T> DemandSlot<T> {
         probe: impl FnOnce() -> Result<Option<T>, String>,
         init: impl FnOnce() -> Result<T, String>,
     ) -> Result<&T, String> {
-        self.get_or_probe_obtaining(runtime_id, key, || (probe(), Vec::new()), init)
+        self.get_or_probe_obtaining(runtime_id, key, || (probe(), Obtained::default()), init)
     }
 
-    /// [`Self::get_or_probe`] whose probe also returns the keys of the
-    /// values it obtained on this thread while it probed (W6 review F2
-    /// follow-up: the roots a warm-reuse probe's recorded-input check
-    /// demanded). They are stored with the value exactly when this
-    /// probe's value is the one published ([`Self::obtained`]); a miss, an
-    /// error or a lost publication race drops them.
-    pub fn get_or_probe_obtaining(
+    /// [`Self::get_or_probe`] whose probe also returns what it obtained on
+    /// this thread while it probed ([`Obtained`]): the keys of the values
+    /// it obtained (W6 review F2 follow-up: the roots a warm-reuse probe's
+    /// recorded-input check demanded) and what it observed for the
+    /// analysis snapshot (W6R). They are stored with the value exactly
+    /// when this probe's value is the one published ([`Self::obtained`],
+    /// [`Self::observations`]); a miss, an error or a lost publication race
+    /// drops them, and a waiter served by another probe's publication gets
+    /// that probe's.
+    pub fn get_or_probe_obtaining<O: Into<Obtained>>(
         &self,
         runtime_id: u64,
         key: &str,
-        probe: impl FnOnce() -> (Result<Option<T>, String>, Vec<String>),
+        probe: impl FnOnce() -> (Result<Option<T>, String>, O),
         init: impl FnOnce() -> Result<T, String>,
     ) -> Result<&T, String> {
         if let Some(result) = self.ready.get() {
@@ -461,6 +501,7 @@ impl<T> DemandSlot<T> {
         // mismatch + re-execute, so the coordinator's sequential path must
         // own every error. The probe is a pure optimization.
         let (probed, obtained) = probe();
+        let obtained: Obtained = obtained.into();
         match probed.unwrap_or(None) {
             Some(value) => {
                 // Publish for all later demands; a concurrent publisher
@@ -485,11 +526,14 @@ impl<T> DemandSlot<T> {
                 }
                 // Under this lock no evaluator runs (none can start) and
                 // every other probe publishes under it too: the value and
-                // what its probe obtained publish together, the keys
-                // first, so whoever sees the value sees them.
+                // what its probe obtained publish together, the keys and
+                // observations first, so whoever sees the value sees them.
                 if self.ready.get().is_none() {
-                    if !obtained.is_empty() {
-                        let _ = self.obtained.set(obtained);
+                    if !obtained.keys.is_empty() {
+                        let _ = self.obtained.set(obtained.keys);
+                    }
+                    if let Some(observations) = obtained.observations {
+                        let _ = self.observations.set(observations);
                     }
                     let _ = self.ready.set(Ok(value));
                 }
@@ -1394,6 +1438,176 @@ mod tests {
             Ok(&2)
         );
         assert!(evaluated.obtained().is_empty());
+    }
+
+    /// W6R: what a probe observed for the analysis snapshot is stored with
+    /// the value exactly when that probe's value is the slot's publication
+    /// — never for a miss, a probe error, a probe that lost to an earlier
+    /// publication or to an evaluator — and a waiter served by an in-flight
+    /// probe's publication gets that probe's set (its own probe never
+    /// runs).
+    #[test]
+    fn a_probe_stores_its_observations_only_with_its_own_publication() {
+        use crate::observed_fs::Captured;
+        let probed = |value: Result<Option<usize>, String>, set: &Arc<Captured>| {
+            let set = set.clone();
+            move || {
+                (
+                    value,
+                    Obtained {
+                        keys: vec!["b".to_owned()],
+                        observations: Some(set),
+                    },
+                )
+            }
+        };
+        let same = |slot: &DemandSlot<usize>, set: &Arc<Captured>| {
+            slot.observations()
+                .is_some_and(|stored| Arc::ptr_eq(stored, set))
+        };
+        let (first, second) = (Captured::for_test(), Captured::for_test());
+        let guard = no_demand();
+        let reuse = reuse_only();
+        let published = DemandSlot::new();
+        assert_eq!(
+            published.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                probed(Ok(Some(5)), &first),
+                || { Ok(1) }
+            ),
+            Ok(&5)
+        );
+        assert!(same(&published, &first));
+        // A later probe is served by the publication and stores nothing.
+        assert_eq!(
+            published.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                probed(Ok(Some(9)), &second),
+                || { Ok(1) }
+            ),
+            Ok(&5)
+        );
+        assert!(same(&published, &first));
+        for missed in [Ok(None), Err("probe error".to_owned())] {
+            let slot = DemandSlot::new();
+            assert!(
+                slot.get_or_probe_obtaining(7, "repository:a", probed(missed, &first), || Ok(1))
+                    .is_err_and(|error| is_needs_repository(&error))
+            );
+            assert!(slot.observations().is_none() && slot.ready().is_none());
+        }
+        // The coordinator published while the probe ran: the probe's set
+        // is dropped with its value.
+        let raced = Arc::new(DemandSlot::new());
+        let coordinator = raced.clone();
+        let late = first.clone();
+        assert_eq!(
+            raced.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                move || {
+                    thread::spawn(move || {
+                        coordinator
+                            .get_or_try_init(7, "repository:a", || Ok(3))
+                            .copied()
+                    })
+                    .join()
+                    .unwrap()
+                    .unwrap();
+                    (
+                        Ok(Some(4)),
+                        Obtained {
+                            keys: Vec::new(),
+                            observations: Some(late),
+                        },
+                    )
+                },
+                || Ok(1)
+            ),
+            Ok(&3)
+        );
+        assert!(raced.observations().is_none());
+        drop(reuse);
+        drop(guard);
+        // An evaluator's value carries no probe's set.
+        let evaluated = DemandSlot::new();
+        assert_eq!(
+            evaluated.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                probed(Ok(Some(5)), &first),
+                || { Ok(2) }
+            ),
+            Ok(&2)
+        );
+        assert!(evaluated.observations().is_none());
+
+        // A waiter served by the in-flight probe's publication: the owner's
+        // set, and the waiter's probe never ran.
+        let slot = Arc::new(DemandSlot::new());
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let owner = {
+            let slot = slot.clone();
+            let first = first.clone();
+            thread::spawn(move || {
+                let _guard = no_demand();
+                let _reuse = reuse_only();
+                slot.get_or_probe_obtaining(
+                    7,
+                    "repository:x",
+                    move || {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv_timeout(TIMEOUT).unwrap();
+                        (
+                            Ok(Some(5)),
+                            Obtained {
+                                keys: Vec::new(),
+                                observations: Some(first),
+                            },
+                        )
+                    },
+                    || Ok(1),
+                )
+                .copied()
+            })
+        };
+        started_rx.recv_timeout(TIMEOUT).unwrap();
+        let ran = Arc::new(AtomicUsize::new(0));
+        let waiter = {
+            let slot = slot.clone();
+            let second = second.clone();
+            let ran = ran.clone();
+            thread::spawn(move || {
+                PROBE_WAIT_OVERRIDE.with(|bound| bound.set(Some(UNBOUNDED)));
+                let _guard = no_demand();
+                let _reuse = reuse_only();
+                slot.get_or_probe_obtaining(
+                    7,
+                    "repository:x",
+                    move || {
+                        ran.fetch_add(1, Ordering::SeqCst);
+                        (
+                            Ok(Some(9)),
+                            Obtained {
+                                keys: Vec::new(),
+                                observations: Some(second),
+                            },
+                        )
+                    },
+                    || Ok(1),
+                )
+                .copied()
+            })
+        };
+        assert!(waiters_arrive(&slot, 1));
+        release_tx.send(()).unwrap();
+        assert_eq!(owner.join().unwrap(), Ok(5));
+        assert_eq!(waiter.join().unwrap(), Ok(5));
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+        assert!(same(&slot, &first));
     }
 
     #[test]
