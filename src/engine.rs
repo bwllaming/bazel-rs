@@ -2298,8 +2298,11 @@ impl Engine {
         // Resolve the module graph on the coordinator before any worker
         // starts (review follow-up): resolution is coordinator-only work,
         // and a lazily-resolving worker could fetch outside the guard.
-        // Already resolved, this is a cheap OnceLock read.
+        // Already resolved, this is a cheap OnceLock read. So is the
+        // repository store's path, whose first computation the analysis
+        // snapshot records (W6R: never in a worker's unit).
         self.repositories.resolve_graph()?;
+        let _ = self.repositories.source_cache_path();
         let workers = self.loading_phase_threads.min(pending.len());
         let slots: Vec<std::sync::Mutex<Option<package::LoadUnit>>> = pending
             .iter()

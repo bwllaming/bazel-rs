@@ -391,8 +391,10 @@ struct PreparedOrdinary {
     generated_mapping: BTreeMap<String, String>,
     repositories: BTreeMap<String, OrdinaryRepository>,
     provenance: Vec<u8>,
-    /// Per-canonical-name spec digest cache (review R1).
-    spec_keys: std::sync::Mutex<BTreeMap<String, String>>,
+    /// Per-canonical-name spec digest cache (review R1), with what the
+    /// digest's computation observed for the analysis snapshot (W6R: the
+    /// declared environment; replayed at every hit).
+    spec_keys: std::sync::Mutex<BTreeMap<String, SpecKeyEntry>>,
     /// SHA-256 of `provenance`, computed ONCE per prepared group:
     /// `specification_digest_bytes` framed these bytes into every
     /// sibling's spec key, re-hashing the whole (closure-bearing) group
@@ -430,22 +432,33 @@ impl PreparedOrdinary {
         declared: &crate::repository_environment::DeclaredEnvironment,
     ) -> Result<String, String> {
         if let Ok(cache) = self.spec_keys.lock()
-            && let Some(key) = cache.get(canonical_name)
+            && let Some((key, observations)) = cache.get(canonical_name)
         {
+            // A worker's probe may have computed it (W6R): the sequential
+            // engine's computation reads the declared environment here.
+            crate::observed_fs::replay_some(observations.as_ref());
             return Ok(key.clone());
         }
-        let key = crate::repository_warm::specification_digest_mixed(
-            repositories,
-            canonical_name,
-            &self.provenance_digest,
-            declared,
-        )?;
+        let (key, observations) = crate::observed_fs::capture(|| {
+            crate::repository_warm::specification_digest_mixed(
+                repositories,
+                canonical_name,
+                &self.provenance_digest,
+                declared,
+            )
+        });
+        let key = key?;
         if let Ok(mut cache) = self.spec_keys.lock() {
-            cache.insert(canonical_name.to_owned(), key.clone());
+            cache
+                .entry(canonical_name.to_owned())
+                .or_insert((key.clone(), observations));
         }
         Ok(key)
     }
 }
+
+/// A cached ordinary spec key and what computing it observed (W6R).
+type SpecKeyEntry = (String, Option<Arc<crate::observed_fs::Captured>>);
 
 #[derive(Debug)]
 struct OrdinaryRepository {
@@ -4715,6 +4728,55 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// W6R: an extension-generated repository's spec key reads its
+    /// declared environment once per invocation (the key is cached per
+    /// name). A worker's warm-reuse probe may compute it first and miss
+    /// (here: nothing is published yet), its observations dropped with the
+    /// probe; the sequential engine's own computation, a cache hit, still
+    /// records the environment value: the entry's captured set replays.
+    #[test]
+    fn a_spec_key_hit_after_a_probe_miss_records_the_declared_environment() {
+        use crate::observed_fs::tests_support::record_this_thread;
+        use crate::repository_demand::{no_demand, reuse_only};
+        let f = environment_fixture(true, "['SYNTHETIC']", "ctx.file('value', 'constant')");
+        let reader = crate::repository_environment::tests::Reader::new(Ok(Some("v".into())));
+        let repos = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
+        let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
+        // The coordinator prepares the extension group (outside the window).
+        repos.mapping(&canonical).unwrap();
+        let window = record_this_thread();
+        {
+            let _guard = no_demand();
+            let _reuse = reuse_only();
+            let unit = crate::observed_fs::unit_scope();
+            let missed = repos.root(&canonical).unwrap_err();
+            assert!(
+                crate::repository_demand::is_needs_repository(&missed),
+                "{missed}"
+            );
+            // The build never commits this unit.
+            drop(unit);
+        }
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+        assert!(window.recorder.snapshot().env.is_empty());
+        let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
+        prepared
+            .spec_key(
+                &repos,
+                &repository.canonical_name,
+                &repository.definition.environ,
+            )
+            .unwrap();
+        assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+        let env = window.recorder.snapshot().env;
+        assert_eq!(
+            env.iter()
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            ["SYNTHETIC"]
+        );
     }
 
     #[test]

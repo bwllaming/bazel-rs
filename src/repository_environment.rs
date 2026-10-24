@@ -152,6 +152,10 @@ impl fmt::Debug for Captured {
 pub(crate) struct Entry {
     name: Arc<str>,
     captured: OnceLock<Result<Captured, EnvError>>,
+    /// What the analysis snapshot records for this name (W6R): the
+    /// digest of the value read (`None`: unset), set when the value was
+    /// read inside the recording window; recorded at every lookup.
+    noted: OnceLock<Option<[u8; 32]>>,
 }
 impl fmt::Debug for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -297,21 +301,27 @@ impl Snapshot {
                 let entry = Arc::new(Entry {
                     name: name.clone(),
                     captured: OnceLock::new(),
+                    noted: OnceLock::new(),
                 });
                 retained.entries.insert(name, entry.clone());
                 entry
             }
         };
         // Never hold the map mutex across the reader or any Starlark evaluation.
-        entry
-            .captured
-            .get_or_init(|| self.capture(&entry.name))
-            .as_ref()
-            .map_err(|e| *e)?;
+        let captured = entry.captured.get_or_init(|| self.capture(&entry));
+        // Every lookup records the value it uses (W6R): the snapshot is
+        // shared by the invocation's threads, and a loading worker may
+        // have read the name first, for a unit or a probe whose
+        // observations the build drops.
+        if let Some(digest) = entry.noted.get() {
+            crate::observed_fs::note_env_digest(std::ffi::OsStr::new(&*entry.name), *digest);
+        }
+        captured.as_ref().map_err(|e| *e)?;
         Ok(entry)
     }
 
-    fn capture(&self, name: &str) -> Result<Captured, EnvError> {
+    fn capture(&self, entry: &Entry) -> Result<Captured, EnvError> {
+        let name = &*entry.name;
         // Verified POSIX odd-name contract: no splitting, truncation or OS access.
         if name.is_empty() || name.bytes().any(|b| b == b'=' || b == 0) {
             return Ok(Captured::Absent);
@@ -319,10 +329,14 @@ impl Snapshot {
         // var_os necessarily allocates its initial OsString before we know its
         // size. All subsequent scanning/conversion/cache allocation is precharged.
         let Some(raw) = self.reader.read(name).map_err(|_| EnvError::Read)? else {
-            crate::observed_fs::note_env(std::ffi::OsStr::new(name), None);
+            if crate::observed_fs::recording() {
+                let _ = entry.noted.set(None);
+            }
             return Ok(Captured::Absent);
         };
-        crate::observed_fs::note_env(std::ffi::OsStr::new(name), Some(&raw));
+        if crate::observed_fs::recording() {
+            let _ = entry.noted.set(crate::observed_fs::env_digest(Some(&raw)));
+        }
         let bytes = raw.as_encoded_bytes();
         if bytes.len() > MAX_VALUE {
             return Err(EnvError::ValueLimit);
@@ -564,6 +578,48 @@ pub(crate) mod tests {
                 (b"Z".as_slice(), b"\xef\xbf\xbd\x01z".as_slice()),
             ]
         );
+    }
+
+    /// W6R: the snapshot is shared by the invocation's threads, so a
+    /// name's first read may happen in a loading worker's frame the build
+    /// drops (a unit never committed, a probe that missed); every later
+    /// lookup records the value again, so the coordinator's lookup is in
+    /// the recording although it reads nothing (one read in total).
+    #[test]
+    fn every_lookup_records_the_value_a_first_read_in_a_dropped_frame_read() {
+        use crate::observed_fs::tests_support::record_this_thread;
+        for value in [Some(OsString::from("value")), None] {
+            let reader = Reader::new(Ok(value.clone()));
+            let snapshot = Snapshot::with_reader(reader.clone());
+            let window = record_this_thread();
+            {
+                let _unit = crate::observed_fs::unit_scope();
+                snapshot.lookup("SYNTHETIC").unwrap();
+                // Dropped unfinished: the build never commits the unit.
+            }
+            assert!(window.recorder.snapshot().env.is_empty());
+            assert_eq!(
+                snapshot.lookup("SYNTHETIC").unwrap(),
+                value
+                    .as_ref()
+                    .map(|value| value.to_str().unwrap().to_owned())
+            );
+            assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+            let recorded = window.recorder.snapshot().env;
+            assert_eq!(recorded.len(), 1, "{recorded:?}");
+            assert_eq!(recorded[0].0, OsString::from("SYNTHETIC"));
+            assert_eq!(
+                recorded[0].1.digest,
+                crate::observed_fs::env_digest(value.as_deref())
+            );
+        }
+        // Read outside the window: nothing is recorded by later lookups
+        // either (bootstrap values belong to the snapshot key).
+        let snapshot = Snapshot::with_reader(Reader::new(Ok(Some("early".into()))));
+        snapshot.lookup("EARLY").unwrap();
+        let window = record_this_thread();
+        snapshot.lookup("EARLY").unwrap();
+        assert!(window.recorder.snapshot().env.is_empty());
     }
 
     #[test]
