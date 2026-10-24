@@ -1,12 +1,12 @@
-# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f)
+# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f, L2-W5g)
 
 Design: PLAN-L2 §1a–§1e, §5, §6 and PLAN-L2 update 1 (§(a) pinned replay,
 §(b) printing protocol v1, decision (1) per-tree validation). Builds on the
 recording layer and the local-repository replay
 (docs/ANALYSIS_SNAPSHOT_RECORDING.md) and on the planned request
 (docs/PLANNED_REQUEST.md). Code: `src/snapshot/` (`key`, `exe_id`,
-`format`, `store`, `hit`, `save`, `capture`, `diag`, plus `validate`,
-`replay`, `codec`, `record`), wired in `src/main.rs`.
+`format`, `store`, `hit`, `save`, `capture`, `diag`, `telemetry`, plus
+`validate`, `replay`, `codec`, `record`), wired in `src/main.rs`.
 
 **Off by default.** `BAZEL_RS_SNAPSHOT=on` reads and writes snapshots for
 `build`, `test` and `run`; `=verify` is `on` plus a shadow full analysis
@@ -227,14 +227,45 @@ hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held ba
 ```
 
 `<cache>/snapshots/verify.log` (binary-safe: every field one token,
-`\xNN`-escaped) holds one line per mismatch:
-`<UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> targets=<patterns>`,
+`\xNN`-escaped, `-` when absent) holds one line per mismatch:
+`<UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<first taint> path=<first differing path> targets=<patterns>`,
 the class of the first difference being one of `plan`, `window`, `taint`,
 `recording`, `env`, `replay`, `lockfile`, `status`, `analysis-failed`,
 `abandoned` or `cannot-verify` (a session that could not start: logged, the
-snapshot kept, the full analysis runs unverified; strict: exit 70). For a
-soak: `BAZEL_RS_SNAPSHOT=verify` (plus `BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the
-`verified` lines), then read the log.
+snapshot kept, the full analysis runs unverified; strict: exit 70). L2-W5g
+added `taint` — the name of the full analysis's first taint
+(`repository-rule-executed` for a tree the full analysis repaired) — and
+`path` — the first path a difference names (an observation recorded now
+but not in the snapshot, or with another outcome; a tree verified now but
+not in the snapshot; a local repository's published root), in the order
+the differences are reported. For a soak: `BAZEL_RS_SNAPSHOT=verify` (plus
+`BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the `verified` lines), then read the log
+— and the miss log below.
+
+**The miss log (L2-W5g).** `<cache>/snapshots/miss.log` (the same
+encoding) holds, in `on` and `verify` mode alike, one line per lookup that
+missed and per full analysis that was not saved, so a reason that repeats
+shows without EXPLAIN — a tool that writes into a store tree's directory,
+say, makes every lookup miss on that directory's INTEGRITY entry:
+
+```text
+<UTC time> <unix seconds> kind=miss key=<short G> command=<command> reason=<class> path=<path> detail=<reason> targets=<patterns>
+<UTC time> <unix seconds> kind=not-saved key=<short G> command=<command> reason=<class> path=- detail=<reason> targets=<patterns>
+```
+
+A miss's class is `absent` (no snapshot for the key), `unreadable`, `env`,
+the failing check's operation (`read`, `readdir`, `stat`, `lstat`, `canon`,
+`readlink` or `integrity`, with the path it names), `tree` (a racy tree
+that no longer matches its manifest), `replay`, `status-stderr`, `capture`,
+`panic` or `other`; `detail` holds the reason EXPLAIN prints (its first
+240 bytes; without EXPLAIN a replay cancelled by the first failure is not
+named).
+A not-saved run's class is the first taint's name (`repository-rule-executed`,
+`network`, `extension-evaluated`, `lockfile-write-pending`, `errors`, ...),
+`failed` (the command failed), `capture`, `too-large`, `incomplete` or
+`other`. Each line is one `write` (O_APPEND); both logs rotate at 1 MiB to
+`<name>.1`, keeping one previous generation (best effort: two commands
+rotating at once may drop one).
 
 A full analysis that ends before planning completed (an error after the
 check point that the hit skipped) is a mismatch too (main reports and logs
@@ -397,6 +428,11 @@ miss; a new BUILD file in a globbed subdirectory misses; REPO.bazel
 cannot read heals (F4); hit refreshes racing a concurrent save of the same
 key, and garbage collection during a hit, keep the store valid; verify
 mode's default executes the full analysis's plan on a mismatch and logs it.
+
+L2-W5g: the miss log names each miss (its class and path) and each
+unsaved run (`the_miss_log_names_each_miss_and_unsaved_run`), the verify
+log the first taint and differing path; unit tests cover the reason
+classes, the binary-safe lines and the rotation.
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f): random
 sequences over a catalogue of 33 mutations (sources, same-size and

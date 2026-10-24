@@ -2259,8 +2259,13 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
     assert!(twin.snapshots().is_empty());
     let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log")).unwrap();
     assert_eq!(log.lines().count(), 1, "{log}");
+    // L2-W5g: the first taint's name and the first differing path (the
+    // repaired tree's observations, recorded now that it was executed).
     assert!(
-        log.contains(" command=build first=taint ") && log.ends_with(" targets=//:all_inputs\n"),
+        log.contains(" command=build first=taint ")
+            && log.contains(" taint=repository-rule-executed path=")
+            && log.contains("/cache/repositories/direct/trees/")
+            && log.ends_with(" targets=//:all_inputs\n"),
         "{log}"
     );
     // The next run analyzes and saves anew, then hits (verified).
@@ -2268,6 +2273,62 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
         .assert_miss("no snapshot")
         .assert_saved();
     twin.same(BUILD_ALL, &[]).assert_hit();
+}
+
+/// L2-W5g soak telemetry: every lookup that misses appends a `kind=miss`
+/// line to `<cache>/snapshots/miss.log` — the reason's class and the path
+/// it names — and every full analysis that is not saved a `kind=not-saved`
+/// line — the first taint's name, or `failed`; hits and saves add nothing.
+#[test]
+fn the_miss_log_names_each_miss_and_unsaved_run() {
+    let twin = warmed(BUILD_ALL, &[]);
+    twin.write("BUILD.bazel", &format!("{ROOT_BUILD}\n# edited\n"));
+    twin.same(BUILD_ALL, &[])
+        .assert_miss("BUILD.bazel")
+        .assert_saved();
+    twin.same(BUILD_ALL, &[]).assert_hit();
+    twin.write(
+        "pkg/BUILD.bazel",
+        "exports_files(['in.txt'])\ngenrule(name = 'bad', outs = ['bad.txt'], cmd = 'exit 1')\n",
+    );
+    let failing = &["build", "//pkg:bad"];
+    assert!(!twin.same(failing, &[]).on.status.success());
+    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/miss.log")).unwrap();
+    let field = |line: &str, name: &str| -> String {
+        line.split(' ')
+            .find_map(|token| token.strip_prefix(name))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let outcomes: Vec<[String; 3]> = log
+        .lines()
+        .map(|line| {
+            [
+                field(line, "kind="),
+                field(line, "reason="),
+                field(line, "targets="),
+            ]
+        })
+        .collect();
+    let expected = [
+        ["miss", "absent", "//:all_inputs"],
+        ["not-saved", "repository-rule-executed", "//:all_inputs"],
+        ["miss", "absent", "//:all_inputs"],
+        ["miss", "read", "//:all_inputs"],
+        ["miss", "absent", "//pkg:bad"],
+        ["not-saved", "failed", "//pkg:bad"],
+    ];
+    assert_eq!(
+        outcomes,
+        expected.map(|row| row.map(str::to_owned)),
+        "{log}"
+    );
+    let read = log.lines().nth(3).unwrap();
+    assert!(
+        read.contains("/run/ws/BUILD.bazel detail=READ\\x20"),
+        "{read}"
+    );
+    assert!(!twin.side(OFF).join("cache/snapshots/miss.log").exists());
 }
 
 // ---- the mutation fuzz (L2-W5f) --------------------------------------------

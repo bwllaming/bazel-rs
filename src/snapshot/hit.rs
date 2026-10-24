@@ -226,9 +226,10 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         Err(_) => return miss("the validation panicked"),
     };
     // EXPLAIN names the first failing check and, when their replay differs
-    // too, the mismatching local repositories (both ran to completion).
+    // too, the mismatching local repositories (both ran to completion). A
+    // replay cancelled by another failure (F7) is no reason of its own.
     let replay_failure = match &replay {
-        Some(Err(reason)) => Some(reason.clone()),
+        Some(Err(reason)) if reason != crate::snapshot::replay::CANCELLED => Some(reason.clone()),
         _ => None,
     };
     let validated: Validated = match (validation, replay_failure) {
@@ -239,10 +240,16 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     };
     timings.validation = validated.elapsed;
     let replayed = match replay {
-        Some(result) => {
-            let (count, wall) = result?;
+        Some(Ok((count, wall))) => {
             timings.replay = wall;
             count
+        }
+        // Cancelled while the validation passed: the plan failed, and its
+        // error is the reason.
+        Some(Err(cancelled)) => {
+            plan.as_ref()
+                .map_err(|error| format!("unreadable plan: {error}"))?;
+            return miss(cancelled);
         }
         None => 0,
     };

@@ -27,7 +27,9 @@
 //!      (what a user of `on` gets), refreshed keys are written back;
 //!      mismatch: every difference on the diagnostics stream, one line
 //!      appended to `<cache>/snapshots/verify.log` ([`LOG`]: time, command,
-//!      key, the first difference's class, the target patterns), the
+//!      key, the first difference's class, the first taint's name and the
+//!      first differing path (L2-W5g), the target patterns;
+//!      crate::snapshot::telemetry), the
 //!      snapshot removed (the next run analyzes and saves anew, so a
 //!      persistent cause shows on every other run), nothing saved — then
 //!      (L2-W5f, the default) what the full analysis printed while planning
@@ -54,10 +56,10 @@ use crate::snapshot::key::Key;
 use crate::snapshot::replay::ReplayRecord;
 use crate::snapshot::validate::Policy;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::Write as _;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -68,8 +70,9 @@ pub const EXIT_MISMATCH: i32 = 70;
 /// mismatch is reported and logged, and the full analysis's plan executes.
 pub const STRICT_VAR: &str = "BAZEL_RS_SNAPSHOT_VERIFY_STRICT";
 /// The mismatch log below the snapshot store root (`<cache>/snapshots/`):
-/// one line per mismatch, appended.
-pub const LOG: &str = "verify.log";
+/// one line per mismatch, appended (crate::snapshot::telemetry: bounded,
+/// rotated).
+pub const LOG: &str = crate::snapshot::telemetry::VERIFY_LOG;
 /// How long the end of the shadow window waits for the capture's reader.
 const CAPTURE_BOUND: Duration = Duration::from_millis(500);
 /// Items shown per kind of difference.
@@ -253,7 +256,8 @@ impl Verify {
         let recording = observed_fs::recorder().map(|recorder| recorder.take());
         let observed = match recording {
             Some(recording) => {
-                if !recording.taints.is_empty() {
+                if let Some(first) = recording.taints.keys().next() {
+                    report.taint = Some(first.name());
                     report.mismatch(
                         Class::Taint,
                         "the full analysis would not be saved".to_owned(),
@@ -450,16 +454,27 @@ impl Class {
 }
 
 /// The differences found (each with its class and detail lines) and the
-/// notes.
+/// notes; for the log line, the first taint's name and the first path a
+/// difference names (an observation, a verified tree's root, a local
+/// repository's published root, in the order the differences are found).
 #[derive(Default)]
 struct Report {
     mismatches: Vec<(Class, String, Vec<String>)>,
     notes: Vec<String>,
+    taint: Option<&'static str>,
+    path: Option<OsString>,
 }
 
 impl Report {
     fn mismatch(&mut self, class: Class, title: String, details: Vec<String>) {
         self.mismatches.push((class, title, details));
+    }
+
+    /// The first differing path (kept once set).
+    fn path(&mut self, path: &OsStr) {
+        if self.path.is_none() {
+            self.path = Some(path.to_owned());
+        }
     }
 
     /// Print every difference on the diagnostics stream, append the log
@@ -481,8 +496,17 @@ impl Report {
             .first()
             .map_or("unknown", |(class, _, _)| class.name());
         let logged = stored.and_then(|(cache, _)| {
-            let path = crate::snapshot::store::root(cache).join(LOG);
-            append_log(&path, &log_line(key, class, self.mismatches.len(), context)).ok()?;
+            let path = crate::snapshot::telemetry::log_path(cache, LOG);
+            let line = crate::snapshot::telemetry::verify_line(
+                key,
+                class,
+                self.mismatches.len(),
+                self.taint,
+                self.path.as_deref(),
+                &context.command,
+                &context.targets,
+            );
+            crate::snapshot::telemetry::append(&path, &line).ok()?;
             Some(path)
         });
         let outcome = if strict {
@@ -522,63 +546,6 @@ impl Report {
             std::process::exit(EXIT_MISMATCH);
         }
     }
-}
-
-/// The verify log's line for one mismatch: binary-safe (every field one
-/// token, crate::observed_fs::escape), space-separated:
-/// `<UTC time> <unix seconds> key=<short G> command=<command>
-/// first=<class> differences=<n> targets=<pattern> <pattern>...`.
-fn log_line(key: &str, class: &str, differences: usize, context: &Context) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs() as i64);
-    let targets: Vec<String> = context
-        .targets
-        .iter()
-        .map(|target| escape(OsStr::new(target)))
-        .collect();
-    format!(
-        "{} {now} key={key} command={} first={class} differences={differences} targets={}\n",
-        utc_timestamp(now),
-        escape(OsStr::new(&context.command)),
-        targets.join(" "),
-    )
-}
-
-/// Append `line` with one `write` (O_APPEND: concurrent commands never
-/// interleave within a line).
-fn append_log(path: &Path, line: &str) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    file.write_all(line.as_bytes())
-}
-
-/// `seconds` since the epoch as `YYYY-MM-DDTHH:MM:SSZ` (UTC; Howard
-/// Hinnant's civil_from_days).
-fn utc_timestamp(seconds: i64) -> String {
-    let days = seconds.div_euclid(86_400);
-    let of_day = seconds.rem_euclid(86_400);
-    let shifted = days + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097);
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = shifted_month + if shifted_month < 10 { 3 } else { -9 };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        of_day / 3600,
-        (of_day % 3600) / 60,
-        of_day % 60
-    )
 }
 
 // ---- the planned request ---------------------------------------------------
@@ -883,23 +850,34 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
     let mut seen: HashSet<(&[u8], &Op)> = HashSet::with_capacity(now.observations.len());
     let mut missing = Vec::new();
     let mut changed = Vec::new();
+    let (mut first_missing, mut first_changed) = (None, None);
     for (path, observation) in &now.observations {
         let key = (path.as_os_str().as_bytes(), &observation.op);
         seen.insert(key);
         match recorded.get(&key) {
-            None => missing.push(format!(
-                "{} {}",
-                op_text(&observation.op),
-                escape(path.as_os_str())
-            )),
-            Some(outcome) if !same_outcome(outcome, &observation.outcome) => changed.push(format!(
-                "{} {}: snapshot {outcome}, now {}",
-                op_text(&observation.op),
-                escape(path.as_os_str()),
-                observation.outcome
-            )),
+            None => {
+                first_missing.get_or_insert(path.as_os_str());
+                missing.push(format!(
+                    "{} {}",
+                    op_text(&observation.op),
+                    escape(path.as_os_str())
+                ));
+            }
+            Some(outcome) if !same_outcome(outcome, &observation.outcome) => {
+                first_changed.get_or_insert(path.as_os_str());
+                changed.push(format!(
+                    "{} {}: snapshot {outcome}, now {}",
+                    op_text(&observation.op),
+                    escape(path.as_os_str()),
+                    observation.outcome
+                ));
+            }
             Some(_) => {}
         }
+    }
+    // The log's first differing path, in the order of the differences.
+    if let Some(path) = first_missing.or(first_changed) {
+        report.path(path);
     }
     if !missing.is_empty() {
         report.mismatch(
@@ -971,10 +949,16 @@ fn compare_recordings(snapshot: &Recording, now: &Recording, report: &mut Report
         .iter()
         .map(|tree| tree.root.as_path())
         .collect();
-    let new_trees: Vec<String> = now
+    let new_trees: Vec<&crate::observed_fs::RepositoryRecord> = now
         .repositories
         .iter()
         .filter(|tree| !roots.contains(tree.root.as_path()))
+        .collect();
+    if let Some(tree) = new_trees.first() {
+        report.path(tree.root.as_os_str());
+    }
+    let new_trees: Vec<String> = new_trees
+        .into_iter()
         .map(|tree| format!("{} {}", tree.name, escape(tree.root.as_os_str())))
         .collect();
     if !new_trees.is_empty() {
@@ -1005,6 +989,7 @@ fn compare_replays(snapshot: &[ReplayRecord], executed: &[ReplayRecord], report:
         .collect();
     for now in executed {
         let Some(old) = records.get(now.canonical.as_str()) else {
+            report.path(now.root.as_os_str());
             report.mismatch(
                 Class::Replay,
                 format!(
@@ -1071,6 +1056,7 @@ fn compare_replays(snapshot: &[ReplayRecord], executed: &[ReplayRecord], report:
             ));
         }
         if !details.is_empty() {
+            report.path(now.root.as_os_str());
             report.mismatch(
                 Class::Replay,
                 format!(
@@ -1170,6 +1156,8 @@ mod tests {
         assert!(titles[0].starts_with("incomplete recording: 1 observation"));
         assert_eq!(report.mismatches[0].2, ["READDIR[dirs] /ws/pkg"]);
         assert!(report.mismatches[1].2[0].starts_with("READ /ws/BUILD: snapshot sha256:0101"));
+        // The log's first differing path: the first difference's.
+        assert_eq!(report.path.as_deref(), Some(OsStr::new("/ws/pkg")));
         // Environment: a variable read now only, another digest.
         let mut snapshot = recording(Vec::new());
         snapshot.env = vec![(
@@ -1195,28 +1183,46 @@ mod tests {
         );
     }
 
-    /// The verify log: one binary-safe line per mismatch, appended.
+    /// The verify log (crate::snapshot::telemetry): one line per mismatch
+    /// naming the first difference's class, the first taint and the first
+    /// differing path (L2-W5g), appended.
     #[test]
-    fn mismatches_append_one_binary_safe_log_line() {
-        assert_eq!(utc_timestamp(0), "1970-01-01T00:00:00Z");
-        assert_eq!(utc_timestamp(1_792_800_000), "2026-10-24T00:00:00Z");
-        assert_eq!(utc_timestamp(951_782_400 + 86_399), "2000-02-29T23:59:59Z");
+    fn a_mismatch_appends_its_log_line() {
+        let temp = tempfile::tempdir().unwrap();
         let context = Context {
             command: "build".to_owned(),
-            targets: vec!["//a:b".to_owned(), "//x y:\n\u{e9}".to_owned()],
+            targets: vec!["//a:b".to_owned()],
             explain: false,
         };
-        let line = log_line("0011", "plan", 2, &context);
-        assert!(line.ends_with(" key=0011 command=build first=plan differences=2 targets=//a:b //x\\x20y:\\x0a\\xc3\\xa9\n"), "{line}");
-        assert_eq!(line.matches('\n').count(), 1);
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("snapshots").join(LOG);
-        append_log(&path, &line).unwrap();
-        append_log(&path, &log_line("0022", "window", 1, &context)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(text.lines().count(), 2, "{text}");
+        let stored = (
+            temp.path().to_path_buf(),
+            Key {
+                g: [1; 32],
+                binary: [2; 32],
+            },
+        );
+        let mut report = Report {
+            taint: Some("repository-rule-executed"),
+            ..Report::default()
+        };
+        report.mismatch(Class::Taint, "taint".to_owned(), Vec::new());
+        report.path(OsStr::new("/c/repositories/direct/trees/a b"));
+        report.path(OsStr::new("/second"));
+        report.conclude("0011", Some(&stored), false, &context, false);
+        let mut report = Report::default();
+        report.mismatch(Class::Window, "window".to_owned(), Vec::new());
+        report.conclude("0022", Some(&stored), false, &context, false);
+        let text = std::fs::read_to_string(temp.path().join("snapshots").join(LOG)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
         assert!(
-            text.lines().nth(1).unwrap().contains(" first=window "),
+            lines[0].ends_with(" key=0011 command=build first=taint differences=1 taint=repository-rule-executed path=/c/repositories/direct/trees/a\\x20b targets=//a:b"),
+            "{text}"
+        );
+        assert!(
+            lines[1].ends_with(
+                " key=0022 command=build first=window differences=1 taint=- path=- targets=//a:b"
+            ),
             "{text}"
         );
     }

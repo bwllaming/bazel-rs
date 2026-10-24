@@ -14,7 +14,9 @@
 //! encodes the sections on the main thread; a background thread writes them
 //! to a temporary file while the actions execute. Only when the command (for
 //! `test` and `run`: its build part) succeeded does [`Save::finish`] rename
-//! it into place (crate::snapshot::store). Failures are never saved.
+//! it into place (crate::snapshot::store). Failures are never saved. A run
+//! that is not saved appends its reason to `<cache>/snapshots/miss.log`
+//! (`kind=not-saved`, crate::snapshot::telemetry; L2-W5g).
 
 use crate::observed_fs::{self, Taint};
 use crate::registry_session::SessionHandle;
@@ -23,8 +25,9 @@ use crate::snapshot::capture::{self, Capture, Captured};
 use crate::snapshot::format::{self, Section, Stats};
 use crate::snapshot::key::Key;
 use crate::snapshot::store;
+use crate::snapshot::telemetry;
 use crate::snapshot::validate::Policy;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// How long the end of the window waits for the capture's reader to see
@@ -45,13 +48,16 @@ pub struct Save {
     started: Instant,
     saved_note: String,
     finished: bool,
+    /// The miss log's command and targets (a run not saved is logged).
+    log: telemetry::Context,
 }
 
-/// Start recording at the snapshot check point.
-pub fn start(key: Key, cache: &Path, explain: bool) -> Save {
+/// Start recording at the snapshot check point (`log`: the cache, command
+/// and target patterns of the miss log).
+pub fn start(key: Key, explain: bool, log: telemetry::Context) -> Save {
     let mut save = Save {
         key,
-        cache: cache.to_path_buf(),
+        cache: log.cache.clone(),
         explain,
         capture: None,
         window: None,
@@ -61,6 +67,7 @@ pub fn start(key: Key, cache: &Path, explain: bool) -> Save {
         started: Instant::now(),
         saved_note: String::new(),
         finished: false,
+        log,
     };
     if !observed_fs::open_window() {
         save.skipped = Some("the recording window was already open".to_owned());
@@ -244,19 +251,29 @@ impl Save {
         let pending = self.pending.take();
         let outcome = match (pending, self.skipped.take()) {
             (Some(pending), _) => match pending.commit() {
-                Ok((bytes, note)) => format!(
+                Ok((bytes, note)) => Ok(format!(
                     "saved {} ({bytes} bytes; {}; {note}; {:.1} ms after the check point)",
                     self.key.short(),
                     self.saved_note,
                     self.started.elapsed().as_secs_f64() * 1000.0
-                ),
-                Err(error) => format!("not saved: {error}"),
+                )),
+                Err(error) => Err(error.to_string()),
             },
-            (None, Some(reason)) => format!("not saved: {reason}"),
-            (None, None) => "not saved: planning did not complete".to_owned(),
+            (None, Some(reason)) => Err(reason),
+            (None, None) => Err("planning did not complete".to_owned()),
         };
-        if self.explain {
-            observed_fs::diag(&outcome);
+        match outcome {
+            Ok(saved) => {
+                if self.explain {
+                    observed_fs::diag(&saved);
+                }
+            }
+            Err(reason) => {
+                self.log.log_not_saved(&self.key.short(), &reason);
+                if self.explain {
+                    observed_fs::diag(&format!("not saved: {reason}"));
+                }
+            }
         }
     }
 }
@@ -269,11 +286,13 @@ impl Drop for Save {
         if self.finished {
             return;
         }
+        let reason = match &self.skipped {
+            Some(reason) => format!("the command failed ({reason})"),
+            None => "the command failed".to_owned(),
+        };
+        self.log.log_not_saved(&self.key.short(), &reason);
         if self.explain {
-            observed_fs::diag(&match &self.skipped {
-                Some(reason) => format!("not saved: the command failed ({reason})"),
-                None => "not saved: the command failed".to_owned(),
-            });
+            observed_fs::diag(&format!("not saved: {reason}"));
         }
     }
 }

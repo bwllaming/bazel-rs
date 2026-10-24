@@ -26,6 +26,8 @@
 //!   repository environment, the status flag of `--nobuild` plans, the
 //!   per-tree policy's directories, the store-path self-heal, a failed
 //!   check cancelling the rest of the attempt.
+//! * L2-W5g: the soak's logs ([`telemetry`]: `verify.log` names the first
+//!   taint and differing path; `miss.log` every miss and unsaved run).
 //!
 //! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
 //! verify mode.
@@ -41,6 +43,7 @@ pub mod record;
 pub mod replay;
 pub mod save;
 pub mod store;
+pub mod telemetry;
 pub mod validate;
 pub mod verify;
 
@@ -245,6 +248,12 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
     };
     let key = key::compute(&inputs.key, binary);
     let key_time = started.elapsed();
+    // The miss log's context (crate::snapshot::telemetry).
+    let log = telemetry::Context {
+        cache: inputs.cache.to_path_buf(),
+        command: inputs.key.command.to_owned(),
+        targets: inputs.key.targets.to_vec(),
+    };
     let outcome = hit::attempt(hit::Attempt {
         cache: inputs.cache,
         key,
@@ -275,6 +284,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             Checked::Hit(hit)
         }
         Err(reason) => {
+            log.log_miss(&key.short(), &reason);
             if explain {
                 observed_fs_diag(&format!("miss {}: {reason}", key.short()));
             }
@@ -285,7 +295,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                     started.elapsed().as_secs_f64() * 1000.0
                 ));
             }
-            Checked::Miss(Some(Box::new(save::start(key, inputs.cache, explain))))
+            Checked::Miss(Some(Box::new(save::start(key, explain, log))))
         }
     }
 }
