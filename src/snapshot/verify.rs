@@ -317,6 +317,16 @@ impl Verify {
             return Concluded::Disagreed;
         }
         let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
+        hit.session.log().log_verified(
+            &key,
+            ms(analysis) + ms(compare),
+            &format!(
+                "analysis:{:.1},compare:{:.1},actions:{}",
+                ms(analysis),
+                ms(compare),
+                hit.request.nodes.len()
+            ),
+        );
         if self.context.explain {
             observed_fs::diag(&format!(
                 "verified {key}: the full analysis agrees with the snapshot ({} actions, PLAN {} bytes, window stderr {} bytes, {} observations, {} local repositories) — full analysis {:.1} ms, comparison {:.1} ms",
@@ -499,6 +509,23 @@ impl Report {
             .first()
             .map_or("unknown", |(class, _, _)| class.name());
         let logged = stored.and_then(|(cache, _)| {
+            // The event log counts it among the hits' outcomes (L2-W5h).
+            crate::snapshot::telemetry::Context {
+                cache: cache.clone(),
+                mode: crate::snapshot::telemetry::MODE_VERIFY,
+                command: context.command.clone(),
+                targets: context.targets.clone(),
+            }
+            .log_mismatch(
+                key,
+                class,
+                self.path.as_deref(),
+                &format!(
+                    "differences:{},taint:{}",
+                    self.mismatches.len(),
+                    self.taint.unwrap_or("-")
+                ),
+            );
             let path = crate::snapshot::telemetry::log_path(cache, LOG);
             let line = crate::snapshot::telemetry::verify_line(
                 key,
@@ -1235,6 +1262,24 @@ mod tests {
         let text = std::fs::read_to_string(temp.path().join("snapshots").join(LOG)).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines.len(), 2, "{text}");
+        // L2-W5h: the event log counts each as a mismatch of verify mode.
+        let events = std::fs::read_to_string(
+            temp.path()
+                .join("snapshots")
+                .join(crate::snapshot::telemetry::EVENTS_LOG),
+        )
+        .unwrap();
+        let events: Vec<&str> = events.lines().collect();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(
+            events[0].contains(" kind=mismatch mode=verify key=0011 command=build reason=taint path=/c/repositories/direct/trees/a\\x20b ms=- detail=differences:1,taint:repository-rule-executed targets=//a:b"),
+            "{events:?}"
+        );
+        assert!(
+            events[1]
+                .contains(" kind=mismatch mode=verify key=0022 command=build reason=window path=-"),
+            "{events:?}"
+        );
         assert!(
             lines[0].ends_with(" key=0011 command=build first=taint differences=1 taint=repository-rule-executed path=/c/repositories/direct/trees/a\\x20b targets=//a:b"),
             "{text}"

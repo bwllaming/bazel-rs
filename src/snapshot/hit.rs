@@ -70,7 +70,7 @@ pub struct Attempt<'a> {
     /// with ([`Evidence`]) and write refreshed keys back only once it
     /// agreed ([`Session::start_deferred_refresh`]).
     pub verify: bool,
-    /// The miss log's context (a healed hit is logged there,
+    /// The event log's context (a healed hit is logged there,
     /// crate::snapshot::telemetry).
     pub log: crate::snapshot::telemetry::Context,
 }
@@ -356,6 +356,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                 inputs,
                 attempt.cache,
                 validated.refresh,
+                session.log.clone(),
             ));
         }
         None
@@ -460,6 +461,7 @@ fn refresh_in_background(
     mut inputs: format::Inputs,
     cache: &Path,
     refresh: Vec<Refresh>,
+    log: crate::snapshot::telemetry::Context,
 ) -> JoinHandle<()> {
     let cache = cache.to_path_buf();
     std::thread::spawn(move || {
@@ -485,7 +487,9 @@ fn refresh_in_background(
             binary: reader.header.binary,
         };
         drop(reader);
-        let _ = store::write_in_background(&cache, &key, sections).commit();
+        let _ = store::write_in_background(&cache, &key, sections)
+            .logged(log)
+            .commit();
     })
 }
 
@@ -546,11 +550,11 @@ impl Trees {
         }
     }
 
-    /// A tree that no longer verifies, if any: its root and why. The trees
-    /// are verified on up to eight threads; the first mismatch found stops
-    /// the others (which one is reported when several differ depends on
-    /// the timing).
-    fn first_mismatch(&self, cache: &Path) -> Option<(PathBuf, String)> {
+    /// A tree that no longer verifies, if any, and its first differing
+    /// entry. The trees are verified on up to eight threads; the first
+    /// mismatch found stops the others (which one is reported when several
+    /// differ depends on the timing).
+    fn first_mismatch(&self, cache: &Path) -> Option<crate::repository_store::TreeMismatch> {
         let crossed: Vec<crate::repository_store::PublishedTree> = if self.crossed.is_empty() {
             Vec::new()
         } else {
@@ -565,20 +569,17 @@ impl Trees {
         };
         let store: Vec<&crate::repository_store::PublishedTree> =
             self.store.iter().chain(&crossed).collect();
-        let check = |index: usize| -> Option<(PathBuf, String)> {
+        let check = |index: usize| -> Option<crate::repository_store::TreeMismatch> {
             match store.get(index) {
-                Some(tree) => crate::repository_store::verify_as_reused(tree)
-                    .err()
-                    .map(|error| (tree.root.clone(), error)),
+                Some(tree) => crate::repository_store::verify_as_reused(tree).err(),
                 None => {
                     let (canonical, root, execution) = &self.local[index - store.len()];
                     crate::repository_store::verify_local_publication(root, execution)
                         .err()
-                        .map(|error| {
-                            (
-                                root.clone(),
-                                format!("local repository {canonical}: {error}"),
-                            )
+                        .map(|mut mismatch| {
+                            mismatch.message =
+                                format!("local repository {canonical}: {}", mismatch.message);
+                            mismatch
                         })
                 }
             }
@@ -643,8 +644,19 @@ impl Session {
     /// `BAZEL_RS_SNAPSHOT=on` does at once).
     pub fn start_deferred_refresh(&mut self, inputs: format::Inputs) {
         if let Some((reader, refresh)) = self.deferred.take() {
-            self.refresh = Some(refresh_in_background(reader, inputs, &self.cache, refresh));
+            self.refresh = Some(refresh_in_background(
+                reader,
+                inputs,
+                &self.cache,
+                refresh,
+                self.log.clone(),
+            ));
         }
+    }
+
+    /// The event log's context of this command (crate::snapshot::telemetry).
+    pub fn log(&self) -> &crate::snapshot::telemetry::Context {
+        &self.log
     }
 
     /// The build part of the command succeeded: let the background refresh
@@ -743,10 +755,10 @@ fn heal(
                 .and_then(|canonical| store_path_in(error, &canonical))
         })
     });
-    let (reason, path, detail) = match named {
-        Some(path) => ("store-path", path, None),
+    let mismatch = match named {
+        Some(_) => None,
         None => match trees.first_mismatch(cache) {
-            Some((root, detail)) => ("tree", root.display().to_string(), Some(detail)),
+            Some(mismatch) => Some(mismatch),
             None => {
                 timing_line(trees, started, false);
                 return false;
@@ -754,17 +766,40 @@ fn heal(
         },
     };
     timing_line(trees, started, true);
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
     if store::remove(cache, key).is_err() {
         return false;
     }
-    log.log_healed(&key.short(), reason, &path, detail.as_deref().unwrap_or(""));
-    match detail {
-        None => eprintln!(
-            "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store; the next build re-analyzes and repairs it"
-        ),
-        Some(_) => eprintln!(
-            "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {path} no longer matches what the analysis recorded; the next build re-analyzes and repairs it"
-        ),
+    match (named, mismatch) {
+        (Some(path), _) => {
+            log.log_healed(
+                &key.short(),
+                "store-path",
+                "named",
+                Path::new(&path),
+                ms,
+                error.unwrap_or_default(),
+            );
+            eprintln!(
+                "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store; the next build re-analyzes and repairs it"
+            );
+        }
+        (None, Some(mismatch)) => {
+            log.log_healed(
+                &key.short(),
+                "tree",
+                mismatch.class,
+                &mismatch.path,
+                ms,
+                &mismatch.message,
+            );
+            eprintln!(
+                "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
+                mismatch.root.display(),
+                mismatch.entry_text()
+            );
+        }
+        (None, None) => {}
     }
     true
 }
@@ -930,6 +965,7 @@ mod tests {
         };
         let log = crate::snapshot::telemetry::Context {
             cache: cache.path().to_path_buf(),
+            mode: crate::snapshot::telemetry::MODE_ON,
             command: "test".to_owned(),
             targets: vec!["//:t".to_owned()],
         };
@@ -969,17 +1005,22 @@ mod tests {
         edit(&direct_root.join("data.txt"));
         assert!(heals(None));
         assert!(!kept());
-        let log_text = std::fs::read_to_string(cache.path().join("snapshots/miss.log")).unwrap();
+        let log_text = std::fs::read_to_string(cache.path().join("snapshots/events.log")).unwrap();
         let lines: Vec<&str> = log_text.lines().collect();
         assert_eq!(lines.len(), 2, "{log_text}");
+        // L2-W5h: each names the first differing entry.
         assert!(
-            lines[0].contains(" kind=healed ")
-                && lines[0].contains(" reason=tree ")
-                && lines[0].contains(&format!(" path={} ", local_root.display())),
+            lines[0].contains(" kind=healed mode=on ")
+                && lines[0].contains(" reason=tree:mode ")
+                && lines[0].contains(&format!(" path={} ", local_root.join("tool.sh").display())),
             "{log_text}"
         );
         assert!(
-            lines[1].contains(&format!(" path={} ", direct_root.display()))
+            lines[1].contains(" reason=tree:content ")
+                && lines[1].contains(&format!(
+                    " path={} ",
+                    direct_root.join("data.txt").display()
+                ))
                 && lines[1].ends_with(" targets=//:t"),
             "{log_text}"
         );

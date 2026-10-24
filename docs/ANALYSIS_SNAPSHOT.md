@@ -1,4 +1,4 @@
-# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f, L2-W5g)
+# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f, L2-W5g, L2-W5h)
 
 Design: PLAN-L2 §1a–§1e, §5, §6 and PLAN-L2 update 1 (§(a) pinned replay,
 §(b) printing protocol v1, decision (1) per-tree validation). Builds on the
@@ -145,7 +145,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      which must record the replayed execution's identity and tree digest
      (`bazel-rs: removed the analysis snapshot of this build: it failed,
      and the repository tree <root> no longer matches what the analysis
-     recorded; the next build re-analyzes and repairs it`).
+     recorded (<entry>); the next build re-analyzes and repairs it`, the
+     entry being the first that differs, L2-W5h: `extra`, `missing`,
+     `kind`, `mode`, `content` or `link` with its path below the root —
+     or `manifest`, `unreadable`, `other`).
 
    The failure happens once: the next run's full analysis repairs the tree
    (the hit does not: re-executing a repository rule needs the analysis).
@@ -153,7 +156,8 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    trees (`PERF-SNAPSHOT heal trees=<n> healed=<bool> ms=<t>` under
    `BAZEL_RS_TIMING=1`) — and a failure that merely mentions a store path
    costs one full analysis next time. Each removal appends a `kind=healed`
-   line to the miss log (below).
+   line to the event log (below), whose reason is `<rule>:<entry>` and
+   whose path is the differing entry's.
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
 decision on review F3; corrected and narrowed by L2-W5g).** Per tree, a
@@ -271,20 +275,50 @@ but not in the snapshot, or with another outcome; a tree verified now but
 not in the snapshot; a local repository's published root), in the order
 the differences are reported. For a soak: `BAZEL_RS_SNAPSHOT=verify` (plus
 `BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the `verified` lines), then read the log
-— and the miss log below.
+— and the event log below (`scripts/snapshot_soak_report.py <cache>`
+summarizes both).
 
-**The miss log (L2-W5g).** `<cache>/snapshots/miss.log` (the same
-encoding) holds, in `on` and `verify` mode alike, one line per lookup that
-missed, per full analysis that was not saved and per failed hit that
-removed its snapshot (`kind=healed`, step 6), so a reason that repeats
+**The event log (L2-W5g `miss.log`, renamed and completed by L2-W5h).**
+`<cache>/snapshots/events.log` (the same encoding) holds one line per
+snapshot event of every command with the snapshot on — in `on` and
+`verify` mode alike, plus `record`'s report — so the soak has a
+denominator: every lookup's hit or miss with the attempt's wall time, every
+save, every full analysis that was not saved, verify mode's outcome of
+every hit (`verified`, or `mismatch` with verify.log holding the details),
+every failed hit that removed its snapshot (`healed`, step 6) and every
+snapshot garbage collection evicted (`evicted`: an `absent` miss of an
+evicted key is no snapshot that was never saved). A reason that repeats
 shows without EXPLAIN — a tool that writes into a store tree's directory,
-say, makes every lookup miss on that directory's INTEGRITY entry:
+say, makes every lookup miss on that directory's INTEGRITY entry. Every
+line has the same fields:
 
 ```text
-<UTC time> <unix seconds> kind=miss key=<short G> command=<command> reason=<class> path=<path> detail=<reason> targets=<patterns>
-<UTC time> <unix seconds> kind=not-saved key=<short G> command=<command> reason=<class> path=- detail=<reason> targets=<patterns>
-<UTC time> <unix seconds> kind=healed key=<short G> command=<command> reason=<store-path|tree> path=<path> detail=<why> targets=<patterns>
+<UTC time> <unix seconds> kind=<kind> mode=<on|verify|record> key=<short G> command=<command> reason=<class> path=<path> ms=<wall ms> detail=<text> targets=<patterns>
 ```
+
+| kind | logged | reason | ms |
+|---|---|---|---|
+| `hit` | a lookup hit (in verify mode before its shadow analysis); `detail` splits the time (key, inputs, validate, replay, decode, status) | - | the attempt, key included |
+| `miss` | a lookup missed; `detail` is the reason EXPLAIN prints | its class (below) | the attempt |
+| `saved` | a full analysis was saved; `detail`: bytes, actions, replays | - | check point to rename |
+| `not-saved` | a full analysis was not saved | its class (below) | - |
+| `verified` | verify mode: the shadow analysis agreed | - | analysis and comparison |
+| `mismatch` | verify mode: it disagreed (`path`: the first differing path) | the first difference's class | - |
+| `healed` | a failed hit removed its snapshot (`path`: the first differing entry) | `<store-path\|tree>:<entry>` | the trees' check |
+| `evicted` | garbage collection removed the snapshot of `key`; `detail` names the save that collected it | `count` or `bytes` | - |
+| `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (no key) | eligible: `yes`, `no`, `unless-pruned` | - |
+
+`scripts/snapshot_soak_report.py <cache dir>` (`--json` for a JSON object)
+prints the counts per mode and kind, misses and unsaved runs by reason,
+the number of keys and per key the hit rate on unchanged re-runs (hits
+over the lookups after the key's first save that missed for no input:
+`absent` without a removal since the save, `unreadable`, `capture`,
+`panic`, `other` — a miss naming a changed input, or an `absent` miss
+after an eviction, heal or verify mismatch, is counted apart), verified
+hits by command, always-miss patterns (at least three consecutive misses
+of one key with the same reason and path and no hit between them), heals
+by reason, every verify.log line verbatim, the hit latency's p50 and p95
+per mode and command, and the store's size.
 
 A miss's class is `absent` (no snapshot for the key), `unreadable`, `env`,
 the failing check's operation (`read`, `readdir`, `stat`, `lstat`, `canon`,
@@ -296,9 +330,12 @@ named).
 A not-saved run's class is the first taint's name (`repository-rule-executed`,
 `network`, `extension-evaluated`, `lockfile-write-pending`, `errors`, ...),
 `failed` (the command failed), `capture`, `too-large`, `incomplete` or
-`other`. Each line is one `write` (O_APPEND); both logs rotate at 1 MiB to
-`<name>.1`, keeping one previous generation (best effort: two commands
-rotating at once may drop one).
+`other`. A heal's entry is the first differing entry's class
+(crate::repository_store::TreeMismatch: `extra`, `missing`, `kind`,
+`mode`, `content`, `link`, `manifest`, `unreadable`, `other`; `named` for
+a failure whose error named a store path). Each line is one `write`
+(O_APPEND); both logs rotate at 1 MiB to `<name>.1`, keeping one previous
+generation (best effort: two commands rotating at once may drop one).
 
 A full analysis that ends before planning completed (an error after the
 check point that the hit skipped) is a mismatch too (main reports and logs
@@ -347,7 +384,7 @@ by the INPUTS like any workspace path, or it is reported (`CACHE <path>`):
 | class | paths | why it is safe |
 |---|---|---|
 | `cache-root`, `store-directories` | the cache dir; `repositories` and its areas (`trees`, `direct`, `git`, `builtins`, with their `trees` and `manifests`), `direct/locks`, `direct/stages` | created, stat'ed or readlink'ed on realpath chains; no content is read |
-| `snapshot-store` | `snapshots/` | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file |
+| `snapshot-store` | `snapshots/` | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file, the event log the hit appends to (written, never read) |
 | `digest-table` | `digests/` | crate::digest_memo: a record holds a file's stat key with its digest and is used only while the file's current stat matches it |
 | `replay-stage` | `repositories/direct/stages/<slug>`, `repositories/direct/locks/stage-<slug>` | a replayed local rule's private stage, created fresh under its lock, compared (identity inputs and tree digests) and removed: nothing in it is trusted |
 | `verified-tree` | published store trees and manifests the INPUTS cover (REPO roots and manifests, INTEGRITY entries, paths inside a verified tree not below its links) | the per-tree validation's subject (a racy tree is verified against its manifest) |
@@ -505,10 +542,14 @@ cannot read heals (F4); hit refreshes racing a concurrent save of the same
 key, and garbage collection during a hit, keep the store valid; verify
 mode's default executes the full analysis's plan on a mismatch and logs it.
 
-L2-W5g: the miss log names each miss (its class and path) and each
-unsaved run (`the_miss_log_names_each_miss_and_unsaved_run`), the verify
+L2-W5g: the event log (L2-W5h; `miss.log` before) names each lookup's
+outcome (a miss's class and path), each save and each unsaved run with
+the mode and wall time (`the_event_log_names_each_outcome`), the verify
 log the first taint and differing path; unit tests cover the reason
-classes, the binary-safe lines and the rotation, and the shadow capture's
+classes, every event kind, the evictions, the binary-safe lines and the
+rotation, the first differing entry of each store's trees (registry, Git,
+builtin; direct and local in the healing test), the soak report
+(tests/test_snapshot_soak_report.py), and the shadow capture's
 forwarding (an overflow, an early end, an incomplete stop: the capture's
 reader and stop driven on a private pipe — a deterministic end-to-end case
 would need a full analysis that prints differently from its own snapshot).

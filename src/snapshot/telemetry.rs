@@ -1,29 +1,45 @@
 //! The soak's logs below the snapshot store root (`<cache>/snapshots/`,
-//! L2-W5g): `verify.log` — one line per verify-mode mismatch
-//! (crate::snapshot::verify) — and `miss.log` — one line per lookup that
-//! missed (`kind=miss`, crate::snapshot::check), per full analysis that
-//! was not saved (`kind=not-saved`, crate::snapshot::save) and per failed
-//! hit that removed its snapshot (`kind=healed`, crate::snapshot::hit), in
-//! `on` and `verify` mode alike, so a reason that repeats (a tool writing
-//! into a store tree's directory, a printing local repository, a damaged
-//! tree) shows in the log, not only under EXPLAIN.
+//! L2-W5g, L2-W5h): `verify.log` — one line per verify-mode mismatch
+//! (crate::snapshot::verify), the details of each — and `events.log` — one
+//! line per snapshot event of every command with the snapshot on, so the
+//! soak has a denominator (L2-W5h; `miss.log` before, which held misses,
+//! unsaved runs and heals only):
+//!
+//! | kind | when | `reason` | `ms` |
+//! |---|---|---|---|
+//! | `hit` | a lookup hit (crate::snapshot::check; in verify mode before the shadow analysis) | - | the attempt's wall, key included |
+//! | `miss` | a lookup missed | its class ([`classify_miss`]) | the attempt's wall |
+//! | `saved` | a full analysis was saved (crate::snapshot::save) | - | check point to rename |
+//! | `not-saved` | a full analysis was not saved | its class ([`classify_not_saved`]) | - |
+//! | `verified` | verify mode: the shadow analysis agreed (crate::snapshot::verify) | - | analysis and comparison |
+//! | `mismatch` | verify mode: it disagreed (verify.log has the details) | the first difference's class | - |
+//! | `healed` | a failed hit removed its snapshot (crate::snapshot::hit) | `<rule>:<entry>` | the trees' check |
+//! | `evicted` | garbage collection removed a snapshot (crate::snapshot::store) | `count` or `bytes` | - |
+//! | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (crate::snapshot::record) | eligible: `yes`, `no`, `unless-pruned` | - |
+//!
+//! A heal's rule is `store-path` (its error named a path in the repository
+//! store) or `tree` (a tree of the snapshot no longer verified); its entry
+//! is the class of the first differing entry
+//! (crate::repository_store::TreeMismatch: `extra`, `missing`, `kind`,
+//! `mode`, `content`, `link`, `manifest`, `unreadable`), whose path is the
+//! line's `path`. An eviction names the evicted snapshot's key (its file
+//! name) and, in `detail`, the key of the save that collected it, so a later
+//! `absent` miss of that key is told apart from one never saved.
 //!
 //! Every line is binary-safe and space-separated, each field one token
 //! (crate::observed_fs::escape; `-` when absent), the target patterns last:
 //!
 //! ```text
-//! <UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<name> path=<path> targets=<pattern>...
-//! <UTC time> <unix seconds> kind=miss key=<short G> command=<command> reason=<class> path=<path> detail=<text> targets=<pattern>...
-//! <UTC time> <unix seconds> kind=not-saved key=<short G> command=<command> reason=<class> path=- detail=<text> targets=<pattern>...
-//! <UTC time> <unix seconds> kind=healed key=<short G> command=<command> reason=<store-path|tree> path=<path> detail=<text> targets=<pattern>...
+//! verify.log: <UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<name> path=<path> targets=<pattern>...
+//! events.log: <UTC time> <unix seconds> kind=<kind> mode=<on|verify|record> key=<short G> command=<command> reason=<class> path=<path> ms=<wall ms> detail=<text> targets=<pattern>...
 //! ```
 //!
-//! Each append is one `write` (O_APPEND: concurrent commands never
-//! interleave within a line). A log that would grow past [`LIMIT`] bytes is
-//! renamed to `<name>.1` first (replacing the previous generation): at most
-//! about twice the limit per log. Best effort: a failed write or rotation
-//! loses telemetry, never fails the command; two commands rotating at once
-//! may lose a generation.
+//! scripts/snapshot_soak_report.py summarizes both. Each append is one
+//! `write` (O_APPEND: concurrent commands never interleave within a line).
+//! A log that would grow past [`LIMIT`] bytes is renamed to `<name>.1` first
+//! (replacing the previous generation): at most about twice the limit per
+//! log. Best effort: a failed write or rotation loses telemetry, never
+//! fails the command; two commands rotating at once may lose a generation.
 
 use crate::observed_fs::escape;
 use std::ffi::OsStr;
@@ -32,12 +48,20 @@ use std::path::{Path, PathBuf};
 
 /// The verify-mode mismatch log.
 pub const VERIFY_LOG: &str = "verify.log";
-/// The miss and not-saved log.
-pub const MISS_LOG: &str = "miss.log";
+/// The event log (every hit, miss, save, unsaved run, verification, heal
+/// and eviction).
+pub const EVENTS_LOG: &str = "events.log";
 /// A log's size before it rotates.
 pub const LIMIT: u64 = 1 << 20;
 /// Bytes of a reason kept in a `detail=` field (before escaping).
 const DETAIL: usize = 240;
+
+/// The `mode=` of `BAZEL_RS_SNAPSHOT=on`.
+pub const MODE_ON: &str = "on";
+/// The `mode=` of `BAZEL_RS_SNAPSHOT=verify`.
+pub const MODE_VERIFY: &str = "verify";
+/// The `mode=` of `BAZEL_RS_SNAPSHOT=record`.
+pub const MODE_RECORD: &str = "record";
 
 /// `<cache>/snapshots/<name>`.
 pub fn log_path(cache: &Path, name: &str) -> PathBuf {
@@ -146,90 +170,189 @@ pub fn verify_line(
     )
 }
 
-/// A `miss.log` line; `kind` is `miss` or `not-saved`, `path` already
-/// escaped (validation names its paths escaped).
-pub fn outcome_line(
-    kind: &str,
-    key: &str,
-    reason: &str,
-    path: Option<&str>,
-    text: &str,
-    command: &str,
-    targets: &[String],
-) -> String {
+/// One `events.log` event (see the module docs): its kind, the snapshot's
+/// key and what the kind names.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Event<'a> {
+    pub kind: &'a str,
+    pub key: &'a str,
+    pub reason: Option<&'a str>,
+    /// Already escaped (validation names its paths escaped).
+    pub path: Option<&'a str>,
+    pub ms: Option<f64>,
+    /// Free text: its first [`DETAIL`] bytes, escaped.
+    pub detail: Option<&'a str>,
+}
+
+/// An `events.log` line of `event` in `mode` for `command` and its target
+/// patterns.
+pub fn event_line(mode: &str, command: &str, targets: &[String], event: &Event<'_>) -> String {
+    let field = |value: Option<&str>| {
+        value
+            .filter(|value| !value.is_empty())
+            .unwrap_or("-")
+            .to_owned()
+    };
     format!(
-        "{} kind={kind} key={key} command={} reason={reason} path={} detail={} {}\n",
+        "{} kind={} mode={} key={} command={} reason={} path={} ms={} detail={} {}\n",
         now_fields(),
-        escape(OsStr::new(command)),
-        path.filter(|path| !path.is_empty()).unwrap_or("-"),
-        detail(text),
+        event.kind,
+        field(Some(mode)),
+        field(Some(event.key)),
+        token(Some(OsStr::new(command))),
+        token(event.reason.map(OsStr::new)),
+        field(event.path),
+        event
+            .ms
+            .map_or_else(|| "-".to_owned(), |ms| format!("{ms:.1}")),
+        event.detail.map_or_else(|| "-".to_owned(), detail),
         targets_field(targets),
     )
 }
 
-/// What a `miss.log` line names besides its outcome: the cache whose store
-/// holds the log, the command and its target patterns. A context without a
-/// cache (the default) logs nothing.
+/// What an `events.log` line names besides its event: the cache whose store
+/// holds the log, the snapshot mode, the command and its target patterns. A
+/// context without a cache (the default) logs nothing.
 #[derive(Clone, Debug, Default)]
 pub struct Context {
     pub cache: PathBuf,
+    /// [`MODE_ON`], [`MODE_VERIFY`] or [`MODE_RECORD`].
+    pub mode: &'static str,
     pub command: String,
     pub targets: Vec<String>,
 }
 
 impl Context {
-    /// Append `line` to this cache's miss log (best effort).
-    fn append(&self, line: &str) {
+    /// Append `event` to this cache's event log (best effort).
+    pub fn log(&self, event: &Event<'_>) {
         if !self.cache.as_os_str().is_empty() {
-            let _ = append(&log_path(&self.cache, MISS_LOG), line);
+            let line = event_line(self.mode, &self.command, &self.targets, event);
+            let _ = append(&log_path(&self.cache, EVENTS_LOG), &line);
         }
     }
 
-    /// A lookup of the snapshot `key` missed for `reason` (best effort).
-    pub fn log_miss(&self, key: &str, reason: &str) {
+    /// A lookup of the snapshot `key` hit after `ms` (the attempt's wall);
+    /// `detail`: where the time went.
+    pub fn log_hit(&self, key: &str, ms: f64, detail: &str) {
+        self.log(&Event {
+            kind: "hit",
+            key,
+            ms: Some(ms),
+            detail: Some(detail),
+            ..Event::default()
+        });
+    }
+
+    /// A lookup of the snapshot `key` missed for `reason` after `ms`.
+    pub fn log_miss(&self, key: &str, reason: &str, ms: f64) {
         let (class, path) = classify_miss(reason);
-        let line = outcome_line(
-            "miss",
+        self.log(&Event {
+            kind: "miss",
             key,
-            class,
-            path.as_deref(),
-            reason,
-            &self.command,
-            &self.targets,
-        );
-        self.append(&line);
+            reason: Some(class),
+            path: path.as_deref(),
+            ms: Some(ms),
+            detail: Some(reason),
+        });
     }
 
-    /// A failed hit removed the snapshot of `key` (best effort): `reason`
-    /// is `store-path` (its error named `path` in the repository store) or
-    /// `tree` (the tree at `path` no longer verified, `detail` says how).
-    pub fn log_healed(&self, key: &str, reason: &str, path: &str, detail: &str) {
-        let path = escape(OsStr::new(path));
-        let line = outcome_line(
-            "healed",
+    /// The full analysis of `key` was saved, `ms` after the check point.
+    pub fn log_saved(&self, key: &str, ms: f64, detail: &str) {
+        self.log(&Event {
+            kind: "saved",
             key,
-            reason,
-            Some(&path),
-            detail,
-            &self.command,
-            &self.targets,
-        );
-        self.append(&line);
+            ms: Some(ms),
+            detail: Some(detail),
+            ..Event::default()
+        });
     }
 
-    /// The full analysis of `key` was not saved, for `reason` (best effort).
+    /// The full analysis of `key` was not saved, for `reason`.
     pub fn log_not_saved(&self, key: &str, reason: &str) {
         let class = classify_not_saved(reason);
-        let line = outcome_line(
-            "not-saved",
+        self.log(&Event {
+            kind: "not-saved",
             key,
-            &class,
-            None,
-            reason,
-            &self.command,
-            &self.targets,
-        );
-        self.append(&line);
+            reason: Some(&class),
+            detail: Some(reason),
+            ..Event::default()
+        });
+    }
+
+    /// Verify mode: the shadow full analysis of the hit of `key` agreed,
+    /// after `ms` (analysis and comparison).
+    pub fn log_verified(&self, key: &str, ms: f64, detail: &str) {
+        self.log(&Event {
+            kind: "verified",
+            key,
+            ms: Some(ms),
+            detail: Some(detail),
+            ..Event::default()
+        });
+    }
+
+    /// Verify mode: the shadow full analysis of the hit of `key` disagreed;
+    /// `class`: the first difference's, `path`: the first differing path.
+    pub fn log_mismatch(&self, key: &str, class: &str, path: Option<&OsStr>, detail: &str) {
+        let path = path.map(escape);
+        self.log(&Event {
+            kind: "mismatch",
+            key,
+            reason: Some(class),
+            path: path.as_deref(),
+            detail: Some(detail),
+            ..Event::default()
+        });
+    }
+
+    /// A failed hit removed the snapshot of `key`: `rule` is `store-path`
+    /// (its error named a path in the repository store) or `tree`; `entry`
+    /// the class of the first differing entry, at `path`; `ms` what the
+    /// check cost.
+    pub fn log_healed(
+        &self,
+        key: &str,
+        rule: &str,
+        entry: &str,
+        path: &Path,
+        ms: f64,
+        detail: &str,
+    ) {
+        let reason = format!("{rule}:{entry}");
+        let path = escape(path.as_os_str());
+        self.log(&Event {
+            kind: "healed",
+            key,
+            reason: Some(&reason),
+            path: Some(&path),
+            ms: Some(ms),
+            detail: Some(detail),
+        });
+    }
+
+    /// Garbage collection removed the snapshot of `key` (at `path`): over
+    /// the store's count (`count`) or byte budget (`bytes`).
+    pub fn log_evicted(&self, key: &str, reason: &str, path: &Path, detail: &str) {
+        let path = escape(path.as_os_str());
+        self.log(&Event {
+            kind: "evicted",
+            key,
+            reason: Some(reason),
+            path: Some(&path),
+            detail: Some(detail),
+            ..Event::default()
+        });
+    }
+
+    /// `BAZEL_RS_SNAPSHOT=record` reported: whether the run would be
+    /// eligible to save (`yes`, `no`, `unless-pruned`) and why not.
+    pub fn log_recorded(&self, eligible: &str, detail: &str) {
+        self.log(&Event {
+            kind: "recorded",
+            reason: Some(eligible),
+            detail: Some(detail),
+            ..Event::default()
+        });
     }
 }
 
@@ -331,13 +454,13 @@ mod tests {
     #[test]
     fn logs_rotate_at_their_limit() {
         let temp = tempfile::tempdir().unwrap();
-        let log = temp.path().join("snapshots").join(MISS_LOG);
+        let log = temp.path().join("snapshots").join(EVENTS_LOG);
         let line = |n: usize| format!("line {n} 0123456789\n");
         for n in 0..5 {
             append_bounded(&log, &line(n), 64).unwrap();
         }
         let current = std::fs::read_to_string(&log).unwrap();
-        let rotated = std::fs::read_to_string(temp.path().join("snapshots/miss.log.1")).unwrap();
+        let rotated = std::fs::read_to_string(temp.path().join("snapshots/events.log.1")).unwrap();
         assert_eq!(rotated, [line(0), line(1), line(2)].concat());
         assert_eq!(current, [line(3), line(4)].concat());
         // A line longer than the limit still lands (alone in its generation).
@@ -430,28 +553,46 @@ mod tests {
         }
     }
 
-    /// Both logs: one binary-safe line per outcome, the targets last.
+    /// Both logs: one binary-safe line per event, the targets last.
     #[test]
     fn lines_are_binary_safe() {
         let targets = vec!["//a:b".to_owned(), "//x y:\n\u{e9}".to_owned()];
-        let line = outcome_line(
-            "miss",
-            "0011",
-            "read",
-            Some("/ws/BUILD"),
-            "READ /ws/BUILD: content changed",
+        let line = event_line(
+            MODE_ON,
             "build",
             &targets,
+            &Event {
+                kind: "miss",
+                key: "0011",
+                reason: Some("read"),
+                path: Some("/ws/BUILD"),
+                ms: Some(12.345),
+                detail: Some("READ /ws/BUILD: content changed"),
+            },
         );
         assert!(
-            line.ends_with(" kind=miss key=0011 command=build reason=read path=/ws/BUILD detail=READ\\x20/ws/BUILD:\\x20content\\x20changed targets=//a:b //x\\x20y:\\x0a\\xc3\\xa9\n"),
+            line.ends_with(" kind=miss mode=on key=0011 command=build reason=read path=/ws/BUILD ms=12.3 detail=READ\\x20/ws/BUILD:\\x20content\\x20changed targets=//a:b //x\\x20y:\\x0a\\xc3\\xa9\n"),
             "{line}"
         );
         assert_eq!(line.matches('\n').count(), 1);
         let long = "x".repeat(1000);
-        let line = outcome_line("not-saved", "0011", "other", None, &long, "test", &targets);
+        let line = event_line(
+            MODE_VERIFY,
+            "test",
+            &targets,
+            &Event {
+                kind: "not-saved",
+                key: "0011",
+                reason: Some("other"),
+                detail: Some(&long),
+                ..Event::default()
+            },
+        );
         assert!(
-            line.contains(&format!(" path=- detail={} targets=", "x".repeat(DETAIL))),
+            line.contains(&format!(
+                " kind=not-saved mode=verify key=0011 command=test reason=other path=- ms=- detail={} targets=",
+                "x".repeat(DETAIL)
+            )),
             "{line}"
         );
         let line = verify_line(
@@ -471,6 +612,84 @@ mod tests {
         assert!(
             line.ends_with(" first=plan differences=1 taint=- path=- targets=\n"),
             "{line}"
+        );
+    }
+
+    /// L2-W5h: every kind of event lands in `<cache>/snapshots/events.log`
+    /// with its mode, key, reason, path and wall time; a context without a
+    /// cache logs nothing.
+    #[test]
+    fn every_event_kind_is_logged() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = Context {
+            cache: temp.path().to_path_buf(),
+            mode: MODE_ON,
+            command: "build".to_owned(),
+            targets: vec!["//:t".to_owned()],
+        };
+        log.log_hit("k1", 120.04, "validate:1.0");
+        log.log_miss("k1", "READ /ws/BUILD: content changed", 40.0);
+        log.log_saved("k1", 900.0, "bytes:4096");
+        log.log_not_saved("k1", "taint network (1): x");
+        log.log_healed(
+            "k1",
+            "tree",
+            "mode",
+            Path::new("/c/repositories/direct/trees/ab/tool.sh"),
+            150.0,
+            "mode of tool.sh",
+        );
+        log.log_evicted("k0", "count", Path::new("/c/snapshots/v1/k0.snap"), "by:k1");
+        let verify = Context {
+            mode: MODE_VERIFY,
+            ..log.clone()
+        };
+        verify.log_verified("k1", 7000.0, "analysis:6900.0,compare:100.0");
+        verify.log_mismatch(
+            "k1",
+            "taint",
+            Some(OsStr::new("/c/x y")),
+            "repository-rule-executed",
+        );
+        Context {
+            mode: MODE_RECORD,
+            ..log.clone()
+        }
+        .log_recorded("no", "taint network");
+        Context::default().log_hit("ignored", 1.0, "");
+        let text = std::fs::read_to_string(temp.path().join("snapshots").join(EVENTS_LOG)).unwrap();
+        let fields: Vec<String> = text
+            .lines()
+            .map(|line| {
+                line.split(' ')
+                    .skip(2)
+                    .filter(|field| {
+                        ["kind=", "mode=", "key=", "reason=", "path=", "ms="]
+                            .iter()
+                            .any(|name| field.starts_with(name))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "kind=hit mode=on key=k1 reason=- path=- ms=120.0",
+                "kind=miss mode=on key=k1 reason=read path=/ws/BUILD ms=40.0",
+                "kind=saved mode=on key=k1 reason=- path=- ms=900.0",
+                "kind=not-saved mode=on key=k1 reason=network path=- ms=-",
+                "kind=healed mode=on key=k1 reason=tree:mode path=/c/repositories/direct/trees/ab/tool.sh ms=150.0",
+                "kind=evicted mode=on key=k0 reason=count path=/c/snapshots/v1/k0.snap ms=-",
+                "kind=verified mode=verify key=k1 reason=- path=- ms=7000.0",
+                "kind=mismatch mode=verify key=k1 reason=taint path=/c/x\\x20y ms=-",
+                "kind=recorded mode=record key=- reason=no path=- ms=-",
+            ],
+            "{text}"
+        );
+        assert!(
+            text.lines().all(|line| line.ends_with(" targets=//:t")),
+            "{text}"
         );
     }
 }

@@ -14,9 +14,10 @@
 //! encodes the sections on the main thread; a background thread writes them
 //! to a temporary file while the actions execute. Only when the command (for
 //! `test` and `run`: its build part) succeeded does [`Save::finish`] rename
-//! it into place (crate::snapshot::store). Failures are never saved. A run
-//! that is not saved appends its reason to `<cache>/snapshots/miss.log`
-//! (`kind=not-saved`, crate::snapshot::telemetry; L2-W5g).
+//! it into place (crate::snapshot::store). Failures are never saved. A save
+//! appends a `kind=saved` line to `<cache>/snapshots/events.log`, a run that
+//! is not saved its reason (`kind=not-saved`, crate::snapshot::telemetry;
+//! L2-W5g, L2-W5h).
 
 use crate::observed_fs::{self, Taint};
 use crate::registry_session::SessionHandle;
@@ -47,13 +48,15 @@ pub struct Save {
     skipped: Option<String>,
     started: Instant,
     saved_note: String,
+    /// The event log's counts of a save (`actions:<n>,window:<bytes>`).
+    saved_counts: String,
     finished: bool,
-    /// The miss log's command and targets (a run not saved is logged).
+    /// The event log's context (a save and a run not saved are logged).
     log: telemetry::Context,
 }
 
-/// Start recording at the snapshot check point (`log`: the cache, command
-/// and target patterns of the miss log).
+/// Start recording at the snapshot check point (`log`: the cache, mode,
+/// command and target patterns of the event log).
 pub fn start(key: Key, explain: bool, log: telemetry::Context) -> Save {
     let mut save = Save {
         key,
@@ -66,6 +69,7 @@ pub fn start(key: Key, explain: bool, log: telemetry::Context) -> Save {
         skipped: None,
         started: Instant::now(),
         saved_note: String::new(),
+        saved_counts: String::new(),
         finished: false,
         log,
     };
@@ -189,6 +193,7 @@ impl Save {
             ms(checked_at),
             ms(plan_at - checked_at),
         );
+        self.saved_counts = format!("actions:{plan_nodes},replays:{}", records.len());
         // The recording is no input of execution: taken, selected and
         // encoded on the writer thread while the actions run.
         Ok(store::write_with(&self.cache, &self.key, move || {
@@ -250,13 +255,20 @@ impl Save {
         self.finished = true;
         let pending = self.pending.take();
         let outcome = match (pending, self.skipped.take()) {
-            (Some(pending), _) => match pending.commit() {
-                Ok((bytes, note)) => Ok(format!(
-                    "saved {} ({bytes} bytes; {}; {note}; {:.1} ms after the check point)",
-                    self.key.short(),
-                    self.saved_note,
-                    self.started.elapsed().as_secs_f64() * 1000.0
-                )),
+            (Some(pending), _) => match pending.logged(self.log.clone()).commit() {
+                Ok((bytes, note)) => {
+                    let ms = self.started.elapsed().as_secs_f64() * 1000.0;
+                    self.log.log_saved(
+                        &self.key.short(),
+                        ms,
+                        &format!("bytes:{bytes},{}", self.saved_counts),
+                    );
+                    Ok(format!(
+                        "saved {} ({bytes} bytes; {}; {note}; {ms:.1} ms after the check point)",
+                        self.key.short(),
+                        self.saved_note,
+                    ))
+                }
                 Err(error) => Err(error.to_string()),
             },
             (None, Some(reason)) => Err(reason),

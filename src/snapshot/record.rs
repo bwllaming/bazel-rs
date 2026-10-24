@@ -88,14 +88,22 @@ pub struct Session {
     /// The command's repository environment (the validation dry run's
     /// ENV checks, crate::snapshot::validate::Environment).
     environment: Vec<(OsString, OsString)>,
+    /// The event log's context: the report appends a `kind=recorded` line
+    /// (crate::snapshot::telemetry, L2-W5h).
+    log: crate::snapshot::telemetry::Context,
     reported: bool,
 }
 
 /// Start recording when `BAZEL_RS_SNAPSHOT=record`. `environment` is the
 /// command's repository environment (the client environment with
 /// `--repo_env` applied, crate::repo_env), which the validation dry run
-/// checks the ENV records against.
-pub fn start(command: &str, environment: &[(OsString, OsString)]) -> Option<Session> {
+/// checks the ENV records against; `log` the event log's context (its
+/// cache, command and target patterns).
+pub fn start(
+    command: &str,
+    environment: &[(OsString, OsString)],
+    log: crate::snapshot::telemetry::Context,
+) -> Option<Session> {
     // Other values: crate::snapshot::Mode::from_env reports them.
     if std::env::var_os(MODE_VAR)? != "record" {
         return None;
@@ -119,6 +127,7 @@ pub fn start(command: &str, environment: &[(OsString, OsString)]) -> Option<Sess
         dump: std::env::var_os(DUMP_VAR).map(PathBuf::from),
         registry: None,
         environment: environment.to_vec(),
+        log,
         reported: false,
     })
 }
@@ -210,6 +219,10 @@ impl Session {
             .map(|_| crate::snapshot::validate::dry_run(&validated, threads, &environment))
             .collect();
         let mut summary = summary(&self.command, &recording, policy, &validations);
+        self.log.log_recorded(
+            eligibility(&recording),
+            &crate::snapshot::save::taints(&recording.taints),
+        );
         summary.push(plan_line(noted_plan()));
         if std::env::var_os("BAZEL_RS_SNAPSHOT_COMPARE").is_some() {
             // The other policy's cost, for comparison.
@@ -407,6 +420,23 @@ fn plan_line(plan: Option<Result<crate::snapshot::codec::Stats, String>>) -> Str
     }
 }
 
+/// Whether the recorded run would be eligible to save: `yes`, `no` or
+/// `unless-pruned` — only taints recorded when analysis registered an
+/// action the plan may still prune (Taint::plan_dependent), and the planned
+/// request never decided them (planning did not complete). Once decided
+/// (L2-W4, observed_fs::settle_plan_taints) only the plan's own remain.
+fn eligibility(recording: &Recording) -> &'static str {
+    if recording.taints.is_empty() {
+        "yes"
+    } else if recording.plan_registered.is_none()
+        && recording.taints.keys().all(|taint| taint.plan_dependent())
+    {
+        "unless-pruned"
+    } else {
+        "no"
+    }
+}
+
 /// The report lines (without the `bazel-rs-snapshot:` prefix).
 pub fn summary(
     command: &str,
@@ -415,20 +445,7 @@ pub fn summary(
     validations: &[crate::snapshot::validate::Report],
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    // `unless-pruned`: only taints recorded when analysis registered an
-    // action the plan may still prune (Taint::plan_dependent), and the
-    // planned request never decided them (planning did not complete). Once
-    // decided (L2-W4, observed_fs::settle_plan_taints) only the plan's own
-    // remain.
-    let eligible = if recording.taints.is_empty() {
-        "yes"
-    } else if recording.plan_registered.is_none()
-        && recording.taints.keys().all(|taint| taint.plan_dependent())
-    {
-        "unless-pruned"
-    } else {
-        "no"
-    };
+    let eligible = eligibility(recording);
     lines.push(format!(
         "record: command={command} window={} ms eligible={eligible}",
         recording.window.map_or_else(|| "open".to_owned(), millis),

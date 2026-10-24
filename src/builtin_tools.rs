@@ -558,6 +558,18 @@ mod tests {
         assert_eq!(materialize(&cache).unwrap(), root);
         let module = root.join("MODULE.bazel");
         let manifest_path = root.with_extension("json");
+        // What a failed analysis-snapshot hit's check names first (L2-W5h).
+        let published = crate::repository_store::PublishedTree {
+            kind: "builtin",
+            id: bundle.identity.clone(),
+            root: root.clone(),
+            manifest: manifest_path.clone(),
+        };
+        let named = || {
+            let mismatch = crate::repository_store::verify_as_reused(&published).unwrap_err();
+            (mismatch.class, mismatch.path)
+        };
+        crate::repository_store::verify_as_reused(&published).unwrap();
 
         // Same-size corruption plus a forged cache manifest must never be trusted.
         let mut corrupt = module_bytes().to_vec();
@@ -570,17 +582,20 @@ mod tests {
             }
         }
         fs::write(&manifest_path, serde_json::to_vec(&forged).unwrap()).unwrap();
+        assert_eq!(named(), ("manifest", manifest_path.clone()));
         assert_eq!(materialize(&cache).unwrap(), root);
         assert_eq!(fs::read(&module).unwrap(), module_bytes());
 
         // Even an unchanged, valid cached manifest cannot attest altered content.
         fs::write(&module, &corrupt).unwrap();
+        assert_eq!(named(), ("content", module.clone()));
         materialize(&cache).unwrap();
         assert_eq!(fs::read(&module).unwrap(), module_bytes());
 
         fs::remove_file(&module).unwrap();
         fs::write(root.join("unexpected"), b"extra").unwrap();
         fs::create_dir(root.join("unexpected-empty-directory")).unwrap();
+        assert_eq!(named(), ("missing", module.clone()));
         materialize(&cache).unwrap();
         assert!(!root.join("unexpected").exists());
         assert!(!root.join("unexpected-empty-directory").exists());
@@ -588,11 +603,13 @@ mod tests {
 
         fs::set_permissions(&module, fs::Permissions::from_mode(0o644)).unwrap();
         fs::set_permissions(root.join("tools"), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(named(), ("mode", module.clone()));
         materialize(&cache).unwrap();
         assert_eq!(mode(&fs::metadata(&module).unwrap()), 0o755);
         assert_eq!(mode(&fs::metadata(root.join("tools")).unwrap()), 0o755);
 
         fs::write(&manifest_path, b"malformed cached manifest").unwrap();
+        assert_eq!(named(), ("manifest", manifest_path.clone()));
         materialize(&cache).unwrap();
         assert_eq!(fs::read(&manifest_path).unwrap(), MANIFEST);
         fs::remove_file(&manifest_path).unwrap();

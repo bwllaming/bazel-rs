@@ -2391,12 +2391,13 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
     twin.same(BUILD_ALL, &[]).assert_hit();
 }
 
-/// L2-W5g soak telemetry: every lookup that misses appends a `kind=miss`
-/// line to `<cache>/snapshots/miss.log` — the reason's class and the path
-/// it names — and every full analysis that is not saved a `kind=not-saved`
-/// line — the first taint's name, or `failed`; hits and saves add nothing.
+/// L2-W5g/L2-W5h soak telemetry: every snapshot event of a command appends
+/// one line to `<cache>/snapshots/events.log` — a lookup's hit or miss (the
+/// reason's class and the path it names) with the attempt's wall time, a
+/// save, a full analysis that is not saved (the first taint's name, or
+/// `failed`) — with the mode; the run without the snapshot logs nothing.
 #[test]
-fn the_miss_log_names_each_miss_and_unsaved_run() {
+fn the_event_log_names_each_outcome() {
     let twin = warmed(BUILD_ALL, &[]);
     twin.write("BUILD.bazel", &format!("{ROOT_BUILD}\n# edited\n"));
     twin.same(BUILD_ALL, &[])
@@ -2409,42 +2410,60 @@ fn the_miss_log_names_each_miss_and_unsaved_run() {
     );
     let failing = &["build", "//pkg:bad"];
     assert!(!twin.same(failing, &[]).on.status.success());
-    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/miss.log")).unwrap();
+    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
     let field = |line: &str, name: &str| -> String {
         line.split(' ')
             .find_map(|token| token.strip_prefix(name))
             .unwrap_or_default()
             .to_owned()
     };
-    let outcomes: Vec<[String; 3]> = log
+    let outcomes: Vec<[String; 4]> = log
         .lines()
         .map(|line| {
             [
                 field(line, "kind="),
+                field(line, "mode="),
                 field(line, "reason="),
                 field(line, "targets="),
             ]
         })
         .collect();
+    let mode = twin.mode.get();
     let expected = [
-        ["miss", "absent", "//:all_inputs"],
-        ["not-saved", "repository-rule-executed", "//:all_inputs"],
-        ["miss", "absent", "//:all_inputs"],
-        ["miss", "read", "//:all_inputs"],
-        ["miss", "absent", "//pkg:bad"],
-        ["not-saved", "failed", "//pkg:bad"],
+        ["miss", mode, "absent", "//:all_inputs"],
+        [
+            "not-saved",
+            mode,
+            "repository-rule-executed",
+            "//:all_inputs",
+        ],
+        ["miss", mode, "absent", "//:all_inputs"],
+        ["saved", mode, "-", "//:all_inputs"],
+        ["miss", mode, "read", "//:all_inputs"],
+        ["saved", mode, "-", "//:all_inputs"],
+        ["hit", mode, "-", "//:all_inputs"],
+        ["miss", mode, "absent", "//pkg:bad"],
+        ["not-saved", mode, "failed", "//pkg:bad"],
     ];
     assert_eq!(
         outcomes,
         expected.map(|row| row.map(str::to_owned)),
         "{log}"
     );
-    let read = log.lines().nth(3).unwrap();
+    let read = log.lines().nth(4).unwrap();
     assert!(
-        read.contains("/run/ws/BUILD.bazel detail=READ\\x20"),
+        read.contains("/run/ws/BUILD.bazel ms=") && read.contains(" detail=READ\\x20"),
         "{read}"
     );
-    assert!(!twin.side(OFF).join("cache/snapshots/miss.log").exists());
+    // Lookups and saves carry their wall time.
+    for line in log.lines() {
+        let ms = field(line, "ms=");
+        match field(line, "kind=").as_str() {
+            "hit" | "miss" | "saved" => assert!(ms.parse::<f64>().is_ok(), "{line}"),
+            _ => assert_eq!(ms, "-", "{line}"),
+        }
+    }
+    assert!(!twin.side(OFF).join("cache/snapshots/events.log").exists());
 }
 
 // ---- verification-based healing (L2-W5g) -----------------------------------
@@ -2578,11 +2597,22 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
             "{case:?}: {stderr}"
         );
         assert!(twin.snapshots().is_empty(), "{case:?}");
-        let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/miss.log")).unwrap();
+        // L2-W5h: the heal names the first differing entry.
+        let (entry, file) = match case {
+            Tamper::ChmodTool => ("mode", "tool.sh"),
+            Tamper::EditRunfile => ("content", "data.txt"),
+        };
         assert!(
-            log.lines().last().is_some_and(
-                |line| line.contains(" kind=healed ") && line.contains(" reason=tree ")
-            ),
+            stderr.contains(&format!(" ({entry} {file}); the next build re-analyzes")),
+            "{case:?}: {stderr}"
+        );
+        let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
+        assert!(
+            log.lines()
+                .last()
+                .is_some_and(|line| line.contains(" kind=healed ")
+                    && line.contains(&format!(" reason=tree:{entry} "))
+                    && line.contains(&format!("/{file} ms="))),
             "{log}"
         );
         // The next run repairs the tree like the run without the snapshot

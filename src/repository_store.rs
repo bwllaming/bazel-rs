@@ -1829,20 +1829,393 @@ enum TreeContent {
 /// exactly the recorded entries below the root, each with the recorded
 /// kind, SHA-256 or link target. Never follows links; reads every file once.
 pub fn verify_published_tree(tree: &PublishedTree) -> Result<(), String> {
-    let bytes = read_stable(&tree.manifest)?;
+    check_published_tree(tree).map_err(|mismatch| mismatch.message)
+}
+
+/// [`verify_published_tree`] naming the first differing entry (L2-W5h: the
+/// analysis snapshot's healing checks a crossed tree this way).
+pub fn check_published_tree(tree: &PublishedTree) -> Result<(), TreeMismatch> {
+    let manifest_error =
+        |message: String| TreeMismatch::manifest(&tree.manifest, &tree.root, message);
+    let bytes = read_stable(&tree.manifest).map_err(manifest_error)?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("cannot parse {}: {e}", tree.manifest.display()))?;
-    let expected = manifest_content(tree.kind, &manifest)
-        .ok_or_else(|| format!("malformed repository manifest {}", tree.manifest.display()))?;
+        .map_err(|e| manifest_error(format!("cannot parse {}: {e}", tree.manifest.display())))?;
+    let expected = manifest_content(tree.kind, &manifest).ok_or_else(|| {
+        manifest_error(format!(
+            "malformed repository manifest {}",
+            tree.manifest.display()
+        ))
+    })?;
     let mut actual = BTreeMap::new();
-    tree_content(&tree.root, &tree.root, &mut actual)?;
-    if actual != expected {
-        return Err(format!(
-            "published repository tree {} does not match its manifest",
-            tree.root.display()
-        ));
+    let walked = tree_content(&tree.root, &tree.root, &mut actual);
+    if walked.is_err() || actual != expected {
+        // The content check: modes do not count (a crossing reads content).
+        let mut found = manifest_inventory(tree.kind, &manifest)
+            .map(|recorded| diagnose_tree(&tree.root, &recorded, false))
+            .unwrap_or_else(|| TreeMismatch::other(&tree.root));
+        found.message = format!(
+            "published repository tree {} does not match its manifest ({})",
+            tree.root.display(),
+            found.entry_text()
+        );
+        return Err(found);
     }
     Ok(())
+}
+
+/// Where a published tree first differs from what its manifest records
+/// (L2-W5h: the analysis snapshot's healing and a hit's check of a local
+/// repository's tree name it, crate::snapshot::hit and
+/// crate::snapshot::telemetry).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeMismatch {
+    /// `extra` (an entry the manifest does not record), `missing`, `kind`
+    /// (a file, directory or link replaced by another kind), `mode`,
+    /// `content` (another size or digest), `link` (another link target),
+    /// `manifest` (missing, unreadable or describing another
+    /// publication), `unreadable` (an entry that cannot be inspected or
+    /// read) or `other` (no single entry differs on a second look: a
+    /// concurrent change, or what only the store's own check rejects).
+    pub class: &'static str,
+    /// The differing entry (absolute), the manifest or the tree root.
+    pub path: PathBuf,
+    /// The tree's root.
+    pub root: PathBuf,
+    /// What differs, for humans.
+    pub message: String,
+}
+
+impl std::fmt::Display for TreeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl TreeMismatch {
+    /// The entry `name` (relative to `root`) differs as `class`.
+    fn entry(root: &Path, class: &'static str, name: &str) -> Self {
+        let path = if name.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(name)
+        };
+        let mut mismatch = Self {
+            class,
+            path,
+            root: root.to_path_buf(),
+            message: String::new(),
+        };
+        mismatch.message = format!(
+            "repository tree {} does not match its manifest ({})",
+            root.display(),
+            mismatch.entry_text()
+        );
+        mismatch
+    }
+
+    /// The manifest at `manifest` does not describe the tree at `root`.
+    fn manifest(manifest: &Path, root: &Path, message: String) -> Self {
+        Self {
+            class: "manifest",
+            path: manifest.to_path_buf(),
+            root: root.to_path_buf(),
+            message,
+        }
+    }
+
+    /// The tree at `root` differs, but no single entry does.
+    fn other(root: &Path) -> Self {
+        Self::entry(root, "other", "")
+    }
+
+    /// `<class> <path relative to the root>` (`.` for the root itself).
+    pub fn entry_text(&self) -> String {
+        let relative = self
+            .path
+            .strip_prefix(&self.root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+            .map_or_else(
+                || self.path.display().to_string(),
+                |relative| relative.display().to_string(),
+            );
+        format!("{} {relative}", self.class)
+    }
+}
+
+/// What a manifest records for one entry below a tree's root, whatever
+/// store wrote it, as [`diagnose_tree`] compares it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Recorded {
+    Directory {
+        mode: Option<u32>,
+    },
+    File {
+        mode: Option<u32>,
+        size: Option<u64>,
+        sha256: String,
+    },
+    Symlink(String),
+}
+
+/// A manifest's entries below the root ([`Recorded`]): the registry
+/// archives' and this store's (directory flag, mode, size, digest, link
+/// target), Git's (kind, mode, size, digest) and the embedded
+/// `@bazel_tools`' (a file list with sizes and modes; its directories are
+/// implied, mode 0755).
+fn manifest_inventory(
+    kind: &str,
+    manifest: &serde_json::Value,
+) -> Option<BTreeMap<String, Recorded>> {
+    use serde_json::Value;
+    let text = |value: &Value| value.as_str().map(str::to_owned);
+    let mode = |entry: &Value| {
+        entry
+            .get("mode")
+            .and_then(Value::as_u64)
+            .and_then(|mode| u32::try_from(mode).ok())
+    };
+    let size = |entry: &Value| entry.get("size").and_then(Value::as_u64);
+    let mut recorded = BTreeMap::new();
+    match kind {
+        "builtin" => {
+            for entry in manifest.get("files")?.as_array()? {
+                let path = entry.get("path")?.as_str()?;
+                for (index, _) in path.match_indices('/') {
+                    recorded.insert(
+                        path[..index].to_owned(),
+                        Recorded::Directory { mode: Some(0o755) },
+                    );
+                }
+                recorded.insert(
+                    path.to_owned(),
+                    Recorded::File {
+                        mode: mode(entry),
+                        size: size(entry),
+                        sha256: text(entry.get("sha256")?)?,
+                    },
+                );
+            }
+        }
+        "git" => {
+            for (name, entry) in manifest.get("files")?.as_object()? {
+                if name.is_empty() {
+                    continue;
+                }
+                let value = match entry.get("kind")? {
+                    Value::String(kind) if kind == "Directory" => {
+                        Recorded::Directory { mode: mode(entry) }
+                    }
+                    Value::String(kind) if kind == "File" => Recorded::File {
+                        mode: mode(entry),
+                        size: size(entry),
+                        sha256: text(entry.get("sha256")?)?,
+                    },
+                    Value::Object(link) => {
+                        Recorded::Symlink(text(link.get("Symlink")?.get("target")?)?)
+                    }
+                    _ => return None,
+                };
+                recorded.insert(name.clone(), value);
+            }
+        }
+        _ => {
+            for (name, entry) in manifest.get("files")?.as_object()? {
+                if name.is_empty() {
+                    continue;
+                }
+                let value = if let Some(target) = entry.get("symlink").and_then(Value::as_str) {
+                    Recorded::Symlink(target.to_owned())
+                } else if entry.get("directory")?.as_bool()? {
+                    Recorded::Directory { mode: mode(entry) }
+                } else {
+                    Recorded::File {
+                        mode: mode(entry),
+                        size: size(entry),
+                        sha256: text(entry.get("sha256")?)?,
+                    }
+                };
+                recorded.insert(name.clone(), value);
+            }
+        }
+    }
+    Some(recorded)
+}
+
+/// The first entry where the tree at `root` differs from `recorded`, after
+/// the store's own check found that it does (L2-W5h; only then: it reads
+/// the tree again). Structure first — an extra or missing entry, another
+/// kind, link target, mode (with `modes`) or size, in path order — then
+/// the files' contents in path order, so a tampered tree costs at most a
+/// walk and the hashing up to the first differing file. Never follows
+/// links.
+fn diagnose_tree(root: &Path, recorded: &BTreeMap<String, Recorded>, modes: bool) -> TreeMismatch {
+    #[derive(Debug)]
+    enum Actual {
+        Directory(u32),
+        File(u32, u64),
+        Symlink(String),
+        Other,
+    }
+    fn walk(
+        root: &Path,
+        directory: &Path,
+        actual: &mut BTreeMap<String, Actual>,
+    ) -> Result<(), PathBuf> {
+        let entries = fs::read_dir(directory).map_err(|_| directory.to_path_buf())?;
+        for entry in entries {
+            let path = entry.map_err(|_| directory.to_path_buf())?.path();
+            let name = path
+                .strip_prefix(root)
+                .map_err(|_| path.clone())?
+                .to_string_lossy()
+                .into_owned();
+            let metadata = fs::symlink_metadata(&path).map_err(|_| path.clone())?;
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o7777
+            };
+            #[cfg(not(unix))]
+            let mode = 0;
+            if metadata.file_type().is_symlink() {
+                let target = fs::read_link(&path).map_err(|_| path.clone())?;
+                actual.insert(name, Actual::Symlink(target.to_string_lossy().into_owned()));
+            } else if metadata.is_dir() {
+                actual.insert(name, Actual::Directory(mode));
+                walk(root, &path, actual)?;
+            } else if metadata.is_file() {
+                actual.insert(name, Actual::File(mode, metadata.len()));
+            } else {
+                actual.insert(name, Actual::Other);
+            }
+        }
+        Ok(())
+    }
+    if !fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir()) {
+        let class = if fs::symlink_metadata(root).is_ok() {
+            "kind"
+        } else {
+            "missing"
+        };
+        return TreeMismatch::entry(root, class, "");
+    }
+    let mut actual = BTreeMap::new();
+    if let Err(path) = walk(root, root, &mut actual) {
+        let name = path
+            .strip_prefix(root)
+            .map(|relative| relative.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return TreeMismatch::entry(root, "unreadable", &name);
+    }
+    // Structure, in path order (both maps are sorted by name).
+    let mut actual_entries = actual.iter().peekable();
+    let mut recorded_entries = recorded.iter().peekable();
+    loop {
+        let (name, class) = match (actual_entries.peek(), recorded_entries.peek()) {
+            (None, None) => break,
+            (Some((name, _)), None) => (name.as_str(), Some("extra")),
+            (None, Some((name, _))) => (name.as_str(), Some("missing")),
+            (Some((have_name, _)), Some((want_name, _))) if have_name < want_name => {
+                (have_name.as_str(), Some("extra"))
+            }
+            (Some((have_name, _)), Some((want_name, _))) if have_name > want_name => {
+                (want_name.as_str(), Some("missing"))
+            }
+            (Some((name, have)), Some((_, want))) => {
+                let mode_differs =
+                    |have: u32, want: Option<u32>| modes && want.is_some_and(|want| want != have);
+                let class = match (have, want) {
+                    (Actual::Symlink(have), Recorded::Symlink(want)) => {
+                        (have != want).then_some("link")
+                    }
+                    (Actual::Directory(have), Recorded::Directory { mode }) => {
+                        mode_differs(*have, *mode).then_some("mode")
+                    }
+                    (Actual::File(have_mode, have_size), Recorded::File { mode, size, .. }) => {
+                        if mode_differs(*have_mode, *mode) {
+                            Some("mode")
+                        } else if size.is_some_and(|size| size != *have_size) {
+                            Some("content")
+                        } else {
+                            None
+                        }
+                    }
+                    _ => Some("kind"),
+                };
+                (name.as_str(), class)
+            }
+        };
+        if let Some(class) = class {
+            return TreeMismatch::entry(root, class, name);
+        }
+        actual_entries.next();
+        recorded_entries.next();
+    }
+    // Contents, in path order.
+    for (name, want) in recorded {
+        if let Recorded::File { sha256, .. } = want {
+            let path = root.join(name);
+            let mut options = OpenOptions::new();
+            options.read(true);
+            no_follow(&mut options);
+            let Ok(mut file) = options.open(&path) else {
+                return TreeMismatch::entry(root, "unreadable", name);
+            };
+            let mut digest = Sha256::new();
+            if std::io::copy(&mut file, &mut digest).is_err() {
+                return TreeMismatch::entry(root, "unreadable", name);
+            }
+            if format!("{:x}", digest.finalize()) != *sha256 {
+                return TreeMismatch::entry(root, "content", name);
+            }
+        }
+    }
+    TreeMismatch::other(root)
+}
+
+/// [`diagnose_tree`] of a published store tree against its manifest file
+/// (an unreadable or malformed manifest is the difference).
+fn diagnose_published(tree: &PublishedTree) -> TreeMismatch {
+    let manifest = fs::read(&tree.manifest)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let Some(manifest) = manifest else {
+        return TreeMismatch::manifest(
+            &tree.manifest,
+            &tree.root,
+            format!(
+                "repository tree {} does not match its manifest (cannot read {})",
+                tree.root.display(),
+                tree.manifest.display()
+            ),
+        );
+    };
+    match manifest_inventory(tree.kind, &manifest) {
+        Some(recorded) => match diagnose_tree(&tree.root, &recorded, true) {
+            // Every entry matches: the store's check rejected the manifest
+            // itself (its format, policy or the publication it names).
+            found if found.class == "other" => TreeMismatch::manifest(
+                &tree.manifest,
+                &tree.root,
+                format!(
+                    "repository tree {} does not match its manifest (the manifest {} describes another publication)",
+                    tree.root.display(),
+                    tree.manifest.display()
+                ),
+            ),
+            found => found,
+        },
+        None => TreeMismatch::manifest(
+            &tree.manifest,
+            &tree.root,
+            format!(
+                "repository tree {} does not match its manifest (malformed manifest {})",
+                tree.root.display(),
+                tree.manifest.display()
+            ),
+        ),
+    }
 }
 
 /// Verify a published store tree the way its store's warm check does before
@@ -1853,22 +2226,25 @@ pub fn verify_published_tree(tree: &PublishedTree) -> Result<(), String> {
 /// [`verify_snapshot`]), a registry archive (crate::materializer), a Git
 /// source (crate::git_source) and the embedded `@bazel_tools`
 /// (crate::builtin_tools) against theirs. Reads only. The error names the
-/// mismatch (an unreadable tree or manifest is one).
-pub fn verify_as_reused(tree: &PublishedTree) -> Result<(), String> {
+/// first differing entry (an unreadable tree or manifest is one; L2-W5h).
+pub fn verify_as_reused(tree: &PublishedTree) -> Result<(), TreeMismatch> {
     let matched = match tree.kind {
-        "direct" => verify_direct_publication(tree)?,
+        "direct" => verify_direct_publication(tree).unwrap_or(false),
         "registry" => crate::materializer::published_tree_matches(&tree.root, &tree.manifest),
         "git" => crate::git_source::published_tree_matches(&tree.root, &tree.manifest, &tree.id),
         "builtin" => crate::builtin_tools::published_tree_matches(&tree.root, &tree.manifest),
-        kind => return Err(format!("unknown repository tree kind {kind}")),
+        kind => {
+            return Err(TreeMismatch::manifest(
+                &tree.manifest,
+                &tree.root,
+                format!("unknown repository tree kind {kind}"),
+            ));
+        }
     };
     if matched {
         Ok(())
     } else {
-        Err(format!(
-            "repository tree {} does not match its manifest",
-            tree.root.display()
-        ))
+        Err(diagnose_published(tree))
     }
 }
 
@@ -1894,8 +2270,13 @@ fn verify_direct_publication(tree: &PublishedTree) -> Result<bool, String> {
 /// tree): the manifest beside it records the execution's identity and tree
 /// digest, and the tree verifies against that manifest as
 /// [`materialize_local`]'s republication check does (content, modes, links;
-/// trusted by stat outside the racy window). Reads only.
-pub fn verify_local_publication(root: &Path, execution: &LocalExecution) -> Result<(), String> {
+/// trusted by stat outside the racy window; every file read under
+/// `--verify_repo_tampering`). Reads only. The error names the first
+/// differing entry (L2-W5h).
+pub fn verify_local_publication(
+    root: &Path,
+    execution: &LocalExecution,
+) -> Result<(), TreeMismatch> {
     let identity = &execution.identity;
     let manifest_path = root
         .parent()
@@ -1903,31 +2284,41 @@ pub fn verify_local_publication(root: &Path, execution: &LocalExecution) -> Resu
         .filter(|_| root.file_name().is_some_and(|name| *name == **identity))
         .map(|direct| direct.join("manifests").join(format!("{identity}.json")))
         .ok_or_else(|| {
-            format!(
-                "{} is not the publication {identity} of the direct store",
-                root.display()
+            TreeMismatch::manifest(
+                root,
+                root,
+                format!(
+                    "{} is not the publication {identity} of the direct store",
+                    root.display()
+                ),
             )
         })?;
-    let bytes = read_stable(&manifest_path)
-        .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
-    let manifest = parse_manifest(&bytes)
-        .ok_or_else(|| format!("unreadable manifest {}", manifest_path.display()))?;
-    let encoded = serde_json::to_vec(&content_view(&manifest.files)).map_err(|e| e.to_string())?;
+    let manifest_error = |message: String| TreeMismatch::manifest(&manifest_path, root, message);
+    let bytes = read_stable(&manifest_path).map_err(|error| {
+        manifest_error(format!("cannot read {}: {error}", manifest_path.display()))
+    })?;
+    let manifest = parse_manifest(&bytes).ok_or_else(|| {
+        manifest_error(format!("unreadable manifest {}", manifest_path.display()))
+    })?;
+    let encoded = serde_json::to_vec(&content_view(&manifest.files))
+        .map_err(|error| manifest_error(error.to_string()))?;
     let digest: [u8; 32] = Sha256::digest(&encoded).into();
     if manifest.identity != *identity || digest != execution.snapshot_digest {
-        return Err(format!(
+        return Err(manifest_error(format!(
             "the manifest {} does not record this execution's tree",
             manifest_path.display()
-        ));
+        )));
     }
-    match verify_snapshot(root, &manifest.files, verify_mode()) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(format!(
-            "published tree {} does not match its manifest",
-            root.display()
-        )),
-        Err(error) => Err(format!("cannot verify {}: {error}", root.display())),
+    if verify_snapshot(root, &manifest.files, verify_mode()).unwrap_or(false) {
+        return Ok(());
     }
+    let recorded = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| manifest_inventory("direct", &value));
+    Err(match recorded {
+        Some(recorded) => diagnose_tree(root, &recorded, true),
+        None => TreeMismatch::other(root),
+    })
 }
 
 fn manifest_content(

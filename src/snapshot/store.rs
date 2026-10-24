@@ -125,9 +125,13 @@ static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug)]
 pub struct Pending {
     cache: PathBuf,
+    key: Key,
     path: PathBuf,
     temporary: PathBuf,
     writer: Option<JoinHandle<Result<(u64, String), String>>>,
+    /// Where the garbage collection after the commit logs its evictions
+    /// ([`Pending::logged`]; none by default).
+    log: Option<crate::snapshot::telemetry::Context>,
 }
 
 /// Start writing the snapshot of `key` with `sections` (in file order) on a
@@ -167,9 +171,11 @@ pub fn write_with(
         .ok();
     Pending {
         cache: cache.to_path_buf(),
+        key,
         path,
         temporary,
         writer,
+        log: None,
     }
 }
 
@@ -207,6 +213,13 @@ fn write_file(
 }
 
 impl Pending {
+    /// Log the evictions of the garbage collection after the commit to
+    /// `log`'s event log (crate::snapshot::telemetry, L2-W5h).
+    pub fn logged(mut self, log: crate::snapshot::telemetry::Context) -> Self {
+        self.log = Some(log);
+        self
+    }
+
     /// The command succeeded: wait for the writer, rename the file into
     /// place and collect garbage. Returns the snapshot's size and the
     /// writer's note.
@@ -216,7 +229,22 @@ impl Pending {
             let _ = fs::remove_file(&self.temporary);
             format!("cannot rename {}: {error}", self.temporary.display())
         })?;
-        collect_garbage(&self.cache);
+        let evicted = collect_garbage(&self.cache);
+        if let Some(log) = &self.log {
+            for eviction in &evicted {
+                log.log_evicted(
+                    &eviction.key,
+                    eviction.reason,
+                    &eviction.path,
+                    &format!(
+                        "by:{},kept:{},bytes:{}",
+                        self.key.short(),
+                        eviction.kept,
+                        eviction.kept_bytes
+                    ),
+                );
+            }
+        }
         Ok(written)
     }
 
@@ -245,12 +273,27 @@ pub fn remove(cache: &Path, key: &Key) -> io::Result<()> {
     fs::remove_file(path(cache, key))
 }
 
+/// A snapshot [`collect_garbage`] removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evicted {
+    /// Its key (the file name: the short form of G).
+    pub key: String,
+    pub path: PathBuf,
+    /// `count` (beyond [`KEEP`]) or `bytes` (beyond [`BUDGET`]).
+    pub reason: &'static str,
+    /// The snapshots and bytes kept.
+    pub kept: usize,
+    pub kept_bytes: u64,
+}
+
 /// Keep at most [`KEEP`] snapshots and [`BUDGET`] bytes, most recently used
-/// first; remove temporary files older than an hour.
-pub fn collect_garbage(cache: &Path) {
+/// first; remove temporary files older than an hour. Returns the snapshots
+/// it removed (the event log names them, L2-W5h: an `absent` miss of an
+/// evicted key is no snapshot that was never saved).
+pub fn collect_garbage(cache: &Path) -> Vec<Evicted> {
     let directory = directory(cache);
     let Ok(entries) = fs::read_dir(&directory) else {
-        return;
+        return Vec::new();
     };
     let now = SystemTime::now();
     let mut snapshots: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
@@ -276,14 +319,35 @@ pub fn collect_garbage(cache: &Path) {
     snapshots.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
     let mut kept = 0usize;
     let mut bytes = 0u64;
+    let mut removed = Vec::new();
     for (_, len, path) in snapshots {
         if kept < KEEP && bytes.saturating_add(len) <= BUDGET {
             kept += 1;
             bytes += len;
         } else {
-            let _ = fs::remove_file(path);
+            let reason = if kept >= KEEP { "count" } else { "bytes" };
+            // Only what this collection removed (another may race it).
+            if fs::remove_file(&path).is_ok() {
+                let key = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(SUFFIX))
+                    .unwrap_or_default()
+                    .to_owned();
+                removed.push((key, path, reason));
+            }
         }
     }
+    removed
+        .into_iter()
+        .map(|(key, path, reason)| Evicted {
+            key,
+            path,
+            reason,
+            kept,
+            kept_bytes: bytes,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -398,13 +462,57 @@ mod tests {
             file.set_modified(SystemTime::now() - Duration::from_secs(age))
                 .unwrap();
         }
-        collect_garbage(cache);
+        // (Each commit collected: seeds 1 to 3 went then.)
+        assert!(collect_garbage(cache).is_empty());
         let kept: Vec<bool> = (0..(KEEP as u8 + 3))
             .map(|seed| path(cache, &key(seed)).exists())
             .collect();
         assert_eq!(kept.iter().filter(|kept| **kept).count(), KEEP);
         assert!(kept[0], "the most recently used survives");
         assert!(!kept[1] && !kept[2] && !kept[3], "{kept:?}");
+        // L2-W5h: what a collection removed, by key (the file name) and
+        // limit: two newer files evict the two least recently used.
+        for n in 0..2 {
+            fs::write(directory(cache).join(format!("standin{n}{SUFFIX}")), b"x").unwrap();
+        }
+        let evicted = collect_garbage(cache);
+        let mut names: Vec<(String, &str, usize)> = evicted
+            .iter()
+            .map(|evicted| (evicted.key.clone(), evicted.reason, evicted.kept))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [4, 5]
+                .map(|seed| (key(seed).short(), "count", KEEP))
+                .to_vec()
+        );
+        assert!(evicted.iter().all(|evicted| !evicted.path.exists()));
+        // A commit with an event log names what its collection evicted and
+        // the key that collected it.
+        let log = crate::snapshot::telemetry::Context {
+            cache: cache.to_path_buf(),
+            mode: crate::snapshot::telemetry::MODE_ON,
+            command: "build".to_owned(),
+            targets: vec!["//:x".to_owned()],
+        };
+        write_in_background(cache, &key(40), sections(b"p"))
+            .logged(log)
+            .commit()
+            .unwrap();
+        let events = fs::read_to_string(crate::snapshot::telemetry::log_path(
+            cache,
+            crate::snapshot::telemetry::EVENTS_LOG,
+        ))
+        .unwrap();
+        assert_eq!(events.lines().count(), 1, "{events}");
+        assert!(
+            events.contains(&format!(
+                " kind=evicted mode=on key={} command=build reason=count path=",
+                key(6).short()
+            )) && events.contains(&format!(" detail=by:{},kept:16,", key(40).short())),
+            "{events}"
+        );
         // A stale temporary file goes, a fresh one stays.
         let stale = directory(cache).join(".tmp-stale");
         let fresh = directory(cache).join(".tmp-fresh");

@@ -27,7 +27,9 @@
 //!   per-tree policy's directories, the store-path self-heal, a failed
 //!   check cancelling the rest of the attempt.
 //! * L2-W5g: the soak's logs ([`telemetry`]: `verify.log` names the first
-//!   taint and differing path; `miss.log` every miss and unsaved run).
+//!   taint and differing path); L2-W5h: `events.log` — every hit, miss,
+//!   save, unsaved run, verification, heal and eviction, with its mode and
+//!   wall time (scripts/snapshot_soak_report.py summarizes both).
 //!
 //! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
 //! verify mode.
@@ -248,9 +250,14 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
     };
     let key = key::compute(&inputs.key, binary);
     let key_time = started.elapsed();
-    // The miss log's context (crate::snapshot::telemetry).
+    // The event log's context (crate::snapshot::telemetry).
     let log = telemetry::Context {
         cache: inputs.cache.to_path_buf(),
+        mode: if inputs.verify {
+            telemetry::MODE_VERIFY
+        } else {
+            telemetry::MODE_ON
+        },
         command: inputs.key.command.to_owned(),
         targets: inputs.key.targets.to_vec(),
     };
@@ -264,13 +271,27 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         log: log.clone(),
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
+    let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+    let wall = ms(started.elapsed());
     match outcome {
         Ok(hit) => {
+            log.log_hit(
+                &key.short(),
+                wall,
+                &format!(
+                    "key:{:.1},inputs:{:.1},validate:{:.1},replay:{:.1},decode:{:.1},status:{:.1}",
+                    ms(key_time),
+                    ms(hit.timings.inputs),
+                    ms(hit.timings.validation),
+                    ms(hit.timings.replay),
+                    ms(hit.timings.decode),
+                    ms(hit.timings.status),
+                ),
+            );
             if explain {
                 observed_fs_diag(&hit.summary);
             }
             if timing {
-                let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
                 diag::line_fmt(format_args!(
                     "PERF-SNAPSHOT hit key_ms={:.3} inputs_ms={:.3} validate_ms={:.3} replay_ms={:.3} decode_ms={:.3} status_ms={:.3} attempt_ms={:.3}",
                     ms(key_time),
@@ -285,15 +306,14 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             Checked::Hit(hit)
         }
         Err(reason) => {
-            log.log_miss(&key.short(), &reason);
+            log.log_miss(&key.short(), &reason, wall);
             if explain {
                 observed_fs_diag(&format!("miss {}: {reason}", key.short()));
             }
             if timing {
                 diag::line_fmt(format_args!(
-                    "PERF-SNAPSHOT miss key_ms={:.3} attempt_ms={:.3}",
-                    key_time.as_secs_f64() * 1000.0,
-                    started.elapsed().as_secs_f64() * 1000.0
+                    "PERF-SNAPSHOT miss key_ms={:.3} attempt_ms={wall:.3}",
+                    ms(key_time),
                 ));
             }
             Checked::Miss(Some(Box::new(save::start(key, explain, log))))

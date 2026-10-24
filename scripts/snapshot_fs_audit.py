@@ -72,8 +72,9 @@ safe by construction, or be covered like any other path:
     no content is read;
   * snapshot-store: `snapshots/` — the hit's own file (header, sections and
     checksums verified), `exe.id` (the binary identity, keyed by the
-    binary's stat), the store directory and the background refresh's
-    temporary file;
+    binary's stat), the store directory, the background refresh's
+    temporary file and the event log the hit appends to (L2-W5h: written,
+    never read);
   * digest-table: `digests/` — the execution tail's digest table, whose
     records hold a file's stat key with its digest and are used only when
     the file's current stat still matches (crate::digest_memo);

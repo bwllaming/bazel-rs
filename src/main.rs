@@ -431,7 +431,16 @@ fn run() -> Result<(), String> {
     let mut snapshot = bazel_rs::snapshot::Scope::default();
     match bazel_rs::snapshot::Mode::from_env() {
         bazel_rs::snapshot::Mode::Record => {
-            snapshot.record = bazel_rs::snapshot::record::start(&command, &repository_environment);
+            snapshot.record = bazel_rs::snapshot::record::start(
+                &command,
+                &repository_environment,
+                bazel_rs::snapshot::telemetry::Context {
+                    cache: cache.clone(),
+                    mode: bazel_rs::snapshot::telemetry::MODE_RECORD,
+                    command: command.clone(),
+                    targets: rest.clone(),
+                },
+            );
         }
         mode @ (bazel_rs::snapshot::Mode::On | bazel_rs::snapshot::Mode::Verify)
             if builds(&command) =>

@@ -1697,7 +1697,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn published_git_trees_verify_against_their_manifest() {
-        use crate::repository_store::{published_tree, verify_published_tree};
+        use crate::repository_store::{
+            check_published_tree, published_tree, verify_as_reused, verify_published_tree,
+        };
         use std::os::unix::fs::{PermissionsExt, symlink};
         let mut fixture = Fixture::new("");
         fs::create_dir(fixture.origin.join("sub")).unwrap();
@@ -1714,42 +1716,86 @@ mod tests {
             fs::canonicalize(fixture.manifest(&tree)).unwrap()
         );
         verify_published_tree(&published).unwrap();
-        // Modes are no content: still the manifest's tree.
+        // Modes are no content: still the manifest's tree. The warm check a
+        // failed snapshot hit runs (L2-W5h) names the mode; a warm
+        // materialization repairs it.
         fs::set_permissions(tree.root.join("run"), fs::Permissions::from_mode(0o644)).unwrap();
         verify_published_tree(&published).unwrap();
-        // What each tamper does to the tree.
-        type Tamper = (&'static str, fn(&Path));
+        let mismatch = verify_as_reused(&published).unwrap_err();
+        assert_eq!(
+            (mismatch.class, mismatch.path),
+            ("mode", tree.root.join("run"))
+        );
+        assert_eq!(fixture.tree(), tree);
+        verify_as_reused(&published).unwrap();
+        // What each tamper does to the tree, and the first differing entry
+        // each check names (L2-W5h).
+        type Tamper = (&'static str, fn(&Path), &'static str, &'static str);
         let tampers: [Tamper; 6] = [
-            ("edited file", |root| {
-                fs::write(root.join("data"), b"tampered").unwrap()
-            }),
-            ("retargeted link", |root| {
-                fs::remove_file(root.join("link")).unwrap();
-                symlink("run", root.join("link")).unwrap();
-            }),
-            ("link replaced by its referent", |root| {
-                fs::remove_file(root.join("link")).unwrap();
-                fs::write(root.join("link"), b"original\n").unwrap();
-            }),
-            ("extra file", |root| {
-                fs::write(root.join("sub/extra"), b"").unwrap()
-            }),
-            ("missing file", |root| {
-                fs::remove_file(root.join("sub/inner")).unwrap()
-            }),
-            ("directory replaced by a file", |root| {
-                fs::remove_file(root.join("sub/inner")).unwrap();
-                fs::remove_dir(root.join("sub")).unwrap();
-                fs::write(root.join("sub"), b"").unwrap();
-            }),
+            (
+                "edited file",
+                |root| fs::write(root.join("data"), b"tampered").unwrap(),
+                "content",
+                "data",
+            ),
+            (
+                "retargeted link",
+                |root| {
+                    fs::remove_file(root.join("link")).unwrap();
+                    symlink("run", root.join("link")).unwrap();
+                },
+                "link",
+                "link",
+            ),
+            (
+                "link replaced by its referent",
+                |root| {
+                    fs::remove_file(root.join("link")).unwrap();
+                    fs::write(root.join("link"), b"original\n").unwrap();
+                },
+                "kind",
+                "link",
+            ),
+            (
+                "extra file",
+                |root| fs::write(root.join("sub/extra"), b"").unwrap(),
+                "extra",
+                "sub/extra",
+            ),
+            (
+                "missing file",
+                |root| fs::remove_file(root.join("sub/inner")).unwrap(),
+                "missing",
+                "sub/inner",
+            ),
+            (
+                "directory replaced by a file",
+                |root| {
+                    fs::remove_file(root.join("sub/inner")).unwrap();
+                    fs::remove_dir(root.join("sub")).unwrap();
+                    fs::write(root.join("sub"), b"").unwrap();
+                },
+                "kind",
+                "sub",
+            ),
         ];
-        for (name, tamper) in tampers {
+        for (name, tamper, class, entry) in tampers {
             tamper(&tree.root);
             let error = verify_published_tree(&published).unwrap_err();
             assert!(
                 error.contains("does not match its manifest"),
                 "{name}: {error}"
             );
+            for mismatch in [
+                check_published_tree(&published).unwrap_err(),
+                verify_as_reused(&published).unwrap_err(),
+            ] {
+                assert_eq!(
+                    (mismatch.class, mismatch.path.clone()),
+                    (class, tree.root.join(entry)),
+                    "{name}: {mismatch}"
+                );
+            }
             // A warm materialization repairs the tree from the origin.
             assert_eq!(fixture.tree(), tree);
             verify_published_tree(&published).unwrap();
