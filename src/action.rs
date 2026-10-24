@@ -1959,11 +1959,18 @@ fn check_runfiles_entries(
     action: &Action,
     entries: &[(String, Option<PathBuf>)],
 ) -> Result<(), String> {
+    // One lookup per entry (a runfiles tree of 30,000 entries is checked in
+    // linear time, not against every input).
+    let inputs: HashSet<&Path> = action
+        .inputs
+        .iter()
+        .map(|(_, name)| name.as_path())
+        .collect();
     for (path, destination) in entries {
         validate_relative(Path::new(path))
             .map_err(|e| format!("invalid runfiles path '{path}': {e}"))?;
         if let Some(destination) = destination
-            && !action.inputs.iter().any(|(_, name)| name == destination)
+            && !inputs.contains(destination.as_path())
         {
             return Err(format!(
                 "runfiles entry '{path}' links to '{}', which is not an action input",

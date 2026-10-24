@@ -463,10 +463,21 @@ impl Runfiles {
             .iter()
             .map(|path| (path.clone(), Some(manifest[path].clone())))
             .collect();
-        for extra in self.empty_files.extra_paths(&kept) {
-            match entries.iter_mut().find(|(path, _)| *path == extra) {
-                Some(entry) => entry.1 = None,
-                None => entries.push((extra, None)),
+        // The kept paths are distinct and so are the extra paths (a set), so
+        // an extra path matches at most one kept entry: found by lookup, not
+        // by a scan per extra path (tens of thousands of entries).
+        let extras = self.empty_files.extra_paths(&kept);
+        if !extras.is_empty() {
+            let positions: std::collections::HashMap<&str, usize> = kept
+                .iter()
+                .enumerate()
+                .map(|(index, path)| (path.as_str(), index))
+                .collect();
+            for extra in extras {
+                match positions.get(extra.as_str()) {
+                    Some(&index) => entries[index].1 = None,
+                    None => entries.push((extra, None)),
+                }
             }
         }
         let mut result = RunfilesMapping::new();
