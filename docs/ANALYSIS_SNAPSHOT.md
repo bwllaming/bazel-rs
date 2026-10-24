@@ -137,9 +137,20 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
 6. After a hit: keys a content check found settled are written back — the
    snapshot is rewritten in the background with the refreshed INPUTS, and
    renamed over the file the hit read only while its path still names
-   that file (L2-W5h: a snapshot healed, removed by a verify mismatch,
-   evicted or saved anew meanwhile is never brought back) — and the file's
-   modification time is set (LRU). When the command fails — in
+   that file (L2-W5h: its device and inode, checked right before the
+   rename; L2-W5i: the hit keeps that file open until after the rename, so
+   a newer file cannot reuse its inode number and pass the check) — and the
+   file's modification time is set (LRU). A snapshot healed, set aside by a
+   verify mismatch, evicted or saved anew before the check stays so. The
+   check and the rename are two steps, though, not one atomic step: a
+   removal or a save in the instant between them is overwritten by the
+   refresh. The precise guarantee: at worst one lost newer snapshot (that
+   command's next run misses and saves again) or one snapshot a heal or a
+   verify mismatch had just removed coming back once (its next hit fails
+   and heals again, or under verify mismatches again) — never a false hit:
+   the refreshed file holds the recorded inputs of the file the hit read
+   (with the stat keys a content check settled) and is validated on every
+   lookup like any other, so it can only hit where that file could have. When the command fails — in
    the build part, in the tests (`test` before it exits 3) or after the
    build part (`test`'s test runner staging a runfile, `run`'s
    preparation) — the hit may have trusted a damaged tree (per tree, a
@@ -413,10 +424,16 @@ eviction, heal or verify mismatch, and an `absent` miss while none is saved
 are counted apart), the keys never saved (L2-W5i: no save, hit or snapshot
 read; with their not-saved reasons — expected when every run was tainted,
 `network` say, or failed; `capture`, `too-large`, `incomplete`, `other` or
-no not-saved event at all are worth reporting), verified hits by command,
-always-miss patterns, heals by reason, every verify.log line verbatim with
-its verify-details.log block, the hit latency's p50 and p95 per mode and
-command, and the store's size (and what `mismatched/` holds).
+no not-saved event at all are worth reporting), verified hits by command
+and verify-mode hits by outcome (L2-W5i: `verified`, hit then mismatch by
+class — no clean hit: counted apart from a key's hits and out of the hit
+rates — or not concluded), always-miss patterns, heals by reason, every
+verify.log line verbatim with its verify-details.log block, the hit
+latency's p50 and p95 per mode and command, the local-tree check of the
+hits with local repositories (L2-W5i, from the hit's `local:` and
+`replay:` times: p50, p95, max, and on how many hits the check took longer
+than the replay it runs beside — then it is on the attempt's critical
+path), and the store's size (and what `mismatched/` holds).
 
 An **always-miss pattern** is at least three consecutive misses of one key
 with the same reason and path and no hit between them. L2-W5i (the W5h

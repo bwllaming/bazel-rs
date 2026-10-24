@@ -26,11 +26,12 @@ ROTATED = "".join([
     line(3, "saved", "k1", ms="900.0", detail="bytes:4096,actions:3,replays:0"),
 ])
 CURRENT = "".join([
-    line(4, "hit", "k1", ms="120.0"),
-    line(5, "hit", "k1", ms="100.0"),
+    # L2-W5i: the local-tree check beside the replay (`local:` of the detail).
+    line(4, "hit", "k1", ms="120.0", detail="key:0.1,inputs:1.0,validate:3.0,replay:100.0,local:5.0,decode:20.0"),
+    line(5, "hit", "k1", ms="100.0", detail="key:0.1,inputs:1.0,validate:3.0,replay:40.0,local:60.0,decode:20.0"),
     line(6, "miss", "k1", reason="read", path="/ws/BUILD.bazel", ms="35.0"),
     line(7, "saved", "k1", ms="800.0"),
-    line(8, "hit", "k1", ms="140.0"),
+    line(8, "hit", "k1", ms="140.0", detail="key:0.1,replay:0.0,local:0.0"),
     # Evicted by another key's save: the next `absent` is explained.
     line(9, "evicted", "k1", command="-", reason="count", path="/c/snapshots/v1/k1.snap",
          detail="by:k2,kept:16,bytes:1", targets=""),
@@ -142,6 +143,24 @@ class SoakReportTests(unittest.TestCase):
                           "INTEGRITY x"))
         self.assertEqual(runs[0]["targets"], ["//t:t"])
 
+    def test_a_hit_then_a_mismatch_is_no_clean_hit(self):
+        k3 = self.key("k3")
+        self.assertEqual((k3["lookups"], k3["hits"], k3["mismatched_hits"], k3["hit_rate"]), (2, 1, {"taint": 1}, 1.0))
+        self.assertEqual(self.report["verify_outcomes"],
+                         {"hits": 2, "verified": 1, "hit_then_mismatch": {"taint": 1}, "not_concluded": 0})
+        # A cannot-verify after a hit is counted apart too (the snapshot
+        # stays: a later `absent` would be unexplained); a hit whose verify
+        # outcome never came is not concluded.
+        events = events_of(("saved",), ("hit",), ("mismatch", "cannot-verify"), ("hit",), mode="verify")
+        result = report.analyze(events, [])
+        self.assertEqual(result["keys"][0]["mismatched_hits"], {"cannot-verify": 1})
+        self.assertEqual(result["verify_outcomes"]["not_concluded"], 1)
+
+    def test_the_local_tree_check_against_the_replay(self):
+        self.assertEqual(self.report["local_tree"], {"hits": 2, "p50": 5.0, "p95": 60.0, "max": 60.0,
+                                                     "local_above_replay": 1, "share_above": 0.5})
+        self.assertEqual(report.detail_fields("key:0.1,local:4.5,bad,x:y"), {"key": 0.1, "local": 4.5})
+
     def test_heals_verified_hits_mismatches_latency_and_store(self):
         self.assertEqual(self.report["heals"], {"tree:mode": 1})
         self.assertEqual(self.report["heal_lines"][0]["path"], "/c/repositories/direct/trees/cd/tool.sh")
@@ -183,7 +202,11 @@ class SoakReportTests(unittest.TestCase):
                          VERIFY.rstrip("\n"), "p50 140.0, p95 310.0", "store: 2 snapshot(s), 1024 bytes",
                          "SUSPECT 1, likely your edits 0",
                          f"3 x integrity {self.cache}/repositories/trees/ab/sub [cache], 2 save(s) between",
-                         "hit rate on unchanged re-runs, all keys: 85.7% (6/7)",
+                         "hit rate on unchanged re-runs, all keys: 83.3% (5/6)",
+                         "k3 run //r:r: lookups 2, hits 1 (and taint 1 hit then mismatch), changed 0",
+                         "verify-mode hits: 2 - verified 1, hit then mismatch 1 (taint 1), not concluded 0",
+                         "local-tree check (beside the replay; hits with local repositories): 2, local p50 5.0 / "
+                         "p95 60.0 / max 60.0 ms; local > replay on 1 (50.0%)",
                          "keys never saved (no save, hit or snapshot read in the log): 0",
                          "    snapshot: set aside as /c/snapshots/mismatched/2026-10-24T000033.0Z-k3-1.snap",
                          "      @@ indented detail line @@", "(verify.log line rotated away)",
@@ -197,9 +220,9 @@ class SoakReportTests(unittest.TestCase):
             self.assertEqual(report.main([empty]), 2)
 
 
-def events_of(*specs, key="k", command="build", targets="//a:b"):
-    """Parsed events of one key from `(kind, reason, path)` specs, a second apart."""
-    return [report.parse_line(line(seconds, kind, key, command=command, reason=reason, path=path,
+def events_of(*specs, key="k", command="build", targets="//a:b", mode="on"):
+    """Parsed events of one key from `(kind, reason, path, detail)` specs, a second apart."""
+    return [report.parse_line(line(seconds, kind, key, mode=mode, command=command, reason=reason, path=path,
                                    detail=detail, targets=targets))
             for seconds, (kind, reason, path, detail) in enumerate(
                 (spec + ("-",) * (4 - len(spec))) for spec in specs)]

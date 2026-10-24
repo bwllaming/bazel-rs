@@ -26,7 +26,9 @@ set aside), and prints:
   * the hit rate on unchanged re-runs over all keys;
   * keys never saved (no save, hit or snapshot read), with their not-saved
     reasons — expected when every run was tainted (`network`, ...) or failed;
-  * verified hits by command (verify mode);
+  * verified hits by command (verify mode), and verify-mode hits by outcome:
+    verified, hit then mismatch (by class; no clean hit: counted apart from
+    the hits and out of the hit rates, L2-W5i), not concluded;
   * always-miss patterns: at least three consecutive misses of one key with
     the same reason and path and no hit between them — a save ends the run
     when the misses name an input you may have changed (a workspace or host
@@ -39,6 +41,9 @@ set aside), and prints:
   * every verify.log mismatch line, verbatim, each with its verify-details.log
     block (where the snapshot went and every difference; L2-W5i);
   * hit latency (the attempt's wall time): p50 and p95, per mode and command;
+  * the local-tree check of the hits with local repositories (`local:` of the
+    hit's detail, L2-W5i): p50, p95 and max, and on how many it took longer
+    than the replay it runs beside;
   * the store: snapshot files and bytes, those set aside in `mismatched/`, the
     logs' sizes.
 
@@ -239,8 +244,9 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
         if key == '-' or event.get('kind') == 'recorded':
             continue
         info = keys.setdefault(key, {'key': key, 'command': None, 'targets': [], 'lookups': 0, 'hits': 0,
-                                     'changed': 0, 'unexplained': 0, 'after_removal': 0, 'before_save': 0,
-                                     'saves': 0, 'not_saved': collections.Counter(), 'events': []})
+                                     'mismatched_hits': collections.Counter(), 'changed': 0, 'unexplained': 0,
+                                     'after_removal': 0, 'before_save': 0, 'saves': 0,
+                                     'not_saved': collections.Counter(), 'events': []})
         if event.get('command', '-') != '-' and info['command'] is None and event.get('kind') != 'evicted':
             info['command'] = unescape(event['command'])
             info['targets'] = event.get('targets', [])
@@ -254,6 +260,9 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
         # `gone` (a lookup found none).
         state = 'unknown'
         run = None
+        # Verify-mode hits whose outcome (`verified`, `mismatch`) is still to
+        # come: a hit then a mismatch is no clean hit (L2-W5i).
+        verifying = 0
 
         def close():
             nonlocal run
@@ -273,12 +282,26 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
                     run['saves'] += 1
             elif kind == 'not-saved':
                 info['not_saved'][reason] += 1
-            elif kind in REMOVALS or (kind == 'mismatch' and reason != 'cannot-verify'):
+            elif kind in REMOVALS:
                 state = 'removed'
+            elif kind == 'mismatch':
+                if reason != 'cannot-verify':
+                    # Set aside (or removed): the next `absent` is explained.
+                    state = 'removed'
+                if verifying:
+                    # The hit before it was no clean hit: counted apart, out
+                    # of the hit rate (the mismatch is gated on its own).
+                    verifying -= 1
+                    info['hits'] -= 1
+                    info['mismatched_hits'][reason] += 1
+            elif kind == 'verified':
+                verifying = max(0, verifying - 1)
             elif kind == 'hit':
                 state = 'present'
                 info['lookups'] += 1
                 info['hits'] += 1
+                if event.get('mode') == 'verify':
+                    verifying += 1
                 close()
             elif kind == 'miss':
                 if reason != 'absent':
@@ -344,6 +367,11 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
     ]
     hits = sum(info['hits'] for info in listed)
     unchanged = sum(info['unchanged'] for info in listed)
+    mismatched_hits = collections.Counter()
+    for info in listed:
+        mismatched_hits.update(info['mismatched_hits'])
+    verify_hits = sum(1 for e in events if e.get('kind') == 'hit' and e.get('mode') == 'verify')
+    verified = sum(1 for e in events if e.get('kind') == 'verified')
     report = {
         'events': len(events),
         'evicted_only_keys': len(evicted_only),
@@ -353,9 +381,13 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
         'not_saved': dict(not_saved.most_common()),
         'keys': [
             {name: value for name, value in info.items() if name != 'events'}
-            | {'not_saved': dict(info['not_saved'])}
+            | {'not_saved': dict(info['not_saved']), 'mismatched_hits': dict(info['mismatched_hits'])}
             for info in listed
         ],
+        'verify_outcomes': {'hits': verify_hits, 'verified': verified,
+                            'hit_then_mismatch': dict(mismatched_hits.most_common()),
+                            'not_concluded': max(0, verify_hits - verified - sum(mismatched_hits.values()))},
+        'local_tree': local_tree(events),
         'hit_rate_unchanged': {'hits': hits, 'unchanged': unchanged,
                                'rate': (hits / unchanged) if unchanged else None},
         'never_saved': never_saved,
@@ -378,6 +410,38 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
         'store': store,
     }
     return report
+
+
+def detail_fields(detail):
+    """A hit's `detail=` (`key:0.1,inputs:1.0,...,local:4.0,...`) as numbers."""
+    fields = {}
+    for part in unescape(detail or '-').split(','):
+        name, sep, value = part.partition(':')
+        if sep:
+            try:
+                fields[name] = float(value)
+            except ValueError:
+                pass
+    return fields
+
+
+def local_tree(events):
+    """The local-tree check of every hit that has local repositories (L2-W5h
+    logs `local:` beside `replay:`; L2-W5i): how long it took and on how many
+    hits it took longer than the replay it runs beside (then it is on the
+    attempt's critical path)."""
+    pairs = []
+    for event in events:
+        if event.get('kind') != 'hit':
+            continue
+        fields = detail_fields(event.get('detail'))
+        if 'local' in fields and 'replay' in fields and (fields['local'] > 0 or fields['replay'] > 0):
+            pairs.append((fields['local'], fields['replay']))
+    values = [local for local, _ in pairs]
+    above = sum(1 for local, replay in pairs if local > replay)
+    return {'hits': len(pairs), 'p50': percentile(values, 0.5), 'p95': percentile(values, 0.95),
+            'max': max(values) if values else None, 'local_above_replay': above,
+            'share_above': (above / len(pairs)) if pairs else None}
 
 
 def pair_details(verify_lines, details):
@@ -427,9 +491,12 @@ def render(report, cache):
                  'absent while none was saved):')
     for info in sorted(report['keys'], key=lambda info: -info['lookups']):
         targets = ' '.join(info['targets'])
+        mismatched = info.get('mismatched_hits') or {}
         lines.append(
-            f"  {info['key']} {info['command'] or '-'} {targets}: lookups {info['lookups']}, hits {info['hits']}, "
-            f"changed {info['changed']}, unexplained {info['unexplained']}, after removal {info['after_removal']}, "
+            f"  {info['key']} {info['command'] or '-'} {targets}: lookups {info['lookups']}, hits {info['hits']}"
+            + ((' (and ' + ', '.join(f'{k} {v}' for k, v in mismatched.items()) + ' hit then mismatch)')
+               if mismatched else '')
+            + f", changed {info['changed']}, unexplained {info['unexplained']}, after removal {info['after_removal']}, "
             f"before a save {info['before_save']}, saves {info['saves']}; hit rate on unchanged re-runs "
             + (f"{100 * info['hit_rate']:.1f}% ({info['hits']}/{info['unchanged']})"
                if info['hit_rate'] is not None else '-')
@@ -451,6 +518,13 @@ def render(report, cache):
     verified = report['verified_by_command']
     lines.append('verified hits by command: ' + (', '.join(f'{k} {v}' for k, v in sorted(verified.items()))
                                                  if verified else 'none'))
+    outcomes = report['verify_outcomes']
+    mismatched = outcomes['hit_then_mismatch']
+    lines.append(f"verify-mode hits: {outcomes['hits']} - verified {outcomes['verified']}, hit then mismatch "
+                 f"{sum(mismatched.values())}"
+                 + (' (' + ', '.join(f'{k} {v}' for k, v in mismatched.items()) + ')' if mismatched else '')
+                 + f", not concluded {outcomes['not_concluded']} (the command ended first); a hit then mismatch "
+                   f"is no clean hit: counted apart, out of the hit rates")
     lines.append('')
     runs = report['always_miss']
     suspect = [run for run in runs if run['class'] == 'suspect']
@@ -494,6 +568,11 @@ def render(report, cache):
         lines.append(f"  {name:24} hits {stats['hits']}, p50 {number(stats['p50'])}, p95 {number(stats['p95'])}")
     if not report['hit_latency_ms']:
         lines.append('  no hits')
+    local = report['local_tree']
+    lines.append(f"local-tree check (beside the replay; hits with local repositories): {local['hits']}"
+                 + (f", local p50 {number(local['p50'])} / p95 {number(local['p95'])} / max {number(local['max'])} ms; "
+                    f"local > replay on {local['local_above_replay']} ({100 * local['share_above']:.1f}%)"
+                    if local['hits'] else ''))
     store = report['store']
     if store is not None:
         lines.append('')

@@ -265,17 +265,24 @@ impl Pending {
     }
 
     /// [`Pending::commit`] of a hit's refresh (crate::snapshot::hit): only
-    /// while the key's path still names `read`, the file the hit read
-    /// (L2-W5h). A snapshot removed meanwhile — healed by a failed hit,
-    /// removed by a verify mismatch, evicted — or replaced by another save
-    /// is never brought back by the refresh of the old one (checked after
-    /// the writer finished, right before the rename).
-    pub fn commit_replacing(mut self, read: FileIdentity) -> Result<(u64, String), String> {
+    /// while the key's path still names the file `read` — the hit's reader —
+    /// opened (L2-W5h: its device and inode, checked after the writer
+    /// finished, right before the rename). A snapshot removed before the
+    /// check — healed by a failed hit, set aside by a verify mismatch,
+    /// evicted — or replaced by another save is not brought back by the
+    /// refresh of the old one. The reader is borrowed until the rename
+    /// (L2-W5i): the file it holds open keeps its inode, so no newer file can
+    /// reuse the number and pass the check. The check and the rename are two
+    /// steps: a removal or a save in the instant between them is overwritten
+    /// (docs/ANALYSIS_SNAPSHOT.md, "What a hit does" step 6: at worst one
+    /// lost newer snapshot or one more failing hit and heal; the refreshed
+    /// file is validated like any other, never a false hit).
+    pub fn commit_replacing(mut self, read: &Reader) -> Result<(u64, String), String> {
         let written = self.join()?;
         let current = fs::symlink_metadata(&self.path)
             .ok()
             .map(|metadata| identity_of(&metadata));
-        if current != Some(read) {
+        if current != Some(read.identity()) {
             return Err(format!(
                 "{} was removed or replaced since the hit read it: not refreshed",
                 self.path.display()
@@ -569,14 +576,16 @@ mod tests {
     }
 
     /// L2-W5h: a hit's refresh replaces only the file the hit read; a
-    /// snapshot removed (healed, evicted) or replaced (saved anew) since
-    /// stays removed or replaced, and no temporary file is left behind.
+    /// snapshot removed (healed, evicted) or replaced (saved anew) before
+    /// the check stays removed or replaced, and no temporary file is left
+    /// behind. (L2-W5i: the check borrows the hit's reader, whose open file
+    /// keeps its inode number from being reused by a newer file.)
     #[test]
     fn a_refresh_never_brings_back_a_removed_or_replaced_snapshot() {
         let cache = tempfile::tempdir().unwrap();
         let cache = cache.path();
         let refresh = |reader: &Reader, plan: &[u8]| {
-            write_in_background(cache, &key(1), sections(plan)).commit_replacing(reader.identity())
+            write_in_background(cache, &key(1), sections(plan)).commit_replacing(reader)
         };
         write_in_background(cache, &key(1), sections(b"old"))
             .commit()

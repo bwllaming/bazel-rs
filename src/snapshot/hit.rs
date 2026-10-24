@@ -573,7 +573,8 @@ pub const LOCAL_TREE_DIFFERS: &str = "its published tree differs from its manife
 /// "if any keys were refreshed, rewrite the file in the background"): the
 /// INPUTS section re-encoded, the other sections copied from the file the
 /// hit read — and renamed over it only while its path still names that
-/// file (crate::snapshot::store::Pending::commit_replacing, L2-W5h).
+/// file (crate::snapshot::store::Pending::commit_replacing, L2-W5h; the
+/// reader stays open until after the rename, L2-W5i).
 fn refresh_in_background(
     reader: Reader,
     mut inputs: format::Inputs,
@@ -604,13 +605,15 @@ fn refresh_in_background(
             g: reader.header.key,
             binary: reader.header.binary,
         };
-        let read = reader.identity();
-        drop(reader);
-        // Only over the file the hit read (L2-W5h): never brings back a
-        // snapshot healed, removed or replaced meanwhile.
+        // Only over the file the hit read (L2-W5h): a snapshot healed, set
+        // aside, evicted or replaced before the check stays so. The reader
+        // keeps that file open until after the rename (L2-W5i): its inode
+        // cannot be freed and reused by a newer file meanwhile, which would
+        // pass the identity check.
         let _ = store::write_in_background(&cache, &key, sections)
             .logged(log)
-            .commit_replacing(read);
+            .commit_replacing(&reader);
+        drop(reader);
     })
 }
 
