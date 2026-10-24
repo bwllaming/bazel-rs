@@ -336,7 +336,7 @@ too (docs/COMMON_RULE_ATTRIBUTES.md).
 
 ## test_suite analysis
 
-`build`/`test` replace a test suite among their targets by its tests
+`build`/`test`/`run` replace a test suite among their targets by its tests
 (docs/TEST_COMMAND.md, "Selecting tests"); a suite is analyzed as a
 dependency (its `testonly` dependents), with `--noexpand_test_suites`, or
 as another suite's member. TestSuite.create (rules/test/TestSuite.java:44-118):
@@ -344,7 +344,9 @@ as another suite's member. TestSuite.create (rules/test/TestSuite.java:44-118):
 `tests` is `in tests attribute of test_suite rule L: source file 'F' is
 misplaced here (expected no files)`, a member whose alias chain ends in
 neither a test rule nor a test suite `... expecting a test or a test_suite
-rule but 'M' is not one`; the configured target has no files to build, no
+rule but 'M' is not one`, M the end of the chain (`dep.getLabel()`,
+AliasConfiguredTarget.getLabel: the expansion's error names the alias
+itself); the configured target has no files to build, no
 default runfiles and no executable, and its data runfiles merge, in order,
 each member's files to build and data runfiles
 (Runfiles.Builder.addTargets with --incompatible_always_include_files_in_data)

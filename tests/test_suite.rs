@@ -83,7 +83,13 @@ const GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "strict",
-        &["with_lib", "with_alias", "with_file", "test_with_lib"],
+        &[
+            "with_lib",
+            "with_alias",
+            "with_file",
+            "test_with_lib",
+            "with_lib_alias",
+        ],
     ),
     (
         "analysis",
@@ -96,6 +102,8 @@ const GROUPS: &[(&str, &[&str])] = &[
             "filegroup",
             "noexpand",
             "noexpand_test",
+            "consumer_lib_alias",
+            "consumer_lib_alias_chain",
         ],
     ),
     ("test", &["test_explicit", "test_all"]),

@@ -76,7 +76,7 @@ and `All tests passed but there were other errors during the build.`,
 (docs/NATIVE_BUILD_RULES.md, test_suite). `WARNING: All specified test
 targets were excluded by filters`; no tests: `ERROR: No test targets were
 found, yet testing was requested`, exit 4. Paired capture
-`tests/fixtures/test_suite` (46 genuine 9.3.0 cases, all MATCH, 8 of them
+`tests/fixtures/test_suite` (49 genuine 9.3.0 cases, all MATCH, 8 of them
 `run`; replayed by `tests/test_suite.rs`).
 `shard_count` is checked like RuleConfiguredTargetBuilder.initializeTestProvider
 (`Must not be negative.`, more than 50 shards).

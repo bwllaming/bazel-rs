@@ -5068,7 +5068,9 @@ impl Engine {
     /// a prerequisite (its alias chain's end) that is neither a test rule
     /// (TestTagsProvider) nor a test_suite (TransitiveTestsProvider) is `in
     /// tests attribute of test_suite rule L: expecting a test or a test_suite
-    /// rule but 'M' is not one` (M as written, an alias's own label).
+    /// rule but 'M' is not one`, M being `dep.getLabel()`: for an alias the
+    /// end of its chain (AliasConfiguredTarget.getLabel returns its actual's
+    /// label, rules/AliasConfiguredTarget.java:171-179).
     fn test_suite_errors(
         &mut self,
         rule: &Rule,
@@ -5090,13 +5092,13 @@ impl Engine {
                         "in tests attribute of test_suite rule {shown}: {error}"
                     ));
                 }
-                None => members.push((dependency, actual)),
+                None => members.push(actual),
             }
         }
         if !errors.is_empty() {
             return Ok(errors);
         }
-        for (dependency, actual) in members {
+        for actual in members {
             let accepted = match self.target(&actual)? {
                 Target::Rule(member) => {
                     test_suite_filter_tags(&member).is_some()
@@ -5106,7 +5108,7 @@ impl Engine {
             };
             if !accepted {
                 errors.push(format!(
-                    "in tests attribute of test_suite rule {shown}: expecting a test or a test_suite rule but '{dependency}' is not one"
+                    "in tests attribute of test_suite rule {shown}: expecting a test or a test_suite rule but '{actual}' is not one"
                 ));
             }
         }
