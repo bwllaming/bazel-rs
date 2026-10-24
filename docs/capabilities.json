@@ -133,7 +133,7 @@
     "license checking",
     "BUILD-context native.existing_rule(s)",
     "analysis of toolchain, toolchain_type and other native rule classes beyond filegroup/genrule/config_setting/alias/label_flag/label_setting/constraint_setting/constraint_value/platform",
-    "full Git semantics including mutable refs and unrestricted symlinks, archive overrides, full patch semantics and patch commands, single-file gz/xz/zst/bz2, ar/deb and 7z archive formats, semantic PAX keys (sparse files, PAX size) and directory hard links",
+    "full Git semantics including mutable refs and unrestricted symlinks, archive overrides, full patch semantics and patch commands, single-file gz/xz/zst/bz2 and 7z archive formats, strip_components and rename_files for zip/tar, semantic PAX keys (sparse files, PAX size) and directory hard links",
     "offline flags",
     "complete module-extension APIs, isolation, bazel mod tidy and SDK execution",
     "default builtin/registry semantics and --override_repository",

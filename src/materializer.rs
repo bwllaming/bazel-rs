@@ -364,7 +364,9 @@ pub fn materialize_with_registry_config(
             crate::archive::Failure::PrefixNotFound(_) => {
                 format!("archive strip_prefix {prefix:?} did not match")
             }
-            crate::archive::Failure::Other(message) => message,
+            crate::archive::Failure::Io(message) | crate::archive::Failure::Other(message) => {
+                message
+            }
         })?;
     for (path, value) in &overlays {
         let relative = relative_path(path)?;

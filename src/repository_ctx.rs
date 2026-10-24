@@ -1298,13 +1298,16 @@ fn decompressor(kind: &str) -> anyhow::Result<&'static str> {
         ("tzst", "tar.zst"),
         ("tar.bz2", "tar.bz2"),
         ("tbz", "tar.bz2"),
+        // ArFunction (DecompressorValue.java:151-152, 172).
+        ("ar", "ar"),
+        ("deb", "ar"),
     ];
     if let Some((_, native)) = NATIVE.iter().find(|(name, _)| *name == kind) {
         return Ok(native);
     }
     if BAZEL_FORMATS.contains(&kind) {
         bail!(
-            "archive type {kind} is not supported by the native extractor (supported: zip, jar, war, aar, nupkg, whl, tar, tar.gz, tgz, tar.xz, txz, tar.zst, tzst, tar.bz2, tbz)"
+            "archive type {kind} is not supported by the native extractor (supported: zip, jar, war, aar, nupkg, whl, tar, tar.gz, tgz, tar.xz, txz, tar.zst, tzst, tar.bz2, tbz, ar, deb)"
         );
     }
     bail!(
@@ -1342,6 +1345,75 @@ fn decompressor_for_name(basename: &[u8], shown: &str) -> anyhow::Result<&'stati
         "Expected a file with a {} suffix (got {shown})",
         readable_formats(".", "or")
     )
+}
+
+/// The file name download_and_extract downloads to and extracts from:
+/// DownloadManager.getDownloadDestination (java:522-536) with the `type`
+/// it always passes (StarlarkBaseExternalContext.java:1137): the first
+/// URL's decoded basename (`temp` when empty; Bazel's `cacheprobe[.TYPE]`
+/// placeholder without URLs, java:230-238), `.TYPE` appended unless the name
+/// already ends with it, and every UTF-16 unit outside `[A-Za-z0-9._-]`
+/// replaced by `_` (FS_UNSAFE_CHARS). The decompressor is then chosen by
+/// this name alone (java:1186-1190).
+fn download_basename(url: Option<&reqwest::Url>, kind: &str) -> String {
+    let base = match url {
+        Some(url) => url_basename(url),
+        None if kind.is_empty() => "cacheprobe".to_owned(),
+        None => format!("cacheprobe.{kind}"),
+    };
+    let mut base = if base.is_empty() {
+        "temp".to_owned()
+    } else {
+        base
+    };
+    if !kind.is_empty() && !base.ends_with(&format!(".{kind}")) {
+        base.push('.');
+        base.push_str(kind);
+    }
+    base.chars()
+        .flat_map(|c| {
+            let safe = c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+            let (c, count) = if safe { (c, 1) } else { ('_', c.len_utf16()) };
+            std::iter::repeat_n(c, count)
+        })
+        .collect()
+}
+
+/// `PathFragment.create(uri.getPath()).getBaseName()` (DownloadManager
+/// getUrlBaseName, java:553-568): the percent-decoded path's last segment.
+fn url_basename(url: &reqwest::Url) -> String {
+    let raw = url.path().as_bytes();
+    let mut decoded = Vec::with_capacity(raw.len());
+    let mut index = 0;
+    while index < raw.len() {
+        let hex = |byte: u8| char::from(byte).to_digit(16);
+        if raw[index] == b'%'
+            && let (Some(high), Some(low)) = (
+                raw.get(index + 1).copied().and_then(hex),
+                raw.get(index + 2).copied().and_then(hex),
+            )
+        {
+            decoded.push(u8::try_from(high * 16 + low).expect("two hex digits"));
+            index += 3;
+            continue;
+        }
+        decoded.push(raw[index]);
+        index += 1;
+    }
+    let text = String::from_utf8_lossy(&decoded);
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in text.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            other => segments.push(other),
+        }
+    }
+    segments
+        .last()
+        .map_or_else(String::new, |last| (*last).to_owned())
 }
 
 impl Context {
@@ -2183,6 +2255,8 @@ impl Context {
 
     /// Stream-extract the archive file into `output` (stage-relative),
     /// merging like Bazel's decompressors writing into an existing directory.
+    /// `output_created`: download_and_extract created the output first
+    /// (StarlarkBaseExternalContext.java:1120).
     fn extract_archive(
         &self,
         archive_file: &Path,
@@ -2190,7 +2264,18 @@ impl Context {
         strip_prefix: &str,
         output: &str,
         archive: &[u8],
+        rename_files: &[(Vec<u8>, Vec<u8>)],
+        output_created: bool,
     ) -> anyhow::Result<()> {
+        if kind == "ar" {
+            return self.extract_ar_archive(
+                archive_file,
+                output,
+                archive,
+                rename_files,
+                output_created,
+            );
+        }
         let normalized = normalized_prefix(strip_prefix);
         self.mark_created()?;
         let destination = if output.is_empty() {
@@ -2229,6 +2314,9 @@ impl Context {
                 // seen before the prefix was found, collected in the same pass.
                 return Err(prefix_not_found(archive, strip_prefix, &available));
             }
+            Err(crate::archive::Failure::Io(error)) => {
+                return Err(extraction_io_error(archive, &error));
+            }
             Err(crate::archive::Failure::Other(error)) => {
                 if crate::archive::is_bazel_extraction_io_error(&error) {
                     return Err(extraction_io_error(archive, &error));
@@ -2237,6 +2325,78 @@ impl Context {
             }
         }
         merge(temporary.path(), &destination)?;
+        temporary.close()?;
+        Ok(())
+    }
+
+    /// ArFunction (docs/AR_ARCHIVES.md): members are extracted into a
+    /// private staging directory with Bazel's view of the output (its
+    /// errors name the output itself) and merged into the output, which,
+    /// like Bazel's, `extract` creates only when a member is written.
+    fn extract_ar_archive(
+        &self,
+        archive_file: &Path,
+        output: &str,
+        archive: &[u8],
+        rename_files: &[(Vec<u8>, Vec<u8>)],
+        output_created: bool,
+    ) -> anyhow::Result<()> {
+        use crate::archive::ArDestination;
+        self.ensure_stage()?;
+        let destination = if output.is_empty() {
+            self.stage.clone()
+        } else {
+            self.stage.join(output)
+        };
+        let state = if output_created {
+            ArDestination::Directory
+        } else if output.is_empty() {
+            if self.state.borrow().created {
+                ArDestination::Directory
+            } else {
+                ArDestination::Missing
+            }
+        } else {
+            match fs::symlink_metadata(&destination) {
+                Ok(metadata) if metadata.is_dir() => ArDestination::Directory,
+                Ok(_) => ArDestination::File,
+                Err(_) => ArDestination::Missing,
+            }
+        };
+        let temporary = tempfile::Builder::new()
+            .prefix(".extract-")
+            .tempdir_in(&self.stage)?;
+        let options = crate::archive::ArOptions {
+            shown: &destination,
+            state,
+            rename_files,
+        };
+        match crate::archive::extract_ar_file(archive_file, temporary.path(), &options) {
+            Ok(()) => {}
+            Err(crate::archive::Failure::Io(error)) => {
+                return Err(extraction_io_error(archive, &error));
+            }
+            Err(error) => return Err(anyhow::Error::msg(error.to_string())),
+        }
+        let extracted = fs::read_dir(temporary.path())?.next().is_some();
+        if extracted || output_created {
+            self.mark_created()?;
+            if !output.is_empty() {
+                let path = parents(&self.stage, output, true)?;
+                match fs::symlink_metadata(&path) {
+                    Ok(metadata) => ensure!(
+                        metadata.file_type().is_dir(),
+                        "extraction output {} must be a real directory",
+                        path.display()
+                    ),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        fs::create_dir(&path)?
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            merge(temporary.path(), &destination)?;
+        }
         temporary.close()?;
         Ok(())
     }
@@ -2412,7 +2572,6 @@ fn validate_stripping(
     method: &str,
     strip_prefix: &str,
     strip_components: i32,
-    rename_files: Option<Value<'_>>,
 ) -> anyhow::Result<()> {
     // StarlarkBaseExternalContext.java:1450-1464.
     ensure!(
@@ -2423,13 +2582,30 @@ fn validate_stripping(
         strip_prefix.is_empty() || strip_components == 0,
         "{method}() got multiple strip values. Only one of 'strip_prefix' or 'strip_components' can be set"
     );
+    Ok(())
+}
+
+/// What the native extractor does not implement once the decompressor is
+/// known: `strip_components` and `rename_files` for zip and tar. ArFunction
+/// ignores `strip_components` and applies `rename_files` (ArFunction.java:
+/// 45-53).
+fn native_extraction_limits(
+    method: &str,
+    kind: &str,
+    strip_components: i32,
+    rename_files: &[(Vec<u8>, Vec<u8>)],
+) -> anyhow::Result<()> {
+    if kind == "ar" {
+        return Ok(());
+    }
     ensure!(
         strip_components == 0,
         "{method}() strip_components is not supported by the native extractor"
     );
-    if !string_dict(rename_files, "rename_files")?.is_empty() {
-        bail!("{method}() rename_files is not supported by the native extractor");
-    }
+    ensure!(
+        rename_files.is_empty(),
+        "{method}() rename_files is not supported by the native extractor"
+    );
     Ok(())
 }
 
@@ -3157,7 +3333,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         let _ = this;
         let context = context(eval)?;
         let strip_prefix = renamed_strip_prefix("extract", strip_prefix, stripPrefix)?;
-        validate_stripping("extract", strip_prefix, strip_components, rename_files)?;
+        validate_stripping("extract", strip_prefix, strip_components)?;
         let archive_path = context.path_of(archive, "extract", "archive")?;
         let host = path_buf(&archive_path);
         let metadata = fs::metadata(&host)
@@ -3173,13 +3349,24 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             None => context.stage_bytes().to_vec(),
         };
         let relative = context.output(&output)?;
+        // Dict.cast (java:1372-1373) before the decompressor is chosen.
+        let rename_files = string_dict(rename_files, "rename_files")?;
         let kind = if r#type.trim().is_empty() {
             let basename = archive_path.rsplit(|b| *b == b'/').next().unwrap_or(b"");
             decompressor_for_name(basename, &display(&archive_path))?
         } else {
             decompressor(r#type)?
         };
-        context.extract_archive(&host, kind, strip_prefix, &relative, &archive_path)?;
+        native_extraction_limits("extract", kind, strip_components, &rename_files)?;
+        context.extract_archive(
+            &host,
+            kind,
+            strip_prefix,
+            &relative,
+            &archive_path,
+            &rename_files,
+            false,
+        )?;
         Ok(NoneType)
     }
 
@@ -3209,12 +3396,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         let _ = this;
         let context = context(eval)?;
         let strip_prefix = renamed_strip_prefix("download_and_extract", strip_prefix, stripPrefix)?;
-        validate_stripping(
-            "download_and_extract",
-            strip_prefix,
-            strip_components,
-            rename_files,
-        )?;
+        validate_stripping("download_and_extract", strip_prefix, strip_components)?;
         let request = DownloadRequest::new(
             "download_and_extract",
             url,
@@ -3224,24 +3406,21 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             auth,
             headers,
         )?;
+        // Dict.cast (java:1103-1104), after the URL and checksum checks.
+        let rename_files = string_dict(rename_files, "rename_files")?;
         let output = match output {
             Some(output) => context.path_of(output, "download_and_extract", "output")?,
             None => context.stage_bytes().to_vec(),
         };
         let relative = context.output(&output)?;
         context.facility("download");
-        // The download lands in `<output>/temp<N>/<url basename>`
-        // (java:1126, DownloadManager); errors and suffix checks name it.
+        // The download lands in `<output>/temp<N>/<name>` (java:1126,
+        // DownloadManager.getDownloadDestination); errors, the suffix check
+        // and the decompressor use that name.
         let temp = temp_name();
-        let downloaded = |url: &reqwest::Url| {
-            let name = url
-                .path_segments()
-                .and_then(|mut segments| segments.next_back())
-                .unwrap_or("");
-            let mut path = output.clone();
-            path.extend_from_slice(format!("/{temp}/{name}").as_bytes());
-            (name.to_owned(), path)
-        };
+        let name = download_basename(request.urls.first(), r#type);
+        let mut archive = output.clone();
+        archive.extend_from_slice(format!("/{temp}/{name}").as_bytes());
         context.mark_created()?;
         let scratch = tempfile::Builder::new()
             .prefix(".download-")
@@ -3255,11 +3434,11 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
                 let file = scratch.path().join(&name);
                 context
                     .cache_get(expected, canonical_id, &file)?
-                    .map(|size| (expected.clone(), size, file, urls.first().cloned()))
+                    .map(|size| (expected.clone(), size, file))
             }
             None => None,
         };
-        let (checksum, size, file, url) = match cached {
+        let (checksum, size, file) = match cached {
             Some(cached) => cached,
             None => match context.fetch_to(
                 urls,
@@ -3276,33 +3455,37 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
                         }
                         Err(error) => return Err(error),
                     }
-                    (fetched.checksum, fetched.size, file, Some(fetched.url))
+                    (fetched.checksum, fetched.size, file)
                 }
                 Err(failure)
                     if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
                 {
                     return Ok(eval.heap().alloc(AllocStruct([("success", false)])));
                 }
-                Err(failure) => return Err(failure.into_error(urls, &downloaded(&urls[0]).1)),
+                Err(failure) => return Err(failure.into_error(urls, &archive)),
             },
         };
         if let Some(error) = &request.deferred {
             bail!("Checksum error in {}: {error}", context.identifying());
         }
-        let (name, archive) = match &url {
-            Some(url) => downloaded(url),
-            None => {
-                let mut path = output.clone();
-                path.extend_from_slice(format!("/{temp}/cacheprobe").as_bytes());
-                ("cacheprobe".to_owned(), path)
-            }
-        };
-        let kind = if r#type.is_empty() {
-            decompressor_for_name(name.as_bytes(), &display(&archive))?
-        } else {
-            decompressor(r#type)?
-        };
-        context.extract_archive(&file, kind, strip_prefix, &relative, &archive)?;
+        // DecompressorValue.getDecompressor(downloadedPath): by name only
+        // (java:1186-1190), the `type` being part of the name.
+        let kind = decompressor_for_name(name.as_bytes(), &display(&archive))?;
+        native_extraction_limits(
+            "download_and_extract",
+            kind,
+            strip_components,
+            &rename_files,
+        )?;
+        context.extract_archive(
+            &file,
+            kind,
+            strip_prefix,
+            &relative,
+            &archive,
+            &rename_files,
+            true,
+        )?;
         scratch.close()?;
         Ok(download_result(eval.heap(), &checksum, size))
     }
@@ -6087,6 +6270,45 @@ ctx.extract("archive.tar.gz", "out", strip_prefix = "top")"#);
         fixture.ok("ctx.extract('archive.tar.gz', 'slash', 'top/')\nctx.extract('archive.tar.gz', 'dotted', './top/./')");
         assert_eq!(fixture.bytes("slash/a.txt"), b"A");
         assert_eq!(fixture.bytes("dotted/sub/b.txt"), b"B");
+    }
+
+    #[test]
+    fn extract_ar_archives_apply_rename_files_and_ignore_stripping() {
+        // ArFunction (docs/AR_ARCHIVES.md); tests/ar_archives.rs replays the
+        // genuine capture.
+        let fixture = Fixture::new();
+        let mut deb = b"!<arch>\n".to_vec();
+        for (name, data) in [("debian-binary", &b"2.0\n"[..]), ("data.tar.xz", b"xz")] {
+            deb.extend_from_slice(
+                format!(
+                    "{name:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+                    1,
+                    0,
+                    0,
+                    100644,
+                    data.len()
+                )
+                .as_bytes(),
+            );
+            deb.extend_from_slice(data);
+        }
+        fs::write(fixture.stage.path().join("pkg.deb"), &deb).unwrap();
+        fs::write(fixture.stage.path().join("blob"), &deb).unwrap();
+        fs::write(fixture.stage.path().join("bad.deb"), b"<!DOCTYPE html>\n").unwrap();
+        fixture.ok(r#"ctx.extract("pkg.deb", output = "out", strip_prefix = "none", rename_files = {"debian-binary": "meta/version"})
+ctx.extract("pkg.deb", output = "comp", strip_components = 2)
+ctx.extract("blob", output = "typed", type = "ar")"#);
+        assert_eq!(fixture.bytes("out/meta/version"), b"2.0\n");
+        assert_eq!(fixture.bytes("out/data.tar.xz"), b"xz");
+        assert_eq!(fixture.bytes("comp/debian-binary"), b"2.0\n");
+        assert_eq!(fixture.bytes("typed/data.tar.xz"), b"xz");
+        fixture.error(
+            "ctx.extract('bad.deb', 'bad')",
+            &format!(
+                "java.io.IOException: Error extracting {stage}/bad.deb to {stage}: Invalid header <!DOCTYP",
+                stage = fixture.stage_text()
+            ),
+        );
     }
 
     #[test]

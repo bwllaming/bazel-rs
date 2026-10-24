@@ -29,6 +29,13 @@
 //! escape, no writes through symlinks, no hard links outside the root) are
 //! enforced per entry, independent of size. The only size rule kept is
 //! Bazel's own zip symlink precondition (`entry.getSize() < 256`).
+//!
+//! `.ar`/`.deb` archives ([`extract_ar_file`]) follow Bazel's ArFunction
+//! over commons-compress 1.26.1's ArArchiveInputStream instead
+//! (docs/AR_ARCHIVES.md): every member becomes a regular file named by the
+//! (renamed) member name, `strip_prefix` and `strip_components` are ignored,
+//! modes are the member's mode with the owner-read bit (`mode | 0400`) and
+//! atime/mtime are the member's timestamp.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -48,18 +55,24 @@ const MAX_EXTENSION_RECORD: u64 = 1024 * 1024;
 const ZSTD_MAX_WINDOW: u64 = 1 << 31;
 
 /// Archive types accepted by the native extractor (Bazel type names,
-/// DecompressorValue.java:40-76). `gz`, `xz`, `zst`, `bz2`, `ar`, `deb` and
-/// `7z` are not supported natively and fail explicitly in the callers.
+/// DecompressorValue.java:40-76). `gz`, `xz`, `zst`, `bz2` and `7z` are not
+/// supported natively and fail explicitly in the callers.
 pub const NATIVE_TYPES: &[&str] = &[
-    "zip", "tar", "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar.bz2", "tbz",
+    "zip", "tar", "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar.bz2", "tbz", "ar",
+    "deb",
 ];
 
 /// Extraction failure. `PrefixNotFound` carries Bazel's prefix suggestions
 /// (`CouldNotFindPrefixException.maybeMakePrefixSuggestion`: the first segment
-/// of every multi-segment entry seen before the prefix was found).
+/// of every multi-segment entry seen before the prefix was found). `Io` is
+/// the message of an IOException a Bazel decompressor throws, which
+/// DecompressorValue.decompress wraps as `Error extracting ARCHIVE to
+/// PARENT: MESSAGE` (DecompressorValue.java:260-270); `Other` is a native
+/// error.
 #[derive(Debug)]
 pub enum Failure {
     PrefixNotFound(BTreeSet<String>),
+    Io(String),
     Other(String),
 }
 
@@ -67,7 +80,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PrefixNotFound(_) => f.write_str("archive strip_prefix did not match"),
-            Self::Other(message) => f.write_str(message),
+            Self::Io(message) | Self::Other(message) => f.write_str(message),
         }
     }
 }
@@ -132,7 +145,7 @@ pub fn extract_named(
         Failure::PrefixNotFound(_) => {
             format!("archive strip_prefix {strip_prefix:?} did not match")
         }
-        Failure::Other(message) => message,
+        Failure::Io(message) | Failure::Other(message) => message,
     })
 }
 
@@ -156,15 +169,21 @@ fn run<R: Read + Seek>(
     destination: &Path,
     archive_name: &str,
 ) -> Result<(), Failure> {
-    let prefix = prefix_components(strip_prefix)?;
-    check_directory(destination)?;
-    if fs::read_dir(destination)
-        .map_err(|e| format!("inspect extraction destination: {e}"))?
-        .next()
-        .is_some()
-    {
-        return Err("extraction destination must be empty".into());
+    if matches!(archive_type, "ar" | "deb") {
+        // ArFunction ignores the prefix (ArFunction.java:27-30).
+        let options = ArOptions {
+            shown: destination,
+            state: ArDestination::Directory,
+            rename_files: &[],
+        };
+        return extract_ar(
+            BufReader::with_capacity(BUFFER_SIZE, source),
+            destination,
+            &options,
+        );
     }
+    let prefix = prefix_components(strip_prefix)?;
+    check_empty_destination(destination)?;
     let mut state = Extraction {
         destination,
         prefix,
@@ -204,6 +223,19 @@ fn run<R: Read + Seek>(
         return Err(Failure::PrefixNotFound(state.available));
     }
     Ok(state.create_symlinks(archive_type != "zip")?)
+}
+
+/// The extraction destination must be an existing, empty, private directory.
+fn check_empty_destination(destination: &Path) -> Result<(), String> {
+    check_directory(destination)?;
+    if fs::read_dir(destination)
+        .map_err(|e| format!("inspect extraction destination: {e}"))?
+        .next()
+        .is_some()
+    {
+        return Err("extraction destination must be empty".into());
+    }
+    Ok(())
 }
 
 /// A zstd stream of one or more frames (RFC 8878 section 3.1), decoded
@@ -1063,6 +1095,554 @@ fn extract_zip<R: Read + Seek>(source: R, state: &mut Extraction<'_>) -> Result<
                 return Err("skipped zip entry has incorrect expanded size".into());
             }
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `.ar` / `.deb`: Bazel 9.3's ArFunction (decompressor/ArFunction.java) over
+// commons-compress 1.26.1's ArArchiveInputStream (docs/AR_ARCHIVES.md).
+
+/// Bazel's view of an `ar` extraction destination when extraction starts.
+/// ArFunction writes straight into `descriptor.destinationPath()`, creating
+/// each member's parent with `createDirectoryAndParents`: Bazel 9.3 deletes a
+/// repository directory before its implementation runs
+/// (RepositoryFetchFunction.setupRepoRoot, java:564-571) and `extract` never
+/// creates its output (`download_and_extract` does, java:1120), so a member
+/// with an empty name (the GNU symbol table `/`) writes a regular FILE at a
+/// destination that does not exist yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArDestination {
+    Missing,
+    Directory,
+    /// A regular file at the destination path itself.
+    File,
+}
+
+/// How [`extract_ar_file`] names and renames what it writes.
+pub struct ArOptions<'a> {
+    /// The destination as Bazel's errors name it (the repository-visible
+    /// path); extraction itself writes into a private staging directory.
+    pub shown: &'a Path,
+    pub state: ArDestination,
+    /// `rename_files`, applied to member names (ArFunction.java:53).
+    pub rename_files: &'a [(Vec<u8>, Vec<u8>)],
+}
+
+const AR_MAGIC: &[u8; 8] = b"!<arch>\n";
+const AR_TRAILER: &[u8; 2] = b"`\n";
+/// NAME(16) MTIME(12) UID(6) GID(6) MODE(8) SIZE(10), before the trailer.
+const AR_METADATA: usize = 58;
+
+/// One member: its decoded name (raw bytes: US-ASCII as commons-compress
+/// decodes it, a byte above 0x7F being U+FFFD there) and header fields.
+struct ArEntry {
+    name: Vec<u8>,
+    mode: i32,
+    mtime: i64,
+}
+
+/// commons-compress 1.26.1 `ArArchiveInputStream.getNextArEntry` and `read`:
+/// `offset` counts every consumed byte (`trackReadBytes`, also
+/// `getBytesRead()`); a member's data ends at `entryOffset + length`, and a
+/// stream that ends early simply ends it (no error, like `transferTo`).
+struct ArStream<R> {
+    input: R,
+    offset: u64,
+    /// The GNU `//` string table.
+    names: Option<Vec<u8>>,
+    /// Data offset and length of the current member.
+    current: Option<(u64, u64)>,
+}
+
+/// A `Failure::Io` with an I/O error's strerror text.
+fn io_failure(error: &io::Error) -> Failure {
+    Failure::Io(io_reason(error))
+}
+
+/// `strerror` text of an I/O error, as Java and unix_jni report it.
+fn io_reason(error: &io::Error) -> String {
+    let text = error.to_string();
+    match text.rsplit_once(" (os error ") {
+        Some((text, _)) => text.to_owned(),
+        None => text,
+    }
+}
+
+/// How Bazel prints a Java string decoded from US-ASCII: a byte above 0x7F
+/// is U+FFFD, which its terminal output writes as `?`.
+fn ascii_text(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| if byte.is_ascii() { *byte as char } else { '?' })
+        .collect()
+}
+
+/// `String.trim()`: leading and trailing characters up to U+0020.
+fn java_trim(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| *byte > b' ')
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte > b' ')
+        .map_or(start, |index| index + 1);
+    &bytes[start..end]
+}
+
+/// `Integer.parseInt`/`Long.parseLong(text, radix)` as ParsingUtils calls
+/// them: an optional sign, at least one digit of `radix`, within range.
+fn java_number(text: &[u8], radix: u32, min: i64, max: i64) -> Option<i64> {
+    let (negative, digits) = match text.first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value: i128 = 0;
+    for byte in digits {
+        let digit = char::from(*byte).to_digit(radix)?;
+        value = value * i128::from(radix) + i128::from(digit);
+        if value > i128::from(max) + 1 {
+            return None;
+        }
+    }
+    let value = if negative { -value } else { value };
+    (i128::from(min)..=i128::from(max))
+        .contains(&value)
+        .then(|| i64::try_from(value).expect("in range"))
+}
+
+/// `ParsingUtils.parseIntValue(text, radix)`.
+fn java_int(text: &[u8], radix: u32) -> Result<i32, Failure> {
+    java_number(text, radix, i64::from(i32::MIN), i64::from(i32::MAX))
+        .map(|value| i32::try_from(value).expect("int range"))
+        .ok_or_else(|| {
+            Failure::Io(format!(
+                "Unable to parse int from string value: {}",
+                ascii_text(text)
+            ))
+        })
+}
+
+/// `ParsingUtils.parseLongValue(text)`.
+fn java_long(text: &[u8]) -> Result<i64, Failure> {
+    java_number(text, 10, i64::MIN, i64::MAX).ok_or_else(|| {
+        Failure::Io(format!(
+            "Unable to parse long from string value: {}",
+            ascii_text(text)
+        ))
+    })
+}
+
+impl<R: Read> ArStream<R> {
+    fn new(input: R) -> Self {
+        Self {
+            input,
+            offset: 0,
+            names: None,
+            current: None,
+        }
+    }
+
+    /// `IOUtils.readFully`: as many bytes as available, up to the buffer.
+    fn read_fully(&mut self, buffer: &mut [u8]) -> Result<usize, Failure> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            match self.input.read(&mut buffer[filled..]) {
+                Ok(0) => break,
+                Ok(count) => filled += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(io_failure(&error)),
+            }
+        }
+        self.offset += filled as u64;
+        Ok(filled)
+    }
+
+    /// `IOUtils.readRange(in, length)`: up to `length` bytes, all remaining
+    /// bytes for a negative length (only ever an error then: just counted).
+    fn read_range(&mut self, length: i64) -> Result<(Vec<u8>, u64), Failure> {
+        let mut data = Vec::new();
+        let read = match u64::try_from(length) {
+            Ok(length) => (&mut self.input)
+                .take(length)
+                .read_to_end(&mut data)
+                .map(|count| count as u64),
+            Err(_) => io::copy(&mut self.input, &mut io::sink()),
+        }
+        .map_err(|error| io_failure(&error))?;
+        self.offset += read;
+        Ok((data, read))
+    }
+
+    /// `getExtendedName(offset)`: the GNU table name at `offset`, up to its
+    /// LF or NUL, without one trailing `/`.
+    fn extended_name(&self, offset: i32) -> Result<Vec<u8>, Failure> {
+        let Some(table) = &self.names else {
+            return Err(Failure::Io(
+                "Cannot process GNU long file name as no // record was found".into(),
+            ));
+        };
+        let start = usize::try_from(offset).expect("digits are nonnegative");
+        for index in start..table.len() {
+            if table[index] == b'\n' || table[index] == 0 {
+                if index == 0 {
+                    break;
+                }
+                let end = if table[index - 1] == b'/' {
+                    index - 1
+                } else {
+                    index
+                };
+                if end > start {
+                    return Ok(table[start..end].to_vec());
+                }
+                break;
+            }
+        }
+        Err(Failure::Io(format!("Failed to read entry: {offset}")))
+    }
+
+    /// The next member (`getNextArEntry`), or `None` at the end.
+    fn next_entry(&mut self) -> Result<Option<ArEntry>, Failure> {
+        loop {
+            if let Some((start, length)) = self.current.take() {
+                // Skip what the caller did not read; a short stream ends it.
+                let remaining = (start + length).saturating_sub(self.offset);
+                let skipped = io::copy(&mut (&mut self.input).take(remaining), &mut io::sink())
+                    .map_err(|error| io_failure(&error))?;
+                self.offset += skipped;
+            }
+            if self.offset == 0 {
+                let mut magic = [0u8; 8];
+                let read = self.read_fully(&mut magic)?;
+                if read != magic.len() {
+                    return Err(Failure::Io(format!(
+                        "Failed to read header. Occurred at byte: {}",
+                        self.offset
+                    )));
+                }
+                if &magic != AR_MAGIC {
+                    return Err(Failure::Io(format!(
+                        "Invalid header {}",
+                        ascii_text(&magic)
+                    )));
+                }
+            }
+            if !self.offset.is_multiple_of(2) {
+                let mut padding = [0u8; 1];
+                if self.read_fully(&mut padding)? == 0 {
+                    return Ok(None);
+                }
+            }
+            let mut metadata = [0u8; AR_METADATA];
+            match self.read_fully(&mut metadata)? {
+                0 => return Ok(None),
+                AR_METADATA => {}
+                _ => return Err(Failure::Io("Truncated ar archive".into())),
+            }
+            let mut trailer = [0u8; 2];
+            if self.read_fully(&mut trailer)? != trailer.len() {
+                return Err(Failure::Io(format!(
+                    "Failed to read entry trailer. Occurred at byte: {}",
+                    self.offset
+                )));
+            }
+            if &trailer != AR_TRAILER {
+                return Err(Failure::Io(format!(
+                    "Invalid entry trailer. not read the content? Occurred at byte: {}",
+                    self.offset
+                )));
+            }
+            let mut start = self.offset;
+            let size = java_trim(&metadata[48..58]);
+            let name = java_trim(&metadata[..16]);
+            if name == b"//" {
+                // readGNUStringTable: the table replaces any earlier one.
+                let length = java_int(size, 10)?;
+                let (table, read) = self.read_range(i64::from(length))?;
+                if u64::try_from(length) != Ok(read) {
+                    return Err(Failure::Io(format!(
+                        "Failed to read complete // record: expected={length} read={read}"
+                    )));
+                }
+                self.names = Some(table);
+                self.current = Some((start, read));
+                continue;
+            }
+            let mut length = java_long(size)?;
+            let mut name = name.to_vec();
+            if name.last() == Some(&b'/') {
+                // The GNU terminator.
+                name.pop();
+            } else if name.len() > 1 && name[0] == b'/' && name[1..].iter().all(u8::is_ascii_digit)
+            {
+                name = self.extended_name(java_int(&name[1..], 10)?)?;
+            } else if name.len() > 3
+                && name.starts_with(b"#1/")
+                && name[3..].iter().all(u8::is_ascii_digit)
+            {
+                // BSD: the name precedes the data and counts in the size.
+                let name_length = java_int(&name[3..], 10)?;
+                let (bytes, read) = self.read_range(i64::from(name_length))?;
+                if u64::try_from(name_length) != Ok(read) {
+                    // `new EOFException()`: a null message.
+                    return Err(Failure::Io("null".into()));
+                }
+                length -= i64::from(name_length);
+                start += read;
+                name = bytes;
+            }
+            if length < 0 {
+                return Err(Failure::Io(
+                    "broken archive, entry with negative size".into(),
+                ));
+            }
+            // The ArArchiveEntry arguments, parsed left to right.
+            let blank_or_int = |text: &[u8]| {
+                if text.is_empty() {
+                    Ok(0)
+                } else {
+                    java_int(text, 10)
+                }
+            };
+            blank_or_int(java_trim(&metadata[28..34]))?;
+            blank_or_int(java_trim(&metadata[34..40]))?;
+            let mode = java_int(java_trim(&metadata[40..48]), 8)?;
+            let mtime = java_long(java_trim(&metadata[16..28]))?;
+            self.current = Some((start, length.unsigned_abs()));
+            return Ok(Some(ArEntry { name, mode, mtime }));
+        }
+    }
+
+    /// Copy the rest of the current member (`transferTo`): a stream that
+    /// ends early ends the member without an error.
+    fn copy_data(&mut self, output: &mut impl io::Write) -> io::Result<u64> {
+        let Some((start, length)) = self.current else {
+            return Ok(0);
+        };
+        let remaining = (start + length).saturating_sub(self.offset);
+        let copied = io::copy(&mut (&mut self.input).take(remaining), output)?;
+        self.offset += copied;
+        Ok(copied)
+    }
+}
+
+/// `PathFragment` normalization of a member name (UnixOsPathPolicy): empty
+/// and `.` segments vanish, `..` removes a preceding segment, is dropped at
+/// an absolute root and is kept otherwise.
+fn ar_components(name: &[u8]) -> (bool, Vec<&[u8]>) {
+    let absolute = name.first() == Some(&b'/');
+    let mut parts: Vec<&[u8]> = Vec::new();
+    for segment in name.split(|byte| *byte == b'/') {
+        match segment {
+            b"" | b"." => {}
+            b".." if parts.last().is_some_and(|last| *last != b"..") => {
+                parts.pop();
+            }
+            b".." if absolute => {}
+            other => parts.push(other),
+        }
+    }
+    (absolute, parts)
+}
+
+fn joined(root: &Path, parts: &[&[u8]]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    let mut path = root.to_path_buf();
+    for part in parts {
+        path.push(std::ffi::OsStr::from_bytes(part));
+    }
+    path
+}
+
+/// Stream-extract the `ar` archive file at `archive` into the empty,
+/// private `destination` like Bazel's ArFunction (docs/AR_ARCHIVES.md).
+pub fn extract_ar_file(
+    archive: &Path,
+    destination: &Path,
+    options: &ArOptions<'_>,
+) -> Result<(), Failure> {
+    let file = File::open(archive).map_err(|e| format!("open archive: {e}"))?;
+    extract_ar(
+        BufReader::with_capacity(BUFFER_SIZE, file),
+        destination,
+        options,
+    )
+}
+
+fn extract_ar(
+    reader: impl Read,
+    destination: &Path,
+    options: &ArOptions<'_>,
+) -> Result<(), Failure> {
+    check_empty_destination(destination)?;
+    let mut stream = ArStream::new(reader);
+    let mut root = options.state;
+    while let Some(entry) = stream.next_entry()? {
+        // `renameFiles.getOrDefault(entryName, entryName)`.
+        let renamed = options
+            .rename_files
+            .iter()
+            .find(|(from, _)| *from == entry.name)
+            .map(|(_, to)| to.clone());
+        let decoded = renamed.is_none();
+        let name = renamed.unwrap_or(entry.name);
+        if decoded && !name.is_ascii() {
+            // Bazel 9.3 crashes (IllegalStateException in
+            // StringUnsafe.getInternalStringBytes) on the U+FFFD that
+            // commons-compress decodes for such bytes.
+            return Err(Failure::Other(format!(
+                "ar member name {:?} is not ASCII, which Bazel 9.3 cannot extract (it crashes on such names); native extraction rejects it",
+                String::from_utf8_lossy(&name)
+            )));
+        }
+        let (absolute, parts) = ar_components(&name);
+        let shown_name = String::from_utf8_lossy(&name);
+        if absolute {
+            return Err(Failure::Other(format!(
+                "ar member {shown_name:?} is an absolute path (native extraction never writes outside the extraction destination)"
+            )));
+        }
+        if parts.first() == Some(&b"..".as_slice()) {
+            return Err(Failure::Other(format!(
+                "ar member {shown_name:?} escapes the extraction destination (native extraction never writes outside it)"
+            )));
+        }
+        let Some((last, parents)) = parts.split_last() else {
+            // The destination itself: `getOutputStream()` of a directory, or
+            // a new regular file where none exists yet.
+            match root {
+                ArDestination::Directory => {
+                    return Err(Failure::Io(format!(
+                        "{} (Is a directory)",
+                        options.shown.display()
+                    )));
+                }
+                ArDestination::Missing | ArDestination::File => {
+                    root = ArDestination::File;
+                    stream
+                        .copy_data(&mut io::sink())
+                        .map_err(|error| io_failure(&error))?;
+                    continue;
+                }
+            }
+        };
+        if parents.iter().any(|part| part.contains(&0)) {
+            // java.io.File rejects a path with NUL (FileNotFoundException).
+            return Err(Failure::Io("Invalid file path".into()));
+        }
+        ar_parents(destination, options.shown, parents, &mut root)?;
+        if last.contains(&0) {
+            return Err(Failure::Io("Invalid file path".into()));
+        }
+        let path = joined(destination, &parts);
+        let shown = joined(options.shown, &parts);
+        // `filePath.getOutputStream()`: create or truncate in place.
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(|error| Failure::Io(format!("{} ({})", shown.display(), io_reason(&error))))?;
+        stream
+            .copy_data(&mut output)
+            .map_err(|error| io_failure(&error))?;
+        // `chmod(entry.getMode() | 0400)`: chmod(2) keeps the low 12 bits.
+        let mode = (entry.mode.cast_unsigned() | 0o400) & 0o7777;
+        set_file_mode(&output, mode)?;
+        drop(output);
+        if mode & 0o111 != 0 {
+            // Like other extracted executables (crate::spawn_lock::seal).
+            crate::spawn_lock::seal(&path)
+                .map_err(|e| format!("seal archive file {path:?}: {e}"))?;
+        }
+        // `setLastModifiedTime(mtime * 1000)`: utimensat sets atime and
+        // mtime (unix_jni.cc:425-446).
+        let offset = std::time::Duration::from_secs(entry.mtime.unsigned_abs());
+        let time = if entry.mtime >= 0 {
+            std::time::UNIX_EPOCH.checked_add(offset)
+        } else {
+            std::time::UNIX_EPOCH.checked_sub(offset)
+        };
+        time.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+            .and_then(|time| {
+                let file = File::open(&path)?;
+                file.set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
+            })
+            .map_err(|error| {
+                Failure::Io(format!(
+                    "[unix_jni.cc:444] {} ({})",
+                    shown.display(),
+                    io_reason(&error)
+                ))
+            })?;
+    }
+    if root == ArDestination::File {
+        return Err(Failure::Other(format!(
+            "an ar member with an empty name (the GNU symbol table) makes Bazel write a regular file at the extraction destination {} itself, which native extraction does not reproduce",
+            options.shown.display()
+        )));
+    }
+    Ok(())
+}
+
+/// UnixFileSystem.createDirectoryAndParents (java:279-296) of a member's
+/// parent `destination/parents`: the nearest existing ancestor must be a
+/// directory (`<requested> (File exists)` otherwise), and the missing
+/// directories are created with mkdir(0777) under the umask.
+fn ar_parents(
+    destination: &Path,
+    shown: &Path,
+    parents: &[&[u8]],
+    root: &mut ArDestination,
+) -> Result<(), Failure> {
+    let requested = || joined(shown, parents).display().to_string();
+    match *root {
+        ArDestination::File => {
+            return Err(Failure::Io(format!("{} (File exists)", requested())));
+        }
+        ArDestination::Missing => *root = ArDestination::Directory,
+        ArDestination::Directory => {}
+    }
+    // The nearest existing ancestor (a stat that is ENOENT or ENOTDIR is
+    // "not found"); the destination itself always exists here.
+    let mut existing = parents.len();
+    while existing > 0 {
+        match fs::symlink_metadata(joined(destination, &parents[..existing])) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                return Err(Failure::Io(format!("{} (File exists)", requested())));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                existing -= 1;
+            }
+            Err(error) => {
+                return Err(Failure::Io(format!(
+                    "[unix_jni.cc:382] {} ({})",
+                    joined(shown, &parents[..existing]).display(),
+                    io_reason(&error)
+                )));
+            }
+        }
+    }
+    for depth in existing + 1..=parents.len() {
+        fs::create_dir(joined(destination, &parents[..depth])).map_err(|error| {
+            Failure::Io(format!(
+                "[unix_jni.cc:471] {} ({})",
+                joined(shown, &parents[..depth]).display(),
+                io_reason(&error)
+            ))
+        })?;
     }
     Ok(())
 }
@@ -2385,6 +2965,210 @@ mod tests {
                     .contains("exceeds the native 1 MiB limit"),
                 "type {kind}"
             );
+        }
+    }
+
+    /// An `ar` member header: NAME(16) MTIME(12) UID(6) GID(6) MODE(8)
+    /// SIZE(10) and the trailer, fields padded with spaces.
+    fn ar_header(name: &[u8], mtime: &str, mode: &str, size: &str) -> Vec<u8> {
+        let mut header = Vec::new();
+        for (value, width) in [
+            (name, 16),
+            (mtime.as_bytes(), 12),
+            (b"0".as_slice(), 6),
+            (b"0".as_slice(), 6),
+            (mode.as_bytes(), 8),
+            (size.as_bytes(), 10),
+        ] {
+            header.extend_from_slice(value);
+            header.resize(header.len() + width - value.len(), b' ');
+        }
+        header.extend_from_slice(b"`\n");
+        header
+    }
+
+    fn ar_member(name: &[u8], mtime: &str, mode: &str, data: &[u8]) -> Vec<u8> {
+        let mut member = ar_header(name, mtime, mode, &data.len().to_string());
+        member.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            member.push(b'\n');
+        }
+        member
+    }
+
+    fn ar(members: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = b"!<arch>\n".to_vec();
+        for member in members {
+            bytes.extend_from_slice(member);
+        }
+        bytes
+    }
+
+    fn extract_ar_bytes(
+        bytes: &[u8],
+        state: ArDestination,
+        rename_files: &[(Vec<u8>, Vec<u8>)],
+    ) -> (tempfile::TempDir, Result<(), Failure>) {
+        let destination = tempfile::tempdir().unwrap();
+        let options = ArOptions {
+            shown: Path::new("/shown/out"),
+            state,
+            rename_files,
+        };
+        let result = extract_ar(Cursor::new(bytes), destination.path(), &options);
+        (destination, result)
+    }
+
+    fn io_message(result: Result<(), Failure>) -> String {
+        match result {
+            Err(Failure::Io(message)) => message,
+            other => panic!("expected a Bazel IOException, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ar_members_keep_names_modes_and_timestamps_like_arfunction() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let table = b"a-long-gnu-member-name.txt/\n".to_vec();
+        let bsd = b"bsd name.txt";
+        let mut bsd_data = bsd.to_vec();
+        bsd_data.extend_from_slice(b"bsd");
+        let bytes = ar(&[
+            ar_member(b"//", "", "", &table),
+            ar_member(b"/0", "1500000000", "100600", b"gnu"),
+            ar_member(b"#1/12", "1400000000", "100070", &bsd_data),
+            ar_member(b"plain.txt", "-1", "100755", b"plain"),
+            ar_member(b"dir/x/", "0", "644", b"nested"),
+            ar_member(b"plain.txt", "7", "100644", b"2nd"),
+        ]);
+        let (destination, result) = extract_ar_bytes(&bytes, ArDestination::Missing, &[]);
+        result.unwrap();
+        let root = destination.path();
+        for (name, data, mode, mtime) in [
+            (
+                "a-long-gnu-member-name.txt",
+                &b"gnu"[..],
+                0o600,
+                1_500_000_000,
+            ),
+            ("bsd name.txt", b"bsd", 0o470, 1_400_000_000),
+            ("dir/x", b"nested", 0o644, 0),
+            // The later duplicate wins in place, with its own mode and time.
+            ("plain.txt", b"2nd", 0o644, 7),
+        ] {
+            // Before reading the file, which may update its atime.
+            let metadata = fs::metadata(root.join(name)).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o7777, mode, "{name}");
+            assert_eq!(metadata.mtime(), mtime, "{name}");
+            assert_eq!(metadata.atime(), mtime, "{name}");
+            assert_eq!(fs::read(root.join(name)).unwrap(), data, "{name}");
+        }
+    }
+
+    #[test]
+    fn ar_ignores_strip_prefix_and_applies_rename_files() {
+        let bytes = ar(&[
+            ar_member(b"debian-binary", "1", "100644", b"2.0\n"),
+            ar_member(b"data.tar.xz", "1", "100644", b"data"),
+        ]);
+        let destination = run(&bytes, "deb", "no/such/prefix").unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("debian-binary")).unwrap(),
+            b"2.0\n"
+        );
+        let rename = [(b"debian-binary".to_vec(), b"meta/version".to_vec())];
+        let (destination, result) = extract_ar_bytes(&bytes, ArDestination::Directory, &rename);
+        result.unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("meta/version")).unwrap(),
+            b"2.0\n"
+        );
+        assert!(destination.path().join("data.tar.xz").is_file());
+    }
+
+    #[test]
+    fn ar_errors_are_commons_compress_and_bazel_texts() {
+        let member = ar_member(b"a.txt", "1", "100644", b"a\n");
+        for (bytes, message) in [
+            (
+                b"!<ar".to_vec(),
+                "Failed to read header. Occurred at byte: 4",
+            ),
+            (
+                b"\x1f\x8b\x08\0\0\0\0\0rest".to_vec(),
+                "Invalid header \x1f?\x08\0\0\0\0\0",
+            ),
+            (ar(&[member[..30].to_vec()]), "Truncated ar archive"),
+            (
+                ar(&[member[..59].to_vec()]),
+                "Failed to read entry trailer. Occurred at byte: 67",
+            ),
+            (
+                ar(&[ar_header(b"a", "1", "100644", "12a")]),
+                "Unable to parse long from string value: 12a",
+            ),
+            (
+                ar(&[ar_member(b"a", "1", "", b"")]),
+                "Unable to parse int from string value: ",
+            ),
+            (
+                ar(&[ar_member(b"/0", "1", "644", b"")]),
+                "Cannot process GNU long file name as no // record was found",
+            ),
+            (
+                ar(&[ar_header(b"#1/50", "1", "644", "60"), b"short".to_vec()]),
+                "null",
+            ),
+            (
+                ar(&[member.clone(), b"junk".to_vec()]),
+                "Truncated ar archive",
+            ),
+        ] {
+            let (_, result) = extract_ar_bytes(&bytes, ArDestination::Directory, &[]);
+            assert_eq!(io_message(result), message);
+        }
+        // Data cut short by the end of the archive is extracted short.
+        let mut cut = ar(&[ar_header(b"cut.bin", "1", "644", "100")]);
+        cut.extend_from_slice(b"0123456789");
+        let (destination, result) = extract_ar_bytes(&cut, ArDestination::Directory, &[]);
+        result.unwrap();
+        assert_eq!(
+            fs::read(destination.path().join("cut.bin")).unwrap(),
+            b"0123456789"
+        );
+    }
+
+    #[test]
+    fn ar_destination_conflicts_follow_bazels_filesystem() {
+        let symbols = ar_member(b"/", "1", "0", b"\0\0\0\0");
+        let object = ar_member(b"obj.o/", "1", "644", b"o\n");
+        // A missing destination becomes a regular file, the next member fails.
+        let (_, result) =
+            extract_ar_bytes(&ar(&[symbols.clone(), object]), ArDestination::Missing, &[]);
+        assert_eq!(io_message(result), "/shown/out (File exists)");
+        let (_, result) = extract_ar_bytes(&ar(&[symbols]), ArDestination::Directory, &[]);
+        assert_eq!(io_message(result), "/shown/out (Is a directory)");
+        let file = ar_member(b"a", "1", "644", b"file");
+        let below = ar_member(b"a/b", "1", "644", b"below");
+        let (_, result) = extract_ar_bytes(
+            &ar(&[file.clone(), below.clone()]),
+            ArDestination::Directory,
+            &[],
+        );
+        assert_eq!(io_message(result), "/shown/out/a (File exists)");
+        let (_, result) = extract_ar_bytes(&ar(&[below, file]), ArDestination::Directory, &[]);
+        assert_eq!(io_message(result), "/shown/out/a (Is a directory)");
+        let nul = ar_member(b"#1/8", "1", "644", b"x.txt\0\0\0data");
+        let (_, result) = extract_ar_bytes(&ar(&[nul]), ArDestination::Directory, &[]);
+        assert_eq!(io_message(result), "Invalid file path");
+        for name in [&b"../up.txt"[..], b"/abs.txt", b"caf\xc3\xa9.txt"] {
+            let (_, result) = extract_ar_bytes(
+                &ar(&[ar_member(name, "1", "644", b"x")]),
+                ArDestination::Directory,
+                &[],
+            );
+            assert!(matches!(result, Err(Failure::Other(_))), "{name:?}");
         }
     }
 }

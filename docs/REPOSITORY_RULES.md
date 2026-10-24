@@ -132,8 +132,14 @@ the published location (relative symlinks into it are replanted, below).
   (SBEC:907-1400) validate the legacy `stripPrefix` alias, `strip_components`,
   archive types (`Expected a file with a ... suffix`, `No decompressor found for
   type ...`) and URLs/checksums with Bazel's messages, then extract with the
-  native extractor (zip/jar/war/aar/nupkg/whl, tar, tar.gz/tgz) into the output,
-  merging with existing directories. `strip_prefix` is PathFragment-normalized
+  native extractor (zip/jar/war/aar/nupkg/whl, tar, tar.gz/tgz, ar/deb) into
+  the output, merging with existing directories. `.ar`/`.deb` archives follow
+  ArFunction (docs/AR_ARCHIVES.md): members become files, `strip_prefix` and
+  `strip_components` are ignored, `rename_files` applies, modes are `mode |
+  0400` and atime/mtime the member's. download_and_extract names its download
+  like DownloadManager (the first URL's decoded basename, `.TYPE` appended,
+  unsafe characters as `_`) and chooses the decompressor by that name.
+  `strip_prefix` is PathFragment-normalized
   (`pre/` strips `pre`, StripPrefixedPath.java:53); a prefix absent from the
   archive fails with `java.io.IOException: Error extracting ARCHIVE to PARENT:
   Prefix "P" was given, but not found in the archive. Here are possible prefixes
@@ -154,9 +160,9 @@ the published location (relative symlinks into it are replanted, below).
   `Unknown host: HOST`, `Connect timed out`. Bazel's empty `temp<N>` directory
   left after an `allow_fail` failure is not reproduced. Native
   formats are zip/jar/war/aar/nupkg/whl, tar, tar.gz/tgz, tar.xz/txz,
-  tar.zst/tzst and tar.bz2/tbz; the single-file gz/xz/zst/bz2 decompressors,
-  ar/deb and 7z, `strip_components > 0`, `rename_files`, and non-empty `auth` and
-  `headers` fail explicitly. Downloads reuse the module-extension transport
+  tar.zst/tzst, tar.bz2/tbz and ar/deb; the single-file gz/xz/zst/bz2
+  decompressors and 7z, and for zip and tar `strip_components > 0` and
+  `rename_files`, fail explicitly. Downloads reuse the module-extension transport
   (verified TLS, redirect/retry policy, Bazel's 10 s connect / 20 s read
   timeouts, `--repository_disable_download` policy) and **stream** into a
   private temporary directory of the repository while hashing; extraction then

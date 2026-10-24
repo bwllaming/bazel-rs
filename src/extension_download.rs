@@ -704,8 +704,6 @@ pub(crate) fn checksum_mismatch(actual: &Checksum, expected: &Checksum, sri: boo
 /// A completed streaming download.
 #[derive(Debug)]
 pub(crate) struct Fetched {
-    /// The mirror that produced the bytes.
-    pub(crate) url: Url,
     /// Bytes written.
     pub(crate) size: u64,
     /// Digest of the written bytes, in the expected checksum's algorithm, or
@@ -789,7 +787,6 @@ pub(crate) fn fetch_to_file(
                 });
             }
             Ok(Fetched {
-                url: url.clone(),
                 size,
                 checksum: actual,
             })
@@ -1137,7 +1134,7 @@ pub(crate) mod tests {
         assert_eq!(failures[0].0, urls[0]);
         assert_eq!(failures[0].1.class, UNRECOVERABLE);
         assert!(failures[0].1.message.starts_with("Checksum was "));
-        assert_eq!(fetched.url, urls[1]);
+        // The second mirror produced the bytes (its file holds them below).
         assert_eq!(fetched.size, body.len() as u64);
         assert_eq!(fetched.checksum.bytes, digest);
         assert!(!targets[0].exists(), "failed mirror file must be removed");
