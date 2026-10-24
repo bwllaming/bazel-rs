@@ -392,6 +392,17 @@ and encoded on the writer thread, which writes a temporary file while the
 actions run. Only when the command (for `test` and `run`: its build part)
 succeeded is the file renamed into place. Failures are never saved.
 
+**A miss runs without the phase-1 prefetch** (integration-21): the
+recording window is open while it plans (`on` saving, `verify`'s shadow
+analysis), and W6's prefetch never starts while it records
+(`observed_fs::recording`, docs/PARALLEL_ANALYSIS.md "Phase-1 prefetch"):
+the recording is process-wide, so it would also take the observations of
+speculative units that are never committed. So a miss pays the
+sequential loading of phase 1 (~/code, warm:
+oauth2token:all `--nobuild` 6.5 s against 4.0–4.2 s unset; B2 `--nobuild`
+11.1 s against 7.9–8.7 s); hits are unaffected. Follow-up: per-unit
+observation buffers merged only for committed units.
+
 **Diagnostics bypass the capture** (`snapshot::diag`): the PERF marks,
 `PERF-STAGE`, `PERF-PLAN`, the memory watchdog's lines and the
 `bazel-rs-snapshot:` lines write to the original stderr while a capture

@@ -136,6 +136,16 @@ module cache, shared with the engine) is never dropped at all: it holds only mem
 frees. `BAZEL_RS_DEBUG_ENGINE_DROP=inline` drops the engine on the main thread before execution, `=leak` never
 drops it (measurement switches).
 
+With W7's exit without teardown (perf-loading, docs/PERF_LAYER1.md "W7"; integration-21) the CLI's engine is a
+`ManuallyDrop` that only a planned request takes out (`ManuallyDrop::into_inner` at the `plan_request` of `build`,
+`test` and `run`): `query` and every error before planning end without dropping it. A request that does not
+execute (`--nobuild`, `Engine::skips_teardown`) forgets the engine after planning — `plan_build` has already left
+its analysis and planning maps to the OS, and the command ends right after — and only an executing build's engine
+goes to the background thread above (the measurement switches still win). Measured with integration-21 (~/code
+oauth2token, warm, 4 interleaved rounds, wall after `execute.end`): no-op build 0.088–0.099 s (W7 alone:
+0.075–0.105 s; i20: 0.21–0.35 s), `--nobuild` 0.085–0.089 s (W7 alone: 0.087–0.089 s); RSS at `execute.end` of the
+no-op build 1,084–1,094 MB against W7's 1,117–1,124 MB (the background drop has begun).
+
 Measured on ~/code `build //src/beyondwork.ai/tools/oauth2token/...` (release binaries, warm repository
 cache; the machine is shared, timings indicative):
 

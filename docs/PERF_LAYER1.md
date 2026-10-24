@@ -469,7 +469,12 @@ work: post-plan drops of the planning maps and, at exit, `drop Engine` and
   `--nobuild` build also forgets its analysis and planning maps at the end
   of `plan_build` (an executing build drops them before execution, so the
   execution phase's memory is unchanged). Library users (tests building
-  several times with one engine) never set the flag.
+  several times with one engine) never set the flag. Since the
+  plan/execute split (L2-W4, integration-21) a planned `build`, `test` or
+  `run` takes the engine out of the `ManuallyDrop`: a `--nobuild` request
+  forgets it after planning (`Engine::skips_teardown`), an executing one
+  frees it on a background thread while its actions run
+  (docs/PLANNED_REQUEST.md "Freeing the engine").
 - **`LocationMap::add`** (location_expander.rs) deduplicated each label's
   files with a linear scan per file — quadratic for a dependency with
   thousands of files (the Go SDK's `srcs`). The entry now keeps the files
