@@ -180,7 +180,7 @@ pub struct PlannedAction {
 /// index (crate::snapshot::codec); there is deliberately no serde derive:
 /// with serde's `rc` feature an `Arc<InputGroup>` would serialize once per
 /// holder.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InputGroup {
     /// The directory every destination lies below (the runfiles tree).
     pub root: PathBuf,

@@ -19,12 +19,13 @@
 use crate::action::{Action, Transform};
 use crate::engine::{BuildSummary, RunRunfiles, RunTarget};
 use crate::label::Label;
-use crate::scheduler::{self, Dependency, PlannedAction};
+use crate::scheduler::{self, Dependency, InputGroup, PlannedAction};
 use crate::test_command::TestRuleInfo;
 use crate::workspace_status::{ComputedWorkspaceStatus, WorkspaceStatusOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The ids of the workspace status nodes (BazelWorkspaceStatusAction's
 /// stable and volatile outputs; the native executor has no two-output
@@ -219,8 +220,9 @@ impl PlannedRequest {
     /// * the workspace status placeholders become the status nodes: on
     ///   success the `#stable` and `#volatile` writes; on failure ONE
     ///   failing `#volatile` node (Bazel's one action fails once), every
-    ///   consumer of the stable file depending on it instead, exactly as
-    ///   planning laid the failure out before the split;
+    ///   consumer of the stable file depending on it instead (also through
+    ///   a shared input group: a tool's runfiles can hold the file), exactly
+    ///   as planning laid the failure out before the split;
     /// * every inherited action environment name is resolved against the
     ///   client environment (ActionEnvironment.resolve; the encoding never
     ///   holds the values).
@@ -319,6 +321,7 @@ impl PlannedRequest {
                         redirect_stable(&mut dependency.action_id);
                     }
                 }
+                self.redirect_stable_in_groups();
                 let redirect = |produced: &mut Produced| {
                     if let Some((id, _)) = &mut produced.producer {
                         redirect_stable(id);
@@ -341,6 +344,41 @@ impl PlannedRequest {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The failed-status layout of the shared input groups (PA-1): a
+    /// tool's runfiles tree holding the stable status file depends on
+    /// `#stable` through its group. Each such group is rebuilt once with
+    /// the dependency redirected and every holder takes the rebuilt group,
+    /// so its holders still share one (a group is never changed in place:
+    /// `Arc::make_mut` would give every holder a copy of its own); the
+    /// other groups stay as they are.
+    fn redirect_stable_in_groups(&mut self) {
+        let stamped = |group: &InputGroup| {
+            group
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.action_id == STABLE_STATUS_ID)
+        };
+        // Old pointer -> (old group kept alive, its redirected copy): no
+        // address is reused while the pass runs.
+        let mut redirected: HashMap<*const InputGroup, (Arc<InputGroup>, Arc<InputGroup>)> =
+            HashMap::new();
+        for node in &mut self.nodes {
+            for group in &mut node.groups {
+                if !stamped(group) {
+                    continue;
+                }
+                let (_, copy) = redirected.entry(Arc::as_ptr(group)).or_insert_with(|| {
+                    let mut copy = InputGroup::clone(group);
+                    for dependency in &mut copy.dependencies {
+                        redirect_stable(&mut dependency.action_id);
+                    }
+                    (Arc::clone(group), Arc::new(copy))
+                });
+                *group = Arc::clone(copy);
             }
         }
     }
@@ -890,6 +928,92 @@ mod tests {
             request.run_plans[0].1.executable.producer,
             Some((STABLE_STATUS_ID.to_owned(), 0))
         );
+    }
+
+    /// A shared input group below `bazel-out/tool.runfiles` with one
+    /// generated input made by `producer`.
+    fn tool_group(destination: &str, producer: &str) -> Arc<InputGroup> {
+        Arc::new(InputGroup {
+            root: PathBuf::from("bazel-out/tool.runfiles"),
+            inputs: Vec::new(),
+            dependencies: vec![Dependency {
+                action_id: producer.to_owned(),
+                output_index: 0,
+                destination: PathBuf::from("bazel-out/tool.runfiles").join(destination),
+            }],
+            tree_inputs: Vec::new(),
+            constant_metadata: Vec::new(),
+            empty_files: Vec::new(),
+            sources: Vec::new(),
+            valid: true,
+        })
+    }
+
+    /// PA-1 x W4 (integration-21): a tool's runfiles can hold the stable
+    /// status file, so a failed status redirects a shared input group's
+    /// dependency on `#stable` too — each affected group rebuilt once and
+    /// shared again by all its holders, every other group untouched — and
+    /// no dependency on the removed `#stable` node remains (the scheduler
+    /// would refuse the graph: `unknown dependency`).
+    #[test]
+    fn a_failed_status_redirects_the_shared_input_groups_holding_the_stable_file() {
+        let stamped = tool_group("_main/stable-status.txt", STABLE_STATUS_ID);
+        let plain = tool_group("_main/out", "//:first");
+        let holders = |request: &mut PlannedRequest| {
+            for (index, groups) in [vec![&stamped, &plain], vec![&stamped]]
+                .into_iter()
+                .enumerate()
+            {
+                let mut holder = node(&format!("//:holder{index}"), None, &[]);
+                holder.groups = groups.into_iter().map(Arc::clone).collect();
+                request.nodes.push(holder);
+            }
+        };
+        let mut request = with_placeholders();
+        holders(&mut request);
+        request
+            .finalize(StatusSource::Planned(Some(
+                ComputedWorkspaceStatus::Failed(crate::workspace_status::WorkspaceStatusError(
+                    "Process exited with status 1".to_owned(),
+                )),
+            )))
+            .unwrap();
+        let held: Vec<&Vec<Arc<InputGroup>>> = request
+            .nodes
+            .iter()
+            .filter(|node| node.action.id.starts_with("//:holder"))
+            .map(|node| &node.groups)
+            .collect();
+        let rebuilt = &held[0][0];
+        assert!(!Arc::ptr_eq(rebuilt, &stamped));
+        assert!(Arc::ptr_eq(rebuilt, &held[1][0]), "shared again");
+        assert_eq!(rebuilt.dependencies[0].action_id, VOLATILE_STATUS_ID);
+        assert_eq!(
+            rebuilt.dependencies[0].destination,
+            stamped.dependencies[0].destination
+        );
+        assert!(Arc::ptr_eq(&held[0][1], &plain), "untouched");
+        // The planned group itself is not changed in place.
+        assert_eq!(stamped.dependencies[0].action_id, STABLE_STATUS_ID);
+        assert!(request.nodes.iter().all(|node| {
+            node.all_dependencies()
+                .all(|dependency| dependency.action_id != STABLE_STATUS_ID)
+        }));
+        // A successful status keeps every group as planned.
+        let mut request = with_placeholders();
+        holders(&mut request);
+        request
+            .finalize(StatusSource::Planned(Some(ComputedWorkspaceStatus::Ok(
+                status(),
+            ))))
+            .unwrap();
+        let holder = request
+            .nodes
+            .iter()
+            .find(|node| node.action.id == "//:holder0")
+            .unwrap();
+        assert!(Arc::ptr_eq(&holder.groups[0], &stamped));
+        assert!(Arc::ptr_eq(&holder.groups[1], &plain));
     }
 
     /// A decoded request (a snapshot hit) runs the status command itself.

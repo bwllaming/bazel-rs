@@ -56,8 +56,12 @@ Paths and byte strings stay exactly what they were in memory (lone bytes include
   `StatusSource::Compute` (a decoded request: run `--workspace_status_command` now) — and writes it into the
   placeholders. A failed status becomes ONE failing `#volatile` node where `#stable` was, and every dependency
   and reported producer of `#stable` is redirected to it: exactly the layout planning produced before the
-  split (`Failed to determine workspace status: ...` once). A placeholder that reaches execution is an
-  internal error (it is keyed apart and never executes).
+  split (`Failed to determine workspace status: ...` once). That includes the dependencies of the shared input
+  groups (PA-1): a tool's runfiles tree can hold the stable status file, so each group depending on `#stable`
+  is rebuilt once with the dependency redirected and all its holders take the rebuilt group (still shared;
+  integration-21, tests `request::tests::a_failed_status_redirects_the_shared_input_groups_holding_the_stable_file`
+  and tests/planned_request.rs `//:tooled`). A placeholder that reaches execution is an internal error (it is
+  keyed apart and never executes).
 * **Environment.** Every inherited action-environment name is resolved against the client environment of this
   run (ActionEnvironment.resolve); actions without inherited names get no client values. Planning still
   resolves them too (the in-memory request is complete), but the encoding never holds the values.

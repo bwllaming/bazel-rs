@@ -9,8 +9,11 @@
 //!   a test), cache hits and a failing workspace status command (`build`,
 //!   `test`, `run`) — on a fixture with tree artifacts expanded by Args
 //!   (deferred command lines and written Args), workspace status consumers,
-//!   genrules (an embedded input) and inherited environment variables. A
-//!   request with a Starlark `map_each` is handed over unencoded.
+//!   genrules (an embedded input), inherited environment variables and two
+//!   actions sharing their tool's runfiles tree, which holds the stable
+//!   status file (one shared input group, PA-1: encoded once, and
+//!   redirected by a failing status command). A request with a Starlark
+//!   `map_each` is handed over unencoded.
 //! * The determinism gate (PLAN-L2 §1b layer 4): the encoded request
 //!   (`BAZEL_RS_SNAPSHOT_PLAN_OUT`) is identical across
 //!   `--loading_phase_threads` 1/8/32 and loading-order jitter seeds.
@@ -78,9 +81,28 @@ _ATTRS = {
 
 script_test = rule(implementation = _exe, test = True, attrs = _ATTRS)
 script_binary = rule(implementation = _exe, executable = True, attrs = _ATTRS)
+
+# A tool whose runfiles hold the stable status file, used by two actions:
+# one shared input group (PA-1) depending on the status node.
+def _status_tool(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/bash\nfind \"$0.runfiles\" | LC_ALL=C sort > \"$1\"\n", is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = [ctx.info_file] + ctx.files.data))]
+
+status_tool = rule(implementation = _status_tool, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+
+def _tooled(ctx):
+    outs = []
+    for name in ["one", "two"]:
+        out = ctx.actions.declare_file(ctx.label.name + "." + name)
+        ctx.actions.run(outputs = [out], executable = ctx.executable.tool, arguments = [out.path])
+        outs.append(out)
+    return [DefaultInfo(files = depset(outs))]
+
+tooled = rule(implementation = _tooled, attrs = {"tool": attr.label(executable = True, cfg = "target")})
 "##;
 
-const ROOT_BUILD: &str = r##"load("//rules:defs.bzl", "script_binary", "script_test", "tree")
+const ROOT_BUILD: &str = r##"load("//rules:defs.bzl", "script_binary", "script_test", "status_tool", "tooled", "tree")
 
 tree(name = "t", deps = ["//p00:g00", "//p05:g05"])
 
@@ -101,6 +123,10 @@ script_binary(name = "tool", data = [":g"], script = "#!/bin/bash\necho tool-ran
 script_test(name = "stamped_test", size = "small", data = [":t"], script = "#!/bin/bash\necho stamped\n")
 
 script_binary(name = "stamped_tool", data = [":t"], script = "#!/bin/bash\necho stamped-tool\n")
+
+status_tool(name = "status_tool", data = [":g"])
+
+tooled(name = "tooled", tool = ":status_tool")
 "##;
 
 fn manifest() -> &'static Path {
@@ -271,6 +297,20 @@ fn round_tripped_requests_execute_byte_identically() {
             ],
             false,
         ),
+        // PA-1 x W4 (integration-21): two actions share their tool's
+        // runfiles tree (one input group, encoded once); the tree holds the
+        // stable status file, so a failing status command redirects the
+        // group's dependency too.
+        (&["build", "//:tooled"], false),
+        (&["build", "//:tooled"], true),
+        (
+            &[
+                "build",
+                "--workspace_status_command=/bin/false",
+                "//:tooled",
+            ],
+            false,
+        ),
     ];
     for (arguments, warm) in cases {
         let mut runs = Vec::new();
@@ -334,6 +374,55 @@ fn round_tripped_requests_execute_byte_identically() {
         "bazel-out/k8-fastbuild/bin/t_dir/a.txt\nbazel-out/k8-fastbuild/bin/t_dir/sub/b.txt\n"
     );
     assert_eq!(output("t.env"), "from-client\n");
+}
+
+/// PA-1 x W4 (integration-21): the two `tooled` actions hold their tool's
+/// runfiles tree as ONE shared input group, which the codec encodes once
+/// (`groups=1`), and the decoded request stages it for both: each sees the
+/// stable status file and the tool's data in the tree.
+#[test]
+fn a_shared_tool_tree_round_trips_as_one_group() {
+    let ws = Workspace::fixture();
+    let built = ws.run(
+        &["build", "//:tooled"],
+        &[
+            ("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+    );
+    let (code, stdout, stderr) = observed(&built);
+    assert_eq!(code, Some(0), "{stderr}");
+    let line = |prefix: &str| {
+        stderr
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(
+        line("PERF-GROUPS ").contains(" holders=2 refs=2 distinct=1 "),
+        "{stderr}"
+    );
+    let plan = line("PERF-PLAN ");
+    assert!(
+        plan.contains(" groups=1 ") && plan.ends_with(" roundtrip=1"),
+        "{plan}"
+    );
+    for suffix in ["tooled.one", "tooled.two"] {
+        let path = stdout
+            .lines()
+            .find_map(|line| {
+                line.split_once('\t')
+                    .map(|(_, path)| path)
+                    .filter(|path| path.ends_with(suffix))
+            })
+            .unwrap_or_else(|| panic!("{suffix} in {stdout}"));
+        let listing = fs::read_to_string(path).unwrap();
+        assert!(
+            listing.contains("stable-status.txt") && listing.contains("/g.txt"),
+            "{listing}"
+        );
+    }
 }
 
 const MAPPED_DEFS: &str = r#"def _basename(f):
