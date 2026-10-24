@@ -765,7 +765,9 @@ where
     let manifest_path = direct.join("manifests").join(format!("{identity}.json"));
     let (bytes, existing) = {
         let _m = timing::mark(&timing::PHASES.manifest_read);
-        let Some(bytes) = read_stable(&manifest_path).ok() else {
+        // A missing manifest under a valid pointer may be a republication
+        // between its two renames: looked for again (bounded).
+        let Some(bytes) = read_published(&manifest_path, true).ok() else {
             return Ok(None);
         };
         let Some(existing) = parse_manifest(&bytes) else {
@@ -1342,7 +1344,8 @@ fn read_pointer(path: &Path) -> Result<Option<String>, String> {
         format: u32,
         identity: String,
     }
-    let Ok(bytes) = read_stable(path) else {
+    // A missing pointer is a specification never published: no waiting.
+    let Ok(bytes) = read_published(path, false) else {
         return Ok(None);
     };
     crate::observed_fs::note_read(path, &bytes);
@@ -1527,6 +1530,108 @@ fn stable(before: &fs::Metadata, after: &fs::Metadata) -> bool {
 fn read_stable(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     stream_stable(path, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// How often [`read_published`] reads a file that is being replaced.
+const PUBLISHED_READ_ATTEMPTS: u32 = 8;
+
+/// A test hook run with the number of the attempt that failed.
+#[cfg(test)]
+type RetryHook = Box<dyn FnMut(u32)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook: runs before each further attempt of [`read_published`]
+    /// on this thread.
+    static BEFORE_PUBLISHED_RETRY: std::cell::RefCell<Option<RetryHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A publication's specification pointer or manifest, read for the warm
+/// probe ([`try_reuse`]). Publishers and the probes of other threads and
+/// processes replace these files by renames while a probe reads them
+/// ([`publish_pointer`], [`refresh_manifest`]; a republication renames the
+/// old manifest away before it renames the new one in), so a read that
+/// checks the path again after reading ([`read_stable`]) is torn by a
+/// rename and missed a valid publication. Here the bytes come from the one
+/// opened file, complete whatever is renamed over its path meanwhile; only
+/// a change of that file itself while it is read fails an attempt. Such an
+/// attempt, and with `wait_if_missing` a missing file (after a pause of
+/// 1 ms, then 2, ..., 28 ms in all), is tried again, up to
+/// [`PUBLISHED_READ_ATTEMPTS`] times; the last error stands.
+fn read_published(path: &Path, wait_if_missing: bool) -> Result<Vec<u8>, String> {
+    let mut attempt = 1;
+    loop {
+        let (missing, error) = match read_opened(path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(Unread::Missing(error)) if wait_if_missing => (true, error),
+            Err(Unread::Changed(error)) => (false, error),
+            Err(Unread::Missing(error) | Unread::Failed(error)) => return Err(error),
+        };
+        if attempt == PUBLISHED_READ_ATTEMPTS {
+            return Err(error);
+        }
+        #[cfg(test)]
+        BEFORE_PUBLISHED_RETRY.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(attempt);
+            }
+        });
+        if missing {
+            std::thread::sleep(std::time::Duration::from_millis(u64::from(attempt)));
+        }
+        attempt += 1;
+    }
+}
+
+/// Why [`read_opened`] read nothing.
+enum Unread {
+    /// No file at the path.
+    Missing(String),
+    /// The opened file changed while it was read.
+    Changed(String),
+    Failed(String),
+}
+
+/// One attempt of [`read_published`]: the regular file `path` (never
+/// through a link, never hard-linked) read whole from one descriptor, which
+/// must keep its size and modification time while it is read. A rename over
+/// the path only unlinks it: no link left is no second link.
+fn read_opened(path: &Path) -> Result<Vec<u8>, Unread> {
+    let failed = |error: std::io::Error| Unread::Failed(error.to_string());
+    let mut options = OpenOptions::new();
+    options.read(true);
+    no_follow(&mut options);
+    let mut file = options.open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Unread::Missing(error.to_string())
+        } else {
+            Unread::Failed(error.to_string())
+        }
+    })?;
+    let opened = file.metadata().map_err(failed)?;
+    #[cfg(unix)]
+    let unlinked = {
+        use std::os::unix::fs::MetadataExt;
+        opened.nlink() == 0
+    };
+    #[cfg(not(unix))]
+    let unlinked = false;
+    if !(opened.is_file() && unlinked) {
+        regular_metadata(&opened).map_err(Unread::Failed)?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(failed)?;
+    let read = file.metadata().map_err(failed)?;
+    if bytes.len() as u64 != opened.len()
+        || read.len() != opened.len()
+        || read.modified().ok() != opened.modified().ok()
+    {
+        return Err(Unread::Changed(
+            "direct repository file changed while reading".into(),
+        ));
+    }
     Ok(bytes)
 }
 
@@ -4381,6 +4486,105 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
         no_stages(cache.path());
+    }
+
+    /// A warm probe never misses a valid publication because another probe
+    /// renames a refreshed manifest over the one it is reading (here a
+    /// tight loop renaming identical bytes into place): it reads the opened
+    /// file, which a rename leaves complete ([`read_published`]). Before:
+    /// 301 of 2,000 probes missed ("changed while reading"), and
+    /// `concurrent_warm_probes_refresh_the_manifest_safely` failed 7 of 300
+    /// loaded runs on "every probe reuses".
+    #[test]
+    fn probes_read_manifests_that_are_renamed_over_meanwhile() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        let bytes = fs::read(&path).unwrap();
+        let spec_key = spec_identity(b"spec");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let renamer = {
+            let (stop, path, bytes) = (stop.clone(), path.clone(), bytes.clone());
+            std::thread::spawn(move || {
+                let mut renames = 0u64;
+                while !stop.load(Ordering::SeqCst) {
+                    let mut stage =
+                        tempfile::NamedTempFile::new_in(path.parent().unwrap()).unwrap();
+                    stage.write_all(&bytes).unwrap();
+                    stage.persist(&path).unwrap();
+                    renames += 1;
+                }
+                renames
+            })
+        };
+        let misses = (0..2000)
+            .filter(|_| {
+                try_reuse(cache.path(), &spec_key, |_, _| Ok(true))
+                    .unwrap()
+                    .is_none()
+            })
+            .count();
+        stop.store(true, Ordering::SeqCst);
+        let renames = renamer.join().unwrap();
+        assert!(renames > 0);
+        assert_eq!(
+            misses, 0,
+            "{misses} of 2,000 probes missed ({renames} renames)"
+        );
+    }
+
+    /// A republication renames the old manifest away before it renames the
+    /// new one in: a probe that finds no manifest under a valid pointer
+    /// looks again after a pause (bounded), so the publication in between
+    /// is not missed. A missing pointer (a specification never published)
+    /// is never waited for, and a manifest that stays missing is given up
+    /// after [`PUBLISHED_READ_ATTEMPTS`] attempts.
+    #[test]
+    fn probes_wait_briefly_for_a_manifest_between_two_renames() {
+        let cache = temp();
+        let (tree, _) = publish(cache.path(), b"", write).unwrap();
+        let path = metadata_path(cache.path(), &tree);
+        let away = cache.path().join("direct/manifests/away");
+        let spec_key = spec_identity(b"spec");
+        let retries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook = |restore: bool| {
+            let (retries, path, away) = (retries.clone(), path.clone(), away.clone());
+            BEFORE_PUBLISHED_RETRY.with(|cell| {
+                *cell.borrow_mut() = Some(Box::new(move |attempt| {
+                    retries.lock().unwrap().push(attempt);
+                    if restore && attempt == 2 {
+                        fs::rename(&away, &path).unwrap();
+                    }
+                }));
+            });
+        };
+        // The new manifest arrives during the probe's retries.
+        fs::rename(&path, &away).unwrap();
+        hook(true);
+        assert_eq!(
+            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            Some(tree.clone())
+        );
+        assert_eq!(*retries.lock().unwrap(), [1, 2]);
+        // A specification never published: no waiting.
+        retries.lock().unwrap().clear();
+        assert_eq!(
+            try_reuse(cache.path(), &spec_identity(b"other"), |_, _| Ok(true)).unwrap(),
+            None
+        );
+        assert!(retries.lock().unwrap().is_empty());
+        // A manifest that stays missing: given up after the last attempt.
+        fs::rename(&path, &away).unwrap();
+        hook(false);
+        assert_eq!(
+            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            None
+        );
+        assert_eq!(
+            *retries.lock().unwrap(),
+            (1..PUBLISHED_READ_ATTEMPTS).collect::<Vec<_>>()
+        );
+        BEFORE_PUBLISHED_RETRY.with(|cell| cell.borrow_mut().take());
     }
 
     /// Review i20: the refresh is a compare-and-swap under the publication

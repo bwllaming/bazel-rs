@@ -604,6 +604,23 @@ hang; skipped when the manifest changed since it was read; applied once
 otherwise). Mutating the lock or the byte-exact compare back to the old
 identity+content guard fails the latter.
 
+A probe that read the manifest while another probe's refresh renamed a new
+one over it used to miss the valid publication: the read checked the path
+again after reading and reported "changed while reading", and `try_reuse`
+returned `None` (performance only: the caller falls back to the guarded
+path; `concurrent_warm_probes_refresh_the_manifest_safely` failed 7 of 300
+loaded runs on "every probe reuses", a probe against a tight rename loop of
+identical bytes missed 246–369 of 2,000). The probe now reads the pointer
+and the manifest through `read_published` (fix-digest-memo): the bytes of the
+one opened file, which a rename over the path leaves complete (an unlinked
+file is no hard-linked one); only a change of that file itself fails an
+attempt, which is retried, and a manifest missing under a valid pointer — a
+republication renames the old manifest away before it renames the new one
+in — is looked for again after 1, 2, ... ms, up to 8 attempts (28 ms in all).
+A missing pointer, a specification never published, is never waited for.
+Tests `probes_read_manifests_that_are_renamed_over_meanwhile` (0 of 2,000
+probes miss) and `probes_wait_briefly_for_a_manifest_between_two_renames`.
+
 ### Recorded-input digest memo
 
 Every recorded-input file state (`file:<sha256>` of a file a repository rule
