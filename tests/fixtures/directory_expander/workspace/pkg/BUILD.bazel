@@ -1,0 +1,8 @@
+load(":defs.bzl", "not_input", "probe")
+
+probe(name = "probe")
+
+not_input(
+    name = "not_input",
+    tags = ["manual"],
+)

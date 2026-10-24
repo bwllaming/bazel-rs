@@ -71,8 +71,12 @@ Citations are to the pinned Bazel source
   expand a tree to its files in byte order of relative path when the consuming
   action executes (`VectorArg.preprocess`/`expandDirectories`,
   `StarlarkCustomCommandLine.java:309-485`). `map_each` is then called on each
-  child File; it must be a top-level function of a loaded `.bzl` file (the
-  frozen function is called after analysis), else analysis fails explicitly.
+  child File when the action executes: a top-level function of a loaded `.bzl`
+  file is called frozen; any other callable — a closure with
+  `allow_closure=True` (aspect_rules_js's js_image_layer `map_entry`), a
+  lambda, a built-in such as `str` — is retained by the analysis module and
+  frozen with it (`analysis_runtime::retain_mapper`), like Bazel's retained
+  StarlarkCallable.
   Without `allow_closure=True`, `map_each` must be a global `def`
   (Args.validateMapEach, `analysis/starlark/Args.java:366-385`): one of the
   analyzing package's load graph, or (N47) of any package the build loaded,
@@ -96,8 +100,21 @@ Citations are to the pinned Bazel source
   with Bazel's `Cannot add directories to Args#add ...` (`Args.java:534-541`).
   Written Args expand their directories too (the directories become inputs of
   the write).
-* Two-argument `map_each(item, expander)` (DirectoryExpander) stays
-  unsupported.
+* Two-argument `map_each(item, expander)`
+  (`StarlarkCustomCommandLine.applyMapEach`/`wantsDirectoryExpander`,
+  `:1085-1188`): a `def` or lambda declaring two or more parameters (also
+  `def f(x, *rest)`) gets a `DirectoryExpander` (type name `DirectoryExpander`)
+  as its second argument; built-ins never do. `expand(file)` returns a tree
+  artifact input's files (relative-path byte order) or `[file]`; a tree that
+  is no input of the action is FullExpander's `Failed to expand directory
+  <generated file ...>. Only directories that are action inputs can be
+  expanded.`, failing the action. With `expand_directories=False` a tree
+  reaches such a map_each as it is, when the action executes; with `True` its
+  files do. Non-directory values keep the eager mapping at analysis time,
+  where `expand()` of a tree fails explicitly (genuine expands it at
+  execution); the list it returns is mutable natively. Paired capture
+  `tests/fixtures/directory_expander` (4 genuine 9.3.0 cases, all MATCH),
+  replayed by `tests/directory_expander.rs`.
 
 ## ctx.actions.symlink
 

@@ -1362,6 +1362,7 @@ r = rule(implementation=impl, subrules=[S])
             runfiles: Default::default(),
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
+            retained_mappers: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let heap = module.heap();
@@ -1521,6 +1522,7 @@ S = subrule(implementation=callback)
             runfiles: Default::default(),
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
+            retained_mappers: Default::default(),
         };
         Module::with_temp_heap(|module| {
             let s = module.heap().access_owned_frozen_value(&owned);

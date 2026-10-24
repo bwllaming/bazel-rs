@@ -62,6 +62,32 @@ pub(crate) enum Item {
     Strings(Vec<String>),
     /// A tree artifact expanded at execution time.
     Directory(#[serde(with = "crate::snapshot::codec::file")] File),
+    /// A tree artifact passed as it is to a map_each that takes a
+    /// DirectoryExpander (`expand_directories = False`), at execution time.
+    Unexpanded(#[serde(with = "crate::snapshot::codec::file")] File),
+}
+
+/// The map_each function of a deferred vector, called at execution time: a
+/// frozen top-level function, or any other callable (a closure with
+/// `allow_closure = True`, a built-in such as `str`) retained by the
+/// analysis module and set when that module freezes
+/// (crate::analysis_runtime::Context::retain_mapper).
+#[derive(Clone, Debug)]
+pub(crate) enum Mapper {
+    Frozen(OwnedFrozenValue),
+    Retained(Arc<std::sync::OnceLock<OwnedFrozenValue>>),
+}
+
+impl Mapper {
+    fn function(&self) -> Result<&OwnedFrozenValue, String> {
+        match self {
+            Self::Frozen(function) => Ok(function),
+            Self::Retained(cell) => cell.get().ok_or_else(|| {
+                "internal error: a deferred map_each was not retained by its analysis module"
+                    .to_owned()
+            }),
+        }
+    }
 }
 
 /// An add_all/add_joined call whose values contain tree artifacts.
@@ -73,7 +99,91 @@ pub(crate) struct DeferredVector {
     /// planned request that still needs one cannot be encoded
     /// (crate::snapshot::codec::map_each).
     #[serde(with = "crate::snapshot::codec::map_each")]
-    pub map_each: Option<OwnedFrozenValue>,
+    pub map_each: Option<Mapper>,
+    /// map_each takes a DirectoryExpander (wantsDirectoryExpander: a
+    /// StarlarkFunction with two or more parameters).
+    pub expander: bool,
+}
+
+/// The file listings a DirectoryExpander expands at execution time: each
+/// tree artifact of the vector (by exec path) to its files.
+pub(crate) type Listings = std::collections::BTreeMap<String, Vec<File>>;
+
+// Only derive-generated marker implementations need the exception. The value
+// owns its listings (Files), no heap references.
+#[allow(unsafe_code)]
+mod expander {
+    use super::*;
+    use allocative::Allocative;
+    use starlark::values::{NoSerialize, ProvidesStaticType, StarlarkPagablePanic};
+
+    /// DirectoryExpander (starlarkbuildapi/DirectoryExpander.java,
+    /// StarlarkCustomCommandLine.FullExpander :1099-1123): `expand(file)` is
+    /// the files of a tree artifact input, or `[file]`. `listings` is `None`
+    /// for the native's eager mapping of non-directory values at analysis
+    /// time, where expanding a directory is an explicit gap.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(crate) struct DirectoryExpander {
+        #[allocative(skip)]
+        pub listings: Option<Arc<Listings>>,
+    }
+    starlark::starlark_simple_value!(DirectoryExpander);
+}
+pub(crate) use expander::DirectoryExpander;
+
+impl std::fmt::Display for DirectoryExpander {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<DirectoryExpander>")
+    }
+}
+
+starlark::methods_static!(DIRECTORY_EXPANDER_METHODS = directory_expander_methods);
+
+#[starlark::values::starlark_value(type = "DirectoryExpander")]
+impl<'v> starlark::values::StarlarkValue<'v> for DirectoryExpander {
+    fn get_methods() -> Option<&'static starlark::environment::Methods> {
+        Some(DIRECTORY_EXPANDER_METHODS.methods())
+    }
+}
+
+#[starlark::starlark_module]
+fn directory_expander_methods(builder: &mut starlark::environment::MethodsBuilder) {
+    /// DirectoryExpander.expand (DirectoryExpander.java): a tree artifact
+    /// input's files, else the file alone.
+    fn expand<'v>(
+        this: &DirectoryExpander,
+        #[starlark(require = pos)] file: starlark::values::Value<'v>,
+        heap: starlark::values::Heap<'v>,
+    ) -> anyhow::Result<starlark::values::Value<'v>> {
+        let Some(found) = File::from_value(file) else {
+            anyhow::bail!(
+                "in call to expand(), parameter 'file' got value of type '{}', want 'File'",
+                file.get_type()
+            );
+        };
+        if !found.is_directory {
+            return Ok(heap.alloc(vec![file]));
+        }
+        let Some(listings) = &this.listings else {
+            anyhow::bail!(
+                "DirectoryExpander.expand({}) while map_each maps a non-directory value: the native profile maps those values at analysis time, where directories cannot be expanded (docs/ACTIONS_PARAMS.md)",
+                file.to_repr()
+            );
+        };
+        let Some(children) = listings.get(&found.path) else {
+            // FullExpander.list (:1106-1117).
+            anyhow::bail!(
+                "Failed to expand directory {}. Only directories that are action inputs can be expanded.",
+                file.to_repr()
+            );
+        };
+        Ok(heap.alloc(
+            children
+                .iter()
+                .map(|child| crate::starlark_types::alloc_file(heap, child.clone()))
+                .collect::<Vec<_>>(),
+        ))
+    }
 }
 
 /// One Args mutation (`recordArgStart`): add, add_all or add_joined.
@@ -176,15 +286,27 @@ pub(crate) fn tree_child(tree: &File, relative: &std::path::Path) -> File {
     }
 }
 
-/// Call a frozen top-level map_each function with one tree child.
-fn call_mapper(mapper: &OwnedFrozenValue, file: File) -> Result<Vec<String>, String> {
+/// Call a deferred map_each with one value (a tree child, or an unexpanded
+/// tree), and a DirectoryExpander over `listings` when it takes one
+/// (StarlarkCustomCommandLine.applyMapEach, :1125-1183).
+fn call_mapper(
+    mapper: &Mapper,
+    file: File,
+    listings: Option<&Arc<Listings>>,
+) -> Result<Vec<String>, String> {
+    let mapper = mapper.function()?;
     Module::with_temp_heap(|module| {
         let heap = module.heap();
         let function = heap.access_owned_frozen_value(mapper);
         let mut eval = Evaluator::new(&module);
-        let argument = crate::starlark_types::alloc_file(heap, file);
+        let mut arguments = vec![crate::starlark_types::alloc_file(heap, file)];
+        if let Some(listings) = listings {
+            arguments.push(heap.alloc(DirectoryExpander {
+                listings: Some(Arc::clone(listings)),
+            }));
+        }
         let mapped = eval
-            .eval_function(function, &[argument], &[])
+            .eval_function(function, &arguments, &[])
             .map_err(|e| format!("map_each failed: {e}"))?;
         mapped_strings(mapped)
     })
@@ -210,6 +332,28 @@ pub(crate) fn mapped_strings(mapped: starlark::values::Value<'_>) -> Result<Vec<
 }
 
 fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec<String>, String> {
+    // The DirectoryExpander of a map_each that takes one lists the vector's
+    // tree artifacts (FullExpander over the action's input metadata).
+    let listings = if vector.expander {
+        let mut listings = Listings::new();
+        for item in &vector.items {
+            // A tree the lookup cannot list (no action input) stays unlisted:
+            // expanding it is FullExpander's error, ignoring it is fine.
+            if let Item::Directory(tree) | Item::Unexpanded(tree) = item
+                && !listings.contains_key(&tree.path)
+                && let Ok(relatives) = trees(tree)
+            {
+                let children = relatives
+                    .iter()
+                    .map(|relative| tree_child(tree, relative))
+                    .collect();
+                listings.insert(tree.path.clone(), children);
+            }
+        }
+        Some(Arc::new(listings))
+    } else {
+        None
+    };
     let mut values = Vec::new();
     for item in &vector.items {
         match item {
@@ -218,11 +362,19 @@ fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec
                 for relative in trees(tree)? {
                     let child = tree_child(tree, &relative);
                     match &vector.map_each {
-                        Some(mapper) => values.extend(call_mapper(mapper, child)?),
+                        Some(mapper) => {
+                            values.extend(call_mapper(mapper, child, listings.as_ref())?)
+                        }
                         None => values.push(child.path),
                     }
                 }
             }
+            Item::Unexpanded(tree) => match &vector.map_each {
+                Some(mapper) => {
+                    values.extend(call_mapper(mapper, tree.clone(), listings.as_ref())?)
+                }
+                None => values.push(tree.path.clone()),
+            },
         }
     }
     assemble(&vector.shape, values)
@@ -249,7 +401,9 @@ pub(crate) fn expand_groups(
                     for item in &vector.items {
                         match item {
                             Item::Strings(strings) => values.extend(strings.iter().cloned()),
-                            Item::Directory(tree) => values.push(tree.path.clone()),
+                            Item::Directory(tree) | Item::Unexpanded(tree) => {
+                                values.push(tree.path.clone())
+                            }
                         }
                     }
                     assemble(&vector.shape, values)?

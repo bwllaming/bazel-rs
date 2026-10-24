@@ -393,9 +393,19 @@ fn check_mapper(
     Ok(())
 }
 
+/// StarlarkCustomCommandLine.wantsDirectoryExpander (:1185-1188): a
+/// StarlarkFunction (`def` or lambda) declaring two or more parameters gets
+/// a DirectoryExpander as its second argument; built-ins never do.
+fn wants_expander(map_each: Value<'_>) -> bool {
+    map_each
+        .parameters_spec()
+        .is_some_and(|parameters| parameters.len() >= 2)
+}
+
 fn map_one<'v>(
     item: Value<'v>,
     map_each: Value<'v>,
+    expander: bool,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Vec<String>> {
     if map_each.is_none() {
@@ -403,9 +413,17 @@ fn map_one<'v>(
     }
     // Bazel calls map_each while expanding the command line, in its own
     // Starlark thread (StarlarkCustomCommandLine.java:1138), not within the
-    // rule implementation.
+    // rule implementation. A non-directory value is mapped here, eagerly:
+    // its DirectoryExpander expands non-directories only.
+    let mut arguments = vec![item];
+    if expander {
+        arguments.push(
+            eval.heap()
+                .alloc(crate::command_line::DirectoryExpander { listings: None }),
+        );
+    }
     let mapped = eval
-        .with_new_recursion_scope(|eval| eval.eval_function(map_each, &[item], &[]))
+        .with_new_recursion_scope(|eval| eval.eval_function(map_each, &arguments, &[]))
         .map_err(|e| anyhow!("map_each failed: {e}"))?;
     crate::command_line::mapped_strings(mapped).map_err(anyhow::Error::msg)
 }
@@ -445,18 +463,27 @@ fn vector_group<'v>(
     if values.is_empty() && shape.omit_if_empty {
         return Ok(None);
     }
+    let expander = !map_each.is_none() && wants_expander(map_each);
     let mut items: Vec<Item> = Vec::new();
     let mut deferred = false;
     for item in values {
-        if expand_directories
-            && let Some(file) = File::from_value(item)
+        if let Some(file) = File::from_value(item)
             && file.is_directory
         {
-            deferred = true;
-            items.push(Item::Directory(file.clone()));
-            continue;
+            // A tree artifact expands at execution time; one passed as it is
+            // to a map_each with a DirectoryExpander is mapped then too.
+            if expand_directories {
+                deferred = true;
+                items.push(Item::Directory(file.clone()));
+                continue;
+            }
+            if expander {
+                deferred = true;
+                items.push(Item::Unexpanded(file.clone()));
+                continue;
+            }
         }
-        let strings = map_one(item, map_each, eval)?;
+        let strings = map_one(item, map_each, expander, eval)?;
         match items.last_mut() {
             Some(Item::Strings(previous)) => previous.extend(strings),
             _ => items.push(Item::Strings(strings)),
@@ -466,27 +493,30 @@ fn vector_group<'v>(
         let map_each = if map_each.is_none() {
             None
         } else {
+            // A top-level function of a loaded .bzl file is already frozen;
+            // any other callable (a closure with allow_closure, a built-in)
+            // is retained by the analysis module until it freezes.
             Some(
-                crate::analysis_runtime::owned_top_level_function(eval, map_each).ok_or_else(
-                    || {
-                        anyhow!(
-                            "map_each over the contents of a directory requires a top-level function of a loaded .bzl file (native execution-time expansion)"
-                        )
-                    },
-                )?,
+                match crate::analysis_runtime::owned_top_level_function(eval, map_each) {
+                    Some(function) => crate::command_line::Mapper::Frozen(function),
+                    None => crate::command_line::Mapper::Retained(
+                        crate::analysis_runtime::retain_mapper(eval, map_each)?,
+                    ),
+                },
             )
         };
         return Ok(Some(Group::Deferred(Arc::new(DeferredVector {
             shape,
             items,
             map_each,
+            expander,
         }))));
     }
     let values = items
         .into_iter()
         .flat_map(|item| match item {
             Item::Strings(strings) => strings,
-            Item::Directory(_) => unreachable!("no directory items"),
+            Item::Directory(_) | Item::Unexpanded(_) => unreachable!("no directory items"),
         })
         .collect();
     Ok(Some(Group::Strings(
@@ -988,6 +1018,22 @@ expanded([a]) == ["1", "2", "\"x\""]
         // Any callable, built-ins included (json.encode, aspect_rules_js's
         // js_image_layer: tests/fixtures/args_map_each).
         pass("a.add_all([1, True], map_each=str)\nexpanded([a]) == ['1', 'True']");
+        // A StarlarkFunction with two or more parameters gets a
+        // DirectoryExpander (StarlarkCustomCommandLine.wantsDirectoryExpander);
+        // expanding a non-directory is the file alone.
+        pass(
+            "def two(f, e):\n    return '%s %s %d' % (type(e), f.basename, len(e.expand(f)))\na.add_all([file], map_each=two)\nexpanded([a]) == ['DirectoryExpander file with $ spaces 1']",
+        );
+        pass(
+            "def rest(f, *more):\n    return str(len(more))\na.add_all([file], map_each=rest)\nexpanded([a]) == ['1']",
+        );
+        pass(
+            "a.add_all([file], map_each=lambda f, e: e.expand(f)[0].path, allow_closure=True)\nexpanded([a]) == ['pkg/file with $ spaces']",
+        );
+        fail(
+            "def two(f, e):\n    return e.expand('x')\na.add_all([file], map_each=two)",
+            "in call to expand(), parameter 'file' got value of type 'string', want 'File'",
+        );
         for returned in ["42", "['ok', 42]", "('tuple',)"] {
             fail(
                 &format!(

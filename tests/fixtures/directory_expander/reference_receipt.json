@@ -1,0 +1,157 @@
+{
+ "schema": "directory-expander-reference-receipt/v1",
+ "fixture": "directory_expander",
+ "purpose": "Two-argument Args map_each(item, expander) (StarlarkCustomCommandLine.applyMapEach / wantsDirectoryExpander, analysis/starlark/StarlarkCustomCommandLine.java:1085-1188): a StarlarkFunction (def or lambda) declaring two or more parameters gets a DirectoryExpander (`type()` DirectoryExpander) whose expand(file) is a tree artifact input's files (FullExpander, sorted by relative path) or [file]; a directory with `expand_directories = False` reaches such a map_each as it is, with `expand_directories = True` its files do; a directory that is no action input is `Failed to expand directory <generated file ...>. Only directories that are action inputs can be expanded.` when the action executes. Any callable maps a directory's files at execution time: a top-level def, a closure with allow_closure = True (retained with its analysis module, like Bazel's retained StarlarkCallable), a lambda, a built-in (`str`). Motivation: after Args map_each callables, `build --nobuild //src/ts/...` on ~/code stopped at `analysis of //src/ts/bport:layers: ... js_image_layer.bzl:520, in _js_image_layer_impl  entries.add_all(  error: map_each failed: ... map_entry() missing 1 required positional argument: expander` (aspect_rules_js 2.9.2 js_image_layer's map_entry closure over expanded runfiles directories, js/private/js_image_layer.bzl:460-526).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "3d73263b28cecf17e45a563c2e047d78acaffec73f957092ef25ff681dc64b2e",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pts-capture.py, pts-receipt.py (not committed)",
+  "sha256": {
+   "pts-capture.py": "d4fce085e20aa42812209bb9cf7b2fe090316610b02419c5a0e06a0bf3b3dfcc",
+   "pts-receipt.py": "07f42c0e45c57bf1cc07637691d0d13e68089b89f84abc83d395ccc1cbd326a8"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "da1f6cfde83d4d4d05bd28f38dacc4d8855da8ab33c158ba957ede0fbba20e12",
+  "pkg/BUILD.bazel": "5ac34f4de6b7ba34c73c221293497b99f8876722f5875e9490c4672eeffd73d9",
+  "pkg/a.txt": "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7",
+  "pkg/defs.bzl": "dbaf29cdfa6684d8073f938789b4c54b1f13b989958ad292485f92c3680f1fc5"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/directory_expander.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (or the recorded part of it) (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal; a successful `run` case's stdout (the program's output) equal; a `query` case's stdout equal; the recorded outputs' existence after the command equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "Eager values: expand(file) of a file is [file] (`pkg/a.txt<-a.txt`, `DirectoryExpander:False:pkg/a.txt:1`); `def f(x, *rest)` gets the expander too (rest=1); a 1-parameter def and `str` get the item alone.",
+  "expand_directories = True: map_each sees each file of the tree (is_directory False, short_path pkg/probe_d/a, root bazel-out/k8-fastbuild/bin, owner name probe, expand = [file]) in relative-path byte order (a, c, sub/b); expand_directories = False: map_each(dir, expander) sees the tree (`DirectoryExpander:True:pkg/probe_d:3`) and expand lists its 3 files; js_image_layer's closure `map_entry` (allow_closure) over a source file and a tree with before_each; a 2-parameter lambda; add_joined over expanded files; the same in a spawn's command line; `--nobuild` analyzes it all without expanding.",
+  "expand() of a tree that is no input of the action fails the action: `NotInput pkg/not_input.txt failed: ... Error in expand: Failed to expand directory <generated file pkg/not_input_other>. Only directories that are action inputs can be expanded.`; `--nobuild` succeeds."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and the action failure with its own `action '...': Action ... failed: map_each failed:` prefix and traceback form (the message is Bazel's).",
+  "Native maps non-directory values eagerly at analysis time (unchanged): a DirectoryExpander there expands non-directories only, so a map_each expanding a tree while mapping a non-directory value fails explicitly natively (genuine expands it when the action executes); the list expand() returns is mutable natively.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 4
+ },
+ "scratch_removed": true,
+ "cases": {
+  "probe": {
+   "argv": [
+    "build",
+    "//pkg:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.256,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe.txt\n  bazel-bin/pkg/probe.args\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 2 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/probe.args": [
+      "0o555",
+      "bazel-out/k8-fastbuild/bin/pkg/probe_d/a<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/c<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/sub/b<-probe_d\napp.runfiles/pkg/probe_d/a|bazel-out/k8-fastbuild/bin|probe\napp.runfiles/pkg/probe_d/c|bazel-out/k8-fastbuild/bin|probe\napp.runfiles/pkg/probe_d/sub/b|bazel-out/k8-fastbuild/bin|probe\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/probe.txt": [
+      "0o555",
+      "pkg/a.txt<-a.txt\nDirectoryExpander:False:pkg/a.txt:1\nDirectoryExpander:False:pkg/probe_d/a:1\nDirectoryExpander:False:pkg/probe_d/c:1\nDirectoryExpander:False:pkg/probe_d/sub/b:1\nbazel-out/k8-fastbuild/bin/pkg/probe_d/a<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/c<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/sub/b<-probe_d\nDirectoryExpander:True:pkg/probe_d:3\n,\napp.runfiles/pkg/a.txt||a.txt\n,\napp.runfiles/pkg/probe_d/a|bazel-out/k8-fastbuild/bin|probe\n,\napp.runfiles/pkg/probe_d/c|bazel-out/k8-fastbuild/bin|probe\n,\napp.runfiles/pkg/probe_d/sub/b|bazel-out/k8-fastbuild/bin|probe\na\nc\nb\na.txt rest=1\na rest=1\nc rest=1\nb rest=1\na\nc\nb\n<generated file pkg/probe_d/a>\n<generated file pkg/probe_d/c>\n<generated file pkg/probe_d/sub/b>\nDirectoryExpander:False:pkg/a.txt:1;DirectoryExpander:False:pkg/probe_d/a:1;DirectoryExpander:False:pkg/probe_d/c:1;DirectoryExpander:False:pkg/probe_d/sub/b:1\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.469,
+    "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/probe.args": [
+      "0o555",
+      "bazel-out/k8-fastbuild/bin/pkg/probe_d/a<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/c<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/sub/b<-probe_d\napp.runfiles/pkg/probe_d/a|bazel-out/k8-fastbuild/bin|probe\napp.runfiles/pkg/probe_d/c|bazel-out/k8-fastbuild/bin|probe\napp.runfiles/pkg/probe_d/sub/b|bazel-out/k8-fastbuild/bin|probe\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/probe.txt": [
+      "0o555",
+      "pkg/a.txt<-a.txt\nDirectoryExpander:False:pkg/a.txt:1\nDirectoryExpander:False:pkg/probe_d/a:1\nDirectoryExpander:False:pkg/probe_d/c:1\nDirectoryExpander:False:pkg/probe_d/sub/b:1\nbazel-out/k8-fastbuild/bin/pkg/probe_d/a<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/c<-probe_d\nbazel-out/k8-fastbuild/bin/pkg/probe_d/sub/b<-probe_d\nDirectoryExpander:True:pkg/probe_d:3\n,\napp.runfiles/pkg/a.txt||a.txt\n,\napp.runfiles/pkg/probe_d/a|bazel-out/k8-fastbuild/bin|probe\n,\napp.runfiles/pkg/probe_d/c|bazel-out/k8-fastbuild/bin|probe\n,\napp.runfiles/pkg/probe_d/sub/b|bazel-out/k8-fastbuild/bin|probe\na\nc\nb\na.txt rest=1\na rest=1\nc rest=1\nb rest=1\na\nc\nb\n<generated file pkg/probe_d/a>\n<generated file pkg/probe_d/c>\n<generated file pkg/probe_d/sub/b>\nDirectoryExpander:False:pkg/a.txt:1;DirectoryExpander:False:pkg/probe_d/a:1;DirectoryExpander:False:pkg/probe_d/c:1;DirectoryExpander:False:pkg/probe_d/sub/b:1\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.526,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.437,
+    "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.args\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "not_input": {
+   "argv": [
+    "build",
+    "//pkg:not_input"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.407,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:not_input (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:5:10: NotInput pkg/not_input.txt failed: \n\n<WS>/pkg/defs.bzl:81:17: Traceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 78, column 48, in expand_other\n\t\treturn [x.path for x in expander.expand(other)]\nError in expand: Failed to expand directory <generated file pkg/not_input_other>. Only directories that are action inputs can be expanded.\nTarget //pkg:not_input failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 2 internal, 2 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.448,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:not_input#2': Action pkg/not_input.txt failed: map_each failed: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:78, in expand_other\n      return [x.path for x in expander.expand(other)]\nerror: Failed to expand directory <generated file pkg/not_input_other>. Only directories that are action inputs can be expanded.\n  --> //pkg:defs.bzl:78:33\n   |\n78 |         return [x.path for x in expander.expand(other)]\n   |                                 ^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "Failed to expand directory <generated file pkg/not_input_other>. Only directories that are action inputs can be expanded.",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild_not_input": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:not_input"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.939,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:not_input (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.44,
+    "stdout": "//pkg:not_input\tbazel-out/k8-fastbuild/bin/pkg/not_input.txt\n//pkg:not_input\tbazel-out/k8-fastbuild/bin/pkg/not_input_other\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

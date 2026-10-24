@@ -4,7 +4,7 @@
 #![allow(clippy::too_many_arguments)]
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use anyhow::{anyhow, bail, ensure};
 
@@ -201,6 +201,13 @@ mod owned {
         /// (TargetUtils.getFilteredExecutionInfo with
         /// --incompatible_allow_tags_propagation), and they are keyed.
         pub propagated_tags: BTreeSet<String>,
+        /// Deferred map_each callables that are not frozen top-level
+        /// functions (closures with `allow_closure`, built-ins): each set in
+        /// the analysis module under its slot name and its cell filled when
+        /// that module freezes ([`super::retain_mapper`],
+        /// [`Context::fill_retained_mappers`]), so the command line can call
+        /// it at execution time like Bazel's retained StarlarkCallable.
+        pub retained_mappers: RefCell<Vec<(String, Arc<OnceLock<OwnedFrozenValue>>)>>,
     }
 
     #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, Trace, StarlarkPagablePanic)]
@@ -749,6 +756,43 @@ pub(crate) fn is_top_level_mapper(eval: &Evaluator<'_, '_, '_>, value: Value<'_>
 
 /// The frozen top-level function a map_each value is, usable after analysis
 /// (execution-time expansion of tree artifacts).
+/// Retain a deferred map_each that is not a frozen top-level function
+/// (Args with tree artifacts, crate::command_line::Mapper::Retained): set in
+/// the analysis module (the evaluator's module, frozen with the providers)
+/// under a private slot; the returned cell is filled by
+/// [`Context::fill_retained_mappers`] after the freeze.
+pub(crate) fn retain_mapper<'v>(
+    eval: &Evaluator<'v, '_, '_>,
+    value: Value<'v>,
+) -> anyhow::Result<Arc<OnceLock<OwnedFrozenValue>>> {
+    let context = context(eval).map_err(|_| {
+        anyhow!(
+            "map_each over the contents of a directory needs an analysis context to retain the function until execution"
+        )
+    })?;
+    let mut retained = context.retained_mappers.borrow_mut();
+    let slot = format!("$map_each:{}", retained.len());
+    eval.module().set(&slot, value);
+    let cell = Arc::new(OnceLock::new());
+    retained.push((slot, Arc::clone(&cell)));
+    Ok(cell)
+}
+
+impl Context {
+    /// Fill the retained map_each cells from the frozen analysis module
+    /// ([`retain_mapper`]).
+    pub(crate) fn fill_retained_mappers(
+        &self,
+        frozen: &starlark::environment::FrozenModule,
+    ) -> anyhow::Result<()> {
+        for (slot, cell) in self.retained_mappers.borrow().iter() {
+            let (value, _) = frozen.get_any_visibility(slot)?;
+            let _ = cell.set(value);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn owned_top_level_function(
     eval: &Evaluator<'_, '_, '_>,
     value: Value<'_>,
@@ -2252,6 +2296,7 @@ mod tests {
             runfiles: Default::default(),
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
+            retained_mappers: Default::default(),
         }
     }
 
@@ -2600,6 +2645,7 @@ r=rule(implementation=_rule,subrules=[S])
             runfiles: Default::default(),
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
+            retained_mappers: Default::default(),
         };
         let owner = make_context();
         let foreign = make_context();

@@ -1086,14 +1086,16 @@ pub(crate) mod file {
 }
 
 /// An Args `map_each` function: an in-memory Starlark value with no
-/// encoding. `None` encodes as nothing; `Some` makes the request
-/// unencodable (the snapshot blocker `map-each-deferred`, PLAN-L2 §1b).
+/// encoding — a frozen function or a callable its analysis module retains
+/// (crate::command_line::Mapper). `None` encodes as nothing; `Some` makes
+/// the request unencodable (the snapshot blocker `map-each-deferred`,
+/// PLAN-L2 §1b).
 pub(crate) mod map_each {
     use super::*;
-    use starlark::values::OwnedFrozenValue;
+    use crate::command_line::Mapper;
 
     pub(crate) fn serialize<S: Serializer>(
-        value: &Option<OwnedFrozenValue>,
+        value: &Option<Mapper>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match value {
@@ -1106,7 +1108,7 @@ pub(crate) mod map_each {
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<Option<OwnedFrozenValue>, D::Error> {
+    ) -> Result<Option<Mapper>, D::Error> {
         <()>::deserialize(deserializer).map(|()| None)
     }
 }
@@ -1153,7 +1155,8 @@ mod tests {
                 ..VectorShape::default()
             },
             items: vec![Item::Strings(vec!["lit".into()]), Item::Directory(tree())],
-            map_each,
+            map_each: map_each.map(crate::command_line::Mapper::Frozen),
+            expander: false,
         }))
     }
 

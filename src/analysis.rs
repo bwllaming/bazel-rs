@@ -1771,6 +1771,7 @@ fn analyze_aspect_inner(
         // The base rule's tags (the aspect's action owner is the base
         // target's rule, crate::engine's aspect commit).
         propagated_tags: crate::engine::rule_execution_info(rule),
+        retained_mappers: Default::default(),
     };
     Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let ctx = make_aspect_ctx(application, &context, module.heap(), aspect_surface.clone())?;
@@ -1819,6 +1820,9 @@ fn analyze_aspect_inner(
                 rule.label, aspect.exported_name
             ))))
             .map_err(crate::providers::unsupported_payload_freeze)?;
+        // Deferred map_each callables retained by this module
+        // (crate::analysis_runtime::retain_mapper).
+        context.fill_retained_mappers(&frozen)?;
         let providers = slots
             .into_iter()
             .map(|(identity, slot)| {
@@ -2199,6 +2203,7 @@ fn analyze_inner(
             ..Default::default()
         },
         propagated_tags: crate::engine::rule_execution_info(rule),
+        retained_mappers: Default::default(),
     };
     for output in &rule.outs {
         context.declare(output)?;
@@ -2381,6 +2386,9 @@ fn analyze_inner(
                     rule.label
                 ))))
                 .map_err(crate::providers::unsupported_payload_freeze)?;
+            // Deferred map_each callables retained by this module
+            // (crate::analysis_runtime::retain_mapper).
+            context.fill_retained_mappers(&frozen)?;
             let providers = slots
                 .into_iter()
                 .map(|(identity, slot)| {
@@ -3149,6 +3157,7 @@ r = rule(implementation=impl, attrs={
             runfiles: Default::default(),
             exec_groups: Default::default(),
             propagated_tags: Default::default(),
+            retained_mappers: Default::default(),
         }
     }
 
