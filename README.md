@@ -67,6 +67,12 @@ implementation-specific content-addressed cache, **not** Bazel's conventional
 `bazel-bin` tree. Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
+The analysis snapshot is on by default: a `build`, `test` or `run` saves its
+analysis in `<cache>/snapshots/`, and a re-run whose recorded inputs are all
+unchanged skips loading and analysis. `BAZEL_RS_SNAPSHOT=off` turns it off;
+`BAZEL_RS_SNAPSHOT=verify` checks every hit against a full analysis when a
+result looks stale (docs/ANALYSIS_SNAPSHOT.md).
+
 Implemented:
 
 - Workspace and package discovery; main and local external-repository labels, with a deliberately

@@ -18,7 +18,7 @@
 //!
 //! Nothing else changes: stdout, the rest of stderr and every output are
 //! byte-identical with recording on and off. The diagnostics appear only
-//! when `BAZEL_RS_SNAPSHOT` is set.
+//! in the record mode (or under `BAZEL_RS_SNAPSHOT_EXPLAIN`).
 
 use crate::observed_fs::{self, Op, Outcome, Recording, Taint, escape};
 use crate::registry_session::SessionHandle;

@@ -261,9 +261,10 @@ recorded:ms replay:ms root:… [reason:…]`) and the summary are written to the
 file, one record per line, paths with every non-graphic byte escaped as
 `\xNN`.
 
-The diagnostics appear only when `BAZEL_RS_SNAPSHOT` is set, always with the
-`bazel-rs-snapshot:` prefix (strip them like `PERF` lines when comparing
-stderr). Any other value of the variable is reported and ignored.
+The diagnostics appear only in the record mode (`BAZEL_RS_SNAPSHOT=record`),
+always with the `bazel-rs-snapshot:` prefix (strip them like `PERF` lines when
+comparing stderr). An unknown value of the variable is reported and ignored:
+the default, `on` (L2-W7, docs/ANALYSIS_SNAPSHOT.md).
 
 ## Keeping the record complete
 
@@ -371,7 +372,7 @@ collected per execution for the replay record, in record mode only).
 
 ## The store and the hit path (L2-W5)
 
-`BAZEL_RS_SNAPSHOT=on` saves what this recording describes — the
+`BAZEL_RS_SNAPSHOT=on` (the default since L2-W7) saves what this recording describes — the
 observations a hit validates, the replay records and pinned tables (binary,
 crate::snapshot::format), the window's stderr, the planned request — and
 skips loading and analysis when every input is unchanged:

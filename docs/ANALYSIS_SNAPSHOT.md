@@ -1,4 +1,4 @@
-# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f, L2-W5g, L2-W5h)
+# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6, L2-W5f, L2-W5g, L2-W5h, L2-W7)
 
 Design: PLAN-L2 §1a–§1e, §5, §6 and PLAN-L2 update 1 (§(a) pinned replay,
 §(b) printing protocol v1, decision (1) per-tree validation). Builds on the
@@ -8,17 +8,34 @@ recording layer and the local-repository replay
 `format`, `store`, `hit`, `save`, `capture`, `diag`, `telemetry`, plus
 `validate`, `replay`, `codec`, `record`), wired in `src/main.rs`.
 
-**Off by default.** `BAZEL_RS_SNAPSHOT=on` reads and writes snapshots for
-`build`, `test` and `run`; `=verify` is `on` plus a shadow full analysis
-on every hit, compared with the hit before it executes (see "Verify mode"
-below, L2-W6); `=record` keeps the recording-only report; `=off` or unset
-does nothing; any other value is reported on the diagnostics stream and
-ignored. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
+**On by default (L2-W7).** With `BAZEL_RS_SNAPSHOT` unset or empty (or
+`=on`, `=1`, `=true`) every `build`, `test` and `run` reads and writes
+snapshots: an unchanged re-run is a hit, anything else runs the full
+analysis and saves it. `query` and `mod` never use it. The other values:
+
+| `BAZEL_RS_SNAPSHOT` | |
+|---|---|
+| unset, empty, `on`, `1`, `true` | the default: look up, hit or run the full analysis and save it |
+| `off`, `0`, `false` | **the escape hatch**: nothing snapshot-related at all — no lookup, no recording window, no stderr capture, no store write (not even `<cache>/snapshots/`); every command runs the full analysis, exactly as before the snapshot existed |
+| `verify` | a debugging tool for when a hit is suspected of a stale result: `on`, plus a shadow full analysis on every hit, compared with the hit before it executes (see "Verify mode" below, L2-W6); a difference is logged to `<cache>/snapshots/verify.log` and the full analysis's plan executes, so the command's result is the snapshot-less one |
+| `record` | the recording-only report (docs/ANALYSIS_SNAPSHOT_RECORDING.md); never reads or writes snapshots |
+| anything else | reported on the diagnostics stream (`ignoring BAZEL_RS_SNAPSHOT=...`) and ignored: the default |
+
+When a result looks stale, run the command once with
+`BAZEL_RS_SNAPSHOT=verify`: it runs the full analysis beside the hit, names
+any difference on stderr and in `verify.log`, removes that snapshot and
+gives the full analysis's result (the next run analyzes and saves anew) —
+please report such a mismatch with its `verify.log` line. `=off` gives the
+full analysis's result without touching the store (a later default run
+still uses the snapshot; the off run did repair any tampered repository
+tree, see "Repository tree files on a hit"); deleting `<cache>/snapshots/`
+drops every snapshot and log. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
 diagnostics stream (`bazel-rs-snapshot:` lines), why a lookup missed (the
 first failing input), what a hit validated and replayed, and why a run was
 or was not saved. `BAZEL_RS_TIMING=1` adds a `PERF-SNAPSHOT` line (key,
 inputs, validation, replay, local trees, decode, status and attempt
-times).
+times). Without them the snapshot prints nothing but the one line of a
+failed hit that removes its snapshot (step 6 below).
 
 ## What a hit does
 
@@ -304,7 +321,10 @@ still pass on the damaged runfile.
 `BAZEL_RS_SNAPSHOT=verify` is `on` (a miss saves exactly the same way),
 and every hit also runs the full analysis in its shadow
 (`snapshot::verify`, PLAN-L2 §1b layer 3, update 1 row W6) before the hit
-executes:
+executes. With the snapshot on by default (L2-W7) it is the debugging tool
+for a suspected stale result: a verified hit costs a full analysis (plus
+the comparison, ~0.1 s on ~/code), so it is meant for a command or a
+session, not as a permanent setting:
 
 ```text
 hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held back)
@@ -360,10 +380,16 @@ added `taint` — the name of the full analysis's first taint
 `path` — the first path a difference names (an observation recorded now
 but not in the snapshot, or with another outcome; a tree verified now but
 not in the snapshot; a local repository's published root), in the order
-the differences are reported. For a soak: `BAZEL_RS_SNAPSHOT=verify` (plus
-`BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the `verified` lines), then read the log
-— and the event log below (`scripts/snapshot_soak_report.py <cache>`
-summarizes them; the "Soak" section below is the guide).
+the differences are reported. To check a series of commands:
+`BAZEL_RS_SNAPSHOT=verify` (plus `BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the
+`verified` lines), then read the log — and the event log below
+(`scripts/snapshot_soak_report.py <cache>` summarizes them; the "Soak"
+section below is the guide). The test suite runs the same way (L2-W7):
+`BAZEL_RS_SNAPSHOT=verify BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1 cargo test`
+verifies every hit of the CLI tests and fails a disagreeing one with exit
+70 (the harnesses that clear the environment forward both variables,
+tests/support/verify_env.rs; those that pin their environment or set the
+mode themselves — tests/snapshot.rs — do not).
 
 **What a mismatch leaves behind (L2-W5i).** A `first=plan` line alone is
 not actionable, and the differences used to reach stderr only while the
@@ -706,8 +732,9 @@ analysis), and W6's prefetch never starts while it records
 the recording is process-wide, so it would also take the observations of
 speculative units that are never committed. So a miss pays the
 sequential loading of phase 1 (~/code, warm:
-oauth2token:all `--nobuild` 6.5 s against 4.0–4.2 s unset; B2 `--nobuild`
-11.1 s against 7.9–8.7 s); hits are unaffected. Follow-up: per-unit
+oauth2token:all `--nobuild` 6.5 s against 4.0–4.2 s with the snapshot off;
+B2 `--nobuild` 11.1 s against 7.9–8.7 s); hits are unaffected. Since the
+snapshot is on by default (L2-W7) every miss pays it. Follow-up: per-unit
 observation buffers merged only for committed units.
 
 **Diagnostics bypass the capture** (`snapshot::diag`; L2-W5h: never
@@ -764,6 +791,31 @@ overlap execution. A/B against the base binary (exit code, stdout, stderr
 without diagnostics, `BAZEL_RS_DUMP_ACTIONS`): byte-identical for
 oauth2token:all `--nobuild`, oauth2token/... build and B2 `--nobuild`, the
 compared run being the hit.
+
+**With the default on (L2-W7**, integration-21 stage 2 + L2-W7, release
+binary, private caches and lockfile, update-mode recipe, load 17–36 on the
+shared machine; wall and peak RSS by `wait4`, rounds interleaved):
+
+| | installed i20 (no snapshot) | snapshot off | miss (records, saves) | hit | snapshot file |
+|---|---|---|---|---|---|
+| oauth2token:all `--nobuild` | 6.6–9.0 s, 1.31 GB | 4.4–5.4 s, 1.16 GB | 7.5–7.8 s, 1.34 GB | 0.23–0.29 s, 66 MB | 10.7 MiB |
+| oauth2token/... build (689 cache hits) | 7.0–7.5 s, 1.31 GB | 4.3–5.7 s, 1.16 GB | 7.1–7.2 s, 1.32 GB | 0.31–0.34 s, 73–76 MB | 10.7 MiB |
+| B2 `--nobuild` | 11.2–13.7 s, 1.96 GB | 8.0–9.3 s, 1.81 GB | 11.3–14.0 s, 2.07 GB | 0.15–0.16 s, 155–160 MB | 43.0 MiB |
+| tools/... `--nobuild` (`--memory-limit=20000`) | exit 1 (`overlapping output paths`) | 13.4–14.1 s, 2.75 GB | 17.2–17.8 s, 3.11 GB | 0.16–0.19 s, 257–261 MB | 80.7 MiB |
+
+On a fresh cache the first command fetches and executes repository rules
+(not saved: `network`, `lockfile-write-pending`), the second saves, the third
+hits; the first hit after a save verifies the racy trees (0.37–0.71 s). A
+miss costs 2.4–4.6 s and 160–360 MB over the snapshot-off run (the recording
+without the phase-1 prefetch, above, and the save). A/B against the
+installed i20 (exit code, stdout, stderr without diagnostics, the action
+dump), every run compared — the first (miss and save) and the later ones
+(hits): identical for oauth2token:all `--nobuild` (3 runs), oauth2token/...
+build (3), B2 `--nobuild` (3) and `test //src/beyondwork.ai/tools/oauth2token:oauth2token_test` (2).
+Two processes running the same command on one cache at once (oauth2token/...
+build, B2 `--nobuild`) both missed and saved the same bytes, printed what
+the snapshot-off run prints, left one snapshot and no temporary file; the
+next run hit and a verify run agreed.
 
 ## Tests
 
@@ -903,3 +955,26 @@ non-test member fails `test`, `build` and `run` and is never saved, and a
 suite edited into that state misses, is not saved and hits its earlier
 snapshot once reverted (`failing_test_suite_expansions_are_never_saved`);
 both also in `verify_mode`.
+
+L2-W7 (on by default): the twins' reference side sets `BAZEL_RS_SNAPSHOT=off`
+explicitly; `the_snapshot_is_on_by_default_and_off_turns_everything_off`
+(unset, empty and unknown values save and hit like `on`, byte-identical
+with `off`; `off`, `0` and `false` leave a fresh cache without
+`snapshots/` and say nothing under EXPLAIN); a unit test of the values. Every
+other CLI test runs with the default. Those whose subject the snapshot
+legitimately changes turn it off for the commands concerned
+(`SNAPSHOT_OFF`, tests/support/snapshot_off.rs; the reason at each call
+site): no cache directory after a failed analysis — the store is set up at
+the check point — (tests/custom_rules.rs, loading.rs, native.rs,
+parallel_cli.rs, repositories.rs: 9 tests); no file in the cache under
+`--nobuild`, which now saves a snapshot (nobuild.rs: 4); the full analysis's
+own output on re-runs, which hits skip — PERF-STAGE rows
+(plan_timings.rs: 2) and `BAZEL_RS_SNAPSHOT_PLAN_OUT`
+(`encoded_requests_are_identical_across_threads_and_loading_jitter`); and
+the warm probe repairing a tree file edited in place, which a hit does not
+look into (`edited_repository_tree_files_are_caught_by_the_next_command`, the
+per-tree trade-off above: on a hit the build failed once with
+`conflicting duplicate input destination` — the edited `genrule-setup.sh`
+against the genrule's embedded copy — and healed). The whole suite under
+`BAZEL_RS_SNAPSHOT=verify BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` passes: 119
+verified hits outside tests/snapshot.rs, no mismatch.

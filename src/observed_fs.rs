@@ -1390,8 +1390,10 @@ fn escape_str(text: &str) -> String {
 }
 
 /// Write one diagnostics line (`bazel-rs-snapshot: ...`) to stderr. Snapshot
-/// diagnostics only appear when `BAZEL_RS_SNAPSHOT` is set; the prefix lets
-/// exact-stderr checks drop them (like `PERF` lines).
+/// diagnostics appear in the record mode, under `BAZEL_RS_SNAPSHOT_EXPLAIN`,
+/// for a verify mismatch and for an unknown `BAZEL_RS_SNAPSHOT` value (the
+/// default `on` is otherwise silent); the prefix lets exact-stderr checks
+/// drop them (like `PERF` lines).
 pub fn diag(line: &str) {
     // The diagnostics stream: outside a stderr capture (crate::snapshot::diag).
     crate::snapshot::diag::line(&format!("bazel-rs-snapshot: {line}"));
