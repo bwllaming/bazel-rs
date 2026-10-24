@@ -1,7 +1,7 @@
 {
  "schema": "target-compatible-with-reference-receipt/v1",
  "fixture": "target_compatible_with",
- "purpose": "target_compatible_with, step 1 (IncompatibleTargetChecker.IncompatibleTargetProducer, analysis/constraints/IncompatibleTargetChecker.java:126-227, run by DependencyContextProducerWithCompatibilityCheck after the target platform and the select() keys and before toolchain resolution, :159-189): the configured labels (select() resolved in the target's configuration) provide ConstraintValueInfo (the target platform must have the value) or a config_setting's ConfigMatchingProvider (it must match); duplicate constraint settings and select errors fail; a compatible target (Starlark rule, genrule, filegroup, alias, an exec-configuration tool, a non-host --platforms) is analyzed and built as usual, with ctx.attr.target_compatible_with its Targets; a rule without toolchain resolution (a build setting) is never checked. An incompatible target is an explicit native error naming the platform and the unmet constraints in Bazel's words; skipping (wildcards, IncompatiblePlatformProvider propagation, --skip_incompatible_explicit_targets, SKIPPED tests) is out of scope. Motivation: `build --nobuild //src/beyondwork.ai/...` on ~/code stopped at `analysis of //thirdparty/duckdb/cross_libs:cxx_runtime_linux_amd64: declared rule features accepted at load time but not analyzed by the native profile: attribute 'target_compatible_with' = [\"@@platforms//os:linux\", \"@@platforms//cpu:x86_64\"] (incompatible target skipping (constraint analysis))`; ~/code's other uses are //src/python/baseimage:image (a select() of cpu constraint values plus os:linux).",
+ "purpose": "target_compatible_with, step 1 (IncompatibleTargetChecker.IncompatibleTargetProducer, analysis/constraints/IncompatibleTargetChecker.java:126-227, run by DependencyContextProducerWithCompatibilityCheck after the target platform and the select() keys and before toolchain resolution, :159-189): the configured labels (select() resolved in the target's configuration) provide ConstraintValueInfo (the target platform must have the value) or a config_setting's ConfigMatchingProvider (it must match); duplicate constraint settings and select errors fail; a compatible target (Starlark rule, genrule, filegroup, alias, an exec-configuration tool, a non-host --platforms, a select() whose default is @platforms//:incompatible) is analyzed and built as usual, with ctx.attr.target_compatible_with its Targets; a rule without toolchain resolution (a build setting) is never checked; a config_setting whose match is an error (a feature flag without a value) fails with `For config_setting L: ...`. An incompatible target (also @platforms//:incompatible, directly or as a select() default) is an explicit native error naming the platform, the unmet constraints and the non-matching config_settings (sorted, deduplicated) in Bazel's words, and its dependencies are never analyzed (a missing package or repository among them is no error); skipping (wildcards, IncompatiblePlatformProvider propagation, --skip_incompatible_explicit_targets, SKIPPED tests) is out of scope. Motivation: `build --nobuild //src/beyondwork.ai/...` on ~/code stopped at `analysis of //thirdparty/duckdb/cross_libs:cxx_runtime_linux_amd64: declared rule features accepted at load time but not analyzed by the native profile: attribute 'target_compatible_with' = [\"@@platforms//os:linux\", \"@@platforms//cpu:x86_64\"] (incompatible target skipping (constraint analysis))`; ~/code's other uses are //src/python/baseimage:image (a select() of cpu constraint values plus os:linux).",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,19 +11,20 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "2981dd1dd716c55434fa2697ba64fb11bba4838588dd247ea5b6889c3b5d55f0",
+  "sha256": "5d31259122141105e49fb135ee87f46afeaea9845b830a542319c3ddd63e4bd2",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
   "path": "/tmp/opencode/perf-research/pfu-tcw-capture.py, pfu-tcw-receipt.py (not committed)",
   "sha256": {
-   "pfu-tcw-capture.py": "0ac731ad5c9e70303d73de7340a9c7b545f2d38a8b5bcc084b447fa809f4c2d3",
-   "pfu-tcw-receipt.py": "0e6196509bc545d4d643f8718a115230094a4b2ec3070c9dfd942cfe3ebf25af"
+   "pfu-tcw-capture.py": "8c051a6a1436da5dd45919a6a4e4b8f9fea863363a2940cd08ed021c0c80f37c",
+   "pfu-tcw-receipt.py": "339ed9358b8bb938d5a72d62ad44f68f04031a92f26ef3c4eec880849b76e3b1"
   }
  },
  "fixture_files_sha256": {
   "MODULE.bazel": "5ad7faff81b832155ce30be6eaf4719f5e95d24e0d3cfcca25c737f80ddaf6f3",
-  "pkg/BUILD.bazel": "00a36c2974ed18c5ba104b57b98e076a3d607580372e2e291408f14a0c113ebc",
+  "missing/BUILD.bazel": "1325eeab4d5c4e9022aa9fa06d442d6a44cd8c5c1c474540151508a56beadb03",
+  "pkg/BUILD.bazel": "467325379a362a3a33540ca428caf4a98909ed12fcf88c59ab6d8c8778522b2e",
   "pkg/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
   "pkg/defs.bzl": "1b43d551097181e7453ff917f22407318a3f02a3105626fb0de7c6681a558feb",
   "wildcard/BUILD.bazel": "941f67355b51f990eb96364d7d729c1730c98954eee0b2daf8e82aec4ab5a3ee"
@@ -33,15 +34,17 @@
  "genuine_key_findings": [
   "Compatible targets build like targets without the attribute: a constant list (os:linux, cpu:x86_64 on the linux x86_64 host platform @@platforms//host:host), a select() of constraint values plus a list (~/code's baseimage shape), config_settings and an alias of a constraint value, a genrule, a filegroup, an alias (which then uses toolchain resolution), a tool in the exec configuration, and under --platforms=//pkg:linux_arm64 the host-incompatible targets.",
   "A build setting (no toolchain resolution) is never checked: an aarch64-only build setting builds on the host.",
-  "Duplicate constraint settings: `Duplicate constraint values detected: constraint_setting @@platforms//os:os has [@@platforms//os:linux, @@platforms//os:osx]` at the rule (@platforms//os:macos is an alias of os:osx). A select() without a matching branch: Bazel's `configurable attribute \"target_compatible_with\" in //pkg:no_match doesn't match this configuration.` text. A label without either provider: `in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`.",
+  "Duplicate constraint settings: `Duplicate constraint values detected: constraint_setting @@platforms//os:os has [@@platforms//os:linux, @@platforms//os:osx]` at the rule (@platforms//os:macos is an alias of os:osx). A select() without a matching branch: Bazel's `configurable attribute \"target_compatible_with\" in //pkg:no_match doesn't match this configuration.` text. A label without either provider: `in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'`. A config_setting in error (a config_feature_flag without default or value): `For config_setting //pkg:flag_is_a: Feature flag //pkg:no_default_flag has no default but no value was explicitly specified.` at the rule.",
+  "@platforms//:incompatible is unmet on every platform that does not set @platforms//:incompatible_setting: directly, or as the select() default when no other branch matches, the target is incompatible (`didn't satisfy constraint @@platforms//:incompatible`); with a matching branch of [] it builds. An unmet constraint and a non-matching config_setting read `... didn't satisfy constraint @@platforms//cpu:aarch64 and target configuration didn't match config_setting //pkg:is_macos`; listed in reverse label order with an aliased duplicate, both lists are sorted by label and the duplicate constraint value appears once (`constraints [@@platforms//cpu:aarch64, @@platforms//os:osx] and target configuration didn't match config_settings [//pkg:is_aarch64, //pkg:is_macos]`, IncompatiblePlatformProvider.java:113-125).",
+  "An incompatible target's dependencies are not resolved: deps on a missing package and an unknown repository do not fail; only the incompatibility is reported.",
   "Incompatible targets: requested explicitly (also through a dependency) the build fails with `Target L is incompatible and cannot be built, but was explicitly requested.` and the dependency chain `<--  target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64` (constraints sorted by label and deduplicated — `constraints [@@platforms//cpu:aarch64, @@platforms//os:osx]` for the attribute order [os:macos, cpu:aarch64] — and `target configuration didn't match config_setting //pkg:is_macos`); in a wildcard pattern the target is skipped (`Target //wildcard:skipped was skipped`) and the build succeeds."
  ],
  "known_divergences": [
   "An incompatible target is an explicit native error at its analysis, naming the target platform and the unmet constraints with Bazel's reason text; genuine creates an IncompatiblePlatformProvider target: wildcard patterns skip it (exit 0), an explicit request (directly or through dependencies) fails with the dependency chain."
  ],
  "counts": {
-  "MATCH": 11,
-  "DECLARED_DIVERGENCE": 6
+  "MATCH": 13,
+  "DECLARED_DIVERGENCE": 11
  },
  "scratch_removed": true,
  "cases": {
@@ -52,13 +55,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.707,
+    "seconds": 16.043,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //pkg:compatible (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible up-to-date:\n  bazel-bin/pkg/compatible.txt\nINFO: Elapsed time: 8.852s, Critical Path: 0.02s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed target //pkg:compatible (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible up-to-date:\n  bazel-bin/pkg/compatible.txt\nINFO: Elapsed time: 14.001s, Critical Path: 0.07s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 4.193,
+    "seconds": 3.711,
     "stdout": "//pkg:compatible\tbazel-out/k8-fastbuild/bin/pkg/compatible.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -78,13 +81,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.5,
+    "seconds": 16.613,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //pkg:compatible_select (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_select up-to-date:\n  bazel-bin/pkg/compatible_select.txt\nINFO: Elapsed time: 8.675s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed target //pkg:compatible_select (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_select up-to-date:\n  bazel-bin/pkg/compatible_select.txt\nINFO: Elapsed time: 14.754s, Critical Path: 0.06s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 4.157,
+    "seconds": 3.794,
     "stdout": "//pkg:compatible_select\tbazel-out/k8-fastbuild/bin/pkg/compatible_select.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -104,13 +107,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.705,
+    "seconds": 14.965,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //pkg:compatible_config_setting (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_config_setting up-to-date:\n  bazel-bin/pkg/compatible_config_setting.txt\nINFO: Elapsed time: 8.858s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed target //pkg:compatible_config_setting (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_config_setting up-to-date:\n  bazel-bin/pkg/compatible_config_setting.txt\nINFO: Elapsed time: 12.968s, Critical Path: 0.05s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 5.743,
+    "seconds": 4.182,
     "stdout": "//pkg:compatible_config_setting\tbazel-out/k8-fastbuild/bin/pkg/compatible_config_setting.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -130,13 +133,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.426,
+    "seconds": 16.887,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //pkg:compatible_consumer (6 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_consumer up-to-date:\n  bazel-bin/pkg/compatible_consumer.txt\nINFO: Elapsed time: 8.464s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed target //pkg:compatible_consumer (6 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_consumer up-to-date:\n  bazel-bin/pkg/compatible_consumer.txt\nINFO: Elapsed time: 14.926s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 4.152,
+    "seconds": 3.886,
     "stdout": "//pkg:compatible_consumer\tbazel-out/k8-fastbuild/bin/pkg/compatible_consumer.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -159,13 +162,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.759,
+    "seconds": 15.255,
     "stdout": "",
-    "stderr": "INFO: Analyzed 3 targets (6 packages loaded, 15 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 8.851s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
+    "stderr": "INFO: Analyzed 3 targets (6 packages loaded, 15 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 13.091s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 4.915,
+    "seconds": 3.812,
     "stdout": "//pkg:compatible\tbazel-out/k8-fastbuild/bin/pkg/compatible.txt\n//pkg:compatible_consumer\tbazel-out/k8-fastbuild/bin/pkg/compatible_consumer.txt\n//pkg:compatible_select\tbazel-out/k8-fastbuild/bin/pkg/compatible_select.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -178,13 +181,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.797,
+    "seconds": 14.849,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //pkg:uses_exec_tool (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:uses_exec_tool up-to-date:\n  bazel-bin/pkg/uses_exec_tool.txt\nINFO: Elapsed time: 8.888s, Critical Path: 0.03s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n"
+    "stderr": "INFO: Analyzed target //pkg:uses_exec_tool (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:uses_exec_tool up-to-date:\n  bazel-bin/pkg/uses_exec_tool.txt\nINFO: Elapsed time: 12.850s, Critical Path: 0.10s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 4.473,
+    "seconds": 3.938,
     "stdout": "//pkg:uses_exec_tool\tbazel-out/k8-fastbuild/bin/pkg/uses_exec_tool.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -205,13 +208,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.37,
+    "seconds": 14.555,
     "stdout": "",
-    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:setting up-to-date (nothing to build)\nTarget //pkg:reads_setting up-to-date:\n  bazel-bin/pkg/reads_setting.txt\nINFO: Elapsed time: 8.425s, Critical Path: 0.02s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:setting up-to-date (nothing to build)\nTarget //pkg:reads_setting up-to-date:\n  bazel-bin/pkg/reads_setting.txt\nINFO: Elapsed time: 12.452s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 1.929,
+    "seconds": 0.494,
     "stdout": "//pkg:reads_setting\tbazel-out/k8-fastbuild/bin/pkg/reads_setting.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -233,13 +236,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.418,
+    "seconds": 14.345,
     "stdout": "",
-    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:compatible_select up-to-date:\n  bazel-bin/pkg/compatible_select.txt\nTarget //pkg:incompatible up-to-date:\n  bazel-bin/pkg/incompatible.txt\nINFO: Elapsed time: 8.488s, Critical Path: 0.02s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n"
+    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:compatible_select up-to-date:\n  bazel-bin/pkg/compatible_select.txt\nTarget //pkg:incompatible up-to-date:\n  bazel-bin/pkg/incompatible.txt\nINFO: Elapsed time: 12.436s, Critical Path: 0.02s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.494,
+    "seconds": 0.549,
     "stdout": "//pkg:compatible_select\tbazel-out/k8-fastbuild/bin/pkg/compatible_select.txt\n//pkg:incompatible\tbazel-out/k8-fastbuild/bin/pkg/incompatible.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -264,13 +267,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.42,
+    "seconds": 19.689,
     "stdout": "",
-    "stderr": "Target //pkg:incompatible failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible' failed; build aborted: Target //pkg:incompatible is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 8.490s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "Target //pkg:incompatible failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible' failed; build aborted: Target //pkg:incompatible is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 17.525s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.935,
+    "seconds": 4.123,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:99:7: //pkg:incompatible is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -287,13 +290,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.702,
+    "seconds": 20.188,
     "stdout": "",
-    "stderr": "ERROR: Target //pkg:incompatible is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 7.873s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: Target //pkg:incompatible is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 18.005s\nINFO: 0 processes.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.912,
+    "seconds": 4.095,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:99:7: //pkg:incompatible is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -309,13 +312,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.522,
+    "seconds": 20.284,
     "stdout": "",
-    "stderr": "Target //pkg:incompatible_two failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_two' failed; build aborted: Target //pkg:incompatible_two is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_two (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx]\nINFO: Elapsed time: 8.651s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "Target //pkg:incompatible_two failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_two' failed; build aborted: Target //pkg:incompatible_two is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_two (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx]\nINFO: Elapsed time: 18.159s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.813,
+    "seconds": 3.94,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:104:7: //pkg:incompatible_two is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx]; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -331,13 +334,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.365,
+    "seconds": 20.38,
     "stdout": "",
-    "stderr": "Target //pkg:incompatible_config_setting failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_config_setting' failed; build aborted: Target //pkg:incompatible_config_setting is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_config_setting (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_macos\nINFO: Elapsed time: 8.495s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "Target //pkg:incompatible_config_setting failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_config_setting' failed; build aborted: Target //pkg:incompatible_config_setting is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_config_setting (a7a71f)   <-- target configuration didn't match config_setting //pkg:is_macos\nINFO: Elapsed time: 18.131s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 4.091,
+    "seconds": 3.837,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:112:7: //pkg:incompatible_config_setting is incompatible with its target platform: target configuration didn't match config_setting //pkg:is_macos; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -353,13 +356,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.362,
+    "seconds": 14.828,
     "stdout": "",
-    "stderr": "Target //pkg:incompatible_consumer failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_consumer' failed; build aborted: Target //pkg:incompatible_consumer is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_consumer (a7a71f)\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 8.512s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "Target //pkg:incompatible_consumer failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_consumer' failed; build aborted: Target //pkg:incompatible_consumer is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_consumer (a7a71f)\n    //pkg:incompatible (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 12.673s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.807,
+    "seconds": 3.795,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:99:7: //pkg:incompatible is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -375,13 +378,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.244,
+    "seconds": 13.915,
     "stdout": "",
-    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //wildcard:skipped was skipped\nTarget //wildcard:kept up-to-date:\n  bazel-bin/wildcard/kept.txt\nINFO: Elapsed time: 8.476s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //wildcard:skipped was skipped\nTarget //wildcard:kept up-to-date:\n  bazel-bin/wildcard/kept.txt\nINFO: Elapsed time: 11.956s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.916,
+    "seconds": 3.84,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/wildcard/BUILD.bazel:5:7: //wildcard:skipped is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
    },
@@ -396,13 +399,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.179,
+    "seconds": 14.261,
     "stdout": "",
-    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:123:7: Duplicate constraint values detected: constraint_setting @@platforms//os:os has [@@platforms//os:linux, @@platforms//os:osx]\nERROR: Analysis of target '//pkg:duplicate' failed; build aborted\nINFO: Elapsed time: 8.376s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:123:7: Duplicate constraint values detected: constraint_setting @@platforms//os:os has [@@platforms//os:linux, @@platforms//os:osx]\nERROR: Analysis of target '//pkg:duplicate' failed; build aborted\nINFO: Elapsed time: 12.394s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.618,
+    "seconds": 0.446,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:123:7: Duplicate constraint values detected: constraint_setting @@platforms//os:os has [@@platforms//os:linux, @@platforms//os:osx]\n"
    },
@@ -416,13 +419,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.317,
+    "seconds": 14.343,
     "stdout": "",
-    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:131:7: configurable attribute \"target_compatible_with\" in //pkg:no_match doesn't match this configuration. Would a default condition help?\n\nConditions checked:\n @@platforms//cpu:aarch64\n\nTo see a condition's definition, run: bazel query --output=build <condition label>.\n\nThis instance of //pkg:no_match has configuration identifier a7a71fd. To inspect its configuration, run: bazel config a7a71fd.\n\nFor more help, see https://bazel.build/docs/configurable-attributes#faq-select-choose-condition.\n\nERROR: Analysis of target '//pkg:no_match' failed; build aborted\nINFO: Elapsed time: 8.447s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:131:7: configurable attribute \"target_compatible_with\" in //pkg:no_match doesn't match this configuration. Would a default condition help?\n\nConditions checked:\n @@platforms//cpu:aarch64\n\nTo see a condition's definition, run: bazel query --output=build <condition label>.\n\nThis instance of //pkg:no_match has configuration identifier a7a71fd. To inspect its configuration, run: bazel config a7a71fd.\n\nFor more help, see https://bazel.build/docs/configurable-attributes#faq-select-choose-condition.\n\nERROR: Analysis of target '//pkg:no_match' failed; build aborted\nINFO: Elapsed time: 12.322s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.843,
+    "seconds": 3.692,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:131:7: configurable attribute \"target_compatible_with\" in //pkg:no_match doesn't match this configuration. Would a default condition help?\n\nConditions checked:\n @@platforms//cpu:aarch64\n\nTo see a condition's definition, run: bazel query --output=build <condition label>.\n\nThis instance of //pkg:no_match has configuration identifier 25220f3. To inspect its configuration, run: bazel config 25220f3.\n\nFor more help, see https://bazel.build/docs/configurable-attributes#faq-select-choose-condition.\n\n\n"
    },
@@ -436,18 +439,174 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.119,
+    "seconds": 15.719,
     "stdout": "",
-    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:138:7: in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'\nERROR: <WS>/pkg/BUILD.bazel:138:7: Analysis of target '//pkg:not_a_constraint' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:not_a_constraint' failed; build aborted\nINFO: Elapsed time: 8.254s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:138:7: in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'\nERROR: <WS>/pkg/BUILD.bazel:138:7: Analysis of target '//pkg:not_a_constraint' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:not_a_constraint' failed; build aborted\nINFO: Elapsed time: 13.254s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 3.617,
+    "seconds": 3.674,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:138:7: in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'\n"
    },
    "expected_message": "<WS>/pkg/BUILD.bazel:138:7: in target_compatible_with attribute of writer rule //pkg:not_a_constraint: '//pkg:compatible' does not have mandatory providers: ConfigMatchingProvider or 'ConstraintValueInfo'",
    "verdict": "MATCH"
+  },
+  "incompatible_marker": {
+   "argv": [
+    "build",
+    "//pkg:incompatible_marker"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 16.579,
+    "stdout": "",
+    "stderr": "Target //pkg:incompatible_marker failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_marker' failed; build aborted: Target //pkg:incompatible_marker is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_marker (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible\nINFO: Elapsed time: 14.069s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 5.362,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:154:7: //pkg:incompatible_marker is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
+   },
+   "declared_divergence": "both fail (exit 1); @platforms//:incompatible (a value of a constraint setting no platform sets) in target_compatible_with",
+   "native_message": "BUILD.bazel:154:7: //pkg:incompatible_marker is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+   "genuine_reason": " target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "incompatible_default": {
+   "argv": [
+    "build",
+    "//pkg:incompatible_default"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 18.102,
+    "stdout": "",
+    "stderr": "Target //pkg:incompatible_default failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_default' failed; build aborted: Target //pkg:incompatible_default is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_default (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible\nINFO: Elapsed time: 15.734s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 5.563,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:159:7: //pkg:incompatible_default is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
+   },
+   "declared_divergence": "both fail (exit 1); @platforms//:incompatible as the select() default of target_compatible_with (no other branch matches on linux)",
+   "native_message": "BUILD.bazel:159:7: //pkg:incompatible_default is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+   "genuine_reason": " target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//:incompatible",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "compatible_default": {
+   "argv": [
+    "build",
+    "//pkg:compatible_default"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 15.708,
+    "stdout": "",
+    "stderr": "INFO: Analyzed target //pkg:compatible_default (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:compatible_default up-to-date:\n  bazel-bin/pkg/compatible_default.txt\nINFO: Elapsed time: 13.611s, Critical Path: 0.04s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n"
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 3.671,
+    "stdout": "//pkg:compatible_default\tbazel-out/k8-fastbuild/bin/pkg/compatible_default.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
+   },
+   "outputs": [
+    [
+     "//pkg:compatible_default",
+     "bazel-out/k8-fastbuild/bin/pkg/compatible_default.txt",
+     "compatible_default\n"
+    ]
+   ],
+   "verdict": "MATCH"
+  },
+  "incompatible_mixed": {
+   "argv": [
+    "build",
+    "//pkg:incompatible_mixed"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 18.105,
+    "stdout": "",
+    "stderr": "Target //pkg:incompatible_mixed failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_mixed' failed; build aborted: Target //pkg:incompatible_mixed is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_mixed (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64 and target configuration didn't match config_setting //pkg:is_macos\nINFO: Elapsed time: 15.476s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 3.792,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:186:7: //pkg:incompatible_mixed is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64 and target configuration didn't match config_setting //pkg:is_macos; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
+   },
+   "declared_divergence": "both fail (exit 1); an unmet constraint and a non-matching config_setting, joined with ` and`",
+   "native_message": "BUILD.bazel:186:7: //pkg:incompatible_mixed is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64 and target configuration didn't match config_setting //pkg:is_macos; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+   "genuine_reason": " target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64 and target configuration didn't match config_setting //pkg:is_macos",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "incompatible_sorted": {
+   "argv": [
+    "build",
+    "//pkg:incompatible_sorted"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 17.441,
+    "stdout": "",
+    "stderr": "Target //pkg:incompatible_sorted failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//pkg:incompatible_sorted' failed; build aborted: Target //pkg:incompatible_sorted is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //pkg:incompatible_sorted (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx] and target configuration didn't match config_settings [//pkg:is_aarch64, //pkg:is_macos]\nINFO: Elapsed time: 15.115s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 3.688,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:196:7: //pkg:incompatible_sorted is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx] and target configuration didn't match config_settings [//pkg:is_aarch64, //pkg:is_macos]; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
+   },
+   "declared_divergence": "both fail (exit 1); constraints and config_settings listed in reverse label order, one constraint value also through an alias: both lists sorted by label, the aliased constraint once",
+   "native_message": "BUILD.bazel:196:7: //pkg:incompatible_sorted is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx] and target configuration didn't match config_settings [//pkg:is_aarch64, //pkg:is_macos]; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+   "genuine_reason": " target platform (@@platforms//host:host) didn't satisfy constraints [@@platforms//cpu:aarch64, @@platforms//os:osx] and target configuration didn't match config_settings [//pkg:is_aarch64, //pkg:is_macos]",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "config_setting_error": {
+   "argv": [
+    "build",
+    "//pkg:config_setting_error"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 17.378,
+    "stdout": "",
+    "stderr": "ERROR: <WS>/pkg/BUILD.bazel:222:7: For config_setting //pkg:flag_is_a: Feature flag //pkg:no_default_flag has no default but no value was explicitly specified.\nERROR: Analysis of target '//pkg:config_setting_error' failed; build aborted\nINFO: Elapsed time: 14.727s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 3.716,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:222:7: For config_setting //pkg:flag_is_a: Feature flag //pkg:no_default_flag has no default but no value was explicitly specified.\n"
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:222:7: For config_setting //pkg:flag_is_a: Feature flag //pkg:no_default_flag has no default but no value was explicitly specified.",
+   "verdict": "MATCH"
+  },
+  "incompatible_missing_deps": {
+   "argv": [
+    "build",
+    "//missing:incompatible_missing_deps"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 16.477,
+    "stdout": "",
+    "stderr": "Target //missing:incompatible_missing_deps failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Analysis of target '//missing:incompatible_missing_deps' failed; build aborted: Target //missing:incompatible_missing_deps is incompatible and cannot be built, but was explicitly requested.\nDependency chain:\n    //missing:incompatible_missing_deps (a7a71f)   <-- target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64\nINFO: Elapsed time: 14.244s, Critical Path: 0.06s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 3.631,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/missing/BUILD.bazel:5:7: //missing:incompatible_missing_deps is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)\n"
+   },
+   "declared_divergence": "both fail (exit 1) with the incompatibility only: the target's dependencies on a missing package and an unknown repository are never analyzed (genuine creates the incompatible target before resolving dependencies; natively the check precedes every dependency)",
+   "native_message": "missing/BUILD.bazel:5:7: //missing:incompatible_missing_deps is incompatible with its target platform: target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64; skipping incompatible targets (IncompatiblePlatformProvider) is not implemented in the native profile (docs/PLATFORMS.md)",
+   "genuine_reason": " target platform (@@platforms//host:host) didn't satisfy constraint @@platforms//cpu:aarch64",
+   "verdict": "DECLARED_DIVERGENCE"
   }
  }
 }

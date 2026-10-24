@@ -1,4 +1,18 @@
-load(":defs.bzl", "compile", "consumer", "grouped", "owners", "tool", "writer")
+load(
+    ":defs.bzl",
+    "aspect_consumer",
+    "compile",
+    "consumer",
+    "expand",
+    "grouped",
+    "owners",
+    "plain",
+    "runner",
+    "tool",
+    "tree",
+    "tree_consumer",
+    "writer",
+)
 
 tool(name = "tool")
 
@@ -129,3 +143,64 @@ grouped(
     exec_properties = {"g1.key": "value"},
     group = "g1",
 )
+
+# An aspect applied to two targets registers one spawn twice on one path:
+# shared (the base targets' exec_properties are not the aspect actions'),
+# unless the spawns differ.
+plain(
+    name = "aspect_base_x",
+    exec_properties = {"key": "x"},
+)
+
+plain(
+    name = "aspect_base_y",
+    exec_properties = {"key": "y"},
+)
+
+plain(
+    name = "aspect_base_z",
+    content = "other aspect content\n",
+)
+
+aspect_consumer(
+    name = "aspect_both",
+    deps = [
+        ":aspect_base_x",
+        ":aspect_base_y",
+    ],
+)
+
+aspect_consumer(
+    name = "aspect_conflict",
+    deps = [
+        ":aspect_base_x",
+        ":aspect_base_z",
+    ],
+)
+
+# One tree artifact declared by two targets.
+tree(name = "tree_a")
+
+tree(name = "tree_b")
+
+tree_consumer(
+    name = "tree_both",
+    deps = [
+        ":tree_a",
+        ":tree_b",
+    ],
+)
+
+# //pkg:b's Files as runfiles of an executable that also depends on //pkg:a.
+runner(
+    name = "run_shared",
+    deps = [
+        ":a",
+        ":b",
+    ],
+)
+
+# Identical Args writes expanding a tree artifact in two targets.
+expand(name = "expand_a")
+
+expand(name = "expand_b")

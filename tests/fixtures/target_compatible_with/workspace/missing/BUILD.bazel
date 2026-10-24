@@ -1,0 +1,12 @@
+load("//pkg:defs.bzl", "writer")
+
+# An incompatible target's dependencies are never analyzed: neither the
+# missing package nor the unknown repository is an error.
+writer(
+    name = "incompatible_missing_deps",
+    target_compatible_with = ["@platforms//cpu:aarch64"],
+    deps = [
+        "//no/such/package:target",
+        "@no_such_repository//:target",
+    ],
+)

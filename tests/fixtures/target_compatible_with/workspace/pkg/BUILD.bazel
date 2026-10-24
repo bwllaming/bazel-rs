@@ -148,3 +148,78 @@ platform(
         "@platforms//cpu:aarch64",
     ],
 )
+
+# @platforms//:incompatible (a value of a setting no platform sets), directly
+# and as a select() default.
+writer(
+    name = "incompatible_marker",
+    target_compatible_with = ["@platforms//:incompatible"],
+)
+
+writer(
+    name = "incompatible_default",
+    target_compatible_with = select({
+        "@platforms//os:macos": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+writer(
+    name = "compatible_default",
+    target_compatible_with = select({
+        "@platforms//os:linux": [],
+        "//conditions:default": ["@platforms//:incompatible"],
+    }),
+)
+
+config_setting(
+    name = "is_aarch64",
+    constraint_values = ["@platforms//cpu:aarch64"],
+)
+
+alias(
+    name = "aarch64_alias",
+    actual = "@platforms//cpu:aarch64",
+)
+
+# An unmet constraint and a non-matching config_setting.
+writer(
+    name = "incompatible_mixed",
+    target_compatible_with = [
+        ":is_macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+# Two constraints and two config_settings in reverse label order, one
+# constraint value also through an alias.
+writer(
+    name = "incompatible_sorted",
+    target_compatible_with = [
+        ":is_macos",
+        "@platforms//os:macos",
+        ":is_aarch64",
+        "@platforms//cpu:aarch64",
+        ":aarch64_alias",
+    ],
+)
+
+# A config_setting whose match is an error: a feature flag without a default
+# and without a configured value (ConfigFeatureFlag's deferred error).
+config_feature_flag(
+    name = "no_default_flag",
+    allowed_values = [
+        "a",
+        "b",
+    ],
+)
+
+config_setting(
+    name = "flag_is_a",
+    flag_values = {":no_default_flag": "a"},
+)
+
+writer(
+    name = "config_setting_error",
+    target_compatible_with = [":flag_is_a"],
+)

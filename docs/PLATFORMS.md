@@ -384,9 +384,19 @@ natively `Engine::check_target_compatibility`:
   modelled (step 2).
 
 `tests/target_compatible_with.rs` replays the paired genuine capture
-`tests/fixtures/target_compatible_with/reference_receipt.json` (17 cases: 11
-MATCH, 6 declared divergences — the incompatible cases and the wildcard
-skip).
+`tests/fixtures/target_compatible_with/reference_receipt.json` (24 cases: 13
+MATCH, 11 declared divergences — the incompatible cases and the wildcard
+skip; every incompatible case's native message carries genuine's
+dependency-chain reason verbatim): besides the shapes above,
+`@platforms//:incompatible` directly and as the select() default (with a
+matching `[]` branch the target builds), an unmet constraint with a
+non-matching config_setting, constraints and config_settings in reverse
+label order with an aliased duplicate (sorted, once each), a config_setting
+whose match is an error (a `config_feature_flag` without a value: `For
+config_setting //pkg:flag_is_a: Feature flag //pkg:no_default_flag has no
+default but no value was explicitly specified.`), and an incompatible target
+whose dependencies name a missing package and an unknown repository — never
+analyzed, so only the incompatibility is reported, as in Bazel.
 
 ## Tests
 

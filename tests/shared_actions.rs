@@ -50,6 +50,10 @@ const GROUPS: &[(&str, &[&str])] = &[
             "groups_shared",
             "write_output_first",
             "write_declared_first",
+            "aspect_shared",
+            "tree_shared",
+            "runfiles_shared",
+            "run_shared",
         ],
     ),
     (
@@ -67,7 +71,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "groups_props",
         ],
     ),
-    ("declared", &["prefix"]),
+    ("declared", &["prefix", "aspect_conflict", "expand_shared"]),
 ];
 
 struct Workspace(tempfile::TempDir);
@@ -237,6 +241,16 @@ fn check(name: &str, case: &Value) {
         assert_eq!(conflict(&stderr), Some(expected), "{name}: {stderr}");
         return;
     }
+    if argv[0] == "run" {
+        // The program's output: both owners' Files of the shared output
+        // read through the runfiles tree.
+        assert_eq!(
+            stdout,
+            case["expected_stdout"].as_str().unwrap(),
+            "{name}: {stderr}"
+        );
+        return;
+    }
     if argv.iter().any(|arg| arg == "--nobuild") {
         return;
     }
@@ -314,8 +328,11 @@ fn receipt_covers_the_fixture_and_every_case_once() {
 /// Identical actions of two targets on one output are shared: the
 /// rules_python precompile shape (a tool with runfiles, a param file, env
 /// and execution requirements, per-target progress messages), a consumer
-/// of both targets' Files, plain tags, exec groups of one platform, and a
-/// declared file shared with another rule's output-file target.
+/// of both targets' Files, plain tags, exec groups of one platform, a
+/// declared file shared with another rule's output-file target, two
+/// applications of one aspect (whose base targets' exec_properties are not
+/// the aspect actions'), a tree artifact, and a shared output as a runfile
+/// of an executable, built and `run`.
 #[test]
 fn equal_actions_of_two_targets_are_shared() {
     check_group("shared");
@@ -327,7 +344,9 @@ fn compared_differences_conflict() {
     check_group("conflicts");
 }
 
-/// Explicit native errors with a recorded difference.
+/// Explicit native errors with a recorded difference: Bazel's prefix
+/// conflict text, an aspect conflict's location, and identical actions
+/// expanding a tree artifact across targets (genuine shares them).
 #[test]
 fn declared_divergences_are_explicit_errors() {
     check_group("declared");
@@ -369,6 +388,53 @@ fn a_shared_action_is_planned_once_by_its_first_owner() {
         );
         assert!(
             consumer.contains(&format!("generated {owner}#0[0] -> {shared}\n")),
+            "{consumer}"
+        );
+    }
+}
+
+/// The aspect commit path and a tree artifact: the second application's
+/// (or target's) equal action plans no node, its outputs are produced by
+/// the first owner's action, and the consumer of both Files depends on
+/// that node once.
+#[test]
+fn shared_aspect_and_tree_actions_are_planned_once() {
+    let ws = Workspace::new();
+    let argv = ["build", "--nobuild", "//pkg:aspect_both", "//pkg:tree_both"]
+        .map(str::to_owned)
+        .to_vec();
+    let output = ws.run(&argv, &[("BAZEL_RS_DUMP_ACTIONS", "1")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    for (shared, owner, consumer) in [
+        (
+            "bazel-out/k8-fastbuild/bin/pkg/aspect_shared.txt",
+            "//pkg:aspect_base_x%//pkg:defs.bzl%shared_aspect#0",
+            "bazel-out/k8-fastbuild/bin/pkg/aspect_both.cat",
+        ),
+        (
+            "bazel-out/k8-fastbuild/bin/pkg/tree_shared",
+            "//pkg:tree_a#0",
+            "bazel-out/k8-fastbuild/bin/pkg/tree_both.cat",
+        ),
+    ] {
+        let producers = stderr
+            .split("ACTION ")
+            .filter(|node| node.contains(&format!("  output {shared}\n")))
+            .map(|node| node.lines().next().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(producers, [owner], "{stderr}");
+        let consumer = stderr
+            .split("ACTION ")
+            .find(|node| node.contains(&format!("  output {consumer}\n")))
+            .unwrap();
+        assert_eq!(
+            consumer.matches(&format!("-> {shared}\n")).count(),
+            1,
+            "{consumer}"
+        );
+        assert!(
+            consumer.contains(&format!("generated {owner}[0] -> {shared}\n")),
             "{consumer}"
         );
     }

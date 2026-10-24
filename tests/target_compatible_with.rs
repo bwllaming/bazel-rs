@@ -53,9 +53,18 @@ const GROUPS: &[(&str, &[&str])] = &[
             "exec_tool",
             "setting",
             "arm_platform",
+            "compatible_default",
         ],
     ),
-    ("errors", &["duplicate", "no_match", "not_a_constraint"]),
+    (
+        "errors",
+        &[
+            "duplicate",
+            "no_match",
+            "not_a_constraint",
+            "config_setting_error",
+        ],
+    ),
     (
         "declared",
         &[
@@ -65,6 +74,11 @@ const GROUPS: &[(&str, &[&str])] = &[
             "incompatible_config_setting",
             "incompatible_consumer",
             "wildcard",
+            "incompatible_marker",
+            "incompatible_default",
+            "incompatible_mixed",
+            "incompatible_sorted",
+            "incompatible_missing_deps",
         ],
     ),
 ];
@@ -300,22 +314,29 @@ fn receipt_covers_the_fixture_and_every_case_once() {
 /// Compatible targets build as usual: constraint lists, ~/code's select()
 /// shape, config_settings and an alias of a constraint value, a genrule, a
 /// filegroup, an alias, an exec-configuration tool, a non-host target
-/// platform, and a build setting (never checked: no toolchain resolution).
+/// platform, a build setting (never checked: no toolchain resolution), and
+/// a select() whose unmatched default is @platforms//:incompatible.
 #[test]
 fn compatible_targets_are_analyzed_and_built() {
     check_group("compatible");
 }
 
-/// Duplicate constraint settings, a select() without a match and a label
-/// without a ConstraintValueInfo or ConfigMatchingProvider fail with Bazel's
-/// messages.
+/// Duplicate constraint settings, a select() without a match, a label
+/// without a ConstraintValueInfo or ConfigMatchingProvider and a
+/// config_setting whose match is an error (`For config_setting L: ...`)
+/// fail with Bazel's messages.
 #[test]
 fn validation_errors_match_bazel() {
     check_group("errors");
 }
 
 /// An incompatible target is an explicit error with Bazel's reason text
-/// (genuine skips it in wildcards and rejects it when requested).
+/// (genuine skips it in wildcards and rejects it when requested):
+/// @platforms//:incompatible directly and as a select() default, an unmet
+/// constraint with a non-matching config_setting, both lists sorted and
+/// deduplicated, and dependencies on a missing package and an unknown
+/// repository that are never analyzed (only the incompatibility is
+/// reported).
 #[test]
 fn incompatible_targets_are_explicit_errors() {
     check_group("declared");
