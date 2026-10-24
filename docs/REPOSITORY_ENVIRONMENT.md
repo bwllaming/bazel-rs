@@ -23,6 +23,47 @@ implement Bazel's persistent-server callback suppression.
 Declared and dynamic inputs affect repository identity even when output bytes
 remain constant; unrelated observations from other callbacks must not do so.
 
+## Relative paths in the client environment
+
+The client environment reaches repository rules verbatim, as in Bazel 9.3
+(the client forwards its environment as `--client_env`,
+`option_processor.cc:723-726`; `CommandEnvironment.java:333-346` builds the
+repository environment from it): a relative `HOME` or `TMPDIR` is not made
+absolute. `repository_ctx.execute` runs its child in the repository directory
+(Bazel: `external/<name>`; native: the private stage), so the child resolves
+such a value there and writes its `$HOME` files into the repository itself.
+Genuine Bazel 9.3.0 does exactly this (scratch fixture: `HOME=rel/home` puts
+`external/+r+r/rel/home/.config/go/counter` into the repository).
+
+Symptom: every gazelle `go_repository` fetch fails with a different
+`fetch_repo: resulting module with sum h1:...; expected sum h1:...` on each
+attempt — under genuine Bazel too (two attempts, two different sums; the same
+fetch passes with an absolute `HOME`) — and seemingly passes "under strace",
+because that invocation used absolute paths. `fetch_repo` runs
+`go mod download` with the client's `HOME`; the Go command's telemetry
+(`$HOME/.config/go/telemetry/local/*.count`, `upload.token`, `weekends`;
+time-dependent bytes) then lands in the module directory that `fetch_repo`
+hashes with `dirhash.HashDir`. This was the "nondeterministic Go module
+checksum on a cold cache" of the 2026-10-24 PA-1 runs (their harness exported
+`HOME=runs/<name>-home` relative to its own working directory; every failing
+run's home stayed empty). Run the CLI with absolute `HOME` and `TMPDIR`
+(harnesses: resolve per-run directories before exporting them). Test:
+`relative_home_reaches_execute_verbatim_and_resolves_in_the_repository`.
+
+Checked without ptrace (inotify on `direct/stages/` during cold fetches of
+`//src/beyondwork.ai/utils/grpcfx:all` on ~/code): with a relative `HOME` the
+first fetched module's stage receives
+`runs/<name>-home/.config/go/telemetry/local/*.count` and `upload.token`, then
+`fetch_repo` reports the mismatch and removes the module's cache directory;
+with an absolute `HOME` no `.config` appears in any stage. In both runs the
+shared Go cache (`GOPATH`, which `go_repository_cache` records as its own stage
+path `direct/stages/<slug>`) is created by its stage, renamed away at
+publication and recreated by `go`, and never deleted while modules are
+fetched. A latent hazard remains across processes: a second native process on
+the same cache that re-executes `go_repository_cache` starts its fresh stage at
+that path and so deletes the module cache under the first process's fetches
+(Bazel's single server per output base cannot interleave so).
+
 ## Privacy, identity and resource boundaries
 
 Only requested names are read; the process environment is never enumerated.

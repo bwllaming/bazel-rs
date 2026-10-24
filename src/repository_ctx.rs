@@ -5566,6 +5566,30 @@ R = repository_rule(implementation = _impl)
         fixture.error("ctx.os.name = 'changed'", "repository_os");
     }
 
+    /// A relative HOME (or TMPDIR) of the client environment reaches the rule
+    /// verbatim, as in Bazel 9.3 (the client forwards its environment as
+    /// --client_env, option_processor.cc:723-726; CommandEnvironment.java:
+    /// 333-346 builds the repository environment from it), and an
+    /// execute() child resolves it against its working directory, the
+    /// repository directory. Genuine Bazel 9.3.0 does the same. This is how
+    /// a harness passing `HOME=runs/<name>-home` made every gazelle
+    /// go_repository fetch fail with a different `fetch_repo: resulting
+    /// module with sum ...` on each attempt (genuine too): `go mod download`
+    /// wrote its telemetry counters ($HOME/.config/go/telemetry,
+    /// time-dependent bytes) into the module directory fetch_repo hashes
+    /// (docs/REPOSITORY_ENVIRONMENT.md). Pinned so the value is never
+    /// silently absolutized, which Bazel does not do.
+    #[test]
+    fn relative_home_reaches_execute_verbatim_and_resolves_in_the_repository() {
+        let (fixture, _) =
+            Fixture::new().with_env(&[("HOME", b"rel/home"), ("PATH", b"/usr/bin:/bin")]);
+        fixture.ok("(ctx.os.environ['HOME'] == 'rel/home') or fail('verbatim')\nr = ctx.execute(['/bin/sh', '-c', 'mkdir -p \"$HOME/.config/go/telemetry\" && printf counter > \"$HOME/.config/go/telemetry/count\"'])\n(r.return_code == 0) or fail(r.stderr)");
+        assert_eq!(
+            fixture.bytes("rel/home/.config/go/telemetry/count"),
+            b"counter"
+        );
+    }
+
     #[test]
     fn os_environ_snapshot_failure_is_cached_and_reported_only_on_access() {
         let mut fixture = Fixture::new();
