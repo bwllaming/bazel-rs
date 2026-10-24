@@ -350,7 +350,8 @@ itself); the configured target has no files to build, no
 default runfiles and no executable, and its data runfiles merge, in order,
 each member's files to build and data runfiles
 (Runfiles.Builder.addTargets with --incompatible_always_include_files_in_data)
-— test rules only when their Rule.getRuleTags match the suite's `tags`
+— test rules only when their Rule.getRuleTags (tags, size, timeout,
+`flaky`/`noflaky`, `local`/`nolocal`) match the suite's `tags`
 without `manual`, nested suites always; it has an OutputGroupInfo like
 every rule target. Paired capture `tests/fixtures/test_suite`.
 

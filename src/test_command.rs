@@ -746,17 +746,24 @@ pub struct TestRuleInfo {
 
 impl TestRuleInfo {
     /// Rule.getRuleTags (packages/Rule.java:752-765): `tags` and the
-    /// taggable attributes `size`, `timeout`, `flaky` and `local`.
+    /// taggable attributes `size`, `timeout`, `flaky` and `local`
+    /// (StarlarkRuleClassFunctions.java:266-291); a boolean converts to its
+    /// name when true and to `no` + its name when false (Type.BOOLEAN
+    /// .toTagSet, packages/Type.java:431-439): `flaky`/`noflaky`,
+    /// `local`/`nolocal`.
     pub fn rule_tags(&self) -> BTreeSet<String> {
         let mut tags: BTreeSet<String> = self.tags.iter().cloned().collect();
         tags.insert(self.size.name().to_owned());
         tags.insert(self.timeout.name().to_owned());
-        if self.flaky {
-            tags.insert("flaky".to_owned());
-        }
-        if self.local {
-            tags.insert("local".to_owned());
-        }
+        let boolean = |value: bool, name: &str| {
+            if value {
+                name.to_owned()
+            } else {
+                format!("no{name}")
+            }
+        };
+        tags.insert(boolean(self.flaky, "flaky"));
+        tags.insert(boolean(self.local, "local"));
         tags
     }
 
@@ -1994,6 +2001,36 @@ mod tests {
         assert_eq!(
             tmp_dir_name("bazel-out/k8-fastbuild/bin/pkg/pass_test.sh", 0, 0),
             "6d6ad32491d201b7db1194ee8bd5b1f5"
+        );
+    }
+
+    /// Rule.getRuleTags: the false booleans are `noflaky`/`nolocal`
+    /// (genuine 9.3: `--test_tag_filters=noflaky` keeps non-flaky tests,
+    /// tests/fixtures/test_suite tests_only_noflaky).
+    #[test]
+    fn rule_tags_convert_booleans_like_type_boolean() {
+        let info = TestRuleInfo {
+            rule_class: "x_test".to_owned(),
+            size: TestSize::Small,
+            timeout: TestTimeout::Short,
+            flaky: false,
+            shard_count: -1,
+            local: true,
+            tags: vec!["fast".to_owned()],
+        };
+        let tags = |names: &[&str]| names.iter().map(|name| (*name).to_owned()).collect();
+        assert_eq!(
+            info.rule_tags(),
+            tags(&["fast", "local", "noflaky", "short", "small"])
+        );
+        let info = TestRuleInfo {
+            flaky: true,
+            local: false,
+            ..info
+        };
+        assert_eq!(
+            info.rule_tags(),
+            tags(&["fast", "flaky", "nolocal", "short", "small"])
         );
     }
 

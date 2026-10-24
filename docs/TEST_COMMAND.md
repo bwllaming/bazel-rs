@@ -56,7 +56,8 @@ its test rules and test suites (FilteringPolicies.FILTER_TESTS: manual ones
 only when named explicitly), per negative pattern its unfiltered targets,
 each expanded by TestsForTargetPatternFunction and added or removed in
 pattern order, then the command-line filters (TestFilter; tag filters use
-Rule.getRuleTags: tags, size, timeout, `flaky`, `local`). `test` builds the
+Rule.getRuleTags: tags, size, timeout, `flaky`/`noflaky`, `local`/`nolocal`
+— a false boolean is `no` + its name, Type.BOOLEAN.toTagSet). `test` builds the
 targets plus the tests, `--build_tests_only` (also under `build`) only the
 tests; with `--expand_test_suites` (default) every test suite among the
 targets to build is replaced by its tests — so `//pkg:suite -//pkg:t` still
@@ -78,7 +79,7 @@ and `All tests passed but there were other errors during the build.`,
 (docs/NATIVE_BUILD_RULES.md, test_suite). `WARNING: All specified test
 targets were excluded by filters`; no tests: `ERROR: No test targets were
 found, yet testing was requested`, exit 4. Paired capture
-`tests/fixtures/test_suite` (52 genuine 9.3.0 cases, all MATCH, 8 of them
+`tests/fixtures/test_suite` (56 genuine 9.3.0 cases, all MATCH, 8 of them
 `run`; replayed by `tests/test_suite.rs`).
 `shard_count` is checked like RuleConfiguredTargetBuilder.initializeTestProvider
 (`Must not be negative.`, more than 50 shards).
