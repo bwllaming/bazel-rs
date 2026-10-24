@@ -133,23 +133,58 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    removed and one line says so (`bazel-rs: removed the analysis snapshot
    of this build: its failure involves <path> in the repository store; the
    next build re-analyzes and repairs it`). A failure that merely mentions a
-   store path costs one full analysis next time, never a repeated failure.
+   store path costs one full analysis next time. **Only** a failure whose
+   error names an absolute path in the store heals: damage that fails an
+   action or a test without naming that path (an action citing the file by
+   its execution-root path, a test that fails on a runfile's content) keeps
+   the snapshot, and the same failure repeats on every hit (the deviation
+   below, L2-W5g).
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
-decision on review F3).** Per tree, a hit validates a repository tree's
-root, manifest and directories, not its files: a file added, deleted or
-renamed anywhere in a tree is a miss (its directory's lstat key moved; the
-full analysis repairs the tree, `a_file_or_directory_deleted_from_a_repository_tree_misses`),
-but an in-place edit of a file's bytes (or mode) keeps every directory key.
-The execution phase hashes every action input — crate::digest_memo keys the
+decision on review F3; corrected by L2-W5g).** Per tree, a hit validates a
+repository tree's root, manifest and directories, not its files: a file
+added, deleted or renamed anywhere in a tree is a miss (its directory's
+lstat key moved; the full analysis repairs the tree,
+`a_file_or_directory_deleted_from_a_repository_tree_misses`), but an
+in-place edit of a file's bytes or mode keeps every directory key. A local
+(`local = True`) repository's replay reproduces its identity inputs and
+tree digests in a fresh stage and checks that its published tree exists,
+but does not look into the published tree either. So **byte or mode
+tampering of a file in a store tree or in a local repository's published
+tree that execution uses (an action input, a tool, a test's or `run`'s
+runfile) persists under `on`**: every hit executes with the tampered file,
+where a run without the snapshot repairs the tree first (its warm probe
+sees the mode, size or change time differ, re-executes the rule and
+republishes the tree). Reproduced (L2-W5f re-review): `chmod 644` on a
+store-tree tool fails its genrule with `Permission denied` (exit 1) on every
+`on` run while the snapshot-less run repairs the tree and exits 0; an
+in-place edit of a test's store runfile fails the test on every `on` run;
+the same for both in a `local = True` repository's published tree. The
+execution phase hashes every action input — crate::digest_memo keys the
 files of the tree stores by their *change time*, so an edit that keeps the
-size and restores the modification time is still re-hashed — and the action
-runs with the edited bytes (`a_hit_hashes_an_edited_tree_file_by_its_change_time`),
-where the full analysis would repair the tree first. Like Bazel, which
+size and restores the modification time is still re-hashed — so the action
+runs again with the edited bytes
+(`a_hit_hashes_an_edited_tree_file_by_its_change_time`): a different output
+or a failure, never a stale cache hit. Only failures whose error names an
+absolute store path heal (step 6: `a_store_input_staged_by_the_test_runner_heals`,
+the test runner staging an unreadable runfile from the store); errors that
+name the file by its execution-root or runfiles path
+(`external/+gen_rule+genrepo/tool.sh: Permission denied`) and tests that
+merely fail keep the snapshot until something else replaces it (an edit
+that misses, a deleted snapshot, garbage collection). Like Bazel, which
 trusts an external repository's files once its marker is up to date, a hit
-uses a tampered store file as it is; `--verify_repo_tampering` validates
-every entry. A file that became unreadable fails the hit once, then heals
-(step 6, `a_store_input_staged_by_the_test_runner_heals`). The directory
+uses a tampered store file as it is. `BAZEL_RS_SNAPSHOT=verify` avoids it:
+the shadow full analysis repairs the tree before the hit executes — for a
+store tree that is a mismatch (`first=taint`, the full analysis's plan
+executes), for a local repository it is silent (its re-execution
+republishes the repaired tree and still matches the replay record, so the
+hit is verified and executes with the repaired tree). For store trees
+`--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` avoids it too
+(every INTEGRITY entry validated: the tampered file is a miss, which
+repairs the tree); a local repository's published files have no INTEGRITY
+entries (the analysis STATs them, which records the kind only), so there
+the tampering persists under that policy as well (checked by L2-W5g with
+the reviewer's chmod and in-place cases). The directory
 entries cost the hit more checks — on ~/code 10,313 instead of 1,009
 (oauth2token) and 16,605 instead of 3,035 (B2), validated on 16 threads in
 35–62 ms on the loaded shared machine, beside a replay of 200–300 ms there —

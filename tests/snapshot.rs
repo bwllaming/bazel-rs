@@ -2748,9 +2748,11 @@ fn fuzz_command(twin: &Twin, command: usize, state: &FuzzState) -> Vec<String> {
 /// failure prints the seed and the steps so far.
 ///
 /// Not in the catalogue (documented deviations, fixtures of their own): an
-/// in-place edit of a store-tree file's bytes (a hit executes with the
-/// edited bytes, `a_hit_hashes_an_edited_tree_file_by_its_change_time`) and
-/// a store-tree file made unreadable (the hit fails once, then heals,
+/// in-place edit of a store-tree file's bytes or mode (a hit executes with
+/// the edited file, `a_hit_hashes_an_edited_tree_file_by_its_change_time`;
+/// a failure it causes repeats on every hit unless its error names the
+/// absolute store path) and a store-tree runfile made unreadable (the test
+/// runner's error names the store path: the hit fails once, then heals,
 /// `a_store_input_staged_by_the_test_runner_heals`).
 #[test]
 fn mutation_fuzz() {

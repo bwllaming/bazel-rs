@@ -547,8 +547,12 @@ pub fn heal_after_failure(error: &str) {
 /// validation does not look into every file, a local repository's replay
 /// not into its published tree; the full analysis repairs both): remove the
 /// snapshot and say so in one line. A failure that merely mentions a store
-/// path costs one full analysis next time, never a repeated failure.
-/// Returns whether the snapshot was removed.
+/// path costs one full analysis next time. Only such errors heal (L2-W5g):
+/// damage whose failure names no absolute store path — an action citing a
+/// tampered tool by its execution-root path, a test failing on a tampered
+/// runfile — keeps the snapshot, and every hit fails the same way
+/// (docs/ANALYSIS_SNAPSHOT.md, the per-tree deviation). Returns whether the
+/// snapshot was removed.
 fn heal(cache: &Path, key: &Key, error: &str) -> bool {
     let store = cache.join("repositories");
     let canonical = std::fs::canonicalize(&store).ok();
