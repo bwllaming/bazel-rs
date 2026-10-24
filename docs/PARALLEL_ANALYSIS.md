@@ -926,9 +926,11 @@ then its evaluation's records, functions and print lines — so the
 `LoadedDefinition` (identities, spec keys, lockfile inputs) and stderr are
 the uncached loader's. Failures are not cached (the next load evaluates
 again, as before). The cache is off while root/mapping results are pinned
-or captured for the analysis snapshot's replay records, and with the
-`BAZEL_RS_DEBUG_NO_DEFINITION_CACHE` switch, which
-`tests/definition_bzl_cache.rs` uses as its A/B reference (two extensions
+(a replaying set) and with the `BAZEL_RS_DEBUG_NO_DEFINITION_CACHE`
+switch; while they are captured for the analysis snapshot's replay
+records it keeps each module's root/mapping lookups and repeats them at a
+hit inside a replay scope (W6R). `tests/definition_bzl_cache.rs` uses the
+switch as its A/B reference (two extensions
 of one `.bzl`, a repository rule shared by both and by a
 `use_repo_rule`, top-level prints, cold and warm lockfile). oauth2token:
 881 evaluations instead of 1,607, peak RSS −150 MB.

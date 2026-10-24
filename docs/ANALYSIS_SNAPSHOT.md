@@ -728,22 +728,24 @@ with phase-1 prefetch") — so a miss saves the recording the threads-1 run
 makes, at any `--loading_phase_threads` (which is not in G: a snapshot
 saved at threads 8 hits, and verifies strictly, at threads 1 and 32).
 Integration-21 had turned prefetch off while recording, so a miss paid
-phase 1's sequential loading. Measured on ~/code (warm, update-mode
-recipe, a miss forced by deleting the private cache's `snapshots/`, load
-10–20; stage 2 = ca7e18b):
+phase 1's sequential loading; and the definition `.bzl` cache (W6) stays
+on while local repository rules are captured for replay now (a reused
+module repeats the root/mapping lookups its first evaluation pinned,
+crate::snapshot::replay::lookups). Measured on ~/code (warm, update-mode
+recipe, a miss forced by deleting the private cache's `snapshots/`,
+interleaved rounds at load 8–15; stage 2 = ca7e18b; "prefetch only" =
+the W6R series without the definition cache, 955783a):
 
-| | stage 2 | W6R | W6R, `BAZEL_RS_SNAPSHOT_PREFETCH=0` | unset |
-|---|---|---|---|---|
-| oauth2token:all `--nobuild` miss, 5 rounds, median (range) | 6.82 s (6.16–7.49) | **5.59 s** (5.12–5.78) | 6.91 s | 4.25–4.31 s |
-| B2 `--nobuild` miss, 3 rounds | 11.48 s (11.26–11.49) | **9.28 s** (9.27–9.61) | 11.73 s | 8.08–8.10 s |
-| peak RSS of a miss (oauth2token / B2) | 1.34 / 2.07 GB | 1.39 / 2.16 GB | — | 1.16 / 1.81 GB |
+| | stage 2 | prefetch only | **W6R** | W6R, `BAZEL_RS_SNAPSHOT_PREFETCH=0` | snapshot off |
+|---|---|---|---|---|---|
+| oauth2token:all `--nobuild` miss, 5 rounds, median (range) | 6.18 s (5.71–6.41) | 5.02 s (4.66–5.24) | **4.49 s** (4.30–4.87) | 5.40 s | 3.92–3.97 s |
+| B2 `--nobuild` miss, 3 rounds | 11.13 s (11.06–11.38) | 8.95 s (8.87–9.14) | **8.44 s** (8.29–8.53) | 10.75 s | 7.98–8.09 s |
+| peak RSS of a miss (oauth2token / B2) | 1.34 / 2.07 GB | 1.39 / 2.16 GB | 1.21–1.23 / 1.97–1.98 GB | 1.16 / 1.88 GB | 1.16 / 1.81 GB |
 
-The rest of the gap to an unset run is the record mode's own cost: the
-definition `.bzl` cache stays off while local repository rules are
-captured for replay (~0.45 s on oauth2token), the recording and the tee
-capture. `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while
-recording (a diagnostics switch, not part of G; it is not a test hook,
-snapshots stay on). Hits are unaffected.
+A hit: 0.16 s / 0.17 s. The rest of the gap to a run without the snapshot
+is the recording and the tee capture. `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps
+prefetch off while recording (a diagnostics switch, not part of G; it is
+not a test hook, snapshots stay on). Hits are unaffected.
 
 **Diagnostics bypass the capture** (`snapshot::diag`; L2-W5h: never
 inside a forwarded line, which goes out whole under the same order lock): the PERF marks,

@@ -397,9 +397,14 @@ panic breaks the stderr capture, so nothing is saved. Workers print
 nothing; `PERF-PREFETCH` goes to the diagnostics stream (never part of the
 captured window bytes a hit replays). Replay scopes for local repository
 rules open on the coordinator only (debug-asserted), so their root/mapping
-capture sees the sequential demands; the definition `.bzl` cache stays off
-while it captures. `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while
-recording (a diagnostics switch, not part of the snapshot key).
+capture sees the sequential demands. The definition `.bzl` cache stays on
+while it captures (W6R): a module the cache serves inside a replay scope
+repeats the `root()`/`mapping()` lookups of its first evaluation
+(`snapshot::replay::lookups`), so the pinned tables are the uncached
+loader's (`tests/definition_bzl_cache.rs`; on ~/code the same recording
+and 45/45 replays with and without it, −195 MB peak RSS).
+`BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while recording (a
+diagnostics switch, not part of the snapshot key).
 
 **Gates.** The record mode's dump prints `INPUTS-CANONICAL <blake3>`: the
 digest of the INPUTS a snapshot of the recording would hold (the policy's
@@ -430,14 +435,16 @@ environment hook off.
 
 Measured on ~/code (warm, update-mode recipe; ~/code HEAD moved from
 14bd7e2e to 31494f32/45ed7432/916008a5 during the measurements, its
-MODULE.bazel.lock unchanged): oauth2token:all `--nobuild` (96,661
-comparable dump lines) and B2 `--nobuild` (159,181) record identically —
-`INPUTS-CANONICAL` and every line — at threads 1/8/32 and 8/40, 32/25,
-8/7 (prefetch loaded 867–923 and 2,202–2,390 units); 24 and 21 verify-mode
-runs cycling threads 1/8/32, saving at each, verified 18 and 15 hits with
-no mismatch; the syscall audit at threads 1 is clean (31,400 window
-touches, 0 unrecorded; 2,730 replay touches, 0 unrecorded). A miss's
-wall: docs/ANALYSIS_SNAPSHOT.md, "What is saved, and when".
+MODULE.bazel.lock unchanged), with the series both before and after the
+definition cache item: oauth2token:all `--nobuild` (96,661 comparable dump
+lines) and B2 `--nobuild` (159,181) record identically — `INPUTS-CANONICAL`
+and every line — at threads 1/8/32 and 8/40, 32/25, 8/7 (prefetch loaded
+867–923 and 2,201–2,390 units); verify-mode runs cycling threads 1/8/32,
+saving at each (45 + 42 runs over both binaries), verified 33 + 30 hits
+with no mismatch; the syscall audit at threads 1 is clean (26,790 window
+touches with the definition cache, 31,400 without, 0 unrecorded; 2,730
+replay touches, 0 unrecorded). A miss's wall: docs/ANALYSIS_SNAPSHOT.md,
+"What is saved, and when".
 
 ## Measured on ~/code (L2-W4R, warm, update-mode recipe)
 
