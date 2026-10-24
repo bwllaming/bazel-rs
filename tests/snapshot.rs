@@ -60,6 +60,28 @@ struct Pair {
     mode: &'static str,
 }
 
+impl Drop for Twin {
+    /// Make every directory writable first: a read-only tree artifact in a
+    /// cache would keep the temporary directory from being removed.
+    fn drop(&mut self) {
+        fn writable(path: &Path) {
+            let Ok(metadata) = fs::symlink_metadata(path) else {
+                return;
+            };
+            if metadata.is_dir() {
+                let mode = metadata.permissions().mode();
+                if mode & 0o700 != 0o700 {
+                    let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700));
+                }
+                for entry in fs::read_dir(path).into_iter().flatten().flatten() {
+                    writable(&entry.path());
+                }
+            }
+        }
+        writable(self.base.path());
+    }
+}
+
 impl Twin {
     fn new(files: &[(&str, &str)]) -> Self {
         let base = tempfile::Builder::new()
@@ -2285,6 +2307,9 @@ er(name = "envrepo")
 
 bazel_dep(name = "localdep", version = "1.0")
 local_path_override(module_name = "localdep", path = "../localdep")
+
+ext = use_extension("//:ext.bzl", "ext")
+use_repo(ext, "extrepo")
 "#;
 
 const FUZZ_REPOS: &str = r#"def _local(ctx):
@@ -2325,8 +2350,10 @@ fn fuzz_fixture() -> Twin {
     twin.write_beside("localdep/BUILD.bazel", &localdep_build(0));
     twin.write(
         "deps/BUILD.bazel",
-        "genrule(name = 'd', srcs = ['@localdep//:l', '//pkg:in.txt'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
+        "genrule(name = 'd', srcs = ['@localdep//:l', '@extrepo//:v.txt', '//pkg:in.txt'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
     );
+    // A module extension: the workspace has a lockfile to edit and delete.
+    twin.write("ext.bzl", EXTENSION);
     twin.write("pkg/other.txt", "other\n");
     twin.write(
         "pkg/BUILD.bazel",
@@ -2572,10 +2599,13 @@ fn mutate(
             name("MODULE.bazel edit")
         }
         20 => {
+            // Still valid JSON: one or two trailing newlines.
+            let two = state.toggle("lockfile");
             twin.each(|root| {
                 let path = root.join("ws/MODULE.bazel.lock");
                 if let Ok(text) = fs::read_to_string(&path) {
-                    fs::write(&path, format!("{}\n", text.trim_end())).unwrap();
+                    let end = if two { "\n\n" } else { "\n" };
+                    fs::write(&path, format!("{}{end}", text.trim_end())).unwrap();
                 }
             });
             name("lockfile edit")
@@ -2772,7 +2802,7 @@ fn mutation_fuzz() {
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
         log.push(format!("step {step}: {mutation}; {mode} {argv:?} {env:?}"));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if concurrent {
+            let pair = if concurrent {
                 // Once in sequence (concurrent runs share the action cache:
                 // which of them executes an action first is a race), then
                 // twice at once on the snapshot side.
@@ -2828,7 +2858,17 @@ fn mutation_fuzz() {
                     );
                 }
                 pair
-            }
+            };
+            // A hit writes no lockfile: it may only hit when the full
+            // analysis would not have written one either.
+            let lockfile = |side: &str| fs::read(twin.side(side).join("ws/MODULE.bazel.lock")).ok();
+            assert!(
+                lockfile(ON) == lockfile(OFF),
+                "{argv:?}: MODULE.bazel.lock differs (on: {:?} bytes, off: {:?} bytes)",
+                lockfile(ON).map(|bytes| bytes.len()),
+                lockfile(OFF).map(|bytes| bytes.len())
+            );
+            pair
         }));
         match outcome {
             Ok(pair) => {
