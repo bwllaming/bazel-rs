@@ -2888,22 +2888,27 @@ mod tests {
             "streamed != reference spec identity"
         );
         // Racy: fresh fingerprint (mtime/ctime ~= now) must hash, not trust.
-        let cache = temp();
-        let (tree, _) = publish(cache.path(), b"", write).unwrap();
-        let manifest: Manifest =
-            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
-        let fresh = fingerprint(&fs::metadata(tree.join("data")).unwrap());
-        assert!(!racy_safe(&fresh, std::time::SystemTime::now()));
-        assert_eq!(
-            settled_fingerprint(
+        // These steps read the real clock, so they are asserted for an
+        // attempt that ran inside the racy window ([`inside_racy_window`]).
+        let (racy_now, settled_now, outcome) = inside_racy_window(|| {
+            let cache = temp();
+            let (tree, _) = publish(cache.path(), b"", write).unwrap();
+            let manifest: Manifest =
+                serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
+                    .unwrap();
+            let fresh = fingerprint(&fs::metadata(tree.join("data")).unwrap());
+            let racy_now = racy_safe(&fresh, std::time::SystemTime::now());
+            let settled_now = settled_fingerprint(
                 &fs::metadata(tree.join("data")).unwrap(),
-                std::time::SystemTime::now()
-            ),
-            None
-        );
-        let mut files = manifest.files.clone();
-        files.get_mut("data").unwrap().stat = Some(fresh);
-        let outcome = verify_snapshot_detailed(&tree, &files, VerifyMode::Stat).unwrap();
+                std::time::SystemTime::now(),
+            );
+            let mut files = manifest.files.clone();
+            files.get_mut("data").unwrap().stat = Some(fresh);
+            let outcome = verify_snapshot_detailed(&tree, &files, VerifyMode::Stat).unwrap();
+            (fresh, (racy_now, settled_now, outcome))
+        });
+        assert!(!racy_now);
+        assert_eq!(settled_now, None);
         assert!(outcome.matched);
         assert!(
             outcome.hashed > 0,
@@ -3362,8 +3367,14 @@ mod tests {
 
     #[test]
     fn binary_executable_empty_directories_and_boundary() {
-        let cache = temp();
-        let (tree, status) = publish(cache.path(), b"definition", write).unwrap();
+        // The publication is asserted for an attempt that recorded its
+        // manifest inside the racy window of every entry (the fingerprint
+        // assertion below; [`inside_racy_window`], [`oldest_entry`]).
+        let (cache, tree, status) = inside_racy_window(|| {
+            let cache = temp();
+            let (tree, status) = publish(cache.path(), b"definition", write).unwrap();
+            (oldest_entry(&tree), (cache, tree, status))
+        });
         assert_eq!(status, Publication::Executed);
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         assert!(tree.join("empty").is_dir());
@@ -3717,6 +3728,9 @@ mod tests {
         let settled = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
         let outcome = verify_snapshot_at(&tree, &parsed.files, VerifyMode::Stat, settled).unwrap();
         assert!(outcome.matched && outcome.refreshed.contains_key("data"));
+        // With the lock provably free, an unchanged manifest below means the
+        // refresh declined this manifest, not that it skipped a held lock.
+        free_publication_lock(&cache.path().join("direct"), &parsed.identity);
         refresh_manifest(
             &cache.path().join("direct"),
             &parsed.identity,
@@ -4194,11 +4208,11 @@ mod tests {
     /// Step B tamper matrix (default Stat verification):
     /// (1) do-nothing warm call reuses; (2) content changed with size
     /// changed re-executes; (3) content changed keeping size AND mtime
-    /// (touch -d) still re-executes — the ctime moves, the stat
-    /// fingerprint mismatches, the fallback hash catches it.
+    /// (restored with futimens, as `touch -d` does) still re-executes —
+    /// the ctime moves, the stat fingerprint mismatches, the fallback hash
+    /// catches it.
     #[test]
     fn stat_verify_reuse_and_tamper_matrix() {
-        let cache = temp();
         let executions = AtomicUsize::new(0);
         let run = |cache: &Path| {
             publish(cache, b"", |stage| {
@@ -4207,18 +4221,27 @@ mod tests {
             })
             .unwrap()
         };
-        let (tree, first) = run(cache.path());
+        // (1) is asserted for an attempt whose publication and warm call
+        // both ran inside the racy window of every entry: one stalled past
+        // it legitimately records or refreshes settled fingerprints
+        // ([`inside_racy_window`], [`oldest_entry`]).
+        let (cache, tree, first, (again, status), manifest) = inside_racy_window(|| {
+            executions.store(0, Ordering::SeqCst);
+            let cache = temp();
+            let (tree, first) = run(cache.path());
+            // (1) do-nothing: reuse, no execution. Fresh entries carry no
+            // fingerprint yet (racy at publish, review R3); a warm verify
+            // hash-matches and refreshes only fingerprints settled by then.
+            let warm = run(cache.path());
+            let manifest: Manifest =
+                serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
+                    .unwrap();
+            (oldest_entry(&tree), (cache, tree, first, warm, manifest))
+        });
         assert_eq!(first, Publication::Executed);
-        assert_eq!(executions.load(Ordering::SeqCst), 1);
-        // (1) do-nothing: reuse, no execution. Fresh entries carry no
-        // fingerprint yet (racy at publish, review R3); the first warm
-        // verify hash-matches and refreshes settled fingerprints in.
-        let (again, status) = run(cache.path());
         assert_eq!(again, tree);
         assert_eq!(status, Publication::Reused);
         assert_eq!(executions.load(Ordering::SeqCst), 1);
-        let manifest: Manifest =
-            serde_json::from_slice(&fs::read(metadata_path(cache.path(), &tree)).unwrap()).unwrap();
         assert!(manifest.files.values().all(|e| e.stat.is_none()));
         // (2) size change: re-execute.
         fs::write(tree.join("data"), b"bad-longer-content").unwrap();
@@ -4230,20 +4253,7 @@ mod tests {
         let path = tree.join("data");
         let mtime = fs::metadata(&path).unwrap().modified().unwrap();
         fs::write(&path, [9u8, 9, 9, 9]).unwrap();
-        let since = mtime
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap();
-        let out = std::process::Command::new("touch")
-            .arg("-d")
-            .arg(format!("@{}.{:09}", since.as_secs(), since.subsec_nanos()))
-            .arg(&path)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "touch: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        File::open(&path).unwrap().set_modified(mtime).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), mtime);
         let (_, status) = run(cache.path());
         assert_eq!(status, Publication::Executed);
@@ -4284,6 +4294,32 @@ mod tests {
             })
             .max()
             .unwrap()
+    }
+
+    /// The stat fingerprint of the entry below `tree`'s root whose racy
+    /// window ends first (the oldest [`changed_at`]). While it is inside
+    /// its window, every entry of the tree is: the root's own pre-publish
+    /// times are no older (creating an entry updates them), and publishing
+    /// renames only the root. An attempt that [`inside_racy_window`]
+    /// accepts with this fingerprint therefore recorded its manifest, and
+    /// ran any warm verify, before any entry had settled.
+    fn oldest_entry(tree: &Path) -> StatFingerprint {
+        fn visit(path: &Path, oldest: &mut Option<StatFingerprint>) {
+            for entry in fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                let metadata = fs::symlink_metadata(&path).unwrap();
+                let candidate = fingerprint(&metadata);
+                if oldest.is_none_or(|oldest| changed_at(&candidate) < changed_at(&oldest)) {
+                    *oldest = Some(candidate);
+                }
+                if metadata.is_dir() {
+                    visit(&path, oldest);
+                }
+            }
+        }
+        let mut oldest = None;
+        visit(tree, &mut oldest);
+        oldest.expect("a tree with entries")
     }
 
     /// Wait until no open file description holds the lock of publication
@@ -4436,14 +4472,23 @@ mod tests {
     /// and a later probe rewrites nothing (idempotent).
     #[test]
     fn concurrent_warm_probes_refresh_the_manifest_safely() {
-        let cache = temp();
-        let (tree, _) = publish(cache.path(), b"", write).unwrap();
-        let path = metadata_path(cache.path(), &tree);
-        let published = parse_manifest(&fs::read(&path).unwrap()).unwrap();
+        // Racy at publish: asserted for a publication recorded inside the
+        // racy window of every entry ([`inside_racy_window`]).
+        let (cache, tree, path, published) = inside_racy_window(|| {
+            let cache = temp();
+            let (tree, _) = publish(cache.path(), b"", write).unwrap();
+            let path = metadata_path(cache.path(), &tree);
+            let published = parse_manifest(&fs::read(&path).unwrap()).unwrap();
+            (oldest_entry(&tree), (cache, tree, path, published))
+        });
         assert!(published.files["data"].stat.is_none()); // racy at publish
         // Let the tree settle past the racy margin, so the probes' fallback
         // hash matches refresh the fingerprint for real.
         std::thread::sleep(RACY_MARGIN + std::time::Duration::from_millis(200));
+        // The probes only TRY the publication lock; a copy of the
+        // publisher's descriptor in a child another test is starting would
+        // make every one of them skip ([`free_publication_lock`]).
+        free_publication_lock(&cache.path().join("direct"), &published.identity);
         let spec_key = spec_identity(b"spec");
         let barrier = Arc::new(Barrier::new(16));
         let probes: Vec<_> = (0..16)
