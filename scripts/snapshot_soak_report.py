@@ -3,10 +3,11 @@
 
 usage: snapshot_soak_report.py [--json] CACHE_DIR
 
-Reads `<cache>/snapshots/events.log` and `verify.log` (each after its rotated
-generation `<name>.1`; crate::snapshot::telemetry writes both, docs/
-ANALYSIS_SNAPSHOT.md "Soak telemetry") and the snapshot store
-`<cache>/snapshots/v1/`, and prints:
+Reads `<cache>/snapshots/events.log`, `verify.log` and `verify-details.log`
+(each after its rotated generation `<name>.1`; crate::snapshot::telemetry
+writes them, docs/ANALYSIS_SNAPSHOT.md "Soak") and the snapshot store
+`<cache>/snapshots/v1/` (and `mismatched/`, the snapshots verify mismatches
+set aside), and prints:
 
   * the number of events per mode and kind (hit, miss, saved, not-saved,
     verified, mismatch, healed, evicted, recorded), misses and unsaved runs
@@ -23,9 +24,11 @@ ANALYSIS_SNAPSHOT.md "Soak telemetry") and the snapshot store
   * always-miss patterns: at least three consecutive misses of one key with
     the same reason and path and no hit between them;
   * heals by reason (`<rule>:<first differing entry>`) with their paths;
-  * every verify.log mismatch line, verbatim;
+  * every verify.log mismatch line, verbatim, each with its verify-details.log
+    block (where the snapshot went and every difference; L2-W5i);
   * hit latency (the attempt's wall time): p50 and p95, per mode and command;
-  * the store: snapshot files and bytes, the logs' sizes.
+  * the store: snapshot files and bytes, those set aside in `mismatched/`, the
+    logs' sizes.
 
 `--json` prints the same as one JSON object. Exit status 0 (2 when the cache
 has no snapshot logs).
@@ -40,6 +43,9 @@ from pathlib import Path
 
 EVENTS_LOG = 'events.log'
 VERIFY_LOG = 'verify.log'
+VERIFY_DETAILS_LOG = 'verify-details.log'
+# Lines of a verify-details.log block shown in the text report (all in --json).
+DETAILS_SHOWN = 40
 # Miss classes that name a changed input (crate::snapshot::telemetry::classify_miss).
 INPUT_CHANGES = {'env', 'read', 'readdir', 'stat', 'lstat', 'canon', 'readlink', 'integrity', 'tree',
                  'replay', 'local-tree', 'status-stderr'}
@@ -115,26 +121,48 @@ def percentile(values, fraction):
     return ordered[rank - 1]
 
 
-def store_size(snapshots):
-    """Snapshot files and bytes below `<cache>/snapshots/v1`, and the logs' sizes."""
-    files = total = 0
-    v1 = snapshots / 'v1'
-    if v1.is_dir():
-        for entry in v1.iterdir():
+def snapshot_files(directory):
+    """The `.snap` files below `directory` (sorted) and their bytes."""
+    files, total = [], 0
+    if directory.is_dir():
+        for entry in sorted(directory.iterdir()):
             if entry.name.endswith('.snap') and entry.is_file():
-                files += 1
+                files.append(entry.name)
                 total += entry.stat().st_size
+    return files, total
+
+
+def store_size(snapshots):
+    """Snapshot files and bytes below `<cache>/snapshots/v1`, those set aside in
+    `mismatched/` (L2-W5i), and the logs' sizes."""
+    files, total = snapshot_files(snapshots / 'v1')
+    aside, aside_bytes = snapshot_files(snapshots / 'mismatched')
     logs = {}
-    for name in (EVENTS_LOG, EVENTS_LOG + '.1', VERIFY_LOG, VERIFY_LOG + '.1'):
-        path = snapshots / name
-        if path.is_file():
-            logs[name] = path.stat().st_size
-    return {'snapshots': files, 'bytes': total, 'logs': logs}
+    for name in (EVENTS_LOG, VERIFY_LOG, VERIFY_DETAILS_LOG):
+        for generation in (name, name + '.1'):
+            path = snapshots / generation
+            if path.is_file():
+                logs[generation] = path.stat().st_size
+    return {'snapshots': len(files), 'bytes': total, 'logs': logs,
+            'mismatched': {'snapshots': aside, 'bytes': aside_bytes}}
 
 
-def analyze(events, verify_lines, store=None):
-    """The report of `events` (parsed events.log lines, oldest first) and the
-    raw `verify_lines`, as a dict (see the module docs)."""
+def parse_details(lines):
+    """verify-details.log blocks: each a header (the mismatch's verify.log line)
+    and its lines (indented by two spaces in the log)."""
+    blocks = []
+    for line in lines:
+        if line.startswith('  ') and blocks:
+            blocks[-1]['lines'].append(line[2:])
+        elif line.strip():
+            blocks.append({'header': line, 'lines': []})
+    return blocks
+
+
+def analyze(events, verify_lines, store=None, details=()):
+    """The report of `events` (parsed events.log lines, oldest first), the raw
+    `verify_lines` and the verify-details.log `details` blocks, as a dict (see
+    the module docs)."""
     counts = collections.Counter((e.get('mode', '-'), e.get('kind', '-')) for e in events)
     misses = collections.Counter(e.get('reason', '-') for e in events if e.get('kind') == 'miss')
     not_saved = collections.Counter(e.get('reason', '-') for e in events if e.get('kind') == 'not-saved')
@@ -239,6 +267,7 @@ def analyze(events, verify_lines, store=None):
             for e in heals
         ],
         'verify_mismatches': list(verify_lines),
+        'verify_details': pair_details(verify_lines, details),
         'hit_latency_ms': {
             f'{mode}/{command}': {'hits': len(values), 'p50': percentile(values, 0.5),
                                   'p95': percentile(values, 0.95)}
@@ -247,6 +276,24 @@ def analyze(events, verify_lines, store=None):
         'store': store,
     }
     return report
+
+
+def pair_details(verify_lines, details):
+    """Each verify.log line's verify-details.log block (by its header: the same
+    line), in verify.log order: `{'line', 'lines'}` (`lines` None when the block
+    is missing: written by an older binary, or rotated away); then the blocks
+    whose verify.log line is missing (rotated away), with `line` their header."""
+    pending = collections.defaultdict(collections.deque)
+    for block in details:
+        pending[block['header']].append(block)
+    paired = []
+    for line in verify_lines:
+        block = pending[line].popleft() if pending.get(line) else None
+        paired.append({'line': line, 'lines': block['lines'] if block else None})
+    for header, blocks in pending.items():
+        for block in blocks:
+            paired.append({'line': header, 'lines': block['lines'], 'only_details': True})
+    return paired
 
 
 def number(value, digits=1):
@@ -298,9 +345,17 @@ def render(report, cache):
         lines.append(f"  {heal['time']} {heal['key']} {heal['command']} {heal['reason']} {heal['path']} "
                      f"({number(heal['ms'])} ms)")
     lines.append('')
-    lines.append(f"verify mismatches (verify.log, verbatim): {len(report['verify_mismatches'])}")
-    for line in report['verify_mismatches']:
-        lines.append('  ' + line)
+    lines.append(f"verify mismatches (verify.log, verbatim, each with its verify-details.log block): "
+                 f"{len(report['verify_mismatches'])}")
+    for entry in report['verify_details']:
+        lines.append('  ' + entry['line'] + (' (verify.log line rotated away)' if entry.get('only_details') else ''))
+        if entry['lines'] is None:
+            lines.append('    (no verify-details.log block: an older binary, or rotated away)')
+            continue
+        for detail in entry['lines'][:DETAILS_SHOWN]:
+            lines.append('    ' + detail)
+        if len(entry['lines']) > DETAILS_SHOWN:
+            lines.append(f"    ... ({len(entry['lines']) - DETAILS_SHOWN} more lines in verify-details.log)")
     lines.append('')
     lines.append('hit latency (attempt wall, ms):')
     for name, stats in report['hit_latency_ms'].items():
@@ -313,14 +368,20 @@ def render(report, cache):
         logs = ', '.join(f'{k} {v} bytes' for k, v in sorted(store['logs'].items())) or 'none'
         lines.append(f"store: {store['snapshots']} snapshot(s), {store['bytes']} bytes "
                      f"({store['bytes'] / (1 << 20):.1f} MiB); logs: {logs}")
+        aside = store.get('mismatched') or {'snapshots': [], 'bytes': 0}
+        lines.append(f"set aside by verify mismatches (snapshots/mismatched/, the 3 newest kept): "
+                     f"{len(aside['snapshots'])} snapshot(s), {aside['bytes']} bytes"
+                     + (': ' + ', '.join(aside['snapshots']) if aside['snapshots'] else ''))
     return '\n'.join(lines) + '\n'
 
 
 def load(cache):
+    """`(events, verify_lines, store, details)` of the cache's logs and store."""
     snapshots = Path(cache) / 'snapshots'
     events = [e for e in (parse_line(l) for l in read_generations(snapshots, EVENTS_LOG)) if e is not None]
     verify_lines = [l for l in read_generations(snapshots, VERIFY_LOG) if l.strip()]
-    return events, verify_lines, store_size(snapshots)
+    details = parse_details(read_generations(snapshots, VERIFY_DETAILS_LOG))
+    return events, verify_lines, store_size(snapshots), details
 
 
 def main(argv=None):
@@ -328,8 +389,8 @@ def main(argv=None):
     ap.add_argument('--json', action='store_true', help='print the report as JSON')
     ap.add_argument('cache')
     a = ap.parse_args(argv)
-    events, verify_lines, store = load(a.cache)
-    report = analyze(events, verify_lines, store)
+    events, verify_lines, store, details = load(a.cache)
+    report = analyze(events, verify_lines, store, details)
     if a.json:
         sys.stdout.write(json.dumps(report, indent=1, default=str) + '\n')
     else:

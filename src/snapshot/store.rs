@@ -16,6 +16,12 @@
 //! * **Garbage collection** after each save: at most [`KEEP`] snapshots and
 //!   [`BUDGET`] bytes per cache, least recently used first (a hit sets its
 //!   file's mtime), and temporary files older than an hour.
+//! * **Set aside** (L2-W5i): a snapshot a verify-mode mismatch contradicted
+//!   is moved to `<cache>/snapshots/mismatched/` ([`set_aside`]) instead of
+//!   being deleted, so the soak's report can be acted on. Lookups never
+//!   look there and the garbage collection never counts it (neither the
+//!   [`KEEP`] snapshots nor the [`BUDGET`] bytes): its own bound is the
+//!   [`MISMATCHED_KEEP`] newest files.
 
 use crate::snapshot::format::{self, HEADER_LEN, Header, Section};
 use crate::snapshot::key::Key;
@@ -33,6 +39,8 @@ pub const KEEP: usize = 16;
 pub const BUDGET: u64 = 1 << 30;
 /// The largest snapshot written (PLAN-L2 §1b "Size").
 pub const MAX_BYTES: u64 = 512 << 20;
+/// Snapshots a verify mismatch set aside that are kept ([`set_aside`]).
+pub const MISMATCHED_KEEP: usize = 3;
 const TEMPORARY_PREFIX: &str = ".tmp-";
 const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
 const SUFFIX: &str = ".snap";
@@ -50,6 +58,13 @@ pub fn directory(cache: &Path) -> PathBuf {
 /// The file of `key`.
 pub fn path(cache: &Path, key: &Key) -> PathBuf {
     directory(cache).join(format!("{}{SUFFIX}", key.short()))
+}
+
+/// Where [`set_aside`] moves the snapshots a verify mismatch contradicted
+/// (outside [`directory`]: lookups and the garbage collection never see
+/// them).
+pub fn mismatched_directory(cache: &Path) -> PathBuf {
+    root(cache).join("mismatched")
 }
 
 /// An open snapshot whose header matched the key.
@@ -318,6 +333,77 @@ pub fn remove(cache: &Path, key: &Key) -> io::Result<()> {
     fs::remove_file(path(cache, key))
 }
 
+/// What [`set_aside`] did with a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetAside {
+    /// Moved to this path in [`mismatched_directory`].
+    Moved(PathBuf),
+    /// The move failed (`error`), so the snapshot was removed instead.
+    Removed { error: String },
+}
+
+/// A verify mismatch contradicted the snapshot of `key` (L2-W5i): move it
+/// out of the store to
+/// `<cache>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` — the next
+/// lookup misses, as when it was removed, but the file stays for the soak's
+/// report beside `verify-details.log` (crate::snapshot::telemetry) — and
+/// keep the [`MISMATCHED_KEEP`] newest there. A move that fails removes the
+/// snapshot instead; `Err` when it is neither (gone already: another
+/// command removed it).
+pub fn set_aside(cache: &Path, key: &Key) -> io::Result<SetAside> {
+    let source = path(cache, key);
+    let directory = mismatched_directory(cache);
+    let moved = fs::create_dir_all(&directory).and_then(|()| {
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        // `2026-10-24T180901.123456789Z-<key>-<pid>.snap`: the names sort
+        // by time.
+        let target = directory.join(format!(
+            "{}.{:09}Z-{}-{}{SUFFIX}",
+            crate::snapshot::telemetry::utc_timestamp(now.as_secs() as i64)
+                .trim_end_matches('Z')
+                .replace(':', ""),
+            now.subsec_nanos(),
+            key.short(),
+            std::process::id()
+        ));
+        fs::rename(&source, &target).map(|()| target)
+    });
+    match moved {
+        Ok(target) => {
+            prune_mismatched(&directory, MISMATCHED_KEEP);
+            Ok(SetAside::Moved(target))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !source.exists() => Err(error),
+        Err(error) => fs::remove_file(&source).map(|()| SetAside::Removed {
+            error: error.to_string(),
+        }),
+    }
+}
+
+/// Keep the `keep` newest snapshots (by name: [`set_aside`]'s names sort by
+/// time) in `directory`.
+fn prune_mismatched(directory: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let mut names: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(SUFFIX))
+        })
+        .collect();
+    names.sort();
+    let excess = names.len().saturating_sub(keep);
+    for path in &names[..excess] {
+        let _ = fs::remove_file(path);
+    }
+}
+
 /// A snapshot [`collect_garbage`] removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evicted {
@@ -517,6 +603,59 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().starts_with(".tmp-"))
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    /// L2-W5i: a snapshot a verify mismatch contradicted is moved out of the
+    /// store, not deleted: the lookup misses (absent), the garbage
+    /// collection never counts or collects it, and only the
+    /// [`MISMATCHED_KEEP`] newest stay; one gone already is an error.
+    #[test]
+    fn mismatching_snapshots_are_set_aside_and_the_newest_kept() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache = cache.path();
+        let mut moved = Vec::new();
+        for seed in 1..=(MISMATCHED_KEEP as u8 + 2) {
+            write_in_background(cache, &key(seed), sections(&[seed]))
+                .commit()
+                .unwrap();
+            let SetAside::Moved(target) = set_aside(cache, &key(seed)).unwrap() else {
+                panic!("not moved");
+            };
+            assert!(Reader::open(cache, &key(seed)).unwrap().is_none());
+            assert!(
+                target.starts_with(mismatched_directory(cache))
+                    && target
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .contains(&key(seed).short()),
+                "{target:?}"
+            );
+            // The moved file is the snapshot, byte for byte.
+            assert!(fs::read(&target).unwrap().ends_with(&[seed]));
+            moved.push(target);
+        }
+        let kept: Vec<bool> = moved.iter().map(|path| path.exists()).collect();
+        assert_eq!(kept, [false, false, true, true, true]);
+        // Outside the store: the garbage collection neither counts them nor
+        // removes them.
+        for seed in 0..(KEEP as u8) {
+            write_in_background(cache, &key(100 + seed), sections(b"p"))
+                .commit()
+                .unwrap();
+        }
+        assert!(collect_garbage(cache).is_empty());
+        assert_eq!(
+            fs::read_dir(mismatched_directory(cache)).unwrap().count(),
+            MISMATCHED_KEEP
+        );
+        // Gone already (another command removed it): an error, nothing moved.
+        assert!(set_aside(cache, &key(1)).is_err());
+        assert_eq!(
+            fs::read_dir(mismatched_directory(cache)).unwrap().count(),
+            MISMATCHED_KEEP
+        );
     }
 
     #[test]

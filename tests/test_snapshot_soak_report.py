@@ -63,6 +63,14 @@ CURRENT = "".join([
 ])
 VERIFY = ("2026-10-24T00:00:33Z 1792800033 key=k3 command=run first=taint differences=2 "
           "taint=repository-rule-executed path=/c/x targets=//r:r\n")
+# L2-W5i: the block of that mismatch, and one whose verify.log line rotated away.
+OLDER = ("2026-10-23T00:00:00Z 1792713600 key=k9 command=build first=plan differences=1 "
+         "taint=- path=- targets=//a:b\n")
+DETAILS = (OLDER + "  snapshot: removed (it could not be set aside: x)\n  verify mismatch: plan\n"
+           + VERIFY + "  snapshot: set aside as /c/snapshots/mismatched/2026-10-24T000033.0Z-k3-1.snap\n"
+           "  verify mismatch: the full analysis would not be saved\n"
+           "  verify   taint repository-rule-executed (1): +gen_rule+genrepo\n"
+           "    @@ indented detail line @@\n")
 
 
 class SoakReportTests(unittest.TestCase):
@@ -74,11 +82,14 @@ class SoakReportTests(unittest.TestCase):
         (snapshots / "events.log.1").write_text(ROTATED)
         (snapshots / "events.log").write_text(CURRENT)
         (snapshots / "verify.log").write_text(VERIFY)
+        (snapshots / "verify-details.log").write_text(DETAILS)
+        (snapshots / "mismatched").mkdir()
+        (snapshots / "mismatched" / "2026-10-24T000033.0Z-k3-1.snap").write_bytes(b"x" * 5)
         (snapshots / "v1" / "k1.snap").write_bytes(b"x" * 1000)
         (snapshots / "v1" / "k2.snap").write_bytes(b"x" * 24)
         (snapshots / "v1" / ".tmp-k3-1-0").write_bytes(b"x" * 7)
-        events, verify_lines, store = report.load(self.cache)
-        self.report = report.analyze(events, verify_lines, store)
+        events, verify_lines, store, details = report.load(self.cache)
+        self.report = report.analyze(events, verify_lines, store, details)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -139,7 +150,23 @@ class SoakReportTests(unittest.TestCase):
         self.assertEqual(latency["verify/run"]["hits"], 2)
         store = self.report["store"]
         self.assertEqual((store["snapshots"], store["bytes"]), (2, 1024))
-        self.assertEqual(sorted(store["logs"]), ["events.log", "events.log.1", "verify.log"])
+        self.assertEqual(sorted(store["logs"]), ["events.log", "events.log.1", "verify-details.log", "verify.log"])
+        self.assertEqual(store["mismatched"], {"snapshots": ["2026-10-24T000033.0Z-k3-1.snap"], "bytes": 5})
+
+    def test_verify_mismatches_pair_with_their_details_blocks(self):
+        details = self.report["verify_details"]
+        self.assertEqual(len(details), 2, details)
+        self.assertEqual(details[0]["line"], VERIFY.rstrip("\n"))
+        self.assertEqual(details[0]["lines"], [
+            "snapshot: set aside as /c/snapshots/mismatched/2026-10-24T000033.0Z-k3-1.snap",
+            "verify mismatch: the full analysis would not be saved",
+            "verify   taint repository-rule-executed (1): +gen_rule+genrepo",
+            "  @@ indented detail line @@"])
+        # A block whose verify.log line rotated away is still shown.
+        self.assertEqual((details[1]["line"], details[1].get("only_details")), (OLDER.rstrip("\n"), True))
+        # A verify.log line without a block (an older binary).
+        paired = report.pair_details(["line without a block"], [])
+        self.assertEqual(paired, [{"line": "line without a block", "lines": None}])
 
     def test_text_and_json_output(self):
         out = io.StringIO()
@@ -150,7 +177,10 @@ class SoakReportTests(unittest.TestCase):
                          "hit rate on unchanged re-runs 75.0% (3/4)",
                          "always-miss patterns", "3 x integrity /c/repositories/trees/ab/sub",
                          "heals by reason: tree:mode 1", "verified hits by command: run 1",
-                         VERIFY.rstrip("\n"), "p50 140.0, p95 310.0", "store: 2 snapshot(s), 1024 bytes"):
+                         VERIFY.rstrip("\n"), "p50 140.0, p95 310.0", "store: 2 snapshot(s), 1024 bytes",
+                         "    snapshot: set aside as /c/snapshots/mismatched/2026-10-24T000033.0Z-k3-1.snap",
+                         "      @@ indented detail line @@", "(verify.log line rotated away)",
+                         "set aside by verify mismatches (snapshots/mismatched/, the 3 newest kept): 1 snapshot(s)"):
             self.assertIn(expected, text)
         out = io.StringIO()
         with redirect_stdout(out):

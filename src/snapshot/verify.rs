@@ -29,9 +29,12 @@
 //!      appended to `<cache>/snapshots/verify.log` ([`LOG`]: time, command,
 //!      key, the first difference's class, the first taint's name and the
 //!      first differing path (L2-W5g), the target patterns;
-//!      crate::snapshot::telemetry), the
-//!      snapshot removed (the next run analyzes and saves anew, so a
-//!      persistent cause shows on every other run), nothing saved — then
+//!      crate::snapshot::telemetry) and — L2-W5i — that line with every
+//!      difference to `verify-details.log`, the snapshot set aside in
+//!      `<cache>/snapshots/mismatched/` (crate::snapshot::store::set_aside,
+//!      the 3 newest kept; before, it was deleted: the next run analyzes
+//!      and saves anew, so a persistent cause shows on every other run),
+//!      nothing saved — then
 //!      (L2-W5f, the default) what the full analysis printed while planning
 //!      prints and the FULL ANALYSIS's plan executes: the command's output
 //!      and exit code are those of a run without the snapshot. With
@@ -113,7 +116,7 @@ pub enum Concluded {
     /// The full analysis agrees with the hit: the hit executes (its window
     /// bytes print first, crate::main's `planned_hit`).
     Agreed(Box<Hit>),
-    /// A mismatch, reported, logged and the snapshot removed (never under
+    /// A mismatch, reported, logged and the snapshot set aside (never under
     /// [`STRICT_VAR`], which exits): what the full analysis printed while
     /// planning is printed, and the caller executes the full analysis's
     /// own planned request, unsaved.
@@ -173,7 +176,7 @@ pub fn start(hit: Box<Hit>, context: Context) -> Option<Box<Verify>> {
         .hit
         .as_ref()
         .map(|hit| (hit.session.cache().to_path_buf(), *hit.session.key()));
-    // Nothing contradicts the snapshot: it stays (`None`: not removed).
+    // Nothing contradicts the snapshot: it stays (`false`: not set aside).
     report.conclude(&key, stored.as_ref(), false, &verify.context, verify.strict);
     None
 }
@@ -198,7 +201,7 @@ impl Verify {
     /// executed — with the hit. On a match the hit is returned for its own
     /// execution (its refreshed keys are being written back); on a mismatch
     /// every difference is printed on the diagnostics stream, logged, the
-    /// snapshot removed, and — under [`STRICT_VAR`] the process exits with
+    /// snapshot set aside, and — under [`STRICT_VAR`] the process exits with
     /// [`EXIT_MISMATCH`] — what the full analysis printed while planning is
     /// written to stderr: the caller executes the full analysis's plan.
     pub fn conclude(
@@ -395,7 +398,7 @@ impl Drop for Verify {
 /// main, when the command returned: a verify session whose full analysis
 /// never completed planning (the command ended first, with `error` if it
 /// failed) is a mismatch — the snapshot planned where the full analysis did
-/// not. Prints and logs it and removes the snapshot; under [`STRICT_VAR`]
+/// not. Prints and logs it and sets the snapshot aside; under [`STRICT_VAR`]
 /// exits with [`EXIT_MISMATCH`], else returns (the full analysis's result is
 /// the command's).
 pub fn exit_if_abandoned(error: Option<&str>) {
@@ -491,8 +494,10 @@ impl Report {
     }
 
     /// Print every difference on the diagnostics stream, append the log
-    /// line, remove the snapshot (`stored`, when `remove`) and — `strict` —
-    /// exit with [`EXIT_MISMATCH`].
+    /// line and — L2-W5i — the differences to `verify-details.log`, set the
+    /// snapshot aside (`stored`, when `remove`: moved to
+    /// `<cache>/snapshots/mismatched/`, crate::snapshot::store::set_aside;
+    /// before, it was deleted) and — `strict` — exit with [`EXIT_MISMATCH`].
     fn conclude(
         self,
         key: &str,
@@ -501,13 +506,24 @@ impl Report {
         context: &Context,
         strict: bool,
     ) {
-        let removed = remove
-            && stored
-                .is_some_and(|(cache, key)| crate::snapshot::store::remove(cache, key).is_ok());
+        use crate::snapshot::store::SetAside;
+        let aside = if remove {
+            stored.and_then(|(cache, key)| crate::snapshot::store::set_aside(cache, key).ok())
+        } else {
+            None
+        };
         let class = self
             .mismatches
             .first()
             .map_or("unknown", |(class, _, _)| class.name());
+        // The differences, as the diagnostics stream shows them (without
+        // its prefix) and verify-details.log keeps them.
+        let mut lines = Vec::new();
+        for (_, title, details) in &self.mismatches {
+            lines.push(format!("verify mismatch: {title}"));
+            lines.extend(details.iter().map(|detail| format!("verify   {detail}")));
+        }
+        lines.extend(self.notes.iter().map(|note| format!("verify note: {note}")));
         let logged = stored.and_then(|(cache, _)| {
             // The event log counts it among the hits' outcomes (L2-W5h).
             crate::snapshot::telemetry::Context {
@@ -537,6 +553,29 @@ impl Report {
                 &context.targets,
             );
             crate::snapshot::telemetry::append(&path, &line).ok()?;
+            // L2-W5i: every difference beside it (before, on stderr only),
+            // under that line, and where the snapshot went.
+            let snapshot = match &aside {
+                Some(SetAside::Moved(target)) => {
+                    format!("snapshot: set aside as {}", escape(target.as_os_str()))
+                }
+                Some(SetAside::Removed { error }) => {
+                    format!("snapshot: removed (it could not be set aside: {error})")
+                }
+                None if remove => "snapshot: gone already (another command removed it)".to_owned(),
+                None => "snapshot: kept".to_owned(),
+            };
+            let block = crate::snapshot::telemetry::details_block(
+                &line,
+                std::iter::once(snapshot.as_str()).chain(lines.iter().map(String::as_str)),
+            );
+            let _ = crate::snapshot::telemetry::append(
+                &crate::snapshot::telemetry::log_path(
+                    cache,
+                    crate::snapshot::telemetry::VERIFY_DETAILS_LOG,
+                ),
+                &block,
+            );
             Some(path)
         });
         let outcome = if strict {
@@ -553,23 +592,26 @@ impl Report {
         observed_fs::diag(&format!(
             "verify {key}: MISMATCH: the full analysis disagrees with the snapshot hit ({} difference(s), first: {class}); {outcome}{}{}",
             self.mismatches.len(),
-            if removed {
-                "; the snapshot is removed (the next run analyzes and saves anew)"
-            } else {
-                ""
+            match &aside {
+                Some(SetAside::Moved(target)) => format!(
+                    "; the snapshot is set aside as {} (the next run analyzes and saves anew)",
+                    escape(target.as_os_str())
+                ),
+                Some(SetAside::Removed { .. }) => {
+                    "; the snapshot is removed (the next run analyzes and saves anew)".to_owned()
+                }
+                None => String::new(),
             },
             logged
-                .map(|path| format!("; logged to {}", escape(path.as_os_str())))
+                .map(|path| format!(
+                    "; logged to {} (the differences: {})",
+                    escape(path.as_os_str()),
+                    crate::snapshot::telemetry::VERIFY_DETAILS_LOG
+                ))
                 .unwrap_or_default(),
         ));
-        for (_, title, details) in &self.mismatches {
-            observed_fs::diag(&format!("verify mismatch: {title}"));
-            for detail in details {
-                observed_fs::diag(&format!("verify   {detail}"));
-            }
-        }
-        for note in &self.notes {
-            observed_fs::diag(&format!("verify note: {note}"));
+        for line in &lines {
+            observed_fs::diag(line);
         }
         if strict {
             crate::digest_memo::finish();
@@ -1296,6 +1338,88 @@ mod tests {
                 " key=0022 command=build first=window differences=1 taint=- path=- targets=//a:b"
             ),
             "{text}"
+        );
+        // L2-W5i: every difference to verify-details.log, under its
+        // verify.log line, with where the snapshot went.
+        let details = std::fs::read_to_string(
+            temp.path()
+                .join("snapshots")
+                .join(crate::snapshot::telemetry::VERIFY_DETAILS_LOG),
+        )
+        .unwrap();
+        assert_eq!(
+            details,
+            format!(
+                "{}\n  snapshot: kept\n  verify mismatch: taint\n{}\n  snapshot: kept\n  verify mismatch: window\n",
+                lines[0], lines[1]
+            )
+        );
+    }
+
+    /// L2-W5i: a mismatch sets the snapshot aside — moved to
+    /// `<cache>/snapshots/mismatched/`, the lookup misses — and its
+    /// verify-details.log block holds every difference (a detail with
+    /// newlines and control characters stays inside the block) and where
+    /// the snapshot went.
+    #[test]
+    fn a_mismatch_sets_the_snapshot_aside_with_its_details() {
+        let temp = tempfile::tempdir().unwrap();
+        let key = Key {
+            g: [3; 32],
+            binary: [4; 32],
+        };
+        crate::snapshot::store::write_in_background(
+            temp.path(),
+            &key,
+            vec![(crate::snapshot::format::Section::Plan, b"plan".to_vec())],
+        )
+        .commit()
+        .unwrap();
+        let stored = (temp.path().to_path_buf(), key);
+        let mut report = Report::default();
+        report.mismatch(
+            Class::Plan,
+            "the planned request differs from the snapshot's plan".to_owned(),
+            vec![
+                "encoded: 10 bytes now, 12 in the snapshot".to_owned(),
+                "action #3 (a in the snapshot, b now):\n  @@ line 2 @@\n  - x\u{1b}".to_owned(),
+            ],
+        );
+        report
+            .notes
+            .push("1 snapshot observation(s) ...".to_owned());
+        let context = Context {
+            command: "test".to_owned(),
+            targets: vec!["//t:t".to_owned()],
+            explain: false,
+        };
+        report.conclude(&key.short(), Some(&stored), true, &context, false);
+        assert!(
+            crate::snapshot::store::Reader::open(temp.path(), &key)
+                .unwrap()
+                .is_none()
+        );
+        let aside: Vec<PathBuf> =
+            std::fs::read_dir(crate::snapshot::store::mismatched_directory(temp.path()))
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.path())
+                .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert!(std::fs::read(&aside[0]).unwrap().ends_with(b"plan"));
+        let verify_line = std::fs::read_to_string(temp.path().join("snapshots").join(LOG)).unwrap();
+        let details = std::fs::read_to_string(
+            temp.path()
+                .join("snapshots")
+                .join(crate::snapshot::telemetry::VERIFY_DETAILS_LOG),
+        )
+        .unwrap();
+        assert_eq!(
+            details,
+            format!(
+                "{verify_line}  snapshot: set aside as {}\n  verify mismatch: the planned request differs from the snapshot's plan\n  verify   encoded: 10 bytes now, 12 in the snapshot\n  verify   action #3 (a in the snapshot, b now):\n    @@ line 2 @@\n    - x\\x1b\n  verify note: 1 snapshot observation(s) ...\n",
+                aside[0].display()
+            )
         );
     }
 

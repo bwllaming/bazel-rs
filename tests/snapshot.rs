@@ -2409,12 +2409,39 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
     assert!(mismatch.line("hit ").is_some(), "{:?}", mismatch.explain());
     let line = mismatch.line("verify ").unwrap_or_default();
     assert!(
-        line.contains("MISMATCH") && line.contains("first: taint") && line.contains("logged to"),
+        line.contains("MISMATCH")
+            && line.contains("first: taint")
+            && line.contains("logged to")
+            && line.contains("the snapshot is set aside as "),
         "{line}"
     );
     assert!(twin.snapshots().is_empty());
+    // L2-W5i: set aside, not deleted, and every difference kept beside the
+    // verify.log line.
+    let aside: Vec<PathBuf> = fs::read_dir(twin.side(ON).join("cache/snapshots/mismatched"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
     let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log")).unwrap();
     assert_eq!(log.lines().count(), 1, "{log}");
+    let details =
+        fs::read_to_string(twin.side(ON).join("cache/snapshots/verify-details.log")).unwrap();
+    // (Named where the command ran: the twins' shared path.)
+    assert!(
+        details.starts_with(&log)
+            && details.contains(&format!(
+                "\n  snapshot: set aside as {}\n",
+                twin.run_root()
+                    .join("cache/snapshots/mismatched")
+                    .join(aside[0].file_name().unwrap())
+                    .display()
+            ))
+            && details.contains("\n  verify mismatch: the full analysis would not be saved\n")
+            && details.contains("\n  verify   taint repository-rule-executed"),
+        "{details}"
+    );
     // L2-W5g: the first taint's name and the first differing path (the
     // repaired tree's observations, recorded now that it was executed).
     assert!(

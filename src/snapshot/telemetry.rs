@@ -1,9 +1,11 @@
 //! The soak's logs below the snapshot store root (`<cache>/snapshots/`,
-//! L2-W5g, L2-W5h): `verify.log` — one line per verify-mode mismatch
-//! (crate::snapshot::verify), the details of each — and `events.log` — one
-//! line per snapshot event of every command with the snapshot on, so the
-//! soak has a denominator (L2-W5h; `miss.log` before, which held misses,
-//! unsaved runs and heals only):
+//! L2-W5g, L2-W5h, L2-W5i): `verify.log` — one line per verify-mode
+//! mismatch (crate::snapshot::verify) —, `verify-details.log` — per
+//! mismatch, that line followed by every difference as the diagnostics
+//! stream printed it ([`details_block`], L2-W5i: before, they went to
+//! stderr only) — and `events.log` — one line per snapshot event of every
+//! command with the snapshot on, so the soak has a denominator (L2-W5h;
+//! `miss.log` before, which held misses, unsaved runs and heals only):
 //!
 //! | kind | when | `reason` | `ms` |
 //! |---|---|---|---|
@@ -34,12 +36,13 @@
 //! events.log: <UTC time> <unix seconds> kind=<kind> mode=<on|verify|record> key=<short G> command=<command> reason=<class> path=<path> ms=<wall ms> detail=<text> targets=<pattern>...
 //! ```
 //!
-//! scripts/snapshot_soak_report.py summarizes both. Each append is one
-//! `write` (O_APPEND: concurrent commands never interleave within a line).
-//! A log that would grow past [`LIMIT`] bytes is renamed to `<name>.1` first
-//! (replacing the previous generation): at most about twice the limit per
-//! log. Best effort: a failed write or rotation loses telemetry, never
-//! fails the command; two commands rotating at once may lose a generation.
+//! scripts/snapshot_soak_report.py summarizes them. Each append is one
+//! `write` (O_APPEND: concurrent commands never interleave within a line or
+//! a details block). A log that would grow past [`LIMIT`] bytes is renamed
+//! to `<name>.1` first (replacing the previous generation): at most about
+//! twice the limit per log. Best effort: a failed write or rotation loses
+//! telemetry, never fails the command; two commands rotating at once may
+//! lose a generation.
 
 use crate::observed_fs::escape;
 use std::ffi::OsStr;
@@ -48,6 +51,9 @@ use std::path::{Path, PathBuf};
 
 /// The verify-mode mismatch log.
 pub const VERIFY_LOG: &str = "verify.log";
+/// Every verify-mode mismatch's differences, as printed on the diagnostics
+/// stream ([`details_block`], L2-W5i).
+pub const VERIFY_DETAILS_LOG: &str = "verify-details.log";
 /// The event log (every hit, miss, save, unsaved run, verification, heal
 /// and eviction).
 pub const EVENTS_LOG: &str = "events.log";
@@ -55,6 +61,10 @@ pub const EVENTS_LOG: &str = "events.log";
 pub const LIMIT: u64 = 1 << 20;
 /// Bytes of a reason kept in a `detail=` field (before escaping).
 const DETAIL: usize = 240;
+/// Bytes of one line of a [`details_block`] kept (before escaping).
+const DETAILS_LINE: usize = 4 << 10;
+/// Bytes of a [`details_block`] at most (its lines are dropped beyond).
+const DETAILS_BLOCK: usize = 64 << 10;
 
 /// The `mode=` of `BAZEL_RS_SNAPSHOT=on`.
 pub const MODE_ON: &str = "on";
@@ -168,6 +178,48 @@ pub fn verify_line(
         token(path),
         targets_field(targets),
     )
+}
+
+/// A `verify-details.log` block (L2-W5i): `header` — the mismatch's
+/// `verify.log` line, so the report pairs them — then each of `lines` (the
+/// differences as the diagnostics stream shows them; a line holding
+/// newlines becomes several) indented by two spaces, control characters
+/// escaped (`\xNN`, tabs kept), each at most [`DETAILS_LINE`] bytes and the
+/// block at most [`DETAILS_BLOCK`] (the lines beyond are counted). A block
+/// is one append: concurrent commands never interleave within it.
+pub fn details_block<'a>(header: &str, lines: impl IntoIterator<Item = &'a str>) -> String {
+    let mut block = String::with_capacity(header.len() + 1024);
+    block.push_str(header);
+    if !block.ends_with('\n') {
+        block.push('\n');
+    }
+    let mut dropped = 0usize;
+    for line in lines.into_iter().flat_map(str::lines) {
+        if dropped > 0 || block.len() + line.len().min(DETAILS_LINE) + 4 > DETAILS_BLOCK {
+            dropped += 1;
+            continue;
+        }
+        let mut end = line.len().min(DETAILS_LINE);
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        block.push_str("  ");
+        for character in line[..end].chars() {
+            if character.is_control() && character != '\t' {
+                block.push_str(&format!("\\x{:02x}", u32::from(character)));
+            } else {
+                block.push(character);
+            }
+        }
+        if end < line.len() {
+            block.push_str(" ...");
+        }
+        block.push('\n');
+    }
+    if dropped > 0 {
+        block.push_str(&format!("  ... ({dropped} more lines)\n"));
+    }
+    block
 }
 
 /// One `events.log` event (see the module docs): its kind, the snapshot's

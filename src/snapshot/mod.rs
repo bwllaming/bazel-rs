@@ -29,7 +29,9 @@
 //! * L2-W5g: the soak's logs ([`telemetry`]: `verify.log` names the first
 //!   taint and differing path); L2-W5h: `events.log` — every hit, miss,
 //!   save, unsaved run, verification, heal and eviction, with its mode and
-//!   wall time (scripts/snapshot_soak_report.py summarizes both).
+//!   wall time (scripts/snapshot_soak_report.py summarizes them); L2-W5i:
+//!   `verify-details.log` keeps every mismatch's differences, and the
+//!   mismatching snapshot is set aside in `snapshots/mismatched/`.
 //!
 //! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
 //! verify mode.

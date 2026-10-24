@@ -311,11 +311,13 @@ hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held ba
   -> match: the hit's own window bytes print and the snapshot's plan executes (what `on` would run);
             the refreshed keys are written back
      mismatch: every difference on the diagnostics stream (`bazel-rs-snapshot: verify ...`), one line
-            appended to <cache>/snapshots/verify.log, the snapshot removed (the next run analyzes and
-            saves anew), nothing saved; then (the default, L2-W5f) what the full analysis printed while
-            planning prints and the FULL ANALYSIS's plan executes — the command's output and exit code
-            are those of a run without the snapshot; with BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1 (tests, CI)
-            nothing executes and the command exits 70
+            appended to <cache>/snapshots/verify.log and that line with every difference to
+            verify-details.log (L2-W5i), the snapshot set aside in <cache>/snapshots/mismatched/
+            (L2-W5i; before, deleted — either way the next run analyzes and saves anew), nothing
+            saved; then (the default, L2-W5f) what the full analysis printed while planning prints
+            and the FULL ANALYSIS's plan executes — the command's output and exit code are those of
+            a run without the snapshot; with BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1 (tests, CI) nothing
+            executes and the command exits 70
 ```
 
 Verify mode's shadow capture (`capture::Mode::Shadow`) keeps what
@@ -346,7 +348,27 @@ not in the snapshot; a local repository's published root), in the order
 the differences are reported. For a soak: `BAZEL_RS_SNAPSHOT=verify` (plus
 `BAZEL_RS_SNAPSHOT_EXPLAIN=1` for the `verified` lines), then read the log
 — and the event log below (`scripts/snapshot_soak_report.py <cache>`
-summarizes both).
+summarizes them; the "Soak" section below is the guide).
+
+**What a mismatch leaves behind (L2-W5i).** A `first=plan` line alone is
+not actionable, and the differences used to reach stderr only while the
+snapshot was deleted. Now each mismatch also appends a block to
+`<cache>/snapshots/verify-details.log` — its `verify.log` line, then
+`snapshot: set aside as <path>` (or `removed`, `kept` for `cannot-verify`,
+`gone already`) and every `verify mismatch:`, `verify   <detail>` and
+`verify note:` line the diagnostics stream shows (indented by two spaces;
+a detail's own newlines become further indented lines, control
+characters `\xNN`; at most 4 KiB per line and about 64 KiB per block, the
+rest counted) — bounded and rotated like the other logs (1 MiB plus one
+`.1`). The mismatching snapshot is **moved** to
+`<cache>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` instead of being
+deleted (crate::snapshot::store::set_aside; a move that fails deletes it,
+and the block says so). The next lookup misses (`absent`) as before. The
+directory keeps the **3 newest** files; it is outside `v1/`, so lookups
+never read it and the garbage collection neither counts it against its 16
+snapshots / 1 GiB nor removes it — its own bound is those 3 files (at most
+3 × 512 MiB, in practice 3 × the size of the largest snapshot, tens of MB
+on ~/code).
 
 **The event log (L2-W5g `miss.log`, renamed and completed by L2-W5h).**
 `<cache>/snapshots/events.log` (the same encoding) holds one line per
@@ -373,7 +395,7 @@ line has the same fields:
 | `saved` | a full analysis was saved; `detail`: bytes, actions, replays | - | check point to rename |
 | `not-saved` | a full analysis was not saved | its class (below) | - |
 | `verified` | verify mode: the shadow analysis agreed | - | analysis and comparison |
-| `mismatch` | verify mode: it disagreed (`path`: the first differing path) | the first difference's class | - |
+| `mismatch` | verify mode: it disagreed (`path`: the first differing path; verify.log and verify-details.log hold the rest) | the first difference's class | - |
 | `healed` | a failed hit removed its snapshot (`path`: the first differing entry) | `<store-path\|tree>:<entry>` | the trees' check |
 | `evicted` | garbage collection removed the snapshot of `key` (`command=-` and no targets: those of the evicted snapshot are not known there); `detail` names the save that collected it | `count` or `bytes` | - |
 | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (no key) | eligible: `yes`, `no`, `unless-pruned` | - |
@@ -403,9 +425,10 @@ A not-saved run's class is the first taint's name (`repository-rule-executed`,
 `failed` (the command failed), `capture`, `too-large`, `incomplete` or
 `other`. A heal's entry is the first differing entry's class
 (crate::repository_store::TreeMismatch: `extra`, `missing`, `kind`,
-`mode`, `content`, `link`, `manifest`, `unreadable`, `other`). Each line is one `write`
-(O_APPEND); both logs rotate at 1 MiB to `<name>.1`, keeping one previous
-generation (best effort: two commands rotating at once may drop one).
+`mode`, `content`, `link`, `manifest`, `unreadable`, `other`). Each line
+(and each verify-details.log block) is one `write` (O_APPEND); every log
+rotates at 1 MiB to `<name>.1`, keeping one previous generation (best
+effort: two commands rotating at once may drop one).
 
 A full analysis that ends before planning completed (an error after the
 check point that the hit skipped) is a mismatch too (main reports and logs
@@ -553,7 +576,8 @@ temporary file in the same directory and a rename, so several writers of
 one key all write valid files and the last rename wins; readers never lock.
 Garbage collection after each save keeps at most 16 snapshots and 1 GiB per
 cache, least recently used first, and removes temporary files older than an
-hour. `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
+hour; the snapshots a verify mismatch set aside in `snapshots/mismatched/`
+are neither counted nor collected (their own bound: the 3 newest, L2-W5i). `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
 the identity, a checksum).
 
 ## Measured on ~/code (L2-W5, warm, update-mode recipe, release binary)
