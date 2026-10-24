@@ -595,6 +595,28 @@ separate atomic renames; missing metadata after interruption forces reevaluation
 and repair. The cache is user-owned and published trees must remain immutable
 within a library invocation.
 
+A replaced tree and its manifest are first renamed into a private
+`direct/trees/.trash-*` quarantine, which is deleted once the new publication is
+in place. Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
+as rules_python's `python_repository` does for the interpreter's `lib/`), so
+quarantines and stages are deleted like `fresh_stage` deletes an interrupted
+stage: directories are made writable first and symlinks are never followed. A
+deletion failure leaves garbage, never a failed command (before, `TempDir::close`
+failed with `cannot remove direct quarantine: Permission denied` after the new
+tree was already published, and left the quarantine behind). Publishers hold
+`direct/locks/quarantine` shared while their quarantine exists; a publisher that
+can take it exclusively first deletes every leftover `.trash-*`. Tests:
+`republishing_over_a_read_only_tree_removes_the_quarantine`,
+`stale_quarantines_are_swept_only_when_no_quarantine_is_live`.
+
+How a build with the Python toolchain reached that path: actions staging the
+interpreter's runtime hardlinked its 0444 `lib/` files into the action store's
+`cas/` (their mode is a blob's), so the published tree's files had a second
+link; the next command's verification rejects hard-linked tree files, so the
+rule re-executed (re-extracting the interpreter), kept its identity and
+republished over the read-only tree. Repository files are now copied into
+`cas/`, never linked (docs/HARDLINK_STAGING.md); the tree stays reusable.
+
 ## Application boundary
 
 This executor also serves bounded ordinary module extensions. It does not

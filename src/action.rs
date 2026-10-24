@@ -2518,9 +2518,21 @@ fn blob_valid(blob: &Path, input: &Input) -> Result<bool, String> {
     Ok(intact)
 }
 
+/// Whether `path` lies in the repository store below the canonical cache
+/// root (`repositories/`). Its trees keep exactly one link per file: the
+/// direct store rejects a hard-linked file when it verifies a tree
+/// (crate::repository_store `regular_metadata`), so a blob linked to one
+/// would make that repository re-execute and be republished on the next
+/// command. Their bytes are copied into the store like any external file.
+fn in_repository_store(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|rest| rest.starts_with("repositories"))
+}
+
 /// The store blob of `input`, created on first use: by hardlinking a file
 /// the cache owns that already has the blob's mode (a published output or
-/// fresh execution-root output), otherwise by one verified copy. Concurrent
+/// fresh execution-root output; never a repository's file,
+/// [`in_repository_store`]), otherwise by one verified copy. Concurrent
 /// creators agree on the first linked inode.
 fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String> {
     let blob = blob_path(cas, input);
@@ -2537,6 +2549,7 @@ fn ensure_blob(cas: &Path, input: &Input, root: &Path) -> Result<PathBuf, String
     }
     let candidate = temporary(cas, &input.digest.hex());
     let linked = input.path.starts_with(root)
+        && !in_repository_store(root, &input.path)
         && input.mode == blob_mode(input)
         && hard_link(&input.path, &candidate).is_ok();
     if linked {
@@ -6268,6 +6281,30 @@ mod tests {
                 .unwrap_err()
                 .contains("symlink is not allowed")
         );
+    }
+
+    /// A read-only file of a repository tree (rules_python's interpreter
+    /// `lib/` after `chmod -R ugo-w`: 0444, the blob's own mode) is copied
+    /// into the store, never hardlinked: the direct repository store
+    /// rejects a tree file with a second link, so a linked blob made the
+    /// interpreter's repository re-execute on the next command and republish
+    /// over its read-only tree. A published output is still linked.
+    #[test]
+    fn read_only_repository_files_are_copied_into_the_store_never_linked() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let module = root.join("repositories/direct/trees/abc/lib/python3.12/os.py");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"# stdlib\n").unwrap();
+        fs::set_permissions(&module, fs::Permissions::from_mode(0o444)).unwrap();
+        let mut action = fixture.action();
+        action.inputs = vec![(module.clone(), "src/input".into())];
+        let executed = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(fs::read(&executed.outputs[0]).unwrap(), b"# stdlib\n");
+        assert_eq!(fs::metadata(&module).unwrap().nlink(), 1);
+        // The published output (0555, cache-owned) shares its blob's inode.
+        assert!(fs::metadata(&executed.outputs[0]).unwrap().nlink() >= 2);
     }
 
     /// A published symlink output whose target lies in a repository tree

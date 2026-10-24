@@ -43,8 +43,14 @@ Bytes from outside the cache (sources, external repositories) are copied into
 the store **once** (a streamed, digest-verified copy; the user's files are
 never linked, chmod'ed or otherwise touched). Files the cache already owns
 with the blob's mode (published outputs) are linked into the store, not
-copied. Native writes and transforms (symlink, template) spawn no process and
-stage nothing.
+copied — but never a file of the repository store (`repositories/`), even a
+read-only one with the blob's mode (rules_python makes its interpreter's
+`lib/` 0444): the direct repository store keeps one link per tree file and
+rejects a hard-linked one when it verifies the tree, so such a link made the
+repository re-execute on the next command and be republished over its
+read-only tree (test
+`read_only_repository_files_are_copied_into_the_store_never_linked`). Native
+writes and transforms (symlink, template) spawn no process and stage nothing.
 
 **Read-only inputs and verification.** Because staged inputs share the
 store's inode, a process writing an input in place would corrupt the store.

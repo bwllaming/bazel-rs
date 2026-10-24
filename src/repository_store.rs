@@ -974,9 +974,9 @@ fn lock_stage(locks: &Path, slug: &str) -> Result<File, String> {
 }
 
 /// A fresh, empty `stages/<slug>` (under its lock): an interrupted stage
-/// is removed first. The TempDir owns cleanup on callback errors and Rust
-/// unwinding as well.
-fn fresh_stage(stages: &Path, slug: &str) -> Result<tempfile::TempDir, String> {
+/// is removed first. The [`Scratch`] owns cleanup on callback errors and
+/// Rust unwinding as well.
+fn fresh_stage(stages: &Path, slug: &str) -> Result<Scratch, String> {
     let stage_path = stages.join(slug);
     if optional_metadata(&stage_path)?.is_some() {
         crate::repository_ctx::remove_tree(&stage_path)
@@ -986,7 +986,67 @@ fn fresh_stage(stages: &Path, slug: &str) -> Result<tempfile::TempDir, String> {
         .prefix(slug)
         .rand_bytes(0)
         .tempdir_in(stages)
+        .map(Scratch::new)
         .map_err(|e| format!("cannot stage direct repository: {e}"))
+}
+
+/// A private directory of this store (a stage or a quarantine) that is
+/// deleted when dropped, like the [`tempfile::TempDir`] that created it,
+/// but with [`crate::repository_ctx::remove_tree`]: a repository rule may
+/// have made directories read-only (`chmod -R ugo-w`, as rules_python does
+/// for its interpreter's `lib/`), and `TempDir`'s `remove_dir_all` cannot
+/// empty those. Symlinks are never followed. A removal failure only leaves
+/// garbage behind (cleared by [`fresh_stage`] and [`quarantine_lock`]); it
+/// never fails the command.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(directory: tempfile::TempDir) -> Self {
+        Self(directory.keep())
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // Nothing to do once renamed into place (NotFound is success).
+        let _ = crate::repository_ctx::remove_tree(&self.0);
+    }
+}
+
+/// The shared quarantine lock, held while this publisher's `.trash-*`
+/// exists. Before taking it, a publisher that can take it EXCLUSIVELY — no
+/// publisher of any process is between creating and removing its own
+/// quarantine — first removes every `.trash-*` left in `trees` by an
+/// earlier publication: one killed mid-publication, or a binary before
+/// [`Scratch`], whose failed removal of a read-only tree failed the command
+/// and left the quarantine behind.
+fn quarantine_lock(locks: &Path, trees: &Path) -> Result<File, String> {
+    let path = locks.join("quarantine");
+    if let Some(metadata) = optional_metadata(&path)? {
+        regular_metadata(&metadata)?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    no_follow(&mut options);
+    let lock = options.open(&path).map_err(|e| e.to_string())?;
+    regular_metadata(&lock.metadata().map_err(|e| e.to_string())?)?;
+    if FileExt::try_lock_exclusive(&lock).is_ok()
+        && let Ok(entries) = fs::read_dir(trees)
+    {
+        for entry in entries.flatten() {
+            if entry.file_name().as_encoded_bytes().starts_with(b".trash-") {
+                let _ = crate::repository_ctx::remove_tree(&entry.path());
+            }
+        }
+    }
+    // Converts an exclusive lock taken above.
+    FileExt::lock_shared(&lock)
+        .map_err(|e| format!("cannot lock direct repository quarantine: {e}"))?;
+    Ok(lock)
 }
 
 /// A finished stage's inventory and its encoded content view (the bytes the
@@ -1170,9 +1230,11 @@ where
             .write_all(&encoded)
             .and_then(|()| metadata_stage.as_file().sync_all())
             .map_err(|e| e.to_string())?;
+        let quarantining = quarantine_lock(&locks, &trees)?;
         let trash = tempfile::Builder::new()
             .prefix(".trash-")
             .tempdir_in(&trees)
+            .map(Scratch::new)
             .map_err(|e| e.to_string())?;
         quarantine(&destination, &trash.path().join("tree"))?;
         quarantine(&manifest_path, &trash.path().join("manifest"))?;
@@ -1188,10 +1250,14 @@ where
                 .and_then(|file| file.sync_all())
                 .map_err(|e| e.to_string())?;
         }
-        // TempDir removal does not follow symlinks inside our quarantine.
-        trash
-            .close()
-            .map_err(|e| format!("cannot remove direct quarantine: {e}"))?;
+        // The publication is complete: removing the replaced tree (which
+        // may hold read-only directories) can no longer fail the command,
+        // and never follows symlinks inside our quarantine.
+        drop(trash);
+        // Explicitly: a child another thread started meanwhile may hold a
+        // copy of this descriptor (until its exec), which would keep a
+        // closed flock alive and hold off the next sweep.
+        let _ = FileExt::unlock(&quarantining);
     }
     // Publish the specification pointer after the tree it names. A crash
     // between them leaves a stale pointer, which the warm path revalidates
@@ -2740,6 +2806,125 @@ mod tests {
                 })
             },
         )
+    }
+
+    /// Execute (the warm probe always fails) and publish with exactly these
+    /// recorded probes.
+    fn publish_recorded(
+        cache: &Path,
+        recorded: &'static [u8],
+        run: impl FnOnce(&Path) -> Result<Vec<u8>, String>,
+    ) -> Result<(PathBuf, Publication), String> {
+        materialize(
+            cache,
+            "test-key",
+            b"spec",
+            b"",
+            |_, _| Ok(false),
+            |stage| {
+                run(stage).map(|inputs| Executed {
+                    inputs,
+                    recorded: recorded.to_vec(),
+                })
+            },
+        )
+    }
+
+    /// rules_python's python_repository after extracting the interpreter:
+    /// `chmod -R ugo-w lib` (no pyc may ever be written into it).
+    #[cfg(unix)]
+    fn read_only_lib(stage: &Path) -> Result<Vec<u8>, String> {
+        use std::os::unix::fs::PermissionsExt;
+        let package = stage.join("lib/python3.12/encodings");
+        fs::create_dir_all(&package).map_err(|e| e.to_string())?;
+        fs::write(package.join("__init__.py"), b"").map_err(|e| e.to_string())?;
+        for (path, mode) in [
+            (package.join("__init__.py"), 0o444),
+            (package, 0o555),
+            (stage.join("lib/python3.12"), 0o555),
+            (stage.join("lib"), 0o555),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(b"exact runtime inputs".to_vec())
+    }
+
+    /// The bytes a publication's manifest records as its probes.
+    fn recorded_probes(cache: &Path, tree: &Path) -> Vec<u8> {
+        parse_manifest(&fs::read(metadata_path(cache, tree)).unwrap())
+            .unwrap()
+            .recorded
+            .unwrap()
+    }
+
+    /// Republishing over a tree with read-only directories (a re-execution
+    /// whose recorded probes changed keeps the identity but replaces the
+    /// tree and its manifest) used to fail the command with `cannot remove
+    /// direct quarantine: Permission denied` after the new tree was already
+    /// in place, leaving `direct/trees/.trash-*` behind. It now succeeds and
+    /// removes the quarantine; an unpublished stage holding read-only
+    /// directories is removed as well.
+    #[cfg(unix)]
+    #[test]
+    fn republishing_over_a_read_only_tree_removes_the_quarantine() {
+        let cache = temp();
+        let (tree, first) =
+            publish_recorded(cache.path(), br#"{"version":1}"#, read_only_lib).unwrap();
+        assert_eq!(first, Publication::Executed);
+        no_stages(cache.path());
+        let upgraded = br#"{"version":1,"files":[]}"#;
+        let (again, second) = publish_recorded(cache.path(), upgraded, read_only_lib).unwrap();
+        assert_eq!(
+            (again.as_path(), second),
+            (tree.as_path(), Publication::Executed)
+        );
+        // The quarantine branch ran: the manifest carries the new probes.
+        assert_eq!(recorded_probes(cache.path(), &tree), upgraded);
+        assert!(tree.join("lib/python3.12/encodings/__init__.py").is_file());
+        no_stages(cache.path());
+        // Same identity and probes: nothing is republished and the stage,
+        // read-only `lib/` included, is removed.
+        let (_, third) = publish_recorded(cache.path(), upgraded, read_only_lib).unwrap();
+        assert_eq!(third, Publication::Executed);
+        no_stages(cache.path());
+        crate::repository_ctx::remove_tree(cache.path()).unwrap();
+    }
+
+    /// A `.trash-*` an earlier binary could not remove (a read-only tree)
+    /// is swept by the next quarantining publication, but never while
+    /// another publisher holds the quarantine lock (its own quarantine is
+    /// live then).
+    #[cfg(unix)]
+    #[test]
+    fn stale_quarantines_are_swept_only_when_no_quarantine_is_live() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = temp();
+        let (tree, _) = publish_recorded(cache.path(), br#"{"version":1}"#, read_only_lib).unwrap();
+        let stale = cache.path().join("direct/trees/.trash-left");
+        fs::create_dir_all(stale.join("tree")).unwrap();
+        read_only_lib(&stale.join("tree")).unwrap();
+        fs::set_permissions(stale.join("tree"), fs::Permissions::from_mode(0o555)).unwrap();
+        // Another publisher's quarantine is live: the stale one stays.
+        let live = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(cache.path().join("direct/locks/quarantine"))
+            .unwrap();
+        FileExt::lock_shared(&live).unwrap();
+        publish_recorded(cache.path(), br#"{"version":1,"n":1}"#, read_only_lib).unwrap();
+        assert!(stale.is_dir());
+        FileExt::unlock(&live).unwrap();
+        drop(live);
+        publish_recorded(cache.path(), br#"{"version":1,"n":2}"#, read_only_lib).unwrap();
+        assert!(!stale.exists());
+        assert_eq!(
+            recorded_probes(cache.path(), &tree),
+            br#"{"version":1,"n":2}"#
+        );
+        no_stages(cache.path());
+        crate::repository_ctx::remove_tree(cache.path()).unwrap();
     }
 
     fn metadata_path(cache: &Path, tree: &Path) -> PathBuf {
