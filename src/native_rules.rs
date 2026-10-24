@@ -1616,10 +1616,13 @@ pub(crate) fn analysis_gaps(target: &NativeTarget) -> Vec<String> {
     // (CommonPrerequisiteValidator.java:730-776).
     let neutral: &[&str] = match target.rule_class.as_str() {
         // `data` is runfiles (Filegroup.java:80-104; crate::engine), never
-        // files to build.
+        // files to build; `output_group` selects the files to build from the
+        // `srcs` prerequisites' output groups (Filegroup.java:52-62,
+        // 133-146; crate::engine).
         "filegroup" => &[
             "srcs",
             "data",
+            "output_group",
             "tags",
             "deprecation",
             "testonly",

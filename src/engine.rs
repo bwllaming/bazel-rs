@@ -10635,14 +10635,20 @@ impl Engine {
         let ActionPlanning {
             dry,
             custom_providers,
+            provider_keys,
             runfiles_info,
             artifact_index,
             declared,
             producers,
             nodes,
             source_inputs,
-            client_environment,
+            native_output_groups,
             validation,
+            client_environment,
+            status_client_environment,
+            workspace_status,
+            target_identities,
+            views,
             ..
         } = state;
         let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
@@ -10675,7 +10681,16 @@ impl Engine {
                 let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
                     continue;
                 };
-                let dep_key = ConfiguredTargetKey::new(label, config);
+                // OutputGroupInfo.get(prerequisite): an output file answers
+                // with its generating rule's `_validation` group
+                // (OutputFileConfiguredTarget.java:109-118, as its
+                // dependency view does).
+                let dep_key = match self.target(&label) {
+                    Ok(Target::Output(generating, _)) => {
+                        ConfiguredTargetKey::new(generating.label.clone(), config)
+                    }
+                    _ => ConfiguredTargetKey::new(label, config),
+                };
                 if let Some(set) = self.planned_validation(custom_providers, validation, &dep_key) {
                     members.push(set.node);
                 }
@@ -10686,7 +10701,7 @@ impl Engine {
         }
         // A native rule's source inputs join the index here (W1b
         // registration invariant); generated ones are registered already.
-        let (inputs, _) = self.inputs(rule, config, dry, declared)?;
+        let (mut inputs, _) = self.inputs(rule, config, dry, declared)?;
         for artifact in &inputs {
             register_artifact(artifact_index, &artifact.file, artifact);
         }
@@ -11023,6 +11038,88 @@ impl Engine {
                 }
             }
             if let (RuleKind::Filegroup, Some(native)) = (&rule.kind, &rule.native) {
+                // Filegroup.create (rules/filegroup/Filegroup.java:52-62): an
+                // output group named with OutputGroupInfo.INTERNAL_SUFFIX is
+                // an attribute error; a non-empty one replaces the `srcs`
+                // files as the files to build (and the single-file
+                // executable, the data runfiles' first part):
+                // getArtifactsForOutputGroup (:133-146) adds each `srcs`
+                // prerequisite's group — OutputGroupInfo.get(dep), the
+                // provider its dependents see (a source file has none, an
+                // output file only its generating rule's `_validation`
+                // group, a native rule its framework groups, an alias its
+                // actual's) — to one stable-order set.
+                let output_group = native.string("output_group").unwrap_or_default();
+                if output_group.ends_with(crate::output_group_info::INTERNAL_SUFFIX) {
+                    let label = crate::rule_declarations::canonical_form(&rule.label);
+                    return Err(crate::rule_errors::located_events(
+                        rule.location.as_deref(),
+                        [crate::rule_errors::RuleEvents {
+                            rule_class: "filegroup",
+                            label: &label,
+                        }
+                        .attribute_message(
+                            "output_group",
+                            &format!(
+                                "Output group {output_group} is not permitted for reference in filegroups."
+                            ),
+                        )],
+                    ));
+                }
+                if !output_group.is_empty() {
+                    let mut members = Vec::new();
+                    for text in &rule.srcs {
+                        let label = self.resolve_rule_src(rule, text)?;
+                        let view = self.plan_dependency_view(
+                            configured,
+                            dry,
+                            custom_providers,
+                            provider_keys,
+                            runfiles_info,
+                            artifact_index,
+                            declared,
+                            native_output_groups,
+                            validation,
+                            target_identities,
+                            views,
+                            &label,
+                            config,
+                        )?;
+                        if let Some(set) = view
+                            .providers
+                            .get(crate::output_group_info::PROVIDER_ID)
+                            .and_then(|info| crate::output_group_info::groups(info.value()))
+                            .and_then(|groups| groups.iter().find(|(name, _)| name == output_group))
+                            .map(|(_, set)| set)
+                        {
+                            members.push(Arc::clone(&set.node));
+                        }
+                    }
+                    let files = crate::output_group_info::compose_members(members)
+                        .map(|set| crate::output_group_info::depset_files(&set))
+                        .unwrap_or_default();
+                    let mut selected = Vec::with_capacity(files.len());
+                    for file in &files {
+                        let artifact = self
+                            .indexed_artifact(
+                                file,
+                                artifact_index,
+                                workspace_status,
+                                nodes,
+                                producers,
+                                client_environment,
+                                status_client_environment,
+                            )?
+                            .ok_or_else(|| {
+                                format!(
+                                    "{}: output group '{output_group}' file has no declared artifact identity: {}",
+                                    rule.label, file.path
+                                )
+                            })?;
+                        selected.push(artifact);
+                    }
+                    inputs = selected;
+                }
                 // Each `srcs` and `data` prerequisite's files to build and
                 // runfiles providers (Filegroup.java:80-104). A `data`
                 // prerequisite's source files join the artifact index like

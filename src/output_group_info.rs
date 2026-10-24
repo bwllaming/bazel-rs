@@ -39,6 +39,9 @@ pub(crate) const VALIDATION: &str = "_validation";
 pub(crate) const TEMP_FILES: &str = "temp_files_INTERNAL_";
 /// OutputGroupInfo.DEFAULT (:144).
 pub(crate) const DEFAULT: &str = "default";
+/// OutputGroupInfo.INTERNAL_SUFFIX (:90): a filegroup may not select a group
+/// named with it (rules/filegroup/Filegroup.java:52-56).
+pub(crate) const INTERNAL_SUFFIX: &str = "_INTERNAL_";
 
 static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -223,6 +226,18 @@ pub(crate) fn validation_member(depset: &Depset) -> Arc<DepsetNode> {
 /// the flat first-occurrence list collected before. `None` when every
 /// member is empty.
 pub(crate) fn compose_validation(members: Vec<Arc<DepsetNode>>) -> Option<Depset> {
+    compose_members(members)
+}
+
+/// A `NestedSetBuilder.stableOrder()` of File sets added with
+/// `addTransitive` (collect/nestedset/NestedSetBuilder.java:143-155,
+/// 181-202, 288-313): empty sets skipped, the others deduplicated by
+/// identity, a single member reused as the result; each member keeps its own
+/// layout, so `to_list` walks a topological member unreversed
+/// (crate::starlark_types::Depset::flatten). `None` when every member is
+/// empty. Shared by [`compose_validation`] and filegroup `output_group`
+/// (rules/filegroup/Filegroup.java:133-146).
+pub(crate) fn compose_members(members: Vec<Arc<DepsetNode>>) -> Option<Depset> {
     let mut seen = std::collections::HashSet::new();
     let members: Vec<_> = members
         .into_iter()

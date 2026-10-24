@@ -1,0 +1,265 @@
+load(":defs.bzl", "consumer", "gen", "groups", "lib", "runner", "tool")
+
+gen(
+    name = "common",
+    outs = ["common.txt"],
+)
+
+groups(
+    name = "g1",
+    out = "g1_out.txt",
+    shared = [":common"],
+    srcs = ["s.txt"],
+)
+
+groups(
+    name = "g2",
+    shared = [":common"],
+    shared_first = True,
+)
+
+alias(
+    name = "g1_alias",
+    actual = ":g1",
+)
+
+# The group's files are the files to build, the srcs' runfiles stay
+# runfiles; a single file is the executable.
+filegroup(
+    name = "fg_extra",
+    srcs = [":g1"],
+    output_group = "extra",
+)
+
+filegroup(
+    name = "fg_listed",
+    srcs = [":g1"],
+    output_group = "listed",
+)
+
+filegroup(
+    name = "fg_single",
+    srcs = [":g1"],
+    output_group = "single",
+)
+
+# Several prerequisites: their groups in srcs order, each file once.
+filegroup(
+    name = "fg_two",
+    srcs = [
+        ":g1",
+        ":g2",
+    ],
+    output_group = "extra",
+)
+
+filegroup(
+    name = "fg_shared",
+    srcs = [
+        ":g1",
+        ":g2",
+    ],
+    output_group = "shared",
+)
+
+# Groups of every depset order, in one stable-order set.
+filegroup(
+    name = "fg_topo",
+    srcs = [":g1"],
+    output_group = "topo",
+)
+
+filegroup(
+    name = "fg_topo_two",
+    srcs = [
+        ":g1",
+        ":g2",
+    ],
+    output_group = "topo",
+)
+
+filegroup(
+    name = "fg_pre",
+    srcs = [":g1"],
+    output_group = "pre",
+)
+
+filegroup(
+    name = "fg_post",
+    srcs = [":g1"],
+    output_group = "post",
+)
+
+# Absent and empty groups, `default`, a group of source files.
+filegroup(
+    name = "fg_absent",
+    srcs = [":g1"],
+    output_group = "absent",
+)
+
+filegroup(
+    name = "fg_empty",
+    srcs = [":g1"],
+    output_group = "empty",
+)
+
+filegroup(
+    name = "fg_default",
+    srcs = [":g1"],
+    output_group = "default",
+)
+
+filegroup(
+    name = "fg_src",
+    srcs = [":g1"],
+    output_group = "src",
+)
+
+# Source files, output files and native rules have no such group; an alias
+# forwards its actual's.
+filegroup(
+    name = "fg_mixed",
+    srcs = [
+        "s.txt",
+        ":g1_out.txt",
+        ":fg_extra",
+        ":gen_rule",
+        ":g1_alias",
+    ],
+    output_group = "extra",
+)
+
+genrule(
+    name = "gen_rule",
+    outs = ["gen_rule.txt"],
+    cmd = "echo gen_rule > $@",
+)
+
+# The validation group: of a rule, of an output file (its generating
+# rule's) and of a native filegroup (propagated from its srcs).
+filegroup(
+    name = "fg_validation",
+    srcs = [":g1"],
+    output_group = "_validation",
+)
+
+filegroup(
+    name = "fg_validation_output",
+    srcs = [":g1_out.txt"],
+    output_group = "_validation",
+)
+
+filegroup(
+    name = "fg_validation_native",
+    srcs = [":fg_extra"],
+    output_group = "_validation",
+)
+
+# A native rule over an output file propagates its generating rule's
+# validation outputs (built with the filegroup).
+filegroup(
+    name = "fg_out_file",
+    srcs = [":g1_out.txt"],
+)
+
+# A filegroup over an output-group filegroup takes its files to build.
+filegroup(
+    name = "fg_outer",
+    srcs = [":fg_extra"],
+)
+
+config_setting(
+    name = "mode_pre",
+    define_values = {"mode": "pre"},
+)
+
+filegroup(
+    name = "fg_select",
+    srcs = [":g1"],
+    output_group = select({
+        ":mode_pre": "pre",
+        "//conditions:default": "extra",
+    }),
+)
+
+# aspect_rules_js's js_run_binary: the `runfiles` group of a js_library over
+# the tool, as action inputs.
+tool(
+    name = "tool",
+    data = ["t.txt"],
+)
+
+lib(
+    name = "lib",
+    srcs = [
+        "l.js",
+        ":tool",
+    ],
+)
+
+filegroup(
+    name = "lib_runfiles",
+    srcs = [":lib"],
+    output_group = "runfiles",
+)
+
+genrule(
+    name = "use_runfiles",
+    srcs = [":lib_runfiles"],
+    outs = ["use_runfiles.txt"],
+    cmd = "for f in $(SRCS); do echo $$f: $$(cat $$f); done > $@; echo locations $(locations :lib_runfiles) >> $@",
+)
+
+consumer(
+    name = "consumer",
+    deps = [
+        ":fg_extra",
+        ":fg_listed",
+        ":fg_single",
+        ":fg_two",
+        ":fg_shared",
+        ":fg_topo",
+        ":fg_topo_two",
+        ":fg_pre",
+        ":fg_post",
+        ":fg_absent",
+        ":fg_empty",
+        ":fg_default",
+        ":fg_src",
+        ":fg_mixed",
+        ":fg_validation",
+        ":fg_validation_output",
+        ":fg_validation_native",
+        ":fg_outer",
+        ":fg_select",
+        ":lib_runfiles",
+    ],
+)
+
+consumer(
+    name = "consumer_select",
+    deps = [":fg_select"],
+)
+
+runner(
+    name = "show",
+    data = [
+        ":fg_single",
+        ":lib_runfiles",
+    ],
+)
+
+# Output groups ending in _INTERNAL_ are rejected.
+filegroup(
+    name = "fg_hidden",
+    srcs = [":g1"],
+    output_group = "_hidden_top_level_INTERNAL_",
+    tags = ["manual"],
+)
+
+filegroup(
+    name = "fg_internal",
+    srcs = [":g1"],
+    output_group = "x_INTERNAL_",
+    tags = ["manual"],
+)

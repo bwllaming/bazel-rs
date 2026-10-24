@@ -209,7 +209,10 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   the `srcs`' data runfiles (`--incompatible_filegroup_runfiles_for_data`); a
   single executable when it has exactly one file to build. The default
   runfiles are hidden top-level artifacts, so building a filegroup builds its
-  generated data. Paired capture `tests/fixtures/filegroup_data`.
+  generated data. Paired capture `tests/fixtures/filegroup_data`. With
+  `output_group` the files to build (and so the executable and the data
+  runfiles' first part) are the `srcs` prerequisites' group of that name; the
+  runfiles parts are unchanged (`tests/fixtures/filegroup_output_group`).
 * genrule (rules/genrule/GenRuleBase.java:215-235): no default runfiles, its
   outputs as data runfiles; `executable=True` stays gated.
 * Source and output file targets: no RunfilesProvider, a single-executable

@@ -1,0 +1,517 @@
+{
+ "schema": "filegroup-output-group-reference-receipt/v1",
+ "fixture": "filegroup_output_group",
+ "purpose": "filegroup(output_group = ...) (rules/filegroup/Filegroup.java:48-146, FilegroupRule.java:41-49): an output group named with OutputGroupInfo.INTERNAL_SUFFIX (`_INTERNAL_`) is the attribute error `in output_group attribute of filegroup rule L: Output group NAME is not permitted for reference in filegroups.`; a non-empty one makes the files to build getArtifactsForOutputGroup — a NestedSetBuilder.stableOrder() with each `srcs` prerequisite's OutputGroupInfo.get(dep).getOutputGroup(NAME) added transitively (a source file has no OutputGroupInfo, an output file only its generating rule's `_validation` group (OutputFileConfiguredTarget.java:109-118), a native rule its framework groups, an alias its actual's) — and so the single-file executable and the first part of the data runfiles; the default runfiles and the `srcs`/`data` runfiles are unchanged; `output_group` is configurable. Also RuleConfiguredTargetBuilder.collectTransitiveValidationOutputGroups over an output-file prerequisite of a native rule (its generating rule's `_validation` group). Motivation: `build --nobuild //src/ts/...` on ~/code stopped at `//src/ts/packages/ws-api:ws_api_runfiles: filegroup accepted at load time but not analyzed by the native profile: attribute 'output_group' = \"runfiles\"` (aspect_rules_js 2.9.2 js_run_binary's `<name>_runfiles` filegroup over a js_library of the tool, js/private/js_run_binary.bzl:383-404).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "2d15471af534ebea6b1193ae4714bbb7f8324fc29571204f097edfcd8b1e6d81",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pts-capture.py, pts-receipt.py (not committed)",
+  "sha256": {
+   "pts-capture.py": "42e27a09d92865ffec0ed6e2716ac6c513003202b153a20327d1995982cc0cbf",
+   "pts-receipt.py": "3cd64c94a5cc799acba1825cfc7e0ccdfb341a1e309224666d56985bccc2ff54"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "8e9473e4dde6f5ef579a77fcceb175f910548acf4e6e8cb1feae2ed58a1df197",
+  "pkg/BUILD.bazel": "db95adea2267c3797652ca51fdc2e4808fdb8a29fcf2b77e142c2e09a2ee6c9b",
+  "pkg/defs.bzl": "fc821e869ebb2c146bd7de8e8751a4c70c122e1c53325b67f280e36f9efa16c9",
+  "pkg/l.js": "85ba30deefc0198468282f89596ece326700eae6cdc9a6f73980a59913e5c7fc",
+  "pkg/s.txt": "cbc80bb5c0c0f8944bf73b3a429505ac5cde16644978bc9a1e74c5755f8ca556",
+  "pkg/t.txt": "fe8edeeb98cc6d3b93cf2d57000254b84bd9eba34b4df7ce4b87db8b937b7703"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/filegroup_output_group.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (or the recorded part of it) (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal; a successful `run` case's stdout (the program's output) equal; a `query` case's stdout equal; the recorded outputs' existence after the command equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "files = the group's files in srcs order, each once (fg_two [g1.extra, g1.extra2, g2.extra, g2.extra2], fg_shared [g1.own, common.txt, g2.own]); a list-valued group keeps its order; a single file is the executable (fg_single g1.sh, fg_src s.txt, fg_validation g1.valid); an absent group, an empty one and `default` give no files; the srcs' default runfiles stay the default runfiles, the data runfiles are the files then the srcs' data runfiles (fg_mixed adds gen_rule.txt).",
+  "Each member keeps its own depset layout in the stable-order set: a topological group [t1, t2, t3] (to_list) gives [t3, t2, t1] (walked unreversed), preorder [t1, t2, t3], postorder [t2, t3, t1]; two topological groups [g1.t3, g1.t2, g1.t1, g2.t3, g2.t2, g2.t1]; top-level results list the same order.",
+  "Source files, output files (`extra`), native filegroups and genrules contribute nothing; an alias forwards its actual's group. `_validation`: a rule's group, an output file's (its generating rule's; default runfiles []), a native filegroup's propagated one; every filegroup over g1 or its output file has OutputGroupInfo fields [_hidden_top_level_INTERNAL_, _validation] (lib_runfiles: [_hidden_top_level_INTERNAL_]).",
+  "A select() in output_group resolves per configuration (`--define=mode=pre` gives the preorder group); a filegroup over an output-group filegroup takes its files; js_run_binary's shape: the `runfiles` group of a js_library over a tool with data is [l.js, tool, t.txt], the genrule's $(SRCS) in that order and $(locations) sorted, built as action inputs; `run` of a binary with such filegroups in data stages their files and runfiles.",
+  "`_hidden_top_level_INTERNAL_` and `x_INTERNAL_` are `in output_group attribute of filegroup rule //pkg:fg_hidden: Output group _hidden_top_level_INTERNAL_ is not permitted for reference in filegroups.` (analysis error, exit 1).",
+  "A filegroup over an output file builds its generating rule's validation action (bazel-out/k8-fastbuild/bin/pkg/g1.valid exists after `build //pkg:fg_out_file`); before this change the native rule did not propagate it."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines; native result lines of source files are not compared (Bazel prints `up-to-date (nothing to build)`).",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 13
+ },
+ "scratch_removed": true,
+ "cases": {
+  "consumer": {
+   "argv": [
+    "build",
+    "//pkg:consumer"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.442,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:consumer (6 packages loaded, 40 targets configured).\nINFO: Found 1 target...\nTarget //pkg:consumer up-to-date:\n  bazel-bin/pkg/consumer.txt\n  bazel-bin/pkg/consumer.contents\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 20 processes: 17 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 20 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.contents": [
+      "0o555",
+      "pkg/g1.extra: g1.extra\npkg/g1.extra2: g1.extra2\npkg/g1.sh: #!/bin/sh\necho g1\npkg/g2.extra: g2.extra\npkg/g2.extra2: g2.extra2\npkg/g1.own: g1.own\npkg/common.txt: common.txt\npkg/g2.own: g2.own\npkg/g1.t3: g1.t3\npkg/g1.t2: g1.t2\npkg/g1.t1: g1.t1\npkg/g2.t3: g2.t3\npkg/g2.t2: g2.t2\npkg/g2.t1: g2.t1\npkg/s.txt: s\npkg/g1.valid: valid\npkg/l.js: console.log(\"l\");\npkg/tool: #!/bin/sh\necho tool\npkg/t.txt: t\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.txt": [
+      "0o555",
+      "ctx.files.deps=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.sh\", \"pkg/g2.extra\", \"pkg/g2.extra2\", \"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\", \"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\", \"pkg/s.txt\", \"pkg/g1.valid\", \"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\nlabel=@@//pkg:fg_extra\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_listed\n  files=[\"pkg/g1.extra2\", \"pkg/g1.extra\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra2\", \"pkg/g1.extra\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_single\n  files=[\"pkg/g1.sh\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.sh\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.sh\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_two\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g2.extra\", \"pkg/g2.extra2\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g2.extra\", \"pkg/g2.extra2\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_shared\n  files=[\"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_topo\n  files=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_topo_two\n  files=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_pre\n  files=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_post\n  files=[\"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.t1\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.t1\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_absent\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_empty\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_default\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_src\n  files=[\"pkg/s.txt\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/s.txt\", \"pkg/g1.run\"]\n  executable=\"pkg/s.txt\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_mixed\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\", \"pkg/gen_rule.txt\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.valid\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation_output\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[]\n  data_runfiles=[\"pkg/g1.valid\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation_native\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.valid\", \"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_outer\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_select\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:lib_runfiles\n  files=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  default_runfiles=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  data_runfiles=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\"]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.556,
+    "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.contents\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 19 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.contents": [
+      "0o555",
+      "pkg/g1.extra: g1.extra\npkg/g1.extra2: g1.extra2\npkg/g1.sh: #!/bin/sh\necho g1\npkg/g2.extra: g2.extra\npkg/g2.extra2: g2.extra2\npkg/g1.own: g1.own\npkg/common.txt: common.txt\npkg/g2.own: g2.own\npkg/g1.t3: g1.t3\npkg/g1.t2: g1.t2\npkg/g1.t1: g1.t1\npkg/g2.t3: g2.t3\npkg/g2.t2: g2.t2\npkg/g2.t1: g2.t1\npkg/s.txt: s\npkg/g1.valid: valid\npkg/l.js: console.log(\"l\");\npkg/tool: #!/bin/sh\necho tool\npkg/t.txt: t\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.txt": [
+      "0o555",
+      "ctx.files.deps=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.sh\", \"pkg/g2.extra\", \"pkg/g2.extra2\", \"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\", \"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\", \"pkg/s.txt\", \"pkg/g1.valid\", \"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\nlabel=@@//pkg:fg_extra\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_listed\n  files=[\"pkg/g1.extra2\", \"pkg/g1.extra\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra2\", \"pkg/g1.extra\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_single\n  files=[\"pkg/g1.sh\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.sh\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.sh\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_two\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g2.extra\", \"pkg/g2.extra2\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g2.extra\", \"pkg/g2.extra2\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_shared\n  files=[\"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.own\", \"pkg/common.txt\", \"pkg/g2.own\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_topo\n  files=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_topo_two\n  files=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\"]\n  default_runfiles=[\"pkg/g1.run\", \"pkg/g2.run\"]\n  data_runfiles=[\"pkg/g1.t3\", \"pkg/g1.t2\", \"pkg/g1.t1\", \"pkg/g2.t3\", \"pkg/g2.t2\", \"pkg/g2.t1\", \"pkg/g1.run\", \"pkg/g2.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_pre\n  files=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_post\n  files=[\"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.t1\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.t1\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_absent\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_empty\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_default\n  files=[]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_src\n  files=[\"pkg/s.txt\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/s.txt\", \"pkg/g1.run\"]\n  executable=\"pkg/s.txt\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_mixed\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\", \"pkg/gen_rule.txt\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.valid\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation_output\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[]\n  data_runfiles=[\"pkg/g1.valid\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_validation_native\n  files=[\"pkg/g1.valid\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.valid\", \"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=\"pkg/g1.valid\"\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_outer\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:fg_select\n  files=[\"pkg/g1.extra\", \"pkg/g1.extra2\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.extra\", \"pkg/g1.extra2\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\nlabel=@@//pkg:lib_runfiles\n  files=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  default_runfiles=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  data_runfiles=[\"pkg/l.js\", \"pkg/tool\", \"pkg/t.txt\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\"]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "select_define": {
+   "argv": [
+    "build",
+    "--define=mode=pre",
+    "//pkg:consumer_select"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.678,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:consumer_select (5 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nTarget //pkg:consumer_select up-to-date:\n  bazel-bin/pkg/consumer_select.txt\n  bazel-bin/pkg/consumer_select.contents\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 5 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer_select.contents": [
+      "0o555",
+      "pkg/g1.t1: g1.t1\npkg/g1.t2: g1.t2\npkg/g1.t3: g1.t3\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/consumer_select.txt": [
+      "0o555",
+      "ctx.files.deps=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\nlabel=@@//pkg:fg_select\n  files=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.432,
+    "stdout": "//pkg:consumer_select\tbazel-out/k8-fastbuild/bin/pkg/consumer_select.txt\n//pkg:consumer_select\tbazel-out/k8-fastbuild/bin/pkg/consumer_select.contents\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 6 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer_select.contents": [
+      "0o555",
+      "pkg/g1.t1: g1.t1\npkg/g1.t2: g1.t2\npkg/g1.t3: g1.t3\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/consumer_select.txt": [
+      "0o555",
+      "ctx.files.deps=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\nlabel=@@//pkg:fg_select\n  files=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\"]\n  default_runfiles=[\"pkg/g1.run\"]\n  data_runfiles=[\"pkg/g1.t1\", \"pkg/g1.t2\", \"pkg/g1.t3\", \"pkg/g1.run\"]\n  executable=None\n  output_groups=[\"_hidden_top_level_INTERNAL_\", \"_validation\"]\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_fg_extra": {
+   "argv": [
+    "build",
+    "//pkg:fg_extra"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.52,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_extra (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_extra up-to-date:\n  bazel-bin/pkg/g1.extra\n  bazel-bin/pkg/g1.extra2\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 4 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra": [
+      "0o555",
+      "g1.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra2": [
+      "0o555",
+      "g1.extra2\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.427,
+    "stdout": "//pkg:fg_extra\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_extra\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra": [
+      "0o555",
+      "g1.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra2": [
+      "0o555",
+      "g1.extra2\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_fg_two": {
+   "argv": [
+    "build",
+    "//pkg:fg_two"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.255,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_two (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_two up-to-date:\n  bazel-bin/pkg/g1.extra\n  bazel-bin/pkg/g1.extra2\n  bazel-bin/pkg/g2.extra\n  bazel-bin/pkg/g2.extra2\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 9 processes: 7 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 9 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra": [
+      "0o555",
+      "g1.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra2": [
+      "0o555",
+      "g1.extra2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.extra": [
+      "0o555",
+      "g2.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.extra2": [
+      "0o555",
+      "g2.extra2\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.438,
+    "stdout": "//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g2.extra\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g2.extra2\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra": [
+      "0o555",
+      "g1.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.extra2": [
+      "0o555",
+      "g1.extra2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.extra": [
+      "0o555",
+      "g2.extra\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.extra2": [
+      "0o555",
+      "g2.extra2\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_fg_topo_two": {
+   "argv": [
+    "build",
+    "//pkg:fg_topo_two"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.157,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_topo_two (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_topo_two up-to-date:\n  bazel-bin/pkg/g1.t3\n  bazel-bin/pkg/g1.t2\n  bazel-bin/pkg/g1.t1\n  bazel-bin/pkg/g2.t3\n  bazel-bin/pkg/g2.t2\n  bazel-bin/pkg/g2.t1\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 11 processes: 9 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 11 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t1": [
+      "0o555",
+      "g1.t1\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t2": [
+      "0o555",
+      "g1.t2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t3": [
+      "0o555",
+      "g1.t3\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t1": [
+      "0o555",
+      "g2.t1\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t2": [
+      "0o555",
+      "g2.t2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t3": [
+      "0o555",
+      "g2.t3\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.417,
+    "stdout": "//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t3\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t2\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t1\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t3\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t2\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t1\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 10 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t1": [
+      "0o555",
+      "g1.t1\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t2": [
+      "0o555",
+      "g1.t2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g1.t3": [
+      "0o555",
+      "g1.t3\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t1": [
+      "0o555",
+      "g2.t1\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t2": [
+      "0o555",
+      "g2.t2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/g2.t3": [
+      "0o555",
+      "g2.t3\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_validation": {
+   "argv": [
+    "build",
+    "//pkg:fg_validation"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.039,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_validation (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_validation up-to-date:\n  bazel-bin/pkg/g1.valid\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.valid": [
+      "0o555",
+      "valid\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.379,
+    "stdout": "//pkg:fg_validation\tbazel-out/k8-fastbuild/bin/pkg/g1.valid\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.valid": [
+      "0o555",
+      "valid\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_out_file": {
+   "argv": [
+    "build",
+    "//pkg:fg_out_file"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.13,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_out_file (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_out_file up-to-date:\n  bazel-bin/pkg/g1_out.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1_out.txt": [
+      "0o555",
+      "out\n"
+     ]
+    },
+    "exists": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.valid": true
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.413,
+    "stdout": "//pkg:fg_out_file\tbazel-out/k8-fastbuild/bin/pkg/g1_out.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1_out.txt": [
+      "0o555",
+      "out\n"
+     ]
+    },
+    "exists": {
+     "bazel-out/k8-fastbuild/bin/pkg/g1.valid": true
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_src": {
+   "argv": [
+    "build",
+    "//pkg:fg_src"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.067,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_src (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg_src up-to-date (nothing to build)\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.4,
+    "stdout": "//pkg:fg_src\t<WS>/pkg/s.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {}
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "use_runfiles": {
+   "argv": [
+    "build",
+    "//pkg:use_runfiles"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 10.327,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use_runfiles (6 packages loaded, 13 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use_runfiles up-to-date:\n  bazel-bin/pkg/use_runfiles.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use_runfiles.txt": [
+      "0o555",
+      "pkg/l.js: console.log(\"l\");\nbazel-out/k8-fastbuild/bin/pkg/tool: #!/bin/sh echo tool\npkg/t.txt: t\nlocations bazel-out/k8-fastbuild/bin/pkg/tool pkg/l.js pkg/t.txt\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.39,
+    "stdout": "//pkg:use_runfiles\tbazel-out/k8-fastbuild/bin/pkg/use_runfiles.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use_runfiles.txt": [
+      "0o555",
+      "pkg/l.js: console.log(\"l\");\nbazel-out/k8-fastbuild/bin/pkg/tool: #!/bin/sh echo tool\npkg/t.txt: t\nlocations bazel-out/k8-fastbuild/bin/pkg/tool pkg/l.js pkg/t.txt\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "run_show": {
+   "argv": [
+    "run",
+    "//pkg:show"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 11.22,
+    "stdout": "./pkg\n./pkg/g1.run\n./pkg/g1.sh\n./pkg/l.js\n./pkg/show\n./pkg/t.txt\n./pkg/tool\n",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show (5 packages loaded, 16 targets configured).\nINFO: Found 1 target...\nTarget //pkg:show up-to-date:\n  bazel-bin/pkg/show\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 10 processes: 9 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 10 total actions\nINFO: Running command line: bazel-bin/pkg/show\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.41,
+    "stdout": "./pkg\n./pkg/g1.run\n./pkg/g1.sh\n./pkg/l.js\n./pkg/show\n./pkg/t.txt\n./pkg/tool\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:show\t<CACHE>/actions/d33436db2d0c8319ff375e1fe37c7eade49d8cdf6f22a338ba7c5e5ef3d446d2/outputs/bazel-out/k8-fastbuild/bin/pkg/show\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/1028c22b37a3e6fe65c68875a39391f68c1dcf187bb1fd47f1582ef766ff3056/outputs/bazel-out/k8-fastbuild/bin/pkg/show\n",
+    "outputs": null
+   },
+   "expected_stdout": "./pkg\n./pkg/g1.run\n./pkg/g1.sh\n./pkg/l.js\n./pkg/show\n./pkg/t.txt\n./pkg/tool\n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "hidden": {
+   "argv": [
+    "build",
+    "//pkg:fg_hidden"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 10.963,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:253:10: in output_group attribute of filegroup rule //pkg:fg_hidden: Output group _hidden_top_level_INTERNAL_ is not permitted for reference in filegroups.\nERROR: <WS>/pkg/BUILD.bazel:253:10: Analysis of target '//pkg:fg_hidden' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:fg_hidden' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.386,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:253:10: in output_group attribute of filegroup rule //pkg:fg_hidden: Output group _hidden_top_level_INTERNAL_ is not permitted for reference in filegroups.\n",
+    "outputs": null
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:253:10: in output_group attribute of filegroup rule //pkg:fg_hidden: Output group _hidden_top_level_INTERNAL_ is not permitted for reference in filegroups.",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "internal": {
+   "argv": [
+    "build",
+    "//pkg:fg_internal"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 10.842,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:260:10: in output_group attribute of filegroup rule //pkg:fg_internal: Output group x_INTERNAL_ is not permitted for reference in filegroups.\nERROR: <WS>/pkg/BUILD.bazel:260:10: Analysis of target '//pkg:fg_internal' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:fg_internal' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.389,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:260:10: in output_group attribute of filegroup rule //pkg:fg_internal: Output group x_INTERNAL_ is not permitted for reference in filegroups.\n",
+    "outputs": null
+   },
+   "expected_message": "<WS>/pkg/BUILD.bazel:260:10: in output_group attribute of filegroup rule //pkg:fg_internal: Output group x_INTERNAL_ is not permitted for reference in filegroups.",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild_all": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//pkg:all"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.875,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 32 targets (6 packages loaded, 45 targets configured).\nINFO: Found 32 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.407,
+    "stdout": "//pkg:common\tbazel-out/k8-fastbuild/bin/pkg/common.txt\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.contents\n//pkg:consumer_select\tbazel-out/k8-fastbuild/bin/pkg/consumer_select.txt\n//pkg:consumer_select\tbazel-out/k8-fastbuild/bin/pkg/consumer_select.contents\n//pkg:fg_extra\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_extra\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_listed\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_listed\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_mixed\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_mixed\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_out_file\tbazel-out/k8-fastbuild/bin/pkg/g1_out.txt\n//pkg:fg_outer\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_outer\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_post\tbazel-out/k8-fastbuild/bin/pkg/g1.t2\n//pkg:fg_post\tbazel-out/k8-fastbuild/bin/pkg/g1.t3\n//pkg:fg_post\tbazel-out/k8-fastbuild/bin/pkg/g1.t1\n//pkg:fg_pre\tbazel-out/k8-fastbuild/bin/pkg/g1.t1\n//pkg:fg_pre\tbazel-out/k8-fastbuild/bin/pkg/g1.t2\n//pkg:fg_pre\tbazel-out/k8-fastbuild/bin/pkg/g1.t3\n//pkg:fg_select\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_select\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_shared\tbazel-out/k8-fastbuild/bin/pkg/g1.own\n//pkg:fg_shared\tbazel-out/k8-fastbuild/bin/pkg/common.txt\n//pkg:fg_shared\tbazel-out/k8-fastbuild/bin/pkg/g2.own\n//pkg:fg_single\tbazel-out/k8-fastbuild/bin/pkg/g1.sh\n//pkg:fg_src\t<WS>/pkg/s.txt\n//pkg:fg_topo\tbazel-out/k8-fastbuild/bin/pkg/g1.t3\n//pkg:fg_topo\tbazel-out/k8-fastbuild/bin/pkg/g1.t2\n//pkg:fg_topo\tbazel-out/k8-fastbuild/bin/pkg/g1.t1\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t3\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t2\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g1.t1\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t3\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t2\n//pkg:fg_topo_two\tbazel-out/k8-fastbuild/bin/pkg/g2.t1\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g1.extra\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g1.extra2\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g2.extra\n//pkg:fg_two\tbazel-out/k8-fastbuild/bin/pkg/g2.extra2\n//pkg:fg_validation\tbazel-out/k8-fastbuild/bin/pkg/g1.valid\n//pkg:fg_validation_native\tbazel-out/k8-fastbuild/bin/pkg/g1.valid\n//pkg:fg_validation_output\tbazel-out/k8-fastbuild/bin/pkg/g1.valid\n//pkg:g1\tbazel-out/k8-fastbuild/bin/pkg/g1.main\n//pkg:g1\tbazel-out/k8-fastbuild/bin/pkg/g1_out.txt\n//pkg:g1_alias\tbazel-out/k8-fastbuild/bin/pkg/g1.main\n//pkg:g1_alias\tbazel-out/k8-fastbuild/bin/pkg/g1_out.txt\n//pkg:g2\tbazel-out/k8-fastbuild/bin/pkg/g2.main\n//pkg:gen_rule\tbazel-out/k8-fastbuild/bin/pkg/gen_rule.txt\n//pkg:lib\t<WS>/pkg/l.js\n//pkg:lib\tbazel-out/k8-fastbuild/bin/pkg/tool\n//pkg:lib_runfiles\t<WS>/pkg/l.js\n//pkg:lib_runfiles\tbazel-out/k8-fastbuild/bin/pkg/tool\n//pkg:lib_runfiles\t<WS>/pkg/t.txt\n//pkg:show\tbazel-out/k8-fastbuild/bin/pkg/show\n//pkg:tool\tbazel-out/k8-fastbuild/bin/pkg/tool\n//pkg:use_runfiles\tbazel-out/k8-fastbuild/bin/pkg/use_runfiles.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

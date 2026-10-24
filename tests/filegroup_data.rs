@@ -51,6 +51,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "build_fg_data_only",
             "nobuild_all",
             "query_deps",
+            "output_group",
         ],
     ),
     ("built", &["build_fg_gen"]),
@@ -65,7 +66,7 @@ const GROUPS: &[(&str, &[&str])] = &[
             "path",
         ],
     ),
-    ("declared", &["aspect_probe", "output_group"]),
+    ("declared", &["aspect_probe"]),
 ];
 
 struct Workspace(tempfile::TempDir);
@@ -348,8 +349,8 @@ fn receipt_covers_the_fixture_and_every_case_once() {
 }
 
 /// Files to build, default and data runfiles of filegroups with `data`, as
-/// Starlark dependencies see them (also through an exec attribute), and
-/// their generated data built as action inputs.
+/// Starlark dependencies see them (also through an exec attribute and with
+/// `output_group`), and their generated data built as action inputs.
 #[test]
 fn data_is_runfiles_not_files_to_build() {
     check_group("runfiles");
@@ -374,8 +375,8 @@ fn data_prerequisite_errors_match() {
     check_group("errors");
 }
 
-/// Declared native limitations (Starlark aspects on native rules, filegroup
-/// `output_group`) fail explicitly.
+/// Declared native limitations (Starlark aspects on native rules) fail
+/// explicitly.
 #[test]
 fn declared_divergences_fail_explicitly() {
     check_group("declared");

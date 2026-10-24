@@ -186,7 +186,7 @@ match the target platform (docs/PLATFORMS.md).
   attributes (`compatible_with`, `restricted_to`, `package_metadata`,
   `aspect_hints`, `transitive_configs`) fails explicitly.
 * `filegroup`/`genrule` keep their native analysis only for the modeled
-  attributes (`srcs`, filegroup `data`, `outs`, `cmd`, genrule `tools` in the exec
+  attributes (`srcs`, filegroup `data` and `output_group`, `outs`, `cmd`, genrule `tools` in the exec
   configuration, docs/CONFIGURATION.md "Exec transition"; genrule
   `toolchains` with Make-variable expansion, docs/MAKE_VARIABLES.md;
   metadata such as `tags`, `deprecation`,
@@ -195,7 +195,7 @@ match the target platform (docs/PLATFORMS.md).
   `executable = True`, below; `target_compatible_with`, checked before
   toolchain resolution, docs/PLATFORMS.md). Any other non-empty
   value (`cmd_bash`, `stamp` other than 0,
-  `package_metadata`, `aspect_hints`, filegroup `output_group`, ...) is
+  `package_metadata`, `aspect_hints`, ...) is
   recorded and analysis fails explicitly listing it.
 * `filegroup(data = ...)` (rules/filegroup/Filegroup.java:48-119,
   FilegroupRule.java:36-80): `data` labels are target-configuration
@@ -207,12 +207,31 @@ match the target platform (docs/PLATFORMS.md).
   single-file executable come from `srcs` alone (docs/RUNFILES.md). Bazel
   9.3's filegroup has no `path` attribute (`no such attribute 'path' in
   'filegroup' rule`). Paired capture `tests/fixtures/filegroup_data` (15
-  genuine 9.3.0 cases: 11 MATCH, 4 declared pre-existing divergences —
-  Starlark aspects on native rules, filegroup `output_group`, the native
+  genuine 9.3.0 cases: 12 MATCH, 3 declared pre-existing divergences —
+  Starlark aspects on native rules, the native
   missing-input check under `--nobuild`, the `Target pattern parsing failed.`
   warning of a package error), replayed by `tests/filegroup_data.rs`.
   Motivation: rules_rust's toolchain repository `rust-lld` filegroup (its
   gcc-ld/* linkers are data runfiles of the toolchain's exec `linker`).
+* `filegroup(output_group = ...)` (rules/filegroup/Filegroup.java:52-62,
+  133-146): a name ending in `_INTERNAL_` is the attribute error `in
+  output_group attribute of filegroup rule L: Output group NAME is not
+  permitted for reference in filegroups.`; a non-empty name makes the files to
+  build (hence the single-file executable and the first part of the data
+  runfiles) one stable-order set of each `srcs` prerequisite's group of that
+  name, read from the OutputGroupInfo its dependents see (none for a source
+  file, an output file's generating rule's `_validation` group only, a native
+  rule's framework groups, an alias's actual's): empty and repeated sets
+  skipped, each member walked in its own depset layout (a topological group
+  `[t1, t2, t3]` gives `[t3, t2, t1]`). The `srcs`/`data` runfiles are
+  unchanged; `output_group` is configurable. A native rule over an output file
+  propagates the generating rule's `_validation` group
+  (collectTransitiveValidationOutputGroups through OutputGroupInfo.get).
+  Paired capture `tests/fixtures/filegroup_output_group` (13 genuine 9.3.0
+  cases, all MATCH), replayed by `tests/filegroup_output_group.rs`.
+  Motivation: aspect_rules_js's js_run_binary `<name>_runfiles` filegroup
+  (`output_group = "runfiles"` over a js_library of the tool,
+  js/private/js_run_binary.bzl:383-404) on ~/code `//src/ts/...`.
 * `genrule(executable = True)` (GenRuleBase.java:78-86, 215-235, 288-298):
   the single output is the target's executable, a FilesToRunProvider
   without runfiles support — `dep[DefaultInfo].files_to_run.executable`,
