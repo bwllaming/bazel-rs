@@ -12435,8 +12435,23 @@ fn register_action_outputs(
             let exec = PathBuf::from(&file.path);
             let sharing = register_output(producers, &exec, &producer)?;
             // The key covers the outputs: an action shares all of them with
-            // one action, or none.
-            debug_assert!(index == 0 || first.is_some() == sharing.is_some());
+            // one action, or none. A partial share would plan no node for
+            // the action and leave its other outputs without a producing
+            // action, so it is an internal error in every build.
+            if index > 0 && sharing != first {
+                let shown = |shared: &Option<String>| {
+                    shared
+                        .as_ref()
+                        .map_or_else(|| "its own".to_owned(), |id| format!("{id}'s"))
+                };
+                return Err(format!(
+                    "internal error: action {} of {label}: output {} would be {} and its first output {} (a shared action shares every output; docs/SHAREABLE_ARTIFACTS.md)",
+                    registered.action.id,
+                    file.path,
+                    shown(&sharing),
+                    shown(&first)
+                ));
+            }
             first = first.or(sharing);
             let artifact = Artifact::new(
                 exec.clone(),
@@ -13614,6 +13629,69 @@ mod tests {
             Err("overlapping output paths: bazel-out/k8-fastbuild/bin/p from //p:d conflicts with bazel-out/k8-fastbuild/bin/p/x from //p:a".to_owned())
         );
         assert_eq!(producers.len(), 3);
+    }
+
+    /// A partial share (an equal producer of a later output but not of the
+    /// first) would plan no node for the action and leave its first output
+    /// without one: an internal error in every build, not a debug_assert.
+    #[test]
+    fn a_partial_share_is_an_internal_error() {
+        let x = "bazel-out/k8-fastbuild/bin/p/x";
+        let y = "bazel-out/k8-fastbuild/bin/p/y";
+        // //p:a's equal action registered only for `y` (a state the key
+        // rules out: it covers every output).
+        let mut producers = Producers::new();
+        let earlier = writing_producer("//p:a", "//p:a#0", &[x, y], "same");
+        assert_eq!(
+            register_output(&mut producers, Path::new(y), &earlier),
+            Ok(None)
+        );
+        let key = earlier.action.as_ref().unwrap().1;
+        let outputs = [x, y]
+            .iter()
+            .map(|path| File {
+                path: (*path).to_owned(),
+                short_path: crate::label::split_generated_root(path)
+                    .unwrap()
+                    .1
+                    .to_owned(),
+                owner: "//p:b".to_owned(),
+                is_source: false,
+                is_directory: false,
+            })
+            .collect::<Vec<_>>();
+        let registered = crate::analysis_runtime::RegisteredAction {
+            action: Action {
+                id: "//p:b#0".to_owned(),
+                outputs: outputs
+                    .iter()
+                    .map(|file| PathBuf::from(&file.path))
+                    .collect(),
+                ..Action::default()
+            },
+            inputs: Vec::new(),
+            outputs,
+            deferred: None,
+            exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
+            runfiles_trees: Vec::new(),
+            build_info: None,
+            key,
+            repo_mapping: None,
+        };
+        let error = register_action_outputs(
+            std::slice::from_ref(&registered),
+            ("//p:b", "//p:b"),
+            &mut producers,
+            &mut BTreeMap::new(),
+            &mut Declared::new(),
+            crate::configuration::Configuration::default().id,
+            |_| false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "internal error: action //p:b#0 of //p:b: output bazel-out/k8-fastbuild/bin/p/y would be //p:a#0's and its first output its own (a shared action shares every output; docs/SHAREABLE_ARTIFACTS.md)"
+        );
     }
 
     /// Review F2 of d2fd11c: a generated File's short path is its

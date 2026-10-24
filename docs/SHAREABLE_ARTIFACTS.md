@@ -99,7 +99,10 @@ The same key decides both cases, so they cannot drift:
   producer has an equal key is that action — the later target's outputs are
   its own Artifacts produced by the first owner's action, the later target
   plans no node for it, and the first target in commit order owns it (the
-  local action key hashes the action id). A consumer may take both targets'
+  local action key hashes the action id). The key covers every output, so an
+  action shares all of its outputs with one action or none; a partial share
+  would leave an output without a producing action and is an internal error
+  (`register_action_outputs`). A consumer may take both targets'
   Files of the output as inputs: inputs at one exec path are one artifact
   without owner (one producing action and index). An output-file target
   shared with another target's declared file resolves to its predeclaring
