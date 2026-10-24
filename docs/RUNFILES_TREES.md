@@ -185,7 +185,14 @@ holds 7 groups of 1,868 entries (`PERF-GROUPS` under `BAZEL_RS_TIMING`; tests
 `grouped_nodes_*`). Staging is per executed action as before: a cache-hit
 action still checks and keys every listed input (about 20 ms for a 3,000-file
 workspace-source tree, mostly the per-input ancestor checks workspace files
-keep). An aspect's actions are planned by the same commit step
+keep). A group's input metadata is deliberately not memoized once per build
+(Bazel's once-per-build file state): the entries the cache owns (repository
+trees such as ~/code's hermetic Python runtime, published outputs, blobs)
+already take the per-process memos (docs/HARDLINK_STAGING.md, "Per-process
+memos"), and the remaining per-use cost is exactly the full checks every
+path outside the cache keeps on every use ("Trust"), which a per-group memo
+would skip for runfiles entries only (PA-1 follow-up B5, not done; a
+build-wide workspace file-state memo would be its own design). An aspect's actions are planned by the same commit step
 (`Engine::commit_action`) and stage their tools' trees too (before PA-1
 follow-up B6 the aspect commit dropped them, and the deferred completion of
 a command line expanding tree artifacts; test
