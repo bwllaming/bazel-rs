@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Workspace(PathBuf);
@@ -29,9 +31,14 @@ impl Workspace {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with(args, &[])
+    }
+
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(&self.0)
             .output()
             .unwrap()
@@ -210,7 +217,9 @@ fn parallel_preflight_rejects_every_invalid_graph_before_cache_creation() {
             "genrule(name='aaa',outs=['first'],cmd='printf ran > $@')\n{invalid}\n"
         ));
         ws.file("bazel-out/k8-fastbuild/bin/x", "source collision");
-        let result = ws.run(&["build", "--jobs=8", ":aaa", ":bad"]);
+        // Before cache creation: the analysis snapshot (on by default) sets
+        // up its store in the cache directory before the analysis.
+        let result = ws.run_with(&["build", "--jobs=8", ":aaa", ":bad"], &[SNAPSHOT_OFF]);
         assert!(!result.status.success(), "accepted {invalid}");
         assert!(result.stdout.is_empty());
         assert!(!ws.0.join("bazel-rs-out").exists(), "{}", stderr(&result));

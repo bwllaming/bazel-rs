@@ -27,6 +27,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+include!("support/snapshot_off.rs");
+
 const DEFS: &str = r##"def _tree_impl(ctx):
     d = ctx.actions.declare_directory(ctx.label.name + "_dir")
     ctx.actions.run_shell(
@@ -507,7 +509,13 @@ fn encoded_requests_are_identical_across_threads_and_loading_jitter() {
             let file_text = file.display().to_string();
             let threads_flag = format!("--loading_phase_threads={threads}");
             let jitter_text = jitter.to_string();
-            let mut env = vec![("BAZEL_RS_SNAPSHOT_PLAN_OUT", file_text.as_str())];
+            // The full analysis writes the encoding: with the analysis
+            // snapshot on (the default) every run after the first would be a
+            // hit.
+            let mut env = vec![
+                ("BAZEL_RS_SNAPSHOT_PLAN_OUT", file_text.as_str()),
+                SNAPSHOT_OFF,
+            ];
             if jitter > 0 {
                 env.push(("BAZEL_RS_LOADING_JITTER", jitter_text.as_str()));
             }

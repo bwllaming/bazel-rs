@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+include!("support/snapshot_off.rs");
+
 const BUILD: &str = "\
 genrule(name = 'a', srcs = ['in.txt'], outs = ['a.out'], cmd = 'cat $< > $@; echo more >> $@')
 genrule(name = 'b', srcs = [':a', 'in.txt'], outs = ['b.out'], cmd = 'cat $(location :a) $(location in.txt) > $@')
@@ -329,7 +331,17 @@ fn edited_repository_tree_files_are_caught_by_the_next_command() {
          \x20   cmd = 'cat $(SRCS) > $@',\n\
          )\n",
     );
-    let build = || workspace.run(&["build", "--experimental-builtin-modules", "//:uses"], &[]);
+    // The analysis snapshot off (on by default): a hit does not look into
+    // a tree's files (docs/ANALYSIS_SNAPSHOT.md, the per-tree trade-off) —
+    // the edit below is caught by the full analysis's warm probe, which a
+    // hit skips (the hit's healing of the failure it then causes is
+    // tests/snapshot.rs's `a_failed_hit_on_a_tampered_store_tree_heals`).
+    let build = || {
+        workspace.run(
+            &["build", "--experimental-builtin-modules", "//:uses"],
+            &[SNAPSHOT_OFF],
+        )
+    };
     let cold = build();
     cold.shows("1 actions executed");
     let expected = fs::read(cold.output("uses.txt")).unwrap();

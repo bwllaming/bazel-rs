@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
 impl Workspace {
@@ -22,9 +24,13 @@ impl Workspace {
         Self(path)
     }
     fn run(&self, args: &[&str]) -> std::process::Output {
+        self.run_with(args, &[])
+    }
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(&self.0)
             .output()
             .unwrap()
@@ -86,7 +92,9 @@ fn cycles_and_analysis_errors_do_not_execute_partial_builds() {
         let ws = Workspace::new(&format!(
             "genrule(name='first',outs=['first.txt'],cmd='echo first > $@')\n{invalid}\n"
         ));
-        let result = ws.run(&["build", ":first", ":bad"]);
+        // No cache directory: the analysis snapshot (on by default) would
+        // set up its store there before the analysis.
+        let result = ws.run_with(&["build", ":first", ":bad"], &[SNAPSHOT_OFF]);
         assert!(!result.status.success());
         assert!(
             !ws.0.join("bazel-rs-out").exists(),
@@ -191,7 +199,9 @@ fn artifact_paths_cannot_cross_package_boundaries() {
         let ws = Workspace::new("genrule(name='bad',outs=['sub/file'],cmd='echo bad > $@')\n");
         ws.file(&format!("sub/{marker}"), "");
         ws.file("sub/input.txt", "nested");
-        let result = ws.run(&["build", ":bad"]);
+        // No cache directory after the failed analysis below: the snapshot
+        // store would be there (on by default).
+        let result = ws.run_with(&["build", ":bad"], &[SNAPSHOT_OFF]);
         assert_eq!(
             result.status.success(),
             !crosses,
@@ -221,7 +231,8 @@ fn distinct_artifacts_with_the_same_execution_path_are_rejected() {
         "genrule(name='make',outs=['x'],cmd='echo generated > $@')\nfilegroup(name='ambiguous',srcs=[':make','bazel-out/k8-fastbuild/bin/x'])\n",
     );
     ws.file("bazel-out/k8-fastbuild/bin/x", "different source");
-    let result = ws.run(&["build", ":ambiguous"]);
+    // No cache directory afterwards: the snapshot store would be there.
+    let result = ws.run_with(&["build", ":ambiguous"], &[SNAPSHOT_OFF]);
     assert!(!result.status.success());
     assert!(
         stderr(&result).contains("different artifacts"),
@@ -260,15 +271,20 @@ fn output_prefix_conflicts_across_packages_fail_before_execution() {
         "sub/BUILD.bazel",
         "genrule(name='gen',outs=['out'],cmd='echo child > $@')\n",
     );
+    // No cache directory after any of these failed analyses: the snapshot
+    // store would be there (on by default).
     for labels in [["//:gen", "//sub:gen"], ["//sub:gen", "//:gen"]] {
-        let result = ws.run(&["build", "--jobs=4", labels[0], labels[1]]);
+        let result = ws.run_with(
+            &["build", "--jobs=4", labels[0], labels[1]],
+            &[SNAPSHOT_OFF],
+        );
         assert!(!result.status.success());
         assert!(stderr(&result).contains("is a prefix of the other"));
         assert!(!ws.0.join("bazel-rs-out").exists());
     }
     ws.file("BUILD.bazel", "genrule(name='gen',outs=['sub'],cmd='echo parent > $@')\nfilegroup(name='reverse',srcs=['//sub:gen',':gen'])\n");
     ws.file("sub/BUILD.bazel", "genrule(name='gen',outs=['out'],cmd='echo child > $@',visibility=['//visibility:public'])\n");
-    let result = ws.run(&["build", ":reverse"]);
+    let result = ws.run_with(&["build", ":reverse"], &[SNAPSHOT_OFF]);
     assert!(!result.status.success());
     assert!(stderr(&result).contains("is a prefix of the other"));
     assert!(!ws.0.join("bazel-rs-out").exists());

@@ -207,8 +207,13 @@ impl Twin {
             .env("HOME", &home)
             .env("TMPDIR", &home)
             .env("LC_ALL", "C");
+        // The reference side turns the snapshot off explicitly: unset is
+        // `on` (L2-W7, on by default).
+        command.env(
+            "BAZEL_RS_SNAPSHOT",
+            if snapshot { self.mode.get() } else { OFF },
+        );
         if snapshot {
-            command.env("BAZEL_RS_SNAPSHOT", self.mode.get());
             if self.explain.get() {
                 command.env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1");
             } else {
@@ -4123,6 +4128,69 @@ fn failing_test_suite_expansions_are_never_saved() {
         ["//suite:a_test", "//suite:big_test"]
     );
     assert_eq!(twin.snapshots().len(), 1);
+}
+
+/// L2-W7, on by default: with `BAZEL_RS_SNAPSHOT` unset or empty (or set to
+/// a value it does not know, which it reports) a build saves and hits like
+/// `on`, byte-identical with `off`; `off`, `0` and `false` turn everything
+/// off — no lookup, no recording, no store: a fresh cache gets no
+/// `snapshots/` directory at all, and EXPLAIN has nothing to say.
+#[test]
+fn the_snapshot_is_on_by_default_and_off_turns_everything_off() {
+    let twin = fixture();
+    // The snapshot side with the variable unset (`None`) or set to `value`.
+    let step = |value: Option<&str>| {
+        let on = twin.with_side(ON, || {
+            let mut command = twin.command(BUILD_ALL, &[], true);
+            match value {
+                Some(value) => command.env("BAZEL_RS_SNAPSHOT", value),
+                None => command.env_remove("BAZEL_RS_SNAPSHOT"),
+            };
+            command.output().expect("bazel-rs runs")
+        });
+        let pair = Pair {
+            on,
+            off: twin.run_side(OFF, BUILD_ALL, &[]),
+            mode: ON,
+        };
+        pair.assert_same(BUILD_ALL);
+        pair
+    };
+    // The cold run executes the generated repository (not saved).
+    step(None)
+        .assert_miss("no snapshot")
+        .assert_not_saved("repository-rule-executed");
+    step(None).assert_miss("no snapshot").assert_saved();
+    step(None).assert_hit().assert_success();
+    step(Some("")).assert_hit();
+    let unknown = step(Some("sometimes"));
+    unknown.assert_hit();
+    assert!(
+        unknown
+            .line("ignoring BAZEL_RS_SNAPSHOT=sometimes: expected on (the default), off")
+            .is_some(),
+        "{:?}",
+        unknown.explain()
+    );
+    assert_eq!(twin.snapshots().len(), 1);
+    // Off: the twin's other side has only ever run with `off`; now also
+    // `0` and `false`, with EXPLAIN.
+    for value in ["off", "0", "false"] {
+        let output = twin.with_side(OFF, || {
+            twin.command(BUILD_ALL, &[("BAZEL_RS_SNAPSHOT", value)], true)
+                .output()
+                .expect("bazel-rs runs")
+        });
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert!(
+            !text(&output.stderr).contains("bazel-rs-snapshot: "),
+            "{value}: {}",
+            text(&output.stderr)
+        );
+    }
+    let cache = twin.side(OFF).join("cache");
+    assert!(cache.join("repositories").is_dir());
+    assert!(!cache.join("snapshots").exists());
 }
 
 /// Fixture 19 (PLAN-L2 §7, L2-W6): every fixture again with

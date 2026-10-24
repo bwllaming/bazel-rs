@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
 impl Workspace {
@@ -26,9 +28,13 @@ impl Workspace {
         fs::write(path, content).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with(args, &[])
+    }
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(&self.0)
             .output()
             .unwrap()
@@ -91,7 +97,9 @@ fn query_does_not_run_rule_implementations_and_analysis_failure_is_atomic() {
         "load(':defs.bzl','bad')\ngenrule(name='good',outs=['good.out'],cmd='echo good > $@')\nbad(name='bad')\n",
     );
     assert!(ws.run(&["query", "//:all"]).status.success());
-    let result = ws.run(&["build", ":good", ":bad"]);
+    // No cache directory after the failed analysis: the analysis snapshot
+    // (on by default) would set up its store there at its check point.
+    let result = ws.run_with(&["build", ":good", ":bad"], &[SNAPSHOT_OFF]);
     assert!(!result.status.success());
     assert!(errors(&result).contains("analysis-only failure"));
     assert!(!ws.0.join("bazel-rs-out").exists());
@@ -212,7 +220,8 @@ fn malformed_attributes_and_unproduced_files_never_execute() {
             &format!("def _impl(ctx):\n{implementation}\nbad=rule(implementation=_impl)\n"),
             "load(':defs.bzl','bad')\ngenrule(name='good',outs=['good.out'],cmd='echo good > $@')\nbad(name='bad')\n",
         );
-        let result = ws.run(&["build", ":good", ":bad"]);
+        // The snapshot store would be in the cache directory (on by default).
+        let result = ws.run_with(&["build", ":good", ":bad"], &[SNAPSHOT_OFF]);
         assert!(!result.status.success());
         assert!(!ws.0.join("bazel-rs-out").exists());
     }

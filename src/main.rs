@@ -42,10 +42,12 @@ Digest memo: settled files' SHA-256 by path and stat key persist in
   <cache>/digests/v1.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off bypasses
   it while set (its records stay); deleting <cache>/digests/ drops them
   (docs/DIGEST_MEMO.md).
-Analysis snapshot (experimental, off by default): BAZEL_RS_SNAPSHOT=on saves a
-  build/test/run's analysis in <cache>/snapshots/ and skips loading and analysis
-  while every recorded input is unchanged; BAZEL_RS_SNAPSHOT=verify also runs the
-  full analysis on every hit and exits 70 when they differ;
+Analysis snapshot (on by default): a build/test/run saves its analysis in
+  <cache>/snapshots/ and skips loading and analysis while every recorded input
+  is unchanged. BAZEL_RS_SNAPSHOT=off (or 0, false) turns it off: no lookup, no
+  recording, nothing written. BAZEL_RS_SNAPSHOT=verify (when a stale result is
+  suspected) also runs the full analysis on every hit, logs a difference to
+  <cache>/snapshots/verify.log and then executes the full analysis's plan;
   BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why it missed or was not saved
   (docs/ANALYSIS_SNAPSHOT.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
@@ -421,7 +423,8 @@ fn run() -> Result<(), String> {
     // The analysis-snapshot check point (PLAN-L2 §1a): everything above is
     // bootstrap (part of the snapshot key G). With BAZEL_RS_SNAPSHOT=record
     // the recording window opens here and closes at the end of planning;
-    // with BAZEL_RS_SNAPSHOT=on (build, test, run) a snapshot whose inputs
+    // with BAZEL_RS_SNAPSHOT=on — the default (L2-W7); `off` skips all of
+    // this — (build, test, run) a snapshot whose inputs
     // are all unchanged is a hit — what planning printed is replayed and
     // the saved plan executes — and a miss records and captures this full
     // analysis to save it (crate::snapshot). BAZEL_RS_SNAPSHOT=verify is

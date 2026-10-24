@@ -10,8 +10,9 @@
 //!   recorded with the pinned repository tables their replay needs.
 //! * L2-W4: [`codec`], the binary encoding of the planned request
 //!   (crate::request).
-//! * L2-W5: the store and the hit path, off by default:
-//!   `BAZEL_RS_SNAPSHOT=on` reads and writes snapshots — the key G
+//! * L2-W5: the store and the hit path (on by default since L2-W7;
+//!   `BAZEL_RS_SNAPSHOT=off` turns it off): `on` reads and writes
+//!   snapshots — the key G
 //!   ([`key`], [`exe_id`]), the binary file format ([`format`]) and store
 //!   ([`store`]), the hit ([`hit`]: validation ∥ replay ∥ plan decode), the
 //!   save after a full analysis ([`save`]), the capture of what planning
@@ -54,7 +55,8 @@ pub mod verify;
 use std::path::Path;
 use std::time::Instant;
 
-/// The mode variable: `on`, `verify`, `record` or `off` (unset).
+/// The mode variable: `on` (the default: unset or empty), `verify`, `record`
+/// or `off` (also `0`, `false`: no lookup, no recording, no store write).
 pub const MODE_VAR: &str = "BAZEL_RS_SNAPSHOT";
 /// Marker paths bracketing the hit path for the syscall audit
 /// (scripts/snapshot_fs_audit.py `--hit`): stat'ed when the check point
@@ -73,10 +75,11 @@ pub const EXPLAIN_VAR: &str = "BAZEL_RS_SNAPSHOT_EXPLAIN";
 /// What `BAZEL_RS_SNAPSHOT` asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    /// Nothing snapshot-related: no lookup, no recording, no store write.
     Off,
     /// Record and report, never save or load (L2-W3).
     Record,
-    /// Read and write snapshots (`build`, `test`, `run`).
+    /// Read and write snapshots (`build`, `test`, `run`): the default.
     On,
     /// [`Mode::On`], and every hit also runs the full analysis and compares
     /// ([`verify`]).
@@ -84,22 +87,29 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// The mode of this process; any other value is reported and ignored.
+    /// The mode of this process: [`Mode::On`] unless the variable says
+    /// otherwise (L2-W7: on by default); any other value is reported and
+    /// ignored.
     pub fn from_env() -> Self {
-        let Some(value) = std::env::var_os(MODE_VAR) else {
-            return Self::Off;
+        Self::parse(std::env::var_os(MODE_VAR).as_deref())
+    }
+
+    /// The mode a value of [`MODE_VAR`] asks for (`None`: unset).
+    pub fn parse(value: Option<&std::ffi::OsStr>) -> Self {
+        let Some(value) = value else {
+            return Self::On;
         };
         match value.to_str() {
-            Some("on") => Self::On,
+            Some("on" | "" | "1" | "true") => Self::On,
             Some("verify") => Self::Verify,
             Some("record") => Self::Record,
-            Some("off" | "") => Self::Off,
+            Some("off" | "0" | "false") => Self::Off,
             _ => {
                 observed_fs_diag(&format!(
-                    "ignoring {MODE_VAR}={}: expected on, verify, record or off",
-                    crate::observed_fs::escape(&value)
+                    "ignoring {MODE_VAR}={}: expected on (the default), off, verify or record",
+                    crate::observed_fs::escape(value)
                 ));
-                Self::Off
+                Self::On
             }
         }
     }
@@ -322,5 +332,28 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             }
             Checked::Miss(Some(Box::new(save::start(key, explain, log))))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Mode;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn the_snapshot_is_on_unless_switched_off() {
+        let parse = |value: Option<&str>| Mode::parse(value.map(OsStr::new));
+        // L2-W7: unset or empty is `on`.
+        assert_eq!(parse(None), Mode::On);
+        for on in ["", "on", "1", "true"] {
+            assert_eq!(parse(Some(on)), Mode::On, "{on:?}");
+        }
+        for off in ["off", "0", "false"] {
+            assert_eq!(parse(Some(off)), Mode::Off, "{off:?}");
+        }
+        assert_eq!(parse(Some("verify")), Mode::Verify);
+        assert_eq!(parse(Some("record")), Mode::Record);
+        // Anything else is reported and ignored: the default.
+        assert_eq!(parse(Some("sometimes")), Mode::On);
     }
 }

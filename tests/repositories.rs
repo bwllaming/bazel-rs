@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
 impl Fixture {
@@ -38,9 +40,13 @@ impl Fixture {
         fs::write(path, content).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with(args, &[])
+    }
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         // Never fall back to the default https://bcr.bazel.build/ registry.
         let explicit = args.iter().any(|arg| arg.starts_with("--registry"));
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+            .envs(env.iter().copied())
             .arg("--ignore_all_rc_files")
             .args(args)
             .args(
@@ -195,7 +201,9 @@ fn same_package_name_does_not_bypass_cross_repository_visibility() {
         "p/BUILD.bazel",
         "filegroup(name='bad',srcs=['@first//p:secret'])\n",
     );
-    let denied = fixture.run(&["build", "//p:bad"]);
+    // No cache directory after the failed analysis: the analysis snapshot
+    // (on by default) would set up its store there first.
+    let denied = fixture.run_with(&["build", "//p:bad"], &[SNAPSHOT_OFF]);
     assert!(!denied.status.success());
     assert!(stderr(&denied).contains("not visible"));
     assert!(!fixture.0.join("bazel-rs-out").exists());

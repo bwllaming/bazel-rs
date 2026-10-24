@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
 impl Workspace {
@@ -25,9 +27,13 @@ impl Workspace {
         fs::write(path, content).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
+        self.run_with(args, &[])
+    }
+    fn run_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
             .args(args)
+            .envs(env.iter().copied())
             .current_dir(&self.0)
             .output()
             .unwrap()
@@ -138,7 +144,9 @@ fn empty_globs_are_errors_by_default_and_before_any_execution() {
     ] {
         ws.file("present", "exists");
         ws.file("BUILD.bazel", &format!("genrule(name='first',outs=['out'],cmd='echo hi > $@')\nfilegroup(name='bad',srcs={src})\n"));
-        let result = ws.run(&["build", ":first"]);
+        // No cache directory after the failed loading: the analysis
+        // snapshot (on by default) would set up its store there first.
+        let result = ws.run_with(&["build", ":first"], &[SNAPSHOT_OFF]);
         assert!(!result.status.success(), "accepted {src}");
         assert!(!ws.0.join("bazel-rs-out").exists());
     }

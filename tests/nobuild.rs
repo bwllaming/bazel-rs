@@ -11,6 +11,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+include!("support/snapshot_off.rs");
+
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -43,11 +45,16 @@ impl Workspace {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
+        self.run_with(arguments, &[])
+    }
+
+    fn run_with(&self, arguments: &[&str], env: &[(&str, &str)]) -> Output {
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "120s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg("--cache-dir=cache")
             .args(arguments)
+            .envs(env.iter().copied())
             .current_dir(self.path())
             .output()
             .unwrap();
@@ -56,7 +63,10 @@ impl Workspace {
     }
 
     /// Files materialized under the native cache (action outputs live in
-    /// `cache/actions/<key>/outputs/...`); empty when nothing executed.
+    /// `cache/actions/<key>/outputs/...`); empty when nothing executed —
+    /// and nothing was saved: the commands whose cache this lists run with
+    /// the analysis snapshot off (on by default, a `--nobuild` run saves its
+    /// snapshot in `cache/snapshots/`).
     fn cache_files(&self) -> Vec<String> {
         let mut names = Vec::new();
         collect(&self.path().join("cache"), &mut names);
@@ -103,7 +113,8 @@ fn stdout(output: &Output) -> String {
 #[test]
 fn nobuild_analyses_but_never_executes() {
     let ws = Workspace::new();
-    let output = ws.run(&["build", "--nobuild", "//pkg:gen"]);
+    // The cache is listed below (Workspace::cache_files).
+    let output = ws.run_with(&["build", "--nobuild", "//pkg:gen"], &[SNAPSHOT_OFF]);
     assert!(output.status.success(), "{}", stderr(&output));
     // The planned artifact is reported at its exec path (genuine reports
     // artifactsToBuild under --nobuild), with 0 actions executed.
@@ -134,7 +145,8 @@ fn nobuild_failing_genrule_still_succeeds() {
     assert!(!normal.status.success(), "{}", stderr(&normal));
 
     let ws = Workspace::new();
-    let nobuild = ws.run(&["build", "--nobuild", "//pkg:bad"]);
+    // The cache is listed below (Workspace::cache_files).
+    let nobuild = ws.run_with(&["build", "--nobuild", "//pkg:bad"], &[SNAPSHOT_OFF]);
     assert!(nobuild.status.success(), "{}", stderr(&nobuild));
     assert!(
         stderr(&nobuild).contains("0 actions executed, 0 cache hits"),
@@ -193,8 +205,9 @@ fn nobuild_test_and_run_do_not_execute() {
     // `Couldn't start the build. Unable to run tests` (exit 1);
     // `run --nobuild` fails with `No targets found to run` (exit 2 in
     // genuine; native reports the same text through its exit-1 channel).
+    // The caches are listed below (Workspace::cache_files).
     let ws = Workspace::new();
-    let test = ws.run(&["test", "--nobuild", "//pkg:t"]);
+    let test = ws.run_with(&["test", "--nobuild", "//pkg:t"], &[SNAPSHOT_OFF]);
     assert_eq!(test.status.code(), Some(1), "{}", stderr(&test));
     assert!(
         stderr(&test).contains("ERROR: Couldn't start the build. Unable to run tests"),
@@ -205,7 +218,7 @@ fn nobuild_test_and_run_do_not_execute() {
     assert!(ws.cache_files().is_empty());
 
     let ws = Workspace::new();
-    let run = ws.run(&["run", "--nobuild", "//pkg:tool"]);
+    let run = ws.run_with(&["run", "--nobuild", "//pkg:tool"], &[SNAPSHOT_OFF]);
     assert!(!run.status.success(), "{}", stderr(&run));
     assert!(
         stderr(&run).contains("No targets found to run"),
@@ -259,7 +272,8 @@ fn executing_build_builds_every_reported_artifact() {
     let ws = Workspace::fixture("published_workspace");
     let mut arguments = SHARED_GROUP_ASPECT.to_vec();
     arguments.insert(1, "--nobuild");
-    let output = ws.run(&arguments);
+    // The cache is listed below (Workspace::cache_files).
+    let output = ws.run_with(&arguments, &[SNAPSHOT_OFF]);
     let err = stderr(&output);
     assert!(output.status.success(), "{err}");
     assert!(err.contains("0 actions executed, 0 cache hits"), "{err}");

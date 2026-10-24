@@ -11,9 +11,13 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+include!("support/snapshot_off.rs");
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-struct Workspace(PathBuf);
+/// A workspace, and whether its commands run with the analysis snapshot off
+/// ([`Workspace::without_snapshot`]).
+struct Workspace(PathBuf, bool);
 
 impl Workspace {
     fn new() -> Self {
@@ -23,7 +27,7 @@ impl Workspace {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
-        let ws = Self(path);
+        let ws = Self(path, false);
         ws.file("MODULE.bazel", "module(name='plan_timings')\n");
         ws.file(
             "defs.bzl",
@@ -31,6 +35,14 @@ impl Workspace {
         );
         ws.file("BUILD", "load(':defs.bzl', 'my_rule')\nmy_rule(name='x')\n");
         ws
+    }
+
+    /// The analysis snapshot off for every command: tests of the full
+    /// analysis's stage report, which a hit (an unchanged re-run with the
+    /// snapshot on, the default) does not print.
+    fn without_snapshot(mut self) -> Self {
+        self.1 = true;
+        self
     }
 
     fn file(&self, name: &str, content: &str) {
@@ -69,6 +81,9 @@ impl Workspace {
             .env_remove("BAZEL_RS_TIMING_MODULES")
             .env_remove("BAZEL_RS_TIMING_ALLOC")
             .current_dir(&self.0);
+        if self.1 {
+            command.envs([SNAPSHOT_OFF]);
+        }
         for (name, value) in values {
             command.env(name, value);
         }
@@ -98,7 +113,7 @@ fn stage_total(stderr: &str, stage: &str) -> Option<(f64, u64)> {
 
 #[test]
 fn stage_report_shape_and_thread_ab() {
-    let ws = Workspace::new();
+    let ws = Workspace::new().without_snapshot();
     let plain = ws.run("1", false);
     assert!(
         plain.status.success(),
@@ -200,7 +215,7 @@ fn counters(line: &str) -> std::collections::BTreeMap<String, u64> {
 /// views.
 #[test]
 fn flush_batches_and_view_counters() {
-    let ws = Workspace::new();
+    let ws = Workspace::new().without_snapshot();
     ws.file(
         "defs.bzl",
         "def _impl(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + '.txt')\n    ctx.actions.write(out, 'x')\n    return [DefaultInfo(files=depset([out]))]\nmy_rule = rule(implementation=_impl, attrs={'deps': attr.label_list()})\ndef _flag_impl(ctx):\n    return []\nbool_flag = rule(implementation=_flag_impl, build_setting=config.bool(flag=True))\n",
