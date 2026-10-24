@@ -64,6 +64,33 @@ the same cache that re-executes `go_repository_cache` starts its fresh stage at
 that path and so deletes the module cache under the first process's fetches
 (Bazel's single server per output base cannot interleave so).
 
+The reverse direction exists as well. While one process re-executes
+`go_repository_cache` (under its exclusive `direct/locks/stage-<slug>`, in a
+fresh stage at exactly that path), another process's `go` — a `go_repository`
+fetch (`fetch_repo`, `go mod download`) whose environment comes from the
+published `go.env` — writes `pkg/mod/` and the build cache (`GOCACHE`,
+`<stage>/gocache`) into the live stage. The re-executing `go_repository_cache`
+can then snapshot part of a foreign module cache into its tree (content, and
+an identity, that depend on the other process's timing) or fail mid-snapshot
+when a file changes or disappears while it is hashed; once its publication
+renames the stage away, the other process's `go` loses what it had written
+there.
+
+Planned fix (not implemented): a reader/writer lease on the stage lock. A
+consumer that resolves a label into a direct repository whose published
+content embeds that repository's own stage path (as `go.env` does; detectable
+at publication, when the stage path's bytes occur in a published file) takes
+`direct/locks/stage-<slug>` SHARED once that repository is materialized and
+holds it until its own `materialize_inner` returns, i.e. for as long as its
+rule may run tools that write below that path; writers — a re-execution of
+that repository (`lock_stage`, then `fresh_stage`) — keep taking it
+EXCLUSIVELY. A re-execution then waits for running consumers and consumers
+wait for a running re-execution, in both directions and across processes,
+and a consumer never waits for a writer of its own (the lease is taken only
+after the repository's own materialization returned). Persistent
+per-repository working directories (a `GOPATH` outside every stage) would
+remove the shared path altogether.
+
 ## Privacy, identity and resource boundaries
 
 Only requested names are read; the process environment is never enumerated.
