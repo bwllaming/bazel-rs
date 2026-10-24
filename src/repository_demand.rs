@@ -189,11 +189,20 @@ pub struct DemandSlot<T> {
     probing: Mutex<bool>,
     probed: Condvar,
     /// Whether the sequential engine has obtained the value: a thread
-    /// outside no-demand mode demanded it, or the coordinator committed a
-    /// load unit that did ([`Self::note_sequential`]). A value a worker's
-    /// probe published stays invisible to [`Self::sequential`] until then
-    /// (W6 review F2).
+    /// outside no-demand mode demanded it, or the coordinator noted it
+    /// otherwise ([`Self::note_sequential`]: the commit of a load unit
+    /// that obtained it on a worker, a shared-cache hit on one of its
+    /// `.bzl` modules, the obtains of a probe that published a value that
+    /// counts). A value a worker's probe published stays invisible to
+    /// [`Self::sequential`] until then (W6 review F2 and its follow-up).
     sequential: AtomicBool,
+    /// The keys of the values the probe that published this value
+    /// obtained on its thread while it probed ([`Self::get_or_probe_obtaining`]):
+    /// the evaluation the sequential engine runs instead of the probe
+    /// obtains them too, so they count wherever this value does (W6
+    /// review F2 follow-up). Set before the value is published; empty for
+    /// a value an evaluator computed.
+    obtained: OnceLock<Vec<String>>,
     /// Test instrumentation: how many top-level probers started waiting
     /// for another thread's probe of this slot.
     #[cfg(test)]
@@ -264,9 +273,17 @@ impl<T> DemandSlot<T> {
             probing: Mutex::new(false),
             probed: Condvar::new(),
             sequential: AtomicBool::new(false),
+            obtained: OnceLock::new(),
             #[cfg(test)]
             waits: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    /// The keys the probe that published this value obtained while it
+    /// probed (see the `obtained` field); empty when no probe published
+    /// it, or the probe obtained nothing.
+    pub fn obtained(&self) -> &[String] {
+        self.obtained.get().map_or(&[], Vec::as_slice)
     }
 
     /// The successfully computed value once the sequential engine has
@@ -280,8 +297,9 @@ impl<T> DemandSlot<T> {
         }
     }
 
-    /// Record that the sequential engine obtained the value: the
-    /// coordinator committed a load unit that demanded it on a worker.
+    /// Record that the sequential engine obtained the value (see the
+    /// `sequential` field; for repository roots,
+    /// crate::repository's `DirectRuntime::mark_sequential`).
     pub fn note_sequential(&self) {
         if !self.sequential.load(Ordering::Relaxed) {
             self.sequential.store(true, Ordering::Relaxed);
@@ -378,6 +396,22 @@ impl<T> DemandSlot<T> {
         probe: impl FnOnce() -> Result<Option<T>, String>,
         init: impl FnOnce() -> Result<T, String>,
     ) -> Result<&T, String> {
+        self.get_or_probe_obtaining(runtime_id, key, || (probe(), Vec::new()), init)
+    }
+
+    /// [`Self::get_or_probe`] whose probe also returns the keys of the
+    /// values it obtained on this thread while it probed (W6 review F2
+    /// follow-up: the roots a warm-reuse probe's recorded-input check
+    /// demanded). They are stored with the value exactly when this
+    /// probe's value is the one published ([`Self::obtained`]); a miss, an
+    /// error or a lost publication race drops them.
+    pub fn get_or_probe_obtaining(
+        &self,
+        runtime_id: u64,
+        key: &str,
+        probe: impl FnOnce() -> (Result<Option<T>, String>, Vec<String>),
+        init: impl FnOnce() -> Result<T, String>,
+    ) -> Result<&T, String> {
         if let Some(result) = self.ready.get() {
             return self.note_demanded(result.as_ref().map_err(Clone::clone));
         }
@@ -425,7 +459,8 @@ impl<T> DemandSlot<T> {
         // R2): sequential materialize treats verification errors as
         // mismatch + re-execute, so the coordinator's sequential path must
         // own every error. The probe is a pure optimization.
-        match probe().unwrap_or(None) {
+        let (probed, obtained) = probe();
+        match probed.unwrap_or(None) {
             Some(value) => {
                 // Publish for all later demands; a concurrent publisher
                 // (another worker probing the same repo, or the
@@ -447,7 +482,16 @@ impl<T> DemandSlot<T> {
                         "{NEEDS_REPOSITORY}: runtime {runtime_id}:{key} is unfetched and this thread does not fetch"
                     ));
                 }
-                let _ = self.ready.set(Ok(value));
+                // Under this lock no evaluator runs (none can start) and
+                // every other probe publishes under it too: the value and
+                // what its probe obtained publish together, the keys
+                // first, so whoever sees the value sees them.
+                if self.ready.get().is_none() {
+                    if !obtained.is_empty() {
+                        let _ = self.obtained.set(obtained);
+                    }
+                    let _ = self.ready.set(Ok(value));
+                }
                 drop(running);
                 self.ready
                     .get()
@@ -1272,6 +1316,81 @@ mod tests {
         );
         failed.note_sequential();
         assert_eq!(failed.sequential(), None);
+    }
+
+    /// W6 review F2 follow-up: what a probe obtained is stored with the
+    /// value exactly when that probe's value is the slot's publication —
+    /// never for a miss, a probe error, a probe that lost to an earlier
+    /// publication, or a value an evaluator computed.
+    #[test]
+    fn a_probe_stores_what_it_obtained_only_with_its_own_publication() {
+        let obtained = || vec!["b".to_owned(), "c".to_owned()];
+        let probe = |value: Result<Option<usize>, String>| move || (value, obtained());
+        let guard = no_demand();
+        let reuse = reuse_only();
+
+        let published = DemandSlot::new();
+        assert_eq!(
+            published.get_or_probe_obtaining(7, "repository:a", probe(Ok(Some(5))), || Ok(1)),
+            Ok(&5)
+        );
+        assert_eq!(published.obtained(), ["b", "c"]);
+        // A later probe is served by the publication and stores nothing.
+        assert_eq!(
+            published.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                || (Ok(Some(9)), vec!["d".to_owned()]),
+                || Ok(1)
+            ),
+            Ok(&5)
+        );
+        assert_eq!(published.obtained(), ["b", "c"]);
+
+        for missed in [Ok(None), Err("probe error".to_owned())] {
+            let slot = DemandSlot::new();
+            assert!(
+                slot.get_or_probe_obtaining(7, "repository:a", probe(missed), || Ok(1))
+                    .is_err_and(|error| is_needs_repository(&error))
+            );
+            assert_eq!(slot.ready(), None);
+            assert!(slot.obtained().is_empty());
+        }
+
+        // The coordinator evaluated and published the slot while the probe
+        // ran: its value stands and the probe's keys are dropped.
+        let raced = std::sync::Arc::new(DemandSlot::new());
+        let coordinator = raced.clone();
+        assert_eq!(
+            raced.get_or_probe_obtaining(
+                7,
+                "repository:a",
+                move || {
+                    std::thread::spawn(move || {
+                        coordinator
+                            .get_or_try_init(7, "repository:a", || Ok(3))
+                            .copied()
+                    })
+                    .join()
+                    .unwrap()
+                    .unwrap();
+                    (Ok(Some(4)), vec!["late".to_owned()])
+                },
+                || Ok(1)
+            ),
+            Ok(&3)
+        );
+        assert!(raced.obtained().is_empty());
+        drop(reuse);
+        drop(guard);
+
+        // An evaluator's value obtained nothing through a probe.
+        let evaluated = DemandSlot::new();
+        assert_eq!(
+            evaluated.get_or_probe_obtaining(7, "repository:a", probe(Ok(Some(5))), || Ok(2)),
+            Ok(&2)
+        );
+        assert!(evaluated.obtained().is_empty());
     }
 
     #[test]

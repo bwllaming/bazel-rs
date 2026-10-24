@@ -1293,6 +1293,11 @@ impl<'a> Loader<'a> {
             return Ok(false);
         };
         crate::loading::module_timings::record_hit();
+        // The sequential engine's load of this module obtained its root
+        // here, at the module's entry (`source_path`, before its loads):
+        // whoever evaluated it may have been a worker (W6 review F2
+        // follow-up). A success or a failure alike.
+        self.repositories.note_obtained(&label.repository);
         let cached = match cached {
             Ok(cached) => cached,
             // A cached failure replays for every loading package (P2
@@ -1457,7 +1462,13 @@ impl<'a> Loader<'a> {
                         let mut guard: Option<BzlClaimGuard> = None;
                         loop {
                             if self.shared {
-                                match self.repositories.build_bzl_cache().get(&label)? {
+                                let served = self.repositories.build_bzl_cache().get(&label)?;
+                                if served.is_some() {
+                                    // Its root was demanded at the entry
+                                    // already; noted like every hit.
+                                    self.repositories.note_obtained(&label.repository);
+                                }
+                                match served {
                                     Some(Ok(cached)) => {
                                         self.functions.extend(cached.functions.iter().cloned());
                                         self.cache.insert(label.clone(), cached.module.clone());

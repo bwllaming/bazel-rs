@@ -684,15 +684,44 @@ there first:
   extension reading a file of a warm `@data` before the build demanded
   `@data` failed at threads 1 and recorded `@@+data_repo+data//file.txt`
   at threads 8. Keys now use the roots as the sequential engine sees them
-  (`RepositorySet::sequential_roots`, `DemandSlot::sequential`). A direct
-  or extension-generated root counts once a thread outside no-demand mode
-  demanded it, or once the coordinator committed a load unit that obtained
-  it on a worker (`LoadUnit::roots`, recorded by `repository::UnitRoots`) —
-  the point where the sequential engine demands it. Registry, Git and
-  built-in roots are only ever materialized outside no-demand mode. The
-  link policy keeps every published root: they are store trees, which
-  anchor links in any order anyway (`tests/phase1_prefetch.rs`,
-  `recorded_input_keys_name_only_roots_the_coordinator_has`).
+  (`RepositorySet::sequential_roots`, `DemandSlot::sequential`). The
+  invariant: at every point of the coordinator, a direct or
+  extension-generated root counts exactly when the sequential engine (one
+  loading thread) has obtained it by that point. That is when
+  - the coordinator demanded it (outside no-demand mode; a filled slot
+    included);
+  - the coordinator committed a load unit, or ran a load inline, that
+    obtained it: the package's root and the root of every `.bzl` module
+    the load reached — evaluated, or served from the shared cache
+    (`RepositorySet::note_obtained`; the sequential engine's load of the
+    module read it from that root, whoever evaluated it here). A worker
+    records them in its unit (`LoadUnit::roots`, `repository::UnitRoots`),
+    noted at the commit; the coordinator notes them at once, so an aborted
+    unit's inline re-run counts a cached module's root before the module
+    extensions its later loads run;
+  - transitively, the warm-reuse probe that published a root that counts
+    obtained it while checking that root's recorded inputs: the probe runs
+    in its own `UnitRoots` scope and its roots are stored with the
+    publication (`DemandSlot::get_or_probe_obtaining`,
+    `DemandSlot::obtained`), and they count wherever the published root
+    begins to count (`DirectRuntime::mark_sequential`: the coordinator's
+    demand of the filled slot, a commit, a cache hit). The coordinator's
+    evaluation of that root runs the same check and demands the same roots.
+
+  Registry, Git and built-in roots are only ever materialized outside
+  no-demand mode. So a key is the sequential engine's whatever the phase-1
+  prefetch and pattern-loading workers published, provided the files a
+  probe checks do not change during the invocation. d3f2582 counted only
+  the demands: a root reached through another root's check, or through a
+  `.bzl` module a worker had evaluated first (for a unit the build never
+  commits, or one that aborted and re-ran inline on a cache hit), never
+  counted, and the extension failed at threads 2/8/32 where threads 1
+  recorded `@@NAME//file.txt` (review F2 follow-up). The link policy keeps
+  every published root: they are store trees, which anchor links in any
+  order anyway (`tests/phase1_prefetch.rs`,
+  `recorded_input_keys_name_only_roots_the_coordinator_has`,
+  `recorded_input_keys_count_every_root_the_sequential_engine_obtains`;
+  `repository::tests::a_probed_root_counts_with_the_roots_its_probe_obtained`).
 
 **What is queued** (target-directed, like a loading-phase transitive
 closure; hints only — a wrong guess costs a wasted load, never output):
@@ -798,9 +827,13 @@ sentinel retry (cold, then warm), and a top-level aspect whose `.bzl` a
 worker evaluates first for a package reached only through a select()
 branch not taken (with and without the build committing that package
 later), and a module extension that reads a file of a repository a
-worker probed warm, before and after the build demands that repository —
-byte-identical stdout/stderr/exit at threads 1/2/8/32 and 8/32 with
-jitter; P2's `tests/parallel_loading.rs` unchanged.
+worker probed warm — before and after the build demands that repository,
+and after the build obtains it through another repository's warm check,
+through a `.bzl` module a worker evaluated first, and through an aborted
+unit's inline re-run that reads such a module from the cache —
+byte-identical stdout/stderr/exit (and lockfile, a fresh one per run) at
+threads 1/2/8/32 and 8/32 with jitter; P2's `tests/parallel_loading.rs`
+unchanged.
 
 ### Definition `.bzl` modules evaluated once per invocation
 

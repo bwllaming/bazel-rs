@@ -8,8 +8,10 @@
 //! sequential order, speculative loads (a select() branch not taken, the
 //! implementation of a toolchain resolution never selects) that fail
 //! without surfacing, the sentinel retry path (a registry module root
-//! only the coordinator materializes), and a top-level aspect's `.bzl` a
-//! worker evaluated first (one print, one char model; review F1).
+//! only the coordinator materializes), a top-level aspect's `.bzl` a
+//! worker evaluated first (one print, one char model; review F1), and the
+//! recorded-input keys of a module extension's reads, which name only the
+//! roots the sequential engine has obtained (review F2 and its follow-up).
 
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
@@ -74,6 +76,26 @@ fn assert_identical_across_threads(ws: &Workspace, args: &[&str]) -> Output {
     assert_identical_across_threads_after(ws, args, || {})
 }
 
+/// The thread counts and worker jitter compared with the threads-1 run.
+const THREADED: [(usize, u64); 5] = [(2, 0), (8, 0), (32, 0), (8, 40), (32, 25)];
+
+/// `build --loading_phase_threads=<threads> <args>`, with worker jitter.
+fn build_at(ws: &Workspace, threads: usize, jitter: u64, args: &[&str]) -> Output {
+    let jitter_text = jitter.to_string();
+    let env: Vec<(&str, &str)> = if jitter > 0 {
+        vec![("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
+    } else {
+        Vec::new()
+    };
+    let mut command = vec![
+        "build".to_owned(),
+        format!("--loading_phase_threads={threads}"),
+    ];
+    command.extend(args.iter().map(|arg| (*arg).to_owned()));
+    let command: Vec<&str> = command.iter().map(String::as_str).collect();
+    ws.run_env(&env, &command)
+}
+
 /// [`assert_identical_across_threads`], calling `before` ahead of every
 /// run.
 fn assert_identical_across_threads_after(
@@ -83,22 +105,10 @@ fn assert_identical_across_threads_after(
 ) -> Output {
     let run = |threads: usize, jitter: u64| {
         before();
-        let jitter_text = jitter.to_string();
-        let env: Vec<(&str, &str)> = if jitter > 0 {
-            vec![("BAZEL_RS_LOADING_JITTER", jitter_text.as_str())]
-        } else {
-            Vec::new()
-        };
-        let mut command = vec![
-            "build".to_owned(),
-            format!("--loading_phase_threads={threads}"),
-        ];
-        command.extend(args.iter().map(|arg| (*arg).to_owned()));
-        let command: Vec<&str> = command.iter().map(String::as_str).collect();
-        ws.run_env(&env, &command)
+        build_at(ws, threads, jitter, args)
     };
     let reference = run(1, 0);
-    for (threads, jitter) in [(2usize, 0u64), (8, 0), (32, 0), (8, 40), (32, 25)] {
+    for (threads, jitter) in THREADED {
         let other = run(threads, jitter);
         assert_eq!(
             other.status.code(),
@@ -530,14 +540,10 @@ fn recorded_input_keys_name_only_roots_the_coordinator_has() {
             "@early//:files",
             "//app:app",
         ];
-        let lockfile = ws.0.join("MODULE.bazel.lock");
-        let reference = assert_identical_across_threads_after(&ws, &args, || {
-            let _ = fs::remove_file(&lockfile);
-        });
+        let (reference, lock) = assert_identical_lockfiles_across_threads(&ws, &args);
         let text = stderr(&reference);
         if data_first {
             assert!(reference.status.success(), "{text}");
-            let lock = fs::read_to_string(&lockfile).unwrap();
             assert!(
                 lock.contains("\"FILE:@@+data_repo+data//file.txt "),
                 "{lock}"
@@ -552,6 +558,202 @@ fn recorded_input_keys_name_only_roots_the_coordinator_has() {
                 "{text}"
             );
         }
+    }
+}
+
+/// [`assert_identical_across_threads`] with a fresh `MODULE.bazel.lock`
+/// for every run: the lockfile each run writes is byte-identical to the
+/// threads-1 run's too (none: empty). Returns the reference run and its
+/// lockfile.
+fn assert_identical_lockfiles_across_threads(ws: &Workspace, args: &[&str]) -> (Output, String) {
+    let lockfile = ws.0.join("MODULE.bazel.lock");
+    let run = |threads: usize, jitter: u64| {
+        let _ = fs::remove_file(&lockfile);
+        let output = build_at(ws, threads, jitter, args);
+        (output, fs::read_to_string(&lockfile).unwrap_or_default())
+    };
+    let (reference, reference_lock) = run(1, 0);
+    for (threads, jitter) in THREADED {
+        let (other, lock) = run(threads, jitter);
+        assert_eq!(
+            other.status.code(),
+            reference.status.code(),
+            "threads={threads} jitter={jitter}: exit\n{}",
+            stderr(&other)
+        );
+        assert_eq!(
+            other.stdout, reference.stdout,
+            "threads={threads} jitter={jitter}: stdout"
+        );
+        assert_eq!(
+            stderr(&other),
+            stderr(&reference),
+            "threads={threads} jitter={jitter}: stderr"
+        );
+        assert_eq!(
+            lock, reference_lock,
+            "threads={threads} jitter={jitter}: MODULE.bazel.lock"
+        );
+    }
+    (reference, reference_lock)
+}
+
+/// How the sequential engine obtains, before the module extension runs,
+/// the repository whose store file the extension reads, in the
+/// workspaces of the W6 review F2 follow-up (the reviewer's f2a, f2b,
+/// f2c). None of them is a demand on the coordinator or in a committed
+/// unit, the only obtains d3f2582 counted.
+#[derive(Clone, Copy, Debug)]
+enum ObtainedBy {
+    /// `@a` read `@b//:file.txt`, so `@a`'s warm-reuse check demands
+    /// `@b`. A worker probes `@a` first, for `//spec` (a select() branch
+    /// not taken, never committed); `//mid:m` demands the filled `@a`
+    /// later. (f2a)
+    AnotherRootsCheck,
+    /// `//p1` (through `//mid:m`) loads `@data//:defs.bzl`, which a worker
+    /// evaluated first for `//spec` (a select() branch not taken): `//p1`'s
+    /// load is a cache hit that demands no root. (f2b)
+    CachedBzl,
+    /// `//p1` loads `@data//:defs.bzl`, then `@from_ext//:defs.bzl`: its
+    /// worker unit aborts at the extension, and the coordinator's inline
+    /// re-run reads `@data//:defs.bzl` from the cache right before it runs
+    /// the extension. (f2c)
+    InlineRerunCachedBzl,
+}
+
+/// The [`ObtainedBy`] workspace: `@early` and the repositories of the
+/// extension's file are one `use_repo_rule` group (the `@early` pattern
+/// prepares it, so the workers probe their warm trees); the module
+/// extension that generates `@from_ext` reads the host path `$DATA_PATH`
+/// without demanding its repository; `//app:app` analyzes 1,500 targets
+/// of `//many` before anything else, while the workers run ahead. Returns
+/// the workspace, the repository holding the file and the targets that
+/// publish the trees.
+fn obtained_root_workspace(obtained: ObtainedBy) -> (Workspace, &'static str, Vec<&'static str>) {
+    let (declarations, repository, publish) = match obtained {
+        ObtainedBy::AnotherRootsCheck => (
+            "data_repo(name = 'early')\ndata_repo(name = 'b')\ndata_repo(name = 'a', read_from = '@b//:file.txt')\n",
+            "b",
+            vec!["@early//:files", "@a//:files", "@b//:files"],
+        ),
+        ObtainedBy::CachedBzl | ObtainedBy::InlineRerunCachedBzl => (
+            "data_repo(name = 'early')\ndata_repo(name = 'data')\n",
+            "data",
+            vec!["@early//:files", "@data//:files"],
+        ),
+    };
+    let ws = Workspace::new(&format!(
+        "module(name = 'main')\ndata_repo = use_repo_rule('//:data.bzl', 'data_repo')\n{declarations}ext = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'from_ext')\n"
+    ));
+    ws.file("BUILD.bazel", "");
+    ws.file(
+        "data.bzl",
+        "def _data_repo(ctx):\n    if ctx.attr.read_from:\n        ctx.read(ctx.attr.read_from)\n    ctx.file('BUILD.bazel', 'filegroup(name = \"files\", srcs = [\"file.txt\"], visibility = [\"//visibility:public\"])\\n')\n    ctx.file('pkg/BUILD.bazel', 'filegroup(name = \"files\", visibility = [\"//visibility:public\"])\\n')\n    ctx.file('file.txt', 'data\\n')\n    ctx.file('defs.bzl', 'X = 1\\n')\n\ndata_repo = repository_rule(_data_repo, attrs = {'read_from': attr.label()})\n",
+    );
+    ws.file(
+        "ext.bzl",
+        "def _from_ext(ctx):\n    ctx.file('BUILD.bazel', 'filegroup(name = \"files\", visibility = [\"//visibility:public\"])\\n')\n    ctx.file('defs.bzl', 'Y = 2\\n')\n\nfrom_ext = repository_rule(_from_ext)\n\ndef _ext(module_ctx):\n    path = module_ctx.getenv('DATA_PATH')\n    if path:\n        module_ctx.read(path)\n    from_ext(name = 'from_ext')\n\next = module_extension(_ext)\n",
+    );
+    ws.file(
+        "app/rules.bzl",
+        "def _impl(ctx):\n    return [DefaultInfo()]\nr = rule(implementation = _impl, attrs = {'deps': attr.label_list(allow_files = True)})\n",
+    );
+    let rules = |prefix: &str| -> String {
+        (0..1500)
+            .map(|i| format!("r(name = '{prefix}{i}', visibility = ['//visibility:public'])\n"))
+            .collect()
+    };
+    ws.file(
+        "many/BUILD.bazel",
+        &format!("load('//app:rules.bzl', 'r')\n{}", rules("f")),
+    );
+    let many: Vec<String> = (0..1500).map(|i| format!("'//many:f{i}'")).collect();
+    let many = many.join(", ");
+    if let ObtainedBy::InlineRerunCachedBzl = obtained {
+        ws.file(
+            "app/BUILD.bazel",
+            &format!("load(':rules.bzl', 'r')\nr(name = 'app', deps = [{many}, '//p1:p1'])\n"),
+        );
+        ws.file(
+            "p1/BUILD.bazel",
+            "load('@data//:defs.bzl', 'X')\nload('@from_ext//:defs.bzl', 'Y')\nload('//app:rules.bzl', 'r')\nr(name = 'p1', visibility = ['//visibility:public'])\n",
+        );
+        return (ws, repository, publish);
+    }
+    // `//spec` is reached only through the select() branch not taken: a
+    // worker loads it, the build never commits it.
+    ws.file(
+        "app/BUILD.bazel",
+        &format!(
+            "load(':rules.bzl', 'r')\nconfig_setting(name = 'never', values = {{'cpu': 'nonexistent'}})\nr(name = 'app', deps = [{many}, '//mid:m', '@from_ext//:files'] + select({{':never': ['//spec:x'], '//conditions:default': []}}))\n"
+        ),
+    );
+    let (spec_load, m_dep) = match obtained {
+        ObtainedBy::AnotherRootsCheck => ("@a//:defs.bzl", "@a//pkg:files"),
+        _ => ("@data//:defs.bzl", "//p1:p1"),
+    };
+    ws.file(
+        "spec/BUILD.bazel",
+        &format!(
+            "load('{spec_load}', 'X')\nfilegroup(name = 'x', visibility = ['//visibility:public'])\n"
+        ),
+    );
+    ws.file(
+        "mid/BUILD.bazel",
+        &format!(
+            "load('//app:rules.bzl', 'r')\n{}r(name = 'm', deps = ['{m_dep}'], visibility = ['//visibility:public'])\n",
+            rules("m")
+        ),
+    );
+    ws.file(
+        "p1/BUILD.bazel",
+        "load('@data//:defs.bzl', 'X')\nload('//app:rules.bzl', 'r')\nr(name = 'p1', visibility = ['//visibility:public'])\n",
+    );
+    (ws, repository, publish)
+}
+
+/// W6 review F2 follow-up: the sequential engine obtains a root at more
+/// points than its demands on the coordinator and in committed units —
+/// through another root's warm-reuse check, and through a `.bzl` module
+/// the shared cache serves (also in an aborted unit's inline re-run, just
+/// before the module extension runs). d3f2582 counted only the demands,
+/// so in each workspace ([`ObtainedBy`]) the extension's read of the warm
+/// store file was in no known repository at threads 2/8/32 (update mode
+/// failed) where threads 1 records `@@+data_repo+NAME//file.txt`. Now
+/// every thread count records the threads-1 key: byte-identical exit,
+/// stdout, stderr and lockfile, a fresh lockfile per run.
+#[test]
+fn recorded_input_keys_count_every_root_the_sequential_engine_obtains() {
+    for obtained in [
+        ObtainedBy::AnotherRootsCheck,
+        ObtainedBy::CachedBzl,
+        ObtainedBy::InlineRerunCachedBzl,
+    ] {
+        let (ws, repository, publish) = obtained_root_workspace(obtained);
+        // Publish the warm trees the workers probe.
+        let mut command = vec!["build", "--loading_phase_threads=1"];
+        command.extend(&publish);
+        let warm = ws.run_env(&[], &command);
+        assert!(warm.status.success(), "{obtained:?}: {}", stderr(&warm));
+        let stdout = String::from_utf8_lossy(&warm.stdout).into_owned();
+        let prefix = format!("@@+data_repo+{repository}//:files\t");
+        let file = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix.as_str()))
+            .unwrap_or_else(|| panic!("{obtained:?}: {stdout}"));
+        let file = fs::canonicalize(file).unwrap();
+        let repo_env = format!("--repo_env=DATA_PATH={}", file.display());
+        let args = [repo_env.as_str(), "@early//:files", "//app:app"];
+        let (reference, lock) = assert_identical_lockfiles_across_threads(&ws, &args);
+        assert!(
+            reference.status.success(),
+            "{obtained:?}: {}",
+            stderr(&reference)
+        );
+        assert!(
+            lock.contains(&format!("\"FILE:@@+data_repo+{repository}//file.txt ")),
+            "{obtained:?}: {lock}"
+        );
     }
 }
 

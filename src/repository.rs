@@ -35,10 +35,14 @@ thread_local! {
 /// Records, while it lives, the direct and extension-generated
 /// repositories whose roots a load unit obtains on a worker before the
 /// sequential engine has them — published by the worker's own warm-reuse
-/// probe or by another worker's (W6 review F2). They count as
-/// materialized for order-dependent decisions only once the coordinator
-/// commits the unit ([`RepositorySet::note_committed_roots`]): the
-/// sequential engine demands them at that load.
+/// probe or by another worker's, demanded by the package or by a `.bzl`
+/// module its loads reach, also one the shared cache serves (W6 review F2
+/// and its follow-up). They count as materialized for order-dependent
+/// decisions only once the coordinator commits the unit
+/// ([`RepositorySet::note_committed_roots`]): the sequential engine
+/// demands them at that load. A warm-reuse probe records in a nested
+/// scope ([`Self::during`]): what it obtained is stored with the root it
+/// publishes and counts wherever that root does.
 pub(crate) struct UnitRoots {
     previous: Option<Option<BTreeSet<String>>>,
 }
@@ -49,6 +53,16 @@ impl UnitRoots {
         Self {
             previous: Some(previous),
         }
+    }
+
+    /// Run `probe` in its own scope: its result and the roots it obtained
+    /// on this thread (a warm-reuse probe's recorded-input check demands
+    /// the roots its inputs name), which the enclosing scope does not
+    /// see.
+    fn during<R>(probe: impl FnOnce() -> R) -> (R, Vec<String>) {
+        let scope = Self::record();
+        let result = probe();
+        (result, scope.finish())
     }
 
     /// The recorded repositories, in name order.
@@ -169,6 +183,62 @@ struct DirectRuntime {
     groups: BTreeMap<String, DemandSlot<PreparedGroup>>,
     roots: BTreeMap<String, DemandSlot<PathBuf>>,
     ordinary: BTreeMap<String, DemandSlot<PreparedOrdinary>>,
+}
+
+impl DirectRuntime {
+    /// The root slot of a direct or extension-generated repository, if it
+    /// exists yet (an extension-generated one only once its group is
+    /// prepared). Never prepares or evaluates anything.
+    fn root_slot(&self, canonical: &str) -> Option<&DemandSlot<PathBuf>> {
+        if let Some(slot) = self.roots.get(canonical) {
+            return Some(slot);
+        }
+        let (prefix, generated) = canonical.rsplit_once('+')?;
+        self.catalog
+            .ordinary_routes
+            .get(prefix)
+            .and_then(|id| self.ordinary.get(id))
+            .and_then(DemandSlot::ready)
+            .and_then(|prepared| prepared.repositories.get(generated))
+            .map(|repository| &repository.root)
+    }
+
+    /// The sequential engine has obtained `slot`'s root (W6 review F2 and
+    /// its follow-up): it counts for [`RepositorySet::sequential_roots`],
+    /// and so does every root the warm-reuse probe that published it
+    /// obtained ([`DemandSlot::obtained`]), transitively — the evaluation
+    /// the sequential engine runs instead of that probe demands them. A
+    /// root that already counted had its own marked when it began to
+    /// count. Only filled slots count; nothing is evaluated.
+    fn mark_sequential(&self, slot: &DemandSlot<PathBuf>) {
+        if slot.ready().is_none() {
+            return;
+        }
+        slot.note_sequential();
+        let mut pending: Vec<&str> = slot.obtained().iter().map(String::as_str).collect();
+        while let Some(canonical) = pending.pop() {
+            let Some(obtained) = self.root_slot(canonical) else {
+                continue;
+            };
+            if obtained.ready().is_none() || obtained.sequential().is_some() {
+                continue;
+            }
+            obtained.note_sequential();
+            pending.extend(obtained.obtained().iter().map(String::as_str));
+        }
+    }
+
+    /// `slot`, the root of `canonical`, was just obtained on this thread:
+    /// on a loading worker (no-demand mode) its unit records it for the
+    /// commit ([`UnitRoots`]); on the coordinator it counts at once,
+    /// with what its publishing probe obtained.
+    fn note_obtained(&self, canonical: &str, slot: &DemandSlot<PathBuf>) {
+        if crate::repository_demand::no_demand_active() {
+            UnitRoots::note(canonical, slot);
+        } else {
+            self.mark_sequential(slot);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1161,13 +1231,27 @@ impl RepositorySet {
     }
 
     /// [`Self::materialized_roots`] as the sequential engine sees them (W6
-    /// review F2): a direct or extension-generated repository's root counts
-    /// only once a thread outside no-demand mode demanded it or the
-    /// coordinator committed a load unit that obtained it on a worker
-    /// ([`UnitRoots`]). Registry, Git and built-in roots are only ever
-    /// materialized outside no-demand mode. So a key formed from these
-    /// roots ([`Self::friendly_repository`]) never depends on how far phase-1
-    /// prefetch workers got.
+    /// review F2 and its follow-up). The invariant: at every point of the
+    /// coordinator, a direct or extension-generated repository's root
+    /// counts exactly when the sequential engine (one loading thread) has
+    /// obtained it by that point, which is when
+    /// - the coordinator demanded it (outside no-demand mode; a filled slot
+    ///   included), or
+    /// - the coordinator committed a load unit, or ran a load inline, that
+    ///   obtained it: the package's root, and the root of every `.bzl`
+    ///   module the load reached, evaluated or served from the shared cache
+    ///   ([`Self::note_obtained`]) — recorded on a worker by [`UnitRoots`]
+    ///   and noted at the commit, noted at once on the coordinator; or
+    /// - transitively, the warm-reuse probe that published a root that
+    ///   counts obtained it while checking that root's recorded inputs
+    ///   ([`DemandSlot::obtained`]): the coordinator's evaluation of the
+    ///   root runs the same check and demands the same roots.
+    ///
+    /// Registry, Git and built-in roots are only ever materialized outside
+    /// no-demand mode. So a key formed from these roots
+    /// ([`Self::friendly_repository`]) is the sequential engine's whatever
+    /// phase-1 prefetch or pattern-loading workers published, provided the
+    /// files a probe checks do not change during the invocation.
     fn sequential_roots(&self) -> Vec<(String, PathBuf)> {
         self.roots_materialized(true)
     }
@@ -1230,7 +1314,8 @@ impl RepositorySet {
 
     /// The coordinator committed a load unit that obtained these roots on
     /// a worker ([`UnitRoots`]): the sequential engine demands them at that
-    /// load, so from now on they count for [`Self::sequential_roots`].
+    /// load, so from now on they count for [`Self::sequential_roots`], with
+    /// the roots their publishing probes obtained.
     pub(crate) fn note_committed_roots(&self, names: &[String]) {
         if names.is_empty() {
             return;
@@ -1239,24 +1324,39 @@ impl RepositorySet {
             return;
         };
         for name in names {
-            if let Some(slot) = runtime.roots.get(name) {
-                slot.note_sequential();
-                continue;
-            }
-            let Some((prefix, generated)) = name.rsplit_once('+') else {
-                continue;
-            };
-            if let Some(repository) = runtime
-                .catalog
-                .ordinary_routes
-                .get(prefix)
-                .and_then(|id| runtime.ordinary.get(id))
-                .and_then(DemandSlot::ready)
-                .and_then(|prepared| prepared.repositories.get(generated))
-            {
-                repository.root.note_sequential();
+            if let Some(slot) = runtime.root_slot(name) {
+                runtime.mark_sequential(slot);
             }
         }
+    }
+
+    /// The shared `.bzl` cache served a module of `repository` (W6 review
+    /// F2 follow-up): the sequential engine's load of it reads it from
+    /// that root (`Loader::source_path`) — the first load evaluates it
+    /// there; whoever evaluated it here may have been a worker, possibly
+    /// for a unit the build never commits or one that aborted. Noted like
+    /// a demand of the root that finds it filled: on a loading worker in
+    /// its unit, on the coordinator at once (an inline re-run's load runs
+    /// the module extensions it demands before its commit). Never
+    /// evaluates anything; only a filled direct or extension-generated
+    /// root slot is noted. The main repository and local_path modules
+    /// always count, and only the coordinator materializes registry, Git
+    /// and built-in trees: they need no noting.
+    pub(crate) fn note_obtained(&self, repository: &str) {
+        if repository.is_empty() {
+            return;
+        }
+        let Some(Ok(runtime)) = self.state.direct.get() else {
+            return;
+        };
+        let Some(slot) = runtime.root_slot(repository) else {
+            return;
+        };
+        // A root that counts already counts with what its probe obtained.
+        if slot.ready().is_none() || slot.sequential().is_some() {
+            return;
+        }
+        runtime.note_obtained(repository, slot);
     }
 
     /// The repository of a host path for RepoCacheFriendlyPath
@@ -1837,11 +1937,13 @@ impl RepositorySet {
         // and a recursive definition demand must encounter our cycle guard.
         // Step C: on a worker, the probe arm may serve a warm publication
         // (reads plus at most an idempotent manifest refresh, via
-        // `try_reuse_direct`) without preparing the group.
-        slot.get_or_probe(
+        // `try_reuse_direct`) without preparing the group. The roots its
+        // recorded-input check obtains are stored with the publication
+        // (W6 review F2 follow-up; `DirectRuntime::mark_sequential`).
+        slot.get_or_probe_obtaining(
             self.state.runtime_id,
             &format!("repository:{canonical}"),
-            || self.try_reuse_direct(canonical, entry),
+            || UnitRoots::during(|| self.try_reuse_direct(canonical, entry)),
             || {
                 let prepared = {
                     let _m = crate::repository_store::timing::mark(
@@ -1966,7 +2068,7 @@ impl RepositorySet {
                 .map(|(root, _)| root)
             },
         )
-        .inspect(|_| UnitRoots::note(canonical, slot))
+        .inspect(|_| runtime.note_obtained(canonical, slot))
         .map(PathBuf::as_path)
     }
 
@@ -2344,12 +2446,13 @@ impl RepositorySet {
 
     fn ordinary_root(&self, canonical: &str) -> Result<&Path, String> {
         let (prepared, repository) = self.ordinary_repository(canonical)?;
+        let runtime = self.direct_runtime()?;
         repository
             .root
-            .get_or_probe(
+            .get_or_probe_obtaining(
                 self.state.runtime_id,
                 &format!("repository:{canonical}"),
-                || self.try_reuse_ordinary(canonical),
+                || UnitRoots::during(|| self.try_reuse_ordinary(canonical)),
                 || {
                     let (label, _) =
                         repository
@@ -2476,7 +2579,7 @@ impl RepositorySet {
                     .map(|(root, _)| root)
                 },
             )
-            .inspect(|_| UnitRoots::note(canonical, &repository.root))
+            .inspect(|_| runtime.note_obtained(canonical, &repository.root))
             .map(PathBuf::as_path)
     }
 
@@ -4440,6 +4543,72 @@ mod tests {
         let changed = RepositorySet::new(f.0.clone());
         let second = changed.root(&canonical).unwrap().to_path_buf();
         assert_ne!(second, first);
+    }
+
+    /// W6 review F2 follow-up: `@a` records a read of `@b//:file.txt`, so
+    /// the sequential engine's (warm) evaluation of `@a` demands `@b`. A
+    /// loading worker's probe of `@a` obtains `@b` in its own scope and
+    /// stores it with `@a`'s publication; the worker's unit records only
+    /// `@a`. Neither counts for keys until the sequential engine obtains
+    /// `@a` — the coordinator's demand of the filled slot, the commit of a
+    /// unit that obtained it, or a shared-cache hit on one of its `.bzl`
+    /// modules — and then both do.
+    #[test]
+    fn a_probed_root_counts_with_the_roots_its_probe_obtained() {
+        use crate::repository_demand::{no_demand, reuse_only};
+        let f = Fixture::new();
+        f.write("BUILD", "");
+        f.write(
+            "rules.bzl",
+            "def implementation(ctx):\n    if ctx.attr.read_from:\n        ctx.read(ctx.attr.read_from)\n    ctx.file('BUILD.bazel', '')\n    ctx.file('file.txt', 'data')\nR = repository_rule(implementation, attrs = {'read_from': attr.label()})\n",
+        );
+        f.write(
+            "MODULE.bazel",
+            "r=use_repo_rule('//:rules.bzl','R')\nr(name='early')\nr(name='b')\nr(name='a', read_from='@b//:file.txt')\n",
+        );
+        let cold = RepositorySet::new(f.0.clone());
+        let canonical = |name: &str| {
+            cold.parse(&format!("@{name}//:file.txt"), "", "")
+                .unwrap()
+                .repository
+        };
+        let (early, a, b) = (canonical("early"), canonical("a"), canonical("b"));
+        cold.root(&a).unwrap();
+        let file_of = |root: &Path| std::fs::canonicalize(root.join("file.txt")).unwrap();
+        let (a_file, b_file) = (
+            file_of(cold.root(&a).unwrap()),
+            file_of(cold.root(&b).unwrap()),
+        );
+        let key = |name: &str| Some((name.to_owned(), PathBuf::from("file.txt")));
+        for obtained_by in ["demand", "commit", "cache hit"] {
+            // A new invocation: the coordinator prepares the group.
+            let warm = RepositorySet::new(f.0.clone());
+            warm.root(&early).unwrap();
+            let unit = {
+                let _guard = no_demand();
+                let _reuse = reuse_only();
+                let unit = UnitRoots::record();
+                warm.root(&a).unwrap();
+                // A second obtain (a cache hit) records nothing new.
+                warm.note_obtained(&a);
+                unit.finish()
+            };
+            assert_eq!(unit, std::slice::from_ref(&a));
+            let runtime = warm.direct_runtime().unwrap();
+            assert_eq!(runtime.roots[&a].obtained(), std::slice::from_ref(&b));
+            assert!(runtime.roots[&b].ready().is_some());
+            assert_eq!(warm.friendly_repository(&a_file), None, "{obtained_by}");
+            assert_eq!(warm.friendly_repository(&b_file), None, "{obtained_by}");
+            match obtained_by {
+                "demand" => {
+                    warm.root(&a).unwrap();
+                }
+                "commit" => warm.note_committed_roots(&unit),
+                _ => warm.note_obtained(&a),
+            }
+            assert_eq!(warm.friendly_repository(&a_file), key(&a), "{obtained_by}");
+            assert_eq!(warm.friendly_repository(&b_file), key(&b), "{obtained_by}");
+        }
     }
 
     #[test]
