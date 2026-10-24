@@ -113,6 +113,11 @@ const GROUPS: &[(&str, bool, &[&str])] = &[
             "share_args_same",
         ],
     ),
+    (
+        "cc_sharing",
+        true,
+        &["cc_compile_owners", "cc_compile_one_owner"],
+    ),
 ];
 
 fn manifest() -> &'static Path {
@@ -639,4 +644,13 @@ fn bazel_crashes_are_explicit_errors() {
 #[test]
 fn identical_actions_share_and_uncompared_parts_are_explicit() {
     check_group("sharing");
+}
+
+/// C++ compiles are not shareable (CppCompileActionBuilder.java:99): two
+/// targets' identical compiles on one object conflict (Bazel's lines, both
+/// labels), one target's identical duplicate is one action and builds the
+/// genuine object.
+#[test]
+fn cc_compiles_share_only_within_one_owner() {
+    check_group("cc_sharing");
 }

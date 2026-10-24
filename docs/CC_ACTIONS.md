@@ -36,7 +36,10 @@ noted):
   `actionNameToMnemonic` (CppCompileAction.java:1993-2018), and the action
   config's execution requirements merged into the action info. The action runs
   under the N59 sandbox; `gcc`/`ar` write their outputs with read-only
-  normalization identical to every other action.
+  normalization identical to every other action. Like Bazel's CppCompileAction
+  it is not shareable (`CppCompileActionBuilder.java:99`): an identical compile
+  of another target on the same object is an action conflict, one target's
+  duplicates are one action (docs/SHAREABLE_ARTIFACTS.md).
 - **`get_link_args`** (:407-440) — an `Args` value expanding to the
   LinkCommandLine's parameter command line (the flags without the tool; the
   spawn's `executable` is the tool): `getParamCommandLine`

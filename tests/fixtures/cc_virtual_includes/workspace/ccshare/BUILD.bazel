@@ -1,0 +1,21 @@
+load(":defs.bzl", "compile_shared")
+
+# Two targets compiling x.c under one compilation name: one object path,
+# two owners' identical C++ compiles (a conflict: not shareable).
+compile_shared(
+    name = "a",
+    srcs = ["x.c"],
+)
+
+compile_shared(
+    name = "b",
+    srcs = ["x.c"],
+)
+
+# One target registering the identical compile twice: one owner's
+# duplicates are one action.
+compile_shared(
+    name = "twice",
+    srcs = ["y.c"],
+    twice = True,
+)

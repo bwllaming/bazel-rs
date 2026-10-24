@@ -1,7 +1,7 @@
 {
  "schema": "cc-virtual-includes-reference-receipt/v1",
  "fixture": "cc_virtual_includes",
- "purpose": "ctx.actions.declare_shareable_artifact (StarlarkActionFactory.createShareableArtifact, analysis/starlark/StarlarkActionFactory.java:1267-1276) and the rules_cc 0.2.17 virtual-include path that needs it (cc/private/compile/cc_compilation_helper.bzl _compute_public_headers: strip_include_prefix/include_prefix, the _virtual_includes symlinks through ctx.actions.symlink(use_exec_root_for_source=...), the include directory in the CcCompilationContext) end to end: cc_library targets with strip_include_prefix (package-relative, repository-absolute, in an external module like @protobuf//src/google/protobuf's `/src`), include_prefix and textual headers, consumed by a cc_library and a cc_binary that compile and link; plus the API's own semantics from an allowlisted main-repository package (`test`): root-relative paths, the artifact roots, owner/short_path/root, dedup, shared and conflicting actions, the private-API restriction and misuse. Motivation: analysis of @@protobuf+//src/google/protobuf:internal_visibility failed with `'actions' value has no field or method 'declare_shareable_artifact'`. Plus Actions.canBeShared within one target for any output (//share, review follow-up: identical spawns shared — also with a tool that has runfiles —, differing ones conflicting, parts the native key does not cover an explicit error) and across targets on one shareable path (share_same shared, share_diff a conflict naming both labels). Plus (integration-20, review F2 of d2fd11c) a main-repository shareable artifact below `external/` consumed by another target (//test:external_consumer, case consumed_external_path): ctx.files, the producer's DefaultInfo and a provider field holding the producer's own File are one File with short_path ../somerepo/x.txt.",
+ "purpose": "ctx.actions.declare_shareable_artifact (StarlarkActionFactory.createShareableArtifact, analysis/starlark/StarlarkActionFactory.java:1267-1276) and the rules_cc 0.2.17 virtual-include path that needs it (cc/private/compile/cc_compilation_helper.bzl _compute_public_headers: strip_include_prefix/include_prefix, the _virtual_includes symlinks through ctx.actions.symlink(use_exec_root_for_source=...), the include directory in the CcCompilationContext) end to end: cc_library targets with strip_include_prefix (package-relative, repository-absolute, in an external module like @protobuf//src/google/protobuf's `/src`), include_prefix and textual headers, consumed by a cc_library and a cc_binary that compile and link; plus the API's own semantics from an allowlisted main-repository package (`test`): root-relative paths, the artifact roots, owner/short_path/root, dedup, shared and conflicting actions, the private-API restriction and misuse. Motivation: analysis of @@protobuf+//src/google/protobuf:internal_visibility failed with `'actions' value has no field or method 'declare_shareable_artifact'`. Plus Actions.canBeShared within one target for any output (//share, review follow-up: identical spawns shared — also with a tool that has runfiles —, differing ones conflicting, parts the native key does not cover an explicit error) and across targets on one shareable path (share_same shared, share_diff a conflict naming both labels). Plus (integration-20, review F2 of d2fd11c) a main-repository shareable artifact below `external/` consumed by another target (//test:external_consumer, case consumed_external_path): ctx.files, the producer's DefaultInfo and a provider field holding the producer's own File are one File with short_path ../somerepo/x.txt. Plus (review follow-up 4 of 08abb16, //ccshare) C++ compile actions are not shareable (CppCompileActionBuilder.java:99): two targets' identical cc_common.compile actions on one object conflict, one target's identical duplicate is one action.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,14 +11,14 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "effa3fdfa9c636b6798db136bccfbffe8c318bce478d24617339a3c2c5a4d3ec",
+  "sha256": "978107f529e1ef64a0b52502d2c821c352fbdcda236b8503035978a06a98898d",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
-  "path": "/tmp/opencode/perf-research/pshared-vinc-capture.py, pshared-vinc-receipt.py (not committed; i20s4-vinc-*.py with the shared-actions verdicts; genuine capture reused from i20s4-vinc-genuine.json, the fixture is unchanged)",
+  "path": "/tmp/opencode/perf-research/pfu-vinc-capture.py, pfu-vinc-receipt.py (not committed; pshared-vinc-*.py plus the //ccshare cases; genuine and native fully re-captured)",
   "sha256": {
-   "pshared-vinc-capture.py": "228d491223d5c26ba1474c4fddf58f42a9669dba291e50d15097a04badadb7f8",
-   "pshared-vinc-receipt.py": "ae66e57e9d514ea17c4661362ed5191abbd877fab27479d4d9e8ba68a869d084"
+   "pfu-vinc-capture.py": "c55d264a7126dcf42c0454706ab18d0b4d0a6b1f76b5070337d96e960779a4c8",
+   "pfu-vinc-receipt.py": "bf070bc65384be204275063eafd5a801a0d3bbe7e194c40c3211c7af852b8045"
   }
  },
  "host_compiler": "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0",
@@ -28,6 +28,10 @@
   "app/consumer.h": "9805b516969e3e9e8c5cd8e3cd99e6adcd190baf655e389b61758c32bd5b83a7",
   "app/dup_consumer.c": "1bad755807832bd64b5e559cb806bc479bcdfd8fe62261a04c28033873a8a2d7",
   "app/main.c": "62e8641911fae4231e46f70e44fdfbfd0f940288a4a2261220ad569f0160cfb2",
+  "ccshare/BUILD.bazel": "df231888211c344432da239070bb8be120d343f2df16bebfed942aae93e5d62d",
+  "ccshare/defs.bzl": "845ed0f2de75ebf520cb4137710a23cf34bd0b068438c764180f1ba0ff7ea5eb",
+  "ccshare/x.c": "2f24df5ddb0f2c0ffcf74f89854e0257c770309da533b55df0560de12379a752",
+  "ccshare/y.c": "1d0241db1531c9e6f51c7520b820c3eeb72bd0caa5ed986e3284f9d8d9612f14",
   "denied/BUILD.bazel": "852460c6e7b5f958875628a36a2b0de645c887f577ed713613510f9566f0173e",
   "denied/defs.bzl": "88631e3fcd122e54ec6eb87f0a0efe6d43aabed2c2fd29aa5d914a1745473925",
   "errors/BUILD.bazel": "d1b5cdbf999192e17502c339786fbc204c39148650e9164c48cee96ce752e4cb",
@@ -61,19 +65,20 @@
   "A declared shareable artifact without a generating action: `The following files have no generating action:` / `test/orphan.txt`.",
   "A main-repository rule's shareable `external/somerepo/x.txt` consumed by another target (//test:external_consumer): ctx.files.dep[0], dep[DefaultInfo].files and the producer's own File in a provider field are one File (equal, one depset element), short_path `../somerepo/x.txt` every way (Artifact.getRunfilesPath of a derived artifact does not depend on its owner); an action may take each of them as an input.",
   "Actions.canBeShared within one target, for any output (//share): two identical run_shell registrations (only the progress message differs) are shared; so are two identical ctx.actions.run registrations whose executable has runfiles (share_tool_same) and two identical Args writes expanding a tree artifact (share_args_same); ctx.actions.run registrations differing in an argument conflict: `file 'share/tool_diff.out' is generated by these conflicting actions:` / `Label: //share:tool_diff` (followed by Bazel's action descriptions).",
+  "C++ compiles are not shareable (CppCompileAction.isShareable false unless rules_cc asks, CppCompileActionBuilder.java:99; only linkstamps do): two targets compiling x.c under one cc_common.compile name register identical compiles on ccshare/_objs/shared_compile/x.pic.o and conflict (`file 'ccshare/_objs/shared_compile/x.pic.o' is generated by these conflicting actions:` / `Label: //ccshare:b, //ccshare:a`, `IsShareable: false`, `MandatoryInputs: are equal`, `Outputs: are equal` — Actions.canBeShared compares an unshareable action's files with their owners); one target registering the identical compile twice builds (one action).",
   "Misuse crashes Bazel (exit 37): artifact_root of another type (ClassCastException) or a source root, an absolute path or uplevel references (IllegalArgumentException in ArtifactFactory.validatePath); the empty path is the bin root itself (an output prefix conflict).",
   "rules_cc virtual includes: `<package exec path>/_virtual_includes/<name>/<include path>` below the bin root, a symlink to the source file's path (the workspace for the main repository, <OB>/external/<repo>/... for a module), created only when a compile needs it (header-only targets build nothing); the .d files name the virtual paths; objects, archives, shared libraries and the linked binary are byte-identical natively."
  ],
  "known_divergences": [
   "Bazel crashes on several misuses (exit 37); the native profile reports explicit analysis errors naming the Java exception (exit 1).",
   "The empty path: genuine declares the root itself and fails on the output prefix conflict; natively rejected at declaration (both exit 1).",
-  "Action sharing (Actions.canBeShared) within one target and across targets compares one owner-independent native key (crate::shared_actions; share_same, share_diff, share_tool_same match since the parity-shared-actions branch, tests/fixtures/shared_actions pins the cross-target cases). When the compared parts are equal but an action has a part the native key does not cover (content expanding tree artifacts at execution, build-info callbacks), the native profile reports an explicit not-implemented error instead of guessing (share_args_same; genuine shares it).",
+  "Action sharing (Actions.canBeShared) within one target and across targets compares one owner-independent native key (crate::shared_actions; share_same, share_diff, share_tool_same match since the parity-shared-actions branch, tests/fixtures/shared_actions pins the cross-target cases; C++ compiles are unshareable: cc_compile_owners, cc_compile_one_owner). When the compared parts are equal but an action has a part the native key does not cover (content expanding tree artifacts at execution, build-info callbacks), the native profile reports an explicit not-implemented error instead of guessing (share_args_same; genuine shares it).",
   "symlink(use_exec_root_for_source=True) on a source file: genuine links through <OB>/execroot/_main/<exec path>; the native profile has no persistent execution root and links the source file itself (the same file the execution root's entry is).",
   "Symlinks to files of a local_path_override module name the override directory natively (<WS>/ext/...), genuine its <OB>/external/ext+ symlink (pre-existing native repository layout).",
   "Native error reporting: the analysis error is printed with the native traceback (`bazel-rs: analysis of <label>: ...`), genuine with `ERROR: <location>: in <rule> rule <label>:` lines; a conflict is reported where the second action is registered natively, after the implementation function genuinely."
  ],
  "counts": {
-  "MATCH": 24,
+  "MATCH": 26,
   "DECLARED_DIVERGENCE": 7
  },
  "scratch_removed": true,
@@ -89,13 +94,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 6.099,
+    "seconds": 12.834,
     "stdout": "",
-    "stderr": "INFO: Analyzed 5 targets (26 packages loaded, 134 targets configured).\nINFO: Found 5 targets...\nTarget //lib:stripped up-to-date:\n  bazel-bin/lib/libstripped.a\n  bazel-bin/lib/libstripped.so\nTarget @@ext+//src/ext:ext up-to-date:\n  bazel-bin/external/ext+/src/ext/libext.a\n  bazel-bin/external/ext+/src/ext/libext.so\nTarget //lib:prefixed up-to-date:\n  bazel-bin/lib/libprefixed.a\n  bazel-bin/lib/libprefixed.so\nTarget //lib:textual_outside up-to-date (nothing to build)\nTarget //lib:both up-to-date (nothing to build)\nINFO: Elapsed time: 4.802s, Critical Path: 0.09s\nINFO: 13 processes: 4 internal, 9 processwrapper-sandbox.\nINFO: Build completed successfully, 13 total actions\n"
+    "stderr": "INFO: Analyzed 5 targets (26 packages loaded, 134 targets configured).\nINFO: Found 5 targets...\nTarget //lib:both up-to-date (nothing to build)\nTarget //lib:prefixed up-to-date:\n  bazel-bin/lib/libprefixed.a\n  bazel-bin/lib/libprefixed.so\nTarget @@ext+//src/ext:ext up-to-date:\n  bazel-bin/external/ext+/src/ext/libext.a\n  bazel-bin/external/ext+/src/ext/libext.so\nTarget //lib:textual_outside up-to-date (nothing to build)\nTarget //lib:stripped up-to-date:\n  bazel-bin/lib/libstripped.a\n  bazel-bin/lib/libstripped.so\nINFO: Elapsed time: 10.619s, Critical Path: 0.17s\nINFO: 13 processes: 4 internal, 9 processwrapper-sandbox.\nINFO: Build completed successfully, 13 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 5.466,
+    "seconds": 8.241,
     "stdout": "//lib:prefixed\t<CACHE>/actions/fd5290a709e28cbe6e15e9c7208fdae39e0126f1f516c36f5ebe7b21723f8567/outputs/bazel-out/k8-fastbuild/bin/lib/libprefixed.a\n//lib:prefixed\t<CACHE>/actions/3c1be7d26e5b4bc3bcef19cc62fb9ec5145574e67ca7344885081b1ecf88f692/outputs/bazel-out/k8-fastbuild/bin/lib/libprefixed.so\n//lib:stripped\t<CACHE>/actions/2e9b605cfb3463d7e8d855e54f161e9075a6184fcc342454ce92d98c860409ff/outputs/bazel-out/k8-fastbuild/bin/lib/libstripped.a\n//lib:stripped\t<CACHE>/actions/8c3474bdef6e332705355e477cd9fd9d7f7c43c69305351fc9298019eed6ec5e/outputs/bazel-out/k8-fastbuild/bin/lib/libstripped.so\n@@ext+//src/ext:ext\t<CACHE>/actions/803b59a2859e716e8669cc9fed255baecf3c91ea9c67bd8425e1cdef61e79eb0/outputs/bazel-out/k8-fastbuild/bin/external/ext+/src/ext/libext.a\n@@ext+//src/ext:ext\t<CACHE>/actions/2f0a760e8af84dd55d464ca7ce4c1e6efa4b94481ae29efc71e2f3360b13c2bc/outputs/bazel-out/k8-fastbuild/bin/external/ext+/src/ext/libext.so\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 12 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -202,13 +207,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 4.389,
+    "seconds": 12.123,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //app:app (28 packages loaded, 145 targets configured).\nINFO: Found 1 target...\nTarget //app:app up-to-date:\n  bazel-bin/app/app\nINFO: Elapsed time: 3.449s, Critical Path: 0.09s\nINFO: 16 processes: 10 internal, 6 processwrapper-sandbox.\nINFO: Build completed successfully, 16 total actions\n"
+    "stderr": "INFO: Analyzed target //app:app (28 packages loaded, 145 targets configured).\nINFO: Found 1 target...\nTarget //app:app up-to-date:\n  bazel-bin/app/app\nINFO: Elapsed time: 10.184s, Critical Path: 0.15s\nINFO: 16 processes: 10 internal, 6 processwrapper-sandbox.\nINFO: Build completed successfully, 16 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 5.235,
+    "seconds": 16.307,
     "stdout": "//app:app\t<CACHE>/actions/e26967467d922e2ffc8b121d1e5e20dfaed60d6dbd7e35ffe356a4f645e16eb3/outputs/bazel-out/k8-fastbuild/bin/app/app\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 14 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -312,13 +317,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 4.007,
+    "seconds": 11.682,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //app:app (28 packages loaded, 145 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 3.042s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
+    "stderr": "INFO: Analyzed target //app:app (28 packages loaded, 145 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: 9.645s, Critical Path: 0.00s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 5.123,
+    "seconds": 16.221,
     "stdout": "//app:app\tbazel-out/k8-fastbuild/bin/app/app\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -333,13 +338,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.852,
+    "seconds": 11.629,
     "stdout": "",
-    "stderr": "ERROR: <WS>/errors/BUILD.bazel:5:11: in cc_library rule //errors:not_under: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 138, column 17, in _compute_public_headers\n\t\tfail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_relative_path, strip_prefix))\nError in fail: header 'errors/x.h' is not under the specified strip prefix 'errors/include'\nERROR: <WS>/errors/BUILD.bazel:5:11: Analysis of target '//errors:not_under' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:not_under' failed; build aborted\nINFO: Elapsed time: 2.938s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/errors/BUILD.bazel:5:11: in cc_library rule //errors:not_under: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 138, column 17, in _compute_public_headers\n\t\tfail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_relative_path, strip_prefix))\nError in fail: header 'errors/x.h' is not under the specified strip prefix 'errors/include'\nERROR: <WS>/errors/BUILD.bazel:5:11: Analysis of target '//errors:not_under' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:not_under' failed; build aborted\nINFO: Elapsed time: 9.674s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 4.836,
+    "seconds": 15.826,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:not_under: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:138, in _compute_public_headers\n      fail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_r...\nerror: fail: header 'errors/x.h' is not under the specified strip prefix 'errors/include'\n   --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:138:13\n    |\n138 |             fail(\"header '{}' is not under the specified strip prefix '{}'\".format(repo_relative_path, strip_prefix))\n    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n"
    },
@@ -353,13 +358,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.848,
+    "seconds": 11.402,
     "stdout": "",
-    "stderr": "ERROR: <WS>/errors/BUILD.bazel:11:11: in cc_library rule //errors:uplevel_include_prefix: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 67, column 17, in _compute_public_headers\n\t\tfail(\"include prefix should not contain uplevel references: \" + include_prefix)\nError in fail: include prefix should not contain uplevel references: ../up\nERROR: <WS>/errors/BUILD.bazel:11:11: Analysis of target '//errors:uplevel_include_prefix' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:uplevel_include_prefix' failed; build aborted\nINFO: Elapsed time: 2.946s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/errors/BUILD.bazel:11:11: in cc_library rule //errors:uplevel_include_prefix: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 67, column 17, in _compute_public_headers\n\t\tfail(\"include prefix should not contain uplevel references: \" + include_prefix)\nError in fail: include prefix should not contain uplevel references: ../up\nERROR: <WS>/errors/BUILD.bazel:11:11: Analysis of target '//errors:uplevel_include_prefix' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:uplevel_include_prefix' failed; build aborted\nINFO: Elapsed time: 9.486s, Critical Path: 0.06s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 5.357,
+    "seconds": 16.707,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:uplevel_include_prefix: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:67, in _compute_public_headers\n      fail(\"include prefix should not contain uplevel references: \" + include_prefix)\nerror: fail: include prefix should not contain uplevel references: ../up\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:67:13\n   |\n67 |             fail(\"include prefix should not contain uplevel references: \" + include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -373,13 +378,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.841,
+    "seconds": 8.488,
     "stdout": "",
-    "stderr": "ERROR: <WS>/errors/BUILD.bazel:17:11: in cc_library rule //errors:absolute_include_prefix: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 69, column 17, in _compute_public_headers\n\t\tfail(\"include prefix should be a relative path: \" + include_prefix)\nError in fail: include prefix should be a relative path: /abs\nERROR: <WS>/errors/BUILD.bazel:17:11: Analysis of target '//errors:absolute_include_prefix' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:absolute_include_prefix' failed; build aborted\nINFO: Elapsed time: 2.915s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/errors/BUILD.bazel:17:11: in cc_library rule //errors:absolute_include_prefix: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 69, column 17, in _compute_public_headers\n\t\tfail(\"include prefix should be a relative path: \" + include_prefix)\nError in fail: include prefix should be a relative path: /abs\nERROR: <WS>/errors/BUILD.bazel:17:11: Analysis of target '//errors:absolute_include_prefix' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:absolute_include_prefix' failed; build aborted\nINFO: Elapsed time: 6.492s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 5.869,
+    "seconds": 27.789,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:absolute_include_prefix: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:69, in _compute_public_headers\n      fail(\"include prefix should be a relative path: \" + include_prefix)\nerror: fail: include prefix should be a relative path: /abs\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:69:13\n   |\n69 |             fail(\"include prefix should be a relative path: \" + include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -393,13 +398,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.934,
+    "seconds": 8.514,
     "stdout": "",
-    "stderr": "ERROR: <WS>/errors/BUILD.bazel:23:11: in cc_library rule //errors:uplevel_strip: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 73, column 17, in _compute_public_headers\n\t\tfail(\"strip include prefix should not contain uplevel references: \" + strip_include_prefix)\nError in fail: strip include prefix should not contain uplevel references: ../x\nERROR: <WS>/errors/BUILD.bazel:23:11: Analysis of target '//errors:uplevel_strip' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:uplevel_strip' failed; build aborted\nINFO: Elapsed time: 3.023s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/errors/BUILD.bazel:23:11: in cc_library rule //errors:uplevel_strip: \nTraceback (most recent call last):\n\tFile \"<OB>/external/rules_cc+/cc/private/rules_impl/cc_library.bzl\", line 56, column 72, in _cc_library_impl\n\t\t(compilation_context, srcs_compilation_outputs) = cc_common.compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/cc_common.bzl\", line 536, column 19, in _compile\n\t\treturn compile(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/compile.bzl\", line 282, column 112, in compile\n\t\tpublic_compilation_context, implementation_deps_context = cc_compilation_helper.init_cc_compilation_context(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 433, column 45, in _init_cc_compilation_context\n\t\tpublic_headers = _compute_public_headers(\n\tFile \"<OB>/external/rules_cc+/cc/private/compile/cc_compilation_helper.bzl\", line 73, column 17, in _compute_public_headers\n\t\tfail(\"strip include prefix should not contain uplevel references: \" + strip_include_prefix)\nError in fail: strip include prefix should not contain uplevel references: ../x\nERROR: <WS>/errors/BUILD.bazel:23:11: Analysis of target '//errors:uplevel_strip' (config: a7a71fd) failed\nERROR: Analysis of target '//errors:uplevel_strip' failed; build aborted\nINFO: Elapsed time: 6.697s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 5.674,
+    "seconds": 27.319,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //errors:uplevel_strip: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * @@rules_cc+//cc/private/rules_impl:cc_library.bzl:56, in _cc_library_impl\n      (compilation_context, srcs_compilation_outputs) = cc_common.compile(\n  * @@rules_cc+//cc/private:cc_common.bzl:536, in _compile\n      return compile(\n  * @@rules_cc+//cc/private/compile:compile.bzl:282, in compile\n      public_compilation_context, implementation_deps_context = cc_compilation_help...\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:433, in _init_cc_compilation_context\n      public_headers = _compute_public_headers(\n  * @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:73, in _compute_public_headers\n      fail(\"strip include prefix should not contain uplevel references: \" + strip_i...\nerror: fail: strip include prefix should not contain uplevel references: ../x\n  --> @@rules_cc+//cc/private/compile:cc_compilation_helper.bzl:73:13\n   |\n73 |             fail(\"strip include prefix should not contain uplevel references: \" + strip_include_prefix)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -424,13 +429,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.238,
+    "seconds": 6.927,
     "stdout": "",
-    "stderr": "INFO: Analyzed 12 targets (5 packages loaded, 19 targets configured).\nINFO: Found 12 targets...\nTarget //test:external_path up-to-date:\n  bazel-bin/test/external_path.report\n  bazel-bin/external/somerepo/x.txt\nTarget //test:in_package up-to-date:\n  bazel-bin/test/in_package.report\n  bazel-bin/test/in_package/shared.txt\nTarget //test:normalized up-to-date:\n  bazel-bin/test/normalized.report\n  bazel-bin/test/normalized.txt\nTarget //test:symlink_exec_root up-to-date:\n  bazel-bin/test/symlink_exec_root.report\n  bazel-bin/test/_virtual_includes/symlink_exec_root/v.h\nTarget //test:bin_dir up-to-date:\n  bazel-bin/test/bin_dir.report\n  bazel-bin/test/bin_dir.txt\nTarget //test:outside up-to-date:\n  bazel-bin/test/outside.report\n  bazel-bin/elsewhere/shared.txt\nTarget //test:cross up-to-date:\n  bazel-bin/test/cross.report\n  bazel-bin/test/sub/cross.txt\nTarget //test:alias up-to-date:\n  bazel-bin/test/alias.report\n  bazel-bin/test/alias.txt\nTarget //test:file_root up-to-date:\n  bazel-bin/test/file_root.report\n  bazel-bin/test/file_root.anchor\n  bazel-bin/test/file_root.txt\nTarget //test:symlink up-to-date:\n  bazel-bin/test/symlink.report\n  bazel-bin/test/_virtual_includes/symlink/v.h\nTarget //test:genfiles_dir up-to-date:\n  bazel-bin/test/genfiles_dir.report\n  bazel-bin/test/genfiles_dir.txt\nTarget //test:twice up-to-date:\n  bazel-bin/test/twice.report\n  bazel-bin/test/twice.txt\nINFO: Elapsed time: 2.307s, Critical Path: 0.03s\nINFO: 26 processes: 26 internal.\nINFO: Build completed successfully, 26 total actions\n"
+    "stderr": "INFO: Analyzed 12 targets (5 packages loaded, 19 targets configured).\nINFO: Found 12 targets...\nTarget //test:in_package up-to-date:\n  bazel-bin/test/in_package.report\n  bazel-bin/test/in_package/shared.txt\nTarget //test:symlink up-to-date:\n  bazel-bin/test/symlink.report\n  bazel-bin/test/_virtual_includes/symlink/v.h\nTarget //test:cross up-to-date:\n  bazel-bin/test/cross.report\n  bazel-bin/test/sub/cross.txt\nTarget //test:alias up-to-date:\n  bazel-bin/test/alias.report\n  bazel-bin/test/alias.txt\nTarget //test:external_path up-to-date:\n  bazel-bin/test/external_path.report\n  bazel-bin/external/somerepo/x.txt\nTarget //test:normalized up-to-date:\n  bazel-bin/test/normalized.report\n  bazel-bin/test/normalized.txt\nTarget //test:symlink_exec_root up-to-date:\n  bazel-bin/test/symlink_exec_root.report\n  bazel-bin/test/_virtual_includes/symlink_exec_root/v.h\nTarget //test:outside up-to-date:\n  bazel-bin/test/outside.report\n  bazel-bin/elsewhere/shared.txt\nTarget //test:genfiles_dir up-to-date:\n  bazel-bin/test/genfiles_dir.report\n  bazel-bin/test/genfiles_dir.txt\nTarget //test:twice up-to-date:\n  bazel-bin/test/twice.report\n  bazel-bin/test/twice.txt\nTarget //test:file_root up-to-date:\n  bazel-bin/test/file_root.report\n  bazel-bin/test/file_root.anchor\n  bazel-bin/test/file_root.txt\nTarget //test:bin_dir up-to-date:\n  bazel-bin/test/bin_dir.report\n  bazel-bin/test/bin_dir.txt\nINFO: Elapsed time: 4.939s, Critical Path: 0.08s\nINFO: 26 processes: 26 internal.\nINFO: Build completed successfully, 26 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.102,
+    "seconds": 0.197,
     "stdout": "//test:alias\t<CACHE>/actions/b75f4727571e09ed8a7fa74edcba6d81353319784cbc2bbe87388d3dcf92e4b3/outputs/bazel-out/k8-fastbuild/bin/test/alias.report\n//test:alias\t<CACHE>/actions/f55b7e229b199156f6fdd57d8c5ed78344d635ca14b3b9a225489470ac111f97/outputs/bazel-out/k8-fastbuild/bin/test/alias.txt\n//test:bin_dir\t<CACHE>/actions/9f9ca99e1e1138ac268127a6dfc8eac0e4c69242046d895576c17c6b7c26297b/outputs/bazel-out/k8-fastbuild/bin/test/bin_dir.report\n//test:bin_dir\t<CACHE>/actions/24c507c97e983ba8658e8ef96ce4437547e9b5b759662393c667eda5bded79f3/outputs/bazel-out/k8-fastbuild/bin/test/bin_dir.txt\n//test:cross\t<CACHE>/actions/e960fee8c37249098470a216e2a36bf6ac8e02e2760a245122a5335c70df98ed/outputs/bazel-out/k8-fastbuild/bin/test/cross.report\n//test:cross\t<CACHE>/actions/2a8b165e85bdac64624c0b663b06b283ff3529887d404e9412d5e23bd705fda0/outputs/bazel-out/k8-fastbuild/bin/test/sub/cross.txt\n//test:external_path\t<CACHE>/actions/325f0eb0d46e4808e2bdea70ca457273dd328dd25aeb5d93dca6136e70415a76/outputs/bazel-out/k8-fastbuild/bin/test/external_path.report\n//test:external_path\t<CACHE>/actions/0fd9fe565ed29514d7ee1922d235186049f564b8898a0f84c98b3fabac339c18/outputs/bazel-out/k8-fastbuild/bin/external/somerepo/x.txt\n//test:file_root\t<CACHE>/actions/3252c6984b7daca1a2b573eef00ab9ff9df44273c41fbfe745c11fca49fa691c/outputs/bazel-out/k8-fastbuild/bin/test/file_root.report\n//test:file_root\t<CACHE>/actions/73946144c7881497203db5558e3daf2d697a57c4318018a818be638a134bd89c/outputs/bazel-out/k8-fastbuild/bin/test/file_root.anchor\n//test:file_root\t<CACHE>/actions/a4fd55f34ee2dc9d3572127d0f2cb9ca74d48fe890d58877a6bfac66d0d96b69/outputs/bazel-out/k8-fastbuild/bin/test/file_root.txt\n//test:genfiles_dir\t<CACHE>/actions/f75e416c4406a2ab6194f1f6edc18ff8e23937ab852baa1d137dfa33c4fcfad1/outputs/bazel-out/k8-fastbuild/bin/test/genfiles_dir.report\n//test:genfiles_dir\t<CACHE>/actions/1580b58cf973782667d899a5de7eef88c255f86824432039e1702472c4985f9f/outputs/bazel-out/k8-fastbuild/bin/test/genfiles_dir.txt\n//test:in_package\t<CACHE>/actions/1546d826056e5da37a3f359be3f3b60c44cbb00717be02f81f1f8a22cf4dd1cb/outputs/bazel-out/k8-fastbuild/bin/test/in_package.report\n//test:in_package\t<CACHE>/actions/52d91316f5c8e76a37ceba9b8cbe72a7837fe3f96c2cf57bc8295e9c7911c36b/outputs/bazel-out/k8-fastbuild/bin/test/in_package/shared.txt\n//test:normalized\t<CACHE>/actions/d9430d5ae92e71c62fdaddfe432bc0d794b328dd939b1c7b08e165d5949c2e35/outputs/bazel-out/k8-fastbuild/bin/test/normalized.report\n//test:normalized\t<CACHE>/actions/4906613568be92ca909b68004491170cf67fd823bbc54ebd18e775f028fa7ec4/outputs/bazel-out/k8-fastbuild/bin/test/normalized.txt\n//test:outside\t<CACHE>/actions/17339afa8dbd84f011ee9f24b1b8b78ecce0d936d5bdc336f46fb77032ff6c00/outputs/bazel-out/k8-fastbuild/bin/test/outside.report\n//test:outside\t<CACHE>/actions/7af51f9be4b5bd8c5a480c464779b5a30c11dd0c1d2ad933a5fd0e375e692ff0/outputs/bazel-out/k8-fastbuild/bin/elsewhere/shared.txt\n//test:symlink\t<CACHE>/actions/c4b2efe81e629574dcd22dacd6c7122d87f174678869c522392a98d1814b6515/outputs/bazel-out/k8-fastbuild/bin/test/symlink.report\n//test:symlink\t<CACHE>/actions/2aa84c9fa97b97a5c45f69bc3604d1f2cc01132a2ef1965014550092e882381d/outputs/bazel-out/k8-fastbuild/bin/test/_virtual_includes/symlink/v.h\n//test:symlink_exec_root\t<CACHE>/actions/dbb269bcfad033b88b9d52e599b3e76cd0ee4a111d4af8727aaf9233eebbb20a/outputs/bazel-out/k8-fastbuild/bin/test/symlink_exec_root.report\n//test:symlink_exec_root\t<CACHE>/actions/31eb5f43a65f45f932bad77415c0ee9a6d19a81437915e553d51e42c963e98d1/outputs/bazel-out/k8-fastbuild/bin/test/_virtual_includes/symlink_exec_root/v.h\n//test:twice\t<CACHE>/actions/48942b201783f5ba4a4e71ebff26e2dac0e5c660af1c642cdd1c4278f69f1231/outputs/bazel-out/k8-fastbuild/bin/test/twice.report\n//test:twice\t<CACHE>/actions/5a7589852806829f04b27b275249b950bca1389481fd172a243f714c2c00e4ea/outputs/bazel-out/k8-fastbuild/bin/test/twice.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 25 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -663,13 +668,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.249,
+    "seconds": 6.639,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //test:same_writes (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //test:same_writes up-to-date:\n  bazel-bin/test/same_writes.report\n  bazel-bin/test/same_writes.txt\nINFO: Elapsed time: 2.301s, Critical Path: 0.03s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n"
+    "stderr": "INFO: Analyzed target //test:same_writes (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //test:same_writes up-to-date:\n  bazel-bin/test/same_writes.report\n  bazel-bin/test/same_writes.txt\nINFO: Elapsed time: 4.845s, Critical Path: 0.05s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.08,
+    "seconds": 0.107,
     "stdout": "//test:same_writes\t<CACHE>/actions/8cb477c6c533ce3249b63df763199a58e7cfb2e804f725cda5dfd95e44dd9d40/outputs/bazel-out/k8-fastbuild/bin/test/same_writes.report\n//test:same_writes\t<CACHE>/actions/36af7e87b19d3ee3485c5d2ab7b385471b69f15124fdc8b8334ce866dfddb5e7/outputs/bazel-out/k8-fastbuild/bin/test/same_writes.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -705,13 +710,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 4.15,
+    "seconds": 8.955,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //app:dup_consumer (26 packages loaded, 125 targets configured).\nINFO: Found 1 target...\nTarget //app:dup_consumer up-to-date:\n  bazel-bin/app/libdup_consumer.a\n  bazel-bin/app/libdup_consumer.so\nINFO: Elapsed time: 3.192s, Critical Path: 0.07s\nINFO: 5 processes: 2 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n"
+    "stderr": "INFO: Analyzed target //app:dup_consumer (26 packages loaded, 125 targets configured).\nINFO: Found 1 target...\nTarget //app:dup_consumer up-to-date:\n  bazel-bin/app/libdup_consumer.a\n  bazel-bin/app/libdup_consumer.so\nINFO: Elapsed time: 7.158s, Critical Path: 0.14s\nINFO: 5 processes: 2 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 5.219,
+    "seconds": 27.336,
     "stdout": "//app:dup_consumer\t<CACHE>/actions/740bf75253d841d96e59a3ffa954b413094d4685e862ad3414150e0cef685daf/outputs/bazel-out/k8-fastbuild/bin/app/libdup_consumer.a\n//app:dup_consumer\t<CACHE>/actions/45a40acff51b04f3d243799611851be59a8dc9ca00ef18c470d7412ad49e39a5/outputs/bazel-out/k8-fastbuild/bin/app/libdup_consumer.so\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -759,13 +764,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.183,
+    "seconds": 6.899,
     "stdout": "",
-    "stderr": "INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //test:share_a up-to-date:\n  bazel-bin/test/share_a.report\n  bazel-bin/shared/same.txt\nTarget //test/sub:share_b up-to-date:\n  bazel-bin/test/sub/share_b.report\n  bazel-bin/shared/same.txt\nINFO: Elapsed time: 2.268s, Critical Path: 0.02s\nINFO: 4 processes: 4 internal.\nINFO: Build completed successfully, 4 total actions\n"
+    "stderr": "INFO: Analyzed 2 targets (6 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //test/sub:share_b up-to-date:\n  bazel-bin/test/sub/share_b.report\n  bazel-bin/shared/same.txt\nTarget //test:share_a up-to-date:\n  bazel-bin/test/share_a.report\n  bazel-bin/shared/same.txt\nINFO: Elapsed time: 5.002s, Critical Path: 0.05s\nINFO: 4 processes: 4 internal.\nINFO: Build completed successfully, 4 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.096,
+    "seconds": 0.111,
     "stdout": "//test:share_a\t<CACHE>/actions/5d09125c4daf64c8227c14d2560e5c1dff92554c66aa2fe68e434e688af24878/outputs/bazel-out/k8-fastbuild/bin/test/share_a.report\n//test:share_a\t<CACHE>/actions/03e84ee65c669536cc145d4145fad2ac3f254a1e8b98f782674692f81da3f456/outputs/bazel-out/k8-fastbuild/bin/shared/same.txt\n//test/sub:share_b\t<CACHE>/actions/3fce2a5b3d23912280150716f7ca0cb015d9a243ceb479ba1831af68a5f240ae/outputs/bazel-out/k8-fastbuild/bin/test/sub/share_b.report\n//test/sub:share_b\t<CACHE>/actions/03e84ee65c669536cc145d4145fad2ac3f254a1e8b98f782674692f81da3f456/outputs/bazel-out/k8-fastbuild/bin/shared/same.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -815,13 +820,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.195,
+    "seconds": 6.779,
     "stdout": "",
-    "stderr": "ERROR: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test:share_c, //test/sub:share_d\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: e61ebf5e2674e2b5c427c635aee8262eb048a8d5599ae91dc48f0df9d58bfeeb, 4176d17f77340e6e8515d80c21db0034c7f3c7ecbf3ff711dc5921aca9dc0032\nProgress message: Writing file shared/diff.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]shared/diff.txt\nOwner information: ConfiguredTargetKey{label=//test:share_c, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//test/sub:share_d, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nTarget //test:share_c failed to build\nTarget //test/sub:share_d failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test:share_c, //test/sub:share_d\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: e61ebf5e2674e2b5c427c635aee8262eb048a8d5599ae91dc48f0df9d58bfeeb, 4176d17f77340e6e8515d80c21db0034c7f3c7ecbf3ff711dc5921aca9dc0032\nProgress message: Writing file shared/diff.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]shared/diff.txt\nOwner information: ConfiguredTargetKey{label=//test:share_c, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//test/sub:share_d, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 2.237s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test:share_c, //test/sub:share_d\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: e61ebf5e2674e2b5c427c635aee8262eb048a8d5599ae91dc48f0df9d58bfeeb, 4176d17f77340e6e8515d80c21db0034c7f3c7ecbf3ff711dc5921aca9dc0032\nProgress message: Writing file shared/diff.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]shared/diff.txt\nOwner information: ConfiguredTargetKey{label=//test:share_c, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//test/sub:share_d, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nTarget //test:share_c failed to build\nTarget //test/sub:share_d failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test:share_c, //test/sub:share_d\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: e61ebf5e2674e2b5c427c635aee8262eb048a8d5599ae91dc48f0df9d58bfeeb, 4176d17f77340e6e8515d80c21db0034c7f3c7ecbf3ff711dc5921aca9dc0032\nProgress message: Writing file shared/diff.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]shared/diff.txt\nOwner information: ConfiguredTargetKey{label=//test:share_c, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//test/sub:share_d, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 4.708s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.083,
+    "seconds": 0.1,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'shared/diff.txt' is generated by these conflicting actions:\nLabel: //test/sub:share_d, //test:share_c\n"
    },
@@ -839,13 +844,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.233,
+    "seconds": 6.641,
     "stdout": "",
-    "stderr": "ERROR: <WS>/test/BUILD.bazel:115:6: in probe rule //test:orphan: \n<WS>/test/defs.bzl:22:5: The following files have no generating action:\ntest/orphan.txt\nERROR: <WS>/test/BUILD.bazel:115:6: Analysis of target '//test:orphan' (config: a7a71fd) failed\nERROR: Analysis of target '//test:orphan' failed; build aborted\nINFO: Elapsed time: 2.176s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/test/BUILD.bazel:115:6: in probe rule //test:orphan: \n<WS>/test/defs.bzl:22:5: The following files have no generating action:\ntest/orphan.txt\nERROR: <WS>/test/BUILD.bazel:115:6: Analysis of target '//test:orphan' (config: a7a71fd) failed\nERROR: Analysis of target '//test:orphan' failed; build aborted\nINFO: Elapsed time: 4.785s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.074,
+    "seconds": 0.127,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:orphan: The following files have no generating action:\ntest/orphan.txt\n"
    },
@@ -859,13 +864,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.201,
+    "seconds": 6.595,
     "stdout": "",
-    "stderr": "ERROR: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: 80a9bb7d2803d5414233d47490077dfa382d4a4c294df0dd2e9cc5849c2b6bfe, 933032a9eb015753274cead2082d8eedba9fd80662b9393002330ff5ab8060a0\nProgress message: Writing file test/two_writes.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]test/two_writes.txt\nOwner information: ConfiguredTargetKey{label=//test:two_writes, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nERROR: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: 80a9bb7d2803d5414233d47490077dfa382d4a4c294df0dd2e9cc5849c2b6bfe, 933032a9eb015753274cead2082d8eedba9fd80662b9393002330ff5ab8060a0\nProgress message: Writing file test/two_writes.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]test/two_writes.txt\nOwner information: ConfiguredTargetKey{label=//test:two_writes, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 2.228s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: 80a9bb7d2803d5414233d47490077dfa382d4a4c294df0dd2e9cc5849c2b6bfe, 933032a9eb015753274cead2082d8eedba9fd80662b9393002330ff5ab8060a0\nProgress message: Writing file test/two_writes.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]test/two_writes.txt\nOwner information: ConfiguredTargetKey{label=//test:two_writes, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nERROR: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\nRuleClass: probe rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.FileWriteAction$RegularFileWriteAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: FileWrite\nIsShareable: true\nAction key: 80a9bb7d2803d5414233d47490077dfa382d4a4c294df0dd2e9cc5849c2b6bfe, 933032a9eb015753274cead2082d8eedba9fd80662b9393002330ff5ab8060a0\nProgress message: Writing file test/two_writes.txt\nAction describeKey: (null)\nPrimaryInput: (null)\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]test/two_writes.txt\nOwner information: ConfiguredTargetKey{label=//test:two_writes, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 4.709s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.073,
+    "seconds": 0.112,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:two_writes: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:87, in _probe_impl\n      actions.write(a, \"two\\n\")\nerror: file 'test/two_writes.txt' is generated by these conflicting actions:\nLabel: //test:two_writes\n  --> //test:defs.bzl:87:9\n   |\n87 |         actions.write(a, \"two\\n\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -882,13 +887,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.21,
+    "seconds": 6.378,
     "stdout": "",
-    "stderr": "ERROR: <WS>/test/BUILD.bazel:127:6: in probe rule //test:named: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 89, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(path = path)\nError in declare_shareable_artifact: declare_shareable_artifact() got named argument for positional-only parameter 'path'\nERROR: <WS>/test/BUILD.bazel:127:6: Analysis of target '//test:named' (config: a7a71fd) failed\nERROR: Analysis of target '//test:named' failed; build aborted\nINFO: Elapsed time: 2.225s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/test/BUILD.bazel:127:6: in probe rule //test:named: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 89, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(path = path)\nError in declare_shareable_artifact: declare_shareable_artifact() got named argument for positional-only parameter 'path'\nERROR: <WS>/test/BUILD.bazel:127:6: Analysis of target '//test:named' (config: a7a71fd) failed\nERROR: Analysis of target '//test:named' failed; build aborted\nINFO: Elapsed time: 4.650s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.076,
+    "seconds": 0.08,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:named: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:89, in _probe_impl\n      actions.declare_shareable_artifact(path = path)\nerror: declare_shareable_artifact() got named argument for positional-only parameter 'path'\n  --> //test:defs.bzl:89:9\n   |\n89 |         actions.declare_shareable_artifact(path = path)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -902,13 +907,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.193,
+    "seconds": 6.669,
     "stdout": "",
-    "stderr": "ERROR: <WS>/test/BUILD.bazel:133:6: in probe rule //test:int_path: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 91, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(1)\nError in declare_shareable_artifact: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\nERROR: <WS>/test/BUILD.bazel:133:6: Analysis of target '//test:int_path' (config: a7a71fd) failed\nERROR: Analysis of target '//test:int_path' failed; build aborted\nINFO: Elapsed time: 2.260s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/test/BUILD.bazel:133:6: in probe rule //test:int_path: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 91, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(1)\nError in declare_shareable_artifact: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\nERROR: <WS>/test/BUILD.bazel:133:6: Analysis of target '//test:int_path' (config: a7a71fd) failed\nERROR: Analysis of target '//test:int_path' failed; build aborted\nINFO: Elapsed time: 4.811s, Critical Path: 0.04s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.071,
+    "seconds": 0.11,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:int_path: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:91, in _probe_impl\n      actions.declare_shareable_artifact(1)\nerror: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\n  --> //test:defs.bzl:91:9\n   |\n91 |         actions.declare_shareable_artifact(1)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -922,13 +927,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.085,
+    "seconds": 6.56,
     "stdout": "",
-    "stderr": "ERROR: <WS>/test/BUILD.bazel:138:6: in probe rule //test:too_many: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 93, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(path, ctx.bin_dir, 3)\nError in declare_shareable_artifact: declare_shareable_artifact() accepts no more than 2 positional arguments but got 3\nERROR: <WS>/test/BUILD.bazel:138:6: Analysis of target '//test:too_many' (config: a7a71fd) failed\nERROR: Analysis of target '//test:too_many' failed; build aborted\nINFO: Elapsed time: 2.164s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/test/BUILD.bazel:138:6: in probe rule //test:too_many: \nTraceback (most recent call last):\n\tFile \"<WS>/test/defs.bzl\", line 93, column 43, in _probe_impl\n\t\tactions.declare_shareable_artifact(path, ctx.bin_dir, 3)\nError in declare_shareable_artifact: declare_shareable_artifact() accepts no more than 2 positional arguments but got 3\nERROR: <WS>/test/BUILD.bazel:138:6: Analysis of target '//test:too_many' (config: a7a71fd) failed\nERROR: Analysis of target '//test:too_many' failed; build aborted\nINFO: Elapsed time: 4.771s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.067,
+    "seconds": 0.089,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:too_many: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:93, in _probe_impl\n      actions.declare_shareable_artifact(path, ctx.bin_dir, 3)\nerror: declare_shareable_artifact() accepts no more than 2 positional arguments but got 3\n  --> //test:defs.bzl:93:9\n   |\n93 |         actions.declare_shareable_artifact(path, ctx.bin_dir, 3)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -942,13 +947,13 @@
    ],
    "genuine": {
     "exit": 37,
-    "seconds": 3.057,
+    "seconds": 6.441,
     "stdout": "",
     "stderr": "FATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//test:root_string, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//test:root_string, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: ClassCastException thrown during Starlark evaluation (//test:root_string)\nCaused by: java.lang.ClassCastException: class java.lang.String cannot be cast to class com.google.devtools.build.lib.actions.ArtifactRoot (java.lang.String is in module java.base of loader 'bootstrap'; com.google.devtools.build.lib.actions.ArtifactRoot is in unnamed module of loader 'app')\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.073,
+    "seconds": 0.122,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:root_string: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:95, in _probe_impl\n      actions.declare_shareable_artifact(path, \"bazel-out\")\nerror: declare_shareable_artifact('test/root_string.txt'): artifact_root must be a root, not 'string' (Bazel 9.3 fails with an internal ClassCastException)\n  --> //test:defs.bzl:95:9\n   |\n95 |         actions.declare_shareable_artifact(path, \"bazel-out\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -963,13 +968,13 @@
    ],
    "genuine": {
     "exit": 37,
-    "seconds": 3.072,
+    "seconds": 6.561,
     "stdout": "",
     "stderr": "FATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//test:root_none, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//test:root_none, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: ClassCastException thrown during Starlark evaluation (//test:root_none)\nCaused by: java.lang.ClassCastException: class net.starlark.java.eval.NoneType cannot be cast to class com.google.devtools.build.lib.actions.ArtifactRoot (net.starlark.java.eval.NoneType and com.google.devtools.build.lib.actions.ArtifactRoot are in unnamed module of loader 'app')\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.076,
+    "seconds": 0.1,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:root_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:97, in _probe_impl\n      actions.declare_shareable_artifact(path, None)\nerror: declare_shareable_artifact('test/root_none.txt'): artifact_root must be a root, not 'NoneType' (Bazel 9.3 fails with an internal ClassCastException)\n  --> //test:defs.bzl:97:9\n   |\n97 |         actions.declare_shareable_artifact(path, None)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -984,13 +989,13 @@
    ],
    "genuine": {
     "exit": 37,
-    "seconds": 3.119,
+    "seconds": 6.565,
     "stdout": "",
     "stderr": "FATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//test:source_root, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//test:source_root, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//test:source_root)\nCaused by: java.lang.IllegalArgumentException\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.073,
+    "seconds": 0.101,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:source_root: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:99, in _probe_impl\n      actions.declare_shareable_artifact(path, ctx.file.src.root)\nerror: declare_shareable_artifact('test/source_root.txt'): artifact_root is a source root; a shareable artifact needs a derived root (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:99:9\n   |\n99 |         actions.declare_shareable_artifact(path, ctx.file.src.root)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1005,13 +1010,13 @@
    ],
    "genuine": {
     "exit": 37,
-    "seconds": 3.187,
+    "seconds": 6.706,
     "stdout": "",
     "stderr": "FATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//test:uplevel, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//test:uplevel, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//test:uplevel)\nCaused by: java.lang.IllegalArgumentException: ../up.txt\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.074,
+    "seconds": 0.116,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:uplevel: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact('../up.txt'): the path must not contain uplevel references (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1026,13 +1031,13 @@
    ],
    "genuine": {
     "exit": 37,
-    "seconds": 3.09,
+    "seconds": 6.717,
     "stdout": "",
     "stderr": "FATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//test:absolute, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//test:absolute, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//test:absolute)\nCaused by: java.lang.IllegalArgumentException: /abs.txt\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.074,
+    "seconds": 0.087,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:absolute: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact('/abs.txt'): the path must be relative to the artifact root (Bazel 9.3 fails with an internal IllegalArgumentException)\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1047,13 +1052,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.211,
+    "seconds": 6.624,
     "stdout": "",
-    "stderr": "ERROR: One of the output paths 'bazel-out/k8-fastbuild/bin' (belonging to //test:empty) and 'bazel-out/k8-fastbuild/bin/test/empty.report' (belonging to //test:empty) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them\nTarget //test:empty failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: One of the output paths 'bazel-out/k8-fastbuild/bin' (belonging to //test:empty) and 'bazel-out/k8-fastbuild/bin/test/empty.report' (belonging to //test:empty) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them\nINFO: Elapsed time: 2.230s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: One of the output paths 'bazel-out/k8-fastbuild/bin' (belonging to //test:empty) and 'bazel-out/k8-fastbuild/bin/test/empty.report' (belonging to //test:empty) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them\nTarget //test:empty failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: One of the output paths 'bazel-out/k8-fastbuild/bin' (belonging to //test:empty) and 'bazel-out/k8-fastbuild/bin/test/empty.report' (belonging to //test:empty) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them\nINFO: Elapsed time: 4.802s, Critical Path: 0.05s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.071,
+    "seconds": 0.121,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //test:empty: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //test:defs.bzl:29, in _probe_impl\n      a = actions.declare_shareable_artifact(path)\nerror: declare_shareable_artifact(''): the path names the artifact root itself, which cannot be an output of the native profile\n  --> //test:defs.bzl:29:13\n   |\n29 |         a = actions.declare_shareable_artifact(path)\n   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1068,13 +1073,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.208,
+    "seconds": 6.549,
     "stdout": "",
-    "stderr": "ERROR: <WS>/denied/BUILD.bazel:3:7: in denied rule //denied:declare: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 6, column 47, in _denied_impl\n\t\tctx.actions.declare_shareable_artifact(\"denied/x.txt\")\nError in declare_shareable_artifact: file '//denied:defs.bzl' cannot use private API\nERROR: <WS>/denied/BUILD.bazel:3:7: Analysis of target '//denied:declare' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:declare' failed; build aborted\nINFO: Elapsed time: 2.226s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/denied/BUILD.bazel:3:7: in denied rule //denied:declare: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 6, column 47, in _denied_impl\n\t\tctx.actions.declare_shareable_artifact(\"denied/x.txt\")\nError in declare_shareable_artifact: file '//denied:defs.bzl' cannot use private API\nERROR: <WS>/denied/BUILD.bazel:3:7: Analysis of target '//denied:declare' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:declare' failed; build aborted\nINFO: Elapsed time: 4.636s, Critical Path: 0.06s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.058,
+    "seconds": 0.074,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:declare: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:6, in _denied_impl\n      ctx.actions.declare_shareable_artifact(\"denied/x.txt\")\nerror: file '//denied:defs.bzl' cannot use private API\n --> //denied:defs.bzl:6:9\n  |\n6 |         ctx.actions.declare_shareable_artifact(\"denied/x.txt\")\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
    },
@@ -1088,13 +1093,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.178,
+    "seconds": 6.583,
     "stdout": "",
-    "stderr": "ERROR: <WS>/denied/BUILD.bazel:9:7: in denied rule //denied:int_path: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 8, column 47, in _denied_impl\n\t\tctx.actions.declare_shareable_artifact(1)\nError in declare_shareable_artifact: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\nERROR: <WS>/denied/BUILD.bazel:9:7: Analysis of target '//denied:int_path' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:int_path' failed; build aborted\nINFO: Elapsed time: 2.241s, Critical Path: 0.02s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/denied/BUILD.bazel:9:7: in denied rule //denied:int_path: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 8, column 47, in _denied_impl\n\t\tctx.actions.declare_shareable_artifact(1)\nError in declare_shareable_artifact: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\nERROR: <WS>/denied/BUILD.bazel:9:7: Analysis of target '//denied:int_path' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:int_path' failed; build aborted\nINFO: Elapsed time: 4.561s, Critical Path: 0.07s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.061,
+    "seconds": 0.113,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:int_path: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:8, in _denied_impl\n      ctx.actions.declare_shareable_artifact(1)\nerror: in call to declare_shareable_artifact(), parameter 'path' got value of type 'int', want 'string'\n --> //denied:defs.bzl:8:9\n  |\n8 |         ctx.actions.declare_shareable_artifact(1)\n  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  |\n\n"
    },
@@ -1108,13 +1113,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.229,
+    "seconds": 6.762,
     "stdout": "",
-    "stderr": "ERROR: <WS>/denied/BUILD.bazel:14:7: in denied rule //denied:symlink: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 11, column 28, in _denied_impl\n\t\tctx.actions.symlink(\nError in symlink: file '//denied:defs.bzl' cannot use private API\nERROR: <WS>/denied/BUILD.bazel:14:7: Analysis of target '//denied:symlink' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:symlink' failed; build aborted\nINFO: Elapsed time: 2.290s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: <WS>/denied/BUILD.bazel:14:7: in denied rule //denied:symlink: \nTraceback (most recent call last):\n\tFile \"<WS>/denied/defs.bzl\", line 11, column 28, in _denied_impl\n\t\tctx.actions.symlink(\nError in symlink: file '//denied:defs.bzl' cannot use private API\nERROR: <WS>/denied/BUILD.bazel:14:7: Analysis of target '//denied:symlink' (config: a7a71fd) failed\nERROR: Analysis of target '//denied:symlink' failed; build aborted\nINFO: Elapsed time: 4.800s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.071,
+    "seconds": 0.105,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //denied:symlink: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //denied:defs.bzl:11, in _denied_impl\n      ctx.actions.symlink(\nerror: file '//denied:defs.bzl' cannot use private API\n  --> //denied:defs.bzl:11:9\n   |\n11 |           ctx.actions.symlink(\n   |  _________^\n12 | |             output = out,\n13 | |             target_file = ctx.file.src,\n14 | |             use_exec_root_for_source = False,\n15 | |         )\n   | |_________^\n   |\n\n"
    },
@@ -1128,13 +1133,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.259,
+    "seconds": 6.8,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //share:shell_same (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //share:shell_same up-to-date:\n  bazel-bin/share/shell_same.out\nINFO: Elapsed time: 2.257s, Critical Path: 0.03s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n"
+    "stderr": "INFO: Analyzed target //share:shell_same (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //share:shell_same up-to-date:\n  bazel-bin/share/shell_same.out\nINFO: Elapsed time: 4.763s, Critical Path: 0.06s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.074,
+    "seconds": 0.129,
     "stdout": "//share:shell_same\t<CACHE>/actions/3e524bbc799a3c18d3045fcd88bf5aeefcc8dae9efaaff6d533516c50a407197/outputs/bazel-out/k8-fastbuild/bin/share/shell_same.out\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -1159,13 +1164,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.235,
+    "seconds": 6.788,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //share:tool_same (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //share:tool_same up-to-date:\n  bazel-bin/share/tool_same.out\nINFO: Elapsed time: 2.344s, Critical Path: 0.02s\nINFO: 8 processes: 7 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 8 total actions\n"
+    "stderr": "INFO: Analyzed target //share:tool_same (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //share:tool_same up-to-date:\n  bazel-bin/share/tool_same.out\nINFO: Elapsed time: 4.798s, Critical Path: 0.07s\nINFO: 8 processes: 7 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 8 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 2.598,
+    "seconds": 3.532,
     "stdout": "//share:tool_same\t<CACHE>/actions/806cbbf23cb996e35de27a1534af3c6bd297af2ded3300cc16d6ac2634a33cbc/outputs/bazel-out/k8-fastbuild/bin/share/tool_same.out\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -1190,13 +1195,13 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 3.369,
+    "seconds": 6.852,
     "stdout": "",
-    "stderr": "ERROR: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\nRuleClass: run_twice rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: Twice\nIsShareable: true\nAction key: 1202df7cf202787d87bccfee622590be271af414576e5ad9b96357274c163fea, 7c88b5aca09d44442d8aaeb2a4b3fd041fda1ace2fa5d87cce52c0c4099987b0\nProgress message: Twice share/tool_diff.out\nAction describeKey: Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 1'\n  Output paths mode: OFF\n, Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 0'\n  Output paths mode: OFF\n\nPrimaryInput: File:[[<execution_root>]bazel-out/k8-opt-exec/bin]share/tool.sh\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]share/tool_diff.out\nOwner information: ConfiguredTargetKey{label=//share:tool_diff, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nERROR: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\nRuleClass: run_twice rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: Twice\nIsShareable: true\nAction key: 1202df7cf202787d87bccfee622590be271af414576e5ad9b96357274c163fea, 7c88b5aca09d44442d8aaeb2a4b3fd041fda1ace2fa5d87cce52c0c4099987b0\nProgress message: Twice share/tool_diff.out\nAction describeKey: Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 1'\n  Output paths mode: OFF\n, Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 0'\n  Output paths mode: OFF\n\nPrimaryInput: File:[[<execution_root>]bazel-out/k8-opt-exec/bin]share/tool.sh\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]share/tool_diff.out\nOwner information: ConfiguredTargetKey{label=//share:tool_diff, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 2.437s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+    "stderr": "ERROR: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\nRuleClass: run_twice rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: Twice\nIsShareable: true\nAction key: 1202df7cf202787d87bccfee622590be271af414576e5ad9b96357274c163fea, 7c88b5aca09d44442d8aaeb2a4b3fd041fda1ace2fa5d87cce52c0c4099987b0\nProgress message: Twice share/tool_diff.out\nAction describeKey: Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 1'\n  Output paths mode: OFF\n, Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 0'\n  Output paths mode: OFF\n\nPrimaryInput: File:[[<execution_root>]bazel-out/k8-opt-exec/bin]share/tool.sh\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]share/tool_diff.out\nOwner information: ConfiguredTargetKey{label=//share:tool_diff, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nERROR: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\nRuleClass: run_twice rule\nJavaActionClass: class com.google.devtools.build.lib.analysis.actions.StarlarkAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: Twice\nIsShareable: true\nAction key: 1202df7cf202787d87bccfee622590be271af414576e5ad9b96357274c163fea, 7c88b5aca09d44442d8aaeb2a4b3fd041fda1ace2fa5d87cce52c0c4099987b0\nProgress message: Twice share/tool_diff.out\nAction describeKey: Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 1'\n  Output paths mode: OFF\n, Twice share/tool_diff.out\n  Argument: bazel-out/k8-opt-exec/bin/share/tool.sh\n  Argument: bazel-out/k8-fastbuild/bin/share/tool_diff.out\n  Argument: 'call 0'\n  Output paths mode: OFF\n\nPrimaryInput: File:[[<execution_root>]bazel-out/k8-opt-exec/bin]share/tool.sh\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]share/tool_diff.out\nOwner information: ConfiguredTargetKey{label=//share:tool_diff, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 4.849s, Critical Path: 0.03s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 2.538,
+    "seconds": 3.246,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //share:tool_diff: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //share:defs.bzl:33, in _run_twice_impl\n      ctx.actions.run(\nerror: file 'share/tool_diff.out' is generated by these conflicting actions:\nLabel: //share:tool_diff\n  --> //share:defs.bzl:33:13\n   |\n33 |               ctx.actions.run(\n   |  _____________^\n34 | |                 executable = ctx.executable.tool,\n35 | |                 arguments = [out.path, \"call \" + str(i)],\n36 | |                 outputs = [out],\n37 | |                 mnemonic = \"Twice\",\n38 | |             )\n   | |_____________^\n   |\n\n"
    },
@@ -1213,13 +1218,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.273,
+    "seconds": 8.291,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //share:args_same (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //share:args_same up-to-date:\n  bazel-bin/share/args_same.args\nINFO: Elapsed time: 2.353s, Critical Path: 0.03s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n"
+    "stderr": "INFO: Analyzed target //share:args_same (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //share:args_same up-to-date:\n  bazel-bin/share/args_same.args\nINFO: Elapsed time: 6.375s, Critical Path: 0.06s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n"
    },
    "native": {
     "exit": 1,
-    "seconds": 0.075,
+    "seconds": 0.089,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //share:args_same: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //share:defs.bzl:62, in _args_twice_impl\n      ctx.actions.write(out, args)\nerror: file 'share/args_same.args' is generated by two actions of //share:args_same: sharing identical actions with command lines or contents expanding tree artifacts is not implemented in the native profile (Actions.canBeShared, docs/SHAREABLE_ARTIFACTS.md)\n  --> //share:defs.bzl:62:9\n   |\n62 |         ctx.actions.write(out, args)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
    },
@@ -1234,13 +1239,13 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 3.285,
+    "seconds": 8.971,
     "stdout": "",
-    "stderr": "INFO: Analyzed target //test:external_consumer (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //test:external_consumer up-to-date:\n  bazel-bin/test/external_consumer.report\n  bazel-bin/test/external_consumer.copy\nINFO: Elapsed time: 2.390s, Critical Path: 0.03s\nINFO: 4 processes: 3 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n"
+    "stderr": "INFO: Analyzed target //test:external_consumer (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //test:external_consumer up-to-date:\n  bazel-bin/test/external_consumer.report\n  bazel-bin/test/external_consumer.copy\nINFO: Elapsed time: 6.897s, Critical Path: 0.09s\nINFO: 4 processes: 3 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n"
    },
    "native": {
     "exit": 0,
-    "seconds": 0.105,
+    "seconds": 0.125,
     "stdout": "//test:external_consumer\t<CACHE>/actions/87486ada55fd3ec46d23861f0f32251aedb52df26f60a0d3aa8d4389b5008618/outputs/bazel-out/k8-fastbuild/bin/test/external_consumer.report\n//test:external_consumer\t<CACHE>/actions/886706d4dcd46c271a1aae54e25e95194683a00b260fddd3c2678c6ab29a905b/outputs/bazel-out/k8-fastbuild/bin/test/external_consumer.copy\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -1270,6 +1275,67 @@
    },
    "reports": {
     "bazel-out/k8-fastbuild/bin/test/external_consumer.report": "files.path=bazel-out/k8-fastbuild/bin/external/somerepo/x.txt\nfiles.short_path=../somerepo/x.txt\nfiles.root=bazel-out/k8-fastbuild/bin\nfiles.owner=@@//test:external_producer\nfiles.basename=x.txt\nfiles.dirname=bazel-out/k8-fastbuild/bin/external/somerepo\nfiles.extension=txt\nfiles.is_source=False\nfiles.is_directory=False\nfiles.repr=<generated file external/somerepo/x.txt>\ninfo.path=bazel-out/k8-fastbuild/bin/external/somerepo/x.txt\ninfo.short_path=../somerepo/x.txt\ninfo.root=bazel-out/k8-fastbuild/bin\ninfo.owner=@@//test:external_producer\ninfo.basename=x.txt\ninfo.dirname=bazel-out/k8-fastbuild/bin/external/somerepo\ninfo.extension=txt\ninfo.is_source=False\ninfo.is_directory=False\ninfo.repr=<generated file external/somerepo/x.txt>\nprovider.path=bazel-out/k8-fastbuild/bin/external/somerepo/x.txt\nprovider.short_path=../somerepo/x.txt\nprovider.root=bazel-out/k8-fastbuild/bin\nprovider.owner=@@//test:external_producer\nprovider.basename=x.txt\nprovider.dirname=bazel-out/k8-fastbuild/bin/external/somerepo\nprovider.extension=txt\nprovider.is_source=False\nprovider.is_directory=False\nprovider.repr=<generated file external/somerepo/x.txt>\nfiles_equal_info=True\nfiles_equal_provider=True\nin_set=1\n"
+   },
+   "verdict": "MATCH"
+  },
+  "cc_compile_owners": {
+   "argv": [
+    "build",
+    "//ccshare:a",
+    "//ccshare:b"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 11.237,
+    "stdout": "",
+    "stderr": "ERROR: file 'ccshare/_objs/shared_compile/x.pic.o' is generated by these conflicting actions:\nLabel: //ccshare:b, //ccshare:a\nRuleClass: compile_shared rule\nJavaActionClass: class com.google.devtools.build.lib.rules.cpp.CppCompileAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: CppCompile\nIsShareable: false\nAction key: 7900a045031f41f8bccaeca96d318fc7579d11492dc657cddbad46b72e644f69\nProgress message: Compiling ccshare/x.c\nAction describeKey: Compiling ccshare/x.c\n  Command: /usr/bin/gcc\n  Argument: -U_FORTIFY_SOURCE\n  Argument: -fstack-protector\n  Argument: -Wall\n  Argument: -Wunused-but-set-parameter\n  Argument: -Wno-free-nonheap-object\n  Argument: -fno-omit-frame-pointer\n  Argument: -MD\n  Argument: -MF\n  Argument: bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.d\n  Argument: '-frandom-seed=bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.o'\n  Argument: -fPIC\n  Argument: -iquote\n  Argument: .\n  Argument: -iquote\n  Argument: bazel-out/k8-fastbuild/bin\n  Argument: -c\n  Argument: ccshare/x.c\n  Argument: -o\n  Argument: bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.o\n  Argument: -fno-canonical-system-headers\n  Argument: -Wno-builtin-macro-redefined\n  Argument: '-D__DATE__=\"redacted\"'\n  Argument: '-D__TIMESTAMP__=\"redacted\"'\n  Argument: '-D__TIME__=\"redacted\"'\n\nPrimaryInput: File:[<WS>[source]]ccshare/x.c\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]ccshare/_objs/shared_compile/x.pic.o\nOwner information: ConfiguredTargetKey{label=//ccshare:b, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//ccshare:a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nTarget //ccshare:a failed to build\nTarget //ccshare:b failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: file 'ccshare/_objs/shared_compile/x.pic.o' is generated by these conflicting actions:\nLabel: //ccshare:b, //ccshare:a\nRuleClass: compile_shared rule\nJavaActionClass: class com.google.devtools.build.lib.rules.cpp.CppCompileAction\nConfiguration: a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18\nMnemonic: CppCompile\nIsShareable: false\nAction key: 7900a045031f41f8bccaeca96d318fc7579d11492dc657cddbad46b72e644f69\nProgress message: Compiling ccshare/x.c\nAction describeKey: Compiling ccshare/x.c\n  Command: /usr/bin/gcc\n  Argument: -U_FORTIFY_SOURCE\n  Argument: -fstack-protector\n  Argument: -Wall\n  Argument: -Wunused-but-set-parameter\n  Argument: -Wno-free-nonheap-object\n  Argument: -fno-omit-frame-pointer\n  Argument: -MD\n  Argument: -MF\n  Argument: bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.d\n  Argument: '-frandom-seed=bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.o'\n  Argument: -fPIC\n  Argument: -iquote\n  Argument: .\n  Argument: -iquote\n  Argument: bazel-out/k8-fastbuild/bin\n  Argument: -c\n  Argument: ccshare/x.c\n  Argument: -o\n  Argument: bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/x.pic.o\n  Argument: -fno-canonical-system-headers\n  Argument: -Wno-builtin-macro-redefined\n  Argument: '-D__DATE__=\"redacted\"'\n  Argument: '-D__TIMESTAMP__=\"redacted\"'\n  Argument: '-D__TIME__=\"redacted\"'\n\nPrimaryInput: File:[<WS>[source]]ccshare/x.c\nPrimaryOutput: File:[[<execution_root>]bazel-out/k8-fastbuild/bin]ccshare/_objs/shared_compile/x.pic.o\nOwner information: ConfiguredTargetKey{label=//ccshare:b, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}, ConfiguredTargetKey{label=//ccshare:a, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}\nMandatoryInputs: are equal\nOutputs: are equal\nINFO: Elapsed time: 9.314s, Critical Path: 0.06s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n"
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 20.501,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'ccshare/_objs/shared_compile/x.pic.o' is generated by these conflicting actions:\nLabel: //ccshare:b, //ccshare:a\n"
+   },
+   "expected_message": "file 'ccshare/_objs/shared_compile/x.pic.o' is generated by these conflicting actions:",
+   "expected_labels": [
+    "//ccshare:a",
+    "//ccshare:b"
+   ],
+   "verdict": "MATCH"
+  },
+  "cc_compile_one_owner": {
+   "argv": [
+    "build",
+    "//ccshare:twice"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 11.605,
+    "stdout": "",
+    "stderr": "INFO: Analyzed target //ccshare:twice (24 packages loaded, 121 targets configured).\nINFO: Found 1 target...\nTarget //ccshare:twice up-to-date:\n  bazel-bin/ccshare/_objs/shared_compile/y.pic.o\nINFO: Elapsed time: 8.868s, Critical Path: 0.08s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n"
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 8.147,
+    "stdout": "//ccshare:twice\t<CACHE>/actions/df58c3676b319134a142109cdfd57ff5042316dd5a4eacfbdda4bdd05c16a9fe/outputs/bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/y.pic.o\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
+   },
+   "top_level_outputs": [
+    [
+     "//ccshare:twice",
+     "bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/y.pic.o"
+    ]
+   ],
+   "outputs": {
+    "bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/y.pic.d": {
+     "kind": "file",
+     "sha256": "9a542d31e50397fb4ac289364990c0d8ee52004a8dcfe8b18b3630bbb9620174",
+     "text": "bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/y.pic.o: \\\n ccshare/y.c /usr/include/stdc-predef.h\n"
+    },
+    "bazel-out/k8-fastbuild/bin/ccshare/_objs/shared_compile/y.pic.o": {
+     "kind": "file",
+     "sha256": "5a4077d2db9aa63f96cda5addd1a06a5b54f84d0b875959cc1518d74a901d49d"
+    }
    },
    "verdict": "MATCH"
   }

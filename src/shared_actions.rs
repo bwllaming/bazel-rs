@@ -35,12 +35,13 @@ use crate::starlark_types::File;
 /// a framed encoding of every part [`Sharing`] compares (the stand-in for
 /// Bazel's action key plus the ownerless mandatory inputs and outputs; 32
 /// bytes per action, so the build's producer map can keep one per action),
-/// and the part Bazel compares that the native encoding cannot cover, if
-/// any.
+/// the part Bazel compares that the native encoding cannot cover, if any,
+/// and whether the action is shareable (ActionAnalysisMetadata.isShareable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActionKey {
     digest: [u8; 32],
     uncompared: Option<&'static str>,
+    shareable: bool,
 }
 
 /// How two registrations of one output path relate (Actions.canBeShared).
@@ -89,6 +90,13 @@ pub struct KeyedParts<'a> {
     /// An actions.transform_{version,info}_file registration
     /// (BuildInfoFileWriteAction.computeKey keys its callback's digest).
     pub build_info: bool,
+    /// ActionAnalysisMetadata.isShareable (false for a C++ compile,
+    /// CppCompileActionBuilder.java:99). Two unshareable actions are one
+    /// only when their mandatory inputs and outputs are equal WITH their
+    /// owners (Actions.canBeShared :105-114): the files are keyed with
+    /// their owners, and actions of two owners never share
+    /// ([`ActionKey::sharing_between_owners`]).
+    pub shareable: bool,
 }
 
 impl ActionKey {
@@ -97,8 +105,14 @@ impl ActionKey {
     pub(crate) fn of(action: &Action, parts: &KeyedParts<'_>) -> Self {
         let mut key = Fingerprint::default();
         key.action(action);
-        key.files(parts.inputs);
-        key.files(parts.outputs);
+        key.flag(parts.shareable);
+        if parts.shareable {
+            key.files(parts.inputs);
+            key.files(parts.outputs);
+        } else {
+            key.owned_files(parts.inputs);
+            key.owned_files(parts.outputs);
+        }
         key.count(parts.runfiles_trees.len());
         for tree in parts.runfiles_trees {
             key.str(&tree.directory);
@@ -132,10 +146,14 @@ impl ActionKey {
         Self {
             digest: key.0.finalize().into(),
             uncompared,
+            shareable: parts.shareable,
         }
     }
 
-    /// Actions.canBeShared of the actions keyed `self` and `other`.
+    /// Actions.canBeShared of the actions keyed `self` and `other`, both of
+    /// one owner (Actions.assignOwnersAndThrowIfConflictToleratingSharedActions):
+    /// an unshareable action is the other only when its files are equal
+    /// with their owners too, which its key covers.
     pub(crate) fn sharing(&self, other: &ActionKey) -> Sharing {
         if self.digest != other.digest {
             Sharing::Conflict
@@ -143,6 +161,18 @@ impl ActionKey {
             Sharing::Unmodelled(reason)
         } else {
             Sharing::Shared
+        }
+    }
+
+    /// Actions.canBeShared of the actions keyed `self` and `other` of two
+    /// owners (MapBasedActionGraph.registerAction): an unshareable action
+    /// conflicts with any other owner's, whose outputs are that owner's
+    /// Artifacts (Actions.java:99-114).
+    pub(crate) fn sharing_between_owners(&self, other: &ActionKey) -> Sharing {
+        if self.shareable && other.shareable {
+            self.sharing(other)
+        } else {
+            Sharing::Conflict
         }
     }
 }
@@ -258,6 +288,16 @@ impl Fingerprint {
         self.count(files.len());
         for file in files {
             self.file(file);
+        }
+    }
+
+    /// Files compared with their owners (Artifact.equals): an unshareable
+    /// action's inputs and outputs.
+    fn owned_files(&mut self, files: &[File]) {
+        self.count(files.len());
+        for file in files {
+            self.file(file);
+            self.str(&file.owner);
         }
     }
 
@@ -541,6 +581,7 @@ mod tests {
                 },
                 deferred: false,
                 build_info: false,
+                shareable: true,
             },
         )
     }
@@ -654,6 +695,47 @@ mod tests {
         );
     }
 
+    /// Actions.canBeShared for unshareable actions (C++ compiles): one
+    /// owner's duplicates with equal (owned) files are one action; another
+    /// owner's equal action, or a shareable one, conflicts.
+    #[test]
+    fn unshareable_actions_share_only_within_one_owner() {
+        let keyed = |input_owner: &str, shareable: bool| {
+            let inputs = [file("p/in.txt", input_owner)];
+            let outputs = [file("bazel-out/k8-fastbuild/bin/p/out", "//p:a")];
+            ActionKey::of(
+                &spawn("//p:a#0", "x"),
+                &KeyedParts {
+                    inputs: &inputs,
+                    outputs: &outputs,
+                    runfiles_trees: &[],
+                    execution: KeyedExecution::default(),
+                    deferred: false,
+                    build_info: false,
+                    shareable,
+                },
+            )
+        };
+        let first = keyed("//p:in.txt", false);
+        assert_eq!(first.sharing(&keyed("//p:in.txt", false)), Sharing::Shared);
+        // Files equal only without their owners (Artifact.equals).
+        assert_eq!(
+            first.sharing(&keyed("//q:in.txt", false)),
+            Sharing::Conflict
+        );
+        // Either action unshareable: owners never share.
+        for other in [keyed("//p:in.txt", false), keyed("//p:in.txt", true)] {
+            assert_eq!(first.sharing_between_owners(&other), Sharing::Conflict);
+            assert_eq!(other.sharing_between_owners(&first), Sharing::Conflict);
+        }
+        assert_eq!(first.sharing(&keyed("//p:in.txt", true)), Sharing::Conflict);
+        // Shareable ones of two owners compare without owners.
+        assert_eq!(
+            keyed("//p:in.txt", true).sharing_between_owners(&keyed("//q:in.txt", true)),
+            Sharing::Shared
+        );
+    }
+
     #[test]
     fn uncompared_parts_are_unmodelled_only_when_the_rest_is_equal() {
         let action = spawn("//p:a#0", "x");
@@ -666,6 +748,7 @@ mod tests {
                 execution: KeyedExecution::default(),
                 deferred: true,
                 build_info: false,
+                shareable: true,
             },
         );
         let plain = ActionKey::of(
@@ -677,6 +760,7 @@ mod tests {
                 execution: KeyedExecution::default(),
                 deferred: false,
                 build_info: false,
+                shareable: true,
             },
         );
         assert_eq!(

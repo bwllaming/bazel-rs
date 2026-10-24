@@ -356,6 +356,7 @@ impl Context {
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
             build_info: None,
+            shareable: true,
         })
     }
 
@@ -375,6 +376,7 @@ impl Context {
             exec_group,
             runfiles_trees,
             build_info,
+            shareable,
         } = registration;
         ensure!(
             !outputs.is_empty(),
@@ -466,6 +468,7 @@ impl Context {
                 execution: self.exec_groups.keyed_execution(&exec_group),
                 deferred: deferred.is_some(),
                 build_info: build_info.is_some(),
+                shareable,
             },
         );
         let registered = RegisteredAction {
@@ -600,6 +603,12 @@ pub(crate) struct Registration {
     pub runfiles_trees: Vec<ToolRunfilesTree>,
     /// An actions.transform_{version,info}_file registration (N63).
     pub build_info: Option<BuildInfoAction>,
+    /// ActionAnalysisMetadata.isShareable: whether an equal action of
+    /// another owner may share this one's outputs (Actions.canBeShared,
+    /// crate::shared_actions). Every action is but a C++ compile
+    /// (CppCompileAction, not shareable unless asked:
+    /// CppCompileActionBuilder.java:99).
+    pub shareable: bool,
 }
 
 /// The runfiles tree of an action tool or executable, staged into the spawn
@@ -1018,6 +1027,7 @@ fn register_spawn(
         exec_group,
         runfiles_trees,
         build_info: None,
+        shareable: true,
     })
 }
 
@@ -1256,6 +1266,7 @@ fn action_methods(builder: &mut MethodsBuilder) {
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
             build_info: None,
+            shareable: true,
         })?;
         Ok(NoneType)
     }
@@ -1589,6 +1600,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             executable_file: false,
             runfiles_trees: Vec::new(),
             build_info: None,
+            shareable: true,
         })?;
         Ok(NoneType)
     }
@@ -1675,6 +1687,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             executable_file: false,
             runfiles_trees: Vec::new(),
             build_info: None,
+            shareable: true,
         })?;
         Ok(NoneType)
     }
@@ -1796,6 +1809,7 @@ fn transform_build_info<'v>(
             volatile,
             callback_digest,
         }),
+        shareable: true,
     })?;
     Ok(alloc_file(eval.heap(), output))
 }

@@ -858,6 +858,7 @@ fn solib_symlink(context: &Context, library: &File, link_path: &str) -> anyhow::
         exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
         runfiles_trees: Vec::new(),
         build_info: None,
+        shareable: true,
     })?;
     Ok(symlink)
 }
@@ -1146,6 +1147,11 @@ fn create_cc_compile_action<'v>(
             exec_group: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME.to_owned(),
             runfiles_trees: Vec::new(),
             build_info: None,
+            // CppCompileActionBuilder.java:99: a C++ compile is not
+            // shareable (`shareable = True` fails above), so equal
+            // compiles of two owners conflict; only one target's
+            // duplicates are one action (Actions.canBeShared).
+            shareable: false,
         })
         .map_err(|error| failure(format!("cc_internal.{F}: {error}")))?;
     Ok(())
