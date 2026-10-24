@@ -1,0 +1,16 @@
+load(":defs.bzl", "bad", "probe")
+
+probe(name = "probe")
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+        tags = ["manual"],
+    )
+    for mode in [
+        "joined_int",
+        "all_string",
+        "all_int_bad_format",
+    ]
+]

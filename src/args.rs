@@ -353,23 +353,31 @@ fn formatted(template: Option<&str>, value: &str) -> anyhow::Result<String> {
 fn check_mapper(
     map_each: Value<'_>,
     allow_closure: bool,
+    method: &str,
     eval: &Evaluator<'_, '_, '_>,
 ) -> anyhow::Result<()> {
     if map_each.is_none() {
         return Ok(());
     }
-    let name = map_each
-        .function_name()
-        .ok_or_else(|| anyhow!("map_each must be a function or None"))?;
-    // Args.validateMapEach (analysis/starlark/Args.java:366-386): only a
+    // CommandLineArgsApi add_all/add_joined `map_each`: a StarlarkCallable or
+    // None, checked when the call binds — any callable, a built-in such as
+    // `json.encode` or `str` included (aspect_rules_js's js_image_layer).
+    if <starlark::values::typing::StarlarkCallable<'_> as starlark::values::UnpackValue>::unpack_value_opt(map_each).is_none() {
+        bail!(
+            "in call to {method}(), parameter 'map_each' got value of type '{}', want 'callable or NoneType'",
+            map_each.get_type()
+        );
+    }
+    // Args.validateMapEach (analysis/starlark/Args.java:366-388): only a
     // StarlarkFunction (a `def` or lambda, repr `<function NAME from FILE>`,
-    // StarlarkFunction.java:222-231) must be global; built-in callables such
-    // as `str` are accepted as they are.
+    // StarlarkFunction.java:222-231) must be global; built-in callables are
+    // accepted as they are.
     let starlark_function = {
         let repr = map_each.to_repr();
         repr.starts_with("<function ") && repr.contains(" from ")
     };
     if !allow_closure && starlark_function {
+        let name = map_each.function_name().unwrap_or("");
         // Analysis runs in a fresh module. The loader retains identities of
         // actual top-level def declarations, including private/imported helpers.
         ensure!(
@@ -405,6 +413,7 @@ fn map_one<'v>(
 /// One add_all/add_joined call as a group: eager unless a value is a tree
 /// artifact and expand_directories is set (VectorArg.maybeExpandDirectories).
 fn vector_group<'v>(
+    method: &str,
     values: Value<'v>,
     shape: VectorShape,
     map_each: Value<'v>,
@@ -412,9 +421,11 @@ fn vector_group<'v>(
     allow_closure: bool,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> anyhow::Result<Option<Group>> {
+    // Args.addAll/addJoined (Args.java:325-429): the map_each binding and
+    // validateMapEach, then addVectorArg's format strings (:445-446).
+    check_mapper(map_each, allow_closure, method, eval)?;
     formatted(shape.format_each.as_deref(), "")?;
     formatted(shape.format_joined.as_deref(), "")?;
-    check_mapper(map_each, allow_closure, eval)?;
     let values = if values.get_type() == "depset" {
         let to_list = values
             .get_attr_error("to_list", eval.heap())
@@ -536,6 +547,7 @@ fn args_methods(builder: &mut MethodsBuilder) {
             ..VectorShape::default()
         };
         if let Some(group) = vector_group(
+            "add_all",
             values,
             shape,
             map_each,
@@ -574,6 +586,7 @@ fn args_methods(builder: &mut MethodsBuilder) {
             ..VectorShape::default()
         };
         if let Some(group) = vector_group(
+            "add_joined",
             values,
             shape,
             map_each,
@@ -963,7 +976,18 @@ expanded([a]) == ["1", "2", "\"x\""]
         fail("a.add_all('abc')", "expected list or tuple");
         // Args.add_all `values` is a Sequence; a range is one (RangeList).
         pass("a.add_all('--n', range(2))\nexpanded([a]) == ['--n', '0', '1']");
-        fail("a.add_all([], map_each=42)", "map_each must be a function");
+        // The map_each binding (CommandLineArgsApi: StarlarkCallable or None).
+        fail(
+            "a.add_all([], map_each=42)",
+            "in call to add_all(), parameter 'map_each' got value of type 'int', want 'callable or NoneType'",
+        );
+        fail(
+            "a.add_joined([], join_with=',', map_each='str', format_joined='bad')",
+            "in call to add_joined(), parameter 'map_each' got value of type 'string', want 'callable or NoneType'",
+        );
+        // Any callable, built-ins included (json.encode, aspect_rules_js's
+        // js_image_layer: tests/fixtures/args_map_each).
+        pass("a.add_all([1, True], map_each=str)\nexpanded([a]) == ['1', 'True']");
         for returned in ["42", "['ok', 42]", "('tuple',)"] {
             fail(
                 &format!(

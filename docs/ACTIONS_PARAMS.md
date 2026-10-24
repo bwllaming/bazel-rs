@@ -79,9 +79,13 @@ Citations are to the pinned Bazel source
   as when a function reaches the rule through a dependency's or toolchain's
   provider (rules_go's `go.toolchain.actions.stdlib` and its `_dirname`
   mapper; `crate::analysis_runtime::LoadedFunctions`, keyed by value
-  identity). Built-in callables (`str`, `repr`, ...) are accepted as they
-  are (only StarlarkFunctions must be global; also TemplateDict.add_joined,
-  `TemplateDict.java:70-78`). Closures and lambdas stay rejected unless
+  identity). Any other callable — built-ins such as `str`, `repr` and
+  `json.encode` (aspect_rules_js's js_image_layer) — is accepted as it is
+  (only StarlarkFunctions must be global; also TemplateDict.add_joined,
+  `TemplateDict.java:70-78`); a non-callable is the binding error `in call to
+  add_all(), parameter 'map_each' got value of type 'int', want 'callable or
+  NoneType'` (also `add_joined`), before the format-string checks (paired
+  capture `tests/fixtures/args_map_each`, 5 cases, all MATCH). Closures and lambdas stay rejected unless
   `allow_closure = True`, with the native message
   (`map_each must be a top-level function visible in this analysis module;
   ...`, not Bazel's text).
