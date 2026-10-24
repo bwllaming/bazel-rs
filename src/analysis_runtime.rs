@@ -1007,6 +1007,8 @@ struct SpawnOptions<'v> {
     /// The spawn mnemonic (StarlarkActionFactory.getMnemonic with the
     /// "Action" default, :811; crate::action::ActionExtra::mnemonic).
     mnemonic: String,
+    /// `run(unused_inputs_list = ...)` (docs/UNUSED_INPUTS_LIST.md).
+    unused_inputs_list: Option<File>,
 }
 
 /// Register a Starlark spawn: `executable` is Bazel's executable command-line
@@ -1075,15 +1077,22 @@ fn register_spawn(
         max_length: crate::command_line::MIN_PARAM_FILE_SIZE,
     };
     let environment = spawn_environment(context, options.env, options.use_default_shell_env)?;
+    let mut execution_info = match options.execution_requirements {
+        Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
+        _ => BTreeMap::new(),
+    };
+    if let Some(list) = &options.unused_inputs_list {
+        // StarlarkAction.Builder.createSpawnAction (StarlarkAction.java:
+        // 177-189): "Always download unused_inputs_list file from remote
+        // cache" (ExecutionRequirements.REMOTE_EXECUTION_INLINE_OUTPUTS).
+        execution_info.insert("internal-inline-outputs".to_owned(), list.path.clone());
+    }
     let extra = ActionExtra {
         inherited_environment: environment.inherited,
         // As given: the shared-action key filters it to the legal keys and
         // merges the propagated tags like TargetUtils.getFilteredExecutionInfo
         // (crate::shared_actions).
-        execution_info: match options.execution_requirements {
-            Some(value) if !value.is_none() => string_dict(value, "execution_requirements")?,
-            _ => BTreeMap::new(),
-        },
+        execution_info,
         mnemonic: options.mnemonic,
         ..ActionExtra::default()
     };
@@ -1443,6 +1452,8 @@ fn action_methods(builder: &mut MethodsBuilder) {
                 groups,
                 progress_message,
                 mnemonic: mnemonic.unwrap_or_else(|| "Action".to_owned()),
+                // run_shell has no such parameter (StarlarkActionFactory.java:675).
+                unused_inputs_list: None,
             },
             Vec::new(),
             Vec::new(),
@@ -1540,6 +1551,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] outputs: Value<'v>,
         #[starlark(require = named)] executable: Value<'v>,
         #[starlark(require = named)] inputs: Option<Value<'v>>,
+        #[starlark(require = named)] unused_inputs_list: Option<Value<'v>>,
         #[starlark(require = named)] tools: Option<Value<'v>>,
         #[starlark(require = named)] arguments: Option<Value<'v>>,
         #[starlark(require = named)] env: Option<Value<'v>>,
@@ -1553,6 +1565,19 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] progress_message: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
+        // `unused_inputs_list`: File or NoneType (StarlarkActionFactoryApi
+        // run, :423-438), bound before the call runs.
+        let unused_inputs_list = match unused_inputs_list {
+            Some(value) if !value.is_none() => Some(File::from_value(value).cloned().ok_or_else(
+                || {
+                    anyhow!(
+                        "in call to run(), parameter 'unused_inputs_list' got value of type '{}', want 'File or NoneType'",
+                        value.get_type()
+                    )
+                },
+            )?),
+            _ => None,
+        };
         let context = action_receiver(this, eval, false)?;
         let _ = resource_set;
         let mnemonic = string_or_none(mnemonic, "run", "mnemonic")?;
@@ -1618,6 +1643,7 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                 groups,
                 progress_message,
                 mnemonic: mnemonic.unwrap_or_else(|| "Action".to_owned()),
+                unused_inputs_list,
             },
             extra_inputs,
             trees,

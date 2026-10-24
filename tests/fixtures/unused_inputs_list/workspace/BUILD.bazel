@@ -1,0 +1,24 @@
+load(":defs.bzl", "bad_list", "input_list", "none_list", "output_list")
+
+input_list(
+    name = "input_list",
+    a = "a.txt",
+    b = "b.txt",
+)
+
+output_list(
+    name = "output_list",
+    a = "a.txt",
+    b = "b.txt",
+)
+
+none_list(
+    name = "none_list",
+    a = "a.txt",
+)
+
+bad_list(
+    name = "bad",
+    a = "a.txt",
+    value = "b.txt",
+)

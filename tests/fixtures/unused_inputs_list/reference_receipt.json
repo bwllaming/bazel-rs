@@ -1,0 +1,168 @@
+{
+ "schema": "unused-inputs-list-reference-receipt/v1",
+ "fixture": "unused_inputs_list",
+ "purpose": "ctx.actions.run(unused_inputs_list = ...) (StarlarkActionFactoryApi.java:423-438, StarlarkActionFactory.java:752-760, StarlarkAction.java:150-215 and EnhancedStarlarkAction afterExecute :400-445): a File or None, the aspect_bazel_lib tar.bzl shape (the list written by another action and an input) and a list the action writes itself, the Starlark binding error for another type, and the action cache after a change of an unused and of a used input. Motivation: ~/code //src/python/baseimage:image (aspect_bazel_lib tar(name = 'sh')) failed with `run() got unexpected keyword argument 'unused_inputs_list'`.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; default registry; one workspace and output base for all cases, run in order (writes applied to both workspaces before a case)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "99d382ba40bf48a9465eac3ab22f665445e063cf83205bed6d601be6d81d621f",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/uil-capture.py (not committed)",
+  "sha256": "17ab21904bec7484c54e5b8564703d14360389a72867e88a58c03bdc9a23a2dc"
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "64cdef541ef0e30c00a7d23a6a359a06d3b91c137e0070127643e25c4cf7f637",
+  "MODULE.bazel": "23f65b11d2752bcaa72f8a98bf341f7343fac7285de038fddd2b489c7b43f77d",
+  "a.txt": "207e28adce54b7266d98257621b5e4f375848d8bbe0e72cdb50dd1a2012617fb",
+  "b.txt": "612f20d0b15454d3a266dc647568a8038dd28fffaa5f06c695fb18059b58e4ab",
+  "defs.bzl": "29ec1bf734588bf39ac1a853784806b33734607ab0179e93ed74ddcf803ac0b2"
+ },
+ "normalization": "<WS> = the workspace; <OB> = the genuine output base. Outputs: per top-level target (genuine --show_result, native LABEL<TAB>PATH lines) the file contents in order.",
+ "comparison (tests/unused_inputs_list.rs, live)": "EXACT: both succeed with equal outputs (process counts are recorded: genuine `INFO: N processes` and native `N actions executed`; after an unused input changes Bazel does not re-execute the pruned actions, the native profile does \u2014 declared in docs/UNUSED_INPUTS_LIST.md). EXACT_MESSAGE: both fail and genuine's first ERROR message (without its location) is contained in native stderr.",
+ "counts": {
+  "EXACT": 4,
+  "EXACT_MESSAGE": 1
+ },
+ "scratch_removed": true,
+ "cases": {
+  "build": {
+   "command": "build //:input_list //:output_list //:none_list",
+   "writes": {},
+   "verdict": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 5 processes: 2 internal, 3 processwrapper-sandbox."
+    ],
+    "outputs": [
+     [
+      "//:input_list",
+      "used input\n"
+     ],
+     [
+      "//:none_list",
+      "used input\n"
+     ],
+     [
+      "//:output_list",
+      "used input\n"
+     ]
+    ]
+   },
+   "native_exit": 0,
+   "native_summary": [
+    "bazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)"
+   ]
+  },
+  "nobuild": {
+   "command": "build --nobuild //:input_list //:output_list //:none_list",
+   "writes": {},
+   "verdict": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 0 processes."
+    ],
+    "outputs": []
+   },
+   "native_exit": 0,
+   "native_summary": [
+    "bazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)"
+   ]
+  },
+  "bad_type": {
+   "command": "build //:bad",
+   "writes": {},
+   "verdict": "EXACT_MESSAGE",
+   "genuine": {
+    "exit": 1,
+    "errors": [
+     "<WS>/BUILD.bazel:20:9: in bad_list rule //:bad: ",
+     "<WS>/BUILD.bazel:20:9: Analysis of target '//:bad' (config: a7a71fd) failed",
+     "Analysis of target '//:bad' failed; build aborted",
+     "Build did NOT complete successfully"
+    ],
+    "processes": [
+     "INFO: 1 process: 1 internal."
+    ],
+    "message": "in call to run(), parameter 'unused_inputs_list' got value of type 'string', want 'File or NoneType'"
+   },
+   "native_exit": 1,
+   "native_summary": []
+  },
+  "unused_changed": {
+   "command": "build //:input_list //:output_list //:none_list",
+   "writes": {
+    "b.txt": "changed unused input\n"
+   },
+   "verdict": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 1 process: 4 action cache hit, 1 internal."
+    ],
+    "outputs": [
+     [
+      "//:input_list",
+      "used input\n"
+     ],
+     [
+      "//:none_list",
+      "used input\n"
+     ],
+     [
+      "//:output_list",
+      "used input\n"
+     ]
+    ]
+   },
+   "native_exit": 0,
+   "native_summary": [
+    "bazel-rs: 2 actions executed, 2 cache hits (experimental local execution; sandboxed)"
+   ]
+  },
+  "used_changed": {
+   "command": "build //:input_list //:output_list //:none_list",
+   "writes": {
+    "a.txt": "changed used input\n"
+   },
+   "verdict": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "errors": [],
+    "processes": [
+     "INFO: 4 processes: 1 action cache hit, 1 internal, 3 processwrapper-sandbox."
+    ],
+    "outputs": [
+     [
+      "//:input_list",
+      "changed used input\n"
+     ],
+     [
+      "//:none_list",
+      "changed used input\n"
+     ],
+     [
+      "//:output_list",
+      "changed used input\n"
+     ]
+    ]
+   },
+   "native_exit": 0,
+   "native_summary": [
+    "bazel-rs: 3 actions executed, 1 cache hits (experimental local execution; sandboxed)"
+   ]
+  }
+ }
+}
