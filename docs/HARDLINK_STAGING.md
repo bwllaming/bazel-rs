@@ -141,10 +141,12 @@ change time, so it also re-reads an edited file of an old identity
 (docs/DIGEST_MEMO.md, "Trust"). Staging still verifies
 what it links: an existing blob by mode, size and digest, a new blob by a
 digest-checked copy (a file the cache owns that already has the blob's mode
-is hardlinked instead and its digest checked after linking), both through
-the stat-keyed digest memo; a copy whose bytes no longer match fails the
-action (`input ... changed while it was being staged`), and every staged
-inode is re-checked after its process ran. Execution roots (`work/`), the
+is hardlinked instead and its digest checked after linking), a repository
+tree file that an executable is linked to (below) by mode, size and digest,
+all through the stat-keyed digest memo (the tree file by its change time);
+a copy or tree file whose bytes no longer match fails the action
+(`input ... changed while it was being staged`), and every staged inode is
+re-checked after its process ran. Execution roots (`work/`), the
 working areas of repository rules and module extensions, and every path
 outside the cache keep the full checks on every use.
 
@@ -228,10 +230,20 @@ independent libraries <prefix>` / `No module named 'encodings'`, sandboxed or
 standalone. Genuine Bazel 9.3.0 builds the same fixture (worker, local and
 processwrapper-sandbox strategies).
 
-The key is unchanged (staging only). The tree file's size and mode must still
-match the keyed input when it is linked, and its inode state is re-checked
-after the process like a blob's; a modification fails the action, but the
-tree's file is never removed (the executor removes only `cas/` blobs).
+The key is unchanged (staging only). When it is linked, the tree file must
+still be exactly the keyed input — size, mode and digest — or the action
+fails with `input ... changed while it was being staged`. The key took the
+digest from the per-process file memo, which keeps a store file's digest by
+its path: without the digest check, a tree file rewritten in place after its
+first read in this command would run its new bytes under a key computed from
+the old ones (blob staging stages the blob of the keyed bytes instead). The
+check hashes the file by its change-time key, so the digest memo answers
+only for the unchanged file, never for a rewrite that kept the size and
+restored the modification time (test
+`tree_links_verify_the_keyed_content_when_staged`). Its inode state is
+re-checked after the process like a blob's; a modification fails the
+action, but the tree's file is never removed (the executor removes only
+`cas/` blobs).
 Executables at their own path (`external/<repo>/...`) keep hardlink staging:
 their declared installation is staged around them, mirroring the repository.
 Through the link a process can write to the tree file or, if the repository

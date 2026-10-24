@@ -62,8 +62,9 @@
 //! one starts with empty per-process memos, re-verifies the repository trees
 //! it materializes and takes repository tree files from the persistent
 //! digest memo only by their change time); staging still checks the digest
-//! of every blob it links (docs/HARDLINK_STAGING.md, "Per-process memos";
-//! across commands: docs/DIGEST_MEMO.md, "Trust").
+//! of every blob it links, and of a repository tree file it links an
+//! executable to (`stage_tree_link`) (docs/HARDLINK_STAGING.md, "Per-process
+//! memos"; across commands: docs/DIGEST_MEMO.md, "Trust").
 //! Workspace files and every other path outside the cache keep the full
 //! checks on every use. Many inputs (or tree files) are read and hashed on
 //! several threads (`try_map_ordered`, helpers from one process-wide budget
@@ -2744,8 +2745,10 @@ fn stage_file(
 /// PyCompile runs `bazel-out/.../python/private/python3`, an alias of the
 /// interpreter (`current_interpreter_executable`) whose blob, staged there,
 /// resolved to itself: `Could not find platform independent libraries`.
-/// Repository trees are immutable and verified like blobs; the keyed state
-/// is checked at staging and after the process ([`check_staged`]).
+/// Once linked, the tree's file must still hold exactly the keyed input —
+/// its size, mode and content, which is hashed again (see below) like a
+/// blob's — and its inode state is checked after the process
+/// ([`check_staged`]).
 fn stage_tree_link(
     input: &Input,
     execroot: &Path,
@@ -2760,14 +2763,30 @@ fn stage_tree_link(
         .map_err(|e| io_error("cannot link", &target, e))?;
     let metadata = fs::symlink_metadata(&input.path)
         .map_err(|e| io_error("cannot inspect", &input.path, e))?;
+    let changed = || {
+        format!(
+            "input '{}' changed while it was being staged",
+            input.path.display()
+        )
+    };
     if !metadata.is_file()
         || metadata.size() != input.size
         || metadata.permissions().mode() & 0o7777 != input.mode
     {
-        return Err(format!(
-            "input '{}' changed while it was being staged",
-            input.path.display()
-        ));
+        return Err(changed());
+    }
+    // The key took the digest from the file memo, which keeps a store
+    // file's digest by its path for the whole process ([`read_input`]): a
+    // tree file rewritten in place since its first read would run its new
+    // bytes under a key computed from the old ones (blob staging stages
+    // the blob of the keyed bytes instead). Hashed by its change-time key,
+    // not as a cache-owned file: the per-process digest memo then answers
+    // only for the unchanged file, never for an in-place rewrite that kept
+    // the size and restored the modification time (the persistent memo
+    // keys repository tree files so as well, crate::digest_memo).
+    let (digest, metadata) = hash_file_from(&input.path, metadata, false, false)?;
+    if digest != input.digest {
+        return Err(changed());
     }
     staged.push(StagedFile {
         destination: destination.to_path_buf(),
@@ -6394,30 +6413,9 @@ mod tests {
             "#!/bin/sh\nprintf x >> \"$0\"\ntouch out/result\n",
             0o755,
         );
-        let alias = |source: &Path, name: &str| {
-            let mut link = fixture.action();
-            link.id = format!("alias-{name}");
-            link.command.clear();
-            link.inputs = vec![(
-                source.to_path_buf(),
-                format!("external/repo/bin/{name}").into(),
-            )];
-            link.outputs = vec![format!("bazel-out/bin/tools/{name}").into()];
-            link.extra.transform = Some(Transform::Symlink {
-                target: format!("external/repo/bin/{name}").into(),
-                require_executable: true,
-                progress: "Creating symlink".into(),
-            });
-            execute(&fixture.cache(), &link).unwrap().outputs[0].clone()
-        };
+        let alias = |source: &Path, name: &str| alias_output(&fixture, source, name);
         let run = |id: &str, source: PathBuf, program: &str| {
-            let mut action = fixture.action();
-            action.id = id.into();
-            action.command.clear();
-            action.program = Some(program.into());
-            action.executable_file = true;
-            action.inputs = vec![(source, program.into())];
-            execute(&fixture.cache(), &action)
+            run_executable(&fixture, id, source, program)
         };
         let ran = run("alias", alias(&tool, "tool"), "bazel-out/bin/tools/tool").unwrap();
         assert_eq!(fs::read(&ran.outputs[0]).unwrap(), b"in the tree\n");
@@ -6436,6 +6434,97 @@ mod tests {
             "{wrote}"
         );
         assert!(writer.is_file());
+    }
+
+    /// The published output of an actions.symlink action
+    /// `bazel-out/bin/tools/<name>` aliasing `source` (its input at
+    /// `external/repo/bin/<name>`), as rules_python's interpreter executable
+    /// aliases the interpreter.
+    fn alias_output(fixture: &Fixture, source: &Path, name: &str) -> PathBuf {
+        let mut link = fixture.action();
+        link.id = format!("alias-{name}");
+        link.command.clear();
+        link.inputs = vec![(
+            source.to_path_buf(),
+            format!("external/repo/bin/{name}").into(),
+        )];
+        link.outputs = vec![format!("bazel-out/bin/tools/{name}").into()];
+        link.extra.transform = Some(Transform::Symlink {
+            target: format!("external/repo/bin/{name}").into(),
+            require_executable: true,
+            progress: "Creating symlink".into(),
+        });
+        execute(&fixture.cache(), &link).unwrap().outputs[0].clone()
+    }
+
+    /// Run `source`, staged at the execution path `program`, as the
+    /// process's File executable.
+    fn run_executable(
+        fixture: &Fixture,
+        id: &str,
+        source: PathBuf,
+        program: &str,
+    ) -> Result<ActionResult, String> {
+        let mut action = fixture.action();
+        action.id = id.into();
+        action.command.clear();
+        action.program = Some(program.into());
+        action.executable_file = true;
+        action.inputs = vec![(source, program.into())];
+        execute(&fixture.cache(), &action)
+    }
+
+    /// Rewrite `path` in place with `contents` (from offset 0, no
+    /// truncation: the same inode), without this process holding a
+    /// writable descriptor to it (see write_executable_script: ETXTBSY).
+    fn rewrite_in_place(path: &Path, contents: &str) {
+        let status = Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s' "$2" 1<>"$1""#, "rewrite-in-place"])
+            .arg(path)
+            .arg(contents)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .stdin(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "cannot rewrite {}", path.display());
+    }
+
+    /// The file memo keeps a repository tree file's digest by its path for
+    /// the whole process, so a tree file rewritten in place after a first
+    /// action read it — same inode, size and mode, even its modification
+    /// time restored — still has its old digest in the next action's key.
+    /// Blob staging then stages the blob of those keyed bytes; a link into
+    /// the tree (stage_tree_link) would run the new ones and publish their
+    /// result under the old key, so the link is verified by content when it
+    /// is staged.
+    #[test]
+    fn tree_links_verify_the_keyed_content_when_staged() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let tool = root.join("repositories/direct/trees/abc/bin/tool");
+        fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        write_executable_script(&tool, "#!/bin/sh\necho AAAA > out/result\n", 0o755);
+        // Settled, so that the first read also enters the per-process digest
+        // memo (by the birth-time key of a cache-owned file).
+        let settled = SystemTime::now() - Duration::from_secs(60);
+        File::open(&tool).unwrap().set_modified(settled).unwrap();
+        let alias = alias_output(&fixture, &tool, "tool");
+        let first = run_executable(&fixture, "first", alias.clone(), "bazel-out/bin/tools/tool");
+        assert_eq!(fs::read(&first.unwrap().outputs[0]).unwrap(), b"AAAA\n");
+        rewrite_in_place(&tool, "#!/bin/sh\necho BBBB > out/result\n");
+        File::open(&tool).unwrap().set_modified(settled).unwrap();
+        let error = run_executable(&fixture, "second", alias, "bazel-out/bin/tools/tool")
+            .map(|second| fs::read_to_string(&second.outputs[0]).unwrap())
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "input '{}' changed while it was being staged",
+                tool.display()
+            )
+        );
     }
 
     /// A read-only file of a repository tree (rules_python's interpreter
