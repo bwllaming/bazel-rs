@@ -729,6 +729,7 @@ fn run() -> Result<(), String> {
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
         bazel_rs::perf_mark("select.end");
         // A query's planning is its loading.
+        engine.record_link_anchors();
         bazel_rs::observed_fs::close_window();
         bazel_rs::repository_store::timing::report(loading_threads_for_report(
             &command,

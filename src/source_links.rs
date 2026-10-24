@@ -348,7 +348,8 @@ fn resolve_across_inner(
     }
     let mut candidates: Vec<PathBuf> = others
         .iter()
-        .filter_map(|(_, path)| observed_fs::canonicalize(path).ok())
+        // snapshot-unrecorded: the policy's roots are recorded once at the end of planning (RepositorySet::record_link_anchors, W6R)
+        .filter_map(|(_, path)| std::fs::canonicalize(path).ok())
         .collect();
     if !others.is_empty() {
         // The starting repository is materialized too.
@@ -356,7 +357,8 @@ fn resolve_across_inner(
     }
     let blocked: Vec<PathBuf> = blocked
         .iter()
-        .map(|path| observed_fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+        // snapshot-unrecorded: the blocked prefixes are recorded once at the end of planning (RepositorySet::record_link_anchors, W6R)
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
         .collect();
     // A hop into another live repository root taints the analysis
     // snapshot: whether it is materialized depends on the run (PLAN-L2

@@ -8086,6 +8086,8 @@ impl Engine {
             errors: std::mem::take(&mut self.errors),
             build_info,
         };
+        // The link policy's canonical forms, once (W6R).
+        self.repositories.record_link_anchors();
         crate::observed_fs::settle_plan_taints(
             request
                 .blockers()
@@ -8094,6 +8096,15 @@ impl Engine {
         );
         crate::perf_mark("plan.end");
         Ok(request)
+    }
+
+    /// Record the canonical forms the link policy took unrecorded (W6R,
+    /// crate::repository::RepositorySet::record_link_anchors): at the end
+    /// of planning, inside the analysis snapshot's recording window — for
+    /// build, test and run [`Self::plan_request`] does; `query` (whose
+    /// planning is its loading) before its window closes.
+    pub fn record_link_anchors(&self) {
+        self.repositories.record_link_anchors();
     }
 
     /// The workspace status the last planned request computed, taken: its
