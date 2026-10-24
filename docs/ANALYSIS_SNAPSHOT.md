@@ -52,8 +52,11 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    (`--script_path`, `--run_env`, `--[no]run`, `--run_in_cwd`,
    `--omit_run_args`), spawn strategies and sandbox paths, the remote cache,
    credential helpers and `--native-action-dump` (`snapshot::key::EXCLUDED`
-   lists them with the reason). The test filters, `--build_tests_only` and
-   `--run_under` (a label prefix is rejected before planning) stay in G.
+   lists them with the reason). The test filters, `--build_tests_only`,
+   `--[no]expand_test_suites` (the target pattern phase selects the targets
+   and tests before planning, and the planned request carries its expanded
+   sets) and `--run_under` (a label prefix is rejected before planning) stay
+   in G.
    Test and debug hooks (`BAZEL_RS_LOADING_JITTER`,
    `BAZEL_RS_LOADING_NO_DEMAND`, `BAZEL_RS_VERIFY_VIEWS`,
    `BAZEL_RS_VERIFY_ARTIFACTS`, `BAZEL_RS_DIGEST_MEMO`,
@@ -385,8 +388,12 @@ repository rule — v1 of the printing protocol —, an evaluated extension, a
 callbacks or `map_each` of planned actions, Unstable, and the new
 `workspace-status-stderr`: a status command that wrote to stderr would
 print twice on a hit), no lockfile or hidden lockfile write is pending, the
-request has no analysis error, the capture is complete and below 16 MiB,
-and the snapshot stays below 512 MiB. The plan is encoded on the main
+request has no analysis error, the target pattern phase reported no
+test-suite expansion error (integration-21: such a `build`, `test` or `run`
+fails after its build with `command succeeded, but there were ... errors`,
+which a hit — it skips the phase and replays what the phase printed —
+could not reproduce; the phase taints the run with `errors`), the capture
+is complete and below 16 MiB, and the snapshot stays below 512 MiB. The plan is encoded on the main
 thread before execution; the recording is taken, selected by the policy
 and encoded on the writer thread, which writes a temporary file while the
 actions run. Only when the command (for `test` and `run`: its build part)
@@ -560,3 +567,14 @@ post-planning warnings printed by a hit; plans with analysis errors and
 run saves (genuine Bazel 9.3 writes MODULE.bazel.lock for `test`, `run` and
 a failing `query` too; the native commands that end the process
 themselves now write it first).
+
+Integration-21 (parity-next's target pattern phase): `test` of explicit,
+implicit and nested test suites hits with exactly the tests the full
+analysis selected (the summaries compared), `--test_size_filters` and
+`--noexpand_test_suites` select their own snapshots, `build` of a suite and
+`run` of a suite of one test hit
+(`test_suites_hit_with_what_the_full_analysis_selected`); a suite with a
+non-test member fails `test`, `build` and `run` and is never saved, and a
+suite edited into that state misses, is not saved and hits its earlier
+snapshot once reverted (`failing_test_suite_expansions_are_never_saved`);
+both also in `verify_mode`.

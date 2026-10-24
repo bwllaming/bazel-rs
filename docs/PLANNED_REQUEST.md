@@ -35,7 +35,7 @@ same pipeline and keep the analysis diagnostics in the engine (`take_warnings`/`
 
 | Field | Content |
 |---|---|
-| `command` | `Build`; `Test { build, tests }` (the targets built, and every test to run after the test filters with its `TestRuleInfo` and location); `Run { label, test }` (the target's test properties, looked up before planning while the target is loaded, for `run` of a test; an error surfaces where `run_test` read it before) |
+| `command` | `Build`; `Test { build, tests }` (the targets built, and every test to run after the test filters with its `TestRuleInfo` and location — both as the target pattern phase selected them, test suites expanded); `Run { label, test }` (the target the phase selected — a suite of one test is that test —, its test properties, looked up before planning while the target is loaded, for `run` of a test; an error surfaces where `run_test` read it before). A phase that reported a test-suite expansion error fails the command after its build; it is not part of the request: such a run is never saved as a snapshot (docs/ANALYSIS_SNAPSHOT.md) |
 | `execute` | false under `--nobuild` |
 | `nodes` | the reachable planned actions in plan order (the `BAZEL_RS_DUMP_ACTIONS` order), with the workspace status nodes as placeholders at their position |
 | `requested`, `aspect_reports`, `non_empty_targets` | the reported artifacts as `Produced { real, producer }` (where `--nobuild` reports them / which action output publishes them) |

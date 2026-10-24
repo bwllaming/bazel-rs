@@ -49,8 +49,10 @@ pub const FORMAT: u32 = 2;
 ///   `test_verbose_timeout_warnings`, `test_runner_fail_fast`,
 ///   `zip_undeclared_test_outputs`, `incompatible_check_sharding_support`.
 ///   The test filters (`test_tag_filters`, `test_size_filters`,
-///   `test_timeout_filters`, `test_lang_filters`, `build_tests_only`)
-///   select the tests before planning: they stay in G.
+///   `test_timeout_filters`, `test_lang_filters`, `build_tests_only`) and
+///   `expand_test_suites` select the targets and tests before planning (the
+///   target pattern phase, crate::engine::Engine::target_pattern_phase,
+///   whose expanded sets the planned request carries): they stay in G.
 /// * run (crate::run_command::RunOptions, read after the build part):
 ///   `script_path`, `run_env`, `run`, `run_in_cwd`, `omit_run_args`.
 ///   `run_under` stays: a label prefix is rejected before planning.
@@ -287,7 +289,13 @@ mod tests {
         for text in [
             "--nobuild",
             "--test_tag_filters=a",
+            "--test_size_filters=small",
+            "--test_timeout_filters=short",
+            "--test_lang_filters=sh",
             "--build_tests_only",
+            "--nobuild_tests_only",
+            "--expand_test_suites",
+            "--noexpand_test_suites",
             "--run_under=x",
             "--action_env=A",
             "--repo_env=A=b",

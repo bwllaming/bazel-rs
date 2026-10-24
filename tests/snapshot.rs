@@ -3632,6 +3632,165 @@ fn mutation_fuzz() {
     println!("mutation fuzz: seed {seed}: {counts:?}");
 }
 
+/// Test suites (integration-21: parity-next's target pattern phase, ed8468a
+/// and 644a0b1, under L2-W5): explicit, implicit (`tests` empty: the
+/// package's non-manual tests) and nested suites, a suite of one test for
+/// `run`, and a suite with a non-test member in its own package.
+const SUITE_BUILD: &str = r##"load("//:rules.bzl", "script_test")
+
+script_test(name = "a_test", size = "small", script = "#!/bin/bash\necho a-ran\n")
+
+script_test(name = "b_test", size = "small", script = "#!/bin/bash\necho b-ran\n")
+
+script_test(name = "big_test", size = "large", script = "#!/bin/bash\necho big-ran\n")
+
+script_test(name = "manual_test", size = "small", tags = ["manual"], script = "#!/bin/bash\necho manual-ran\n")
+
+test_suite(name = "explicit", tests = [":a_test", ":big_test"])
+
+test_suite(name = "implicit")
+
+test_suite(name = "one", tests = [":b_test"])
+
+test_suite(name = "nested", tests = [":one", ":manual_test"])
+"##;
+
+const BAD_SUITE_BUILD: &str = r##"load("//:rules.bzl", "script_test")
+
+script_test(name = "c_test", size = "small", script = "#!/bin/bash\necho c-ran\n")
+
+genrule(name = "lib", outs = ["lib.txt"], cmd = "echo lib > $@")
+
+test_suite(name = "bad", tests = [":c_test", ":lib"])
+"##;
+
+/// The test labels of a `test` summary on stdout, in order.
+fn summarized_tests(output: &Output) -> Vec<String> {
+    text(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|word| word.starts_with("//"))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Integration-21 (ed8468a/644a0b1 × L2-W5): the target pattern phase
+/// expands test suites before planning and the planned request carries the
+/// expanded sets (`RequestCommand::Test { build, tests }`, the `Run` label),
+/// so a hit tests, builds and runs exactly what the full analysis selected;
+/// `--test_size_filters` and `--noexpand_test_suites` are part of G (each
+/// selects its own snapshot).
+#[test]
+fn test_suites_hit_with_what_the_full_analysis_selected() {
+    let twin = fixture();
+    twin.write("suite/BUILD.bazel", SUITE_BUILD);
+    let tested = |args: &[&str], expected: &[&str]| {
+        let hit = twin.same(args, &[]);
+        hit.assert_hit().assert_success();
+        assert_eq!(summarized_tests(&hit.on), expected, "{args:?}");
+    };
+    let explicit = &["test", "//suite:explicit"];
+    twin.save(explicit, &[]);
+    tested(explicit, &["//suite:a_test", "//suite:big_test"]);
+    let small = &["test", "--test_size_filters=small", "//suite:implicit"];
+    twin.same(small, &[]).assert_miss("").assert_saved();
+    tested(small, &["//suite:a_test", "//suite:b_test"]);
+    let implicit = &["test", "//suite:implicit"];
+    twin.same(implicit, &[]).assert_miss("").assert_saved();
+    tested(
+        implicit,
+        &["//suite:a_test", "//suite:b_test", "//suite:big_test"],
+    );
+    tested(small, &["//suite:a_test", "//suite:b_test"]);
+    let nested = &["test", "//suite:nested"];
+    twin.same(nested, &[]).assert_saved();
+    tested(nested, &["//suite:b_test", "//suite:manual_test"]);
+    // `build` of a suite builds its tests; --noexpand_test_suites the suite.
+    for build in [
+        &["build", "//suite:explicit"][..],
+        &["build", "--noexpand_test_suites", "//suite:explicit"],
+    ] {
+        twin.same(build, &[]).assert_saved();
+        twin.same(build, &[]).assert_hit().assert_success();
+    }
+    // `run` of a suite of one test runs that test.
+    let run = &["run", "//suite:one"];
+    twin.same(run, &[]).assert_saved();
+    let ran = twin.same(run, &[]);
+    ran.assert_hit().assert_success();
+    assert!(
+        text(&ran.on.stdout).contains("b-ran"),
+        "{}",
+        text(&ran.on.stdout)
+    );
+}
+
+/// Integration-21: a test suite with a non-test member makes `test`,
+/// `build` and `run` fail after their build (BuildView
+/// .createAnalysisFailureDetail), which a hit — it skips the target pattern
+/// phase — could not reproduce: such a run is never saved (Taint::Errors).
+/// A suite edited into that state misses, is not saved, and hits its
+/// earlier snapshot once the edit is reverted.
+#[test]
+fn failing_test_suite_expansions_are_never_saved() {
+    let twin = fixture();
+    twin.write("badsuite/BUILD.bazel", BAD_SUITE_BUILD);
+    for args in [
+        &["test", "//badsuite:bad"][..],
+        &["build", "//badsuite:bad"],
+        &["run", "//badsuite:bad"],
+    ] {
+        for attempt in 0..2 {
+            let failed = twin.same(args, &[]);
+            assert_eq!(failed.on.status.code(), Some(1), "{args:?}");
+            let stderr = failed.stderr();
+            assert!(
+                stderr.contains(
+                    "expecting a test or a test_suite rule but '//badsuite:lib' is not one"
+                ),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("ERROR: command succeeded, but there were"),
+                "{stderr}"
+            );
+            // The first run of the workspace may write the lockfile first.
+            if attempt == 1 {
+                failed.assert_not_saved("test-suite expansion error");
+            } else {
+                failed.assert_not_saved("");
+            }
+        }
+    }
+    assert!(twin.snapshots().is_empty());
+    twin.write("suite/BUILD.bazel", SUITE_BUILD);
+    let explicit = &["test", "//suite:explicit"];
+    twin.save(explicit, &[]);
+    twin.write(
+        "suite/BUILD.bazel",
+        &format!(
+            "{}\ngenrule(name = 'lib', outs = ['lib.txt'], cmd = 'echo lib > $@')\n",
+            SUITE_BUILD.replace(
+                "tests = [\":a_test\", \":big_test\"]",
+                "tests = [\":a_test\", \":big_test\", \":lib\"]"
+            )
+        ),
+    );
+    let failed = twin.same(explicit, &[]);
+    failed
+        .assert_miss("")
+        .assert_not_saved("test-suite expansion error");
+    assert_eq!(failed.on.status.code(), Some(1));
+    twin.write("suite/BUILD.bazel", SUITE_BUILD);
+    let hit = twin.same(explicit, &[]);
+    hit.assert_hit().assert_success();
+    assert_eq!(
+        summarized_tests(&hit.on),
+        ["//suite:a_test", "//suite:big_test"]
+    );
+    assert_eq!(twin.snapshots().len(), 1);
+}
+
 /// Fixture 19 (PLAN-L2 §7, L2-W6): every fixture again with
 /// `BAZEL_RS_SNAPSHOT=verify` on the snapshot side. A miss saves as with
 /// `on`; every hit also runs the full analysis in its shadow, which must
@@ -3837,6 +3996,16 @@ mod verify_mode {
     #[test]
     fn garbage_collection_during_a_hit_never_breaks_it() {
         verified(super::garbage_collection_during_a_hit_never_breaks_it);
+    }
+
+    #[test]
+    fn test_suites_hit_with_what_the_full_analysis_selected() {
+        verified(super::test_suites_hit_with_what_the_full_analysis_selected);
+    }
+
+    #[test]
+    fn failing_test_suite_expansions_are_never_saved() {
+        verified(super::failing_test_suite_expansions_are_never_saved);
     }
 }
 
