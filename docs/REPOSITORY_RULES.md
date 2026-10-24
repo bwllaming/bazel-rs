@@ -605,10 +605,14 @@ deletion failure leaves garbage and a `bazel-rs: warning: cannot remove ...`
 line, never a failed command (before, `TempDir::close`
 failed with `cannot remove direct quarantine: Permission denied` after the new
 tree was already published, and left the quarantine behind). Publishers hold
-`direct/locks/quarantine` shared while their quarantine exists; a publisher that
-can take it exclusively first deletes every leftover `.trash-*`. Tests:
+`direct/locks/quarantine` shared while their quarantine exists; the first
+publisher of a process that can take it exclusively first deletes every
+leftover `.trash-*`, once per process and store (leftovers only come from
+earlier processes; sweeping on every publication listed `direct/trees` once
+per published tree, quadratic over a cold fetch, and briefly serialized
+concurrent publishers each time). Tests:
 `republishing_over_a_read_only_tree_removes_the_quarantine`,
-`stale_quarantines_are_swept_only_when_no_quarantine_is_live`.
+`stale_quarantines_are_swept_once_when_no_quarantine_is_live`.
 
 How a build with the Python toolchain reached that path: actions staging the
 interpreter's runtime hardlinked its 0444 `lib/` files into the action store's

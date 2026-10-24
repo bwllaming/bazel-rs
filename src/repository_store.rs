@@ -1029,7 +1029,13 @@ impl Drop for Scratch {
 /// quarantine — first removes every `.trash-*` left in `trees` by an
 /// earlier publication: one killed mid-publication, or a binary before
 /// [`Scratch`], whose failed removal of a read-only tree failed the command
-/// and left the quarantine behind.
+/// and left the quarantine behind. At most one such sweep per process and
+/// store ([`swept_stores`]): leftovers only come from earlier processes
+/// (this one removes its own quarantines, or warns), while sweeping on every
+/// publication listed `trees` once per published tree — quadratic over a
+/// cold fetch of hundreds of repositories — and briefly serialized
+/// concurrent publishers behind the exclusive lock each time. A sweep that
+/// could not take the lock is tried again by the next publication.
 fn quarantine_lock(locks: &Path, trees: &Path) -> Result<File, String> {
     let path = locks.join("quarantine");
     if let Some(metadata) = optional_metadata(&path)? {
@@ -1040,19 +1046,31 @@ fn quarantine_lock(locks: &Path, trees: &Path) -> Result<File, String> {
     no_follow(&mut options);
     let lock = options.open(&path).map_err(|e| e.to_string())?;
     regular_metadata(&lock.metadata().map_err(|e| e.to_string())?)?;
-    if FileExt::try_lock_exclusive(&lock).is_ok()
-        && let Ok(entries) = fs::read_dir(trees)
     {
-        for entry in entries.flatten() {
-            if entry.file_name().as_encoded_bytes().starts_with(b".trash-") {
-                let _ = crate::repository_ctx::remove_tree(&entry.path());
+        let mut swept = swept_stores().lock().unwrap_or_else(|e| e.into_inner());
+        if !swept.contains(trees) && FileExt::try_lock_exclusive(&lock).is_ok() {
+            if let Ok(entries) = fs::read_dir(trees) {
+                for entry in entries.flatten() {
+                    if entry.file_name().as_encoded_bytes().starts_with(b".trash-") {
+                        let _ = crate::repository_ctx::remove_tree(&entry.path());
+                    }
+                }
             }
+            swept.insert(trees.to_path_buf());
         }
     }
     // Converts an exclusive lock taken above.
     FileExt::lock_shared(&lock)
         .map_err(|e| format!("cannot lock direct repository quarantine: {e}"))?;
     Ok(lock)
+}
+
+/// The tree directories whose leftover quarantines this process has swept
+/// ([`quarantine_lock`]).
+fn swept_stores() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static SWEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    SWEPT.get_or_init(Default::default)
 }
 
 /// A finished stage's inventory and its encoded content view (the bytes the
@@ -2898,20 +2916,26 @@ mod tests {
     }
 
     /// A `.trash-*` an earlier binary could not remove (a read-only tree)
-    /// is swept by the next quarantining publication, but never while
-    /// another publisher holds the quarantine lock (its own quarantine is
-    /// live then).
+    /// is swept by a quarantining publication, but never while another
+    /// publisher holds the quarantine lock (its own quarantine is live
+    /// then), and once per process and store: a later leftover waits for
+    /// the next process.
     #[cfg(unix)]
     #[test]
-    fn stale_quarantines_are_swept_only_when_no_quarantine_is_live() {
+    fn stale_quarantines_are_swept_once_when_no_quarantine_is_live() {
         use std::os::unix::fs::PermissionsExt;
         let cache = temp();
-        let (tree, _) = publish_recorded(cache.path(), br#"{"version":1}"#, read_only_lib).unwrap();
-        let stale = cache.path().join("direct/trees/.trash-left");
-        fs::create_dir_all(stale.join("tree")).unwrap();
-        read_only_lib(&stale.join("tree")).unwrap();
-        fs::set_permissions(stale.join("tree"), fs::Permissions::from_mode(0o555)).unwrap();
+        let trees = cache.path().join("direct/trees");
+        let leave = |name: &str| {
+            let stale = trees.join(name);
+            fs::create_dir_all(stale.join("tree")).unwrap();
+            read_only_lib(&stale.join("tree")).unwrap();
+            fs::set_permissions(stale.join("tree"), fs::Permissions::from_mode(0o555)).unwrap();
+            stale
+        };
+        let stale = leave(".trash-left");
         // Another publisher's quarantine is live: the stale one stays.
+        fs::create_dir_all(cache.path().join("direct/locks")).unwrap();
         let live = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -2919,16 +2943,24 @@ mod tests {
             .open(cache.path().join("direct/locks/quarantine"))
             .unwrap();
         FileExt::lock_shared(&live).unwrap();
-        publish_recorded(cache.path(), br#"{"version":1,"n":1}"#, read_only_lib).unwrap();
+        let (tree, _) = publish_recorded(cache.path(), br#"{"version":1}"#, read_only_lib).unwrap();
         assert!(stale.is_dir());
         FileExt::unlock(&live).unwrap();
         drop(live);
-        publish_recorded(cache.path(), br#"{"version":1,"n":2}"#, read_only_lib).unwrap();
+        publish_recorded(cache.path(), br#"{"version":1,"n":1}"#, read_only_lib).unwrap();
         assert!(!stale.exists());
+        // Swept once: the process's later publications list nothing.
+        let later = leave(".trash-later");
+        publish_recorded(cache.path(), br#"{"version":1,"n":2}"#, read_only_lib).unwrap();
+        assert!(later.is_dir());
         assert_eq!(
             recorded_probes(cache.path(), &tree),
             br#"{"version":1,"n":2}"#
         );
+        // The next process (its first quarantining publication) sweeps it.
+        swept_stores().lock().unwrap().remove(&trees);
+        publish_recorded(cache.path(), br#"{"version":1,"n":3}"#, read_only_lib).unwrap();
+        assert!(!later.exists());
         no_stages(cache.path());
         crate::repository_ctx::remove_tree(cache.path()).unwrap();
     }
