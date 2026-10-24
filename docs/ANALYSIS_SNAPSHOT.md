@@ -400,18 +400,42 @@ line has the same fields:
 | `evicted` | garbage collection removed the snapshot of `key` (`command=-` and no targets: those of the evicted snapshot are not known there); `detail` names the save that collected it | `count` or `bytes` | - |
 | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (no key) | eligible: `yes`, `no`, `unless-pruned` | - |
 
-`scripts/snapshot_soak_report.py <cache dir>` (`--json` for a JSON object)
-prints the counts per mode and kind, misses and unsaved runs by reason,
-the number of keys (those seen only in an eviction counted apart) and
-per key the hit rate on unchanged re-runs (hits
-over the lookups after the key's first save that missed for no input:
-`absent` without a removal since the save, `unreadable`, `capture`,
-`panic`, `other` — a miss naming a changed input, or an `absent` miss
-after an eviction, heal or verify mismatch, is counted apart), verified
-hits by command, always-miss patterns (at least three consecutive misses
-of one key with the same reason and path and no hit between them), heals
-by reason, every verify.log line verbatim, the hit latency's p50 and p95
-per mode and command, and the store's size.
+`scripts/snapshot_soak_report.py <cache dir>` (`--json` for a JSON object;
+`--workspace <dir>` names the cache's workspace when the cache is not its
+`bazel-rs-out`) prints the counts per mode and kind, misses and unsaved
+runs by reason, the number of keys (those seen only in an eviction counted
+apart), the hit rate on unchanged re-runs over all keys and per key (hits
+over the lookups once a snapshot of the key exists — saved, hit, or read by
+a lookup that missed on an input — that hit or missed for no input:
+`absent` right after a save with no removal since, `unreadable`, `capture`,
+`panic`, `other`; a miss naming a changed input, an `absent` miss after an
+eviction, heal or verify mismatch, and an `absent` miss while none is saved
+are counted apart), the keys never saved (L2-W5i: no save, hit or snapshot
+read; with their not-saved reasons — expected when every run was tainted,
+`network` say, or failed; `capture`, `too-large`, `incomplete`, `other` or
+no not-saved event at all are worth reporting), verified hits by command,
+always-miss patterns, heals by reason, every verify.log line verbatim with
+its verify-details.log block, the hit latency's p50 and p95 per mode and
+command, and the store's size (and what `mismatched/` holds).
+
+An **always-miss pattern** is at least three consecutive misses of one key
+with the same reason and path and no hit between them. L2-W5i (the W5h
+review's F2): a save ends the run when the misses name an input you may
+have changed — a workspace or host path, or an input without a path (`env`,
+`replay`): the save took the change in and the next miss is the next
+change, so editing one BUILD file three times (miss, save, three times) is
+no pattern — but not when they name a path in the cache or an output tree,
+or no input at all (`absent` after every save, `unreadable`, ...): such a
+miss coming back after every save is the command's own doing (a tool
+writing into a repository tree's directory), the case the soak watches
+for. Each pattern is **SUSPECT** — a path below the cache (as given or
+canonical), in an output tree (a `bazel-*` entry of the workspace: Bazel's
+convenience links, `bazel-rs-out`; any path through `bazel-out`,
+`bazel-bin`, `bazel-testlogs`, `bazel-genfiles` or genuine Bazel's output
+user root `_bazel_<user>`), or no path — or **likely your edits** (a
+workspace or host path with no save between: a BUILD file edited while the
+command kept failing). The report prints each with its place, the saves
+between, its first and last time and the last miss's reason.
 
 A miss's class is `absent` (no snapshot for the key), `unreadable`, `env`,
 the failing check's operation (`read`, `readdir`, `stat`, `lstat`, `canon`,

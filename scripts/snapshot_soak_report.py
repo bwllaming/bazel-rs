@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Summarize the analysis snapshot's soak logs of one cache (L2-W5h).
+"""Summarize the analysis snapshot's soak logs of one cache (L2-W5h, L2-W5i).
 
-usage: snapshot_soak_report.py [--json] CACHE_DIR
+usage: snapshot_soak_report.py [--json] [--workspace DIR] CACHE_DIR
 
 Reads `<cache>/snapshots/events.log`, `verify.log` and `verify-details.log`
 (each after its rotated generation `<name>.1`; crate::snapshot::telemetry
@@ -12,17 +12,29 @@ set aside), and prints:
   * the number of events per mode and kind (hit, miss, saved, not-saved,
     verified, mismatch, healed, evicted, recorded), misses and unsaved runs
     by reason;
-  * the snapshot keys (one per command line), and per key: its lookups after
-    the key was first saved (or first hit), the hits, the misses for a
+  * the snapshot keys (one per command line), and per key: its lookups once a
+    snapshot of it exists (saved, hit, or read by a lookup that missed on an
+    input — perhaps saved before the log began), the hits, the misses for a
     changed input (a file, an environment variable, a tree, a local
-    repository), the misses for no input at all (`absent` without a removal
-    of the snapshot since its save, `unreadable`, `capture`, `panic`,
-    `other`), and the hit rate on unchanged re-runs = hits / (hits + those);
-    an `absent` miss after the snapshot was evicted, healed, removed by a
-    verify mismatch or by a noisy status command is counted apart;
+    repository), the misses for no input at all (`absent` right after a save
+    with no removal since, `unreadable`, `capture`, `panic`, `other`), and
+    the hit rate on unchanged re-runs = hits / (hits + those); an `absent`
+    miss after the snapshot was evicted, healed, set aside by a verify
+    mismatch or removed for a noisy status command is counted apart, and so
+    is one while none is saved (before the first save, or again after a
+    lookup found none);
+  * the hit rate on unchanged re-runs over all keys;
+  * keys never saved (no save, hit or snapshot read), with their not-saved
+    reasons — expected when every run was tainted (`network`, ...) or failed;
   * verified hits by command (verify mode);
   * always-miss patterns: at least three consecutive misses of one key with
-    the same reason and path and no hit between them;
+    the same reason and path and no hit between them — a save ends the run
+    when the misses name an input you may have changed (a workspace or host
+    path, or `env`, `replay`, ...: editing one BUILD file three times is no
+    pattern), not when they name a path in the cache or an output tree or no
+    input at all (`absent` after each save, `unreadable`, ...) — split into
+    SUSPECT (a path in the cache or an output tree, or none) and likely your
+    edits (a workspace or host path);
   * heals by reason (`<rule>:<first differing entry>`) with their paths;
   * every verify.log mismatch line, verbatim, each with its verify-details.log
     block (where the snapshot went and every difference; L2-W5i);
@@ -49,8 +61,15 @@ DETAILS_SHOWN = 40
 # Miss classes that name a changed input (crate::snapshot::telemetry::classify_miss).
 INPUT_CHANGES = {'env', 'read', 'readdir', 'stat', 'lstat', 'canon', 'readlink', 'integrity', 'tree',
                  'replay', 'local-tree', 'status-stderr'}
+# Miss classes that name no input at all (with `absent` after a save and no removal: unexplained).
+NO_INPUT = {'absent', 'unreadable', 'capture', 'panic', 'other'}
 # Events that remove the key's snapshot (a later `absent` miss is explained).
 REMOVALS = {'healed', 'evicted'}
+# Path components of output trees (Places).
+OUTPUT_TREES = {'bazel-out', 'bazel-bin', 'bazel-testlogs', 'bazel-genfiles', 'bazel-rs-out'}
+# Not-saved classes worth reporting when a key is never saved (every taint and `failed` are expected:
+# the guide's "not problems", e.g. `network`).
+UNEXPECTED_NOT_SAVED = {'capture', 'too-large', 'incomplete', 'other'}
 
 
 def unescape(token):
@@ -159,10 +178,58 @@ def parse_details(lines):
     return blocks
 
 
-def analyze(events, verify_lines, store=None, details=()):
+class Places:
+    """Where a miss's path lies (L2-W5i): `cache` (below the cache dir, as given
+    or canonical), `output` (an output tree: a `bazel-*` entry of the workspace
+    — Bazel's convenience links, `bazel-rs-out` — or any path through a
+    `bazel-out`, `bazel-bin`, `bazel-testlogs`, `bazel-genfiles` or
+    `bazel-rs-out` component or genuine Bazel's output user root `_bazel_<user>`),
+    `none` (the miss names no path) or `elsewhere` (the workspace or the host)."""
+
+    def __init__(self, cache=None, workspace=None):
+        def spellings(path):
+            return {os.path.abspath(path), os.path.realpath(path)} if path else set()
+        self.cache = spellings(cache)
+        if workspace is None and cache and os.path.basename(os.path.abspath(cache)) == 'bazel-rs-out':
+            # The default cache, `<workspace>/bazel-rs-out`.
+            workspace = os.path.dirname(os.path.abspath(cache))
+        self.workspace = spellings(workspace)
+
+    def of(self, path):
+        if path in ('', '-'):
+            return 'none'
+        if any(path == root or path.startswith(root.rstrip('/') + '/') for root in self.cache):
+            return 'cache'
+        components = path.split('/')
+        if any(c in OUTPUT_TREES or c.startswith('_bazel_') for c in components):
+            return 'output'
+        for root in self.workspace:
+            prefix = root.rstrip('/') + '/'
+            if path.startswith(prefix) and path[len(prefix):].split('/', 1)[0].startswith('bazel-'):
+                return 'output'
+        return 'elsewhere'
+
+
+def ends_on_save(reason, place):
+    """Whether a save ends a run of misses: when they name an input you may
+    have changed — a workspace or host path, or an input without a path
+    (`env`, `replay`, ...): the save took the change in, and the next miss is
+    the next change (editing one BUILD file three times is miss, save three
+    times, no pattern). Not when they name a path in the cache or an output
+    tree, or no input at all (`absent`, `unreadable`, `capture`, `panic`,
+    `other`): such a miss coming back after every save is the command's own
+    doing (a tool writing into a repository tree), the always-miss the soak
+    watches for."""
+    if place in ('cache', 'output'):
+        return False
+    return reason not in NO_INPUT
+
+
+def analyze(events, verify_lines, store=None, details=(), places=None):
     """The report of `events` (parsed events.log lines, oldest first), the raw
     `verify_lines` and the verify-details.log `details` blocks, as a dict (see
-    the module docs)."""
+    the module docs); `places` (a Places) classifies the paths misses name."""
+    places = places or Places()
     counts = collections.Counter((e.get('mode', '-'), e.get('kind', '-')) for e in events)
     misses = collections.Counter(e.get('reason', '-') for e in events if e.get('kind') == 'miss')
     not_saved = collections.Counter(e.get('reason', '-') for e in events if e.get('kind') == 'not-saved')
@@ -180,51 +247,78 @@ def analyze(events, verify_lines, store=None, details=()):
         info['events'].append(event)
     always_miss = []
     for info in keys.values():
-        saved = removed = False
+        # What the log shows of the key's snapshot: `unknown` (nothing yet:
+        # the log may begin after its save), `present` (saved, hit, or read by
+        # a lookup that missed on an input), `removed` (healed, evicted, set
+        # aside by a verify mismatch, removed for a noisy status command) or
+        # `gone` (a lookup found none).
+        state = 'unknown'
         run = None
+
+        def close():
+            nonlocal run
+            if run and run['count'] >= 3:
+                always_miss.append(run)
+            run = None
+
         for event in info['events']:
             kind = event.get('kind')
             reason = event.get('reason', '-')
             if kind == 'saved':
                 info['saves'] += 1
-                saved, removed = True, False
+                state = 'present'
+                if run and ends_on_save(run['reason'], run['place']):
+                    close()
+                elif run:
+                    run['saves'] += 1
             elif kind == 'not-saved':
                 info['not_saved'][reason] += 1
             elif kind in REMOVALS or (kind == 'mismatch' and reason != 'cannot-verify'):
-                removed = True
-            if kind in ('hit', 'miss'):
-                if kind == 'hit':
-                    # A hit implies a save (perhaps before the log began).
-                    saved = True
-                    info['lookups'] += 1
-                    info['hits'] += 1
-                    if run and run['count'] >= 3:
-                        always_miss.append(run)
-                    run = None
-                    continue
-                if saved:
-                    info['lookups'] += 1
-                    if reason in INPUT_CHANGES:
-                        info['changed'] += 1
-                    elif reason == 'absent' and removed:
-                        info['after_removal'] += 1
-                    else:
-                        info['unexplained'] += 1
-                else:
+                state = 'removed'
+            elif kind == 'hit':
+                state = 'present'
+                info['lookups'] += 1
+                info['hits'] += 1
+                close()
+            elif kind == 'miss':
+                if reason != 'absent':
+                    # The lookup read the key's snapshot (perhaps saved
+                    # before the log began).
+                    state = 'present'
+                if state in ('unknown', 'gone'):
+                    # Not saved (yet, or since a lookup found none).
                     info['before_save'] += 1
+                    state = 'gone'
+                    close()
+                    continue
+                info['lookups'] += 1
+                if reason == 'absent' and state == 'removed':
+                    info['after_removal'] += 1
+                    state = 'gone'
+                    close()
+                    continue
+                if reason in INPUT_CHANGES:
+                    info['changed'] += 1
+                else:
+                    info['unexplained'] += 1
                 if reason == 'status-stderr':
-                    removed = True
-                signature = (reason, event.get('path', '-'))
-                if run and run['signature'] == signature:
+                    state = 'removed'
+                elif reason == 'absent':
+                    state = 'gone'
+                path = unescape(event.get('path', '-'))
+                if run and (run['reason'], run['path']) == (reason, path):
                     run['count'] += 1
                     run['last'] = event['time']
+                    run['detail'] = unescape(event.get('detail', '-'))
                 else:
-                    if run and run['count'] >= 3:
-                        always_miss.append(run)
+                    close()
+                    place = places.of(path)
                     run = {'key': info['key'], 'command': info['command'], 'targets': info['targets'],
-                           'signature': signature, 'count': 1, 'first': event['time'], 'last': event['time']}
-        if run and run['count'] >= 3:
-            always_miss.append(run)
+                           'reason': reason, 'path': path, 'place': place,
+                           'class': 'suspect' if place in ('cache', 'output', 'none') else 'likely-your-edits',
+                           'count': 1, 'saves': 0, 'first': event['time'], 'last': event['time'],
+                           'detail': unescape(event.get('detail', '-'))}
+        close()
         unchanged = info['hits'] + info['unexplained']
         info['unchanged'] = unchanged
         info['hit_rate'] = (info['hits'] / unchanged) if unchanged else None
@@ -241,6 +335,15 @@ def analyze(events, verify_lines, store=None, details=()):
     evicted_only = [info for info in keys.values()
                     if all(e.get('kind') == 'evicted' for e in info['events'])]
     listed = [info for info in keys.values() if info not in evicted_only]
+    # Keys never saved: no save, no hit, no lookup that read a snapshot.
+    never_saved = [
+        {'key': info['key'], 'command': info['command'], 'targets': info['targets'],
+         'lookups': info['before_save'], 'not_saved': dict(info['not_saved'].most_common()),
+         'expected': bool(info['not_saved']) and not (set(info['not_saved']) & UNEXPECTED_NOT_SAVED)}
+        for info in listed if info['saves'] == 0 and info['lookups'] == 0
+    ]
+    hits = sum(info['hits'] for info in listed)
+    unchanged = sum(info['unchanged'] for info in listed)
     report = {
         'events': len(events),
         'evicted_only_keys': len(evicted_only),
@@ -253,13 +356,12 @@ def analyze(events, verify_lines, store=None, details=()):
             | {'not_saved': dict(info['not_saved'])}
             for info in listed
         ],
+        'hit_rate_unchanged': {'hits': hits, 'unchanged': unchanged,
+                               'rate': (hits / unchanged) if unchanged else None},
+        'never_saved': never_saved,
         'verified_by_command': dict(collections.Counter(
             unescape(e.get('command', '-')) for e in events if e.get('kind') == 'verified')),
-        'always_miss': [
-            {'key': run['key'], 'command': run['command'], 'targets': run['targets'], 'reason': run['signature'][0],
-             'path': unescape(run['signature'][1]), 'count': run['count'], 'first': run['first'], 'last': run['last']}
-            for run in always_miss
-        ],
+        'always_miss': always_miss,
         'heals': dict(collections.Counter(e.get('reason', '-') for e in heals)),
         'heal_lines': [
             {'time': e['time'], 'key': e.get('key'), 'reason': e.get('reason'), 'path': unescape(e.get('path', '-')),
@@ -316,28 +418,58 @@ def render(report, cache):
     lines.append(f"keys: {len(report['keys'])}" + (
         f" (and {report['evicted_only_keys']} seen only when garbage collection evicted them)"
         if report['evicted_only_keys'] else ''))
-    lines.append('  hit rate on unchanged re-runs per key (lookups after the first save; changed = a miss naming '
-                 'an input; unexplained = absent without a removal, unreadable, capture, panic, other):')
+    overall = report['hit_rate_unchanged']
+    lines.append('hit rate on unchanged re-runs, all keys: '
+                 + (f"{100 * overall['rate']:.1f}% ({overall['hits']}/{overall['unchanged']})"
+                    if overall['rate'] is not None else '-'))
+    lines.append('  per key (lookups once a snapshot exists; changed = a miss naming an input; unexplained = '
+                 'absent after a save without a removal, unreadable, capture, panic, other; before a save = '
+                 'absent while none was saved):')
     for info in sorted(report['keys'], key=lambda info: -info['lookups']):
         targets = ' '.join(info['targets'])
         lines.append(
             f"  {info['key']} {info['command'] or '-'} {targets}: lookups {info['lookups']}, hits {info['hits']}, "
             f"changed {info['changed']}, unexplained {info['unexplained']}, after removal {info['after_removal']}, "
-            f"before the first save {info['before_save']}, saves {info['saves']}; hit rate on unchanged re-runs "
+            f"before a save {info['before_save']}, saves {info['saves']}; hit rate on unchanged re-runs "
             + (f"{100 * info['hit_rate']:.1f}% ({info['hits']}/{info['unchanged']})"
                if info['hit_rate'] is not None else '-')
             + (('; not saved: ' + ', '.join(f'{k} {v}' for k, v in info['not_saved'].items()))
                if info['not_saved'] else ''))
     lines.append('')
+    never = report['never_saved']
+    lines.append(f"keys never saved (no save, hit or snapshot read in the log): {len(never)}")
+    if never:
+        lines.append('  expected when every run was tainted - `network` (a remote registry\'s cold run, '
+                     '`--lockfile_mode=off`), `repository-rule-executed` (after a fetch), `extension-evaluated`, '
+                     '`lockfile-write-pending` (the run after a lockfile change), ... - or failed; worth reporting: '
+                     '`capture`, `too-large`, `incomplete`, `other`, or no not-saved event at all')
+    for info in never:
+        reasons = ', '.join(f'{k} {v}' for k, v in info['not_saved'].items()) or 'no not-saved event'
+        lines.append(f"  {info['key']} {info['command'] or '-'} {' '.join(info['targets'])}: lookups {info['lookups']}, "
+                     f"not saved: {reasons} [{'expected' if info['expected'] else 'please report'}]")
+    lines.append('')
     verified = report['verified_by_command']
     lines.append('verified hits by command: ' + (', '.join(f'{k} {v}' for k, v in sorted(verified.items()))
                                                  if verified else 'none'))
     lines.append('')
-    lines.append(f"always-miss patterns (>= 3 consecutive misses, same reason and path, no hit between): "
-                 f"{len(report['always_miss'])}")
-    for run in report['always_miss']:
-        lines.append(f"  {run['key']} {run['command'] or '-'} {' '.join(run['targets'])}: {run['count']} x "
-                     f"{run['reason']} {run['path']} ({run['first']} .. {run['last']})")
+    runs = report['always_miss']
+    suspect = [run for run in runs if run['class'] == 'suspect']
+    yours = [run for run in runs if run['class'] != 'suspect']
+    lines.append(f"always-miss patterns (>= 3 consecutive misses of one key, same reason and path, no hit between; "
+                 f"a save ends the run unless it names a path in the cache or an output tree or no input): "
+                 f"SUSPECT {len(suspect)}, likely your edits {len(yours)}")
+    for title, group in (('SUSPECT (a path in the cache or an output tree, or none: something other than your '
+                          'edits keeps changing what the snapshot recorded - please report)', suspect),
+                         ('likely your edits (a workspace or host path, no save between: e.g. a BUILD file you '
+                          'edited while the command kept failing)', yours)):
+        if not group:
+            continue
+        lines.append('  ' + title + ':')
+        for run in group:
+            lines.append(f"    {run['key']} {run['command'] or '-'} {' '.join(run['targets'])}: {run['count']} x "
+                         f"{run['reason']} {run['path']} [{run['place']}]"
+                         + (f", {run['saves']} save(s) between" if run['saves'] else '')
+                         + f" ({run['first']} .. {run['last']}); last: {run['detail']}")
     lines.append('')
     heals = report['heals']
     lines.append('heals by reason: ' + (', '.join(f'{k} {v}' for k, v in sorted(heals.items())) if heals else 'none'))
@@ -387,10 +519,12 @@ def load(cache):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--json', action='store_true', help='print the report as JSON')
+    ap.add_argument('--workspace', help='the workspace of the cache (its `bazel-*` entries are output trees; '
+                                        'default: the parent of a cache named bazel-rs-out)')
     ap.add_argument('cache')
     a = ap.parse_args(argv)
     events, verify_lines, store, details = load(a.cache)
-    report = analyze(events, verify_lines, store, details)
+    report = analyze(events, verify_lines, store, details, Places(a.cache, a.workspace))
     if a.json:
         sys.stdout.write(json.dumps(report, indent=1, default=str) + '\n')
     else:
