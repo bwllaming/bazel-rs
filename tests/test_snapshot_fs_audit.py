@@ -241,6 +241,53 @@ class SnapshotAuditTests(unittest.TestCase):
         self.assertIsNone(touched)
         self.assertTrue(problems)
 
+    def test_hit_path_cache_touches_need_a_safe_class_or_coverage(self):
+        """L2-W5g: inside the cache dir a touch must be of a safe class (the
+        snapshot store, the digest table, the store's directories, a
+        replay's stage, a local root's existence, a verified tree) or be
+        covered by the INPUTS (the hidden lockfile); anything else is
+        reported."""
+        stage, local, tree, other = "a" * 32, "b" * 64, "c" * 64, "d" * 64
+        trace = (
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-begin", 0x1, 0) = -1 ENOENT\n'
+            '1 mkdir("/cache/snapshots/v1", 0777) = -1 EEXIST (File exists)\n'
+            '1 openat(AT_FDCWD</ws>, "/cache/snapshots/exe.id", O_RDONLY|O_CLOEXEC) = 3</cache/snapshots/exe.id>\n'
+            '1 readlink("/cache", 0x1, 1023) = -1 EINVAL (Invalid argument)\n'
+            '1 readlink("/cache/repositories", 0x1, 1023) = -1 EINVAL (Invalid argument)\n'
+            '1 openat(AT_FDCWD</ws>, "/cache/digests/v1.dmemo", O_RDONLY|O_CLOEXEC) = 3</cache/digests/v1.dmemo>\n'
+            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/locks/stage-{stage}", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 4</x>\n'
+            f'2 mkdir("/cache/repositories/direct/stages/{stage}", 0777) = 0\n'
+            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/stages/{stage}/BUILD.bazel", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 5</x>\n'
+            f'2 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}", 0, 0x1) = 0\n'
+            f'1 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{tree}/sub", 0, 0x1) = 0\n'
+            '1 openat(AT_FDCWD</ws>, "/cache/hidden-lockfiles/h/MODULE.bazel.lock", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            '1 openat(AT_FDCWD</ws>, "/cache/repositories/direct/specs/x", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            f'1 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{other}/f", 0, 0x1) = 0\n'
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-end", 0x1, 0) = -1 ENOENT\n'
+        )
+        dump_text = (
+            f"REPO direct t /cache/repositories/direct/trees/{tree} "
+            f"manifest:/cache/repositories/direct/manifests/{tree}.json entries:2\n"
+            f"INT /cache/repositories/direct/trees/{tree}/sub d key:1:2:3:4:5\n"
+            "OBS /cache/hidden-lockfiles/h/MODULE.bazel.lock READ sha256:00 key:1:2:3:4:5\n"
+            "REPLAY local+repo not-replayed definition:y flags:- output:0 recorded:1 replay:- "
+            f"root:/cache/repositories/direct/trees/{local}\n"
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            dump = Path(temp) / "dump.txt"
+            dump.write_text(dump_text)
+            stats = {}
+            touched, unrecorded = audit.audit_hit(trace, dump, "/ws", "/cache", [], stats)
+        self.assertEqual(touched, 2)
+        self.assertEqual([u.split()[:2] for u in unrecorded], [
+            ["CACHE", "/cache/repositories/direct/specs/x"],
+            ["CACHE", f"/cache/repositories/direct/trees/{other}/f"],
+        ])
+        self.assertEqual(stats["cache"], {
+            "snapshot-store": 2, "cache-root": 1, "store-directories": 1, "digest-table": 1,
+            "replay-stage": 3, "local-root": 1, "verified-tree": 1, "covered-input": 1,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

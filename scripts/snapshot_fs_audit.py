@@ -55,14 +55,42 @@ INPUTS it validates and replays (same dump format). Audited: everything from
 the check point (/.bazel-rs-snapshot-marker/hit-begin, before the key) to
 the hit's execution (/.bazel-rs-snapshot-marker/hit-end, before the window
 bytes print; after it the actions execute, which is execution). Every path
-touched there outside the cache dir (the snapshot store, exe.id, the
-repository store and its stages, the digest table), /proc and the other
-process paths must be covered by the hit's INPUTS — an observation (a READ
-for a file opened for reading), a listed directory, the resolution chain of
-a CANON record, a path inside a verified tree (not below its links) or a
-pinned root (the replay's definition loads) — except the executions of the
-replayed impure local rules (between their replay-exec markers) and the
-processes started there (a replayed `execute`, the workspace status).
+touched there outside the cache dir, /proc and the other process paths must
+be covered by the hit's INPUTS — an observation (a READ for a file opened
+for reading), a listed directory, the resolution chain of a CANON record, a
+path inside a verified tree (not below its links) or a pinned root (the
+replay's definition loads) — except the executions of the replayed impure
+local rules (between their replay-exec markers) and the processes started
+there (a replayed `execute`, the workspace status).
+
+Inside the cache dir (L2-W5g) every touch must fall into a class that is
+safe by construction, or be covered like any other path:
+  * cache-root, store-directories: the cache dir itself and the repository
+    store's directories (`repositories`; the areas `trees`, `direct`, `git`,
+    `builtins` with their `trees` and `manifests`; `direct/locks` and
+    `direct/stages`), created, stat'ed or readlink'ed on realpath chains —
+    no content is read;
+  * snapshot-store: `snapshots/` — the hit's own file (header, sections and
+    checksums verified), `exe.id` (the binary identity, keyed by the
+    binary's stat), the store directory and the background refresh's
+    temporary file;
+  * digest-table: `digests/` — the execution tail's digest table, whose
+    records hold a file's stat key with its digest and are used only when
+    the file's current stat still matches (crate::digest_memo);
+  * replay-stage: `repositories/direct/stages/<slug>` and its lock
+    `repositories/direct/locks/stage-<slug>` — a replayed local rule's
+    private stage, created fresh, compared (identity inputs and tree
+    digests) and removed: nothing in it is trusted;
+  * verified-tree: a published store tree or manifest the INPUTS cover (a
+    REPO root or manifest, an INTEGRITY entry, a path inside a verified
+    tree not below its links) — the per-tree validation's subject;
+  * local-root: a replayed local repository's published root (REPLAY
+    root:), stat'ed for existence only (its files are not read by the hit;
+    a failed hit verifies them, crate::snapshot::hit).
+Any other path under the cache dir is an input like a workspace file: it
+must be covered by the INPUTS (counted as `covered-input`: e.g. the hidden
+lockfile, a READ observation the validation re-reads when racy) or it is
+reported as unrecorded (`CACHE <path>`).
 
 usage: snapshot_fs_audit.py [--binary BIN] [--workspace DIR] [--cache DIR]
                             [--hit] [--keep] [--report FILE] [-- ARG...]
@@ -506,7 +534,10 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
     for path in recorded.canonicalized:
         ancestors |= realpath_chain(path)
     impure, pinned = load_replay(dump)
-    ignored = [str(Path(cache).resolve())] + [str(Path(p).resolve()) for p in extra_ignored]
+    local_roots = load_local_roots(dump)
+    cache_root = str(Path(cache).resolve())
+    ignored = [str(Path(p).resolve()) for p in extra_ignored]
+    cache_classes = {}
     process = {}
     started = set()
     for i, (tid, name, _, line, result) in enumerate(events):
@@ -527,6 +558,18 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
             return p, None
         if any(p == prefix or p.startswith(prefix + '/') for prefix in ignored):
             return p, None
+        if p == cache_root or p.startswith(cache_root + '/'):
+            klass = cache_class(p[len(cache_root):], p, recorded, pinned, local_roots)
+            if klass is not None:
+                cache_classes[klass] = cache_classes.get(klass, 0) + 1
+                return p, None
+            # Otherwise a cache path is an input like any other: covered by
+            # the INPUTS (an observation, a READ for an open) or reported.
+            ok = p in recorded.reads if read else (p in recorded.observed or p in ancestors)
+            if ok:
+                cache_classes['covered-input'] = cache_classes.get('covered-input', 0) + 1
+                return p, None
+            return 'CACHE ' + p, False
         if recorded.in_tree(p, pinned):
             return p, True
         if read:
@@ -566,8 +609,53 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
             if not ok:
                 unrecorded.setdefault(p, ('UNREAD ' + name if read else name, line.strip()))
     if stats is not None:
-        stats.update(executions=executions, processes=len(started))
+        stats.update(executions=executions, processes=len(started), cache=cache_classes)
     return touched, [f'{p}  [{name}] {line[:200]}' for p, (name, line) in sorted(unrecorded.items())]
+
+
+# A published tree of the repository store (64 hex digits; its manifest).
+TREE = re.compile(r'^/repositories/(?:trees|direct/trees|git/trees|builtins/trees)/[0-9a-f]{64}(?:\.json)?(?:/.*)?$')
+MANIFEST = re.compile(r'^/repositories/(?:direct|git)/manifests/[0-9a-f]{64}\.json$')
+STAGE = re.compile(r'^/repositories/direct/(?:stages/[0-9a-f]{32}(?:/.*)?|locks/stage-[0-9a-f]{32})$')
+# The repository store's own directories: the stores' areas and the parents of
+# their published trees (realpath chains readlink them; nothing in them is read).
+STORE_DIRECTORIES = {'/repositories', '/repositories/trees', '/repositories/direct',
+                     '/repositories/direct/locks', '/repositories/direct/stages',
+                     '/repositories/direct/trees', '/repositories/direct/manifests',
+                     '/repositories/git', '/repositories/git/trees', '/repositories/git/manifests',
+                     '/repositories/builtins', '/repositories/builtins/trees'}
+
+
+def load_local_roots(path):
+    """The replayed local repositories' published roots (REPLAY ... root:)."""
+    roots = set()
+    for line in Path(path).read_text().splitlines():
+        parts = line.split(' ')
+        if parts[0] == 'REPLAY':
+            for part in parts:
+                if part.startswith('root:'):
+                    roots.add(unescape_dump(part[len('root:'):]))
+    return roots
+
+
+def cache_class(rel, p, recorded, pinned, local_roots):
+    """The safe class of a touch inside the cache dir (`rel` below it), or
+    None when it must be reported (see the module docs, L2-W5g)."""
+    if rel == '':
+        return 'cache-root'
+    if rel == '/snapshots' or rel.startswith('/snapshots/'):
+        return 'snapshot-store'
+    if rel == '/digests' or rel.startswith('/digests/'):
+        return 'digest-table'
+    if rel in STORE_DIRECTORIES:
+        return 'store-directories'
+    if STAGE.match(rel):
+        return 'replay-stage'
+    if p in local_roots:
+        return 'local-root'
+    if (TREE.match(rel) or MANIFEST.match(rel)) and (p in recorded.observed or recorded.in_tree(p, pinned)):
+        return 'verified-tree'
+    return None
 
 
 def prepare_fixture(base):
@@ -644,6 +732,8 @@ def audit_hit_runs(a, workspace, cache, base, warmups, runs, lines):
         lines.append(f'  hit path: {touched} path touches outside the cache ({stats["executions"]} replayed '
                      f'executions, {stats["processes"]} processes started, impure executions exempt); '
                      f'unrecorded: {len(unrecorded)}')
+        classes = ', '.join(f'{k}={v}' for k, v in sorted(stats['cache'].items()))
+        lines.append(f'  inside the cache: {sum(stats["cache"].values())} touches ({classes or "none"})')
         for u in unrecorded[:200]:
             lines.append('    HIT-UNRECORDED ' + u)
         if unrecorded:

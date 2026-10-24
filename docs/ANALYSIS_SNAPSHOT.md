@@ -315,7 +315,7 @@ mode (the full analysis re-executes the repository rule to repair the tree:
 executes, `verify_mismatches_execute_the_full_analysis_by_default`). A file
 deleted from a tree is a miss since L2-W5f.
 
-## Syscall audit of the hit path (L2-W6)
+## Syscall audit of the hit path (L2-W6, L2-W5g)
 
 `scripts/snapshot_fs_audit.py --hit` (PLAN-L2 §1b layer 2 for the hit
 path) runs each command with `BAZEL_RS_SNAPSHOT=on` until a run saved,
@@ -325,9 +325,8 @@ replays (the record mode's dump format). Audited: from the check point
 (`/.bazel-rs-snapshot-marker/hit-begin`, before the key) to the hit's
 execution (`.../hit-end`, before the window bytes print; after it the
 actions execute, which is execution). Every path touched there outside
-the cache directory (the snapshot store, `exe.id`, the repository store and
-its stages, the digest table), `/proc` and the other process paths must be
-covered by the hit's INPUTS — an observation (a READ for a file opened for
+the cache directory, `/proc` and the other process paths must be covered
+by the hit's INPUTS — an observation (a READ for a file opened for
 reading), a listed directory, a CANON record's resolution chain, a path
 inside a verified tree (not below its links) or a pinned root (the
 replay's definition loads) — except inside the executions of the replayed
@@ -337,6 +336,35 @@ impure local rules and in the processes started there (a replayed
 fixture with a replayed local rule (118 touches, 1 replay), and ~/code
 oauth2token/... build (3,767 touches, 45 replayed executions, 1 process)
 and B2 `--nobuild` (5,623 touches).
+
+Inside the cache directory (L2-W5g: it used to be ignored wholesale) each
+touch must fall into a class that is safe by construction, or be covered
+by the INPUTS like any workspace path, or it is reported (`CACHE <path>`):
+
+| class | paths | why it is safe |
+|---|---|---|
+| `cache-root`, `store-directories` | the cache dir; `repositories` and its areas (`trees`, `direct`, `git`, `builtins`, with their `trees` and `manifests`), `direct/locks`, `direct/stages` | created, stat'ed or readlink'ed on realpath chains; no content is read |
+| `snapshot-store` | `snapshots/` | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file |
+| `digest-table` | `digests/` | crate::digest_memo: a record holds a file's stat key with its digest and is used only while the file's current stat matches it |
+| `replay-stage` | `repositories/direct/stages/<slug>`, `repositories/direct/locks/stage-<slug>` | a replayed local rule's private stage, created fresh under its lock, compared (identity inputs and tree digests) and removed: nothing in it is trusted |
+| `verified-tree` | published store trees and manifests the INPUTS cover (REPO roots and manifests, INTEGRITY entries, paths inside a verified tree not below its links) | the per-tree validation's subject (a racy tree is verified against its manifest) |
+| `local-root` | a replayed local repository's published root (REPLAY `root:`) | stat'ed for existence only; its files are not read by the hit (a failed hit verifies them, step 6) |
+| `covered-input` | any other cache path the INPUTS cover | an input like a workspace file: the hidden lockfile (`hidden-lockfiles/<hash>/MODULE.bazel.lock`), a READ observation a racy hit re-reads |
+
+The `--hit` report prints the counts per class (`inside the cache: N
+touches (...)`). Clean (L2-W5g, nothing unclassified or uncovered): the
+default fixture (11–12 cache touches: `snapshot-store` 6, `cache-root` 2,
+`digest-table` 1–2, `store-directories` 1, the hidden lockfile as a
+`covered-input`), the snapshot fixture with a replayed local rule and a
+store tree (`build //:all_inputs`: 161 — `replay-stage` 61,
+`verified-tree` 34, `store-directories` 34, `cache-root` 15, `local-root`
+5, ...) and ~/code oauth2token/... build (3,762 touches outside the cache,
+45 replayed executions; 17,940 inside: `verified-tree` 12,169,
+`replay-stage` 2,265, `store-directories` 2,236, `cache-root` 921,
+`local-root` 262, `covered-input` 79, `snapshot-store` 6, `digest-table`
+2). The first ~/code run found three store directories on realpath chains
+(`repositories/trees`, `repositories/builtins`, `.../builtins/trees`) the
+class list had missed: added to `store-directories`.
 
 ## What is saved, and when
 
