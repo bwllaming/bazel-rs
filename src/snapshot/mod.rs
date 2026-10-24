@@ -18,8 +18,12 @@
 //!   printed ([`capture`]) and the diagnostics stream that bypasses it
 //!   ([`diag`]). `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says on the diagnostics
 //!   stream why a lookup missed or why a run was not saved.
+//! * L2-W6: `BAZEL_RS_SNAPSHOT=verify` ([`verify`]): `on`, and every hit
+//!   also runs the full analysis in its shadow and compares the two (a
+//!   mismatch exits 70).
 //!
-//! docs/ANALYSIS_SNAPSHOT.md describes the store and the hit path.
+//! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
+//! verify mode.
 
 pub mod capture;
 pub mod codec;
@@ -33,12 +37,24 @@ pub mod replay;
 pub mod save;
 pub mod store;
 pub mod validate;
+pub mod verify;
 
 use std::path::Path;
 use std::time::Instant;
 
-/// The mode variable: `on`, `record` or `off` (unset).
+/// The mode variable: `on`, `verify`, `record` or `off` (unset).
 pub const MODE_VAR: &str = "BAZEL_RS_SNAPSHOT";
+/// Marker paths bracketing the hit path for the syscall audit
+/// (scripts/snapshot_fs_audit.py `--hit`): stat'ed when the check point
+/// starts ([`check`]) and, on a hit, right before the hit's execution starts
+/// (src/main.rs). They never exist.
+pub const MARKER_HIT_BEGIN: &str = "/.bazel-rs-snapshot-marker/hit-begin";
+pub const MARKER_HIT_END: &str = "/.bazel-rs-snapshot-marker/hit-end";
+
+/// Stat a marker path (see [`MARKER_HIT_BEGIN`]).
+pub fn marker(path: &str) {
+    let _ = std::fs::symlink_metadata(path);
+}
 /// Diagnostics of `on`: why a lookup missed, why a run was not saved.
 pub const EXPLAIN_VAR: &str = "BAZEL_RS_SNAPSHOT_EXPLAIN";
 
@@ -50,6 +66,9 @@ pub enum Mode {
     Record,
     /// Read and write snapshots (`build`, `test`, `run`).
     On,
+    /// [`Mode::On`], and every hit also runs the full analysis and compares
+    /// ([`verify`]).
+    Verify,
 }
 
 impl Mode {
@@ -60,11 +79,12 @@ impl Mode {
         };
         match value.to_str() {
             Some("on") => Self::On,
+            Some("verify") => Self::Verify,
             Some("record") => Self::Record,
             Some("off" | "") => Self::Off,
             _ => {
                 observed_fs_diag(&format!(
-                    "ignoring {MODE_VAR}={}: expected on, record or off",
+                    "ignoring {MODE_VAR}={}: expected on, verify, record or off",
                     crate::observed_fs::escape(&value)
                 ));
                 Self::Off
@@ -83,12 +103,15 @@ pub fn explain() -> bool {
 }
 
 /// The snapshot sessions of one command: the record mode's report, the save
-/// after a full analysis, or the follow-up of a hit.
+/// after a full analysis, the follow-up of a hit, or verify mode's shadow
+/// full analysis of a hit (concluded at the end of planning, which hands
+/// the hit back: crate::snapshot::verify::Verify::conclude).
 #[derive(Default)]
 pub struct Scope {
     pub record: Option<record::Session>,
     pub save: Option<Box<save::Save>>,
     pub hit: Option<hit::Session>,
+    pub verify: Option<Box<verify::Verify>>,
 }
 
 impl Scope {
@@ -96,6 +119,9 @@ impl Scope {
     pub fn set_registry_session(&mut self, registry: crate::registry_session::SessionHandle) {
         if let Some(record) = &mut self.record {
             record.set_registry_session(registry.clone());
+        }
+        if let Some(verify) = &mut self.verify {
+            verify.set_registry_session(registry.clone());
         }
         if let Some(save) = &mut self.save {
             save.set_registry_session(registry);
@@ -106,6 +132,9 @@ impl Scope {
     pub fn end_window(&mut self) {
         if let Some(save) = &mut self.save {
             save.end_window();
+        }
+        if let Some(verify) = &mut self.verify {
+            verify.end_window();
         }
     }
 
@@ -118,7 +147,14 @@ impl Scope {
 
     /// The command (for `test` and `run`: its build part) succeeded.
     pub fn finish(self) {
-        let Self { record, save, hit } = self;
+        let Self {
+            record,
+            save,
+            hit,
+            verify,
+        } = self;
+        // Concluded at the end of planning; one still here never was.
+        drop(verify);
         if let Some(record) = record {
             record.finish();
         }
@@ -133,7 +169,13 @@ impl Scope {
     /// The command failed with `error` (the record mode reports, nothing is
     /// saved, a stale hit removes its snapshot).
     pub fn failed(self, error: &str) {
-        let Self { record, save, hit } = self;
+        let Self {
+            record,
+            save,
+            hit,
+            verify,
+        } = self;
+        drop(verify);
         drop(record);
         drop(save);
         if let Some(hit) = hit {
@@ -142,7 +184,7 @@ impl Scope {
     }
 }
 
-/// What the check point decided for `BAZEL_RS_SNAPSHOT=on`.
+/// What the check point decided for `BAZEL_RS_SNAPSHOT=on` (or `verify`).
 pub enum Checked {
     /// Execute the saved plan.
     Hit(Box<hit::Hit>),
@@ -159,13 +201,20 @@ pub struct CheckInputs<'a> {
     pub replay: hit::ReplayInputs,
     pub workspace_status: crate::workspace_status::WorkspaceStatusOptions,
     pub workspace: &'a Path,
+    /// `BAZEL_RS_SNAPSHOT=verify`: a hit keeps what its shadow full
+    /// analysis is compared with (crate::snapshot::verify).
+    pub verify: bool,
 }
 
 /// The snapshot check point of `BAZEL_RS_SNAPSHOT=on` (PLAN-L2 §1a): compute
 /// G, try a hit, else start the session that saves the full analysis.
-/// Nothing prints but the diagnostics stream.
+/// Nothing prints but the diagnostics stream. The strace audit of the hit
+/// path (scripts/snapshot_fs_audit.py `--hit`) brackets everything from
+/// here to the hit's execution with [`MARKER_HIT_BEGIN`] and
+/// [`MARKER_HIT_END`].
 pub fn check(inputs: CheckInputs<'_>) -> Checked {
     let explain = explain();
+    marker(MARKER_HIT_BEGIN);
     if let Some(hook) = key::test_hook() {
         if explain {
             observed_fs_diag(&format!(
@@ -196,6 +245,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         replay: inputs.replay,
         workspace_status: inputs.workspace_status,
         workspace: inputs.workspace,
+        verify: inputs.verify,
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
     match outcome {

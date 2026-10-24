@@ -50,16 +50,23 @@ pub struct Save {
     finished: bool,
 }
 
-/// Start recording at the snapshot check point. `repo_env` decides which
-/// environment names an option fixes (crate::snapshot::record::start).
-pub fn start(key: Key, cache: &Path, repo_env: &[EnvVar], explain: bool) -> Save {
-    let fixed: BTreeSet<OsString> = repo_env
+/// The environment names whose repository-environment value an option
+/// fixes (`--repo_env=NAME=VALUE`, `--repo_env==NAME`): part of the key,
+/// not checked (crate::observed_fs::open_window).
+pub(crate) fn fixed_names(repo_env: &[EnvVar]) -> BTreeSet<OsString> {
+    repo_env
         .iter()
         .filter_map(|value| match value {
             EnvVar::Set(name, _) | EnvVar::Unset(name) => Some(OsString::from(name)),
             EnvVar::Inherit(_) => None,
         })
-        .collect();
+        .collect()
+}
+
+/// Start recording at the snapshot check point. `repo_env` decides which
+/// environment names an option fixes (crate::snapshot::record::start).
+pub fn start(key: Key, cache: &Path, repo_env: &[EnvVar], explain: bool) -> Save {
+    let fixed = fixed_names(repo_env);
     let mut save = Save {
         key,
         cache: cache.to_path_buf(),
@@ -283,7 +290,9 @@ impl Drop for Save {
 }
 
 /// The taints of a recording, for EXPLAIN (the first details of each).
-fn taints(taints: &std::collections::BTreeMap<Taint, observed_fs::TaintRecord>) -> String {
+pub(crate) fn taints(
+    taints: &std::collections::BTreeMap<Taint, observed_fs::TaintRecord>,
+) -> String {
     taints
         .iter()
         .map(|(taint, record)| {

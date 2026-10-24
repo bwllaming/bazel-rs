@@ -809,6 +809,87 @@ mod tests {
         );
     }
 
+    /// The failed layout redirects the stable file's producer in the run
+    /// plans too (the executable, the runfiles tree, every entry), and
+    /// leaves every other producer alone.
+    #[test]
+    fn finalize_redirects_the_run_plans_of_a_failed_status() {
+        let stable = || Produced {
+            real: PathBuf::from("bazel-out/stable-status.txt"),
+            producer: Some((STABLE_STATUS_ID.to_owned(), 0)),
+        };
+        let other = Produced {
+            real: PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/out.txt"),
+            producer: Some(("//:first".to_owned(), 0)),
+        };
+        let source = Produced {
+            real: PathBuf::from("/ws/pkg/in.txt"),
+            producer: None,
+        };
+        let mut request = with_placeholders();
+        request.run_plans = vec![(
+            Label::parse_canonical("//:t").unwrap(),
+            PlannedRun {
+                executable: stable(),
+                executable_exec: PathBuf::from("bazel-out/stable-status.txt"),
+                executable_short_path: "stable-status.txt".to_owned(),
+                tree: Some((
+                    stable(),
+                    PlannedPath(PathBuf::from("bazel-out/t.runfiles/MANIFEST")),
+                )),
+                entries: Some(vec![
+                    ("_main/stable".to_owned(), Some(stable())),
+                    ("_main/other".to_owned(), Some(other.clone())),
+                    ("_main/source".to_owned(), Some(source.clone())),
+                    ("_main/empty".to_owned(), None),
+                ]),
+                settings: crate::runfiles::RunSettings::default(),
+                configuration: 0,
+            },
+        )];
+        request
+            .finalize(StatusSource::Planned(Some(
+                ComputedWorkspaceStatus::Failed(crate::workspace_status::WorkspaceStatusError(
+                    "Process exited with status 1".to_owned(),
+                )),
+            )))
+            .unwrap();
+        let volatile = Some((VOLATILE_STATUS_ID.to_owned(), 0));
+        let (_, run) = &request.run_plans[0];
+        assert_eq!(run.executable.producer, volatile);
+        assert_eq!(run.tree.as_ref().unwrap().0.producer, volatile);
+        // The paths themselves stay the planned ones.
+        assert_eq!(run.executable.real, stable().real);
+        let entries = run.entries.as_ref().unwrap();
+        assert_eq!(entries[0].1.as_ref().unwrap().producer, volatile);
+        assert_eq!(entries[1].1.as_ref(), Some(&other));
+        assert_eq!(entries[2].1.as_ref(), Some(&source));
+        assert_eq!(entries[3].1, None);
+        // A successful status redirects nothing.
+        let mut request = with_placeholders();
+        request.run_plans = vec![(
+            Label::parse_canonical("//:t").unwrap(),
+            PlannedRun {
+                executable: stable(),
+                executable_exec: PathBuf::from("bazel-out/stable-status.txt"),
+                executable_short_path: "stable-status.txt".to_owned(),
+                tree: None,
+                entries: None,
+                settings: crate::runfiles::RunSettings::default(),
+                configuration: 0,
+            },
+        )];
+        request
+            .finalize(StatusSource::Planned(Some(ComputedWorkspaceStatus::Ok(
+                status(),
+            ))))
+            .unwrap();
+        assert_eq!(
+            request.run_plans[0].1.executable.producer,
+            Some((STABLE_STATUS_ID.to_owned(), 0))
+        );
+    }
+
     /// A decoded request (a snapshot hit) runs the status command itself.
     #[test]
     fn finalize_computes_the_status_of_a_decoded_request() {

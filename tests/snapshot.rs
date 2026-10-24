@@ -12,7 +12,11 @@
 //! diagnostics and `PERF` lines — must be byte-identical, whatever the
 //! snapshot did; the diagnostics say whether it missed, hit or saved.
 //!
-//! Fixture 19 (everything again in verify mode) is L2-W6's.
+//! Fixture 19 (L2-W6): every fixture runs again with
+//! `BAZEL_RS_SNAPSHOT=verify` on the snapshot side (module `verify_mode`):
+//! each hit also runs the full analysis in its shadow and must agree with
+//! it (a `verified` line; a mismatch would exit 70 and differ from the
+//! snapshot-less run).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -22,17 +26,28 @@ use std::process::{Command, Output};
 
 const ON: &str = "on";
 const OFF: &str = "off";
+const VERIFY: &str = "verify";
+
+thread_local! {
+    /// The `BAZEL_RS_SNAPSHOT` value of the snapshot side of this test's
+    /// twins (`on`; fixture 19 runs every fixture again with `verify`).
+    static MODE: std::cell::Cell<&'static str> = const { std::cell::Cell::new(ON) };
+}
 
 /// Two copies of a workspace (with its cache and home) that run under one
 /// path: `<base>/run`.
 struct Twin {
     base: tempfile::TempDir,
+    /// The snapshot side's `BAZEL_RS_SNAPSHOT` ([`MODE`]).
+    mode: &'static str,
 }
 
 /// The two runs of one step.
 struct Pair {
     on: Output,
     off: Output,
+    /// The snapshot side's mode.
+    mode: &'static str,
 }
 
 impl Twin {
@@ -41,7 +56,10 @@ impl Twin {
             .prefix("snapshot-w5-")
             .tempdir_in("/tmp/opencode")
             .unwrap();
-        let twin = Self { base };
+        let twin = Self {
+            base,
+            mode: MODE.with(std::cell::Cell::get),
+        };
         for side in [ON, OFF] {
             fs::create_dir_all(twin.side(side).join("ws")).unwrap();
             fs::create_dir_all(twin.side(side).join("home")).unwrap();
@@ -128,7 +146,7 @@ impl Twin {
             .env("LC_ALL", "C");
         if snapshot {
             command
-                .env("BAZEL_RS_SNAPSHOT", "on")
+                .env("BAZEL_RS_SNAPSHOT", self.mode)
                 .env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1");
         }
         command.envs(env.iter().copied());
@@ -150,7 +168,11 @@ impl Twin {
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Pair {
         let on = self.run_side(ON, args, env);
         let off = self.run_side(OFF, args, env);
-        Pair { on, off }
+        Pair {
+            on,
+            off,
+            mode: self.mode,
+        }
     }
 
     /// [`Twin::run`], asserting identical output.
@@ -256,6 +278,7 @@ impl Pair {
             .find(|line| line.starts_with(prefix))
     }
 
+    /// A hit (in verify mode: verified).
     #[track_caller]
     fn assert_hit(&self) -> &Self {
         assert!(
@@ -264,6 +287,14 @@ impl Pair {
             self.explain().join("\n"),
             text(&self.on.stderr)
         );
+        if self.mode == VERIFY {
+            assert!(
+                self.line("verified ").is_some(),
+                "expected the hit verified:\n{}\n--- stderr:\n{}",
+                self.explain().join("\n"),
+                text(&self.on.stderr)
+            );
+        }
         self
     }
 
@@ -274,6 +305,36 @@ impl Pair {
             panic!("expected a miss ({reason}):\n{}", self.explain().join("\n"))
         });
         assert!(line.contains(reason), "expected a miss ({reason}): {line}");
+        self
+    }
+
+    /// Verify mode: the hit's shadow full analysis disagreed (exit 70,
+    /// nothing executed, the snapshot removed), one difference naming
+    /// `reason`; the snapshot-less run succeeded.
+    #[track_caller]
+    fn assert_verify_mismatch(&self, reason: &str) -> &Self {
+        let explain = self.explain();
+        assert_eq!(
+            self.on.status.code(),
+            Some(70),
+            "expected a verify mismatch ({reason}):\n{}",
+            explain.join("\n")
+        );
+        assert!(
+            explain
+                .iter()
+                .any(|line| line.starts_with("verify ") && line.contains("MISMATCH")),
+            "{}",
+            explain.join("\n")
+        );
+        assert!(
+            explain
+                .iter()
+                .any(|line| line.starts_with("verify ") && line.contains(reason)),
+            "expected a verify mismatch ({reason}):\n{}",
+            explain.join("\n")
+        );
+        assert!(self.off.status.success(), "{}", text(&self.off.stderr));
         self
     }
 
@@ -561,7 +622,9 @@ fn environment_changes_miss_or_rekey() {
     // The variable is an input the window recorded (and the local rule's
     // replay would differ too).
     let miss = twin.same(args, &local);
-    miss.assert_miss("W5_LOCAL");
+    // EXPLAIN names the first failing check and the local repository
+    // whose replay differs too.
+    miss.assert_miss("ENV W5_LOCAL: value changed; and local repository +local_rule+localrepo: the identity inputs differ");
     miss.assert_saved();
     twin.same(args, &local).assert_hit();
 }
@@ -748,6 +811,27 @@ fn a_file_deleted_from_a_repository_tree_heals() {
             continue;
         }
         let stale = twin.run(BUILD_ALL, env);
+        if twin.mode == VERIFY {
+            // Verify mode compares the hit with a full analysis, which
+            // repairs the tree (it executes the rule again): the documented
+            // per-tree trade-off is a mismatch, and the snapshot goes.
+            assert!(stale.line("hit ").is_some(), "{:?}", stale.explain());
+            stale.assert_verify_mismatch("repository-rule-executed");
+            assert!(twin.snapshots().is_empty());
+            // Nothing executed on the snapshot side (the other side ran the
+            // edited input's action): it catches up, then both agree.
+            let next = twin.run(BUILD_ALL, env);
+            next.assert_success()
+                .assert_miss("no snapshot")
+                .assert_saved();
+            assert!(
+                next.stderr().contains("1 actions executed"),
+                "{}",
+                next.stderr()
+            );
+            twin.same(BUILD_ALL, env).assert_hit();
+            continue;
+        }
         stale.assert_hit();
         assert!(!stale.on.status.success());
         let stderr = text(&stale.on.stderr);
@@ -762,6 +846,7 @@ fn a_file_deleted_from_a_repository_tree_heals() {
         let repaired = Pair {
             on: twin.run_side(ON, BUILD_ALL, env),
             off: stale.off,
+            mode: twin.mode,
         };
         repaired.assert_same(BUILD_ALL);
         repaired.assert_success().assert_miss("no snapshot");
@@ -804,6 +889,16 @@ fn a_hit_hashes_an_edited_tree_file_by_its_change_time() {
         assert_eq!(fs::metadata(&file).unwrap().len(), metadata.len());
     });
     let edited = twin.run(BUILD_ALL, &[]);
+    if twin.mode == VERIFY {
+        // The full analysis repairs the tree (the rule runs again): verify
+        // mode reports the documented trade-off as a mismatch.
+        assert!(edited.line("hit ").is_some(), "{:?}", edited.explain());
+        edited.assert_verify_mismatch("repository-rule-executed");
+        twin.same(BUILD_ALL, &[])
+            .assert_success()
+            .assert_miss("no snapshot");
+        return;
+    }
     edited.assert_hit().assert_success();
     assert!(
         edited.stderr().contains("1 actions executed, 0 cache hits"),
@@ -858,6 +953,7 @@ fn another_binary_misses() {
     let pair = Pair {
         off: twin.run_side(OFF, BUILD_ALL, &[]),
         on: output,
+        mode: twin.mode,
     };
     pair.assert_same(BUILD_ALL);
     pair.assert_miss("no snapshot").assert_saved();
@@ -872,35 +968,33 @@ fn another_binary_misses() {
 fn damaged_snapshots_miss_and_are_replaced() {
     let twin = warmed(BUILD_ALL, &[]);
     let file = twin.snapshots().pop().unwrap();
-    let bytes = fs::read(&file).unwrap();
-    // The third section slot of the header is the PLAN section's: kind,
-    // reserved, offset, length (src/snapshot/format.rs).
-    let slot = 96 + 2 * 40;
-    assert_eq!(
-        u32::from_le_bytes(bytes[slot..slot + 4].try_into().unwrap()),
-        3
-    );
-    let plan_end = u64::from_le_bytes(bytes[slot + 8..slot + 16].try_into().unwrap())
-        + u64::from_le_bytes(bytes[slot + 16..slot + 24].try_into().unwrap());
-    for damaged in [
-        bytes[..bytes.len() / 2].to_vec(),
-        {
-            let mut flipped = bytes.clone();
-            flipped[plan_end as usize - 1] ^= 0x55;
-            flipped
-        },
-        {
-            let mut flipped = bytes.clone();
-            flipped[400] ^= 0x55;
-            flipped
-        },
-        {
-            let mut flipped = bytes.clone();
-            flipped[60] ^= 0x55;
-            flipped
-        },
-        b"BZRSSNP1 garbage".to_vec(),
-    ] {
+    /// Flip one byte (at `at` from the start, or the PLAN section's last
+    /// byte for `None`).
+    fn flip(bytes: &[u8], at: Option<usize>) -> Vec<u8> {
+        // The third section slot of the header is the PLAN section's: kind,
+        // reserved, offset, length (src/snapshot/format.rs).
+        let slot = 96 + 2 * 40;
+        assert_eq!(
+            u32::from_le_bytes(bytes[slot..slot + 4].try_into().unwrap()),
+            3
+        );
+        let plan_end = u64::from_le_bytes(bytes[slot + 8..slot + 16].try_into().unwrap())
+            + u64::from_le_bytes(bytes[slot + 16..slot + 24].try_into().unwrap());
+        let mut flipped = bytes.to_vec();
+        flipped[at.unwrap_or(plan_end as usize - 1)] ^= 0x55;
+        flipped
+    }
+    type Damage = fn(&[u8]) -> Vec<u8>;
+    let damages: [Damage; 5] = [
+        |bytes| bytes[..bytes.len() / 2].to_vec(),
+        |bytes| flip(bytes, None),
+        |bytes| flip(bytes, Some(400)),
+        |bytes| flip(bytes, Some(60)),
+        |_| b"BZRSSNP1 garbage".to_vec(),
+    ];
+    for damage in damages {
+        // The latest save's snapshot (its inputs current), damaged.
+        let damaged = damage(&fs::read(&file).unwrap());
         fs::write(&file, &damaged).unwrap();
         twin.same(BUILD_ALL, &[])
             .assert_miss("unreadable")
@@ -936,6 +1030,7 @@ fn concurrent_saves_of_one_key_leave_a_valid_snapshot() {
         let pair = Pair {
             on,
             off: off.clone(),
+            mode: twin.mode,
         };
         pair.assert_same(BUILD_ALL);
         // Both miss and save, unless one started after the other saved
@@ -1314,6 +1409,320 @@ r = repository_rule(_gen)
     twin.same(args, &[]).assert_saved();
     twin.same(args, &[]).assert_hit();
     twin.same(args, &[]).assert_hit();
+}
+
+const STAMP_BUILD: &str = r##"load("//:rules.bzl", "script_binary", "script_test", "stamped")
+
+stamped(name = "stamped")
+
+script_test(name = "stamped_test", size = "small", data = [":stamped"], script = "#!/bin/bash\necho stamped-test-ran\n")
+
+script_binary(name = "stamped_tool", data = [":stamped"], script = "#!/bin/bash\necho stamped-tool-ran\n")
+"##;
+
+/// W4 review: a hit whose `--workspace_status_command` now fails lays the
+/// failure out exactly as the full analysis does (one failing
+/// BazelWorkspaceStatusAction node; the decoded request finalized with the
+/// failed status the hit computed) — for `build`, `test` and `run`.
+#[test]
+fn a_failing_status_command_fails_a_hit_like_the_full_analysis() {
+    let twin = fixture();
+    twin.write("stable.txt", "one\n");
+    twin.write("stamp/BUILD.bazel", STAMP_BUILD);
+    twin.each(|root| {
+        write_executable_script(
+            &root.join("ws/status.sh"),
+            "#!/bin/sh\necho STABLE_W5 $(cat stable.txt)\n[ -e failing ] && exit 1\nexit 0\n",
+            0o755,
+        );
+    });
+    let status = format!(
+        "--workspace_status_command={}",
+        twin.ws().join("status.sh").display()
+    );
+    let status = status.as_str();
+    for args in [
+        &["build", status, "//stamp:stamped"][..],
+        &["test", status, "//stamp:stamped_test"],
+        &["run", status, "//stamp:stamped_tool"],
+    ] {
+        twin.save(args, &[]);
+        twin.same(args, &[]).assert_hit().assert_success();
+        twin.write("failing", "");
+        let failed = twin.same(args, &[]);
+        failed.assert_hit();
+        assert!(!failed.on.status.success(), "{args:?}");
+        assert!(
+            failed
+                .stderr()
+                .contains("Failed to determine workspace status"),
+            "{args:?}: {}",
+            failed.stderr()
+        );
+        twin.each(|root| fs::remove_file(root.join("ws/failing")).unwrap());
+        twin.same(args, &[]).assert_hit().assert_success();
+    }
+}
+
+/// W4 review: the analysis warnings printed after planning (a dependency
+/// on a deprecated target) are part of the saved plan — the save point lies
+/// between the hand-over and the diagnostics being taken — and print on a
+/// hit exactly where the full analysis prints them.
+#[test]
+fn post_planning_warnings_survive_a_hit() {
+    let twin = fixture();
+    twin.write(
+        "dep/BUILD.bazel",
+        "genrule(name = 'old', outs = ['old.txt'], cmd = 'echo old > $@', deprecation = 'use //dep:new', visibility = ['//visibility:public'])\n",
+    );
+    twin.write(
+        "use/BUILD.bazel",
+        "genrule(name = 'user', srcs = ['//dep:old'], outs = ['user.txt'], cmd = 'cp $< $@')\n",
+    );
+    let args = &["build", "//use:user"];
+    twin.save(args, &[]);
+    for _ in 0..2 {
+        let hit = twin.same(args, &[]);
+        hit.assert_hit().assert_success();
+        assert!(
+            hit.stderr()
+                .contains("depends on deprecated target '//dep:old': use //dep:new"),
+            "{}",
+            hit.stderr()
+        );
+    }
+}
+
+const CONFLICT_RULES: &str = r##"def _conflict(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, "#!/bin/sh\n", is_executable = True)
+    d = ctx.files.data[0]
+    return [DefaultInfo(executable = exe, runfiles = ctx.runfiles(symlinks = {"dir": d, "dir/x": d}))]
+
+conflict = rule(_conflict, executable = True, attrs = {"data": attr.label_list(allow_files = True)})
+"##;
+
+/// W4 review: a plan with analysis errors — here a runfiles conflict under
+/// ConflictPolicy.ERROR, which still builds — is never saved.
+#[test]
+fn plans_with_analysis_errors_are_never_saved() {
+    let twin = fixture();
+    twin.write("conflict/defs.bzl", CONFLICT_RULES);
+    twin.write("conflict/d.txt", "d\n");
+    twin.write(
+        "conflict/BUILD.bazel",
+        "load(':defs.bzl', 'conflict')\nconflict(name = 'c', data = ['d.txt'])\n",
+    );
+    for _ in 0..2 {
+        let built = twin.same(&["build", "//conflict:c"], &[]);
+        built.assert_success().assert_not_saved("taint errors");
+        assert!(
+            built.stderr().contains("ERROR: ") && built.stderr().contains("obscured by"),
+            "{}",
+            built.stderr()
+        );
+    }
+    assert!(twin.snapshots().is_empty());
+}
+
+const MAPPED_RULES: &str = r#"def _basename(f):
+    return f.basename
+
+def _mapped(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name + "_dir")
+    ctx.actions.run_shell(outputs = [d], command = "mkdir -p {d} && echo a > {d}/a.txt && echo b > {d}/b.txt".format(d = d.path))
+    out = ctx.actions.declare_file(ctx.label.name + ".list")
+    args = ctx.actions.args()
+    args.add_all([d], map_each = _basename)
+    ctx.actions.run_shell(outputs = [out], inputs = [d], arguments = [args], command = "echo \"$@\" > " + out.path)
+    return [DefaultInfo(files = depset([out]))]
+
+mapped = rule(implementation = _mapped)
+"#;
+
+/// W4 review: an Args `map_each` over a tree artifact (a Starlark call at
+/// execution time) keeps the plan from being saved.
+#[test]
+fn map_each_plans_are_never_saved() {
+    let twin = fixture();
+    twin.write("mapped/defs.bzl", MAPPED_RULES);
+    twin.write(
+        "mapped/BUILD.bazel",
+        "load(':defs.bzl', 'mapped')\nmapped(name = 'm')\n",
+    );
+    for _ in 0..2 {
+        twin.same(&["build", "//mapped:m"], &[])
+            .assert_success()
+            .assert_not_saved("map-each-deferred");
+    }
+    assert!(twin.snapshots().is_empty());
+}
+
+/// L2-W6: `test` writes MODULE.bazel.lock like every command (genuine
+/// Bazel 9.3 does; it exited before the write): the run that wrote it is
+/// not saved, the next one is.
+#[test]
+fn a_test_writes_the_lockfile_and_saves_next_time() {
+    let twin = fixture();
+    twin.write("ext.bzl", EXTENSION);
+    twin.write(
+        "MODULE.bazel",
+        &format!("{MODULE}\next = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'extrepo')\n"),
+    );
+    twin.write(
+        "ext/BUILD.bazel",
+        "load('//:rules.bzl', 'script_test')\nscript_test(name = 'e_test', size = 'small', data = ['@extrepo//:v.txt'], script = '#!/bin/bash\\necho e-test-ran\\n')\n",
+    );
+    let args = &["test", "//ext:e_test"];
+    let cold = twin.same(args, &[]);
+    cold.assert_success().assert_not_saved("taint");
+    assert!(twin.side(ON).join("ws/MODULE.bazel.lock").exists());
+    assert!(twin.side(OFF).join("ws/MODULE.bazel.lock").exists());
+    twin.same(args, &[]).assert_success().assert_saved();
+    twin.same(args, &[]).assert_hit().assert_success();
+}
+
+/// Fixture 19 (PLAN-L2 §7, L2-W6): every fixture again with
+/// `BAZEL_RS_SNAPSHOT=verify` on the snapshot side. A miss saves as with
+/// `on`; every hit also runs the full analysis in its shadow, which must
+/// agree with the snapshot (`Pair::assert_hit` wants the `verified` line;
+/// a mismatch exits 70, which differs from the snapshot-less run).
+mod verify_mode {
+    /// Run `fixture` with the verify mode on its twins' snapshot side.
+    fn verified(fixture: fn()) {
+        super::MODE.with(|mode| mode.set(super::VERIFY));
+        fixture();
+    }
+
+    #[test]
+    fn a_no_op_build_hits_and_replays_what_planning_printed() {
+        verified(super::a_no_op_build_hits_and_replays_what_planning_printed);
+    }
+
+    #[test]
+    fn a_source_edit_hits_and_reruns_the_affected_action() {
+        verified(super::a_source_edit_hits_and_reruns_the_affected_action);
+    }
+
+    #[test]
+    fn build_and_bzl_edits_miss_then_hit_again() {
+        verified(super::build_and_bzl_edits_miss_then_hit_again);
+    }
+
+    #[test]
+    fn glob_listings_see_matching_files_only() {
+        verified(super::glob_listings_see_matching_files_only);
+    }
+
+    #[test]
+    fn recursive_patterns_see_new_packages_only() {
+        verified(super::recursive_patterns_see_new_packages_only);
+    }
+
+    #[test]
+    fn environment_changes_miss_or_rekey() {
+        verified(super::environment_changes_miss_or_rekey);
+    }
+
+    #[test]
+    fn options_select_their_own_snapshot() {
+        verified(super::options_select_their_own_snapshot);
+    }
+
+    #[test]
+    fn racy_and_mtime_restoring_edits_are_detected() {
+        verified(super::racy_and_mtime_restoring_edits_are_detected);
+    }
+
+    #[test]
+    fn lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save() {
+        verified(super::lockfile_and_module_edits_miss_and_lockfile_writes_do_not_save);
+    }
+
+    #[test]
+    fn a_file_deleted_from_a_repository_tree_heals() {
+        verified(super::a_file_deleted_from_a_repository_tree_heals);
+    }
+
+    #[test]
+    fn a_hit_hashes_an_edited_tree_file_by_its_change_time() {
+        verified(super::a_hit_hashes_an_edited_tree_file_by_its_change_time);
+    }
+
+    #[test]
+    fn another_binary_misses() {
+        verified(super::another_binary_misses);
+    }
+
+    #[test]
+    fn damaged_snapshots_miss_and_are_replaced() {
+        verified(super::damaged_snapshots_miss_and_are_replaced);
+    }
+
+    #[test]
+    fn concurrent_saves_of_one_key_leave_a_valid_snapshot() {
+        verified(super::concurrent_saves_of_one_key_leave_a_valid_snapshot);
+    }
+
+    #[test]
+    fn nobuild_test_and_run_hit() {
+        verified(super::nobuild_test_and_run_hit);
+    }
+
+    #[test]
+    fn symlink_retargets_and_bazelignore_edits_miss() {
+        verified(super::symlink_retargets_and_bazelignore_edits_miss);
+    }
+
+    #[test]
+    fn workspace_status_changes_hit_and_rerun_the_consumer() {
+        verified(super::workspace_status_changes_hit_and_rerun_the_consumer);
+    }
+
+    #[test]
+    fn network_and_printing_local_repositories_never_save() {
+        verified(super::network_and_printing_local_repositories_never_save);
+    }
+
+    #[test]
+    fn failed_builds_never_save() {
+        verified(super::failed_builds_never_save);
+    }
+
+    #[test]
+    fn local_jdk_shaped_repositories_miss_on_host_changes() {
+        verified(super::local_jdk_shaped_repositories_miss_on_host_changes);
+    }
+
+    #[test]
+    fn cross_repository_links_hit() {
+        verified(super::cross_repository_links_hit);
+    }
+
+    #[test]
+    fn a_failing_status_command_fails_a_hit_like_the_full_analysis() {
+        verified(super::a_failing_status_command_fails_a_hit_like_the_full_analysis);
+    }
+
+    #[test]
+    fn post_planning_warnings_survive_a_hit() {
+        verified(super::post_planning_warnings_survive_a_hit);
+    }
+
+    #[test]
+    fn plans_with_analysis_errors_are_never_saved() {
+        verified(super::plans_with_analysis_errors_are_never_saved);
+    }
+
+    #[test]
+    fn map_each_plans_are_never_saved() {
+        verified(super::map_each_plans_are_never_saved);
+    }
+
+    #[test]
+    fn a_test_writes_the_lockfile_and_saves_next_time() {
+        verified(super::a_test_writes_the_lockfile_and_saves_next_time);
+    }
 }
 
 include!("support/executable_script.rs");

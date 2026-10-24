@@ -39,6 +39,8 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 /// The container magic.
@@ -51,6 +53,10 @@ pub const FORMAT: u32 = 1;
 pub const CHUNK: usize = 1024;
 /// Below this many encoded action bytes, chunks decode on the calling thread.
 const PARALLEL_DECODE_BYTES: usize = 4 << 20;
+/// At most this many threads encode or decode the chunks of one plan (a
+/// `query //src/...`-sized request has hundreds of chunks; the hit path
+/// decodes beside the validation and replay threads).
+pub const MAX_THREADS: usize = 8;
 
 const SECTION_META: u32 = 1;
 const SECTION_NODES: u32 = 2;
@@ -123,17 +129,33 @@ pub fn encode(request: &PlannedRequest) -> Result<Vec<u8>, EncodeError> {
 
 /// The META section's content of `request`.
 fn meta_of(request: &PlannedRequest) -> Meta<'_> {
+    // Every field by name (no `..`): a new field of PlannedRequest is a
+    // compile error here until the encoding carries it (META, or the NODES
+    // chunks like `nodes`).
+    let PlannedRequest {
+        command,
+        execute,
+        nodes: _,
+        requested,
+        aspect_reports,
+        non_empty_targets,
+        run_plans,
+        configurations,
+        warnings,
+        errors,
+        build_info,
+    } = request;
     Meta {
-        command: &request.command,
-        execute: request.execute,
-        requested: &request.requested,
-        aspect_reports: &request.aspect_reports,
-        non_empty_targets: request.non_empty_targets,
-        run_plans: &request.run_plans,
-        configurations: &request.configurations,
-        warnings: &request.warnings,
-        errors: &request.errors,
-        build_info: &request.build_info,
+        command,
+        execute: *execute,
+        requested,
+        aspect_reports,
+        non_empty_targets: *non_empty_targets,
+        run_plans,
+        configurations,
+        warnings,
+        errors,
+        build_info,
     }
 }
 
@@ -148,29 +170,18 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
     };
     let parts: Vec<&[PlannedAction]> = request.nodes.chunks(CHUNK).collect();
     // Chunks encode independently (the same bytes on any thread): a large
-    // plan encodes them on scoped threads (the analysis snapshot's save,
-    // L2-W5, encodes on the main thread before execution).
-    let encoded: Vec<Result<Vec<u8>, EncodeError>> = if parts.len() > 1 {
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = parts
-                .iter()
-                .map(|chunk| scope.spawn(move || encode_chunk(chunk)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| {
-                    handle.join().unwrap_or_else(|_| {
-                        Err(EncodeError::NotSerializable(
-                            "the planned actions: the encoder panicked".to_owned(),
-                        ))
-                    })
-                })
-                .collect()
+    // plan encodes them on a few scoped threads (the analysis snapshot's
+    // save, L2-W5, encodes on the main thread before execution).
+    let chunks = on_threads(&parts, |chunk| encode_chunk(chunk))
+        .into_iter()
+        .map(|chunk| {
+            chunk.unwrap_or_else(|| {
+                Err(EncodeError::NotSerializable(
+                    "the planned actions: the encoder panicked".to_owned(),
+                ))
+            })
         })
-    } else {
-        parts.iter().map(|chunk| encode_chunk(chunk)).collect()
-    };
-    let chunks = encoded.into_iter().collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let sections = 1 + chunks.len();
     let mut bytes = Vec::with_capacity(
         16 + 12 * sections + meta.len() + chunks.iter().map(Vec::len).sum::<usize>(),
@@ -318,36 +329,61 @@ fn decode_chunk(chunk: &[u8]) -> Result<Vec<PlannedAction>, String> {
     postcard::from_bytes(chunk).map_err(|error| format!("planned actions: {error}"))
 }
 
+/// `work` over `items`, results in item order, on min(items, available
+/// parallelism, [`MAX_THREADS`]) scoped threads that take the next item from
+/// a shared counter (on the calling thread for one item or one thread).
+/// `None` for an item whose work panicked.
+fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<Option<R>> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(MAX_THREADS)
+        .min(items.len());
+    let run = |item: &T| std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(item))).ok();
+    if threads <= 1 {
+        return items.iter().map(run).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    let result = run(item);
+                    *slots[index].lock().unwrap_or_else(PoisonError::into_inner) = result;
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| slot.into_inner().unwrap_or_else(PoisonError::into_inner))
+        .collect()
+}
+
 /// Decode an encoded request.
 pub fn decode(bytes: &[u8]) -> Result<PlannedRequest, String> {
     let sections = sections(bytes)?;
     let meta: MetaOwned = postcard::from_bytes(sections.meta)
         .map_err(|error| format!("planned request outline: {error}"))?;
     let total: usize = sections.nodes.iter().map(|chunk| chunk.len()).sum();
-    let chunks: Vec<Result<Vec<PlannedAction>, String>> =
-        if sections.nodes.len() > 1 && total >= PARALLEL_DECODE_BYTES {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = sections
-                    .nodes
-                    .iter()
-                    .map(|chunk| scope.spawn(move || decode_chunk(chunk)))
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|handle| {
-                        handle
-                            .join()
-                            .unwrap_or_else(|_| Err("planned actions: decoder panicked".into()))
-                    })
-                    .collect()
-            })
-        } else {
-            sections
-                .nodes
-                .iter()
-                .map(|chunk| decode_chunk(chunk))
-                .collect()
-        };
+    let chunks: Vec<Result<Vec<PlannedAction>, String>> = if sections.nodes.len() > 1
+        && total >= PARALLEL_DECODE_BYTES
+    {
+        on_threads(&sections.nodes, |chunk| decode_chunk(chunk))
+            .into_iter()
+            .map(|chunk| chunk.unwrap_or_else(|| Err("planned actions: decoder panicked".into())))
+            .collect()
+    } else {
+        sections
+            .nodes
+            .iter()
+            .map(|chunk| decode_chunk(chunk))
+            .collect()
+    };
     let mut nodes = Vec::with_capacity(chunks.iter().map(|c| c.as_ref().map_or(0, Vec::len)).sum());
     for chunk in chunks {
         nodes.extend(chunk?);
@@ -750,14 +786,17 @@ pub(crate) mod file {
     use crate::starlark_types::File;
 
     pub(crate) fn serialize<S: Serializer>(value: &File, serializer: S) -> Result<S::Ok, S::Error> {
-        (
-            &value.path,
-            &value.short_path,
-            &value.owner,
-            value.is_source,
-            value.is_directory,
-        )
-            .serialize(serializer)
+        // Every field by name (no `..`): a new field of File is a compile
+        // error here until the encoding carries it (deserialize builds the
+        // value with a struct literal, which is exhaustive too).
+        let File {
+            path,
+            short_path,
+            owner,
+            is_source,
+            is_directory,
+        } = value;
+        (path, short_path, owner, is_source, is_directory).serialize(serializer)
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
@@ -1209,6 +1248,30 @@ mod tests {
             format!("//pkg:w#{}", 2 * CHUNK + 4)
         );
         assert_eq!(encode(&decoded).unwrap(), bytes);
+    }
+
+    /// The chunk work runs on at most [`MAX_THREADS`] threads, results in
+    /// item order; a panicking item is a `None`, never a crash.
+    #[test]
+    fn chunk_work_runs_on_a_bounded_number_of_threads() {
+        let items: Vec<usize> = (0..64).collect();
+        let threads = Mutex::new(std::collections::HashSet::new());
+        let results = on_threads(&items, |item| {
+            threads.lock().unwrap().insert(std::thread::current().id());
+            std::thread::sleep(Duration::from_millis(2));
+            assert_ne!(*item, 13, "item 13 panics");
+            item * 2
+        });
+        let used = threads.lock().unwrap().len();
+        assert!((1..=MAX_THREADS).contains(&used), "{used} threads");
+        for (index, result) in results.iter().enumerate() {
+            if index == 13 {
+                assert!(result.is_none());
+            } else {
+                assert_eq!(*result, Some(index * 2));
+            }
+        }
+        assert!(on_threads(&[] as &[usize], |item| *item).is_empty());
     }
 
     /// The round trip's section-by-section check sees any difference.

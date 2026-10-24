@@ -968,6 +968,14 @@ impl Recorder {
     /// the manifest), so the recording does not depend on whether the link
     /// or the repository came first; a local claim drops a crossing's. The
     /// walk runs unlocked; a claim superseded meanwhile records nothing.
+    ///
+    /// The manifest's entry always holds its latest key: two verifications
+    /// of one publication may race (workers' warm probes,
+    /// crate::repository_demand::get_or_probe), and the later one's
+    /// fingerprint refresh rewrites the manifest after the first claim
+    /// walked it — the manifest is stat'ed again when the record is stored
+    /// and on every later owner claim (each verification claims after its
+    /// refresh), so a hit never compares against a key the window replaced.
     fn claim_tree(
         &self,
         claim: Claim,
@@ -980,6 +988,16 @@ impl Recorder {
             let mut roots = lock(&self.repository_roots);
             match (roots.get(root), claim) {
                 (None, _) | (Some(Claim::Crossing), Claim::Owner | Claim::Local) => {}
+                (Some(Claim::Owner), Claim::Owner) => {
+                    let mut repositories = lock(&self.repositories);
+                    if let Some(record) = repositories
+                        .iter_mut()
+                        .find(|repository| repository.root == root)
+                    {
+                        restat_manifest(record, self.window_start_ns);
+                    }
+                    return;
+                }
                 (Some(_), _) => return,
             }
             roots.insert(root.to_path_buf(), claim);
@@ -991,7 +1009,31 @@ impl Recorder {
         }
         let mut repositories = lock(&self.repositories);
         repositories.retain(|repository| repository.root != root);
-        repositories.extend(record);
+        if let Some(mut record) = record {
+            restat_manifest(&mut record, self.window_start_ns);
+            repositories.push(record);
+        }
+    }
+}
+
+/// The manifest entry of `record` at the manifest's current lstat (see
+/// `Recorder::claim_tree`).
+fn restat_manifest(record: &mut RepositoryRecord, window_start_ns: i64) {
+    let Some(manifest) = &record.manifest else {
+        return;
+    };
+    let state = match fs::symlink_metadata(manifest) {
+        Ok(metadata) => Ok((FileKind::of(metadata.file_type()), StatKey::of(&metadata))),
+        Err(error) => Err(errno(&error)),
+    };
+    let racy = matches!(&state, Ok((_, key)) if key.racy(window_start_ns));
+    if let Some(entry) = record
+        .entries
+        .iter_mut()
+        .find(|entry| entry.path == *manifest)
+    {
+        entry.state = state;
+        entry.racy = racy;
     }
 }
 
@@ -1501,6 +1543,49 @@ mod tests {
         recorder.observe(&path, Op::Stat, Outcome::Kind(FileKind::File));
         let taints = recorder.snapshot().taints;
         assert_eq!(taints[&Taint::Unstable].count, 1);
+    }
+
+    /// Two verifications of one publication race (workers' warm probes):
+    /// the later one's fingerprint refresh rewrites the manifest after the
+    /// first claim walked it. The record keeps the manifest's latest key.
+    #[test]
+    fn a_later_owner_claim_records_the_refreshed_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("trees/abc");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("BUILD.bazel"), b"").unwrap();
+        let manifest = temp.path().join("manifests/abc.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        fs::write(&manifest, b"{\"v\": 1}").unwrap();
+        let recorder = Recorder::new(now_ns(), BTreeSet::new());
+        let manifest_key = |recording: &Recording| {
+            recording.repositories[0]
+                .entries
+                .iter()
+                .find(|entry| entry.path == manifest)
+                .map(|entry| entry.state)
+                .unwrap()
+        };
+        recorder.claim_tree(Claim::Owner, "direct", "abc", &root, Some(&manifest));
+        let first = manifest_key(&recorder.snapshot());
+        // The refresh: a new file renamed over the manifest (a new inode).
+        let staged = temp.path().join("manifests/.staged");
+        fs::write(&staged, b"{\"v\": 2}").unwrap();
+        fs::rename(&staged, &manifest).unwrap();
+        recorder.claim_tree(Claim::Owner, "direct", "abc", &root, Some(&manifest));
+        let recording = recorder.snapshot();
+        assert_eq!(recording.repositories.len(), 1);
+        let second = manifest_key(&recording);
+        assert_ne!(first, second);
+        let now = fs::symlink_metadata(&manifest).unwrap();
+        assert_eq!(second, Ok((FileKind::File, StatKey::of(&now))));
+        // The tree's entries were walked once; the root entry is unchanged.
+        assert!(
+            recording.repositories[0]
+                .entries
+                .iter()
+                .any(|entry| entry.path == root.join("BUILD.bazel"))
+        );
     }
 
     #[test]

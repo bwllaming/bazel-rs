@@ -13,15 +13,19 @@
 //!   replayed local repository rule's definition load evaluates its `.bzl`
 //!   closure again with the loader's default print handler: such a print is
 //!   already part of the recorded window bytes, so it is swallowed.
+//! * [`Mode::Shadow`]: verify mode's shadow full analysis of a hit
+//!   (crate::snapshot::verify): kept to be compared, never printed (the hit
+//!   prints its own bytes).
 //!
 //! Stopping restores the original stderr first, then waits (bounded) until
 //! the reader saw the end of the pipe, so every byte written before the stop
 //! is on the original stderr before anything written after it. A process
 //! that still holds the pipe (a lingering child) keeps the reader alive: it
 //! is detached — it keeps forwarding — and the capture is incomplete, which
-//! keeps the run from being saved. A panic while a [`Mode::Tee`] capture is
-//! active restores stderr before the panic message prints (and marks the
-//! capture broken); the memory watchdog does the same before it exits.
+//! keeps the run from being saved. A panic while a [`Mode::Tee`] or
+//! [`Mode::Shadow`] capture is active restores stderr before the panic
+//! message prints (and marks the capture broken); the memory watchdog does
+//! the same before it exits.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -41,6 +45,18 @@ pub enum Mode {
     Tee,
     /// Keep them only (a hit attempt prints nothing).
     Discard,
+    /// Keep them only, for a whole full analysis (verify mode's shadow
+    /// analysis, crate::snapshot::verify: what it printed is compared, the
+    /// hit prints its own bytes): like [`Mode::Tee`], a panic or the memory
+    /// watchdog's exit restores stderr first, so their messages are seen.
+    Shadow,
+}
+
+impl Mode {
+    /// Whether a panic or the watchdog's exit restores stderr first.
+    fn restores_for_exit(self) -> bool {
+        matches!(self, Self::Tee | Self::Shadow)
+    }
 }
 
 #[derive(Default)]
@@ -140,7 +156,7 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
     rustix::stdio::dup2_stderr(&writer).map_err(io::Error::from)?;
     drop(writer);
     crate::snapshot::diag::set_original(Some(original.clone()));
-    if mode == Mode::Tee {
+    if mode.restores_for_exit() {
         install_panic_hook();
     }
     *slot = Some(Active {
@@ -196,19 +212,19 @@ fn finish(bound: Duration) -> Option<Captured> {
     })
 }
 
-/// Whether a [`Mode::Tee`] capture is active.
-pub fn tee_active() -> bool {
+/// Whether a [`Mode::Tee`] or [`Mode::Shadow`] capture is active.
+fn restorable_active() -> bool {
     active()
         .as_ref()
-        .is_some_and(|active| active.mode == Mode::Tee)
+        .is_some_and(|active| active.mode.restores_for_exit())
 }
 
-/// End a [`Mode::Tee`] capture now, before the process exits or a panic
-/// message prints: restore the original stderr and let the reader forward
-/// what is still in the pipe (briefly bounded). The capture is broken: the
-/// run is not saved.
+/// End a [`Mode::Tee`] (or [`Mode::Shadow`]) capture now, before the
+/// process exits or a panic message prints: restore the original stderr and
+/// let the reader forward what is still in the pipe (briefly bounded). The
+/// capture is broken: the run is not saved.
 pub fn restore_for_exit() {
-    if tee_active() {
+    if restorable_active() {
         BROKEN.store(true, Ordering::SeqCst);
         let _ = finish(Duration::from_millis(200));
     }

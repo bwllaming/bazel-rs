@@ -178,3 +178,72 @@ fn error_mode_keeps_its_on_demand_validation() {
     );
     assert!(f.lock().is_none());
 }
+
+const SCRIPT_RULES: &str = r#"def _exe(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, ctx.attr.script, is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]
+
+_ATTRS = {"script": attr.string(), "data": attr.label_list(allow_files = True)}
+
+script_test = rule(implementation = _exe, test = True, attrs = _ATTRS)
+script_binary = rule(implementation = _exe, executable = True, attrs = _ATTRS)
+"#;
+
+const SCRIPT_BUILD: &str = r##"load("//:script.bzl", "script_binary", "script_test")
+
+script_test(name = "pass_test", size = "small", data = ["@chosen//:data.txt"], script = "#!/bin/sh\necho test-ran\n")
+
+script_test(name = "fail_test", size = "small", data = ["@chosen//:data.txt"], script = "#!/bin/sh\nexit 1\n")
+
+script_binary(name = "tool", data = ["@chosen//:data.txt"], script = "#!/bin/sh\necho tool-ran\n")
+
+filegroup(name = "broken", srcs = ["//missing:x", "@chosen//:data.txt"])
+"##;
+
+/// BazelLockFileModule.afterCommand runs after every command (genuine
+/// Bazel 9.3: `test` passing, failing and `--nobuild`, `run`, a `query`
+/// with exit code 3 all write MODULE.bazel.lock). The native commands that
+/// end the process themselves — `test` exits with its code, `run` replaces
+/// the process, a failing `query` exits — write it before they do.
+#[test]
+fn commands_that_end_the_process_write_the_lockfile_first() {
+    let f = Fixture::new(GOOD_EXT);
+    f.file("script.bzl", SCRIPT_RULES);
+    f.file("BUILD.bazel", SCRIPT_BUILD);
+    let cases: &[(&[&str], i32)] = &[
+        (&["test", "//:pass_test"], 0),
+        (&["test", "//:fail_test"], 3),
+        (&["test", "--nobuild", "//:pass_test"], 1),
+        (&["run", "//:tool"], 0),
+        (&["query", "--keep_going", "deps(//:broken)"], 3),
+    ];
+    for (args, code) in cases {
+        let _ = fs::remove_file(f.0.path().join("MODULE.bazel.lock"));
+        let result = Command::new("timeout")
+            .args([
+                "120s",
+                env!("CARGO_BIN_EXE_bazel-rs"),
+                "--ignore_all_rc_files",
+                "--cache-dir=cache",
+            ])
+            .args(*args)
+            .current_dir(f.0.path())
+            .env("HOME", f.0.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            result.status.code(),
+            Some(*code),
+            "{args:?}: {}",
+            stderr(&result)
+        );
+        let lock = f
+            .lock()
+            .unwrap_or_else(|| panic!("{args:?} wrote no lockfile: {}", stderr(&result)));
+        assert!(lock.contains("\"//:ext.bzl%files\": {"), "{args:?}: {lock}");
+        if args[0] == "run" {
+            assert_eq!(String::from_utf8_lossy(&result.stdout), "tool-ran\n");
+        }
+    }
+}

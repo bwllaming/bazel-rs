@@ -809,18 +809,32 @@ fn check_for_hit(
                 Ok(metadata) => Ok((FileKind::of(metadata.file_type()), StatKey::of(&metadata))),
                 Err(error) => Err(errno(&error)),
             };
-            if got != entry.state {
+            // A manifest rewritten since the recording — the warm probe of
+            // any later full analysis refreshes a settled tree's stat
+            // fingerprints into it (crate::repository_store::try_reuse) —
+            // still describes the same content-addressed tree: its tree is
+            // verified against it, like a racy entry, instead of a miss.
+            let manifest_rewritten = got != entry.state
+                && repository.manifest.as_deref() == Some(entry.path.as_path())
+                && matches!(
+                    (&got, &entry.state),
+                    (Ok((FileKind::File, _)), Ok((FileKind::File, _)))
+                );
+            if got != entry.state && !manifest_rewritten {
                 return Err(format!(
-                    "INTEGRITY {}: lstat changed (repository {})",
+                    "INTEGRITY {}: lstat changed (repository {}; recorded {}, now {})",
                     escape(entry.path.as_os_str()),
-                    repository.name
+                    repository.name,
+                    integrity_state(&entry.state),
+                    integrity_state(&got)
                 ));
             }
-            if !entry.racy {
+            if !entry.racy && !manifest_rewritten {
                 return Ok(None);
             }
-            // Recorded within the racy window: the tree's content decides
-            // (once per tree), then the unchanged key may be settled now.
+            // Recorded within the racy window (or a rewritten manifest):
+            // the tree's content decides (once per tree), then the current
+            // key may be settled now.
             let start = now_ns();
             let already = verified
                 .lock()
@@ -865,14 +879,26 @@ fn check_for_hit(
     }
 }
 
+/// An integrity entry's lstat outcome for diagnostics: `kind:dev:ino:size:mtime:ctime`
+/// or `error:<errno>`.
+fn integrity_state(state: &Result<(FileKind, StatKey), i32>) -> String {
+    match state {
+        Ok((kind, key)) => format!("{}:{key}", kind.letter() as char),
+        Err(errno) => format!("error:{errno}"),
+    }
+}
+
 /// Validate a snapshot's INPUTS for a hit (PLAN-L2 §1c): every check of
 /// [`dry_run`], stopping at the first mismatch, which is the error (the
 /// reason a hit missed). A changed integrity entry misses (the full
-/// analysis repairs or re-verifies its tree); a racy one verifies its tree
+/// analysis repairs or re-verifies its tree); a racy one, or a manifest
+/// rewritten since the recording (a fingerprint refresh), verifies its tree
 /// against its manifest. Below [`SINGLE_THREAD_CHECKS`] checks one thread
 /// runs them in path order; otherwise min(available parallelism, 16)
-/// threads stop at the first mismatch any of them finds (the earliest of
-/// those in path order is reported).
+/// threads take blocks in path order and stop past the earliest mismatch
+/// found so far, so the reported mismatch is always the first failing
+/// check in that order (environment, observations by path, integrity
+/// entries), whatever the thread timing.
 pub fn validate_for_hit(recording: &Recording) -> Result<Validated, String> {
     let started = Instant::now();
     let mut validated = Validated::default();
@@ -911,28 +937,35 @@ pub fn validate_for_hit(recording: &Recording) -> Result<Validated, String> {
         }
     } else {
         let cursor = AtomicUsize::new(0);
-        let failed = std::sync::atomic::AtomicBool::new(false);
+        // The earliest failing index found so far: blocks are handed out in
+        // order and every check before it still runs, so the minimum over
+        // the failures found is the first failing check.
+        let first_failure = AtomicUsize::new(usize::MAX);
         let results: Mutex<Vec<(usize, Result<Validated, String>)>> = Mutex::new(Vec::new());
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 scope.spawn(|| {
                     let mut tally = Validated::default();
                     let mut outcome = Ok(());
-                    'blocks: while !failed.load(Ordering::Relaxed) {
+                    'blocks: loop {
                         let start = cursor.fetch_add(BLOCK, Ordering::Relaxed);
-                        if start >= items.len() {
+                        if start >= items.len() || start > first_failure.load(Ordering::Relaxed) {
                             break;
                         }
                         for (offset, item) in items[start..(start + BLOCK).min(items.len())]
                             .iter()
                             .enumerate()
                         {
+                            let index = start + offset;
+                            if index > first_failure.load(Ordering::Relaxed) {
+                                break 'blocks;
+                            }
                             match check_for_hit(recording, item, &verified, &mut tally) {
                                 Ok(Some(refresh)) => tally.refresh.push(refresh),
                                 Ok(None) => {}
                                 Err(error) => {
-                                    failed.store(true, Ordering::Relaxed);
-                                    outcome = Err((start + offset, error));
+                                    first_failure.fetch_min(index, Ordering::Relaxed);
+                                    outcome = Err((index, error));
                                     break 'blocks;
                                 }
                             }
@@ -1002,6 +1035,7 @@ mod tests {
     use super::*;
     use crate::observed_fs::Projection;
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     fn observation(op: Op, outcome: Outcome) -> Observation {
         Observation { op, outcome }
@@ -1222,7 +1256,7 @@ mod tests {
         }
         let error = validate_for_hit(&changed).unwrap_err();
         assert!(
-            error.starts_with("INTEGRITY ") && error.contains("(repository r)"),
+            error.starts_with("INTEGRITY ") && error.contains("(repository r; recorded d:"),
             "{error}"
         );
         // A racy entry of a tree without a manifest cannot be verified.
@@ -1234,6 +1268,103 @@ mod tests {
         changed.env[0].1.digest = Some([0; 32]);
         let error = validate_for_hit(&changed).unwrap_err();
         assert_eq!(error, "ENV BAZEL_RS_SURELY_UNSET_W5: value changed");
+    }
+
+    /// On many threads the reported mismatch is still the first failing
+    /// check in path order (EXPLAIN names it), whatever thread finds what.
+    #[test]
+    fn a_parallel_hit_validation_reports_the_first_failing_check() {
+        let observations: Vec<(PathBuf, Observation)> = (0..3 * SINGLE_THREAD_CHECKS)
+            .map(|index| {
+                let outcome = if [2500, 7000, 11000].contains(&index) {
+                    Outcome::Kind(FileKind::File)
+                } else {
+                    Outcome::Error(2)
+                };
+                (
+                    PathBuf::from(format!("/nonexistent-w6/{index:05}")),
+                    observation(Op::Stat, outcome),
+                )
+            })
+            .collect();
+        let recording = Recording {
+            observations,
+            ..Recording::default()
+        };
+        for _ in 0..5 {
+            let error = validate_for_hit(&recording).unwrap_err();
+            assert!(
+                error.starts_with("STAT /nonexistent-w6/02500: recorded kind:f"),
+                "{error}"
+            );
+        }
+    }
+
+    /// A manifest rewritten since the recording (a later full analysis
+    /// refreshed its stat fingerprints) verifies its tree instead of
+    /// missing; a tree that no longer matches it still misses, and so does a
+    /// changed tree root.
+    #[test]
+    fn a_rewritten_manifest_verifies_its_tree() {
+        use crate::observed_fs::{IntegrityEntry, RepositoryRecord};
+        let temp = tempfile::tempdir().unwrap();
+        let tree = temp.path().join("trees/abc");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("f"), b"x").unwrap();
+        let digest = crate::observed_fs::hex(&Sha256::digest(b"x"));
+        let manifest = temp.path().join("manifests/abc.json");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let publish = |extra: &str| {
+            let staged = temp.path().join("manifests/.staged");
+            fs::write(
+                &staged,
+                format!(
+                    r#"{{"files": {{"f": {{"directory": false, "sha256": "{digest}"{extra}}}}}}}"#
+                ),
+            )
+            .unwrap();
+            fs::rename(&staged, &manifest).unwrap();
+        };
+        publish("");
+        let entry = |path: &Path, kind: FileKind| IntegrityEntry {
+            path: path.to_path_buf(),
+            state: Ok((kind, key(path))),
+            racy: false,
+        };
+        let recording = Recording {
+            repositories: vec![RepositoryRecord {
+                kind: "direct",
+                name: "r".into(),
+                root: tree.clone(),
+                manifest: Some(manifest.clone()),
+                entries: vec![
+                    entry(&manifest, FileKind::File),
+                    entry(&tree, FileKind::Dir),
+                ],
+            }],
+            ..Recording::default()
+        };
+        assert_eq!(validate_for_hit(&recording).unwrap().trees_verified, 0);
+        // The refresh: the same content view in a new file.
+        publish(r#", "stat": {"dev": 1}"#);
+        let validated = validate_for_hit(&recording).unwrap();
+        assert_eq!(validated.trees_verified, 1);
+        // Just written: not settled, nothing to refresh yet.
+        assert!(validated.refresh.is_empty(), "{:?}", validated.refresh);
+        // The tree no longer matches the manifest: a miss.
+        fs::write(tree.join("f"), b"y").unwrap();
+        let error = validate_for_hit(&recording).unwrap_err();
+        assert!(error.contains("does not match its manifest"), "{error}");
+        // A changed root is a miss at once (the manifest recorded as it is).
+        fs::write(tree.join("f"), b"x").unwrap();
+        let mut recording = recording;
+        recording.repositories[0].entries[0] = entry(&manifest, FileKind::File);
+        fs::write(tree.join("g"), b"new").unwrap();
+        let error = validate_for_hit(&recording).unwrap_err();
+        assert!(
+            error.starts_with("INTEGRITY ") && error.contains("trees/abc: lstat changed"),
+            "{error}"
+        );
     }
 
     /// The byte order agrees with `Path::cmp` on normalized absolute paths,

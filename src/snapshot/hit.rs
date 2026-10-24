@@ -60,6 +60,21 @@ pub struct Attempt<'a> {
     /// (the status of a plan with status placeholders).
     pub workspace_status: WorkspaceStatusOptions,
     pub workspace: &'a Path,
+    /// `BAZEL_RS_SNAPSHOT=verify`: keep what the full analysis is compared
+    /// with ([`Evidence`]) and write refreshed keys back only once it
+    /// agreed ([`Session::start_deferred_refresh`]).
+    pub verify: bool,
+}
+
+/// What verify mode compares a hit's shadow full analysis with
+/// (crate::snapshot::verify).
+pub struct Evidence {
+    /// The PLAN section's bytes (the encoding is deterministic: the full
+    /// analysis's request must encode to exactly these).
+    pub plan: Vec<u8>,
+    /// The INPUTS section, decoded: the policy's recording and the replay
+    /// records.
+    pub inputs: format::Inputs,
 }
 
 /// Where the hit's time went.
@@ -85,6 +100,8 @@ pub struct Hit {
     pub session: Session,
     pub summary: String,
     pub timings: Timings,
+    /// Verify mode only ([`Attempt::verify`]).
+    pub evidence: Option<Evidence>,
 }
 
 /// Why there is no hit.
@@ -122,6 +139,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     // the recorded window bytes): swallowed.
     let capture = crate::snapshot::capture::start(crate::snapshot::capture::Mode::Discard).ok();
     let tables = inputs.tables.clone();
+    let keep_plan = attempt.verify;
     let parallel = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         std::thread::scope(|scope| {
             let plan = scope.spawn(|| {
@@ -129,7 +147,8 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                 let bytes = reader.section(Section::Plan)?;
                 let size = bytes.len();
                 let request = crate::snapshot::codec::decode(&bytes)?;
-                Ok::<_, String>((request, size, started.elapsed()))
+                let kept = keep_plan.then_some(bytes);
+                Ok::<_, String>((request, size, kept, started.elapsed()))
             });
             let replay = (!inputs.replay.is_empty()).then(|| {
                 let records = &inputs.replay;
@@ -161,7 +180,18 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         Ok(results) => results,
         Err(_) => return miss("the validation panicked"),
     };
-    let validated: Validated = validation?;
+    // EXPLAIN names the first failing check and, when their replay differs
+    // too, the mismatching local repositories (both ran to completion).
+    let replay_failure = match &replay {
+        Some(Err(reason)) => Some(reason.clone()),
+        _ => None,
+    };
+    let validated: Validated = match (validation, replay_failure) {
+        (Ok(validated), None) => validated,
+        (Ok(_), Some(replay)) => return miss(replay),
+        (Err(first), None) => return miss(first),
+        (Err(first), Some(replay)) => return miss(format!("{first}; and {replay}")),
+    };
     timings.validation = validated.elapsed;
     let replayed = match replay {
         Some(result) => {
@@ -171,7 +201,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         }
         None => 0,
     };
-    let (request, plan_bytes, decode) =
+    let (request, plan_bytes, kept_plan, decode) =
         plan.map_err(|error| format!("unreadable plan: {error}"))?;
     timings.decode = decode;
     // The workspace status of the plan's status placeholders: computed
@@ -233,19 +263,41 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
             .unwrap_or_default(),
         millis(timings.total),
     );
-    let refresh = (!validated.refresh.is_empty())
-        .then(|| refresh_in_background(reader, inputs, attempt.cache, validated.refresh));
+    let mut session = Session {
+        cache: attempt.cache.to_path_buf(),
+        key: attempt.key,
+        refresh: None,
+        deferred: None,
+    };
+    let evidence = if attempt.verify {
+        // Verify mode: nothing is written back before the full analysis
+        // agreed (a mismatch is never saved).
+        if !validated.refresh.is_empty() {
+            session.deferred = Some((reader, validated.refresh));
+        }
+        Some(Evidence {
+            plan: kept_plan.unwrap_or_default(),
+            inputs,
+        })
+    } else {
+        if !validated.refresh.is_empty() {
+            session.refresh = Some(refresh_in_background(
+                reader,
+                inputs,
+                attempt.cache,
+                validated.refresh,
+            ));
+        }
+        None
+    };
     Ok(Box::new(Hit {
         request,
         window_stderr,
         status,
-        session: Session {
-            cache: attempt.cache.to_path_buf(),
-            key: attempt.key,
-            refresh,
-        },
+        session,
         summary,
         timings,
+        evidence,
     }))
 }
 
@@ -273,16 +325,38 @@ fn replay_records(
         source_cache: tables.source_cache.clone(),
     };
     let report = crate::snapshot::replay::replay(tables, &context, records);
-    for replayed in &report.replayed {
-        if let Some(reason) = &replayed.mismatch {
-            return Err(format!("local repository {}: {reason}", replayed.canonical));
-        }
-        if replayed.output_bytes > 0 {
-            return Err(format!(
+    // Every mismatching local repository, in recorded order (EXPLAIN).
+    let mismatches: Vec<String> = report
+        .replayed
+        .iter()
+        .filter_map(|replayed| match &replayed.mismatch {
+            Some(reason) => Some(format!("local repository {}: {reason}", replayed.canonical)),
+            None if replayed.output_bytes > 0 => Some(format!(
                 "local repository {} printed {} bytes",
                 replayed.canonical, replayed.output_bytes
+            )),
+            None => None,
+        })
+        .collect();
+    if let Some(first) = mismatches.first() {
+        const NAMED: usize = 3;
+        let mut reason = first.clone();
+        if mismatches.len() > 1 {
+            reason.push_str(&format!(
+                " (and {} more: {})",
+                mismatches.len() - 1,
+                mismatches[1..]
+                    .iter()
+                    .take(NAMED)
+                    .map(|text| text.trim_start_matches("local repository "))
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ));
+            if mismatches.len() - 1 > NAMED {
+                reason.push_str(", ...");
+            }
         }
+        return Err(reason);
     }
     if report.replayed.len() != records.len() {
         return Err(format!(
@@ -341,9 +415,30 @@ pub struct Session {
     cache: PathBuf,
     key: Key,
     refresh: Option<JoinHandle<()>>,
+    /// Verify mode: the refresh waits for the full analysis to agree.
+    deferred: Option<(Reader, Vec<Refresh>)>,
 }
 
 impl Session {
+    /// The snapshot's key.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// The cache whose store holds the snapshot.
+    pub fn cache(&self) -> &Path {
+        &self.cache
+    }
+
+    /// Verify mode, once the full analysis agreed with the hit: write the
+    /// keys the validation settled back (in the background, as a hit of
+    /// `BAZEL_RS_SNAPSHOT=on` does at once).
+    pub fn start_deferred_refresh(&mut self, inputs: format::Inputs) {
+        if let Some((reader, refresh)) = self.deferred.take() {
+            self.refresh = Some(refresh_in_background(reader, inputs, &self.cache, refresh));
+        }
+    }
+
     /// The command succeeded: let the background refresh complete.
     pub fn finish(mut self) {
         if let Some(refresh) = self.refresh.take() {
@@ -418,6 +513,7 @@ mod tests {
             cache: cache.to_path_buf(),
             key,
             refresh: None,
+            deferred: None,
         };
         let present = cache.path().join("repositories/trees/ab");
         std::fs::create_dir_all(&present).unwrap();

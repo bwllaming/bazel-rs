@@ -44,8 +44,10 @@ Digest memo: settled files' SHA-256 by path and stat key persist in
   (docs/DIGEST_MEMO.md).
 Analysis snapshot (experimental, off by default): BAZEL_RS_SNAPSHOT=on saves a
   build/test/run's analysis in <cache>/snapshots/ and skips loading and analysis
-  while every recorded input is unchanged; BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why
-  it missed or was not saved (docs/ANALYSIS_SNAPSHOT.md).
+  while every recorded input is unchanged; BAZEL_RS_SNAPSHOT=verify also runs the
+  full analysis on every hit and exits 70 when they differ;
+  BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why it missed or was not saved
+  (docs/ANALYSIS_SNAPSHOT.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
@@ -422,13 +424,19 @@ fn run() -> Result<(), String> {
     // with BAZEL_RS_SNAPSHOT=on (build, test, run) a snapshot whose inputs
     // are all unchanged is a hit — what planning printed is replayed and
     // the saved plan executes — and a miss records and captures this full
-    // analysis to save it (crate::snapshot).
+    // analysis to save it (crate::snapshot). BAZEL_RS_SNAPSHOT=verify is
+    // `on`, and a hit also runs the full analysis below in its shadow, which
+    // plan_request compares with the hit before the hit executes
+    // (crate::snapshot::verify).
     let mut snapshot = bazel_rs::snapshot::Scope::default();
     match bazel_rs::snapshot::Mode::from_env() {
         bazel_rs::snapshot::Mode::Record => {
             snapshot.record = bazel_rs::snapshot::record::start(&command, &rc_options.repo_env);
         }
-        bazel_rs::snapshot::Mode::On if builds(&command) => {
+        mode @ (bazel_rs::snapshot::Mode::On | bazel_rs::snapshot::Mode::Verify)
+            if builds(&command) =>
+        {
+            let verify = mode == bazel_rs::snapshot::Mode::Verify;
             let targets = if command == "run" {
                 &rest[..rest.len().min(1)]
             } else {
@@ -465,29 +473,26 @@ fn run() -> Result<(), String> {
                         },
                         workspace_status: workspace_status.clone(),
                         workspace: &root,
+                        verify,
                     }) {
+                        bazel_rs::snapshot::Checked::Hit(hit) if verify => {
+                            // The full analysis runs below, in the hit's
+                            // shadow; plan_request compares and hands the
+                            // hit back for its own execution.
+                            bazel_rs::perf_mark("snapshot.hit");
+                            snapshot.verify = Some(bazel_rs::snapshot::verify::start(
+                                hit,
+                                &rc_options.repo_env,
+                                bazel_rs::snapshot::explain(),
+                            ));
+                        }
                         bazel_rs::snapshot::Checked::Hit(hit) => {
                             // The saved plan executes exactly like a planned
                             // one; first what planning printed.
                             bazel_rs::perf_mark("snapshot.hit");
-                            let hit = *hit;
-                            {
-                                use std::io::Write as _;
-                                let mut stderr = std::io::stderr().lock();
-                                let _ = stderr
-                                    .write_all(&hit.window_stderr)
-                                    .and_then(|()| stderr.flush());
-                            }
-                            let mut request = hit.request;
-                            let planned = Planned {
-                                diagnostics: request.take_diagnostics(),
-                                status: bazel_rs::request::StatusSource::Planned(hit.status),
-                                request: Ok(request),
-                            };
-                            let snapshot = bazel_rs::snapshot::Scope {
-                                hit: Some(hit.session),
-                                ..bazel_rs::snapshot::Scope::default()
-                            };
+                            bazel_rs::snapshot::marker(bazel_rs::snapshot::MARKER_HIT_END);
+                            let mut snapshot = bazel_rs::snapshot::Scope::default();
+                            let planned = planned_hit(hit, &mut snapshot);
                             let loading_threads = loading_threads_for_report(
                                 &command,
                                 loading_phase_threads,
@@ -582,7 +587,7 @@ fn run() -> Result<(), String> {
     );
     resolver_options.registry_session = session.clone();
     snapshot.set_registry_session(session.clone());
-    let _lockfile_writer = LockfileWriter(session);
+    let _lockfile_writer = LockfileWriter::new(session);
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_repository_downloads_enabled(repository_downloads_enabled)
@@ -737,6 +742,7 @@ fn run() -> Result<(), String> {
         if outcome.exit_code != 0 {
             bazel_rs::loading::module_timings::report();
             drop(snapshot);
+            write_lockfile();
             bazel_rs::digest_memo::finish();
             std::process::exit(outcome.exit_code);
         }
@@ -947,7 +953,10 @@ struct Planned {
 /// status, then free the engine: execution and reporting read only the
 /// planned request. Under BAZEL_RS_SNAPSHOT=on the capture of what planning
 /// printed ends when planning returns, and the planned request is saved
-/// (in the background) before its diagnostics are taken.
+/// (in the background) before its diagnostics are taken. Under
+/// BAZEL_RS_SNAPSHOT=verify this full analysis may be a hit's shadow: it
+/// is compared with the hit (a mismatch exits 70), and the hit's own plan
+/// executes.
 fn plan_request(
     mut engine: Engine,
     spec: bazel_rs::engine::RequestSpec<'_>,
@@ -962,6 +971,14 @@ fn plan_request(
         errors: engine.take_errors(),
     });
     release_engine(engine);
+    if let Some(verify) = snapshot.verify.take() {
+        // Compared before its diagnostics are taken (they are part of the
+        // planned request's encoding).
+        let hit = (*verify).conclude(&request, failed.as_ref());
+        bazel_rs::perf_mark("snapshot.verified");
+        drop(request);
+        return planned_hit(hit, snapshot);
+    }
     let (diagnostics, request) = match request {
         Ok(mut request) => {
             snapshot.planned(&request);
@@ -973,6 +990,31 @@ fn plan_request(
         request,
         diagnostics,
         status,
+    }
+}
+
+/// A snapshot hit's planned request (crate::snapshot::hit): what planning
+/// printed is written to stderr first, then the decoded request executes
+/// like a planned one, with the workspace status the hit computed; the
+/// hit's session (refresh, self-healing) joins `snapshot`.
+fn planned_hit(
+    hit: Box<bazel_rs::snapshot::hit::Hit>,
+    snapshot: &mut bazel_rs::snapshot::Scope,
+) -> Planned {
+    let hit = *hit;
+    {
+        use std::io::Write as _;
+        let mut stderr = std::io::stderr().lock();
+        let _ = stderr
+            .write_all(&hit.window_stderr)
+            .and_then(|()| stderr.flush());
+    }
+    let mut request = hit.request;
+    snapshot.hit = Some(hit.session);
+    Planned {
+        diagnostics: request.take_diagnostics(),
+        status: bazel_rs::request::StatusSource::Planned(hit.status),
+        request: Ok(request),
     }
 }
 
@@ -1047,14 +1089,48 @@ impl LockfileGate {
     }
 }
 
-/// Writes the updated lockfile when the command ends (success or error).
+/// Writes the updated lockfile when the command ends (success or error):
+/// when it drops at the end of the command, or earlier through
+/// [`write_lockfile`] where a command ends the process itself (`test`'s
+/// exit code, `run`'s exec). BazelLockFileModule.afterCommand runs after
+/// every command: genuine Bazel 9.3 writes MODULE.bazel.lock for `test`
+/// (passing, failing, `--nobuild`) and `run` as for `build`.
 struct LockfileWriter(bazel_rs::registry_session::SessionHandle);
+
+/// The registry session whose updated lockfile the command still writes
+/// (taken by the first [`write_lockfile`]: written once).
+static LOCKFILE_SESSION: std::sync::Mutex<Option<bazel_rs::registry_session::SessionHandle>> =
+    std::sync::Mutex::new(None);
+
+impl LockfileWriter {
+    fn new(session: bazel_rs::registry_session::SessionHandle) -> Self {
+        *LOCKFILE_SESSION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session.clone());
+        Self(session)
+    }
+}
 
 impl Drop for LockfileWriter {
     fn drop(&mut self) {
-        if let Some(warning) = self.0.session().and_then(|session| session.finish()) {
-            warn(&warning);
-        }
+        write_lockfile();
+    }
+}
+
+/// Write the updated lockfile (if any) now; later calls do nothing. Called
+/// before `test` exits with its code and before `run` replaces the process,
+/// so they write it like every other command.
+fn write_lockfile() {
+    let session = LOCKFILE_SESSION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(warning) = session
+        .as_ref()
+        .and_then(|session| session.session())
+        .and_then(|session| session.finish())
+    {
+        warn(&warning);
     }
 }
 
@@ -1371,6 +1447,7 @@ fn run_tail(
     }
     process.envs(&line.environment);
     process.current_dir(&line.working_directory);
+    write_lockfile();
     bazel_rs::digest_memo::finish();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", argv[0]))
@@ -1656,6 +1733,7 @@ fn test_tail(
     }
     if planned_tests.is_empty() {
         eprintln!("ERROR: No test targets were found, yet testing was requested");
+        write_lockfile();
         bazel_rs::digest_memo::finish();
         std::process::exit(4);
     }
@@ -1666,6 +1744,7 @@ fn test_tail(
         // the build. Unable to run tests`, exit 1; genuine 9.3 scratch
         // capture `test --nobuild //pkg:t`).
         eprintln!("ERROR: Couldn't start the build. Unable to run tests");
+        write_lockfile();
         bazel_rs::digest_memo::finish();
         std::process::exit(1);
     }
@@ -1718,6 +1797,7 @@ fn test_tail(
         .summaries
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
+    write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
     std::process::exit(if failed_to_build {
@@ -1771,6 +1851,7 @@ fn test_build_failure(
     print!("{}", summary_text(&summaries, 0, options));
     use std::io::Write;
     let _ = std::io::stdout().flush();
+    write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
     std::process::exit(1);
@@ -1951,6 +2032,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     }
     process.envs(&environment);
     process.current_dir(&execroot);
+    write_lockfile();
     bazel_rs::digest_memo::finish();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", options.shell))
@@ -3037,6 +3119,9 @@ fn warn(warning: &str) {
 
 fn main() {
     let result = run();
+    // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended
+    // before planning completed is a mismatch (exit 70).
+    bazel_rs::snapshot::verify::exit_if_abandoned(result.as_ref().err().map(String::as_str));
     // Save the digest memo's new records (if any), also after a failure.
     bazel_rs::digest_memo::finish();
     // N62 breakdown aid (BAZEL_RS_TIMING_MODULES=1): report before any

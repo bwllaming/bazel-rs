@@ -1,4 +1,4 @@
-# Analysis snapshot: the store and the hit path (L2-W5)
+# Analysis snapshot: the store, the hit path and verify mode (L2-W5, L2-W6)
 
 Design: PLAN-L2 §1a–§1e, §5, §6 and PLAN-L2 update 1 (§(a) pinned replay,
 §(b) printing protocol v1, decision (1) per-tree validation). Builds on the
@@ -9,9 +9,11 @@ recording layer and the local-repository replay
 `replay`, `codec`, `record`), wired in `src/main.rs`.
 
 **Off by default.** `BAZEL_RS_SNAPSHOT=on` reads and writes snapshots for
-`build`, `test` and `run`; `=record` keeps the recording-only report;
-`=off` or unset does nothing; any other value is reported on the
-diagnostics stream and ignored. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
+`build`, `test` and `run`; `=verify` is `on` plus a shadow full analysis
+on every hit, compared with the hit before it executes (see "Verify mode"
+below, L2-W6); `=record` keeps the recording-only report; `=off` or unset
+does nothing; any other value is reported on the diagnostics stream and
+ignored. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
 diagnostics stream (`bazel-rs-snapshot:` lines), why a lookup missed (the
 first failing input), what a hit validated and replayed, and why a run was
 or was not saved. `BAZEL_RS_TIMING=1` adds a `PERF-SNAPSHOT` line (key,
@@ -73,8 +75,13 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      keys are trusted; racy or changed READ / READDIR observations are
      re-read and compared by content; a changed integrity entry misses; a
      racy one (a tree published, or its manifest refreshed, less than two
-     seconds before the recording) verifies its tree against its manifest.
-     Below 4,000 checks one thread runs them.
+     seconds before the recording) verifies its tree against its manifest,
+     and so does a manifest rewritten since the recording (L2-W6: the warm
+     probe of any later full analysis — of another target, or verify
+     mode's shadow — refreshes a settled tree's stat fingerprints into its
+     manifest; it still describes the same content-addressed tree, so that
+     is no miss). Below 4,000 checks one thread runs them; on more threads
+     the reported mismatch is still the first failing check in path order.
    * **replay** of every `local = True` repository rule the recorded run
      executed (`snapshot::replay`), against the pinned repository set,
      with **this command line's** resolver options and repository
@@ -89,7 +96,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    analysis would print it during planning, inside the window).
 5. Nothing has printed so far: any mismatch, error or panic (caught) is a
    miss, and the command continues as a full analysis exactly as if no
-   snapshot existed. On a hit the window's stderr bytes are written, then
+   snapshot existed. EXPLAIN names the first failing check and, when their
+   replay differs too, the mismatching local repositories (`miss <key>:
+   ENV W5_LOCAL: value changed; and local repository +local_rule+localrepo:
+   the identity inputs differ`; several are named with a count). On a hit the window's stderr bytes are written, then
    the decoded request is finalized (status, inherited environment) and
    executed by the same code as a planned one (`build_tail`, `test_tail`,
    `run_tail` in src/main.rs).
@@ -110,6 +120,49 @@ bytes (`tests/snapshot.rs::a_hit_hashes_an_edited_tree_file_by_its_change_time`)
 — where the full analysis would repair the tree first. That is the
 documented trade-off of per-tree validation (PLAN-L2 update 1, decision
 (1)); `--verify_repo_tampering` validates every entry.
+
+## Verify mode (L2-W6)
+
+`BAZEL_RS_SNAPSHOT=verify` is `on` (a miss saves exactly the same way),
+and every hit also runs the full analysis in its shadow
+(`snapshot::verify`, PLAN-L2 §1b layer 3, update 1 row W6) before the hit
+executes:
+
+```text
+hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held back)
+  -> recording window + replay capture + stderr captured (capture::Mode::Shadow: kept, never printed)
+  -> the full analysis, exactly as a miss runs it -> at the end of planning (plan_request), compare:
+       the planned request   its encoding must be the PLAN section's bytes (deterministic encoding); the
+                             post-planning warnings and errors are named apart, the outline field by field,
+                             the first differing actions as a line diff of their Debug form
+       what planning printed the captured bytes must be the EVENTS section's (a line diff)
+       the recording         under the snapshot's policy: an observation (path and operation), environment
+                             variable or verified tree recorded now but not in the snapshot = incomplete
+                             recording; an outcome now different from the snapshot's (contents, listing,
+                             type, target — stat keys and racy flags aside) = mismatch
+       local repositories    each execution of the full analysis against its replay record: identity
+                             inputs and tree digests, identity, published root, definition, bound
+                             attributes, output, host facilities (the mismatching repository is named)
+       saveable              no taint, no pending lockfile write, a complete capture, planning succeeded
+  -> match: the hit's own window bytes print and the snapshot's plan executes (what `on` would run);
+            the refreshed keys are written back
+     mismatch: every difference on the diagnostics stream (`bazel-rs-snapshot: verify ...`), the snapshot
+            removed (the next run analyzes and saves anew), nothing executed or saved, exit 70
+```
+
+A full analysis that ends before planning completed (an error after the
+check point that the hit skipped) is a mismatch too (main reports it).
+Observations or local repositories the snapshot holds but the full
+analysis did not make are reported as notes under EXPLAIN (a hit checks
+them needlessly; no failure). `BAZEL_RS_SNAPSHOT_EXPLAIN=1` adds a
+`verified <key>: ...` line with the full analysis's and the comparison's
+time; `BAZEL_RS_TIMING=1` a `PERF-SNAPSHOT verify analysis_ms=...
+compare_ms=...` line.
+
+Two documented trade-offs of the per-tree validation show as mismatches
+in verify mode, as they should: a file deleted from a repository tree
+and an in-place edit of a tree file (the full analysis re-executes the
+repository rule to repair the tree: `taint repository-rule-executed`).
 
 ## What is saved, and when
 
@@ -215,5 +268,14 @@ Unit tests cover the key, the exe.id record, the format (round trips,
 damage), the store (read back, damage, GC, uncommitted writes), the hit's
 validation and refresh, and the self-healing rule.
 
-Fixture 19 (everything again in verify mode) and the strace audit of the
-hit path belong to L2-W6.
+Fixture 19 (L2-W6, module `verify_mode` of tests/snapshot.rs): every
+fixture again with `BAZEL_RS_SNAPSHOT=verify` on the snapshot side — every
+hit must also print its `verified` line; the two per-tree trade-offs above
+expect their mismatch (exit 70), the next run re-saves. L2-W6 also adds
+fixtures for the W4 review: a failing `--workspace_status_command` on a hit
+of `build`, `test` and `run` (the failure layout of the decoded request);
+post-planning warnings printed by a hit; plans with analysis errors and
+`map_each` plans never saved; and `test` writing the lockfile, so its next
+run saves (genuine Bazel 9.3 writes MODULE.bazel.lock for `test`, `run` and
+a failing `query` too; the native commands that end the process
+themselves now write it first).

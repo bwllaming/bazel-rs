@@ -6,10 +6,11 @@
 //! * The round trip changes nothing: exit code, stdout and stderr (with
 //!   the `BAZEL_RS_DUMP_ACTIONS` dump) are byte-identical with and without
 //!   it, for `build`, `build --nobuild`, `test`, `run` (of a binary and of
-//!   a test), cache hits and a failing workspace status command — on a
-//!   fixture with tree artifacts expanded by Args (deferred command lines
-//!   and written Args), workspace status consumers, genrules (an embedded
-//!   input) and inherited environment variables.
+//!   a test), cache hits and a failing workspace status command (`build`,
+//!   `test`, `run`) — on a fixture with tree artifacts expanded by Args
+//!   (deferred command lines and written Args), workspace status consumers,
+//!   genrules (an embedded input) and inherited environment variables. A
+//!   request with a Starlark `map_each` is handed over unencoded.
 //! * The determinism gate (PLAN-L2 §1b layer 4): the encoded request
 //!   (`BAZEL_RS_SNAPSHOT_PLAN_OUT`) is identical across
 //!   `--loading_phase_threads` 1/8/32 and loading-order jitter seeds.
@@ -96,6 +97,10 @@ script_test(
 script_test(name = "fail_test", script = "#!/bin/bash\necho failing\nexit 1\n")
 
 script_binary(name = "tool", data = [":g"], script = "#!/bin/bash\necho tool-ran \"$@\"\ncat g.txt\n")
+
+script_test(name = "stamped_test", size = "small", data = [":t"], script = "#!/bin/bash\necho stamped\n")
+
+script_binary(name = "stamped_tool", data = [":t"], script = "#!/bin/bash\necho stamped-tool\n")
 "##;
 
 fn manifest() -> &'static Path {
@@ -248,6 +253,24 @@ fn round_tripped_requests_execute_byte_identically() {
             &["build", "--workspace_status_command=/bin/false", "//:t"],
             false,
         ),
+        // W4 review: the failure layout of a failing status command for
+        // `test` and `run` (their runfiles hold a status consumer's output).
+        (
+            &[
+                "test",
+                "--workspace_status_command=/bin/false",
+                "//:stamped_test",
+            ],
+            false,
+        ),
+        (
+            &[
+                "run",
+                "--workspace_status_command=/bin/false",
+                "//:stamped_tool",
+            ],
+            false,
+        ),
     ];
     for (arguments, warm) in cases {
         let mut runs = Vec::new();
@@ -266,15 +289,14 @@ fn round_tripped_requests_execute_byte_identically() {
         let (code, _, stderr) = &runs[0];
         assert!(stderr.contains("ACTION "), "{arguments:?}: {stderr}");
         match arguments[0] {
-            "build"
-                if arguments
-                    .iter()
-                    .any(|a| a.starts_with("--workspace_status")) =>
+            _ if arguments
+                .iter()
+                .any(|a| a.starts_with("--workspace_status")) =>
             {
-                assert_eq!(*code, Some(1), "{stderr}");
+                assert_eq!(*code, Some(1), "{arguments:?}: {stderr}");
                 assert!(
                     stderr.contains("Failed to determine workspace status"),
-                    "{stderr}"
+                    "{arguments:?}: {stderr}"
                 );
             }
             "test" if arguments.contains(&"//:all") => assert_eq!(*code, Some(3), "{stderr}"),
@@ -312,6 +334,69 @@ fn round_tripped_requests_execute_byte_identically() {
         "bazel-out/k8-fastbuild/bin/t_dir/a.txt\nbazel-out/k8-fastbuild/bin/t_dir/sub/b.txt\n"
     );
     assert_eq!(output("t.env"), "from-client\n");
+}
+
+const MAPPED_DEFS: &str = r#"def _basename(f):
+    return f.basename
+
+def _mapped(ctx):
+    d = ctx.actions.declare_directory(ctx.label.name + "_dir")
+    ctx.actions.run_shell(outputs = [d], command = "mkdir -p {d} && echo a > {d}/a.txt && echo b > {d}/b.txt".format(d = d.path))
+    out = ctx.actions.declare_file(ctx.label.name + ".list")
+    args = ctx.actions.args()
+    args.add_all([d], map_each = _basename)
+    ctx.actions.run_shell(outputs = [out], inputs = [d], arguments = [args], command = "echo \"$@\" > " + out.path)
+    return [DefaultInfo(files = depset([out]))]
+
+mapped = rule(implementation = _mapped)
+"#;
+
+/// W4 review: a request whose Args expand a tree artifact through a
+/// Starlark `map_each` (an in-memory value) cannot be encoded: the round
+/// trip hands it over as it is, and the build is byte-identical with and
+/// without the round trip (the expansion ran at execution time).
+#[test]
+fn a_map_each_request_round_trips_unencoded() {
+    let ws = Workspace::new(&[
+        ("MODULE.bazel", "module(name = \"planned_map_each\")\n"),
+        (
+            "BUILD.bazel",
+            "load(\"//rules:defs.bzl\", \"mapped\")\nmapped(name = \"m\")\n",
+        ),
+        ("rules/BUILD.bazel", ""),
+        ("rules/defs.bzl", MAPPED_DEFS),
+    ]);
+    let mut runs = Vec::new();
+    for roundtrip in [false, true] {
+        ws.wipe_cache();
+        let mut env = vec![("BAZEL_RS_DUMP_ACTIONS", "1")];
+        if roundtrip {
+            env.push(("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"));
+        }
+        runs.push(observed(&ws.run(&["build", "//:m"], &env)));
+    }
+    assert_eq!(runs[0], runs[1]);
+    let (code, stdout, stderr) = &runs[1];
+    assert_eq!(*code, Some(0), "{stderr}");
+    let listed = stdout
+        .lines()
+        .find_map(|line| line.split_once('\t').map(|(_, path)| path.to_owned()))
+        .unwrap();
+    assert_eq!(fs::read_to_string(listed).unwrap(), "a.txt b.txt\n");
+    // The hand-over says why it did not encode.
+    let timed = ws.run(
+        &["build", "//:m"],
+        &[
+            ("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"),
+            ("BAZEL_RS_TIMING", "1"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&timed.stderr);
+    assert!(
+        stderr.contains("PERF-PLAN not encoded (not serializable: action '")
+            && stderr.contains("map_each"),
+        "{stderr}"
+    );
 }
 
 /// PLAN-L2 §1b layer 4: the encoded request does not depend on the
