@@ -48,7 +48,7 @@ in test_suite `tests` is a loading error: the attribute is not configurable.)
 
 TargetPatternPhaseFunction (skyframe/TargetPatternPhaseFunction.java:75-250,
 determineTests :408-500; `Engine::target_pattern_phase`, shared with
-`build`): the targets are every pattern's targets (FILTER_MANUAL, negative
+`build` and `run`, docs/RUNFILES_TREES.md): the targets are every pattern's targets (FILTER_MANUAL, negative
 patterns subtracted); the tests are determineTests' — per positive pattern
 its test rules and test suites (FilteringPolicies.FILTER_TESTS: manual ones
 only when named explicitly), per negative pattern its unfiltered targets,
@@ -76,8 +76,8 @@ and `All tests passed but there were other errors during the build.`,
 (docs/NATIVE_BUILD_RULES.md, test_suite). `WARNING: All specified test
 targets were excluded by filters`; no tests: `ERROR: No test targets were
 found, yet testing was requested`, exit 4. Paired capture
-`tests/fixtures/test_suite` (38 genuine 9.3.0 cases, all MATCH; replayed by
-`tests/test_suite.rs`).
+`tests/fixtures/test_suite` (46 genuine 9.3.0 cases, all MATCH, 8 of them
+`run`; replayed by `tests/test_suite.rs`).
 `shard_count` is checked like RuleConfiguredTargetBuilder.initializeTestProvider
 (`Must not be negative.`, more than 50 shards).
 

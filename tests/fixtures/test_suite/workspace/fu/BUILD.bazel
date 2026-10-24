@@ -1,0 +1,114 @@
+"""Review follow-ups: `run` of a suite, alias members, a member test with a
+select() in shard_count, the taggable booleans of Rule.getRuleTags."""
+
+load("//pkg:defs.bzl", "consumer", "fake_test", "lib")
+
+# An expansion without tests (no test of the package has the tag).
+test_suite(
+    name = "empty",
+    tags = ["nothing"],
+)
+
+lib(name = "lib")
+
+alias(
+    name = "lib_alias",
+    actual = ":lib",
+)
+
+alias(
+    name = "lib_alias_chain",
+    actual = ":lib_alias",
+)
+
+# An alias of a library: the expansion names the alias (its Target), the
+# analysis the library (the alias's configured target has its label).
+test_suite(
+    name = "with_lib_alias",
+    tests = [":lib_alias"],
+)
+
+test_suite(
+    name = "with_lib_alias_chain",
+    tests = [":lib_alias_chain"],
+)
+
+consumer(
+    name = "consumer_lib_alias",
+    testonly = True,
+    deps = [":with_lib_alias"],
+)
+
+consumer(
+    name = "consumer_lib_alias_chain",
+    testonly = True,
+    deps = [":with_lib_alias_chain"],
+)
+
+config_setting(
+    name = "dbg",
+    values = {"compilation_mode": "dbg"},
+)
+
+# A select() in shard_count: nothing for a build to reject.
+fake_test(
+    name = "sharded_test",
+    shard_count = select({
+        ":dbg": 3,
+        "//conditions:default": 2,
+    }),
+)
+
+test_suite(
+    name = "sharded",
+    tags = ["-slow"],
+    tests = [":sharded_test"],
+)
+
+consumer(
+    name = "consumer_sharded",
+    testonly = True,
+    deps = [":sharded"],
+)
+
+fake_test(
+    name = "flaky_test",
+    flaky = True,
+)
+
+fake_test(name = "steady_test")
+
+fake_test(
+    name = "local_test",
+    local = True,
+)
+
+# Rule.getRuleTags (the suite's analysis, --test_tag_filters) has `noflaky`
+# and `nolocal` for the false booleans; the expansion filters on tags and
+# size only.
+test_suite(
+    name = "noflaky",
+    tags = ["noflaky"],
+    tests = [
+        ":flaky_test",
+        ":steady_test",
+    ],
+)
+
+test_suite(
+    name = "nolocal",
+    tags = ["nolocal"],
+    tests = [
+        ":local_test",
+        ":steady_test",
+    ],
+)
+
+consumer(
+    name = "consumer_noflaky",
+    testonly = True,
+    deps = [
+        ":noflaky",
+        ":nolocal",
+    ],
+)

@@ -544,6 +544,7 @@ fn run() -> Result<(), String> {
                                             options: &run_options,
                                             remote_enabled,
                                             test: &test_options,
+                                            pattern_failure: None,
                                             snapshot,
                                         },
                                     )
@@ -775,27 +776,27 @@ fn run() -> Result<(), String> {
     }
     bazel_rs::perf_mark("select.start");
     let accepts = |info: &bazel_rs::test_command::TestRuleInfo| test_options.accepts(info);
-    let selected = if command == "run" {
-        // The first residue argument is the target; the rest are its
-        // arguments (RunCommand.java:251-252).
-        engine
-            .select_for_build(&rest[..1], &relative_directory)
-            .map(|build| bazel_rs::engine::TargetPatternPhase {
-                build,
-                ..Default::default()
-            })
+    // `run` builds its first residue argument, the target; the rest are its
+    // arguments (RunCommand.java:251-252, runBuild :394-421). Its build
+    // request goes through the same target pattern phase as `build`
+    // (BuildTool.evaluateTargetPatterns, :467-493): test suites are
+    // expanded (`--build_tests_only` and the test filters apply) before
+    // RunCommand.validateTargets sees the targets.
+    let patterns = if command == "run" {
+        &rest[..1]
     } else {
-        engine.target_pattern_phase(
-            &rest,
-            &relative_directory,
-            &bazel_rs::engine::TargetPatternPhaseOptions {
-                determine_tests: false,
-                build_tests_only: test_options.build_tests_only,
-                expand_test_suites: test_options.expand_test_suites,
-                test_filter: &accepts,
-            },
-        )
+        &rest[..]
     };
+    let selected = engine.target_pattern_phase(
+        patterns,
+        &relative_directory,
+        &bazel_rs::engine::TargetPatternPhaseOptions {
+            determine_tests: false,
+            build_tests_only: test_options.build_tests_only,
+            expand_test_suites: test_options.expand_test_suites,
+            test_filter: &accepts,
+        },
+    );
     bazel_rs::perf_mark("select.end");
     // Bazel reports pattern warnings as they happen, before a later error.
     for warning in engine.take_warnings() {
@@ -824,6 +825,7 @@ fn run() -> Result<(), String> {
                 options: &run_options,
                 remote_enabled,
                 test: &test_options,
+                pattern_failure,
                 snapshot,
             },
         });
@@ -1209,6 +1211,10 @@ struct RunTail<'a> {
     options: &'a bazel_rs::run_command::RunOptions,
     remote_enabled: bool,
     test: &'a bazel_rs::test_command::TestOptions,
+    /// The target pattern phase's failure (a test suite's expansion error):
+    /// the build runs, then fails (BuildView.createAnalysisFailureDetail).
+    /// Always `None` on a snapshot hit ([`pattern_phase_failure`]).
+    pattern_failure: Option<&'static str>,
     /// The analysis snapshot's sessions: finished once the build part ends.
     snapshot: bazel_rs::snapshot::Scope,
 }
@@ -1226,7 +1232,8 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
         mut tail,
     } = context;
     let options = tail.options;
-    // validateTargets (RunCommand.java:1052-1111).
+    // validateTargets (RunCommand.java:1052-1111) over the target pattern
+    // phase's targets (test suites expanded).
     if labels.len() > 1 {
         let mut names: Vec<String> = labels.iter().map(|label| label.to_string()).collect();
         let truncated = names.len() > 5;
@@ -1301,6 +1308,7 @@ fn run_tail(
         options,
         remote_enabled,
         test,
+        pattern_failure,
         snapshot,
     } = tail;
     let result = planned.request.and_then(|request| {
@@ -1383,6 +1391,14 @@ fn run_tail(
             summary.cache_hits,
             execution_note()
         );
+    }
+    // A test suite's expansion error fails the build once it ran
+    // (BuildView.createAnalysisFailureDetail, analysis/BuildView.java:760-776),
+    // so RunCommand.runBuild does not run the target (:421-426; genuine 9.3
+    // `run //pkg:with_lib`, tests/fixtures/test_suite run_strict).
+    if let Some(message) = pattern_failure {
+        eprintln!("ERROR: {message}");
+        return Err("Build failed. Not running target".into());
     }
     if !execute {
         // --nobuild: analysis succeeded and 0 actions executed, but no

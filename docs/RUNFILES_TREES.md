@@ -143,12 +143,22 @@ package targets, so `query` does not list them (tests/runfiles_trees.rs
 `bazel-rs run [build and run options] TARGET [-- ARGS...]`: `run` inherits the
 `build` options and rc groups (`always`, `common`, `build`, `run`).
 
+* The target pattern goes through `build`'s target pattern phase
+  (BuildTool.evaluateTargetPatterns, buildtool/BuildTool.java:467-493;
+  docs/TEST_COMMAND.md "Selecting tests"): a test suite is expanded
+  (`--expand_test_suites`, `--build_tests_only` and the test filters apply)
+  before RunCommand.validateTargets sees the targets, so a suite of one test
+  runs that test.
 * Exactly one target (`Only a single target can be run. Your target pattern P
   expanded to the targets ...`, `No targets found to run`, `Must specify a
   target to run`); it must be a file, an executable rule or an alias
-  (`Cannot run target L: Not executable`, :1052-1211). Test rules run through
-  test-setup.sh with the test environment (getTestCommandLine, :754-850; N23g,
-  docs/TEST_COMMAND.md).
+  (`Cannot run target L: Not executable`, :1052-1211; a suite kept by
+  `--noexpand_test_suites` is not executable). A suite's expansion error
+  builds the rest, then fails with `command succeeded, but there were loading
+  phase errors` and `Build failed. Not running target` (:421-426). Test
+  rules run through test-setup.sh with the test environment
+  (getTestCommandLine, :754-850; N23g, docs/TEST_COMMAND.md). Paired capture:
+  the `run_*` cases of `tests/fixtures/test_suite`.
 * The target and its runfiles tree are built (the tree also with
   `--nobuild_runfile_links`, ensureRunfilesBuilt, :996-1040);
   `--nobuild_runfile_manifests` fails with Bazel's text (:503-513). The build's

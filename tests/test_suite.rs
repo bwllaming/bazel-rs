@@ -1,16 +1,18 @@
 //! test_suite (Bazel 9.3 rules/test/TestSuiteRule.java, TestSuite.java) and
-//! its expansion by the target pattern phase of `build` and `test`
+//! its expansion by the target pattern phase of `build`, `test` and `run`
 //! (skyframe/TargetPatternPhaseFunction.java, TestsForTargetPatternFunction,
 //! TestExpansionFunction): suites replaced by their tests (explicit,
 //! implicit, tag-filtered, nested), negative patterns, `--build_tests_only`
-//! with the test filters, strict expansion errors, and a suite analyzed as a
-//! dependency or with `--noexpand_test_suites` (its runfiles, its `tests`
-//! checks). Every case of tests/fixtures/test_suite/reference_receipt.json —
+//! with the test filters, strict expansion errors, `run` of a suite (its
+//! expansion validated by RunCommand.validateTargets), and a suite analyzed
+//! as a dependency or with `--noexpand_test_suites` (its runfiles, its
+//! `tests` checks). Every case of tests/fixtures/test_suite/reference_receipt.json —
 //! genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here (with the
 //! artifact and view self-checks) and is compared with the genuine capture:
 //! success, the WARNING lines, Bazel's error message, the top-level outputs
-//! (mode and contents) and a `test` command's summary.
+//! (mode and contents), a `test` command's summary and the output of the
+//! program a `run` command ran.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
@@ -97,6 +99,19 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("test", &["test_explicit", "test_all"]),
+    (
+        "run",
+        &[
+            "run_single",
+            "run_other",
+            "run_multi",
+            "run_strict",
+            "run_empty",
+            "run_noexpand",
+            "run_tests_only_excluded",
+            "run_tests_only_lib",
+        ],
+    ),
 ];
 
 struct Workspace(tempfile::TempDir);
@@ -295,6 +310,14 @@ fn check(name: &str, case: &Value, ws: &Workspace) {
             "{name}: {stderr}"
         );
     }
+    // The program `run` ran (a test through test-setup.sh).
+    if argv[0] == "run" && succeeded {
+        assert_eq!(
+            stdout,
+            case["expected_stdout"].as_str().unwrap(),
+            "{name}: {stderr}"
+        );
+    }
     if argv[0] == "build" && succeeded && !argv.iter().any(|arg| arg == "--nobuild") {
         let expected: BTreeMap<String, Value> = genuine["outputs"]
             .as_object()
@@ -409,4 +432,12 @@ fn test_suite_analysis_matches() {
 #[test]
 fn test_runs_the_expanded_tests() {
     check_group("test");
+}
+
+/// `run` of a suite validates its expansion: one test runs, several are
+/// Bazel's single-target error, none `No targets found to run`; a strict
+/// expansion error fails the build before anything runs.
+#[test]
+fn run_validates_the_expanded_targets() {
+    check_group("run");
 }
