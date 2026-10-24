@@ -23,10 +23,15 @@
 //!
 //! After a hit: keys a content check settled are written back (the snapshot
 //! file is rewritten in the background: [`Session::finish`]), and a command
-//! that failed on a path inside the repository store — in the build part
-//! ([`Session::failed`]) or after it ([`heal_after_failure`]) — removes the
-//! snapshot with a one-line hint: the full analysis repairs such a tree,
-//! whose files the per-tree validation does not look into.
+//! that failed — in the build part ([`Session::failed`]), in the tests or
+//! after the build part ([`heal_after_failure`]) — heals a damaged tree the
+//! hit trusted (the per-tree validation does not look into a tree's files,
+//! a local repository's replay not into its published tree): when the
+//! error names a path inside the repository store, or when a tree of the
+//! snapshot no longer verifies (L2-W5g: the verified store trees as their
+//! store's warm check does, the local repositories' published trees against
+//! their executions), the snapshot is removed with a one-line hint and the
+//! next run's full analysis repairs the tree.
 
 use crate::request::PlannedRequest;
 use crate::snapshot::format::{self, Section};
@@ -65,6 +70,9 @@ pub struct Attempt<'a> {
     /// with ([`Evidence`]) and write refreshed keys back only once it
     /// agreed ([`Session::start_deferred_refresh`]).
     pub verify: bool,
+    /// The miss log's context (a healed hit is logged there,
+    /// crate::snapshot::telemetry).
+    pub log: crate::snapshot::telemetry::Context,
 }
 
 /// What verify mode compares a hit's shadow full analysis with
@@ -328,6 +336,8 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         key: attempt.key,
         refresh: None,
         deferred: None,
+        trees: Trees::of(&inputs),
+        log: attempt.log,
     };
     let evidence = if attempt.verify {
         // Verify mode: nothing is written back before the full analysis
@@ -486,6 +496,135 @@ pub struct Session {
     refresh: Option<JoinHandle<()>>,
     /// Verify mode: the refresh waits for the full analysis to agree.
     deferred: Option<(Reader, Vec<Refresh>)>,
+    /// What a failed command verifies before the snapshot may stay.
+    trees: Trees,
+    log: crate::snapshot::telemetry::Context,
+}
+
+/// The repository trees a hit used without looking into them (L2-W5g),
+/// verified when its command fails ([`heal`]): the snapshot's verified
+/// store trees (their REPO records, and the trees only a link crossed into)
+/// and the published trees of its local repositories, with the execution
+/// each must still hold.
+#[derive(Debug, Default)]
+struct Trees {
+    store: Vec<crate::repository_store::PublishedTree>,
+    /// Roots of published trees a link crossed into (resolved against the
+    /// canonical store when verified).
+    crossed: Vec<PathBuf>,
+    local: Vec<(String, PathBuf, crate::repository_store::LocalExecution)>,
+}
+
+impl Trees {
+    fn of(inputs: &format::Inputs) -> Self {
+        Self {
+            store: inputs
+                .recording
+                .repositories
+                .iter()
+                .filter_map(|tree| {
+                    Some(crate::repository_store::PublishedTree {
+                        kind: tree.kind,
+                        id: tree.root.file_name()?.to_str()?.to_owned(),
+                        root: tree.root.clone(),
+                        manifest: tree.manifest.clone()?,
+                    })
+                })
+                .collect(),
+            crossed: inputs.recording.crossed.clone(),
+            local: inputs
+                .replay
+                .iter()
+                .map(|record| {
+                    (
+                        record.canonical.clone(),
+                        record.root.clone(),
+                        record.execution.clone(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// A tree that no longer verifies, if any: its root and why. The trees
+    /// are verified on up to eight threads; the first mismatch found stops
+    /// the others (which one is reported when several differ depends on
+    /// the timing).
+    fn first_mismatch(&self, cache: &Path) -> Option<(PathBuf, String)> {
+        let crossed: Vec<crate::repository_store::PublishedTree> = if self.crossed.is_empty() {
+            Vec::new()
+        } else {
+            std::fs::canonicalize(cache.join("repositories"))
+                .map(|store| {
+                    self.crossed
+                        .iter()
+                        .filter_map(|root| crate::repository_store::store_tree_of(&store, root))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let store: Vec<&crate::repository_store::PublishedTree> =
+            self.store.iter().chain(&crossed).collect();
+        let check = |index: usize| -> Option<(PathBuf, String)> {
+            match store.get(index) {
+                Some(tree) => crate::repository_store::verify_as_reused(tree)
+                    .err()
+                    .map(|error| (tree.root.clone(), error)),
+                None => {
+                    let (canonical, root, execution) = &self.local[index - store.len()];
+                    crate::repository_store::verify_local_publication(root, execution)
+                        .err()
+                        .map(|error| {
+                            (
+                                root.clone(),
+                                format!("local repository {canonical}: {error}"),
+                            )
+                        })
+                }
+            }
+        };
+        let total = store.len() + self.local.len();
+        let threads = std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+            .clamp(1, 8)
+            .min(total);
+        if threads <= 1 {
+            return (0..total).find_map(check);
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let found = std::sync::Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..threads {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= total {
+                            break;
+                        }
+                        if let Some(mismatch) = check(index) {
+                            // Stop the others: no index is handed out past
+                            // the end.
+                            next.store(total, Ordering::Relaxed);
+                            found
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .get_or_insert(mismatch);
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        found
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many trees [`Trees::first_mismatch`] verifies at most.
+    fn len(&self) -> usize {
+        self.store.len() + self.crossed.len() + self.local.len()
+    }
 }
 
 impl Session {
@@ -509,72 +648,136 @@ impl Session {
     }
 
     /// The build part of the command succeeded: let the background refresh
-    /// complete. What runs after it (`test`'s test runner, `run`'s
-    /// preparation) may still fail on a damaged repository tree: such a
-    /// failure heals the snapshot through [`heal_after_failure`] (main).
+    /// complete. What runs after it (`test`'s tests, `run`'s preparation)
+    /// may still fail on a damaged repository tree: such a failure heals the
+    /// snapshot through [`heal_after_failure`] (main).
     pub fn finish(mut self) {
         if let Some(refresh) = self.refresh.take() {
             let _ = refresh.join();
         }
+        let Self {
+            cache,
+            key,
+            trees,
+            log,
+            ..
+        } = self;
         *FINISHED
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((self.cache.clone(), self.key));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Finished {
+            cache,
+            key,
+            trees,
+            log,
+        });
     }
 
-    /// Execution failed with `error`: heal the snapshot when the failure
-    /// involves the repository store ([`heal`]).
+    /// Execution failed with `error`: [`heal`] the snapshot.
     pub fn failed(mut self, error: &str) {
         if let Some(refresh) = self.refresh.take() {
             let _ = refresh.join();
         }
-        heal(&self.cache, &self.key, error);
+        heal(&self.cache, &self.key, &self.trees, &self.log, Some(error));
     }
 }
 
-/// The snapshot of a hit whose build part succeeded ([`Session::finish`]).
-static FINISHED: std::sync::Mutex<Option<(PathBuf, Key)>> = std::sync::Mutex::new(None);
+/// A hit whose build part succeeded ([`Session::finish`]).
+struct Finished {
+    cache: PathBuf,
+    key: Key,
+    trees: Trees,
+    log: crate::snapshot::telemetry::Context,
+}
 
-/// main, when the command failed with `error` after a hit's build part
-/// succeeded (`test`'s test runner staging a runfile, `run`'s preparation):
-/// [`heal`] its snapshot.
-pub fn heal_after_failure(error: &str) {
+static FINISHED: std::sync::Mutex<Option<Finished>> = std::sync::Mutex::new(None);
+
+/// main, when the command failed after a hit's build part succeeded — with
+/// `error` (`test`'s test runner staging a runfile, `run`'s preparation) or
+/// without one (`test`'s tests failed, L2-W5g): [`heal`] its snapshot.
+pub fn heal_after_failure(error: Option<&str>) {
     let finished = FINISHED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
-    if let Some((cache, key)) = finished {
-        heal(&cache, &key, error);
+    if let Some(finished) = finished {
+        heal(
+            &finished.cache,
+            &finished.key,
+            &finished.trees,
+            &finished.log,
+            error,
+        );
     }
 }
 
-/// A hit's command failed with `error`. When the error names a path inside
-/// the repository store at all — quoted or not, missing or not (L2-W5f
-/// review F4) — the snapshot may have trusted a damaged tree (the per-tree
-/// validation does not look into every file, a local repository's replay
-/// not into its published tree; the full analysis repairs both): remove the
-/// snapshot and say so in one line. A failure that merely mentions a store
-/// path costs one full analysis next time. Only such errors heal (L2-W5g):
-/// damage whose failure names no absolute store path — an action citing a
-/// tampered tool by its execution-root path, a test failing on a tampered
-/// runfile — keeps the snapshot, and every hit fails the same way
-/// (docs/ANALYSIS_SNAPSHOT.md, the per-tree deviation). Returns whether the
-/// snapshot was removed.
-fn heal(cache: &Path, key: &Key, error: &str) -> bool {
+/// A hit's command failed (with `error`, when there is one: a failing test
+/// has none). The snapshot may have trusted a damaged tree — the per-tree
+/// validation does not look into a tree's files, a local repository's
+/// replay not into its published tree; the full analysis repairs both — so
+/// it is removed, with one line saying so, when
+///
+/// * the error names a path inside the repository store at all — quoted or
+///   not, missing or not (L2-W5f review F4; a failure that merely mentions
+///   a store path costs one full analysis next time); or
+/// * a tree of the snapshot no longer verifies ([`Trees::first_mismatch`],
+///   L2-W5g): a byte or mode edit whose failure names no store path (an
+///   action citing a tampered tool by its execution-root path, a test
+///   failing on a tampered runfile) — before, every hit failed the same way.
+///
+/// The next run's full analysis repairs the tree. A failure with intact
+/// trees keeps the snapshot (the check costs a walk of the trees, trusted
+/// by stat). Returns whether the snapshot was removed.
+fn heal(
+    cache: &Path,
+    key: &Key,
+    trees: &Trees,
+    log: &crate::snapshot::telemetry::Context,
+    error: Option<&str>,
+) -> bool {
+    let started = Instant::now();
     let store = cache.join("repositories");
-    let canonical = std::fs::canonicalize(&store).ok();
-    let Some(path) = store_path_in(error, &store)
-        .or_else(|| canonical.and_then(|canonical| store_path_in(error, &canonical)))
-    else {
-        return false;
+    let named = error.and_then(|error| {
+        store_path_in(error, &store).or_else(|| {
+            std::fs::canonicalize(&store)
+                .ok()
+                .and_then(|canonical| store_path_in(error, &canonical))
+        })
+    });
+    let (reason, path, detail) = match named {
+        Some(path) => ("store-path", path, None),
+        None => match trees.first_mismatch(cache) {
+            Some((root, detail)) => ("tree", root.display().to_string(), Some(detail)),
+            None => {
+                timing_line(trees, started, false);
+                return false;
+            }
+        },
     };
+    timing_line(trees, started, true);
     if store::remove(cache, key).is_err() {
         return false;
     }
-    eprintln!(
-        "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store; the next build re-analyzes and repairs it"
-    );
+    log.log_healed(&key.short(), reason, &path, detail.as_deref().unwrap_or(""));
+    match detail {
+        None => eprintln!(
+            "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store; the next build re-analyzes and repairs it"
+        ),
+        Some(_) => eprintln!(
+            "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {path} no longer matches what the analysis recorded; the next build re-analyzes and repairs it"
+        ),
+    }
     true
+}
+
+/// `BAZEL_RS_TIMING=1`: what a failed hit's healing cost.
+fn timing_line(trees: &Trees, started: Instant, healed: bool) {
+    if crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-SNAPSHOT heal trees={} healed={healed} ms={:.3}",
+            trees.len(),
+            started.elapsed().as_secs_f64() * 1000.0
+        ));
+    }
 }
 
 /// The first path below `store` that `text` names (up to the next
@@ -635,6 +838,8 @@ mod tests {
             key,
             refresh: None,
             deferred: None,
+            trees: Trees::default(),
+            log: crate::snapshot::telemetry::Context::default(),
         };
         let present = cache.path().join("repositories/trees/ab");
         std::fs::create_dir_all(&present).unwrap();
@@ -656,13 +861,127 @@ mod tests {
         // After the build part succeeded (a test runner's error).
         save();
         session(cache.path()).finish();
-        heal_after_failure("a test failed");
+        heal_after_failure(Some("a test failed"));
         assert!(store::path(cache.path(), &key).exists());
         session(cache.path()).finish();
-        heal_after_failure(&format!(
+        heal_after_failure(Some(&format!(
             "cannot inspect '{}': No such file or directory",
             present.join("gone.go").display()
-        ));
+        )));
         assert!(!store::path(cache.path(), &key).exists());
+    }
+
+    /// L2-W5g: a failed hit verifies the trees it used without looking into
+    /// them — a store tree as its store's warm check does, a local
+    /// repository's published tree against its execution — and removes the
+    /// snapshot when a byte or mode edit made one differ (with or without
+    /// an error text); intact trees keep it.
+    #[test]
+    fn a_failed_hit_with_a_tampered_tree_removes_the_snapshot() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = tempfile::tempdir().unwrap();
+        let store_root = cache.path().join("repositories");
+        let key = Key {
+            g: [5; 32],
+            binary: [6; 32],
+        };
+        let save = || {
+            store::write_in_background(cache.path(), &key, vec![(Section::Inputs, Vec::new())])
+                .commit()
+                .unwrap();
+        };
+        let execute = |stage: &Path| {
+            let tool = stage.join("tool.sh");
+            std::fs::write(&tool, "#!/bin/sh\n").map_err(|e| e.to_string())?;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| e.to_string())?;
+            std::fs::write(stage.join("data.txt"), "good\n").map_err(|e| e.to_string())?;
+            Ok(crate::repository_store::Executed {
+                inputs: b"runtime inputs".to_vec(),
+                recorded: br#"{"version":1}"#.to_vec(),
+            })
+        };
+        let (local_root, execution) = crate::repository_store::materialize_local(
+            &store_root,
+            "+local_rule+tools",
+            "local-spec",
+            || Ok(b"local provenance".to_vec()),
+            execute,
+        )
+        .unwrap();
+        let (direct_root, _) = crate::repository_store::materialize(
+            &store_root,
+            "+gen_rule+tools",
+            b"spec",
+            b"provenance",
+            |_, _| Ok(true),
+            execute,
+        )
+        .unwrap();
+        let direct = crate::repository_store::published_tree(&store_root, &direct_root).unwrap();
+        let trees = Trees {
+            store: vec![direct],
+            crossed: Vec::new(),
+            local: vec![(
+                "+local_rule+tools".to_owned(),
+                local_root.clone(),
+                execution,
+            )],
+        };
+        let log = crate::snapshot::telemetry::Context {
+            cache: cache.path().to_path_buf(),
+            command: "test".to_owned(),
+            targets: vec!["//:t".to_owned()],
+        };
+        let heals = |error: Option<&str>| heal(cache.path(), &key, &trees, &log, error);
+        let kept = || store::path(cache.path(), &key).exists();
+        let set_mode = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        // An in-place edit of the same size with its modification time
+        // restored (its change time moves).
+        let edit = |file: &Path| {
+            let metadata = std::fs::metadata(file).unwrap();
+            let mode = metadata.permissions().mode();
+            set_mode(file, 0o644);
+            std::fs::write(file, "bad!\n").unwrap();
+            let handle = std::fs::File::options().write(true).open(file).unwrap();
+            handle.set_modified(metadata.modified().unwrap()).unwrap();
+            drop(handle);
+            set_mode(file, mode);
+        };
+        save();
+        // Intact trees: kept, whatever failed.
+        assert!(!heals(Some("action '//:t' failed: exit 1")));
+        assert!(!heals(None));
+        assert!(kept());
+        // The local repository's tool made non-executable: removed.
+        set_mode(&local_root.join("tool.sh"), 0o644);
+        assert!(heals(Some(
+            "external/+local_rule+tools/tool.sh: Permission denied"
+        )));
+        assert!(!kept());
+        set_mode(&local_root.join("tool.sh"), 0o755);
+        save();
+        assert!(!heals(None));
+        // The store tree's runfile edited in place: removed (a failing test
+        // has no error text).
+        edit(&direct_root.join("data.txt"));
+        assert!(heals(None));
+        assert!(!kept());
+        let log_text = std::fs::read_to_string(cache.path().join("snapshots/miss.log")).unwrap();
+        let lines: Vec<&str> = log_text.lines().collect();
+        assert_eq!(lines.len(), 2, "{log_text}");
+        assert!(
+            lines[0].contains(" kind=healed ")
+                && lines[0].contains(" reason=tree ")
+                && lines[0].contains(&format!(" path={} ", local_root.display())),
+            "{log_text}"
+        );
+        assert!(
+            lines[1].contains(&format!(" path={} ", direct_root.display()))
+                && lines[1].ends_with(" targets=//:t"),
+            "{log_text}"
+        );
     }
 }

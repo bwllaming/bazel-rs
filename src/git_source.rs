@@ -743,6 +743,24 @@ enum EntryKind {
     Symlink { target: String },
 }
 
+/// The warm check of a published Git tree `key`, as [`materialize`]'s reuse
+/// check runs it (L2-W5g: a failed analysis-snapshot hit's healing,
+/// crate::repository_store::verify_as_reused): the manifest is this
+/// policy's for `key` and the tree matches it. Reads only.
+pub(crate) fn published_tree_matches(root: &Path, manifest: &Path, key: &str) -> bool {
+    // Never through a link (the reuse check rejects them).
+    fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir())
+        && fs::symlink_metadata(manifest).is_ok_and(|metadata| metadata.is_file())
+        && read_whole(manifest)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+            .is_some_and(|manifest| {
+                manifest.policy == POLICY
+                    && manifest.key == key
+                    && snapshot(root, false).is_ok_and(|actual| actual == manifest.files)
+            })
+}
+
 fn snapshot(root: &Path, normalize: bool) -> Result<BTreeMap<String, Entry>, String> {
     fn visit(
         root: &Path,

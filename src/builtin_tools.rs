@@ -281,6 +281,21 @@ fn verified_warm(root: &Path, manifest: &Manifest) -> bool {
     verified
 }
 
+/// The warm check of the published `@bazel_tools` tree, as [`materialize`]
+/// runs it (L2-W5g: a failed analysis-snapshot hit's healing,
+/// crate::repository_store::verify_as_reused): the manifest file holds
+/// exactly the embedded manifest and the tree verifies against it. Reads
+/// only.
+pub(crate) fn published_tree_matches(root: &Path, manifest: &Path) -> bool {
+    let Ok(bundle) = bundle() else {
+        return false;
+    };
+    fs::symlink_metadata(manifest)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == MANIFEST.len() as u64)
+        && fs::read(manifest).is_ok_and(|bytes| bytes == MANIFEST)
+        && verified_warm(root, &bundle.manifest)
+}
+
 /// Whether `root` holds exactly the manifest's files and directories, with
 /// their sizes, modes and SHA-256 digests; `memo` takes the digests through
 /// the digest memo (the warm check of the published tree).

@@ -729,6 +729,22 @@ fn tree_matches(root: &Path, expected: &BTreeMap<String, Entry>) -> bool {
     matched
 }
 
+/// The warm check of a published registry tree, as [`materialize`]'s reuse
+/// check runs it (L2-W5g: a failed analysis-snapshot hit's healing,
+/// crate::repository_store::verify_as_reused): the manifest parses with
+/// this format and the tree matches it. Reads only.
+pub(crate) fn published_tree_matches(root: &Path, manifest: &Path) -> bool {
+    // Never through a link (the reuse check rejects them).
+    fs::symlink_metadata(root).is_ok_and(|metadata| metadata.is_dir())
+        && fs::symlink_metadata(manifest).is_ok_and(|metadata| metadata.is_file())
+        && fs::read(manifest)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Manifest>(&bytes).ok())
+            .is_some_and(|manifest| {
+                manifest.format == FORMAT && tree_matches(root, &manifest.files)
+            })
+}
+
 /// A regular file's SHA-256 (hex) from its path and lstat.
 type FileDigest<'a> = &'a dyn Fn(&Path, &fs::Metadata) -> Result<String, String>;
 

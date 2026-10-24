@@ -1845,6 +1845,91 @@ pub fn verify_published_tree(tree: &PublishedTree) -> Result<(), String> {
     Ok(())
 }
 
+/// Verify a published store tree the way its store's warm check does before
+/// it reuses the tree (L2-W5g: a failed analysis-snapshot hit's healing,
+/// crate::snapshot::hit) — content, modes and links, trusted by stat where
+/// that check trusts, every file read under `--verify_repo_tampering`: a
+/// direct tree against its manifest (this store's
+/// [`verify_snapshot`]), a registry archive (crate::materializer), a Git
+/// source (crate::git_source) and the embedded `@bazel_tools`
+/// (crate::builtin_tools) against theirs. Reads only. The error names the
+/// mismatch (an unreadable tree or manifest is one).
+pub fn verify_as_reused(tree: &PublishedTree) -> Result<(), String> {
+    let matched = match tree.kind {
+        "direct" => verify_direct_publication(tree)?,
+        "registry" => crate::materializer::published_tree_matches(&tree.root, &tree.manifest),
+        "git" => crate::git_source::published_tree_matches(&tree.root, &tree.manifest, &tree.id),
+        "builtin" => crate::builtin_tools::published_tree_matches(&tree.root, &tree.manifest),
+        kind => return Err(format!("unknown repository tree kind {kind}")),
+    };
+    if matched {
+        Ok(())
+    } else {
+        Err(format!(
+            "repository tree {} does not match its manifest",
+            tree.root.display()
+        ))
+    }
+}
+
+/// A direct tree's warm check ([`try_reuse`] without the recorded inputs:
+/// the analysis snapshot validated those): its manifest names this
+/// publication and the tree verifies against it.
+fn verify_direct_publication(tree: &PublishedTree) -> Result<bool, String> {
+    let bytes = read_stable(&tree.manifest)
+        .map_err(|error| format!("cannot read {}: {error}", tree.manifest.display()))?;
+    let Some(manifest) = parse_manifest(&bytes) else {
+        return Ok(false);
+    };
+    if manifest.identity != tree.id {
+        return Ok(false);
+    }
+    verify_snapshot(&tree.root, &manifest.files, verify_mode())
+        .map_err(|error| format!("cannot verify {}: {error}", tree.root.display()))
+}
+
+/// A local repository's published tree still holds what its execution
+/// produced (L2-W5g: a failed analysis-snapshot hit's healing — the hit
+/// replays the rule in a fresh stage and never looks into the published
+/// tree): the manifest beside it records the execution's identity and tree
+/// digest, and the tree verifies against that manifest as
+/// [`materialize_local`]'s republication check does (content, modes, links;
+/// trusted by stat outside the racy window). Reads only.
+pub fn verify_local_publication(root: &Path, execution: &LocalExecution) -> Result<(), String> {
+    let identity = &execution.identity;
+    let manifest_path = root
+        .parent()
+        .and_then(Path::parent)
+        .filter(|_| root.file_name().is_some_and(|name| *name == **identity))
+        .map(|direct| direct.join("manifests").join(format!("{identity}.json")))
+        .ok_or_else(|| {
+            format!(
+                "{} is not the publication {identity} of the direct store",
+                root.display()
+            )
+        })?;
+    let bytes = read_stable(&manifest_path)
+        .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
+    let manifest = parse_manifest(&bytes)
+        .ok_or_else(|| format!("unreadable manifest {}", manifest_path.display()))?;
+    let encoded = serde_json::to_vec(&content_view(&manifest.files)).map_err(|e| e.to_string())?;
+    let digest: [u8; 32] = Sha256::digest(&encoded).into();
+    if manifest.identity != *identity || digest != execution.snapshot_digest {
+        return Err(format!(
+            "the manifest {} does not record this execution's tree",
+            manifest_path.display()
+        ));
+    }
+    match verify_snapshot(root, &manifest.files, verify_mode()) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "published tree {} does not match its manifest",
+            root.display()
+        )),
+        Err(error) => Err(format!("cannot verify {}: {error}", root.display())),
+    }
+}
+
 fn manifest_content(
     kind: &str,
     manifest: &serde_json::Value,

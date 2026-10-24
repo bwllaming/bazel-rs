@@ -261,6 +261,7 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
         workspace_status: inputs.workspace_status,
         workspace: inputs.workspace,
         verify: inputs.verify,
+        log: log.clone(),
     });
     let timing = crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING"));
     match outcome {

@@ -1,11 +1,12 @@
 //! The soak's logs below the snapshot store root (`<cache>/snapshots/`,
 //! L2-W5g): `verify.log` — one line per verify-mode mismatch
 //! (crate::snapshot::verify) — and `miss.log` — one line per lookup that
-//! missed (`kind=miss`, crate::snapshot::check) and per full analysis that
-//! was not saved (`kind=not-saved`, crate::snapshot::save), in `on` and
-//! `verify` mode alike, so a reason that repeats (a tool writing into a
-//! store tree's directory, a printing local repository) shows in the log,
-//! not only under EXPLAIN.
+//! missed (`kind=miss`, crate::snapshot::check), per full analysis that
+//! was not saved (`kind=not-saved`, crate::snapshot::save) and per failed
+//! hit that removed its snapshot (`kind=healed`, crate::snapshot::hit), in
+//! `on` and `verify` mode alike, so a reason that repeats (a tool writing
+//! into a store tree's directory, a printing local repository, a damaged
+//! tree) shows in the log, not only under EXPLAIN.
 //!
 //! Every line is binary-safe and space-separated, each field one token
 //! (crate::observed_fs::escape; `-` when absent), the target patterns last:
@@ -14,6 +15,7 @@
 //! <UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<name> path=<path> targets=<pattern>...
 //! <UTC time> <unix seconds> kind=miss key=<short G> command=<command> reason=<class> path=<path> detail=<text> targets=<pattern>...
 //! <UTC time> <unix seconds> kind=not-saved key=<short G> command=<command> reason=<class> path=- detail=<text> targets=<pattern>...
+//! <UTC time> <unix seconds> kind=healed key=<short G> command=<command> reason=<store-path|tree> path=<path> detail=<text> targets=<pattern>...
 //! ```
 //!
 //! Each append is one `write` (O_APPEND: concurrent commands never
@@ -166,7 +168,8 @@ pub fn outcome_line(
 }
 
 /// What a `miss.log` line names besides its outcome: the cache whose store
-/// holds the log, the command and its target patterns.
+/// holds the log, the command and its target patterns. A context without a
+/// cache (the default) logs nothing.
 #[derive(Clone, Debug, Default)]
 pub struct Context {
     pub cache: PathBuf,
@@ -175,6 +178,13 @@ pub struct Context {
 }
 
 impl Context {
+    /// Append `line` to this cache's miss log (best effort).
+    fn append(&self, line: &str) {
+        if !self.cache.as_os_str().is_empty() {
+            let _ = append(&log_path(&self.cache, MISS_LOG), line);
+        }
+    }
+
     /// A lookup of the snapshot `key` missed for `reason` (best effort).
     pub fn log_miss(&self, key: &str, reason: &str) {
         let (class, path) = classify_miss(reason);
@@ -187,7 +197,24 @@ impl Context {
             &self.command,
             &self.targets,
         );
-        let _ = append(&log_path(&self.cache, MISS_LOG), &line);
+        self.append(&line);
+    }
+
+    /// A failed hit removed the snapshot of `key` (best effort): `reason`
+    /// is `store-path` (its error named `path` in the repository store) or
+    /// `tree` (the tree at `path` no longer verified, `detail` says how).
+    pub fn log_healed(&self, key: &str, reason: &str, path: &str, detail: &str) {
+        let path = escape(OsStr::new(path));
+        let line = outcome_line(
+            "healed",
+            key,
+            reason,
+            Some(&path),
+            detail,
+            &self.command,
+            &self.targets,
+        );
+        self.append(&line);
     }
 
     /// The full analysis of `key` was not saved, for `reason` (best effort).
@@ -202,7 +229,7 @@ impl Context {
             &self.command,
             &self.targets,
         );
-        let _ = append(&log_path(&self.cache, MISS_LOG), &line);
+        self.append(&line);
     }
 }
 

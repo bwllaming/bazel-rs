@@ -1812,6 +1812,11 @@ fn test_tail(
         .summaries
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
+    if failed_to_build || !passed {
+        // A snapshot hit whose tests failed: a damaged repository tree the
+        // hit trusted heals (crate::snapshot::hit, L2-W5g).
+        bazel_rs::snapshot::hit::heal_after_failure(None);
+    }
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
@@ -3145,10 +3150,10 @@ fn main() {
     // exit path, idempotent, silent unless enabled.
     bazel_rs::loading::module_timings::report();
     if let Err(error) = result {
-        // A snapshot hit whose build part succeeded, failing afterwards on
-        // a path in the repository store (`test` staging a runfile from a
-        // damaged tree): the snapshot goes (crate::snapshot::hit).
-        bazel_rs::snapshot::hit::heal_after_failure(&error);
+        // A snapshot hit whose build part succeeded, failing afterwards
+        // (`test` staging a runfile, `run`'s preparation): a damaged tree
+        // the hit trusted heals (crate::snapshot::hit).
+        bazel_rs::snapshot::hit::heal_after_failure(Some(&error));
         let error = located(&error);
         eprintln!("bazel-rs: {error}");
         // A sandbox setup failure is an environmental failure of the

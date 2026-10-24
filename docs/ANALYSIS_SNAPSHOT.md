@@ -123,68 +123,83 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    `run_tail` in src/main.rs).
 6. After a hit: keys a content check found settled are written back — the
    snapshot is rewritten in the background with the refreshed INPUTS — and
-   the file's modification time is set (LRU). When the command fails with
-   an error that names a path in the repository store at all — quoted or
-   not, existing or not, in the build part or after it (`test`'s test
-   runner staging a runfile, `run`'s preparation; L2-W5f review F4) — the
-   hit may have trusted a damaged tree (per tree, a file's own bytes and
-   mode are not validated, a local repository's replay does not look into
-   its published tree; the full analysis repairs both): the snapshot is
-   removed and one line says so (`bazel-rs: removed the analysis snapshot
-   of this build: its failure involves <path> in the repository store; the
-   next build re-analyzes and repairs it`). A failure that merely mentions a
-   store path costs one full analysis next time. **Only** a failure whose
-   error names an absolute path in the store heals: damage that fails an
-   action or a test without naming that path (an action citing the file by
-   its execution-root path, a test that fails on a runfile's content) keeps
-   the snapshot, and the same failure repeats on every hit (the deviation
-   below, L2-W5g).
+   the file's modification time is set (LRU). When the command fails — in
+   the build part, in the tests (`test` before it exits 3) or after the
+   build part (`test`'s test runner staging a runfile, `run`'s
+   preparation) — the hit may have trusted a damaged tree (per tree, a
+   file's own bytes and mode are not validated, a local repository's
+   replay does not look into its published tree; the full analysis repairs
+   both), so the snapshot is removed, and one line says so, when
+   * the error names a path in the repository store at all — quoted or
+     not, existing or not (L2-W5f review F4: `bazel-rs: removed the
+     analysis snapshot of this build: its failure involves <path> in the
+     repository store; the next build re-analyzes and repairs it`); or
+   * a tree of the snapshot no longer verifies (L2-W5g, verification-based
+     healing): each verified store tree as its store's warm check does
+     before reusing it — content, modes and links, trusted by stat outside
+     the racy window, every file read under `--verify_repo_tampering` —
+     and each local repository's published tree against its manifest,
+     which must record the replayed execution's identity and tree digest
+     (`bazel-rs: removed the analysis snapshot of this build: it failed,
+     and the repository tree <root> no longer matches what the analysis
+     recorded; the next build re-analyzes and repairs it`).
+
+   The failure happens once: the next run's full analysis repairs the tree
+   (the hit does not: re-executing a repository rule needs the analysis).
+   A failure with intact trees keeps the snapshot — the check walks the
+   trees (`PERF-SNAPSHOT heal trees=<n> healed=<bool> ms=<t>` under
+   `BAZEL_RS_TIMING=1`) — and a failure that merely mentions a store path
+   costs one full analysis next time. Each removal appends a `kind=healed`
+   line to the miss log (below).
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
-decision on review F3; corrected by L2-W5g).** Per tree, a hit validates a
-repository tree's root, manifest and directories, not its files: a file
-added, deleted or renamed anywhere in a tree is a miss (its directory's
-lstat key moved; the full analysis repairs the tree,
+decision on review F3; corrected and narrowed by L2-W5g).** Per tree, a
+hit validates a repository tree's root, manifest and directories, not its
+files: a file added, deleted or renamed anywhere in a tree is a miss (its
+directory's lstat key moved; the full analysis repairs the tree,
 `a_file_or_directory_deleted_from_a_repository_tree_misses`), but an
 in-place edit of a file's bytes or mode keeps every directory key. A local
 (`local = True`) repository's replay reproduces its identity inputs and
 tree digests in a fresh stage and checks that its published tree exists,
-but does not look into the published tree either. So **byte or mode
-tampering of a file in a store tree or in a local repository's published
-tree that execution uses (an action input, a tool, a test's or `run`'s
-runfile) persists under `on`**: every hit executes with the tampered file,
+but does not look into the published tree either. So **a hit does not see
+byte or mode tampering of a file in a store tree or in a local
+repository's published tree that execution uses** (an action input, a
+tool, a test's or `run`'s runfile): it executes with the tampered file,
 where a run without the snapshot repairs the tree first (its warm probe
 sees the mode, size or change time differ, re-executes the rule and
-republishes the tree). Reproduced (L2-W5f re-review): `chmod 644` on a
-store-tree tool fails its genrule with `Permission denied` (exit 1) on every
-`on` run while the snapshot-less run repairs the tree and exits 0; an
-in-place edit of a test's store runfile fails the test on every `on` run;
-the same for both in a `local = True` repository's published tree. The
-execution phase hashes every action input — crate::digest_memo keys the
-files of the tree stores by their *change time*, so an edit that keeps the
-size and restores the modification time is still re-hashed — so the action
-runs again with the edited bytes
-(`a_hit_hashes_an_edited_tree_file_by_its_change_time`): a different output
-or a failure, never a stale cache hit. Only failures whose error names an
-absolute store path heal (step 6: `a_store_input_staged_by_the_test_runner_heals`,
-the test runner staging an unreadable runfile from the store); errors that
-name the file by its execution-root or runfiles path
-(`external/+gen_rule+genrepo/tool.sh: Permission denied`) and tests that
-merely fail keep the snapshot until something else replaces it (an edit
-that misses, a deleted snapshot, garbage collection). Like Bazel, which
-trusts an external repository's files once its marker is up to date, a hit
-uses a tampered store file as it is. `BAZEL_RS_SNAPSHOT=verify` avoids it:
-the shadow full analysis repairs the tree before the hit executes — for a
-store tree that is a mismatch (`first=taint`, the full analysis's plan
-executes), for a local repository it is silent (its re-execution
-republishes the repaired tree and still matches the replay record, so the
-hit is verified and executes with the repaired tree). For store trees
-`--verify_repo_tampering` / `BAZEL_RS_VERIFY_REPOS=full` avoids it too
-(every INTEGRITY entry validated: the tampered file is a miss, which
-repairs the tree); a local repository's published files have no INTEGRITY
-entries (the analysis STATs them, which records the kind only), so there
-the tampering persists under that policy as well (checked by L2-W5g with
-the reviewer's chmod and in-place cases). The directory
+republishes the tree). The L2-W5f re-review reproduced the consequence
+before L2-W5g: `chmod 644` on a store-tree tool failed its genrule with
+`Permission denied` (exit 1) on every `on` run while the snapshot-less run
+repaired the tree and exited 0; an in-place edit of a test's store
+runfile failed the test on every `on` run; the same for both in a
+`local = True` repository's published tree — only failures whose error
+named an absolute store path healed. Since L2-W5g a failed hit verifies
+the snapshot's trees (step 6): such a failure happens once, the snapshot
+goes, and the next run's full analysis repairs the tree and succeeds
+(`a_failed_hit_on_a_tampered_store_tree_heals`,
+`a_failed_hit_on_a_tampered_local_repository_heals`). **What persists
+under `on` is tampering that does not fail the command**: the execution
+phase hashes every action input — crate::digest_memo keys the files of the
+tree stores by their *change time*, so an edit that keeps the size and
+restores the modification time is still re-hashed — so the action runs
+again with the edited bytes and may produce a different output
+(`a_hit_hashes_an_edited_tree_file_by_its_change_time`; never a stale
+cache hit); a test that still passes runs on the edited runfile; and the
+program `run` starts replaces bazel-rs's process, so its failure is never
+seen. Like Bazel, which trusts an external repository's files once its
+marker is up to date, a hit uses a tampered store file as it is.
+`BAZEL_RS_SNAPSHOT=verify` avoids it: the shadow full analysis repairs the
+tree before the hit executes — for a store tree that is a mismatch
+(`first=taint`, the full analysis's plan executes), for a local repository
+it is silent (its re-execution republishes the repaired tree and still
+matches the replay record, so the hit is verified and executes with the
+repaired tree). For store trees `--verify_repo_tampering` /
+`BAZEL_RS_VERIFY_REPOS=full` avoids it too (every INTEGRITY entry
+validated: the tampered file is a miss, which repairs the tree); a local
+repository's published files have no INTEGRITY entries (the analysis STATs
+them, which records the kind only), so there the tampering is unseen
+under that policy as well (checked by L2-W5g with the reviewer's chmod and
+in-place cases). The directory
 entries cost the hit more checks — on ~/code 10,313 instead of 1,009
 (oauth2token) and 16,605 instead of 3,035 (B2), validated on 16 threads in
 35–62 ms on the loaded shared machine, beside a replay of 200–300 ms there —
@@ -257,13 +272,15 @@ the differences are reported. For a soak: `BAZEL_RS_SNAPSHOT=verify` (plus
 
 **The miss log (L2-W5g).** `<cache>/snapshots/miss.log` (the same
 encoding) holds, in `on` and `verify` mode alike, one line per lookup that
-missed and per full analysis that was not saved, so a reason that repeats
+missed, per full analysis that was not saved and per failed hit that
+removed its snapshot (`kind=healed`, step 6), so a reason that repeats
 shows without EXPLAIN — a tool that writes into a store tree's directory,
 say, makes every lookup miss on that directory's INTEGRITY entry:
 
 ```text
 <UTC time> <unix seconds> kind=miss key=<short G> command=<command> reason=<class> path=<path> detail=<reason> targets=<patterns>
 <UTC time> <unix seconds> kind=not-saved key=<short G> command=<command> reason=<class> path=- detail=<reason> targets=<patterns>
+<UTC time> <unix seconds> kind=healed key=<short G> command=<command> reason=<store-path|tree> path=<path> detail=<why> targets=<patterns>
 ```
 
 A miss's class is `absent` (no snapshot for the key), `unreadable`, `env`,
@@ -449,6 +466,16 @@ classes, the binary-safe lines and the rotation, and the shadow capture's
 forwarding (an overflow, an early end, an incomplete stop: the capture's
 reader and stop driven on a private pipe — a deterministic end-to-end case
 would need a full analysis that prints differently from its own snapshot).
+Verification-based healing (L2-W5g): the reviewer's cases — a tool made
+non-executable (`chmod 644`) and a test's runfile edited in place, each in
+a store tree and in a local repository's published tree — fail the hit
+once, remove the snapshot (one line, a `kind=healed` log line), and the
+next run repairs the tree and succeeds like the run without the snapshot
+(`a_failed_hit_on_a_tampered_store_tree_heals`,
+`a_failed_hit_on_a_tampered_local_repository_heals`; under verify the
+store tree's repair is a mismatch, the local repository's silent); a unit
+test drives the check on real publications (intact trees keep the
+snapshot).
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f): random
 sequences over a catalogue of 33 mutations (sources, same-size and
