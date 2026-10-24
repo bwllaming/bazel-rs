@@ -1,0 +1,235 @@
+{
+ "schema": "py-shared-library-reference-receipt/v1",
+ "fixture": "py_shared_library",
+ "purpose": "py_internal.cc_helper.is_valid_shared_library_artifact(shared_library) (builtins_bzl/common/python/py_internal.bzl:101-131, `_is_valid_shared_library_artifact` / `_is_versioned_shared_library_extension_valid`): `extension` in [so, dll, dylib, pyd, wasm], else the basename's last `.so.`/`.dylib.` split with a non-empty name and version whose `.`-parts start with an ASCII digit and continue with [a-zA-Z0-9_]; duck-typed fields; the `def`'s binding and evaluation errors. Motivation: after create_repo_mapping_manifest, `build --nobuild //src/beyondwork.ai/...` on ~/code stopped at `analysis of @@rules_python++pip+pypi_312_argcomplete_py3_none_any_f5007b3a//:pkg: ... error: py_internal.cc_helper.is_valid_shared_library_artifact is not implemented in the native profile (analysis-time Python API)` (rules_python py_library's `merge_uses_shared_libraries`).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "330e5906af3738c15731f40516b0fc4647441302ad5e74bd7940c82ef1d98cbf",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pnext-capture.py, pnext-receipt.py (not committed)",
+  "sha256": {
+   "pnext-capture.py": "38e7afb084768fb454e7e175326227d1011fd3cbdb48db5133332c14a9be4966",
+   "pnext-receipt.py": "f475b206fdb5487f626359487d67f2a9806c6087c7ad62243cece027e3b3f2b5"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "44958a1c1886cc068959b1abe2ee0d1e5abc557f9015310675c1a00de84fd6f5",
+  "tools/build_defs/python/BUILD.bazel": "426d208d3d8c691f42aedf4d56da92726595ab98d43f60b8698c932128d9163d",
+  "tools/build_defs/python/defs.bzl": "308cca2a83746466a8a2b48da7dd2b5ab8b0df007c22c9ea0bbae5a99ffb2e31",
+  "tools/build_defs/python/libs/.so.1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/foo.dll": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/foo.so.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/foo.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libbar.so.1.2.3": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.SO": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.dylib.3": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.dylib.x.so.5": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.1-2": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.1.2a": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.1.b_2": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.1a": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.a1": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/libfoo.so.so.4": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/so": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/x.dylib": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/y.pyd": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "tools/build_defs/python/libs/z.wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/py_shared_library.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "True: libfoo.so, foo.dll, x.dylib, y.pyd, z.wasm, libfoo.so.1, libbar.so.1.2.3, libfoo.so.1.2a, libfoo.so.1a, libfoo.dylib.3, libfoo.so.so.4 and libfoo.dylib.x.so.5 (the last split), and duck structs (extension \"so\"; extension None with basename libx.so.1; basename lib.dylib.7_x); False: .so.1 (empty name), libfoo.so.1-2, libfoo.so.1.b_2, libfoo.so.a1, foo.so.txt, foo.txt, libfoo.SO, so.",
+  "Errors are the def's: `_is_valid_shared_library_artifact() missing 1 required positional argument: shared_library`, `accepts no more than 1 positional argument but got 2`, `'NoneType' value has no field or method 'extension'`, `'struct' value has no field or method 'basename'`, `'int' value has no field or method 'rpartition'`, and an empty version part `index out of range (index is 0, but sequence has 0 elements)`."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and Starlark errors in its own traceback format without the @_builtins wrapper frames (the messages are Bazel's; native omits the `Available attributes:` line of a missing struct field).",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 7
+ },
+ "scratch_removed": true,
+ "cases": {
+  "probe": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:probe"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.463,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:probe (5 packages loaded, 27 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:probe up-to-date:\n  bazel-bin/tools/build_defs/python/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      ".so.1=False\nfoo.dll=True\nfoo.so.txt=False\nfoo.txt=False\nlibbar.so.1.2.3=True\nlibfoo.SO=False\nlibfoo.dylib.3=True\nlibfoo.dylib.x.so.5=True\nlibfoo.so=True\nlibfoo.so.1=True\nlibfoo.so.1-2=False\nlibfoo.so.1.2a=True\nlibfoo.so.1.b_2=False\nlibfoo.so.1a=True\nlibfoo.so.a1=False\nlibfoo.so.so.4=True\nso=False\nx.dylib=True\ny.pyd=True\nz.wasm=True\nnamed=False\nduck_extension=True\nduck_none=True\nduck_versioned=True\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.458,
+    "stdout": "//tools/build_defs/python:probe\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/probe.txt": [
+      "0o555",
+      ".so.1=False\nfoo.dll=True\nfoo.so.txt=False\nfoo.txt=False\nlibbar.so.1.2.3=True\nlibfoo.SO=False\nlibfoo.dylib.3=True\nlibfoo.dylib.x.so.5=True\nlibfoo.so=True\nlibfoo.so.1=True\nlibfoo.so.1-2=False\nlibfoo.so.1.2a=True\nlibfoo.so.1.b_2=False\nlibfoo.so.1a=True\nlibfoo.so.a1=False\nlibfoo.so.so.4=True\nso=False\nx.dylib=True\ny.pyd=True\nz.wasm=True\nnamed=False\nduck_extension=True\nduck_none=True\nduck_versioned=True\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_missing"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 20.829,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_missing: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 31, column 10, in _bad_impl\n\t\tf()\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 103, column 5, in _is_valid_shared_library_artifact\nError: _is_valid_shared_library_artifact() missing 1 required positional argument: shared_library\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_missing' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_missing' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.691,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:31, in _bad_impl\n      f()\nerror: _is_valid_shared_library_artifact() missing 1 required positional argument: shared_library\n  --> //tools/build_defs/python:defs.bzl:31:9\n   |\n31 |         f()\n   |         ^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_valid_shared_library_artifact() missing 1 required positional argument: shared_library",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_two": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_two"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 13.18,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_two: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 33, column 10, in _bad_impl\n\t\tf(1, 2)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 103, column 5, in _is_valid_shared_library_artifact\nError: _is_valid_shared_library_artifact() accepts no more than 1 positional argument but got 2\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_two' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_two' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.445,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_two: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:33, in _bad_impl\n      f(1, 2)\nerror: _is_valid_shared_library_artifact() accepts no more than 1 positional argument but got 2\n  --> //tools/build_defs/python:defs.bzl:33:9\n   |\n33 |         f(1, 2)\n   |         ^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "_is_valid_shared_library_artifact() accepts no more than 1 positional argument but got 2",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_none": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_none"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 12.969,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_none: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 35, column 10, in _bad_impl\n\t\tf(None)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 104, column 23, in _is_valid_shared_library_artifact\nError: 'NoneType' value has no field or method 'extension'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_none' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_none' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.431,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_none: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:35, in _bad_impl\n      f(None)\nerror: 'NoneType' value has no field or method 'extension'\n  --> //tools/build_defs/python:defs.bzl:35:9\n   |\n35 |         f(None)\n   |         ^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "'NoneType' value has no field or method 'extension'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_basename_int": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_basename_int"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 13.229,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_basename_int: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 37, column 10, in _bad_impl\n\t\tf(struct(extension = \"x\", basename = 1))\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 107, column 56, in _is_valid_shared_library_artifact\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 121, column 47, in _is_versioned_shared_library_extension_valid\nError: 'int' value has no field or method 'rpartition'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_basename_int' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_basename_int' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.604,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_basename_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:37, in _bad_impl\n      f(struct(extension = \"x\", basename = 1))\nerror: 'int' value has no field or method 'rpartition'\n  --> //tools/build_defs/python:defs.bzl:37:9\n   |\n37 |         f(struct(extension = \"x\", basename = 1))\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "'int' value has no field or method 'rpartition'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_empty_part": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_empty_part"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 12.891,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_empty_part: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 39, column 10, in _bad_impl\n\t\tf(struct(extension = \"\", basename = \"libfoo.so.1.\"))\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 107, column 56, in _is_valid_shared_library_artifact\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 125, column 28, in _is_versioned_shared_library_extension_valid\nError: index out of range (index is 0, but sequence has 0 elements)\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_empty_part' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_empty_part' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.433,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_empty_part: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:39, in _bad_impl\n      f(struct(extension = \"\", basename = \"libfoo.so.1.\"))\nerror: index out of range (index is 0, but sequence has 0 elements)\n  --> //tools/build_defs/python:defs.bzl:39:9\n   |\n39 |         f(struct(extension = \"\", basename = \"libfoo.so.1.\"))\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "index out of range (index is 0, but sequence has 0 elements)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_no_basename": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_no_basename"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 13.477,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_no_basename: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 41, column 10, in _bad_impl\n\t\tf(struct(extension = \"x\"))\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 107, column 71, in _is_valid_shared_library_artifact\nError: 'struct' value has no field or method 'basename'\nAvailable attributes: extension\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_no_basename' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_no_basename' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.541,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_no_basename: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:41, in _bad_impl\n      f(struct(extension = \"x\"))\nerror: 'struct' value has no field or method 'basename'\nAvailable attributes: extension\n  --> //tools/build_defs/python:defs.bzl:41:9\n   |\n41 |         f(struct(extension = \"x\"))\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "'struct' value has no field or method 'basename'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

@@ -9227,6 +9227,13 @@ impl Engine {
             if shared {
                 continue;
             }
+            if registered.repo_mapping.is_some() {
+                return Err(format!(
+                    "aspect {}: py_internal.create_repo_mapping_manifest in an aspect {}",
+                    aspect.identity,
+                    crate::language_modules::NOT_IMPLEMENTED
+                ));
+            }
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
             if registered.build_info.is_some() {
@@ -10246,6 +10253,10 @@ impl Engine {
             if shared {
                 continue;
             }
+            // py_internal.create_repo_mapping_manifest: the
+            // RepoMappingManifestAction's content over the target's
+            // transitive repositories (like its runfiles support's).
+            self.resolve_repo_mapping(&transitive, &mut registered)?;
             // N63: resolve an actions.transform_{version,info}_file
             // registration into its template expansion.
             if registered.build_info.is_some() {
@@ -12945,6 +12956,37 @@ impl Engine {
     /// either). The stable variant keys its status input regularly: a
     /// changed stable key re-keys and re-executes it, like Bazel's
     /// regular derived artifact.
+    /// The content of a `py_internal.create_repo_mapping_manifest` write
+    /// (RepoMappingManifestAction.newDeterministicWriter): the mappings of
+    /// the target's transitive repositories relevant to the runfiles, like
+    /// the runfiles support's `_repo_mapping` (crate::runfiles_tree).
+    fn resolve_repo_mapping(
+        &self,
+        transitive: &BTreeSet<String>,
+        registered: &mut crate::analysis_runtime::RegisteredAction,
+    ) -> Result<(), String> {
+        let Some(runfiles) = registered.repo_mapping.take() else {
+            return Ok(());
+        };
+        let repositories = &self.repositories;
+        let content = crate::runfiles_tree::repo_mapping_manifest(
+            &runfiles,
+            transitive,
+            &|repository: &str| repositories.mapping(repository).cloned(),
+            self.runfiles_options.compact_repo_mapping,
+        )?;
+        match registered.action.write.as_mut() {
+            Some(write) => write.content = content,
+            None => {
+                return Err(format!(
+                    "internal error: the repo mapping manifest {:?} is no write",
+                    registered.action.outputs
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_build_info(
         &self,
         plan: &Option<WorkspaceStatusPlan>,

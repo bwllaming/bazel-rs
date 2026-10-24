@@ -1,0 +1,43 @@
+load(":defs.bzl", "bad", "probe")
+
+probe(
+    name = "probe",
+    libs = [
+        "libs/.so.1",
+        "libs/foo.dll",
+        "libs/foo.so.txt",
+        "libs/foo.txt",
+        "libs/libbar.so.1.2.3",
+        "libs/libfoo.SO",
+        "libs/libfoo.dylib.3",
+        "libs/libfoo.dylib.x.so.5",
+        "libs/libfoo.so",
+        "libs/libfoo.so.1",
+        "libs/libfoo.so.1-2",
+        "libs/libfoo.so.1.2a",
+        "libs/libfoo.so.1.b_2",
+        "libs/libfoo.so.1a",
+        "libs/libfoo.so.a1",
+        "libs/libfoo.so.so.4",
+        "libs/so",
+        "libs/x.dylib",
+        "libs/y.pyd",
+        "libs/z.wasm",
+    ],
+)
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+        tags = ["manual"],
+    )
+    for mode in [
+        "missing",
+        "two",
+        "none",
+        "basename_int",
+        "empty_part",
+        "no_basename",
+    ]
+]

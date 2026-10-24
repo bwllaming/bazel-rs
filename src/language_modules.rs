@@ -121,6 +121,12 @@ pub(crate) enum Behavior {
     /// `_make_runfiles_respect_legacy_external_runfiles(_ctx, runfiles)`
     /// (py_internal.bzl:86-87): `runfiles`.
     PyRespectLegacyExternalRunfiles,
+    /// PyBuiltins.repoMappingAction (rules/python/PyBuiltins.java:157-181):
+    /// a RepoMappingManifestAction of `runfiles` to `output`.
+    PyCreateRepoMappingManifest,
+    /// `_is_valid_shared_library_artifact(shared_library)`
+    /// (py_internal.bzl:101-131, `py_internal.cc_helper`).
+    PyIsValidSharedLibraryArtifact,
 }
 
 /// The four Java builtin namespaces plus `cc_internal`; each has its own
@@ -1056,6 +1062,58 @@ fn call<'v>(
             })?;
             Ok(Value::new_bool(true))
         }
+        Behavior::PyCreateRepoMappingManifest => {
+            // `_create_repo_mapping_manifest(*args, **kwargs)` forwards to the
+            // Java method: three named-only parameters (StarlarkRuleContext,
+            // Runfiles, Artifact) whose `unbound` defaults reach it when
+            // absent (Bazel 9.3 crashes; an explicit error natively).
+            const FUNCTION: &str = "create_repo_mapping_manifest";
+            let bound = bind_styled(
+                Style::Builtin,
+                FUNCTION,
+                &[
+                    param("ctx", false, true, false),
+                    param("runfiles", false, true, false),
+                    param("output", false, true, false),
+                ],
+                args,
+                heap,
+            )?;
+            if let Some(ctx) = bound[0]
+                && ctx.get_type() != "ctx"
+            {
+                return Err(type_error(FUNCTION, "ctx", ctx, "ctx"));
+            }
+            if let Some(runfiles) = bound[1]
+                && crate::runfiles::Runfiles::from_value(runfiles).is_none()
+            {
+                return Err(type_error(FUNCTION, "runfiles", runfiles, "runfiles"));
+            }
+            if let Some(output) = bound[2]
+                && crate::starlark_types::unpack_file(output).is_err()
+            {
+                return Err(type_error(FUNCTION, "output", output, "File"));
+            }
+            let (Some(ctx), Some(runfiles), Some(output)) = (bound[0], bound[1], bound[2]) else {
+                return Err(failure(format!(
+                    "{qualified}() without each of ctx, runfiles and output: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: an `unbound` default reaches PyBuiltins.repoMappingAction), which the native profile reports instead"
+                )));
+            };
+            let runfiles = crate::runfiles::Runfiles::from_value(runfiles).expect("checked");
+            crate::analysis_runtime::create_repo_mapping_manifest(ctx, runfiles, output, eval)?;
+            Ok(Value::new_none())
+        }
+        Behavior::PyIsValidSharedLibraryArtifact => {
+            let bound = bind_styled(
+                style,
+                name,
+                &[param("shared_library", true, true, true)],
+                args,
+                heap,
+            )?;
+            let library = bound[0].expect("required parameter");
+            is_valid_shared_library_artifact(library, eval).map(Value::new_bool)
+        }
         Behavior::PyRespectLegacyExternalRunfiles => {
             let bound = bind_styled(
                 style,
@@ -1681,6 +1739,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                 "make_runfiles_respect_legacy_external_runfiles" => {
                     Behavior::PyRespectLegacyExternalRunfiles
                 }
+                "create_repo_mapping_manifest" => Behavior::PyCreateRepoMappingManifest,
                 _ => unimplemented,
             };
             (
@@ -1700,7 +1759,7 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
                     "_is_valid_shared_library_artifact",
                     MODULE,
                     "py_internal.cc_helper.is_valid_shared_library_artifact",
-                    unimplemented,
+                    Behavior::PyIsValidSharedLibraryArtifact,
                 ),
             )],
         ),
@@ -1710,6 +1769,66 @@ fn py_internal(heap: &FrozenHeap) -> FrozenValue {
         crate::package_specification::alloc_frozen_constructor(heap),
     ));
     sorted_struct(heap, fields)
+}
+
+/// `_is_valid_shared_library_artifact(shared_library)` and
+/// `_is_versioned_shared_library_extension_valid`
+/// (builtins_bzl/common/python/py_internal.bzl:101-131), as Starlark
+/// evaluates them: `shared_library.extension in ["so", "dll", "dylib",
+/// "pyd", "wasm"]`, else the basename's last `.so.` or `.dylib.` split has
+/// a non-empty name and version whose `.`-separated parts start with a
+/// digit and continue with `[a-zA-Z0-9_]` (Bazel's ASCII isdigit/isalnum,
+/// StringModule.java:762-779). Fields come from any value; an empty part
+/// is Bazel's `part[0]` index error.
+fn is_valid_shared_library_artifact<'v>(
+    library: Value<'v>,
+    eval: &mut Evaluator<'v, '_, '_>,
+) -> starlark::Result<bool> {
+    const EXTENSIONS: [&str; 5] = ["so", "dll", "dylib", "pyd", "wasm"];
+    let heap = eval.heap();
+    let extension = library.get_attr_error("extension", heap)?;
+    if extension
+        .unpack_str()
+        .is_some_and(|extension| EXTENSIONS.contains(&extension))
+    {
+        return Ok(true);
+    }
+    let basename = library.get_attr_error("basename", heap)?;
+    let Some(name) = basename.unpack_str() else {
+        // `shared_library_name.rpartition(ext)` on another value.
+        basename.get_attr_error("rpartition", heap)?;
+        return Err(failure(format!(
+            "'{}' value has no field or method 'rpartition'",
+            basename.get_type()
+        )));
+    };
+    for separator in [".so.", ".dylib."] {
+        let Some(index) = name.rfind(separator) else {
+            continue;
+        };
+        let (before, version) = (&name[..index], &name[index + separator.len()..]);
+        if before.is_empty() || version.is_empty() {
+            continue;
+        }
+        for part in version.split('.') {
+            let Some(first) = part.bytes().next() else {
+                return Err(failure(
+                    "index out of range (index is 0, but sequence has 0 elements)".to_owned(),
+                ));
+            };
+            if !first.is_ascii_digit() {
+                return Ok(false);
+            }
+            if !part[1..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The `label` argument of `_py_builtins.get_label_repo_runfiles_path`

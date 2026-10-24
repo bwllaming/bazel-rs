@@ -131,6 +131,12 @@ pub struct RegisteredAction {
     /// ([`Context::register_action`]) and against another target's producer
     /// of an output (crate::engine `register_output`).
     pub key: crate::shared_actions::ActionKey,
+    /// A `py_internal.create_repo_mapping_manifest` registration
+    /// ([`Context::register_repo_mapping_manifest`]): the runfiles whose
+    /// RepoMappingManifestAction the write is; its content needs the
+    /// target's transitive repositories, so the commit computes it
+    /// (crate::engine).
+    pub repo_mapping: Option<crate::runfiles::Runfiles>,
 }
 
 /// The translation callback of an `actions.transform_version_file` /
@@ -471,6 +477,7 @@ impl Context {
             runfiles_trees,
             build_info,
             key,
+            repo_mapping: None,
         };
         if let Some((index, output)) = generated {
             // Actions.assignOwnersAndThrowIfConflictToleratingSharedActions
@@ -499,6 +506,75 @@ impl Context {
         actions.push(registered);
         Ok(())
     }
+}
+
+impl Context {
+    /// PyBuiltins.repoMappingAction (rules/python/PyBuiltins.java:157-181): a
+    /// RepoMappingManifestAction (analysis/RepoMappingManifestAction.java, a
+    /// file write) of `runfiles` to `output`. The content lists the
+    /// mappings of the target's transitive repositories relevant to the
+    /// runfiles (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest),
+    /// known at the commit, which fills it in (crate::engine); the
+    /// registration's placeholder content names the runfiles' entries, so
+    /// two registrations of one output compare like their runfiles.
+    pub(crate) fn register_repo_mapping_manifest(
+        &self,
+        output: File,
+        runfiles: crate::runfiles::Runfiles,
+    ) -> anyhow::Result<()> {
+        let mut placeholder = b"RepoMappingManifest\n".to_vec();
+        for file in runfiles.artifacts() {
+            placeholder.extend_from_slice(format!("{}\t{}\n", file.owner, file.path).as_bytes());
+        }
+        for root in [false, true] {
+            for (path, file) in runfiles.symlink_entries(root) {
+                placeholder.extend_from_slice(
+                    format!("{root}\t{path}\t{}\t{}\n", file.owner, file.path).as_bytes(),
+                );
+            }
+        }
+        self.register(
+            vec![output.clone()],
+            Vec::new(),
+            String::new(),
+            Some(WriteAction {
+                content: placeholder,
+                executable: false,
+            }),
+            None,
+            Vec::new(),
+            BTreeMap::new(),
+            false,
+            false,
+        )?;
+        let mut actions = self.actions.borrow_mut();
+        let registered = actions
+            .iter_mut()
+            .rev()
+            .find(|action| action.outputs.contains(&output))
+            .ok_or_else(|| anyhow!("internal error: no action writes {}", output.path))?;
+        if registered.repo_mapping.is_none() {
+            registered.repo_mapping = Some(runfiles);
+        }
+        Ok(())
+    }
+}
+
+/// `py_internal.create_repo_mapping_manifest(ctx=, runfiles=, output=)`: the
+/// action registered on `ctx`'s analysis (its `actions` factory must be the
+/// current target's).
+pub(crate) fn create_repo_mapping_manifest<'v>(
+    ctx: Value<'v>,
+    runfiles: &crate::runfiles::Runfiles,
+    output: Value<'v>,
+    eval: &Evaluator<'v, '_, '_>,
+) -> starlark::Result<()> {
+    let actions = ctx.get_attr_error("actions", eval.heap())?;
+    let context = action_receiver(actions, eval, false).map_err(starlark::Error::new_other)?;
+    let output = unpack_file(output).map_err(starlark::Error::new_other)?;
+    context
+        .register_repo_mapping_manifest(output, runfiles.clone())
+        .map_err(starlark::Error::new_other)
 }
 
 /// One action registration (crate::analysis_runtime::Context::register_action).

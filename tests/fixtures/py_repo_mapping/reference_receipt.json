@@ -1,0 +1,455 @@
+{
+ "schema": "py-repo-mapping-reference-receipt/v1",
+ "fixture": "py_repo_mapping",
+ "purpose": "py_internal.create_repo_mapping_manifest(ctx=, runfiles=, output=) (rules/python/PyBuiltins.java:157-181 via builtins_bzl/common/python/py_internal.bzl): a RepoMappingManifestAction (analysis/RepoMappingManifestAction.java, a file write) of the given runfiles to `output`, over the target's transitive packages (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest), returning None; BuiltinFunction binding (three named-only parameters ctx/runfiles/File). Motivation: after the py_internal ctx helpers, `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `analysis of @@rules_pkg+//pkg/private/tar:build_tar: ... error: py_internal.create_repo_mapping_manifest is not implemented in the native profile (analysis-time Python API)` (rules_python 1.7.0 py_executable.bzl:842, the `<name>.zip.repo_mapping` of `_create_zip_file`), and `//src/beyondwork.ai/...` at //src/python/tools/docxgen:docxgen.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "330e5906af3738c15731f40516b0fc4647441302ad5e74bd7940c82ef1d98cbf",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pnext-capture.py, pnext-receipt.py (not committed)",
+  "sha256": {
+   "pnext-capture.py": "38e7afb084768fb454e7e175326227d1011fd3cbdb48db5133332c14a9be4966",
+   "pnext-receipt.py": "f475b206fdb5487f626359487d67f2a9806c6087c7ad62243cece027e3b3f2b5"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "0b4657ce3d3654a0415a6dcf1b87925648a8a3fc7dce8f03fa966c99427f2c75",
+  "ext/BUILD.bazel": "94d18f3d8633962a4a689aee972281539811cec3de96d27ff246f959eeef444a",
+  "ext/MODULE.bazel": "a02af1c154e0a4d866238124b22f169605295dbb70eb61b801587e01ea01d40c",
+  "ext/e.txt": "a0ee490c68a8c41a0c9b6988e34d71f6eef3e513e0d3472e478de62403e65894",
+  "tools/build_defs/python/BUILD.bazel": "8881ae81028ffa547e6ad6d6f8ae272076d04a966f8bc27ebd0b5badecc9d12f",
+  "tools/build_defs/python/defs.bzl": "dadbe2cd8313c98a63dcee585efea9c02f61bd0e3d722b66851e59800b9d0607",
+  "tools/build_defs/python/local.txt": "fd62a7426ed68d146de4bb0be1e10dc0922b02c31ea066405a3ae096613a3941"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "comparison (tests/py_repo_mapping.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
+ "genuine_key_findings": [
+  "The manifest lists `source,apparent,canonical` lines of the transitive repositories' mappings whose canonical repository has runfiles artifacts: a main-repository file gives `,py_repo_mapping,_main` (the root module's own name); an external module's file adds `,other,ext+` (its repo_name in the main repository) and `ext+,ext,ext+` (its own mapping); a dependency's default runfiles count; empty runfiles give an empty file; symlink targets do not count, a symlink below the workspace counts as the main repository, a root symlink's first segment only when it is a canonical repository name; --incompatible_compact_repo_mapping_manifest changes nothing here. The function returns None.",
+  "Binding errors are the Java builtin's (`Error in create_repo_mapping_manifest: create_repo_mapping_manifest() got unexpected positional argument`, `in call to create_repo_mapping_manifest(), parameter 'ctx' got value of type 'NoneType', want 'ctx'`, `... 'runfiles' got value of type 'list', want 'runfiles'`, `... 'output' got value of type 'string', want 'File'`, `got unexpected keyword argument 'runfile' (did you mean 'runfiles'?)`); a missing parameter crashes Bazel 9.3 (FATAL, exit 37, the `unbound` default reaches PyBuiltins.repoMappingAction)."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines, and Starlark errors in its own traceback format without the @_builtins wrapper frame (the messages are Bazel's).",
+  "Declared divergence bad_missing: see the case.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 12,
+  "DECLARED_DIVERGENCE": 1
+ },
+ "scratch_removed": true,
+ "cases": {
+  "main_only": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:main_only"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.621,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:main_only (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:main_only up-to-date:\n  bazel-bin/tools/build_defs/python/main_only.repo_mapping\n  bazel-bin/tools/build_defs/python/main_only.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.repo_mapping": [
+      "0o555",
+      ",py_repo_mapping,_main\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 1.009,
+    "stdout": "//tools/build_defs/python:main_only\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.repo_mapping\n//tools/build_defs/python:main_only\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/main_only.repo_mapping": [
+      "0o555",
+      ",py_repo_mapping,_main\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "with_ext": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:with_ext"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.843,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:with_ext (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:with_ext up-to-date:\n  bazel-bin/tools/build_defs/python/with_ext.repo_mapping\n  bazel-bin/tools/build_defs/python/with_ext.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping": [
+      "0o555",
+      ",other,ext+\n,py_repo_mapping,_main\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.484,
+    "stdout": "//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping\n//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping": [
+      "0o555",
+      ",other,ext+\n,py_repo_mapping,_main\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "ext_only": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:ext_only"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 13.405,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:ext_only (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:ext_only up-to-date:\n  bazel-bin/tools/build_defs/python/ext_only.repo_mapping\n  bazel-bin/tools/build_defs/python/ext_only.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.repo_mapping": [
+      "0o555",
+      ",other,ext+\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.427,
+    "stdout": "//tools/build_defs/python:ext_only\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.repo_mapping\n//tools/build_defs/python:ext_only\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/ext_only.repo_mapping": [
+      "0o555",
+      ",other,ext+\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "empty": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:empty"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.022,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:empty (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:empty up-to-date:\n  bazel-bin/tools/build_defs/python/empty.repo_mapping\n  bazel-bin/tools/build_defs/python/empty.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.repo_mapping": [
+      "0o555",
+      ""
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.77,
+    "stdout": "//tools/build_defs/python:empty\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.repo_mapping\n//tools/build_defs/python:empty\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/empty.repo_mapping": [
+      "0o555",
+      ""
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "symlinks": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:symlinks"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.857,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:symlinks (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:symlinks up-to-date:\n  bazel-bin/tools/build_defs/python/symlinks.repo_mapping\n  bazel-bin/tools/build_defs/python/symlinks.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.repo_mapping": [
+      "0o555",
+      ",py_repo_mapping,_main\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.804,
+    "stdout": "//tools/build_defs/python:symlinks\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.repo_mapping\n//tools/build_defs/python:symlinks\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.repo_mapping": [
+      "0o555",
+      ",py_repo_mapping,_main\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "compact": {
+   "argv": [
+    "build",
+    "--incompatible_compact_repo_mapping_manifest",
+    "//tools/build_defs/python:with_ext"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.581,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //tools/build_defs/python:with_ext (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //tools/build_defs/python:with_ext up-to-date:\n  bazel-bin/tools/build_defs/python/with_ext.repo_mapping\n  bazel-bin/tools/build_defs/python/with_ext.info\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping": [
+      "0o555",
+      ",other,ext+\n,py_repo_mapping,_main\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.469,
+    "stdout": "//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping\n//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info": [
+      "0o555",
+      "result=None\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping": [
+      "0o555",
+      ",other,ext+\n,py_repo_mapping,_main\next+,ext,ext+\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "//tools/build_defs/python:with_ext",
+    "//tools/build_defs/python:symlinks"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.916,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.47,
+    "stdout": "//tools/build_defs/python:symlinks\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.repo_mapping\n//tools/build_defs/python:symlinks\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/symlinks.info\n//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.repo_mapping\n//tools/build_defs/python:with_ext\tbazel-out/k8-fastbuild/bin/tools/build_defs/python/with_ext.info\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_positional": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_positional"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 12.763,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_positional: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 42, column 10, in _bad_impl\n\t\tf(ctx)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 38, column 53, in _create_repo_mapping_manifest\nError in create_repo_mapping_manifest: create_repo_mapping_manifest() got unexpected positional argument\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_positional' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_positional' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.446,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_positional: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:42, in _bad_impl\n      f(ctx)\nerror: create_repo_mapping_manifest() got unexpected positional argument\n  --> //tools/build_defs/python:defs.bzl:42:9\n   |\n42 |         f(ctx)\n   |         ^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "create_repo_mapping_manifest() got unexpected positional argument",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_ctx_type": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_ctx_type"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 14.845,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_ctx_type: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 44, column 10, in _bad_impl\n\t\tf(ctx = None, runfiles = runfiles, output = out)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 38, column 53, in _create_repo_mapping_manifest\nError in create_repo_mapping_manifest: in call to create_repo_mapping_manifest(), parameter 'ctx' got value of type 'NoneType', want 'ctx'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_ctx_type' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_ctx_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.442,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_ctx_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:44, in _bad_impl\n      f(ctx = None, runfiles = runfiles, output = out)\nerror: in call to create_repo_mapping_manifest(), parameter 'ctx' got value of type 'NoneType', want 'ctx'\n  --> //tools/build_defs/python:defs.bzl:44:9\n   |\n44 |         f(ctx = None, runfiles = runfiles, output = out)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to create_repo_mapping_manifest(), parameter 'ctx' got value of type 'NoneType', want 'ctx'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_runfiles_type": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_runfiles_type"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 14.418,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_runfiles_type: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 46, column 10, in _bad_impl\n\t\tf(ctx = ctx, runfiles = [], output = out)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 38, column 53, in _create_repo_mapping_manifest\nError in create_repo_mapping_manifest: in call to create_repo_mapping_manifest(), parameter 'runfiles' got value of type 'list', want 'runfiles'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_runfiles_type' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_runfiles_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.516,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_runfiles_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:46, in _bad_impl\n      f(ctx = ctx, runfiles = [], output = out)\nerror: in call to create_repo_mapping_manifest(), parameter 'runfiles' got value of type 'list', want 'runfiles'\n  --> //tools/build_defs/python:defs.bzl:46:9\n   |\n46 |         f(ctx = ctx, runfiles = [], output = out)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to create_repo_mapping_manifest(), parameter 'runfiles' got value of type 'list', want 'runfiles'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_output_type": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_output_type"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 13.997,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_output_type: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 48, column 10, in _bad_impl\n\t\tf(ctx = ctx, runfiles = runfiles, output = \"x\")\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 38, column 53, in _create_repo_mapping_manifest\nError in create_repo_mapping_manifest: in call to create_repo_mapping_manifest(), parameter 'output' got value of type 'string', want 'File'\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_output_type' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_output_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.495,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_output_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:48, in _bad_impl\n      f(ctx = ctx, runfiles = runfiles, output = \"x\")\nerror: in call to create_repo_mapping_manifest(), parameter 'output' got value of type 'string', want 'File'\n  --> //tools/build_defs/python:defs.bzl:48:9\n   |\n48 |         f(ctx = ctx, runfiles = runfiles, output = \"x\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "in call to create_repo_mapping_manifest(), parameter 'output' got value of type 'string', want 'File'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_unknown_keyword": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_unknown_keyword"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 12.963,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: in bad rule //tools/build_defs/python:bad_unknown_keyword: \nTraceback (most recent call last):\n\tFile \"<WS>/tools/build_defs/python/defs.bzl\", line 50, column 10, in _bad_impl\n\t\tf(ctx = ctx, runfile = runfiles, output = out)\n\tFile \"/virtual_builtins_bzl/common/python/py_internal.bzl\", line 38, column 53, in _create_repo_mapping_manifest\nError in create_repo_mapping_manifest: create_repo_mapping_manifest() got unexpected keyword argument 'runfile' (did you mean 'runfiles'?)\nERROR: <WS>/tools/build_defs/python/BUILD.bazel:30:8: Analysis of target '//tools/build_defs/python:bad_unknown_keyword' (config: a7a71fd) failed\nERROR: Analysis of target '//tools/build_defs/python:bad_unknown_keyword' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.431,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_unknown_keyword: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:50, in _bad_impl\n      f(ctx = ctx, runfile = runfiles, output = out)\nerror: create_repo_mapping_manifest() got unexpected keyword argument 'runfile' (did you mean 'runfiles'?)\n  --> //tools/build_defs/python:defs.bzl:50:9\n   |\n50 |         f(ctx = ctx, runfile = runfiles, output = out)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "expected_message": "create_repo_mapping_manifest() got unexpected keyword argument 'runfile' (did you mean 'runfiles'?)",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "bad_missing": {
+   "argv": [
+    "build",
+    "//tools/build_defs/python:bad_missing"
+   ],
+   "genuine": {
+    "exit": 37,
+    "seconds": 13.114,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nFATAL: bazel crashed due to an internal error. Printing stack trace:\njava.lang.RuntimeException: Unrecoverable error while evaluating node 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_missing, config=BuildConfigurationKey[a7a71fd16b14112464272f754633480c74c664f2488224c592ebf2dfc7a06b18]}' (requested by nodes 'ConfiguredTargetKey{label=//tools/build_defs/python:bad_missing, config=BuildConfigurationKey[e722a217ced723dfeb49874b2007895ae0dc9a9d49d004d95320b88c609c409a]}')\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:552)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\nCaused by: net.starlark.java.eval.Starlark$UncheckedEvalException: IllegalArgumentException thrown during Starlark evaluation (//tools/build_defs/python:bad_missing)\n\tat <starlark>.create_repo_mapping_manifest(<builtin>:0)\n\tat <starlark>._create_repo_mapping_manifest(/virtual_builtins_bzl/common/python/py_internal.bzl:38)\n\tat <starlark>._bad_impl(<WS>/tools/build_defs/python/defs.bzl:52)\nCaused by: java.lang.IllegalArgumentException: IllegalArgumentException (argument type mismatch) in Starlark call of public void com.google.devtools.build.lib.rules.python.PyBuiltins.repoMappingAction(com.google.devtools.build.lib.analysis.starlark.StarlarkRuleContext,com.google.devtools.build.lib.analysis.Runfiles,com.google.devtools.build.lib.actions.Artifact), obj=<unknown object com.google.devtools.build.lib.bazel.rules.python.BazelPyBuiltins> (py_builtins), args=[<rule context for //tools/build_defs/python:bad_missing> (ctx), <unknown object com.google.devtools.build.lib.analysis.Runfiles> (runfiles), <unbound> (unbound)]\n\tat net.starlark.java.eval.MethodDescriptor.call(MethodDescriptor.java:280)\n\tat net.starlark.java.eval.BuiltinFunction$ArgumentProcessor.call(BuiltinFunction.java:446)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.execReturn(Eval.java:282)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:321)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.Starlark.callViaArgumentProcessor(Starlark.java:844)\n\tat net.starlark.java.eval.Eval.evalCall(Eval.java:765)\n\tat net.starlark.java.eval.Eval.eval(Eval.java:567)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:304)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:238)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execIf(Eval.java:240)\n\tat net.starlark.java.eval.Eval.exec(Eval.java:316)\n\tat net.starlark.java.eval.Eval.execStatements(Eval.java:83)\n\tat net.starlark.java.eval.Eval.execFunctionBody(Eval.java:67)\n\tat net.starlark.java.eval.StarlarkFunction$ArgumentProcessor.call(StarlarkFunction.java:578)\n\tat net.starlark.java.eval.StarlarkCallable.positionalOnlyCall(StarlarkCallable.java:112)\n\tat net.starlark.java.eval.Starlark.positionalOnlyCall(Starlark.java:878)\n\tat com.google.devtools.build.lib.analysis.starlark.StarlarkRuleConfiguredTargetUtil.evalRule(StarlarkRuleConfiguredTargetUtil.java:86)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createRule(ConfiguredTargetFactory.java:460)\n\tat com.google.devtools.build.lib.analysis.ConfiguredTargetFactory.createConfiguredTarget(ConfiguredTargetFactory.java:240)\n\tat com.google.devtools.build.lib.skyframe.SkyframeBuildView.createConfiguredTarget(SkyframeBuildView.java:1398)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.createConfiguredTarget(ConfiguredTargetFunction.java:453)\n\tat com.google.devtools.build.lib.skyframe.ConfiguredTargetFunction.compute(ConfiguredTargetFunction.java:371)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.485,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //tools/build_defs/python:bad_missing: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //tools/build_defs/python:defs.bzl:52, in _bad_impl\n      f(ctx = ctx, runfiles = runfiles)\nerror: py_internal.create_repo_mapping_manifest() without each of ctx, runfiles and output: genuine Bazel 9.3 crashes on it (IllegalArgumentException, argument type mismatch: an `unbound` default reaches PyBuiltins.repoMappingAction), which the native profile reports instead\n  --> //tools/build_defs/python:defs.bzl:52:9\n   |\n52 |         f(ctx = ctx, runfiles = runfiles)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
+    "outputs": null
+   },
+   "declared_divergence": "genuine Bazel 9.3 crashes (FATAL, exit 37): the missing `output` parameter's `unbound` default reaches PyBuiltins.repoMappingAction(StarlarkRuleContext, Runfiles, Artifact) (IllegalArgumentException, argument type mismatch); the native profile reports an explicit error instead",
+   "native_message": "py_internal.create_repo_mapping_manifest() without each of ctx, runfiles and output: genuine Bazel 9.3 crashes on it",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  }
+ }
+}

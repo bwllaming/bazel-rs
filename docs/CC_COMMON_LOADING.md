@@ -51,7 +51,8 @@ Struct members that Bazel defines with `def` have type `function`, and their
 compare equal by definition, so re-allocated copies, such as those in
 `apple_toolchain()`, behave like Bazel's single objects.
 
-Six `py_internal` functions are implemented; the others fail explicitly:
+Seven `py_internal` functions and `cc_helper.is_valid_shared_library_artifact`
+are implemented; the others fail explicitly:
 
 - `merge_runfiles_with_generated_inits_empty_files_supplier(ctx=, runfiles=)`
   (docs/RUNFILES_TREES.md).
@@ -83,6 +84,26 @@ Six `py_internal` functions are implemented; the others fail explicitly:
   explicit native error). Paired capture `tests/fixtures/py_internal_ctx`
   (17 genuine 9.3.0 cases: 16 MATCH, the crash a declared divergence),
   replayed by `tests/py_internal_ctx.rs`.
+- `create_repo_mapping_manifest(ctx=, runfiles=, output=)`
+  (PyBuiltins.repoMappingAction, rules_python's `<name>.zip.repo_mapping`)
+  registers a RepoMappingManifestAction write on `ctx`'s analysis and
+  returns None: the `source,apparent,canonical` lines of the target's
+  transitive repositories' mappings relevant to the runfiles (the same
+  content as a runfiles support's `_repo_mapping`, crate::runfiles_tree),
+  filled in at the commit, where the transitive repositories are known.
+  BuiltinFunction binding (three named-only parameters typed `ctx`,
+  `runfiles`, `File`); a missing one crashes Bazel 9.3 (an explicit native
+  error); in an aspect it fails explicitly. Paired capture
+  `tests/fixtures/py_repo_mapping` (13 genuine 9.3.0 cases: 12 MATCH, the
+  crash declared), replayed by `tests/py_repo_mapping.rs`.
+- `cc_helper.is_valid_shared_library_artifact(shared_library)` evaluates
+  the `def` (py_internal.bzl:101-131): the extension list
+  `so, dll, dylib, pyd, wasm`, else a versioned `.so.`/`.dylib.` basename
+  whose `.`-parts start with an ASCII digit and continue with
+  `[a-zA-Z0-9_]` (an empty part is Bazel's index error); any value with
+  `extension`/`basename` works. Paired capture
+  `tests/fixtures/py_shared_library` (7 genuine 9.3.0 cases, all MATCH),
+  replayed by `tests/py_shared_library.rs`.
 
 ### `cc_common.internal_DO_NOT_USE()` and the private-API check
 

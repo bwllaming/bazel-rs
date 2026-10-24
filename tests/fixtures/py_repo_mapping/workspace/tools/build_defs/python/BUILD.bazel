@@ -1,0 +1,42 @@
+load(":defs.bzl", "bad", "manifest")
+
+manifest(
+    name = "main_only",
+    data = ["local.txt"],
+)
+
+manifest(
+    name = "with_ext",
+    data = [
+        "local.txt",
+        "@other//:e.txt",
+    ],
+)
+
+manifest(
+    name = "ext_only",
+    data = ["@other//:files"],
+)
+
+manifest(name = "empty")
+
+manifest(
+    name = "symlinks",
+    root_symlinked = ["local.txt"],
+    symlinked = ["@other//:e.txt"],
+)
+
+[
+    bad(
+        name = "bad_" + mode,
+        mode = mode,
+    )
+    for mode in [
+        "positional",
+        "ctx_type",
+        "runfiles_type",
+        "output_type",
+        "unknown_keyword",
+        "missing",
+    ]
+]
