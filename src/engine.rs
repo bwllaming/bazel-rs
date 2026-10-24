@@ -9271,9 +9271,21 @@ impl Engine {
                 .collect::<Result<Vec<_>, _>>()?;
             source_inputs.insert(registered.action.id.clone(), source_paths(&inputs));
             let mut action = registered.action;
-            action.execution_info = rule_execution_info(&base_rule);
-            action.remote_unsupported =
-                self.remote_platform_gate(&base_rule, base_key.config, None);
+            // A spawn's propagated tags are its base rule's (an aspect's
+            // RuleContext.getRule), set at registration (keyed,
+            // Context::register_action); writes and transforms have none,
+            // like a rule's. The base target's exec_properties are not an
+            // aspect action's (ConfiguredTargetFactory.createAspect
+            // setExecProperties(ImmutableMap.of()), analysis/
+            // ConfiguredTargetFactory.java:702: genuine shares two
+            // applications' equal spawns whatever their base targets'
+            // exec_properties, tests/fixtures/shared_actions aspect_shared),
+            // so the key has none; the remote gate stays conservative (they
+            // keep the spawn off the remote cache).
+            if action.write.is_none() && action.extra.transform.is_none() {
+                action.remote_unsupported =
+                    self.remote_platform_gate(&base_rule, base_key.config, None);
+            }
             let planned = plan_action(action, inputs, &main_ignored, client_environment)?;
             nodes.push(planned);
         }

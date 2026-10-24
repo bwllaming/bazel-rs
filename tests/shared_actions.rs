@@ -444,3 +444,65 @@ fn shared_aspect_and_tree_actions_are_planned_once() {
         );
     }
 }
+
+/// An aspect's spawn carries its base rule's execution-requirement tags
+/// (an aspect's RuleContext.getRule is its base target), its writes no
+/// execution info, like a rule's (genuine aquery: the aspect's FileWrite
+/// has no ExecutionInfo, its spawn `{no-remote: ''}`). A package added to
+/// the fixture copy, so the receipt's fixture stays the captured one.
+#[test]
+fn aspect_spawns_carry_the_base_tags_and_writes_none() {
+    let ws = Workspace::new();
+    let package = ws.path().join("tagged");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(
+        package.join("defs.bzl"),
+        r#"TaggedInfo = provider(fields = ["files"])
+
+def _tagged_aspect_impl(target, ctx):
+    write = ctx.actions.declare_file(ctx.label.name + ".aspect_write")
+    ctx.actions.write(write, "written\n")
+    spawn = ctx.actions.declare_file(ctx.label.name + ".aspect_spawn")
+    ctx.actions.run_shell(outputs = [spawn], command = "echo spawned > " + spawn.path)
+    return [TaggedInfo(files = depset([write, spawn]))]
+
+tagged_aspect = aspect(implementation = _tagged_aspect_impl)
+
+def _base_impl(ctx):
+    return []
+
+base = rule(implementation = _base_impl)
+
+def _consumer_impl(ctx):
+    return [DefaultInfo(files = depset(transitive = [dep[TaggedInfo].files for dep in ctx.attr.deps]))]
+
+consumer = rule(
+    implementation = _consumer_impl,
+    attrs = {"deps": attr.label_list(aspects = [tagged_aspect])},
+)
+"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("BUILD.bazel"),
+        "load(\":defs.bzl\", \"base\", \"consumer\")\n\nbase(\n    name = \"base\",\n    tags = [\"no-remote\"],\n)\n\nconsumer(\n    name = \"consumer\",\n    deps = [\":base\"],\n)\n",
+    )
+    .unwrap();
+    let argv = ["build", "--nobuild", "//tagged:consumer"]
+        .map(str::to_owned)
+        .to_vec();
+    let output = ws.run(&argv, &[("BAZEL_RS_DUMP_ACTIONS", "1")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{stderr}");
+    let node = |output: &str| {
+        stderr
+            .split("ACTION ")
+            .find(|node| node.contains(&format!("  output {output}\n")))
+            .unwrap_or_else(|| panic!("no node of {output} in {stderr}"))
+            .to_owned()
+    };
+    let spawn = node("bazel-out/k8-fastbuild/bin/tagged/base.aspect_spawn");
+    assert!(spawn.contains("  execution-info no-remote\n"), "{spawn}");
+    let write = node("bazel-out/k8-fastbuild/bin/tagged/base.aspect_write");
+    assert!(!write.contains("execution-info"), "{write}");
+}

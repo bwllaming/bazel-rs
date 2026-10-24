@@ -59,7 +59,15 @@ aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the nati
   aspect actions register under the application's own action owner
   (`label[config]%aspect`), so the base target's and several aspects'
   actions never collide (duplicate declared output paths still fail, the
-  engine's overlapping-output check).
+  engine's overlapping-output check), except that equal actions of two
+  applications on one path are shared like any two owners' (Actions.canBeShared,
+  docs/SHAREABLE_ARTIFACTS.md). An aspect's spawns carry its base rule's
+  execution-requirement tags (an aspect's `RuleContext.getRule` is the base
+  target), its writes and transforms no execution info; the base target's
+  `exec_properties` are not the aspect actions' (`ConfiguredTargetFactory.createAspect`'s
+  `setExecProperties(ImmutableMap.of())`, `analysis/ConfiguredTargetFactory.java:702`;
+  two applications' equal spawns share whatever their base targets'
+  `exec_properties`, tests/fixtures/shared_actions `aspect_shared`).
 
 ## Providers: the aspect-configured target
 
