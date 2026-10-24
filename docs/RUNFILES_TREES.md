@@ -185,7 +185,12 @@ holds 7 groups of 1,868 entries (`PERF-GROUPS` under `BAZEL_RS_TIMING`; tests
 `grouped_nodes_*`). Staging is per executed action as before: a cache-hit
 action still checks and keys every listed input (about 20 ms for a 3,000-file
 workspace-source tree, mostly the per-input ancestor checks workspace files
-keep).
+keep). An aspect's actions are planned by the same commit step
+(`Engine::commit_action`) and stage their tools' trees too (before PA-1
+follow-up B6 the aspect commit dropped them, and the deferred completion of
+a command line expanding tree artifacts; test
+`aspect_actions_stage_their_tools_runfiles`, its outputs byte-identical to
+genuine Bazel 9.3.0's).
 
 ## `run` (runtime/commands/RunCommand.java)
 

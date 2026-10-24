@@ -626,6 +626,136 @@ fn actions_sharing_a_tool_list_its_runfiles_tree() {
     );
 }
 
+/// PA-1 follow-up B6: an aspect's actions stage their tools' runfiles trees
+/// and complete deferred command lines like a rule's (the aspect commit
+/// used to drop both: the tool found no `$0.runfiles`, the deferred command
+/// line ran without arguments). The aspect runs two tools (`tool`: data, a
+/// generated file and an external file; `pytool`: Python sources with
+/// generated empty `__init__.py` files) as `executable`, as a shell tool,
+/// with the tool's MANIFEST as an input (the tree is listed in that
+/// action) and with a command line expanding a directory. The expected
+/// outputs are genuine Bazel 9.3.0's for this package over the fixture
+/// above (`--batch --ignore_all_rc_files`, byte-identical).
+const ASPECT_DEFS: &str = r##"SCRIPT = """#!/bin/sh
+out=$1
+shift
+{ (cd $0.runfiles && find . \\( -type f -o -type l \\) | LC_ALL=C sort); echo "args=$*"; } > $out
+"""
+
+def _tool(ctx):
+    exe = ctx.actions.declare_file(ctx.label.name)
+    ctx.actions.write(exe, SCRIPT, is_executable = True)
+    gen = ctx.actions.declare_file(ctx.label.name + ".gen")
+    ctx.actions.write(gen, "generated\n")
+    rf = ctx.runfiles(files = ctx.files.data + [gen])
+    if ctx.attr.python:
+        rf = py_internal.merge_runfiles_with_generated_inits_empty_files_supplier(ctx = ctx, runfiles = rf)
+    return [DefaultInfo(executable = exe, runfiles = rf)]
+
+tool = rule(_tool, executable = True, attrs = {
+    "data": attr.label_list(allow_files = True),
+    "python": attr.bool(),
+})
+
+def _base(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".base")
+    ctx.actions.write(out, "base\n")
+    return [DefaultInfo(files = depset([out]))]
+
+base = rule(_base)
+
+def _use_tools(target, ctx):
+    outs = []
+    for attribute in [ctx.attr._tool, ctx.attr._pytool]:
+        tool = attribute[DefaultInfo].files_to_run
+        prefix = target.label.name + "." + tool.executable.basename
+        run = ctx.actions.declare_file(prefix + ".run")
+        ctx.actions.run(outputs = [run], executable = tool, arguments = [run.path])
+        shell = ctx.actions.declare_file(prefix + ".shell")
+        ctx.actions.run_shell(outputs = [shell], tools = [tool], command = "$1 $2", arguments = [tool.executable.path, shell.path])
+        inside = ctx.actions.declare_file(prefix + ".inside")
+        ctx.actions.run(outputs = [inside], inputs = [tool.runfiles_manifest], executable = tool, arguments = [inside.path])
+        tree = ctx.actions.declare_directory(prefix + ".dir")
+        ctx.actions.run_shell(outputs = [tree], command = "mkdir -p $1 && echo x > $1/f.txt", arguments = [tree.path])
+        deferred = ctx.actions.declare_file(prefix + ".deferred")
+        args = ctx.actions.args()
+        args.add(deferred.path)
+        args.add_all([tree])
+        ctx.actions.run(outputs = [deferred], inputs = [tree], executable = tool, arguments = [args])
+        outs += [run, shell, inside, deferred]
+    return [OutputGroupInfo(tool_out = depset(outs))]
+
+use_tools = aspect(_use_tools, attrs = {
+    "_tool": attr.label(default = Label("//tools/build_defs/python/aspect:tool"), executable = True, cfg = "exec"),
+    "_pytool": attr.label(default = Label("//tools/build_defs/python/aspect:pytool"), executable = True, cfg = "exec"),
+})
+"##;
+
+const ASPECT_BUILD: &str = r#"load(":defs.bzl", "base", "tool")
+tool(name = "tool", data = ["d.txt", "@ext//data:fg"])
+tool(name = "pytool", data = ["//py:srcs"], python = True)
+base(name = "b")
+"#;
+
+#[test]
+fn aspect_actions_stage_their_tools_runfiles() {
+    let ws = Workspace::new();
+    let package = "tools/build_defs/python/aspect";
+    ws.file(&format!("{package}/defs.bzl"), ASPECT_DEFS, 0o644);
+    ws.file(&format!("{package}/BUILD.bazel"), ASPECT_BUILD, 0o644);
+    ws.file(&format!("{package}/d.txt"), "aspect-data\n", 0o644);
+    let output = ws
+        .command(
+            &[
+                "build",
+                &format!("--aspects=//{package}:defs.bzl%use_tools"),
+                "--output_groups=tool_out",
+                &format!("//{package}:b"),
+            ],
+            "",
+        )
+        .env("BAZEL_RS_TIMING", "1")
+        .output()
+        .unwrap();
+    success(&output);
+    let content = |name: &str| {
+        let exec = format!("bazel-out/k8-fastbuild/bin/{package}/{name}");
+        fs::read_to_string(single(&ws, &exec)).unwrap()
+    };
+    let tool_tree = format!(
+        "./_main/{package}/d.txt\n./_main/{package}/tool\n./_main/{package}/tool.gen\n./_repo_mapping\n./ext+/data/e.txt\n"
+    );
+    let py_tree = format!(
+        "./_main/py/__init__.py\n./_main/py/__pycache__/c.pyc\n./_main/py/a/__init__.py\n./_main/py/a/b/__init__.py\n./_main/py/a/b/m.py\n./_main/py/a/x.so\n./_main/py/top.py\n./_main/{package}/pytool\n./_main/{package}/pytool.gen\n./_repo_mapping\n"
+    );
+    for (tool, tree) in [("tool", &tool_tree), ("pytool", &py_tree)] {
+        assert_eq!(content(&format!("b.{tool}.run")), format!("{tree}args=\n"));
+        assert_eq!(
+            content(&format!("b.{tool}.shell")),
+            format!("{tree}args=\n")
+        );
+        assert_eq!(
+            content(&format!("b.{tool}.inside")),
+            format!("./MANIFEST\n{tree}args=\n")
+        );
+        assert_eq!(
+            content(&format!("b.{tool}.deferred")),
+            format!("{tree}args=bazel-out/k8-fastbuild/bin/{package}/b.{tool}.dir/f.txt\n")
+        );
+    }
+    // The run, shell and deferred actions hold their tool's shared group;
+    // the `inside` actions list their tool's tree.
+    let text = stderr(&output);
+    assert!(
+        text.contains("holders=6 refs=6 distinct=2 ") && text.contains(" listed_tree_actions=2"),
+        "{}",
+        text.lines()
+            .filter(|line| line.starts_with("PERF-GROUPS"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
 #[test]
 fn python_empty_files_and_obscured_symlinks() {
     let ws = Workspace::new();

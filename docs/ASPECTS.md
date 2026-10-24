@@ -67,7 +67,13 @@ aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the nati
   `exec_properties` are not the aspect actions' (`ConfiguredTargetFactory.createAspect`'s
   `setExecProperties(ImmutableMap.of())`, `analysis/ConfiguredTargetFactory.java:702`;
   two applications' equal spawns share whatever their base targets'
-  `exec_properties`, tests/fixtures/shared_actions `aspect_shared`).
+  `exec_properties`, tests/fixtures/shared_actions `aspect_shared`). An
+  aspect's action is otherwise planned like a rule's (`Engine::commit_action`):
+  its tools' runfiles trees are staged (shared input groups,
+  docs/RUNFILES_TREES.md) and a command line expanding tree artifacts is
+  completed when it executes (PA-1 follow-up B6; the aspect commit used to
+  drop both; tests/runfiles_trees.rs `aspect_actions_stage_their_tools_runfiles`,
+  outputs byte-identical to genuine Bazel 9.3.0's).
 
 ## Providers: the aspect-configured target
 

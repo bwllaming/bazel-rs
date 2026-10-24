@@ -529,6 +529,8 @@ struct PlanState<'a> {
         &'a mut std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
     pub workspace_status: &'a mut Option<WorkspaceStatusPlan>,
     pub views: &'a mut DependencyViews,
+    pub input_groups: &'a mut HashMap<u64, ExpandedTree>,
+    pub listed_tree_actions: &'a mut usize,
 }
 
 impl ActionPlanning {
@@ -553,6 +555,8 @@ impl ActionPlanning {
             aspect_target_identities,
             workspace_status,
             views,
+            input_groups,
+            listed_tree_actions,
             ..
         } = self;
         PlanState {
@@ -574,6 +578,8 @@ impl ActionPlanning {
             status_client_environment,
             workspace_status,
             views,
+            input_groups,
+            listed_tree_actions,
         }
     }
 }
@@ -9275,6 +9281,8 @@ impl Engine {
             client_environment,
             status_client_environment,
             workspace_status,
+            input_groups,
+            listed_tree_actions,
             ..
         } = state;
         let main_ignored = self.ignored("")?;
@@ -9298,6 +9306,18 @@ impl Engine {
             base_key.config,
             |_| false,
         )?;
+        let mut commit = ActionCommit {
+            artifact_index,
+            workspace_status,
+            nodes,
+            producers,
+            source_inputs,
+            client_environment,
+            status_client_environment,
+            input_groups,
+            listed_tree_actions,
+        };
+        let owner = format!("aspect {}", aspect.identity);
         for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
             // Another owner's equal action produces its outputs.
             if shared {
@@ -9305,8 +9325,7 @@ impl Engine {
             }
             if registered.repo_mapping.is_some() {
                 return Err(format!(
-                    "aspect {}: py_internal.create_repo_mapping_manifest in an aspect {}",
-                    aspect.identity,
+                    "{owner}: py_internal.create_repo_mapping_manifest in an aspect {}",
                     crate::language_modules::NOT_IMPLEMENTED
                 ));
             }
@@ -9315,20 +9334,16 @@ impl Engine {
             if registered.build_info.is_some() {
                 self.build_info_actions.insert(registered.action.id.clone());
             }
-            self.resolve_build_info(workspace_status, &mut registered)?;
-            let inputs = registered
+            self.resolve_build_info(commit.workspace_status, &mut registered)?;
+            let own = registered
                 .inputs
                 .iter()
                 .map(|file| {
-                    artifact_index.get(file).cloned().ok_or_else(|| {
-                        format!(
-                            "aspect {}: input has no declared artifact: {}",
-                            aspect.identity, file.path
-                        )
+                    commit.artifact_index.get(file).cloned().ok_or_else(|| {
+                        format!("{owner}: input has no declared artifact: {}", file.path)
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            source_inputs.insert(registered.action.id.clone(), source_paths(&inputs).into());
             let mut action = registered.action;
             // A spawn's propagated tags are its base rule's (an aspect's
             // RuleContext.getRule), set at registration (keyed,
@@ -9345,8 +9360,18 @@ impl Engine {
                 action.remote_unsupported =
                     self.remote_platform_gate(&base_rule, base_key.config, None);
             }
-            let planned = plan_action(action, inputs, &main_ignored, client_environment)?;
-            nodes.push(planned);
+            // Like a rule's action (PA-1 follow-up B6): its tools' runfiles
+            // trees (shared input groups) and its deferred completion,
+            // which the aspect commit used to drop.
+            self.commit_action(
+                action,
+                own,
+                &registered.runfiles_trees,
+                registered.deferred,
+                &owner,
+                &main_ignored,
+                &mut commit,
+            )?;
         }
         Ok(analyzed.providers)
     }
@@ -9587,6 +9612,8 @@ impl Engine {
             aspect_target_identities,
             workspace_status,
             views,
+            input_groups,
+            listed_tree_actions,
             ..
         } = state;
         // The rule's dependency edges, built once per prepare (W1a).
@@ -9817,6 +9844,8 @@ impl Engine {
                         status_client_environment: &mut *status_client_environment,
                         workspace_status: &mut *workspace_status,
                         views: &mut *views,
+                        input_groups: &mut *input_groups,
+                        listed_tree_actions: &mut *listed_tree_actions,
                     };
                     self.plan_aspect_dependency(
                         &mut planning,
@@ -10337,6 +10366,18 @@ impl Engine {
         )? {
             runfiles_nodes.insert(key.clone(), nodes_of_target);
         }
+        let mut commit = ActionCommit {
+            artifact_index,
+            workspace_status,
+            nodes,
+            producers,
+            source_inputs,
+            client_environment,
+            status_client_environment,
+            input_groups,
+            listed_tree_actions,
+        };
+        let owner = rule.label.to_string();
         for (mut registered, shared) in analyzed.actions.into_iter().zip(shared) {
             // Another owner's equal action produces its outputs: no node,
             // no source inputs, no execution of its own.
@@ -10352,12 +10393,12 @@ impl Engine {
             if registered.build_info.is_some() {
                 self.build_info_actions.insert(registered.action.id.clone());
             }
-            self.resolve_build_info(workspace_status, &mut registered)?;
+            self.resolve_build_info(commit.workspace_status, &mut registered)?;
             let own = registered
                 .inputs
                 .iter()
                 .map(|file| {
-                    artifact_index.get(file).cloned().ok_or_else(|| {
+                    commit.artifact_index.get(file).cloned().ok_or_else(|| {
                         format!(
                             "{}: input has no declared artifact: {}",
                             rule.label, file.path
@@ -10365,62 +10406,6 @@ impl Engine {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            // N23f: the tools' runfiles trees, staged at their tree paths
-            // (SpawnInputExpander.addSingleRunfilesTreeToInputs,
-            // exec/SpawnInputExpander.java:87-135); empty files are
-            // empty parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER).
-            // PA-1: each tree is expanded once per build into a shared
-            // input group that every action using the tool holds, like the
-            // one runfiles tree artifact Bazel's spawns hold; a tree listed
-            // twice is one group.
-            let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
-            for tree in &registered.runfiles_trees {
-                let group = match input_groups.get(&tree.identity()) {
-                    Some(expanded) => {
-                        // One identity is one content
-                        // (crate::analysis_runtime::ToolRunfilesTree).
-                        debug_assert!(
-                            Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
-                            "internal error: runfiles tree {} of identity {} differs from the one expanded",
-                            tree.directory(),
-                            tree.identity()
-                        );
-                        Arc::clone(&expanded.group)
-                    }
-                    None => {
-                        let mut resolve = |file: &File| {
-                            self.indexed_artifact(
-                                file,
-                                artifact_index,
-                                workspace_status,
-                                nodes,
-                                producers,
-                                client_environment,
-                                status_client_environment,
-                            )
-                        };
-                        let (artifacts, empty_files) =
-                            runfiles_tree_entries(tree, &rule.label, &mut resolve)?;
-                        let group = Arc::new(runfiles_input_group(
-                            Path::new(tree.directory()),
-                            artifacts,
-                            empty_files,
-                            &main_ignored,
-                        ));
-                        input_groups.insert(
-                            tree.identity(),
-                            ExpandedTree {
-                                tree: Arc::clone(tree),
-                                group: Arc::clone(&group),
-                            },
-                        );
-                        group
-                    }
-                };
-                if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) {
-                    groups.push(group);
-                }
-            }
             // The action's exec group decides its execution platform and
             // exec properties (RuleContext.getActionOwner(execGroup)).
             let execution = action_execution
@@ -10436,82 +10421,15 @@ impl Engine {
             if action.write.is_none() && action.extra.transform.is_none() {
                 action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
             }
-            // The groups stay shared when listing them could change nothing
-            // but the list (crate::scheduler::groups_apart): no entry would
-            // be dropped as a duplicate and the listed action validates
-            // exactly when its own part does. Otherwise they are listed in
-            // the action, as without sharing.
-            let shared_groups = !groups.is_empty() && {
-                list_artifacts(&mut action, &own);
-                scheduler::groups_apart(&action, &groups)
-                    && action::validate_structure(&action).is_ok()
-            };
-            if shared_groups {
-                source_inputs.insert(
-                    action.id.clone(),
-                    SourceInputs {
-                        own: source_paths(&own),
-                        groups: groups.clone(),
-                    },
-                );
-                let mut planned = plan_action(action, own, &main_ignored, client_environment)?;
-                planned.groups = groups;
-                planned.deferred = registered.deferred;
-                nodes.push(planned);
-                continue;
-            }
-            if !groups.is_empty() {
-                *listed_tree_actions += 1;
-            }
-            let mut inputs = own;
-            for tree in &registered.runfiles_trees {
-                let mut resolve = |file: &File| {
-                    self.indexed_artifact(
-                        file,
-                        artifact_index,
-                        workspace_status,
-                        nodes,
-                        producers,
-                        client_environment,
-                        status_client_environment,
-                    )
-                };
-                let (artifacts, empty_files) =
-                    runfiles_tree_entries(tree, &rule.label, &mut resolve)?;
-                inputs.extend(artifacts);
-                for destination in empty_files {
-                    if !action
-                        .extra
-                        .param_files
-                        .iter()
-                        .any(|(existing, _)| *existing == destination)
-                    {
-                        action.extra.param_files.push((destination, Vec::new()));
-                    }
-                }
-            }
-            source_inputs.insert(action.id.clone(), source_paths(&inputs).into());
-            let empties: Vec<(PathBuf, Vec<u8>)> = action
-                .extra
-                .param_files
-                .iter()
-                .filter(|(path, content)| {
-                    content.is_empty()
-                        && registered
-                            .runfiles_trees
-                            .iter()
-                            .any(|tree| path.starts_with(tree.directory()))
-                })
-                .cloned()
-                .collect();
-            let mut planned = plan_action(action, inputs, &main_ignored, client_environment)?;
-            // A deferred command line recomputes the parameter files;
-            // the runfiles empty files are kept.
-            planned.deferred = match (registered.deferred, empties.is_empty()) {
-                (Some(deferred), false) => Some(deferred.with_extra_param_files(empties)),
-                (deferred, _) => deferred,
-            };
-            nodes.push(planned);
+            self.commit_action(
+                action,
+                own,
+                &registered.runfiles_trees,
+                registered.deferred,
+                &owner,
+                &main_ignored,
+                &mut commit,
+            )?;
         }
         let defaults = analyzed
             .files
@@ -10526,6 +10444,138 @@ impl Engine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         dry.insert(key.clone(), Arc::new(defaults));
+        Ok(())
+    }
+
+    /// Plan the node of one registered Starlark action — a rule's
+    /// (commit_custom_target) or an aspect application's
+    /// (plan_aspect_application) alike: `action` with its own inputs `own`
+    /// (the registration's, resolved), its tools' runfiles trees and its
+    /// execution-time completion `deferred`. `owner` names the registering
+    /// target or aspect in the error of a tree entry without an artifact.
+    ///
+    /// N23f: the tools' runfiles trees are staged at their tree paths
+    /// (SpawnInputExpander.addSingleRunfilesTreeToInputs,
+    /// exec/SpawnInputExpander.java:87-135); empty files are empty
+    /// parameter-file-like inputs (VirtualActionInput.EMPTY_MARKER). PA-1:
+    /// each tree is expanded once per build into a shared input group that
+    /// every action using the tool holds, like the one runfiles tree
+    /// artifact Bazel's spawns hold; a tree listed twice is one group.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_action(
+        &self,
+        mut action: Action,
+        own: Vec<Artifact>,
+        runfiles_trees: &[Arc<crate::analysis_runtime::ToolRunfilesTree>],
+        deferred: Option<scheduler::Deferred>,
+        owner: &str,
+        main_ignored: &IgnoredSubdirectories,
+        commit: &mut ActionCommit<'_>,
+    ) -> Result<(), String> {
+        let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
+        for tree in runfiles_trees {
+            let group = match commit.input_groups.get(&tree.identity()) {
+                Some(expanded) => {
+                    // One identity is one content
+                    // (crate::analysis_runtime::ToolRunfilesTree).
+                    debug_assert!(
+                        Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
+                        "internal error: runfiles tree {} of identity {} differs from the one expanded",
+                        tree.directory(),
+                        tree.identity()
+                    );
+                    Arc::clone(&expanded.group)
+                }
+                None => {
+                    let (artifacts, empty_files) =
+                        runfiles_tree_entries(tree, owner, &mut |file| {
+                            commit.artifact(self, file)
+                        })?;
+                    let group = Arc::new(runfiles_input_group(
+                        Path::new(tree.directory()),
+                        artifacts,
+                        empty_files,
+                        main_ignored,
+                    ));
+                    commit.input_groups.insert(
+                        tree.identity(),
+                        ExpandedTree {
+                            tree: Arc::clone(tree),
+                            group: Arc::clone(&group),
+                        },
+                    );
+                    group
+                }
+            };
+            if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) {
+                groups.push(group);
+            }
+        }
+        // The groups stay shared when listing them could change nothing
+        // but the list (crate::scheduler::groups_apart): no entry would
+        // be dropped as a duplicate and the listed action validates
+        // exactly when its own part does. Otherwise they are listed in
+        // the action, as without sharing.
+        let shared_groups = !groups.is_empty() && {
+            list_artifacts(&mut action, &own);
+            scheduler::groups_apart(&action, &groups) && action::validate_structure(&action).is_ok()
+        };
+        if shared_groups {
+            commit.source_inputs.insert(
+                action.id.clone(),
+                SourceInputs {
+                    own: source_paths(&own),
+                    groups: groups.clone(),
+                },
+            );
+            let mut planned = plan_action(action, own, main_ignored, commit.client_environment)?;
+            planned.groups = groups;
+            planned.deferred = deferred;
+            commit.nodes.push(planned);
+            return Ok(());
+        }
+        if !groups.is_empty() {
+            *commit.listed_tree_actions += 1;
+        }
+        let mut inputs = own;
+        for tree in runfiles_trees {
+            let (artifacts, empty_files) =
+                runfiles_tree_entries(tree, owner, &mut |file| commit.artifact(self, file))?;
+            inputs.extend(artifacts);
+            for destination in empty_files {
+                if !action
+                    .extra
+                    .param_files
+                    .iter()
+                    .any(|(existing, _)| *existing == destination)
+                {
+                    action.extra.param_files.push((destination, Vec::new()));
+                }
+            }
+        }
+        commit
+            .source_inputs
+            .insert(action.id.clone(), source_paths(&inputs).into());
+        let empties: Vec<(PathBuf, Vec<u8>)> = action
+            .extra
+            .param_files
+            .iter()
+            .filter(|(path, content)| {
+                content.is_empty()
+                    && runfiles_trees
+                        .iter()
+                        .any(|tree| path.starts_with(tree.directory()))
+            })
+            .cloned()
+            .collect();
+        let mut planned = plan_action(action, inputs, main_ignored, commit.client_environment)?;
+        // A deferred command line recomputes the parameter files;
+        // the runfiles empty files are kept.
+        planned.deferred = match (deferred, empties.is_empty()) {
+            (Some(deferred), false) => Some(deferred.with_extra_param_files(empties)),
+            (deferred, _) => deferred,
+        };
+        commit.nodes.push(planned);
         Ok(())
     }
 
@@ -11434,9 +11484,6 @@ impl Engine {
             }
             crate::plan_timings::report(&labels, &edges);
         }
-        if crate::plan_timings::enabled() {
-            report_input_groups(&state.nodes, state.listed_tree_actions);
-        }
         // W0-A: retained-memory breakdown (BAZEL_RS_TIMING_ALLOC=1 only).
         alloc_report::report_if_enabled(self, &state, &plan, &configured);
         // N58: the top-level aspects of `--aspects` (and the appended
@@ -11499,6 +11546,10 @@ impl Engine {
         }
         // The top-level aspects above also run rule implementations
         // (N58); implementations and action planning end here.
+        if crate::plan_timings::enabled() {
+            // After the top-level aspects: their actions hold groups too.
+            report_input_groups(&state.nodes, state.listed_tree_actions);
+        }
         crate::perf_mark("plan.phase2_actions_done");
         // N63 follow-up (BLOCKER 1): Bazel adds the workspace status
         // artifacts to artifactsToBuild UNCONDITIONALLY on every build
@@ -12793,7 +12844,7 @@ impl SourceInputs {
 /// build's artifact lookup ([`Engine::indexed_artifact`]).
 fn runfiles_tree_entries(
     tree: &crate::analysis_runtime::ToolRunfilesTree,
-    label: &Label,
+    owner: &str,
     resolve: &mut dyn FnMut(&File) -> Result<Option<Artifact>, String>,
 ) -> Result<(Vec<Artifact>, Vec<PathBuf>), String> {
     let mut artifacts = Vec::new();
@@ -12804,7 +12855,7 @@ fn runfiles_tree_entries(
             Some(file) => {
                 let mut artifact = resolve(file)?.ok_or_else(|| {
                     format!(
-                        "{label}: tool runfile has no declared artifact: {}",
+                        "{owner}: tool runfile has no declared artifact: {}",
                         file.path
                     )
                 })?;
@@ -12882,6 +12933,36 @@ fn runfiles_input_group(
         empty_files,
         sources,
         valid,
+    }
+}
+
+/// The planning state one registered Starlark action's node is committed
+/// into ([`Engine::commit_action`]): a rule commit's and an aspect
+/// application's.
+struct ActionCommit<'a> {
+    artifact_index: &'a mut BTreeMap<File, Artifact>,
+    workspace_status: &'a mut Option<WorkspaceStatusPlan>,
+    nodes: &'a mut Vec<PlannedAction>,
+    producers: &'a mut Producers,
+    source_inputs: &'a mut BTreeMap<String, SourceInputs>,
+    client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    status_client_environment: &'a std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
+    input_groups: &'a mut HashMap<u64, ExpandedTree>,
+    listed_tree_actions: &'a mut usize,
+}
+
+impl ActionCommit<'_> {
+    /// The Artifact `file` resolves to ([`Engine::indexed_artifact`]).
+    fn artifact(&mut self, engine: &Engine, file: &File) -> Result<Option<Artifact>, String> {
+        engine.indexed_artifact(
+            file,
+            self.artifact_index,
+            self.workspace_status,
+            self.nodes,
+            self.producers,
+            self.client_environment,
+            self.status_client_environment,
+        )
     }
 }
 
