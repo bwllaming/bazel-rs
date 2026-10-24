@@ -689,14 +689,20 @@ fn configuration_methods(builder: &mut MethodsBuilder) {
         crate::subrule_fragments::private_api(eval)?;
         Ok(false)
     }
-    /// :888-892; `--enable_runfiles` (default auto: true on Linux).
+    /// :888-892; BuildConfigurationValue.runfilesEnabled over
+    /// getRunfileSymlinksMode (:866-882): the configured `--enable_runfiles`
+    /// is YES, or AUTO (the default) off Windows
+    /// (crate::configuration::VALUE_OPTIONS).
     fn runfiles_enabled<'v>(
         this: Value<'v>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<bool> {
-        configuration(this).map_err(starlark::Error::new_other)?;
+        let surface = configuration(this).map_err(starlark::Error::new_other)?;
         crate::subrule_fragments::private_api(eval)?;
-        Ok(true)
+        Ok(
+            surface.option_value("enable_runfiles")
+                != crate::configuration::OptionValue::Enum("NO"),
+        )
     }
     /// :965-969: the disabled `--features` (rejected natively): an empty,
     /// immutable set.

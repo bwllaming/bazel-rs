@@ -723,11 +723,39 @@ mod tests {
                 )
             );
         }
+        // CoreOptions.enableRunfiles: TriStateConverter over the configured
+        // TriState, AUTO unless set (tests/fixtures/enable_runfiles_option).
+        assert_eq!(
+            result(&[("enable_runfiles", "true")], &[], &[]),
+            MatchResult::NoMatch(vec![Diff {
+                what: option_label("enable_runfiles"),
+                got: "AUTO".into(),
+                want: "YES".into(),
+            }])
+        );
+        for (values, args) in [
+            (&[("enable_runfiles", "Auto")][..], &[][..]),
+            (&[("enable_runfiles", "1")][..], &["--enable_runfiles"][..]),
+            (
+                &[("enable_runfiles", "n")][..],
+                &["--noenable_runfiles"][..],
+            ),
+            (
+                &[("enable_runfiles", "auto")][..],
+                &["--enable_runfiles=no", "--enable_runfiles=AUTO"][..],
+            ),
+        ] {
+            assert_eq!(result(values, &[], args), matched, "{values:?} {args:?}");
+        }
+        assert_eq!(
+            in_coverage(&[("enable_runfiles", "maybe")]).unwrap_err(),
+            "in values attribute of config_setting rule //c:x: error while parsing configuration settings: While parsing option --enable_runfiles=maybe: 'maybe' is not a boolean"
+        );
         // Real options outside both tables keep the explicit error.
         assert!(
-            in_coverage(&[("enable_runfiles", "true")])
+            in_coverage(&[("build_runfile_links", "true")])
                 .unwrap_err()
-                .contains("select() on build option 'enable_runfiles' is not implemented in the native profile")
+                .contains("select() on build option 'build_runfile_links' is not implemented in the native profile")
         );
     }
 

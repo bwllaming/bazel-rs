@@ -1,0 +1,93 @@
+load(":defs.bzl", "flag", "matched", "probe")
+
+# CoreOptions.enableRunfiles (`--enable_runfiles`, a TriState, default
+# auto): config_setting converts the expected value with TriStateConverter
+# and compares it with the configured value (auto unless set), like
+# aspect_bazel_lib's //lib:enable_runfiles.
+config_setting(
+    name = "er_true",
+    values = {"enable_runfiles": "true"},
+)
+
+config_setting(
+    name = "er_yes",
+    values = {"enable_runfiles": "yes"},
+)
+
+config_setting(
+    name = "er_one",
+    values = {"enable_runfiles": "1"},
+)
+
+config_setting(
+    name = "er_upper",
+    values = {"enable_runfiles": "TRUE"},
+)
+
+config_setting(
+    name = "er_auto",
+    values = {"enable_runfiles": "auto"},
+)
+
+config_setting(
+    name = "er_auto_upper",
+    values = {"enable_runfiles": "AUTO"},
+)
+
+config_setting(
+    name = "er_false",
+    values = {"enable_runfiles": "false"},
+)
+
+config_setting(
+    name = "er_no",
+    values = {"enable_runfiles": "no"},
+)
+
+SETTINGS = [
+    ":er_true",
+    ":er_yes",
+    ":er_one",
+    ":er_upper",
+    ":er_auto",
+    ":er_auto_upper",
+    ":er_false",
+    ":er_no",
+]
+
+probe(
+    name = "probe",
+    matches = matched(SETTINGS),
+)
+
+# The exec configuration propagates the option
+# (builtin_exec_platforms.bzl CoreOptions `propagate`).
+probe(
+    name = "tool_probe",
+    matches = matched(SETTINGS),
+)
+
+probe(
+    name = "exec",
+    tool = ":tool_probe",
+)
+
+flag(
+    name = "flag",
+    enable_runfiles = select({
+        ":er_true": True,
+        "//conditions:default": False,
+    }),
+)
+
+# A conversion error of the expected value.
+config_setting(
+    name = "er_bad",
+    values = {"enable_runfiles": "maybe"},
+)
+
+probe(
+    name = "bad",
+    matches = matched([":er_bad"]),
+    tags = ["manual"],
+)

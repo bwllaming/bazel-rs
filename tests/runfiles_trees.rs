@@ -432,10 +432,12 @@ fn runfiles_options_select_the_artifacts_and_tree_mode() {
         stderr(&rejected)
             .contains("--nobuild_runfile_manifests is incompatible with the \"run\" command")
     );
-    // Invalid tri-state value.
+    // Invalid tri-state value: TriStateConverter's error (genuine capture
+    // tests/fixtures/enable_runfiles_option bad_value).
     let rejected = ws.run(&["build", "--enable_runfiles=maybe", "//pkg:tool"]);
     assert!(
-        stderr(&rejected).contains("'maybe' is not one of {auto, yes, no}"),
+        stderr(&rejected)
+            .contains("While parsing option --enable_runfiles=maybe: 'maybe' is not a boolean"),
         "{}",
         stderr(&rejected)
     );

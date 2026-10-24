@@ -51,6 +51,19 @@ pub enum OptionKind {
     /// (build/lib/rules/apple/AppleCommandLineOptions.java:394-406): the
     /// input in ASCII lower case (`Ascii.toLowerCase`), never an error.
     LowerCaseString,
+    /// Converters.TriStateConverter (common/options/Converters.java:133-156):
+    /// `auto` or a boolean spelling, case-insensitive, stored as the
+    /// TriState constant (`YES`, `NO`, `AUTO`: its `toString`); boolean
+    /// option syntax (OptionDefinition.usesBooleanValueSyntax, :160-166).
+    TriState,
+}
+
+impl OptionKind {
+    /// OptionDefinition.usesBooleanValueSyntax (common/options/OptionDefinition.java:160-166):
+    /// `--NAME` without a value is `--NAME=1`, `--noNAME` is `--NAME=0`.
+    pub fn boolean_syntax(self) -> bool {
+        matches!(self, Self::Bool | Self::TriState)
+    }
 }
 
 /// One modelled native option (an `@Option` of a FragmentOptions class).
@@ -485,6 +498,29 @@ pub const VALUE_OPTIONS: &[ValueOption] = &[
         exec: ExecValue::Propagate,
         exec_source: "builtin_exec_platforms.bzl:432",
     },
+    // CoreOptions.enableRunfiles (`--enable_runfiles`, a TriState, default
+    // auto): config_setting matches the configured value, which stays AUTO
+    // unless set (aspect_bazel_lib's //lib:enable_runfiles `true` does not
+    // match by default; paired capture tests/fixtures/enable_runfiles_option);
+    // the runfiles trees read the same flag (crate::runfiles_tree,
+    // BuildConfigurationValue.runfilesEnabled: YES, or AUTO off Windows).
+    // Propagated to exec configurations (builtin_exec_platforms.bzl:237).
+    ValueOption {
+        option: OptionDef {
+            name: "enable_runfiles",
+            old_name: None,
+            abbrev: None,
+            kind: OptionKind::TriState,
+            default: "auto",
+            allow_multiple: false,
+            non_configurable: false,
+            source: "build/lib/analysis/config/CoreOptions.java:954-961",
+            deprecation: None,
+        },
+        command_line: true,
+        exec: ExecValue::Propagate,
+        exec_source: "builtin_exec_platforms.bzl:237",
+    },
     // CoreOptions.collectCodeCoverage: held by the typed field
     // NativeOptions::collect_code_coverage, which only a Starlark
     // transition sets (N47); the command line (and `bazel coverage`) stays
@@ -813,6 +849,18 @@ pub fn convert(
             input.to_owned()
         })),
         OptionKind::LowerCaseString => Ok(OptionValue::String(input.to_ascii_lowercase())),
+        OptionKind::TriState => {
+            let lower = input.to_ascii_lowercase();
+            if lower == "auto" {
+                Ok(OptionValue::Enum("AUTO"))
+            } else if matches!(lower.as_str(), "true" | "1" | "yes" | "t" | "y") {
+                Ok(OptionValue::Enum("YES"))
+            } else if matches!(lower.as_str(), "false" | "0" | "no" | "f" | "n") {
+                Ok(OptionValue::Enum("NO"))
+            } else {
+                Err(format!("'{lower}' is not a boolean"))
+            }
+        }
     }
 }
 
@@ -1714,7 +1762,7 @@ impl CommandLineOptions {
                 },
             };
             if negated {
-                if option.kind != OptionKind::Bool {
+                if !option.kind.boolean_syntax() {
                     return Err(invalid_argument(
                         arg,
                         format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
@@ -1729,7 +1777,7 @@ impl CommandLineOptions {
                 (option, "0".to_owned(), arg.to_owned(), false)
             } else if let Some(value) = value {
                 (option, value.to_owned(), arg.to_owned(), false)
-            } else if option.kind == OptionKind::Bool {
+            } else if option.kind.boolean_syntax() {
                 (option, "1".to_owned(), arg.to_owned(), false)
             } else {
                 let value = next.ok_or_else(|| format!("Expected value after {arg}"))?;
@@ -2684,6 +2732,7 @@ mod tests {
                 "experimental_proto_descriptor_sets_include_source_info",
                 "strict_proto_deps",
                 "strict_public_imports",
+                "enable_runfiles",
                 "collect_code_coverage",
                 "apple_platform_type"
             ]
@@ -2705,7 +2754,13 @@ mod tests {
             defaults.value("apple_platform_type"),
             Some(OptionValue::String("macos".into()))
         );
-        assert_eq!(defaults.value("enable_runfiles"), None);
+        // CoreOptions.enableRunfiles: the TriState constant, AUTO unless set
+        // (tests/fixtures/enable_runfiles_option).
+        assert_eq!(
+            defaults.value("enable_runfiles"),
+            Some(OptionValue::Enum("AUTO"))
+        );
+        assert_eq!(defaults.value("not_an_option"), None);
     }
 
     /// ProtoConfiguration's options on the command line (paired captures

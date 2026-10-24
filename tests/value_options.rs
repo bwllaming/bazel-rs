@@ -99,15 +99,13 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     ("apple", &["apple_defaults"]),
+    // CoreOptions.enable_runfiles (tests/fixtures/enable_runfiles_option);
+    // the case keeps the name it had before the option was modelled.
+    ("enable_runfiles", &["unmodelled_enable_runfiles"]),
     ("combined", &["all_defaults", "all_set"]),
     (
         "declared",
-        &[
-            "coverage_cmdline",
-            "apple_cmdline",
-            "unmodelled_enable_runfiles",
-            "proto_transition",
-        ],
+        &["coverage_cmdline", "apple_cmdline", "proto_transition"],
     ),
 ];
 
@@ -404,6 +402,13 @@ fn collect_code_coverage_matches_its_configured_value() {
 #[test]
 fn apple_platform_type_is_macos() {
     check_group("apple");
+}
+
+/// config_setting on CoreOptions.enable_runfiles (aspect_bazel_lib's
+/// //lib:enable_runfiles) does not match `true` at the default `auto`.
+#[test]
+fn enable_runfiles_true_does_not_match_the_default() {
+    check_group("enable_runfiles");
 }
 
 /// Every setting at once, with and without the proto options set.

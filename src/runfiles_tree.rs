@@ -59,31 +59,37 @@ impl RunfilesOptions {
                 return Some(value.map(|value| *slot = value));
             }
         }
-        // TriState converter: yes/no/auto and the boolean spellings
-        // (common/options/Converters.java TriStateConverter).
-        if arg == "--enable_runfiles" {
-            self.enable_runfiles = true;
-            return Some(Ok(()));
-        }
-        if arg == "--noenable_runfiles" {
-            self.enable_runfiles = false;
-            return Some(Ok(()));
-        }
-        let value = arg.strip_prefix("--enable_runfiles=")?;
-        Some(match value.to_ascii_lowercase().as_str() {
-            "auto" | "yes" | "true" | "1" => {
-                self.enable_runfiles = true;
-                Ok(())
-            }
-            "no" | "false" | "0" => {
-                self.enable_runfiles = false;
-                Ok(())
-            }
-            _ => Err(format!(
-                "While parsing option --enable_runfiles={value}: '{value}' is not one of {{auto, yes, no}}"
-            )),
-        })
+        // CoreOptions.enableRunfiles through the configuration's
+        // TriStateConverter (crate::configuration::VALUE_OPTIONS, which
+        // also records the value): RunfileSymlinksMode.CREATE for YES and
+        // for AUTO off Windows (BuildConfigurationValue.java:866-874).
+        let value = match arg {
+            "--enable_runfiles" => "1",
+            "--noenable_runfiles" => "0",
+            _ => arg.strip_prefix("--enable_runfiles=")?,
+        };
+        let option = crate::configuration::value_option("enable_runfiles")
+            .expect("--enable_runfiles is a table-driven option");
+        Some(
+            crate::configuration::convert(&option.option, value, &|_| {
+                Err("--enable_runfiles has no label value".to_owned())
+            })
+            .map(|value| {
+                self.enable_runfiles = value != crate::configuration::OptionValue::Enum("NO");
+            })
+            .map_err(|error| format!("While parsing option {arg}: {error}")),
+        )
     }
+}
+
+/// Whether `arg` is a `--[no]enable_runfiles[=VALUE]` command-line form
+/// (the configuration parses and checks it before [`RunfilesOptions::parse`]).
+pub fn is_enable_runfiles(arg: &str) -> bool {
+    let Some(rest) = arg.strip_prefix("--") else {
+        return false;
+    };
+    let name = rest.split_once('=').map_or(rest, |(name, _)| name);
+    matches!(name, "enable_runfiles" | "noenable_runfiles")
 }
 
 /// The repository mapping (apparent name -> canonical name) of a repository.
@@ -277,7 +283,34 @@ mod tests {
         assert!(!options.enable_runfiles);
         assert!(options.parse("--enable_runfiles").unwrap().is_ok());
         assert!(options.enable_runfiles);
-        assert!(options.parse("--enable_runfiles=x").unwrap().is_err());
+        // TriStateConverter spellings (case-insensitive; AUTO creates the
+        // trees off Windows) and its error (tests/fixtures/enable_runfiles_option).
+        for (arg, enabled) in [
+            ("--noenable_runfiles", false),
+            ("--enable_runfiles=AUTO", true),
+            ("--enable_runfiles=f", false),
+            ("--enable_runfiles=Y", true),
+            ("--enable_runfiles=0", false),
+            ("--enable_runfiles=yes", true),
+        ] {
+            assert!(options.parse(arg).unwrap().is_ok(), "{arg}");
+            assert_eq!(options.enable_runfiles, enabled, "{arg}");
+        }
+        assert_eq!(
+            options.parse("--enable_runfiles=X").unwrap(),
+            Err("While parsing option --enable_runfiles=X: 'x' is not a boolean".to_owned())
+        );
+        for (arg, form) in [
+            ("--enable_runfiles", true),
+            ("--noenable_runfiles", true),
+            ("--enable_runfiles=no", true),
+            ("--noenable_runfiles=yes", true),
+            ("--enable_runfiles_x", false),
+            ("enable_runfiles", false),
+            ("--build_runfile_links", false),
+        ] {
+            assert_eq!(is_enable_runfiles(arg), form, "{arg}");
+        }
         assert!(
             options
                 .parse("--noincompatible_compact_repo_mapping_manifest")

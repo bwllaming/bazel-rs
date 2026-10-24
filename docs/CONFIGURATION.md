@@ -135,14 +135,17 @@ fragment's `func`). From that one row:
   crate::command_options).
 
 Rows (each family checked against genuine Bazel 9.3.0, paired capture
-`tests/fixtures/value_options`, 39 cases: 35 MATCH, 4 declared divergences,
-replayed by `tests/value_options.rs`):
+`tests/fixtures/value_options`, 39 cases: 36 MATCH, 3 declared divergences,
+replayed by `tests/value_options.rs`; `enable_runfiles` also by
+`tests/fixtures/enable_runfiles_option`, 14 cases, all MATCH, replayed by
+`tests/enable_runfiles_option.rs`):
 
 | Option | Kind / default | Command line | Exec | Source |
 | --- | --- | --- | --- | --- |
 | `experimental_proto_descriptor_sets_include_source_info` | Bool, `false` | yes | propagated | `ProtoConfiguration.java:58-65`, `builtin_exec_platforms.bzl:426` |
 | `strict_proto_deps` | StrictDepsMode, `error` | yes | propagated | `ProtoConfiguration.java:113-123`, `:431` |
 | `strict_public_imports` | StrictDepsMode, `off` | yes | propagated | `ProtoConfiguration.java:125-135`, `:432` |
+| `enable_runfiles` | TriState (TriStateConverter: `auto` or a boolean spelling, stored as `YES`/`NO`/`AUTO`; boolean syntax), `auto` | yes (also read by the runfiles trees, crate::runfiles_tree, and `ctx.configuration.runfiles_enabled()`) | propagated | `CoreOptions.java:954-961`, `Converters.java:133-156`, `:237` |
 | `collect_code_coverage` | Bool, `false` (the typed field a Starlark transition sets, N47) | no (coverage instrumentation is not modelled) | default | `CoreOptions.java:566-578`, `:231-287` |
 | `apple_platform_type` | PlatformTypeConverter (ASCII lower case), `macos` | no (Apple rule transitions and `ctx.fragments.apple` are not modelled for other platform types) | set to `macos` | `rules/apple/AppleCommandLineOptions.java:194-203, 394-406`, `:185, 190` |
 
@@ -150,18 +153,20 @@ They unblock protobuf 33.4's `bazel/private:native_bool_flag` settings
 (`values = {flag: match_value}` on the three proto options, read by every
 `proto_library`), rules_python's hermetic runtimes' `:coverage_enabled`
 (`collect_code_coverage`) and grpc's `//:macos`/`//:ios`/...
-(`apple_platform_type`, which matches `macos` on Linux as in Bazel). Genuine
+(`apple_platform_type`, which matches `macos` on Linux as in Bazel) and
+aspect_bazel_lib's `//lib:enable_runfiles` (`{"enable_runfiles": "true"}`,
+selected by aspect_rules_js's `js_binary`; it does not match at the default
+`auto`, which only `auto`/`AUTO` match). Genuine
 findings: `strict_proto_deps` values are case-insensitive and `default` is
 not the default; the three proto options reach exec tools while the roots
 stay `k8-fastbuild`/`k8-opt-exec`; a transition setting
 `collect_code_coverage` gives `k8-fastbuild-ST-0a6d1b0f07f2` on both sides and
 its exec tools are not covered; `query --collect_code_coverage` is accepted.
 Declared divergences: `--collect_code_coverage` and `--apple_platform_type`
-on the command line, `config_setting` on `enable_runfiles` (natively an
-execution option, crate::runfiles_tree, so not a row) and Starlark
+on the command line and Starlark
 transitions on the rows (outside `MODELLED_NATIVE_OPTIONS`) are explicit
 errors. A new row needs only its `@Option` definition, the exec rule, a
-converter kind (Bool, Enum with `toString` spellings, String,
+converter kind (Bool, TriState, Enum with `toString` spellings, String,
 LowerCaseString, AutoCpu, DottedVersion) and a paired capture; options
 with other converters, `allowMultiple` or effects the native profile does
 not model keep the explicit `not implemented in the native profile` error.
@@ -1092,8 +1097,9 @@ first-seen order (`:169-258`). For each entry, `checkOptionValue` (`:420-482`):
   `tests/fixtures/pre_platforms_flags` (41 genuine 9.3.0 cases);
 * the table-driven value options (`strict_proto_deps`,
   `strict_public_imports`, `experimental_proto_descriptor_sets_include_source_info`,
-  `collect_code_coverage`, `apple_platform_type`; above) convert and match
-  through their row (paired capture `tests/fixtures/value_options`);
+  `enable_runfiles`, `collect_code_coverage`, `apple_platform_type`; above)
+  convert and match through their row (paired captures
+  `tests/fixtures/value_options`, `tests/fixtures/enable_runfiles_option`);
 * converter failures: `While parsing option --X=V: MESSAGE`;
 * real Bazel options that are not modelled (for example `copt`, test options):
   explicit `select() on build option 'X' is not implemented in the native

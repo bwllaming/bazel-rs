@@ -2804,6 +2804,17 @@ impl NativeOptions {
         {
             self.output.parse_groups(value);
             false
+        } else if builds(command) && bazel_rs::runfiles_tree::is_enable_runfiles(arg) {
+            // CoreOptions.enableRunfiles is a configuration value
+            // (config_setting `values`, the exec propagation, the identity:
+            // crate::configuration::VALUE_OPTIONS) that the runfiles trees
+            // read too: the configuration converts and records it first, so
+            // its errors are the TriStateConverter's.
+            self.configuration.parse(arg, None)?;
+            if let Some(result) = self.runfiles.parse(arg) {
+                result?;
+            }
+            false
         } else if let Some(result) = builds(command).then(|| self.runfiles.parse(arg)).flatten() {
             result?;
             false
