@@ -12357,8 +12357,8 @@ impl OutputProducer {
 /// for its own action — its outputs are its own Artifacts produced by the
 /// first owner's action, which the first target in commit order owns.
 /// Otherwise an exact path is Bazel's action conflict (both owners named),
-/// and a path below or above another producer's output is an overlap
-/// (Actions.findArtifactPrefixConflicts).
+/// and a path below or above another producer's output is Bazel's prefix
+/// conflict (Actions.findArtifactPrefixConflicts, both owners named).
 fn register_output(
     producers: &mut Producers,
     output: &Path,
@@ -12384,24 +12384,18 @@ fn register_output(
     }
     for ancestor in output.ancestors().skip(1) {
         if let Some(previous) = producers.get(ancestor) {
-            return Err(format!(
-                "overlapping output paths: {} from {} conflicts with {} from {}",
-                ancestor.display(),
-                previous.owner,
-                output.display(),
-                producer.owner
+            return Err(crate::shared_actions::prefix_conflict_message(
+                (&ancestor.to_string_lossy(), previous.label()),
+                (&output.to_string_lossy(), producer.label()),
             ));
         }
     }
     if let Some((previous_path, previous)) = producers.range(output.to_path_buf()..).next()
         && previous_path.starts_with(output)
     {
-        return Err(format!(
-            "overlapping output paths: {} from {} conflicts with {} from {}",
-            output.display(),
-            producer.owner,
-            previous_path.display(),
-            previous.owner
+        return Err(crate::shared_actions::prefix_conflict_message(
+            (&output.to_string_lossy(), producer.label()),
+            (&previous_path.to_string_lossy(), previous.label()),
         ));
     }
     producers.insert(output.to_path_buf(), Arc::clone(producer));
@@ -13567,7 +13561,7 @@ mod tests {
     /// id is returned, nothing is registered); a different key, a different
     /// output list or a native producer is Bazel's conflict naming the
     /// attempted and the previous owner; a path below or above a produced
-    /// one stays an overlap.
+    /// one is Bazel's prefix conflict (the shorter path first).
     #[test]
     fn register_output_shares_equal_actions_and_reports_conflicts() {
         let x = "bazel-out/k8-fastbuild/bin/p/x";
@@ -13620,13 +13614,36 @@ mod tests {
             );
         }
         let below = writing_producer("//p:d", "//p:d#0", &[], "same");
+        let prefix = |prefix: &str, prefix_owner: &str, longer: &str, longer_owner: &str| {
+            Err(format!(
+                "One of the output paths '{prefix}' (belonging to {prefix_owner}) and '{longer}' (belonging to {longer_owner}) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them"
+            ))
+        };
         assert_eq!(
-            register_output(&mut producers, Path::new("bazel-out/k8-fastbuild/bin/p/x/z"), &below),
-            Err("overlapping output paths: bazel-out/k8-fastbuild/bin/p/x from //p:a conflicts with bazel-out/k8-fastbuild/bin/p/x/z from //p:d".to_owned())
+            register_output(
+                &mut producers,
+                Path::new("bazel-out/k8-fastbuild/bin/p/x/z"),
+                &below
+            ),
+            prefix(
+                "bazel-out/k8-fastbuild/bin/p/x",
+                "//p:a",
+                "bazel-out/k8-fastbuild/bin/p/x/z",
+                "//p:d"
+            )
         );
         assert_eq!(
-            register_output(&mut producers, Path::new("bazel-out/k8-fastbuild/bin/p"), &below),
-            Err("overlapping output paths: bazel-out/k8-fastbuild/bin/p from //p:d conflicts with bazel-out/k8-fastbuild/bin/p/x from //p:a".to_owned())
+            register_output(
+                &mut producers,
+                Path::new("bazel-out/k8-fastbuild/bin/p"),
+                &below
+            ),
+            prefix(
+                "bazel-out/k8-fastbuild/bin/p",
+                "//p:d",
+                "bazel-out/k8-fastbuild/bin/p/x",
+                "//p:a"
+            )
         );
         assert_eq!(producers.len(), 3);
     }

@@ -194,6 +194,19 @@ pub(crate) fn conflict_message(output: &str, attempted: &str, previous: &str) ->
     )
 }
 
+/// Actions.findArtifactPrefixConflicts' error (ActionConflictException
+/// .createPrefixDetailedMessage, actions/ActionConflictException.java
+/// :124-131): an output path below another producer's, the shorter path
+/// first, each with its action owner's label.
+pub(crate) fn prefix_conflict_message(
+    (prefix, prefix_owner): (&str, &str),
+    (longer, longer_owner): (&str, &str),
+) -> String {
+    format!(
+        "One of the output paths '{prefix}' (belonging to {prefix_owner}) and '{longer}' (belonging to {longer_owner}) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them"
+    )
+}
+
 /// The explicit error for two registrations of `output` that are equal in
 /// every compared part but have a part the native encoding does not cover
 /// ([`Sharing::Unmodelled`]).

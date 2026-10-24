@@ -263,14 +263,14 @@ fn output_prefix_conflicts_across_packages_fail_before_execution() {
     for labels in [["//:gen", "//sub:gen"], ["//sub:gen", "//:gen"]] {
         let result = ws.run(&["build", "--jobs=4", labels[0], labels[1]]);
         assert!(!result.status.success());
-        assert!(stderr(&result).contains("overlapping output paths"));
+        assert!(stderr(&result).contains("is a prefix of the other"));
         assert!(!ws.0.join("bazel-rs-out").exists());
     }
     ws.file("BUILD.bazel", "genrule(name='gen',outs=['sub'],cmd='echo parent > $@')\nfilegroup(name='reverse',srcs=['//sub:gen',':gen'])\n");
     ws.file("sub/BUILD.bazel", "genrule(name='gen',outs=['out'],cmd='echo child > $@',visibility=['//visibility:public'])\n");
     let result = ws.run(&["build", ":reverse"]);
     assert!(!result.status.success());
-    assert!(stderr(&result).contains("overlapping output paths"));
+    assert!(stderr(&result).contains("is a prefix of the other"));
     assert!(!ws.0.join("bazel-rs-out").exists());
 }
 

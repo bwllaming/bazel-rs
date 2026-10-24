@@ -72,9 +72,10 @@ const GROUPS: &[(&str, &[&str])] = &[
             "write_conflict",
             "groups_props",
             "conflict_requirement_value",
+            "prefix",
         ],
     ),
-    ("declared", &["prefix", "aspect_conflict", "expand_shared"]),
+    ("declared", &["aspect_conflict", "expand_shared"]),
 ];
 
 struct Workspace(tempfile::TempDir);
@@ -231,16 +232,20 @@ fn check(name: &str, case: &Value) {
         "{name} {argv:?}: {stderr}"
     );
     if !succeeded {
-        let labels = case["expected_labels"]
-            .as_array()
-            .unwrap()
+        let message = case["expected_message"].as_str().unwrap();
+        let Some(labels) = case["expected_labels"].as_array() else {
+            // A prefix conflict: genuine's first ERROR line.
+            assert!(
+                stderr.contains(message),
+                "{name}: missing {message:?} in {stderr}"
+            );
+            return;
+        };
+        let labels = labels
             .iter()
             .map(|label| label.as_str().unwrap().to_owned())
             .collect::<Vec<_>>();
-        let expected = (
-            case["expected_message"].as_str().unwrap().to_owned(),
-            labels,
-        );
+        let expected = (message.to_owned(), labels);
         assert_eq!(conflict(&stderr), Some(expected), "{name}: {stderr}");
         return;
     }
@@ -343,15 +348,16 @@ fn equal_actions_of_two_targets_are_shared() {
     check_group("shared");
 }
 
-/// Any compared difference is Bazel's action conflict, both labels named.
+/// Any compared difference is Bazel's action conflict, both labels named;
+/// an output below another target's output is Bazel's prefix conflict.
 #[test]
 fn compared_differences_conflict() {
     check_group("conflicts");
 }
 
-/// Explicit native errors with a recorded difference: Bazel's prefix
-/// conflict text, an aspect conflict's location, and identical actions
-/// expanding a tree artifact across targets (genuine shares them).
+/// Explicit native errors with a recorded difference: an aspect conflict's
+/// location, and identical actions expanding a tree artifact across targets
+/// (genuine shares them).
 #[test]
 fn declared_divergences_are_explicit_errors() {
     check_group("declared");

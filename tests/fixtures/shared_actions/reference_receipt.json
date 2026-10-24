@@ -1,7 +1,7 @@
 {
  "schema": "shared-actions-reference-receipt/v1",
  "fixture": "shared_actions",
- "purpose": "Actions.canBeShared between configured targets (MapBasedActionGraph.registerAction, actions/MapBasedActionGraph.java:46-63; Actions.canBeShared, actions/Actions.java:85-115): two targets' actions generating one output are one action when the mnemonic, the action key (ActionKeyComputer.getKey: command lines by exec path, mnemonic, environment, execution info with the propagated tags, execution platform and exec properties) and the mandatory inputs and outputs without owner are equal; it runs once, each target keeps its own Artifact (File.owner) and a consumer may take both Files as inputs (also as runfiles, built and `run`). The same holds for two aspect applications and for tree artifacts. Any compared difference is Bazel's action conflict, an output below another target's output stays an overlap error. Motivation: `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `overlapping output paths: .../rules_pkg+/pkg/private/__pycache__/__init__.cpython-312.pyc from @@rules_pkg+//pkg/private:archive conflicts with ... from @@rules_pkg+//pkg/private:helpers` (two py_library targets precompiling one __init__.py, shared by genuine Bazel).",
+ "purpose": "Actions.canBeShared between configured targets (MapBasedActionGraph.registerAction, actions/MapBasedActionGraph.java:46-63; Actions.canBeShared, actions/Actions.java:85-115): two targets' actions generating one output are one action when the mnemonic, the action key (ActionKeyComputer.getKey: command lines by exec path, mnemonic, environment, execution info with the propagated tags, execution platform and exec properties) and the mandatory inputs and outputs without owner are equal; it runs once, each target keeps its own Artifact (File.owner) and a consumer may take both Files as inputs (also as runfiles, built and `run`). The same holds for two aspect applications and for tree artifacts. Any compared difference is Bazel's action conflict, an output below another target's output is Bazel's prefix conflict. Motivation: `build --nobuild //src/beyondwork.ai/tools/...` on ~/code stopped at `overlapping output paths: .../rules_pkg+/pkg/private/__pycache__/__init__.cpython-312.pyc from @@rules_pkg+//pkg/private:archive conflicts with ... from @@rules_pkg+//pkg/private:helpers` (two py_library targets precompiling one __init__.py, shared by genuine Bazel).",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,14 +11,14 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "dbe47a3c4424b5758db569dc23749398f4de009e8780f4a0cdbb68628e8ae534",
+  "sha256": "831b5da434c5d1670a9017e140532de7e22c4de22557f3034489711b6cd2948d",
   "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
   "path": "/tmp/opencode/perf-research/pfu-shared-actions-capture.py, pfu-shared-actions-receipt.py (not committed)",
   "sha256": {
    "pfu-shared-actions-capture.py": "f3cb0ce234109d57ce925ecfd3a8fb45a98caf70eb278da7608cc1700e2d57aa",
-   "pfu-shared-actions-receipt.py": "201ea847ba7b2fd16348f5618b96cfe0a4dc9ef1052f803d1978e6fa4730b853"
+   "pfu-shared-actions-receipt.py": "6bf849ac6e1c043dfd7f4a42ad8f115e5884eac73ccf73c40e4d8ca79849c97b"
   }
  },
  "fixture_files_sha256": {
@@ -31,28 +31,27 @@
   "pkg/extra.txt": "b81938cbfb6d98eea556c531be47632d264fd7f1f3a0433c67a0f7d52be2690d"
  },
  "normalization": "<WS> = the case's workspace copy. Outputs: genuine --show_result's (label, bazel-bin path as bazel-out/k8-fastbuild/bin/...) pairs with the file contents; native the LABEL<TAB>PATH result lines with the path below the published action's outputs/ directory and its contents.",
- "comparison (tests/shared_actions.rs, live)": "success equal (genuine exit 0 <=> native exit 0); a failing case's first conflict line is in native stderr and its `Label:` line names the same set of labels (genuine orders them by analysis timing: attempted, previous; natively the second target in commit order is the attempted one); built cases (not --nobuild): the top-level outputs with their contents are equal; `run` cases: the program's stdout is equal; a declared divergence's native message is in native stderr.",
+ "comparison (tests/shared_actions.rs, live)": "success equal (genuine exit 0 <=> native exit 0); a failing case's first conflict line is in native stderr and its `Label:` line names the same set of labels (a prefix conflict: genuine's first ERROR line is in native stderr) (genuine orders them by analysis timing: attempted, previous; natively the second target in commit order is the attempted one); built cases (not --nobuild): the top-level outputs with their contents are equal; `run` cases: the program's stdout is equal; a declared divergence's native message is in native stderr.",
  "genuine_key_findings": [
   "Two targets declaring one output (declare_file(sibling=src) of a shared source, rules_python's precompile shape) with identical ctx.actions.run registrations (a tool with runfiles in the exec configuration, a param file, env, execution_requirements, different progress messages naming each target) share the action: it runs once (12 processes, 4 spawns for 2 targets' 4 outputs plus a consumer), both targets report the output, and a consumer of both sees two Files with one path, different owners (equal=False, depset of both = 2) and takes both as action inputs.",
   "Tags that are no execution requirements do not affect sharing; an execution-requirement tag (no-remote), the arguments, the mnemonic, the environment, the inputs, the tool (executable and runfiles tree) and the exec properties are compared: `file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:` / `Label: <attempted>, <previous>` (both targets fail).",
   "The execution info is compared as one map (TargetUtils.getFilteredExecutionInfo, packages/TargetUtils.java:285-306: the execution_requirements filtered to the legal keys, then each tag `tag: \"\"` where no requirement has the key): a `no-remote` tag of one target and a `no-remote: \"\"` requirement of another share, a requirement that is no execution requirement (`not-a-requirement`) is ignored, `no-remote: \"1\"` conflicts with the tag.",
   "The exec group's name is not compared: identical actions in groups g1 and g2 of two targets (one execution platform) are shared; exec properties of the group conflict.",
   "A write to a declared file and the same write to another rule's predeclared output (an output-file target) share; the output-file label resolves to the predeclaring rule's File (owner //pkg:w_output) whichever target is analyzed first. Different contents conflict.",
-  "An output below another target's output is Actions.findArtifactPrefixConflicts' error, never shared.",
+  "An output below another target's output is Actions.findArtifactPrefixConflicts' error, never shared: `One of the output paths 'bazel-out/k8-fastbuild/bin/pkg/p' (belonging to //pkg:p_parent) and 'bazel-out/k8-fastbuild/bin/pkg/p/x' (belonging to //pkg:p_child) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them` (the shorter path first).",
   "Aspects: two applications of one aspect registering the same spawn on one path (below the base targets' package) share it, although the base targets have different exec_properties (an aspect's RuleContext takes no exec_properties of its base target: ConfiguredTargetFactory.createAspect setExecProperties(ImmutableMap.of()), analysis/ConfiguredTargetFactory.java:702); a consumer of both applications' Files sees two Files with one path and the base targets as owners (depset 2). Different spawn arguments conflict with Bazel's lines naming both base targets (`Label: //pkg:aspect_base_x, //pkg:aspect_base_z` / `Aspects: [//pkg:defs.bzl%shared_aspect]`).",
   "A tree artifact (declare_directory) declared by two targets with one identical spawn is shared; a consumer of both Files (is_directory, depset 2) reads its files once per File.",
   "A shared output consumed as a runfile of an executable that depends on both owners: `build` creates its runfiles tree and `run` executes it, the program reading both precompiled files through the runfiles tree.",
   "Two targets writing identical Args content that expands a (shared) tree artifact share the write (both report bazel-bin/pkg/expand.args, contents `bazel-out/k8-fastbuild/bin/pkg/expand_tree/x.txt`)."
  ],
  "known_divergences": [
-  "An output below another target's output: the native engine's `overlapping output paths` text instead of Bazel's prefix-conflict text (both fail).",
   "Native error reporting: the first conflict aborts the native build with Bazel's first two lines (`file '...' is generated by these conflicting actions:` / `Label: ...`); genuine reports every conflicting target with Bazel's further action-description lines.",
   "A conflict found while committing an aspect application carries the consuming rule's location natively (genuine: no location).",
   "Identical actions with a part the native key does not cover (command lines or contents expanding tree artifacts) are an explicit native error across targets too; genuine shares them."
  ],
  "counts": {
-  "MATCH": 25,
-  "DECLARED_DIVERGENCE": 3
+  "MATCH": 26,
+  "DECLARED_DIVERGENCE": 2
  },
  "scratch_removed": true,
  "cases": {
@@ -71,7 +70,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 4.33,
+    "seconds": 3.79,
     "stdout": "//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/a.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/b.tag.pyc\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.report\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.cat\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -124,7 +123,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 4.118,
+    "seconds": 3.741,
     "stdout": "//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/a.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/b.tag.pyc\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.report\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.cat\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 8 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -178,7 +177,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 4.205,
+    "seconds": 3.647,
     "stdout": "//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/a.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:b\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/b.tag.pyc\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.report\n//pkg:both\tbazel-out/k8-fastbuild/bin/pkg/both.cat\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -198,7 +197,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 3.986,
+    "seconds": 3.839,
     "stdout": "//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/a.tag.pyc\n//pkg:c_plain_tags\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -234,7 +233,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 3.879,
+    "seconds": 4.125,
     "stdout": "//pkg:c_args\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -261,7 +260,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 4.005,
+    "seconds": 3.941,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_args, //pkg:a\n"
    },
@@ -287,7 +286,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.804,
+    "seconds": 4.177,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_args, //pkg:a\n"
    },
@@ -312,7 +311,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.88,
+    "seconds": 3.912,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_tags, //pkg:a\n"
    },
@@ -337,7 +336,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.769,
+    "seconds": 3.768,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_mnemonic, //pkg:a\n"
    },
@@ -362,7 +361,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.807,
+    "seconds": 3.626,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_env, //pkg:a\n"
    },
@@ -387,7 +386,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.79,
+    "seconds": 3.799,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_inputs, //pkg:a\n"
    },
@@ -412,7 +411,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.702,
+    "seconds": 3.65,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_tool, //pkg:a\n"
    },
@@ -437,7 +436,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.67,
+    "seconds": 3.545,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_props, //pkg:a\n"
    },
@@ -462,7 +461,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.515,
+    "seconds": 0.451,
     "stdout": "//pkg:w_declared\tbazel-out/k8-fastbuild/bin/pkg/w.txt\n//pkg:w_owners\tbazel-out/k8-fastbuild/bin/pkg/w_owners.report\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -494,7 +493,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.564,
+    "seconds": 0.465,
     "stdout": "//pkg:w_declared\tbazel-out/k8-fastbuild/bin/pkg/w.txt\n//pkg:w_owners\tbazel-out/k8-fastbuild/bin/pkg/w_owners.report\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n"
    },
@@ -526,7 +525,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.51,
+    "seconds": 0.427,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/w.txt' is generated by these conflicting actions:\nLabel: //pkg:w_other, //pkg:w_declared\n"
    },
@@ -551,13 +550,12 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.586,
+    "seconds": 0.441,
     "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: overlapping output paths: bazel-out/k8-fastbuild/bin/pkg/p from //pkg:p_parent conflicts with bazel-out/k8-fastbuild/bin/pkg/p/x from //pkg:p_child\n"
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: One of the output paths 'bazel-out/k8-fastbuild/bin/pkg/p' (belonging to //pkg:p_parent) and 'bazel-out/k8-fastbuild/bin/pkg/p/x' (belonging to //pkg:p_child) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them\n"
    },
-   "declared_divergence": "both fail (exit 1) on an output below another target's output; genuine reports Actions.findArtifactPrefixConflicts' `One of the output paths ... is a prefix of the other` text, the native engine its pre-existing `overlapping output paths` text (the overlap stays an error; only exact paths can be shared)",
-   "native_message": "overlapping output paths: bazel-out/k8-fastbuild/bin/pkg/p from //pkg:p_parent conflicts with bazel-out/k8-fastbuild/bin/pkg/p/x from //pkg:p_child",
-   "verdict": "DECLARED_DIVERGENCE"
+   "expected_message": "One of the output paths 'bazel-out/k8-fastbuild/bin/pkg/p' (belonging to //pkg:p_parent) and 'bazel-out/k8-fastbuild/bin/pkg/p/x' (belonging to //pkg:p_child) is a prefix of the other. These actions cannot be simultaneously present; please rename one of the output files or build just one of them",
+   "verdict": "MATCH"
   },
   "groups_shared": {
    "argv": [
@@ -573,7 +571,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.546,
+    "seconds": 0.516,
     "stdout": "//pkg:g_one\tbazel-out/k8-fastbuild/bin/pkg/grouped.out\n//pkg:g_two\tbazel-out/k8-fastbuild/bin/pkg/grouped.out\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -605,7 +603,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.489,
+    "seconds": 0.491,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/grouped.out' is generated by these conflicting actions:\nLabel: //pkg:g_props, //pkg:g_one\n"
    },
@@ -629,7 +627,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.539,
+    "seconds": 0.506,
     "stdout": "//pkg:aspect_both\tbazel-out/k8-fastbuild/bin/pkg/aspect_both.report\n//pkg:aspect_both\tbazel-out/k8-fastbuild/bin/pkg/aspect_both.cat\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -660,7 +658,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.436,
+    "seconds": 0.432,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:194:16: file 'pkg/aspect_shared.txt' is generated by these conflicting actions:\nLabel: //pkg:aspect_base_z, //pkg:aspect_base_x\n"
    },
@@ -681,7 +679,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.543,
+    "seconds": 0.513,
     "stdout": "//pkg:tree_both\tbazel-out/k8-fastbuild/bin/pkg/tree_both.report\n//pkg:tree_both\tbazel-out/k8-fastbuild/bin/pkg/tree_both.cat\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -712,7 +710,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 3.983,
+    "seconds": 3.828,
     "stdout": "//pkg:run_shared\tbazel-out/k8-fastbuild/bin/pkg/run_shared.sh\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 9 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -738,7 +736,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 3.985,
+    "seconds": 3.786,
     "stdout": "== pkg/__pycache__/__init__.tag.pyc\n--src\npkg/__init__.py\n--src_name\npkg/__init__.py\n--pyc\nbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n--mode\nsame\nPYTHONHASHSEED=0 X=unset\nrunfile of tool\n== pkg/__pycache__/b.tag.pyc\n--src\npkg/b.py\n--src_name\npkg/b.py\n--pyc\nbazel-out/k8-fastbuild/bin/pkg/__pycache__/b.tag.pyc\n--mode\nsame\nPYTHONHASHSEED=0 X=unset\nrunfile of tool\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:run_shared\t/tmp/opencode/pfu/sa-scratch/native/native-cache/run_shared/actions/1662b5af295e5ee643a4cfa49e98cad5180f1431feabd5a94363a741e5462a7b/outputs/bazel-out/k8-fastbuild/bin/pkg/run_shared.sh\nbazel-rs: 9 actions executed, 0 cache hits (experimental local execution; sandboxed)\nbazel-rs: Running command line: /tmp/opencode/pfu/sa-scratch/native/native-cache/run_shared/actions/e717207d9811afcc2fb7e7793bc687df85793f7fafd0f572a5409fa8debbadf1/outputs/bazel-out/k8-fastbuild/bin/pkg/run_shared.sh\n"
    },
@@ -759,7 +757,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 0.498,
+    "seconds": 0.507,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/expand.args' is generated by actions of //pkg:expand_b and //pkg:expand_a: sharing identical actions with command lines or contents expanding tree artifacts is not implemented in the native profile (Actions.canBeShared, docs/SHAREABLE_ARTIFACTS.md)\n"
    },
@@ -781,7 +779,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 4.354,
+    "seconds": 3.894,
     "stdout": "//pkg:c_req_tag\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:c_tags\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -813,7 +811,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 3.961,
+    "seconds": 3.754,
     "stdout": "//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n//pkg:a\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/a.tag.pyc\n//pkg:c_req_illegal\tbazel-out/k8-fastbuild/bin/pkg/__pycache__/__init__.tag.pyc\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n"
    },
@@ -850,7 +848,7 @@
    },
    "native": {
     "exit": 1,
-    "seconds": 3.754,
+    "seconds": 3.755,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: file 'pkg/__pycache__/__init__.tag.pyc' is generated by these conflicting actions:\nLabel: //pkg:c_tags, //pkg:c_req_value\n"
    },
