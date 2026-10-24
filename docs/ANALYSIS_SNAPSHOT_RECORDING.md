@@ -249,7 +249,9 @@ environment. Record-mode knobs:
 (repeat the validation and replay dry runs), `BAZEL_RS_SNAPSHOT_COMPARE=1`
 (also time the other validation policy).
 
-With `BAZEL_RS_SNAPSHOT_DUMP` the observations (`OBS`), environment digests
+With `BAZEL_RS_SNAPSHOT_DUMP` the digest of the INPUTS a snapshot would
+hold, with what depends on the time of the run zeroed (`INPUTS-CANONICAL`,
+W6R: equal for any loading thread count), the observations (`OBS`), environment digests
 (`ENV`), repositories and integrity entries (`REPO`, `INT`), taints (and,
 once the plan decided them, the plan-dependent registrations as
 `REGISTERED kind count:N detail` lines), the
@@ -320,6 +322,122 @@ the same at 1, 8 and 32 loading threads under `BAZEL_RS_LOADING_JITTER`
 seeds, and never Unstable, on a workspace with globs through links and
 subpackages, a replayed local repository and a link into another
 repository's store tree raced against that repository's demand.
+
+## Recording with phase-1 prefetch (W6R)
+
+W6's phase-1 prefetch workers load packages ahead of the coordinator —
+also packages the build never commits (a select() branch not taken, a
+toolchain implementation resolution never selects) — and fill memos
+shared by the invocation's threads, which the coordinator then hits
+without repeating the work. Integration-21 kept prefetch off while
+recording, so every snapshot miss paid phase 1's sequential loading.
+Since W6R prefetch runs while recording (`on` misses, `record`, verify's
+shadow analysis), and the recording is still the one the threads-1 run
+makes: the observations travel with the three things the sequential
+engine's view of the roots (`RepositorySet::sequential_roots`, W6 review
+F2) already travels with.
+
+* **Frames** (`observed_fs::unit_scope`, `capture`, `capture_detached`,
+  `discard`): while a frame is open on the observing thread the window's
+  recorder appends each observation, taint, environment digest and tree
+  claim to the innermost frame instead of its shards. A claim carries the
+  REPO record walked on the observing thread (none when the recorder
+  already has the tree's owner) and is decided when it reaches the
+  recorder, by the same rules (an owner's record replaces a crossing's, a
+  local claim drops one).
+* **Load units.** A unit evaluated on a loading worker (no-demand mode:
+  prefetch, P2 pattern loading, the `BAZEL_RS_LOADING_NO_DEMAND` hook)
+  records into its frame (`LoadUnit::observations`), committed by
+  `Engine::commit_load_unit` exactly where it notes the unit's roots; a
+  sentinel unit's frame is dropped (its inline re-run records), and so
+  are the frames of units nobody demands and P2 units after the first
+  error.
+* **Memo entries.** A memo a worker can fill and whose hit skips the miss
+  path's observations keeps a captured set (`observed_fs::Captured`) with
+  the entry, and every hit replays it — into the hitting unit's frame, or
+  into the recorder, where a set lands at most once: the shared
+  BUILD-phase `.bzl` cache (what entering and evaluating a module
+  observed; replayed at both hit points beside `note_obtained`), the
+  ignored subdirectories, and an extension repository's cached spec key
+  (its declared environment). The repository environment records its
+  value at every lookup, not only at the first read, and the store path is
+  computed on the coordinator before workers start. **The rule** for any
+  new memo: if a worker can fill it and a hit skips observations its miss
+  makes, the entry must carry a `Captured` replayed at every hit (or the
+  hit must observe again).
+* **Probe publications.** A worker's warm-reuse probe runs in a detached
+  capture: its observations (pointer, manifest, recorded-input check, the
+  tree's REPO claim) are stored with the publication
+  (`DemandSlot::observations`, under the publication lock, dropped on a
+  miss, an error or a lost race) and replayed by
+  `DirectRuntime::mark_sequential` where the root begins to count for the
+  sequential engine — transitively down the probes that published what it
+  obtained. The sequential engine's evaluation of that root runs the same
+  check.
+* **The link policy** holds the sequential roots while recording: a
+  worker-published root is a store tree, which anchors a link in any
+  order, so no decision changes, but a crossing's REPO record is the
+  threads-1 one. The canonical forms of the policy's roots, the store and
+  the blocked prefixes are taken unrecorded and recorded once at the end
+  of planning (`RepositorySet::record_link_anchors`: every counting root,
+  the store, the blocked prefixes; before `settle_plan_taints`, and before
+  a query's window closes) — the set is the same at every thread count.
+* **One spelling per path**: `Path` equality ignores a trailing separator
+  (`root.join("")` spells `root/`), so a recorder entry keeps the
+  byte-wise smallest spelling seen, whatever order the observations come
+  in.
+
+The recorder is a set keyed by (path, op), first outcome wins, a second
+one is Unstable, so neither the order nor the time of a merge matters —
+only which events are merged; `racy` is computed against the window start,
+so an earlier worker read of an unchanged file has the same outcome. A
+file changed while the window is open gives Unstable, or a recording
+consistent with what was analysed (never a false hit). A caught worker
+panic breaks the stderr capture, so nothing is saved. Workers print
+nothing; `PERF-PREFETCH` goes to the diagnostics stream (never part of the
+captured window bytes a hit replays). Replay scopes for local repository
+rules open on the coordinator only (debug-asserted), so their root/mapping
+capture sees the sequential demands; the definition `.bzl` cache stays off
+while it captures. `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while
+recording (a diagnostics switch, not part of the snapshot key).
+
+**Gates.** The record mode's dump prints `INPUTS-CANONICAL <blake3>`: the
+digest of the INPUTS a snapshot of the recording would hold (the policy's
+selection, the replay records and their pinned tables) with the window
+start, the racy flags and the replay records' execution times zeroed
+(worker jitter turns `on` off, so determinism tests compare record-mode
+dumps). `tests/snapshot_prefetch.rs`: the digest and every comparable dump
+line equal threads 1's at threads 2/8/32 and 8/40, 32/25, 8/7 with
+`PERF-PREFETCH loaded>0`; eight targeted fixtures (a `.bzl` a speculative
+unit evaluated first; an aborted unit's module hit by its inline re-run; a
+worker-filled ignored memo hit by a `/...` toolchain pattern; a root probed
+for a never-committed unit, and one reached only through its probe;
+environment values a worker read first, directly and through a spec key;
+a glob into a worker-published store tree; a never-committed unit's
+cross-repository hop; an unused unit) each fail with the hook they need
+switched off (`BAZEL_RS_DEBUG_W6R_OFF=unit,bzl,ignored,probe,env,spec,link,canon`,
+a debug switch; unit tests switch hooks per thread); strict verify across
+thread counts; no `PERF-PREFETCH` in a hit's replayed bytes. Unit tests:
+the frames (commit-only, drop, conflicts, claim merge orders, once per
+sink, detached and discard frames, inert outside a window), the probe set
+publication, the probed chain `@a` → `@b` → `@c` with a worker's unit
+(observations exactly at a demand, a commit, a `.bzl` hit, an ignored hit;
+one kill switch per hook), the environment and spec-key replays, the link
+policy. The spec-key replay is defence in depth today: every coordinator
+path after a spec key re-reads the declared environment (the warm check's
+watched environment, or the execution's), so it matters only with the
+environment hook off.
+
+Measured on ~/code (warm, update-mode recipe; ~/code HEAD moved from
+14bd7e2e to 31494f32/45ed7432/916008a5 during the measurements, its
+MODULE.bazel.lock unchanged): oauth2token:all `--nobuild` (96,661
+comparable dump lines) and B2 `--nobuild` (159,181) record identically —
+`INPUTS-CANONICAL` and every line — at threads 1/8/32 and 8/40, 32/25,
+8/7 (prefetch loaded 867–923 and 2,202–2,390 units); 24 and 21 verify-mode
+runs cycling threads 1/8/32, saving at each, verified 18 and 15 hits with
+no mismatch; the syscall audit at threads 1 is clean (31,400 window
+touches, 0 unrecorded; 2,730 replay touches, 0 unrecorded). A miss's
+wall: docs/ANALYSIS_SNAPSHOT.md, "What is saved, and when".
 
 ## Measured on ~/code (L2-W4R, warm, update-mode recipe)
 

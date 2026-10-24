@@ -614,11 +614,14 @@ coordinator analyzes.
 
 **Pool.** `Engine::plan_build` starts a `Prefetcher` for phase 1 when
 `--loading_phase_threads` > 1 (at most 16 workers; 16 MiB stacks), the
-module graph is already resolved, and neither the analysis-snapshot
-recording nor a pinned (replaying) repository set is active
-(`RepositorySet::prefetch_allowed`, `observed_fs::recording`); the
-`BAZEL_RS_LOADING_NO_DEMAND` test hook and `BAZEL_RS_DEBUG_NO_PREFETCH`
-switch it off. It stops when phase 1 ends, however it ends: workers finish
+module graph is already resolved, and the repository set is not pinned
+(the replay of local repository rules; `RepositorySet::prefetch_allowed`);
+the `BAZEL_RS_LOADING_NO_DEMAND` test hook and `BAZEL_RS_DEBUG_NO_PREFETCH`
+switch it off. Since W6R it also runs while the analysis snapshot records
+(what a worker observes reaches the recording with its unit's commit, a
+memo hit or a counting root: docs/ANALYSIS_SNAPSHOT_RECORDING.md,
+"Recording with phase-1 prefetch"); `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps
+it off while recording. It stops when phase 1 ends, however it ends: workers finish
 the unit they are loading, every unit nobody demanded is dropped
 unreported. `--loading_phase_threads=1` is exactly the sequential engine.
 
@@ -748,7 +751,13 @@ there first:
 
   The audit behind "two such memos" (FU1): every other memo shared by the
   threads of one invocation either demands no root on its miss path, or a
-  worker cannot fill it.
+  worker cannot fill it. (The analysis snapshot's observations follow the
+  same paths since W6R, plus the memos whose miss observes files or the
+  environment without demanding a root: the extension repositories' spec
+  keys carry their observations, the environment snapshot records at
+  every lookup, the canonical-path memo's forms are recorded once at the
+  end of planning, the recorded-input digests and the published-tree
+  verifications record on every answer anyway.)
   - Filled by workers, no root on the miss path: a prepared group's
     source-digest entries and an extension group's spec digests, which a
     warm-reuse probe computes (in-memory sources; host and environment);

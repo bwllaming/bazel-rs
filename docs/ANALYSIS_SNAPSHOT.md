@@ -718,17 +718,32 @@ and encoded on the writer thread, which writes a temporary file while the
 actions run. Only when the command (for `test` and `run`: its build part)
 succeeded is the file renamed into place. Failures are never saved.
 
-**A miss runs without the phase-1 prefetch** (integration-21): the
-recording window is open while it plans (`on` saving, `verify`'s shadow
-analysis), and W6's prefetch never starts while it records
-(`observed_fs::recording`, docs/PARALLEL_ANALYSIS.md "Phase-1 prefetch"):
-the recording is process-wide, so it would also take the observations of
-speculative units that are never committed. So a miss pays the
-sequential loading of phase 1 (~/code, warm:
-oauth2token:all `--nobuild` 6.5 s against 4.0–4.2 s with the snapshot off;
-B2 `--nobuild` 11.1 s against 7.9–8.7 s); hits are unaffected. Since the
-snapshot is on by default (L2-W7) every miss pays it. Follow-up: per-unit
-observation buffers merged only for committed units.
+**A miss runs with the phase-1 prefetch** (W6R): the recording window is
+open while it plans (`on` saving, `verify`'s shadow analysis), and W6's
+prefetch workers run beside it. What a worker observes reaches the
+recording only where the sequential engine would have observed it — with
+its load unit's commit, at a hit of a memo it filled, when a root it
+probed begins to count (docs/ANALYSIS_SNAPSHOT_RECORDING.md, "Recording
+with phase-1 prefetch") — so a miss saves the recording the threads-1 run
+makes, at any `--loading_phase_threads` (which is not in G: a snapshot
+saved at threads 8 hits, and verifies strictly, at threads 1 and 32).
+Integration-21 had turned prefetch off while recording, so a miss paid
+phase 1's sequential loading. Measured on ~/code (warm, update-mode
+recipe, a miss forced by deleting the private cache's `snapshots/`, load
+10–20; stage 2 = ca7e18b):
+
+| | stage 2 | W6R | W6R, `BAZEL_RS_SNAPSHOT_PREFETCH=0` | unset |
+|---|---|---|---|---|
+| oauth2token:all `--nobuild` miss, 5 rounds, median (range) | 6.82 s (6.16–7.49) | **5.59 s** (5.12–5.78) | 6.91 s | 4.25–4.31 s |
+| B2 `--nobuild` miss, 3 rounds | 11.48 s (11.26–11.49) | **9.28 s** (9.27–9.61) | 11.73 s | 8.08–8.10 s |
+| peak RSS of a miss (oauth2token / B2) | 1.34 / 2.07 GB | 1.39 / 2.16 GB | — | 1.16 / 1.81 GB |
+
+The rest of the gap to an unset run is the record mode's own cost: the
+definition `.bzl` cache stays off while local repository rules are
+captured for replay (~0.45 s on oauth2token), the recording and the tee
+capture. `BAZEL_RS_SNAPSHOT_PREFETCH=0` keeps prefetch off while
+recording (a diagnostics switch, not part of G; it is not a test hook,
+snapshots stay on). Hits are unaffected.
 
 **Diagnostics bypass the capture** (`snapshot::diag`; L2-W5h: never
 inside a forwarded line, which goes out whole under the same order lock): the PERF marks,
@@ -971,3 +986,16 @@ per-tree trade-off above: on a hit the build failed once with
 against the genrule's embedded copy — and healed). The whole suite under
 `BAZEL_RS_SNAPSHOT=verify BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` passes: 119
 verified hits outside tests/snapshot.rs, no mismatch.
+
+W6R (phase-1 prefetch while recording, `tests/snapshot_prefetch.rs`): the
+record mode's recording — its `INPUTS-CANONICAL` digest and every
+comparable dump line — equals threads 1's at threads 2/8/32 and under
+worker jitter on a workspace with the phase-1 prefetch shapes, store-tree
+links, ignored directories, recorded inputs in other repositories, a
+declared environment and a local repository, with prefetch loading units
+in every threaded run; eight targeted fixtures each fail with the hook
+they need switched off (`BAZEL_RS_DEBUG_W6R_OFF`); a snapshot saved at
+threads 1 verifies strictly at 8 and 32 and one saved at 8 at 1 and 32, and
+an `on` snapshot saved at threads 8 hits at 1 and 32 without replaying
+`PERF-PREFETCH` (docs/ANALYSIS_SNAPSHOT_RECORDING.md, "Recording with
+phase-1 prefetch").
