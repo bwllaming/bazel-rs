@@ -990,22 +990,23 @@ fn fresh_stage(stages: &Path, slug: &str) -> Result<Scratch, String> {
         .map_err(|e| format!("cannot stage direct repository: {e}"))
 }
 
-/// A private directory of this store (a stage or a quarantine) that is
-/// deleted when dropped, like the [`tempfile::TempDir`] that created it,
-/// but with [`crate::repository_ctx::remove_tree`]: a repository rule may
-/// have made directories read-only (`chmod -R ugo-w`, as rules_python does
-/// for its interpreter's `lib/`), and `TempDir`'s `remove_dir_all` cannot
-/// empty those. Symlinks are never followed. A removal failure only leaves
-/// garbage behind (cleared by [`fresh_stage`] and [`quarantine_lock`]); it
-/// never fails the command.
-struct Scratch(PathBuf);
+/// A private directory of a repository store (a stage or a quarantine;
+/// also the Git and registry stores' stages) that is deleted when dropped,
+/// like the [`tempfile::TempDir`] that created it, but with
+/// [`crate::repository_ctx::remove_tree`]: a repository rule may have made
+/// directories read-only (`chmod -R ugo-w`, as rules_python does for its
+/// interpreter's `lib/`), and `TempDir`'s `remove_dir_all` cannot empty
+/// those. Symlinks are never followed. A removal failure only leaves
+/// garbage behind (cleared by [`fresh_stage`], [`quarantine_lock`] or the
+/// next replacement) and a warning; it never fails the command.
+pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
-    fn new(directory: tempfile::TempDir) -> Self {
+    pub(crate) fn new(directory: tempfile::TempDir) -> Self {
         Self(directory.keep())
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -1013,7 +1014,12 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         // Nothing to do once renamed into place (NotFound is success).
-        let _ = crate::repository_ctx::remove_tree(&self.0);
+        if let Err(error) = crate::repository_ctx::remove_tree(&self.0) {
+            eprintln!(
+                "bazel-rs: warning: cannot remove {} ({error}); left for a later cleanup",
+                self.0.display()
+            );
+        }
     }
 }
 

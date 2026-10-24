@@ -449,8 +449,9 @@ fn remove_cache_entry(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.is_dir() {
-                // remove_dir_all does not follow symlinks inside the corrupt tree.
-                fs::remove_dir_all(path)
+                // Never follows symlinks inside the corrupt tree, and makes
+                // read-only directories (tampering) writable first.
+                crate::repository_ctx::remove_tree(path)
             } else {
                 fs::remove_file(path)
             }

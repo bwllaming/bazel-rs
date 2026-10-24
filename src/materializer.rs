@@ -346,6 +346,7 @@ pub fn materialize_with_registry_config(
     let staging = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(&trees)
+        .map(crate::repository_store::Scratch::new)
         .map_err(|e| format!("cannot stage repository: {e}"))?;
     // Bazel names the archive by its downloaded file, the URL's last path
     // segment (e.g. in the zip link-escape error).
@@ -400,12 +401,10 @@ pub fn materialize_with_registry_config(
     };
     let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
     if destination.exists() {
-        if destination.is_dir() {
-            fs::remove_dir_all(&destination)
-        } else {
-            fs::remove_file(&destination)
-        }
-        .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
+        // Directories may have been made read-only (tampering): they are
+        // made writable first, and symlinks are never followed.
+        crate::repository_ctx::remove_tree(&destination)
+            .map_err(|e| format!("cannot remove corrupt repository cache: {e}"))?;
     }
     // Lock serializes publishers. A crash between these two publications leaves
     // no valid tree+manifest pair and is repaired on the next invocation.
@@ -1706,6 +1705,24 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn repairs_read_only_directory_tampering() {
+        // A read-only tree root (tampering) does not stop the replacement of
+        // a corrupt tree: removal makes directories writable first.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let (registry, source) = fixture(temp.path());
+        let cache = temp.path().join("cache");
+        let root = materialize(&registry, "dep", "1", b"module", &source, &cache).unwrap();
+        fs::set_permissions(root.join("data"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o555)).unwrap();
+        let again = materialize(&registry, "dep", "1", b"module", &source, &cache).unwrap();
+        assert_eq!(again, root);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&root), mode(&root.join("data"))), (0o755, 0o644));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn refuses_symlink_cache_and_repairs_mode_tampering() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let temp = tempfile::tempdir().unwrap();

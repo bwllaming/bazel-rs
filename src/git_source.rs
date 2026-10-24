@@ -204,6 +204,7 @@ pub fn materialize<T>(
     let stage = tempfile::Builder::new()
         .prefix(".stage-")
         .tempdir_in(&trees)
+        .map(crate::repository_store::Scratch::new)
         .map_err(|e| format!("cannot stage Git tree: {e}"))?;
     crate::observed_fs::taint(crate::observed_fs::Taint::Network, || {
         format!("git fetch {} {commit}", spec.remote)
@@ -228,14 +229,16 @@ pub fn materialize<T>(
     check_optional_directory(&destination)?;
     check_optional_regular(&manifest_path)?;
     if destination.exists() {
-        fs::remove_dir_all(&destination)
+        // Read-only directories (tampering) are made writable first;
+        // symlinks are never followed.
+        crate::repository_ctx::remove_tree(&destination)
             .map_err(|e| format!("cannot remove corrupt Git tree: {e}"))?;
     }
     fs::rename(stage.path(), &destination).map_err(|e| format!("cannot publish Git tree: {e}"))?;
     // These are two atomic renames, NOT an atomic pair. Missing/mismatching
     // manifests after a crash trigger refetch, never silent source reuse.
     if let Err(error) = atomic_write(&manifest_path, &encoded) {
-        fs::remove_dir_all(&destination)
+        crate::repository_ctx::remove_tree(&destination)
             .map_err(|cleanup| format!("{error}; cannot clean unpublished Git tree: {cleanup}"))?;
         return Err(error);
     }
@@ -2257,6 +2260,22 @@ mod tests {
         fixture.tree();
         let repaired: Manifest = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         assert_eq!(repaired.files["run"].mode, 0o755);
+    }
+
+    /// A read-only tree directory (tampering) does not stop the replacement
+    /// of a corrupt tree: removal makes directories writable first, like
+    /// the direct store's (crate::repository_ctx::remove_tree).
+    #[test]
+    #[cfg(unix)]
+    fn repairs_read_only_directory_tampering() {
+        let fixture = Fixture::new("pkg");
+        let tree = fixture.tree();
+        let original = fs::read(tree.root.join("data")).unwrap();
+        fs::write(tree.root.join("data"), b"tampered").unwrap();
+        set_mode(&tree.root, 0o555).unwrap();
+        assert_eq!(fixture.tree(), tree);
+        assert_eq!(mode(&fs::metadata(&tree.root).unwrap()), 0o755);
+        assert_eq!(fs::read(tree.root.join("data")).unwrap(), original);
     }
 
     #[test]

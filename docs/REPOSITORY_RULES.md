@@ -601,7 +601,8 @@ in place. Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
 as rules_python's `python_repository` does for the interpreter's `lib/`), so
 quarantines and stages are deleted like `fresh_stage` deletes an interrupted
 stage: directories are made writable first and symlinks are never followed. A
-deletion failure leaves garbage, never a failed command (before, `TempDir::close`
+deletion failure leaves garbage and a `bazel-rs: warning: cannot remove ...`
+line, never a failed command (before, `TempDir::close`
 failed with `cannot remove direct quarantine: Permission denied` after the new
 tree was already published, and left the quarantine behind). Publishers hold
 `direct/locks/quarantine` shared while their quarantine exists; a publisher that
@@ -616,6 +617,13 @@ link; the next command's verification rejects hard-linked tree files, so the
 rule re-executed (re-extracting the interpreter), kept its identity and
 republished over the read-only tree. Repository files are now copied into
 `cas/`, never linked (docs/HARDLINK_STAGING.md); the tree stays reusable.
+
+The Git and registry stores stage and replace corrupt trees the same way
+(`Scratch` stages, `remove_tree` for the replaced tree). Their trees cannot
+normally hold read-only directories (the archive extractor normalizes modes
+to 0755/0644, Git exports carry no directory modes, patches change none), but
+a tampered tree with one no longer makes its repair fail (tests
+`repairs_read_only_directory_tampering` in git_source and materializer).
 
 ## Application boundary
 
