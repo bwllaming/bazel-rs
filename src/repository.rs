@@ -128,8 +128,10 @@ struct RepositoryState {
     direct: OnceLock<Result<DirectRuntime, String>>,
     environment: Arc<crate::repository_environment::Snapshot>,
     host: Arc<crate::host_os::HostSnapshot>,
-    /// IgnoredSubdirectoriesValue per repository, computed once per set.
-    ignored: std::sync::Mutex<BTreeMap<String, IgnoredResult>>,
+    /// IgnoredSubdirectoriesValue per repository, computed once per set,
+    /// with what its computation observed for the analysis snapshot
+    /// (W6R: replayed at every hit, crate::observed_fs::replay).
+    ignored: std::sync::Mutex<BTreeMap<String, IgnoredEntry>>,
     /// Canonical forms of materialized roots and blocked prefixes for the
     /// link policy, memoized per invocation (published roots never move).
     link_canonical: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>>,
@@ -161,6 +163,9 @@ struct RepositoryState {
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
+/// An ignored-subdirectories memo entry: the value and what computing it
+/// observed (W6R).
+type IgnoredEntry = (IgnoredResult, Option<Arc<crate::observed_fs::Captured>>);
 
 /// What a local repository rule's execution callback observed, for its
 /// replay record (crate::snapshot::replay::ReplayRecord).
@@ -864,6 +869,10 @@ impl RepositorySet {
     /// or a hit after one. A success or a cached REPO.bazel error alike
     /// (the root was obtained before it failed); a root whose demand
     /// failed has no filled slot to note.
+    ///
+    /// Likewise what the miss observed for the analysis snapshot is kept
+    /// with the entry and replayed at every hit (W6R): into the hitting
+    /// load unit, or the recording on the coordinator.
     pub fn ignored_subdirectories(&self, repository: &str) -> IgnoredResult {
         let cached = self
             .state
@@ -872,18 +881,21 @@ impl RepositorySet {
             .map_err(|_| "ignored-subdirectories cache poisoned".to_owned())?
             .get(repository)
             .cloned();
-        if let Some(result) = cached {
+        if let Some((result, observations)) = cached {
             self.note_obtained(repository);
+            crate::observed_fs::replay_some(observations.as_ref());
             return result;
         }
-        let computed =
-            crate::ignored::for_repository(&Arc::new(self.clone()), repository).map(Arc::new);
+        let (computed, observations) = crate::observed_fs::capture(|| {
+            crate::ignored::for_repository(&Arc::new(self.clone()), repository).map(Arc::new)
+        });
         self.state
             .ignored
             .lock()
             .map_err(|_| "ignored-subdirectories cache poisoned".to_owned())?
             .entry(repository.to_owned())
-            .or_insert(computed)
+            .or_insert((computed, observations))
+            .0
             .clone()
     }
 

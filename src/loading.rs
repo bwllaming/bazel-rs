@@ -754,6 +754,10 @@ struct CachedBzl {
     /// order: the coordinator emits them once, at the first commit or
     /// aspect load that reaches the module (review §1.4, W6 review F1).
     prints: Vec<String>,
+    /// What reading, parsing and evaluating the module observed for the
+    /// analysis snapshot (W6R): every hit replays it — the sequential
+    /// engine's load of the module observed it there, or a miss before.
+    observations: Option<Arc<crate::observed_fs::Captured>>,
 }
 
 /// The failure of loading one `.bzl` label: its error, the top-level
@@ -768,6 +772,8 @@ struct CachedFailure {
     error: String,
     prints: Vec<String>,
     loads: Vec<Label>,
+    /// What the failed load observed ([`CachedBzl::observations`]).
+    observations: Option<Arc<crate::observed_fs::Captured>>,
 }
 
 /// A BUILD-phase `.bzl` label's value for the invocation: the evaluated
@@ -1228,7 +1234,15 @@ struct Loader<'a> {
 
 enum Work {
     Enter(Label),
-    Finish(Label, PathBuf, Box<AstModule>, Vec<Label>),
+    /// A module to evaluate once its loads are, with what entering it
+    /// observed (W6R: kept with its cache entry).
+    Finish(
+        Label,
+        PathBuf,
+        Box<AstModule>,
+        Vec<Label>,
+        Option<Arc<crate::observed_fs::Captured>>,
+    ),
     /// A module of the invocation's cache, after its loads were visited.
     Reuse(Label, Arc<CachedBzl>),
     /// A cached failure, after its stored loads were visited: emit the
@@ -1296,8 +1310,13 @@ impl<'a> Loader<'a> {
         // The sequential engine's load of this module obtained its root
         // here, at the module's entry (`source_path`, before its loads):
         // whoever evaluated it may have been a worker (W6 review F2
-        // follow-up). A success or a failure alike.
+        // follow-up). A success or a failure alike. Likewise what its
+        // load observed for the analysis snapshot (W6R).
         self.repositories.note_obtained(&label.repository);
+        crate::observed_fs::replay_some(match &cached {
+            Ok(cached) => cached.observations.as_ref(),
+            Err(failure) => failure.observations.as_ref(),
+        });
         let cached = match cached {
             Ok(cached) => cached,
             // A cached failure replays for every loading package (P2
@@ -1373,9 +1392,12 @@ impl<'a> Loader<'a> {
                     if !self.shared_cache_hit(&label, &mut work, &mut active)? {
                         let enter_started = std::time::Instant::now();
                         let recorded = self.repo_mappings.len();
-                        let (path, ast, dependencies) = self
-                            .enter_module(&label)
-                            .or_else(|error| self.failed(&label, error, Vec::new(), Vec::new()))?;
+                        // What a cache entry's hits replay (W6R).
+                        let (entered, observations) =
+                            self.capture_shared(|loader| loader.enter_module(&label));
+                        let (path, ast, dependencies) = entered.or_else(|error| {
+                            self.failed(&label, error, Vec::new(), Vec::new(), observations.clone())
+                        })?;
                         if self.definitions {
                             self.entered_mappings
                                 .insert(label.clone(), self.repo_mappings[recorded..].to_vec());
@@ -1392,6 +1414,7 @@ impl<'a> Loader<'a> {
                                 path,
                                 Box::new(ast),
                                 dependencies.clone(),
+                                observations,
                             ))
                             .chain(dependencies.into_iter().rev().map(Work::Enter)),
                         );
@@ -1434,7 +1457,7 @@ impl<'a> Loader<'a> {
                     let finished = active.pop();
                     debug_assert_eq!(finished.as_ref(), Some(&label));
                 }
-                Work::Finish(label, path, ast, loads) => {
+                Work::Finish(label, path, ast, loads, entered) => {
                     let own_functions = self.functions.len();
                     let own_mappings = self.repo_mappings.len();
                     // Per-label single-flight with in-flight waiting
@@ -1463,10 +1486,15 @@ impl<'a> Loader<'a> {
                         loop {
                             if self.shared {
                                 let served = self.repositories.build_bzl_cache().get(&label)?;
-                                if served.is_some() {
+                                if let Some(served) = &served {
                                     // Its root was demanded at the entry
-                                    // already; noted like every hit.
+                                    // already; noted like every hit, and
+                                    // its observations replayed (W6R).
                                     self.repositories.note_obtained(&label.repository);
+                                    crate::observed_fs::replay_some(match served {
+                                        Ok(cached) => cached.observations.as_ref(),
+                                        Err(failure) => failure.observations.as_ref(),
+                                    });
                                 }
                                 match served {
                                     Some(Ok(cached)) => {
@@ -1526,11 +1554,13 @@ impl<'a> Loader<'a> {
                         continue;
                     }
                     let self_time = std::time::Instant::now();
-                    let (frozen, visibility, prints) = match self.finish_module(&label, &path, *ast)
-                    {
+                    let (finished, evaluated) =
+                        self.capture_shared(|loader| loader.finish_module(&label, &path, *ast));
+                    let observations = crate::observed_fs::Captured::join(entered, evaluated);
+                    let (frozen, visibility, prints) = match finished {
                         Ok(finished) => finished,
                         Err((error, prints)) => {
-                            self.failed(&label, error, prints, loads.clone())?
+                            self.failed(&label, error, prints, loads.clone(), observations.clone())?
                         }
                     };
                     if self.definitions
@@ -1561,6 +1591,7 @@ impl<'a> Loader<'a> {
                                 functions: self.functions[own_functions..].to_vec(),
                                 loads,
                                 prints,
+                                observations,
                             }),
                         )?;
                     }
@@ -1591,6 +1622,7 @@ impl<'a> Loader<'a> {
         error: String,
         prints: Vec<String>,
         loads: Vec<Label>,
+        observations: Option<Arc<crate::observed_fs::Captured>>,
     ) -> Result<T, String> {
         // The inline-rerun sentinels (no-demand, parallel wait-cycle) are
         // never published (P2: a worker's abort is environmental, not a
@@ -1603,10 +1635,27 @@ impl<'a> Loader<'a> {
                     error: error.clone(),
                     prints,
                     loads,
+                    observations,
                 }),
             )?;
         }
         Err(error)
+    }
+
+    /// Run `f` on this loader capturing what it observes for the analysis
+    /// snapshot when this loader publishes to the shared cache (W6R: a
+    /// worker may evaluate a module for a unit the build never commits, or
+    /// one that aborts; the sequential engine's load, a later cache hit,
+    /// replays the entry's set). Other loaders observe in place.
+    fn capture_shared<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Option<Arc<crate::observed_fs::Captured>>) {
+        if self.shared {
+            crate::observed_fs::capture(|| f(self))
+        } else {
+            (f(self), None)
+        }
     }
 
     /// Read, parse and statically check a module; its direct loads.
