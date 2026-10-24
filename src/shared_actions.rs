@@ -115,9 +115,9 @@ impl ActionKey {
         }
         key.count(parts.runfiles_trees.len());
         for tree in parts.runfiles_trees {
-            key.str(&tree.directory);
-            key.count(tree.mapping.len());
-            for (path, file) in &tree.mapping {
+            key.str(tree.directory());
+            key.count(tree.mapping().len());
+            for (path, file) in tree.mapping() {
                 key.str(path);
                 match file {
                     Some(file) => {
@@ -577,11 +577,11 @@ mod tests {
         let outputs = [file("bazel-out/k8-fastbuild/bin/p/out", owner)];
         let trees = tree
             .map(|target| {
-                std::sync::Arc::new(ToolRunfilesTree {
-                    identity: 0,
-                    directory: "bazel-out/k8-opt-exec/bin/tool.runfiles".to_owned(),
-                    mapping: [("_main/data".to_owned(), Some(file(target, "//tools:data")))].into(),
-                })
+                std::sync::Arc::new(ToolRunfilesTree::for_test(
+                    0,
+                    "bazel-out/k8-opt-exec/bin/tool.runfiles",
+                    [("_main/data".to_owned(), Some(file(target, "//tools:data")))].into(),
+                ))
             })
             .into_iter()
             .collect::<Vec<_>>();

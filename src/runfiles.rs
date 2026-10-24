@@ -76,20 +76,33 @@ mod values {
         Full,
     }
 
+    /// A provider is immutable once constructed: every field is private
+    /// to crate::runfiles, set by its constructors (FilesToRun::single,
+    /// FilesToRun::create, FilesToRun::observed, TargetRunfiles::file) and
+    /// read through accessors, and a constructor that copies another
+    /// provider's identity copies its content with it. So the identity
+    /// (FilesToRun::identity) determines the content, which the tool
+    /// runfiles tree memo (crate::analysis_runtime::tool_runfiles_tree)
+    /// and the planner's input groups (crate::engine, PA-1) key on.
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
     pub struct FilesToRun {
-        pub kind: FilesToRunKind,
-        pub executable: Option<File>,
+        pub(in crate::runfiles) kind: FilesToRunKind,
+        pub(in crate::runfiles) executable: Option<File>,
         /// `<executable>.runfiles/MANIFEST` (build_runfile_links default).
-        pub runfiles_manifest: Option<File>,
+        pub(in crate::runfiles) runfiles_manifest: Option<File>,
         /// `<executable>.repo_mapping`.
-        pub repo_mapping_manifest: Option<File>,
+        pub(in crate::runfiles) repo_mapping_manifest: Option<File>,
         /// The runfiles of the RunfilesSupport (Full only).
-        pub runfiles: Option<Runfiles>,
+        pub(in crate::runfiles) runfiles: Option<Runfiles>,
         /// FilesToRunProvider.getFilesToRun without the runfiles tree artifact
         /// (an action tool adds them, StarlarkAction.Builder.addTool).
-        pub files: Vec<File>,
-        /// Bazel compares FilesToRunProvider objects by identity.
+        pub(in crate::runfiles) files: Vec<File>,
+        /// Bazel compares FilesToRunProvider objects by identity: a value of
+        /// the process-wide counter NEXT_FILES_TO_RUN, unique in this
+        /// process and never reused. It means nothing in another process
+        /// (every process counts from 1): it must never be persisted — a
+        /// snapshot restoring identities could collide with the fresh ones
+        /// of the restoring process and alias two providers in the memos.
         pub(in crate::runfiles) id: u64,
         /// File targets create a new provider on each access
         /// (FileConfiguredTarget.getProvider, configuredtargets/FileConfiguredTarget.java:85-101).
@@ -1014,14 +1027,53 @@ impl FilesToRun {
         self.runfiles.as_ref()
     }
 
+    /// Which FilesToRunProvider class this is.
+    pub fn kind(&self) -> FilesToRunKind {
+        self.kind
+    }
+
+    /// FilesToRunProvider.getExecutable.
+    pub fn executable(&self) -> Option<&File> {
+        self.executable.as_ref()
+    }
+
+    /// FilesToRunProvider.getRunfilesManifest.
+    pub fn runfiles_manifest(&self) -> Option<&File> {
+        self.runfiles_manifest.as_ref()
+    }
+
+    /// FilesToRunProvider.getRepoMappingManifest.
+    pub fn repo_mapping_manifest(&self) -> Option<&File> {
+        self.repo_mapping_manifest.as_ref()
+    }
+
+    /// FilesToRunProvider.getFilesToRun without the runfiles tree artifact.
+    pub fn files(&self) -> &[File] {
+        &self.files
+    }
+
+    /// A FullFilesToRunProvider of `executable` with `runfiles` and no
+    /// manifests, under a new identity (unit tests of its consumers).
+    #[cfg(test)]
+    pub(crate) fn full_for_test(executable: File, runfiles: Runfiles) -> Self {
+        Self {
+            kind: FilesToRunKind::Full,
+            executable: Some(executable),
+            runfiles: Some(runfiles),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn same(&self, other: &Self) -> bool {
         self.id == other.id
     }
 
     /// The provider's identity ([`Self::same`]): unique in the process and
-    /// never reused, and a provider is never changed once created, so two
-    /// values with one identity are copies of one provider (their runfiles,
-    /// executable and repository mapping manifest are the same).
+    /// never reused, and a provider never changes once constructed (its
+    /// fields are private to this module), so two values with one identity
+    /// are copies of one provider (their runfiles, executable and
+    /// repository mapping manifest are the same). In-process only: never
+    /// persist it (see the `id` field).
     pub(crate) fn identity(&self) -> u64 {
         self.id
     }
@@ -2188,6 +2240,43 @@ mod tests {
             multiple.to_string(),
             "<unknown object com.google.devtools.build.lib.analysis.FilesToRunProvider$FullFilesToRunProvider>"
         );
+    }
+
+    /// PA-1 follow-up B1: the tool runfiles tree memo keys on the provider
+    /// identity, which only this module can pair with a content (private
+    /// fields). Every constructor takes a new identity or copies one with
+    /// its content; a provider forged here with a reused identity and
+    /// another content is caught on the memo hit in debug builds.
+    #[test]
+    fn provider_identities_come_with_their_content() {
+        let exe = file("pkg/tool", "//pkg:tool");
+        let mut builder = RunfilesBuilder::default();
+        builder.add_artifact(file("pkg/data", "//pkg:data"));
+        let runfiles = builder.build().unwrap();
+        let provider = FilesToRun::full_for_test(exe.clone(), runfiles.clone());
+        let other = FilesToRun::full_for_test(exe.clone(), runfiles.clone());
+        assert!(!provider.same(&other));
+        assert!(provider.same(&provider.clone()));
+        // File targets observe a new provider of the same content.
+        let fresh = TargetRunfiles::file(exe.clone()).files_to_run.unwrap();
+        let observed = fresh.observed();
+        assert!(!observed.same(&fresh));
+        assert_eq!(observed.executable(), fresh.executable());
+        assert_eq!(observed.files(), fresh.files());
+        let tree = crate::analysis_runtime::tool_runfiles_tree(&provider).unwrap();
+        if cfg!(debug_assertions) {
+            let mut changed = RunfilesBuilder::default();
+            changed.add_artifact(file("pkg/other", "//pkg:other"));
+            let forged = FilesToRun {
+                runfiles: Some(changed.build().unwrap()),
+                ..provider.clone()
+            };
+            let hit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::analysis_runtime::tool_runfiles_tree(&forged);
+            }));
+            assert!(hit.is_err(), "a forged identity must fail the memo hit");
+        }
+        drop(tree);
     }
 
     #[test]

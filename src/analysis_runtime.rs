@@ -620,21 +620,80 @@ pub(crate) struct Registration {
 /// the same `Arc` ([`tool_runfiles_tree`]), as Bazel's spawns hold the one
 /// runfiles tree artifact of the tool; the planner expands it into one
 /// shared input group (crate::scheduler::InputGroup).
+///
+/// Constructor-only ([`ToolRunfilesTree::of`]; private fields): the
+/// identity is the FilesToRunProvider's
+/// (crate::runfiles::FilesToRun::identity) and the directory and mapping
+/// are computed from that provider, which never changes once constructed,
+/// so one identity is one tree content — what the memos keyed by identity
+/// rely on ([`tool_runfiles_tree`], the planner's input groups in
+/// crate::engine; both check it on a hit in debug builds). Like the
+/// provider identity, a tree identity is meaningful in this process only
+/// and must never be persisted.
 #[derive(Debug)]
 pub struct ToolRunfilesTree {
-    /// The identity of the FilesToRunProvider the tree is of
-    /// (crate::runfiles::FilesToRun::identity): equal identities are the
-    /// same tree.
-    pub identity: u64,
+    identity: u64,
+    directory: String,
+    mapping: crate::runfiles::RunfilesMapping,
+}
+
+impl ToolRunfilesTree {
+    /// The runfiles tree of `files_to_run`: `None` without an executable
+    /// or with empty runfiles.
+    fn of(files_to_run: &crate::runfiles::FilesToRun) -> Option<Self> {
+        let runfiles = files_to_run
+            .runfiles()
+            .filter(|runfiles| !runfiles.is_empty())?;
+        let executable = files_to_run.executable()?;
+        Some(Self {
+            identity: files_to_run.identity(),
+            directory: format!("{}.runfiles", executable.path),
+            mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest(), None),
+        })
+    }
+
+    /// A tree of the given parts (unit tests of its consumers).
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        identity: u64,
+        directory: &str,
+        mapping: crate::runfiles::RunfilesMapping,
+    ) -> Self {
+        Self {
+            identity,
+            directory: directory.to_owned(),
+            mapping,
+        }
+    }
+
+    /// The identity of the FilesToRunProvider the tree is of: equal
+    /// identities are the same tree (in this process).
+    pub fn identity(&self) -> u64 {
+        self.identity
+    }
+
     /// The exec path of the runfiles directory.
-    pub directory: String,
-    pub mapping: crate::runfiles::RunfilesMapping,
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+
+    /// Runfiles path -> File (`None`: an empty file), in path order.
+    pub fn mapping(&self) -> &crate::runfiles::RunfilesMapping {
+        &self.mapping
+    }
+
+    /// Whether `other` has this tree's content: what a memo hit by
+    /// identity guarantees (debug-build checks).
+    pub(crate) fn same_content(&self, other: &Self) -> bool {
+        self.directory == other.directory && self.mapping == other.mapping
+    }
 }
 
 /// The runfiles trees computed in this process, by FilesToRunProvider
 /// identity ([`tool_runfiles_tree`]). Weak: a tree lives as long as an
-/// action registration or the planner holds it, and is computed again
-/// after that (a memo only saves work).
+/// action registration or the planner's input groups hold it (the planner
+/// holds every tree it expanded until the end of planning), and is computed
+/// again after that (a memo only saves work).
 fn tool_trees() -> &'static Mutex<std::collections::HashMap<u64, std::sync::Weak<ToolRunfilesTree>>>
 {
     static TREES: std::sync::OnceLock<
@@ -1055,26 +1114,32 @@ fn register_spawn(
 /// The runfiles tree a FilesToRunProvider with runfiles support attaches to
 /// a spawn (StarlarkAction.Builder.addTool(FilesToRunProvider) adds the
 /// runfiles tree artifact, RuleConfiguredTargetBuilder.java:144-152).
-/// Computed once per provider (by identity) while any action holds it: a
-/// tool used by thousands of actions (the Python interpreter of every
-/// PyCompile action) is one mapping, not one per action.
+/// Computed once per provider (by identity) while any action or the
+/// planner holds it: a tool used by thousands of actions (the Python
+/// interpreter of every PyCompile action) is one mapping, not one per
+/// action. The memo relies on one identity being one content
+/// ([`ToolRunfilesTree`]); debug builds recompute the tree on every hit and
+/// check.
 pub(crate) fn tool_runfiles_tree(
     files_to_run: &crate::runfiles::FilesToRun,
 ) -> Option<Arc<ToolRunfilesTree>> {
-    let runfiles = files_to_run.runfiles.as_ref().filter(|r| !r.is_empty())?;
-    let executable = files_to_run.executable.as_ref()?;
+    // A provider without a tree has no memo entry to look up.
+    files_to_run.runfiles().filter(|r| !r.is_empty())?;
+    files_to_run.executable()?;
     let identity = files_to_run.identity();
     let lock = || tool_trees().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(tree) = lock().get(&identity).and_then(std::sync::Weak::upgrade) {
+    let known = lock().get(&identity).and_then(std::sync::Weak::upgrade);
+    if let Some(tree) = known {
+        debug_assert!(
+            ToolRunfilesTree::of(files_to_run).is_some_and(|fresh| fresh.same_content(&tree)),
+            "internal error: the memoized runfiles tree of FilesToRunProvider {identity} ({}) differs from its provider's",
+            tree.directory
+        );
         return Some(tree);
     }
     // Computed outside the lock: two threads may both compute one tree, the
     // same value either way.
-    let tree = Arc::new(ToolRunfilesTree {
-        identity,
-        directory: format!("{}.runfiles", executable.path),
-        mapping: runfiles.runfiles_inputs(files_to_run.repo_mapping_manifest.as_ref(), None),
-    });
+    let tree = Arc::new(ToolRunfilesTree::of(files_to_run)?);
     let mut trees = lock();
     // Forget the trees nobody holds any more before the table grows.
     if trees.len() >= 1024 && trees.len().is_power_of_two() {
@@ -1393,7 +1458,7 @@ fn action_tools(
     let mut trees = Vec::new();
     let attach = |files: &mut Vec<File>, trees: &mut Vec<Arc<ToolRunfilesTree>>, file: &File| {
         if let Some(files_to_run) = context.runfiles.executables.borrow().get(file) {
-            files.extend(files_to_run.files.iter().cloned());
+            files.extend(files_to_run.files().iter().cloned());
             trees.extend(tool_runfiles_tree(files_to_run));
         }
     };
@@ -1436,7 +1501,7 @@ fn action_tools(
             if !context.runfiles.is_from_dependencies(files_to_run) {
                 groups.check_tool()?;
             }
-            files.extend(files_to_run.files.iter().cloned());
+            files.extend(files_to_run.files().iter().cloned());
             trees.extend(tool_runfiles_tree(files_to_run));
         } else if crate::starlark_types::is_depset(item) {
             groups.check_tool()?;
@@ -1511,11 +1576,11 @@ fn direct_action_methods(builder: &mut MethodsBuilder) {
                     .cloned(),
             };
             if let Some(files_to_run) = &provider {
-                extra_inputs.extend(files_to_run.files.iter().cloned());
+                extra_inputs.extend(files_to_run.files().iter().cloned());
                 trees.extend(tool_runfiles_tree(files_to_run));
             }
             let file = match crate::runfiles::FilesToRun::from_value(executable) {
-                Some(files_to_run) => files_to_run.executable.clone().ok_or_else(|| {
+                Some(files_to_run) => files_to_run.executable().cloned().ok_or_else(|| {
                     anyhow!("actions.run executable FilesToRunProvider has no executable")
                 })?,
                 None => unpack_file(executable)?,
@@ -2017,33 +2082,33 @@ mod tests {
         let runfiles = builder.build().unwrap();
         // A FullFilesToRunProvider, then another one of the same contents.
         let full = || {
-            let mut provider = crate::runfiles::FilesToRun::default();
-            provider.kind = crate::runfiles::FilesToRunKind::Full;
-            provider.executable = Some(file("bazel-out/k8-fastbuild/bin/p/tool", false));
-            provider.runfiles = Some(runfiles.clone());
-            provider
+            crate::runfiles::FilesToRun::full_for_test(
+                file("bazel-out/k8-fastbuild/bin/p/tool", false),
+                runfiles.clone(),
+            )
         };
         let provider = full();
         let first = tool_runfiles_tree(&provider).unwrap();
         let again = tool_runfiles_tree(&provider.clone()).unwrap();
         assert!(Arc::ptr_eq(&first, &again));
-        assert_eq!(first.identity, provider.identity());
+        assert_eq!(first.identity(), provider.identity());
         assert_eq!(
-            first.directory,
+            first.directory(),
             "bazel-out/k8-fastbuild/bin/p/tool.runfiles"
         );
         assert_eq!(
-            first.mapping.keys().collect::<Vec<_>>(),
+            first.mapping().keys().collect::<Vec<_>>(),
             ["_main/p/data.txt"]
         );
         let separate = tool_runfiles_tree(&full()).unwrap();
         assert!(!Arc::ptr_eq(&first, &separate));
-        assert_eq!(separate.mapping, first.mapping);
+        assert_ne!(separate.identity(), first.identity());
+        assert!(separate.same_content(&first));
         // Released by its last holder, a tree is computed again.
-        let identity = first.identity;
+        let identity = first.identity();
         drop((first, again));
         let fresh = tool_runfiles_tree(&provider).unwrap();
-        assert_eq!(fresh.identity, identity);
+        assert_eq!(fresh.identity(), identity);
         // No runfiles: no tree.
         assert!(
             tool_runfiles_tree(&crate::runfiles::FilesToRun::single(file("p/x", true))).is_none()

@@ -143,11 +143,18 @@ package targets, so `query` does not list them (tests/runfiles_trees.rs
 Planning keeps a tool's tree once, as Bazel's spawns hold the tool's one
 runfiles tree artifact: `tool_runfiles_tree` (crate::analysis_runtime) returns
 one `Arc<ToolRunfilesTree>` per FilesToRunProvider identity while any
-registration holds it, and the commit expands it once per build into a
+registration or the planner holds it, and the commit expands it once per build into a
 `scheduler::InputGroup` (its planted source inputs, generated inputs, tree
 and constant-metadata inputs, empty files, every source path and whether its
 namespace is valid) that every planned action using the tool holds
-(`PlannedAction::groups`, memoized by tree identity). A group stays shared
+(`PlannedAction::groups`, memoized by tree identity with the tree). Both
+memos rely on one identity being one content, which is structural: a
+FilesToRunProvider's fields are private to crate::runfiles (constructors
+and accessors; a constructor copying an identity copies its content) and a
+`ToolRunfilesTree` is only computed from its provider; debug builds check
+the content on every memo hit. Identities come from a per-process counter:
+they must never be persisted (a snapshot restoring identities could
+collide with the fresh ones of the restoring process). A group stays shared
 only when listing it could change nothing but the list
 (`scheduler::groups_apart`: a process action, valid groups with unrelated
 roots, no path of the action itself at, above or below a root, and the

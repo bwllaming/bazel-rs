@@ -890,8 +890,8 @@ fn location_map(
             else {
                 continue;
             };
-            let files = match target.runfiles.files_to_run(&target.files).executable {
-                Some(executable) if name != "srcs" => vec![executable],
+            let files = match target.runfiles.files_to_run(&target.files).executable() {
+                Some(executable) if name != "srcs" => vec![executable.clone()],
                 _ => target.files.clone(),
             };
             let written = crate::label::Label::parse_canonical(label)
@@ -1191,7 +1191,7 @@ fn ctx_attribute_structs<'v>(
                     let executable = match target {
                         Some(target) => {
                             let files_to_run = target.runfiles.files_to_run(&target.files);
-                            let Some(file) = files_to_run.executable.clone() else {
+                            let Some(file) = files_to_run.executable().cloned() else {
                                 // An implicit attribute is masked
                                 // (EventHandlingErrorReporter.java:84-86).
                                 bail!(

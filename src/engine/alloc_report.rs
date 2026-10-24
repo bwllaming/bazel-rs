@@ -960,6 +960,14 @@ fields!(crate::scheduler::InputGroup {
     sources
 });
 fields!(super::SourceInputs { own, groups });
+fields!(super::ExpandedTree { tree, group });
+
+// A tool runfiles tree the planner holds (PA-1, private fields).
+impl Footprint for crate::analysis_runtime::ToolRunfilesTree {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.alloc(self.directory().len()) + self.mapping().heap(walker)
+    }
+}
 fields!(crate::scheduler::Dependency {
     action_id,
     destination

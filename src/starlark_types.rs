@@ -1781,7 +1781,7 @@ impl Target {
             runfiles: None,
             data_runfiles: Some(self.runfiles.data_runfiles()),
             default_runfiles: Some(self.runfiles.default_runfiles()),
-            executable: files_to_run.executable.clone(),
+            executable: files_to_run.executable().cloned(),
             files_to_run: Some(files_to_run),
         }
     }
@@ -2098,7 +2098,8 @@ pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<Fil
     let executable = target
         .runfiles
         .files_to_run(&target.files)
-        .executable
+        .executable()
+        .cloned()
         .filter(|_| target.files.len() != 1);
     Some((
         label,

@@ -226,9 +226,13 @@ struct ActionPlanning {
     source_inputs: BTreeMap<String, SourceInputs>,
     /// The shared input group of each tool runfiles tree an action of this
     /// build used, by the tree's identity (PA-1,
-    /// crate::analysis_runtime::ToolRunfilesTree::identity): expanded once,
-    /// held by every action that uses the tool.
-    input_groups: HashMap<u64, Arc<scheduler::InputGroup>>,
+    /// crate::analysis_runtime::ToolRunfilesTree::identity), with the tree
+    /// it was expanded from: expanded once, held by every action that uses
+    /// the tool. Holding the tree keeps it the one the analysis memo hands
+    /// out for the rest of planning (computed once per build) and lets a
+    /// hit check, in debug builds, that the identity's content is the one
+    /// expanded. In-process only: identities are never persisted.
+    input_groups: HashMap<u64, ExpandedTree>,
     /// Actions whose tool runfiles trees are listed in the action instead
     /// (the groups could not stay shared, crate::scheduler::groups_apart):
     /// reported by PERF-GROUPS.
@@ -393,7 +397,7 @@ fn verify_view(
             view.runfiles
                 .files_to_run
                 .as_ref()
-                .map(|files_to_run| files_to_run.executable.clone()),
+                .map(|files_to_run| files_to_run.executable().cloned()),
         )
     };
     if runfiles(memo) != runfiles(now) {
@@ -10371,8 +10375,18 @@ impl Engine {
             // twice is one group.
             let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
             for tree in &registered.runfiles_trees {
-                let group = match input_groups.get(&tree.identity) {
-                    Some(group) => Arc::clone(group),
+                let group = match input_groups.get(&tree.identity()) {
+                    Some(expanded) => {
+                        // One identity is one content
+                        // (crate::analysis_runtime::ToolRunfilesTree).
+                        debug_assert!(
+                            Arc::ptr_eq(&expanded.tree, tree) || expanded.tree.same_content(tree),
+                            "internal error: runfiles tree {} of identity {} differs from the one expanded",
+                            tree.directory(),
+                            tree.identity()
+                        );
+                        Arc::clone(&expanded.group)
+                    }
                     None => {
                         let mut resolve = |file: &File| {
                             self.indexed_artifact(
@@ -10388,12 +10402,18 @@ impl Engine {
                         let (artifacts, empty_files) =
                             runfiles_tree_entries(tree, &rule.label, &mut resolve)?;
                         let group = Arc::new(runfiles_input_group(
-                            Path::new(&tree.directory),
+                            Path::new(tree.directory()),
                             artifacts,
                             empty_files,
                             &main_ignored,
                         ));
-                        input_groups.insert(tree.identity, Arc::clone(&group));
+                        input_groups.insert(
+                            tree.identity(),
+                            ExpandedTree {
+                                tree: Arc::clone(tree),
+                                group: Arc::clone(&group),
+                            },
+                        );
                         group
                     }
                 };
@@ -10480,7 +10500,7 @@ impl Engine {
                         && registered
                             .runfiles_trees
                             .iter()
-                            .any(|tree| path.starts_with(&tree.directory))
+                            .any(|tree| path.starts_with(tree.directory()))
                 })
                 .cloned()
                 .collect();
@@ -10632,8 +10652,8 @@ impl Engine {
                     &files,
                     runfiles_info.get(&ConfiguredTargetKey::new(actual.clone(), edge_config)),
                 );
-                let located = match runfiles.files_to_run(&files).executable {
-                    Some(executable) => vec![executable],
+                let located = match runfiles.files_to_run(&files).executable() {
+                    Some(executable) => vec![executable.clone()],
                     None => files,
                 };
                 location_map.add(&label.to_string(), located.iter().cloned());
@@ -11774,7 +11794,7 @@ impl Engine {
                     .and_then(|runfiles| runfiles.files_to_run.clone());
                 let executable = match runfiles_nodes.get(&actual_key) {
                     Some(support) => Some(support.executable.clone()),
-                    None => match files_to_run.as_ref().and_then(|f| f.executable.as_ref()) {
+                    None => match files_to_run.as_ref().and_then(|f| f.executable()) {
                         Some(file) => Some(resolve(self, file)?.ok_or_else(|| {
                             format!(
                                 "{label}: executable has no declared artifact: {}",
@@ -12729,6 +12749,13 @@ struct SourceInputs {
     groups: Vec<Arc<scheduler::InputGroup>>,
 }
 
+/// A tool runfiles tree an action of the build used and its shared input
+/// group (PA-1, ActionPlanning::input_groups).
+struct ExpandedTree {
+    tree: Arc<crate::analysis_runtime::ToolRunfilesTree>,
+    group: Arc<scheduler::InputGroup>,
+}
+
 impl From<Vec<PathBuf>> for SourceInputs {
     fn from(own: Vec<PathBuf>) -> Self {
         SourceInputs {
@@ -12771,8 +12798,8 @@ fn runfiles_tree_entries(
 ) -> Result<(Vec<Artifact>, Vec<PathBuf>), String> {
     let mut artifacts = Vec::new();
     let mut empty_files = Vec::new();
-    for (path, file) in &tree.mapping {
-        let destination = Path::new(&tree.directory).join(path);
+    for (path, file) in tree.mapping() {
+        let destination = Path::new(tree.directory()).join(path);
         match file {
             Some(file) => {
                 let mut artifact = resolve(file)?.ok_or_else(|| {
@@ -12948,9 +12975,9 @@ impl Engine {
             return Ok(None);
         };
         let (Some(runfiles), Some(executable), Some(repo_mapping)) = (
-            files_to_run.runfiles.as_ref(),
-            files_to_run.executable.as_ref(),
-            files_to_run.repo_mapping_manifest.as_ref(),
+            files_to_run.runfiles(),
+            files_to_run.executable(),
+            files_to_run.repo_mapping_manifest(),
         ) else {
             return Ok(None);
         };
