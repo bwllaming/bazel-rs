@@ -305,8 +305,10 @@ impl Verify {
             let stored = (hit.session.cache().to_path_buf(), *hit.session.key());
             report.conclude(&key, Some(&stored), true, &self.context, self.strict);
             // Not strict (it exited): what the full analysis printed while
-            // planning, then its own plan executes (the caller).
-            if let Some(window) = &self.window {
+            // planning, then its own plan executes (the caller) — unless
+            // the capture forwarded it already (an overflow or an
+            // incomplete stop, L2-W5g).
+            if let Some(window) = self.window.as_ref().filter(|window| !window.forwarded) {
                 let mut stderr = std::io::stderr().lock();
                 let _ = stderr
                     .write_all(&window.bytes)
@@ -361,8 +363,9 @@ impl Drop for Verify {
         self.end_window();
         if !self.strict {
             // The full analysis ends here (its error follows, from main):
-            // what it printed so far is its output.
-            if let Some(window) = &self.window {
+            // what it printed so far is its output (unless the capture
+            // forwarded it already, L2-W5g).
+            if let Some(window) = self.window.as_ref().filter(|window| !window.forwarded) {
                 let mut stderr = std::io::stderr().lock();
                 let _ = stderr
                     .write_all(&window.bytes)

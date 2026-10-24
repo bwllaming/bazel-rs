@@ -226,6 +226,19 @@ hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held ba
             nothing executes and the command exits 70
 ```
 
+Verify mode's shadow capture (`capture::Mode::Shadow`) keeps what
+the full analysis prints without printing it — the hit prints its own
+bytes. When those bytes can no longer be compared it forwards them
+instead (L2-W5g; before, they were lost): on more than 16 MiB
+(`capture::LIMIT`) the kept bytes go to stderr at once and every later byte
+follows; a panic or the memory watchdog's exit that ends the capture early
+writes the kept bytes before the panic message (or the exit); and a stop
+while a process still holds the pipe (a lingering child) writes the kept
+bytes, after which the detached reader forwards what still arrives. Each
+of these is a mismatch (`window`) or the end of the process, whose output
+is the full analysis's; the mismatch path then does not print the bytes a
+second time.
+
 `<cache>/snapshots/verify.log` (binary-safe: every field one token,
 `\xNN`-escaped, `-` when absent) holds one line per mismatch:
 `<UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<first taint> path=<first differing path> targets=<patterns>`,
@@ -432,7 +445,10 @@ mode's default executes the full analysis's plan on a mismatch and logs it.
 L2-W5g: the miss log names each miss (its class and path) and each
 unsaved run (`the_miss_log_names_each_miss_and_unsaved_run`), the verify
 log the first taint and differing path; unit tests cover the reason
-classes, the binary-safe lines and the rotation.
+classes, the binary-safe lines and the rotation, and the shadow capture's
+forwarding (an overflow, an early end, an incomplete stop: the capture's
+reader and stop driven on a private pipe — a deterministic end-to-end case
+would need a full analysis that prints differently from its own snapshot).
 
 **Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f): random
 sequences over a catalogue of 33 mutations (sources, same-size and
