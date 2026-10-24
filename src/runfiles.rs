@@ -1273,17 +1273,29 @@ impl TargetRunfiles {
     }
 
     /// filegroup (rules/filegroup/Filegroup.java:80-119) with
-    /// --incompatible_filegroup_runfiles_for_data (CoreOptions.java:66-75)
-    /// and no `data` (gated). `srcs` are (files to build, runfiles) pairs.
-    pub fn filegroup(files: &[File], srcs: &[(&[File], &TargetRunfiles)]) -> anyhow::Result<Self> {
-        let prerequisites = srcs
-            .iter()
-            .map(|(files, runfiles)| Prerequisite { files, runfiles })
-            .collect::<Vec<_>>();
-        let default = collect(&[], &prerequisites, Mapping::Default)?;
+    /// --incompatible_filegroup_runfiles_for_data (CoreOptions.java:66-75):
+    /// the default runfiles are Builder.addRunfiles(DEFAULT_RUNFILES) — each
+    /// `data` prerequisite's files to build and data runfiles, then each
+    /// `srcs` prerequisite's default runfiles; the data runfiles are the
+    /// files to build, then addRunfiles(DATA_RUNFILES) — `data` alike, then
+    /// each `srcs` prerequisite's data runfiles. `data` never adds files to
+    /// build. `srcs` and `data` are (files to build, runfiles) pairs.
+    pub fn filegroup(
+        files: &[File],
+        srcs: &[(&[File], &TargetRunfiles)],
+        data: &[(&[File], &TargetRunfiles)],
+    ) -> anyhow::Result<Self> {
+        fn prerequisites<'a>(pairs: &[(&'a [File], &'a TargetRunfiles)]) -> Vec<Prerequisite<'a>> {
+            pairs
+                .iter()
+                .map(|(files, runfiles)| Prerequisite { files, runfiles })
+                .collect()
+        }
+        let (srcs, data_prerequisites) = (prerequisites(srcs), prerequisites(data));
+        let default = collect(&data_prerequisites, &srcs, Mapping::Default)?;
         let mut data = RunfilesBuilder::default();
         data.add_files_to_build(files);
-        data.merge(&collect(&[], &prerequisites, Mapping::Data)?);
+        data.merge(&collect(&data_prerequisites, &srcs, Mapping::Data)?);
         let executable = (files.len() == 1).then(|| files[0].clone());
         Ok(Self {
             provider: Some(RunfilesProvider {

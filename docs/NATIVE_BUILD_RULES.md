@@ -186,7 +186,7 @@ match the target platform (docs/PLATFORMS.md).
   attributes (`compatible_with`, `restricted_to`, `package_metadata`,
   `aspect_hints`, `transitive_configs`) fails explicitly.
 * `filegroup`/`genrule` keep their native analysis only for the modeled
-  attributes (`srcs`, `outs`, `cmd`, genrule `tools` in the exec
+  attributes (`srcs`, filegroup `data`, `outs`, `cmd`, genrule `tools` in the exec
   configuration, docs/CONFIGURATION.md "Exec transition"; genrule
   `toolchains` with Make-variable expansion, docs/MAKE_VARIABLES.md;
   metadata such as `tags`, `deprecation`,
@@ -194,9 +194,25 @@ match the target platform (docs/PLATFORMS.md).
   `exec_properties`, Windows-only `cmd_bat`/`cmd_ps`; genrule
   `executable = True`, below; `target_compatible_with`, checked before
   toolchain resolution, docs/PLATFORMS.md). Any other non-empty
-  value (`data`, `cmd_bash`, `stamp` other than 0,
-  `package_metadata`, `aspect_hints`, `output_group`, ...) is recorded and
-  analysis fails explicitly listing it.
+  value (`cmd_bash`, `stamp` other than 0,
+  `package_metadata`, `aspect_hints`, filegroup `output_group`, ...) is
+  recorded and analysis fails explicitly listing it.
+* `filegroup(data = ...)` (rules/filegroup/Filegroup.java:48-119,
+  FilegroupRule.java:36-80): `data` labels are target-configuration
+  prerequisites (visibility, testonly, select(), `query deps()`) that
+  contribute runfiles only: the default runfiles are each
+  `data` prerequisite's files to build and data runfiles, then each `srcs`
+  prerequisite's default runfiles; the data runfiles the files to build, then
+  the same `data` part, then the `srcs`' data runfiles; files to build and the
+  single-file executable come from `srcs` alone (docs/RUNFILES.md). Bazel
+  9.3's filegroup has no `path` attribute (`no such attribute 'path' in
+  'filegroup' rule`). Paired capture `tests/fixtures/filegroup_data` (15
+  genuine 9.3.0 cases: 11 MATCH, 4 declared pre-existing divergences —
+  Starlark aspects on native rules, filegroup `output_group`, the native
+  missing-input check under `--nobuild`, the `Target pattern parsing failed.`
+  warning of a package error), replayed by `tests/filegroup_data.rs`.
+  Motivation: rules_rust's toolchain repository `rust-lld` filegroup (its
+  gcc-ld/* linkers are data runfiles of the toolchain's exec `linker`).
 * `genrule(executable = True)` (GenRuleBase.java:78-86, 215-235, 288-298):
   the single output is the target's executable, a FilesToRunProvider
   without runfiles support — `dep[DefaultInfo].files_to_run.executable`,

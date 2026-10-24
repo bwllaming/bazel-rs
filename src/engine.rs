@@ -8277,6 +8277,16 @@ impl Engine {
     /// (RuleContext.getTransitivePackagesForRunfileRepoMappingManifest; N23g).
     fn rule_edges(&self, rule: &Rule) -> Vec<Edge> {
         let mut edges = dependency_edges(rule);
+        // FilegroupRule (rules/filegroup/FilegroupRule.java:36-80): `data`
+        // (after `srcs`), target-configuration prerequisites that only
+        // contribute runfiles (Filegroup.java:80-104).
+        if let (RuleKind::Filegroup, Some(native)) = (&rule.kind, &rule.native) {
+            edges.extend(native.labels("data").into_iter().map(|label| Edge {
+                label,
+                attribute: "data".to_owned(),
+                cfg: EdgeCfg::Target,
+            }));
+        }
         // TestSuiteRule (rules/test/TestSuiteRule.java:96-110): `tests`,
         // then `$implicit_tests`, both in the target configuration.
         if let (RuleKind::Native("test_suite"), Some(native)) = (&rule.kind, &rule.native) {
@@ -10986,36 +10996,53 @@ impl Engine {
                     runfiles_info.insert(key.clone(), runfiles);
                 }
             }
-            if matches!(rule.kind, RuleKind::Filegroup) {
-                let mut srcs = Vec::new();
-                for src in &rule.srcs {
-                    let label = self.resolve_rule_src(rule, src)?;
-                    let files = self
-                        .artifacts(&label, config, dry, declared)?
-                        .iter()
-                        .map(Artifact::file)
-                        .collect::<Vec<_>>();
-                    let actual = self
-                        .forwarded_actual(configured, &dependency_key(label.clone()))
-                        .unwrap_or_else(|| label.clone());
-                    let target = self.target(&actual)?;
-                    let runfiles = dependency_runfiles(
-                        &target,
-                        &files,
-                        runfiles_info.get(&dependency_key(actual)),
-                    );
-                    srcs.push((files, runfiles));
-                }
+            if let (RuleKind::Filegroup, Some(native)) = (&rule.kind, &rule.native) {
+                // Each `srcs` and `data` prerequisite's files to build and
+                // runfiles providers (Filegroup.java:80-104). A `data`
+                // prerequisite's source files join the artifact index like
+                // the `srcs` inputs above (they are runfiles).
+                let mut prerequisites = |labels: &[String]| -> Result<Vec<_>, String> {
+                    let mut found = Vec::new();
+                    for text in labels {
+                        let label = self.resolve_rule_src(rule, text)?;
+                        let artifacts = self.artifacts(&label, config, dry, declared)?;
+                        for artifact in artifacts.iter() {
+                            register_artifact(artifact_index, &artifact.file, artifact);
+                        }
+                        let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
+                        let actual = self
+                            .forwarded_actual(configured, &dependency_key(label.clone()))
+                            .unwrap_or_else(|| label.clone());
+                        let target = self.target(&actual)?;
+                        let runfiles = dependency_runfiles(
+                            &target,
+                            &files,
+                            runfiles_info.get(&dependency_key(actual)),
+                        );
+                        found.push((files, runfiles));
+                    }
+                    Ok(found)
+                };
+                let srcs = prerequisites(&rule.srcs)?;
+                let data = prerequisites(&native.labels("data"))?;
                 let files = inputs.iter().map(Artifact::file).collect::<Vec<_>>();
-                let srcs = srcs
-                    .iter()
-                    .map(|(files, runfiles)| (files.as_slice(), &**runfiles))
-                    .collect::<Vec<_>>();
+                fn pairs(
+                    prerequisites: &[(Vec<File>, Arc<crate::runfiles::TargetRunfiles>)],
+                ) -> Vec<(&[File], &crate::runfiles::TargetRunfiles)> {
+                    prerequisites
+                        .iter()
+                        .map(|(files, runfiles)| (files.as_slice(), &**runfiles))
+                        .collect()
+                }
                 runfiles_info.insert(
                     key.clone(),
                     Arc::new(
-                        crate::runfiles::TargetRunfiles::filegroup(&files, &srcs)
-                            .map_err(|error| format!("{}: {error:#}", rule.label))?,
+                        crate::runfiles::TargetRunfiles::filegroup(
+                            &files,
+                            &pairs(&srcs),
+                            &pairs(&data),
+                        )
+                        .map_err(|error| format!("{}: {error:#}", rule.label))?,
                     ),
                 );
             }

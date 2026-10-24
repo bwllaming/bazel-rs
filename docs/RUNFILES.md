@@ -201,10 +201,15 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
 
 ## Native rules
 
-* filegroup (rules/filegroup/Filegroup.java:80-119): default runfiles from the
-  `srcs`' default runfiles, data runfiles from the files to build plus the
-  `srcs`' data runfiles (`--incompatible_filegroup_runfiles_for_data`), a
-  single executable when it has exactly one file. `data` stays gated.
+* filegroup (rules/filegroup/Filegroup.java:80-119): `data` prerequisites
+  (target configuration) never add files to build. Default runfiles:
+  Builder.addRunfiles(DEFAULT_RUNFILES) — each `data` prerequisite's files to
+  build and data runfiles, then the `srcs`' default runfiles; data runfiles:
+  the files to build, then addRunfiles(DATA_RUNFILES) — `data` alike, then
+  the `srcs`' data runfiles (`--incompatible_filegroup_runfiles_for_data`); a
+  single executable when it has exactly one file to build. The default
+  runfiles are hidden top-level artifacts, so building a filegroup builds its
+  generated data. Paired capture `tests/fixtures/filegroup_data`.
 * genrule (rules/genrule/GenRuleBase.java:215-235): no default runfiles, its
   outputs as data runfiles; `executable=True` stays gated.
 * Source and output file targets: no RunfilesProvider, a single-executable

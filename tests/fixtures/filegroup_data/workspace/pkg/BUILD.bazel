@@ -1,0 +1,171 @@
+load(":defs.bzl", "aspect_probe", "consumer", "exec_consumer", "gen", "groups", "runner", "tool")
+
+# Source files in srcs and data: data is runfiles, never files to build.
+filegroup(
+    name = "fg",
+    srcs = ["a.txt"],
+    data = ["d.txt"],
+)
+
+# Several files to build (no executable); data in its order.
+filegroup(
+    name = "fg_multi",
+    srcs = [
+        "a.txt",
+        "b.txt",
+    ],
+    data = [
+        "z.txt",
+        "d.txt",
+    ],
+)
+
+filegroup(
+    name = "fg_data_only",
+    data = ["d.txt"],
+)
+
+gen(
+    name = "gen",
+    outs = ["gen.txt"],
+)
+
+# A generated data file.
+filegroup(
+    name = "fg_gen",
+    srcs = ["a.txt"],
+    data = [":gen"],
+)
+
+tool(
+    name = "tool",
+    data = ["t.txt"],
+)
+
+# A rule with runfiles in data, then in srcs.
+filegroup(
+    name = "fg_tool_data",
+    data = [":tool"],
+)
+
+filegroup(
+    name = "fg_tool_srcs",
+    srcs = [":tool"],
+    data = ["d.txt"],
+)
+
+# A filegroup with data in data, then in srcs.
+filegroup(
+    name = "fg_nested",
+    srcs = ["b.txt"],
+    data = [":fg"],
+)
+
+filegroup(
+    name = "fg_outer",
+    srcs = [":fg"],
+)
+
+config_setting(
+    name = "dbg",
+    values = {"compilation_mode": "dbg"},
+)
+
+filegroup(
+    name = "fg_select",
+    srcs = ["a.txt"],
+    data = select({
+        ":dbg": ["z.txt"],
+        "//conditions:default": ["d.txt"],
+    }),
+)
+
+consumer(
+    name = "consumer",
+    deps = [
+        ":fg",
+        ":fg_multi",
+        ":fg_data_only",
+        ":fg_gen",
+        ":fg_tool_data",
+        ":fg_tool_srcs",
+        ":fg_nested",
+        ":fg_outer",
+        ":fg_select",
+    ],
+)
+
+# rules_rust's rust-lld: one file to build, the other linkers as data, read
+# through an exec attribute.
+filegroup(
+    name = "linker",
+    srcs = ["t.txt"],
+    data = [
+        ":gen",
+        "d.txt",
+    ],
+)
+
+exec_consumer(
+    name = "exec_consumer",
+    tool = ":linker",
+)
+
+runner(
+    name = "show",
+    data = [
+        ":fg",
+        ":fg_gen",
+        ":fg_tool_srcs",
+    ],
+)
+
+# Manual: Starlark aspects on native rules are not modelled natively.
+aspect_probe(
+    name = "aspect_probe",
+    tags = ["manual"],
+    target = ":fg_nested",
+)
+
+groups(name = "groups")
+
+# output_group selects the files to build; data stays runfiles. Manual:
+# output_group is not modelled natively.
+filegroup(
+    name = "fg_output_group",
+    srcs = [":groups"],
+    data = ["d.txt"],
+    output_group = "extra",
+    tags = ["manual"],
+)
+
+consumer(
+    name = "consumer_output_group",
+    tags = ["manual"],
+    deps = [":fg_output_group"],
+)
+
+# Errors: visibility and testonly of a data dependency, a missing file.
+filegroup(
+    name = "fg_invisible",
+    tags = ["manual"],
+    data = ["//other:private"],
+)
+
+gen(
+    name = "testonly_gen",
+    testonly = True,
+    outs = ["testonly.txt"],
+)
+
+filegroup(
+    name = "fg_testonly",
+    tags = ["manual"],
+    data = [":testonly_gen"],
+)
+
+filegroup(
+    name = "fg_missing",
+    tags = ["manual"],
+    data = ["missing.txt"],
+)

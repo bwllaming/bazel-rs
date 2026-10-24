@@ -1,0 +1,6 @@
+# filegroup has no `path` attribute in Bazel 9.3 (FilegroupRule.java:36-80).
+filegroup(
+    name = "p",
+    srcs = [],
+    path = "x",
+)
