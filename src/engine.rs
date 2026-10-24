@@ -13391,23 +13391,6 @@ impl Engine {
         Ok(artifact_index.get(file).cloned())
     }
 
-    /// Resolve one actions.transform_{version,info}_file registration
-    /// (N63): evaluate the Starlark translation callback against the
-    /// build's workspace status and rewrite the action into a
-    /// TemplateKeyed expansion (BuildInfoFileWriteAction.execute
-    /// :121-176 parses the status file, calls the callback and expands
-    /// the template; the native computes the same substitutions during
-    /// planning). The key is Bazel's computeKey (:189-197) — GUID,
-    /// isVolatile, the callback's bzl digest — plus the template input's
-    /// digest, EXCLUDING the substitutions: for the volatile variant the
-    /// status input is constant metadata
-    /// (StarlarkActionFactory.transformBuildInfoFile :510-519), so a
-    /// changed timestamp produces new substitutions under the SAME key
-    /// and the cached volatile_file.h is not rewritten (the volatile
-    /// output is itself constant metadata, so consumers do not re-key
-    /// either). The stable variant keys its status input regularly: a
-    /// changed stable key re-keys and re-executes it, like Bazel's
-    /// regular derived artifact.
     /// The content of a `py_internal.create_repo_mapping_manifest` write
     /// (RepoMappingManifestAction.newDeterministicWriter): the mappings of
     /// the target's transitive repositories relevant to the runfiles, like
@@ -13439,6 +13422,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Resolve one actions.transform_{version,info}_file registration
+    /// (N63): evaluate the Starlark translation callback against the
+    /// build's workspace status and rewrite the action into a
+    /// TemplateKeyed expansion (BuildInfoFileWriteAction.execute
+    /// :121-176 parses the status file, calls the callback and expands
+    /// the template; the native computes the same substitutions during
+    /// planning). The key is Bazel's computeKey (:189-197) — GUID,
+    /// isVolatile, the callback's bzl digest — plus the template input's
+    /// digest, EXCLUDING the substitutions: for the volatile variant the
+    /// status input is constant metadata
+    /// (StarlarkActionFactory.transformBuildInfoFile :510-519), so a
+    /// changed timestamp produces new substitutions under the SAME key
+    /// and the cached volatile_file.h is not rewritten (the volatile
+    /// output is itself constant metadata, so consumers do not re-key
+    /// either). The stable variant keys its status input regularly: a
+    /// changed stable key re-keys and re-executes it, like Bazel's
+    /// regular derived artifact.
     fn resolve_build_info(
         &self,
         plan: &Option<WorkspaceStatusPlan>,

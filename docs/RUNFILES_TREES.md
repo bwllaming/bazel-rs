@@ -6,7 +6,7 @@ of the pinned Bazel 9.3 sources (`/tmp/opencode/bazel-9.3-reference`) unless the
 start with `src/main/cpp`. Implementation: `src/runfiles.rs` (the mapping),
 `src/runfiles_tree.rs` (options, repository mapping manifest),
 `src/action.rs` (`Transform::RunfilesManifest`/`RunfilesTree`), `src/engine.rs`
-(`plan_runfiles_support`, hidden top-level trees, tool trees, `build_for_run`),
+(`plan_runfiles_support`, hidden top-level trees, tool trees, `plan_request`'s run plans),
 `src/analysis_runtime.rs` (tools), `src/run_command.rs` and `src/main.rs` (`run`).
 The analysis model (runfiles values, DefaultInfo, FilesToRunProvider) is N23a,
 docs/RUNFILES.md.

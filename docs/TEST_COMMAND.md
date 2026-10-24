@@ -6,8 +6,10 @@ test targets. Source paths are relative to
 (`/tmp/opencode/bazel-9.3-reference`, e89755b). Implementation:
 `src/test_command.rs` (options, properties, filters, environment, summary,
 test.xml parsing), `src/test_runner.rs` (execution, attempts, caching,
-publication), `src/engine.rs` (`rule_edges`, `select_for_test`,
-`test_rule_info`, `build_for_tests`), `src/action.rs` (`ContentInput`,
+publication), `src/engine.rs` (`rule_edges`, `target_pattern_phase` (the
+target pattern phase: the tests selected, test suites expanded),
+`test_rule_info`, `plan_request`), `src/request.rs` (the planned request a
+`test` executes, docs/PLANNED_REQUEST.md), `src/action.rs` (`ContentInput`,
 `stage_content_inputs`), `src/main.rs` (`test`, `run` of tests). Runfiles
 trees and `run` are N23f (docs/RUNFILES_TREES.md).
 
