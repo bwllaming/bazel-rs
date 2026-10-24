@@ -111,6 +111,31 @@ fn stage_total(stderr: &str, stage: &str) -> Option<(f64, u64)> {
     Some((seconds, count))
 }
 
+/// Timed runs per thread count of [`stage_report_shape_and_thread_ab`]
+/// (the coverage check uses the least disturbed of them).
+const COVERAGE_RUNS: usize = 8;
+
+/// The `PERF-STAGE total plan_span` row: (span in whole milliseconds, as
+/// printed, and the coverage percentage).
+fn plan_span(stderr: &str) -> Option<(u64, f64)> {
+    let line = stderr
+        .lines()
+        .find(|l| l.starts_with("PERF-STAGE total plan_span "))?;
+    let seconds: f64 = line
+        .split_whitespace()
+        .nth(3)?
+        .strip_suffix('s')?
+        .parse()
+        .ok()?;
+    let covered = line
+        .rsplit("covered=")
+        .next()?
+        .strip_suffix('%')?
+        .parse()
+        .ok()?;
+    Some(((seconds * 1000.0).round() as u64, covered))
+}
+
 #[test]
 fn stage_report_shape_and_thread_ab() {
     let ws = Workspace::new().without_snapshot();
@@ -126,77 +151,112 @@ fn stage_report_shape_and_thread_ab() {
     );
     let mut counts = Vec::new();
     for threads in ["1", "32"] {
-        let out = ws.run(threads, true);
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        // Stage reporting is stderr-only: stdout matches the plain run.
-        assert_eq!(out.stdout, plain.stdout, "threads={threads}");
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        for stage in ["prepare", "compute", "commit"] {
-            let (_, count) = stage_total(&stderr, stage)
-                .unwrap_or_else(|| panic!("missing {stage} row:\n{stderr}"));
-            counts.push((threads, stage, count));
+        let mut spans = Vec::new();
+        for _ in 0..COVERAGE_RUNS {
+            let out = ws.run(threads, true);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            // Stage reporting is stderr-only: stdout matches the plain run.
+            assert_eq!(out.stdout, plain.stdout, "threads={threads}");
+            let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+            stage_report_shape(threads, &stderr, &mut counts);
+            let (ms, covered) =
+                plan_span(&stderr).unwrap_or_else(|| panic!("missing plan_span row:\n{stderr}"));
+            spans.push((ms, covered, stderr));
         }
-        let covered: f64 = stderr
-            .lines()
-            .find(|l| l.starts_with("PERF-STAGE total plan_span"))
-            .and_then(|l| l.rsplit("covered=").next())
-            .and_then(|v| v.trim_end_matches('%').parse().ok())
-            .unwrap_or_else(|| panic!("missing plan_span row:\n{stderr}"));
         // Sub-millisecond span: timer overhead is visible here; the 90%
         // gate is verified on the real workload (docs/PARALLEL_ANALYSIS.md).
-        assert!(covered >= 80.0, "coverage {covered}% < 80%:\n{stderr}");
+        // Coverage is a wall-clock ratio, and scheduling noise only ever
+        // ADDS wall time: a preemption inside an untimed gap of the ~1 ms
+        // span lowers it (27% at load ~830), one inside a stage raises it.
+        // So it is judged on the least disturbed run: the shortest span
+        // (ms, as printed) and, among runs that short, the one least
+        // inflated in its gaps (the highest coverage). A large stall inside
+        // a stage lengthens the span and so never selects its run.
+        let shortest = spans.iter().map(|(ms, _, _)| *ms).min().unwrap();
+        let (_, covered, stderr) = spans
+            .iter()
+            .filter(|(ms, _, _)| *ms == shortest)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        let samples: Vec<(u64, f64)> = spans.iter().map(|(ms, c, _)| (*ms, *c)).collect();
         assert!(
-            stderr.contains("PERF-STAGE critical-path compute="),
-            "{stderr}"
-        );
-        assert!(stderr.contains("PERF-STAGE class"), "{stderr}");
-        // W0-A rows: flush batches (none here: no Starlark flag_values
-        // key) and the view / Artifact::file counters.
-        assert!(
-            stderr.contains("PERF-STAGE flush-batch flushes=0 planned=0 "),
-            "{stderr}"
-        );
-        assert!(stderr.contains("PERF-STAGE views edges="), "{stderr}");
-        // PERF marks keep the `PERF <t>s rss=<kB>kB <mark>` prefix and
-        // append the peak RSS after the mark name.
-        let mark = stderr
-            .lines()
-            .find(|l| l.starts_with("PERF ") && l.contains(" plan.start "))
-            .unwrap_or_else(|| panic!("missing plan.start mark:\n{stderr}"));
-        let fields: Vec<&str> = mark.split_whitespace().collect();
-        assert_eq!(fields.len(), 5, "{mark}");
-        assert!(fields[1].ends_with('s'), "{mark}");
-        assert!(
-            fields[2].starts_with("rss=") && fields[2].ends_with("kB"),
-            "{mark}"
-        );
-        assert_eq!(fields[3], "plan.start", "{mark}");
-        let hwm: u64 = fields[4]
-            .strip_prefix("hwm=")
-            .and_then(|v| v.strip_suffix("kB"))
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(|| panic!("no hwm in {mark}"));
-        assert!(hwm > 0, "{mark}");
-        assert!(
-            !stderr.contains("PERF-ALLOC"),
-            "the allocation report needs BAZEL_RS_TIMING_ALLOC:\n{stderr}"
+            *covered >= 80.0,
+            "threads={threads}: coverage {covered}% < 80% in the least disturbed of {COVERAGE_RUNS} runs (span ms, coverage %: {samples:?}):\n{stderr}"
         );
     }
-    // Same stage counts at both thread counts.
+    // Same stage counts at both thread counts (and in every run).
     for stage in ["prepare", "compute", "commit"] {
-        let at = |t: &str| {
-            counts
-                .iter()
-                .find(|(th, s, _)| *th == t && *s == stage)
-                .map(|(_, _, c)| *c)
-        };
-        assert_eq!(at("1"), at("32"), "stage {stage} counts differ");
-        assert!(at("1").unwrap() >= 1, "stage {stage} never recorded");
+        let seen: std::collections::BTreeSet<u64> = counts
+            .iter()
+            .filter(|(_, s, _)| *s == stage)
+            .map(|(_, _, c)| *c)
+            .collect();
+        assert_eq!(seen.len(), 1, "stage {stage} counts differ: {counts:?}");
+        assert!(
+            seen.first().copied().unwrap() >= 1,
+            "stage {stage} never recorded"
+        );
+        for threads in ["1", "32"] {
+            assert!(
+                counts.iter().any(|(t, s, _)| *t == threads && *s == stage),
+                "stage {stage} missing at threads={threads}"
+            );
+        }
     }
+}
+
+/// The deterministic shape checks of one timed run's report; appends its
+/// prepare/compute/commit counts to `counts`.
+fn stage_report_shape(
+    threads: &'static str,
+    stderr: &str,
+    counts: &mut Vec<(&'static str, &'static str, u64)>,
+) {
+    for stage in ["prepare", "compute", "commit"] {
+        let (_, count) =
+            stage_total(stderr, stage).unwrap_or_else(|| panic!("missing {stage} row:\n{stderr}"));
+        counts.push((threads, stage, count));
+    }
+    assert!(
+        stderr.contains("PERF-STAGE critical-path compute="),
+        "{stderr}"
+    );
+    assert!(stderr.contains("PERF-STAGE class"), "{stderr}");
+    // W0-A rows: flush batches (none here: no Starlark flag_values
+    // key) and the view / Artifact::file counters.
+    assert!(
+        stderr.contains("PERF-STAGE flush-batch flushes=0 planned=0 "),
+        "{stderr}"
+    );
+    assert!(stderr.contains("PERF-STAGE views edges="), "{stderr}");
+    // PERF marks keep the `PERF <t>s rss=<kB>kB <mark>` prefix and
+    // append the peak RSS after the mark name.
+    let mark = stderr
+        .lines()
+        .find(|l| l.starts_with("PERF ") && l.contains(" plan.start "))
+        .unwrap_or_else(|| panic!("missing plan.start mark:\n{stderr}"));
+    let fields: Vec<&str> = mark.split_whitespace().collect();
+    assert_eq!(fields.len(), 5, "{mark}");
+    assert!(fields[1].ends_with('s'), "{mark}");
+    assert!(
+        fields[2].starts_with("rss=") && fields[2].ends_with("kB"),
+        "{mark}"
+    );
+    assert_eq!(fields[3], "plan.start", "{mark}");
+    let hwm: u64 = fields[4]
+        .strip_prefix("hwm=")
+        .and_then(|v| v.strip_suffix("kB"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("no hwm in {mark}"));
+    assert!(hwm > 0, "{mark}");
+    assert!(
+        !stderr.contains("PERF-ALLOC"),
+        "the allocation report needs BAZEL_RS_TIMING_ALLOC:\n{stderr}"
+    );
 }
 
 fn counters(line: &str) -> std::collections::BTreeMap<String, u64> {
