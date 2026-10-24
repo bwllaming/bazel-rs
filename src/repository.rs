@@ -36,9 +36,11 @@ thread_local! {
 /// repositories whose roots a load unit obtains on a worker before the
 /// sequential engine has them — published by the worker's own warm-reuse
 /// probe or by another worker's, demanded by the package or by a `.bzl`
-/// module its loads reach, also one the shared cache serves (W6 review F2
-/// and its follow-up). They count as materialized for order-dependent
-/// decisions only once the coordinator commits the unit
+/// module its loads reach, also at a hit of a memo whose miss demands
+/// them (the shared `.bzl` cache, the ignored subdirectories:
+/// [`RepositorySet::note_obtained`]; W6 review F2 and its follow-ups).
+/// They count as materialized for order-dependent decisions only once
+/// the coordinator commits the unit
 /// ([`RepositorySet::note_committed_roots`]): the sequential engine
 /// demands them at that load. A warm-reuse probe records in a nested
 /// scope ([`Self::during`]): what it obtained is stored with the root it
@@ -836,6 +838,17 @@ impl RepositorySet {
     /// The repository's ignored subdirectories (`IgnoredSubdirectoriesValue`),
     /// evaluated once per repository set like a Skyframe value. The lock is
     /// not held while computing: evaluation may resolve repositories.
+    ///
+    /// A loading worker may compute it first (W6 review F2 follow-up FU1):
+    /// the miss demands the repository's root (REPO.bazel and
+    /// `.bazelignore` are read there, `ignored::for_repository`), a hit
+    /// demands nothing, and the coordinator's target-pattern expansion
+    /// asks before it demands the root — never, when the pattern is
+    /// filtered out. So a hit notes the root ([`Self::note_obtained`]):
+    /// the sequential engine's lookup there is the miss that demands it,
+    /// or a hit after one. A success or a cached REPO.bazel error alike
+    /// (the root was obtained before it failed); a root whose demand
+    /// failed has no filled slot to note.
     pub fn ignored_subdirectories(&self, repository: &str) -> IgnoredResult {
         let cached = self
             .state
@@ -845,6 +858,7 @@ impl RepositorySet {
             .get(repository)
             .cloned();
         if let Some(result) = cached {
+            self.note_obtained(repository);
             return result;
         }
         let computed =
@@ -1231,7 +1245,7 @@ impl RepositorySet {
     }
 
     /// [`Self::materialized_roots`] as the sequential engine sees them (W6
-    /// review F2 and its follow-up). The invariant: at every point of the
+    /// review F2 and its follow-ups). The invariant: at every point of the
     /// coordinator, a direct or extension-generated repository's root
     /// counts exactly when the sequential engine (one loading thread) has
     /// obtained it by that point, which is when
@@ -1239,19 +1253,35 @@ impl RepositorySet {
     ///   included), or
     /// - the coordinator committed a load unit, or ran a load inline, that
     ///   obtained it: the package's root, and the root of every `.bzl`
-    ///   module the load reached, evaluated or served from the shared cache
-    ///   ([`Self::note_obtained`]) — recorded on a worker by [`UnitRoots`]
+    ///   module the load reached — recorded on a worker by [`UnitRoots`]
     ///   and noted at the commit, noted at once on the coordinator; or
+    /// - the coordinator, or a load it committed or ran inline, hit a
+    ///   worker-fillable, invocation-wide memo whose miss path demands it:
+    ///   the root that such a memo demands on its miss path counts at a hit
+    ///   ([`Self::note_obtained`]: at once on the coordinator, in a
+    ///   worker's unit from its commit), whoever filled the memo — the
+    ///   sequential engine's lookup there demands it, or an earlier one, a
+    ///   miss, did. There are two such memos: the shared `.bzl` cache (a
+    ///   module's root, `Loader::source_path`; a worker may have evaluated
+    ///   the module for a unit the build never commits, or one that
+    ///   aborted) and the ignored subdirectories
+    ///   ([`Self::ignored_subdirectories`]: the repository's root;
+    ///   target-pattern expansion asks for them before the root, which a
+    ///   filtered-out pattern never demands); or
     /// - transitively, the warm-reuse probe that published a root that
     ///   counts obtained it while checking that root's recorded inputs
     ///   ([`DemandSlot::obtained`]): the coordinator's evaluation of the
     ///   root runs the same check and demands the same roots.
     ///
-    /// Registry, Git and built-in roots are only ever materialized outside
-    /// no-demand mode. So a key formed from these roots
-    /// ([`Self::friendly_repository`]) is the sequential engine's whatever
-    /// phase-1 prefetch or pattern-loading workers published, provided the
-    /// files a probe checks do not change during the invocation.
+    /// No other memo a worker can fill demands a root on its miss path
+    /// only (the audit in docs/PARALLEL_ANALYSIS.md); the definition `.bzl`
+    /// cache's hits skip a module's root too, but only coordinator-only
+    /// definition loads fill it. Registry, Git and built-in roots are only
+    /// ever materialized outside no-demand mode. So a key formed from these
+    /// roots ([`Self::friendly_repository`]) is the sequential engine's
+    /// whatever phase-1 prefetch or pattern-loading workers published,
+    /// provided the files a probe checks do not change during the
+    /// invocation.
     fn sequential_roots(&self) -> Vec<(String, PathBuf)> {
         self.roots_materialized(true)
     }
@@ -1330,18 +1360,21 @@ impl RepositorySet {
         }
     }
 
-    /// The shared `.bzl` cache served a module of `repository` (W6 review
-    /// F2 follow-up): the sequential engine's load of it reads it from
-    /// that root (`Loader::source_path`) — the first load evaluates it
-    /// there; whoever evaluated it here may have been a worker, possibly
-    /// for a unit the build never commits or one that aborted. Noted like
-    /// a demand of the root that finds it filled: on a loading worker in
-    /// its unit, on the coordinator at once (an inline re-run's load runs
-    /// the module extensions it demands before its commit). Never
-    /// evaluates anything; only a filled direct or extension-generated
-    /// root slot is noted. The main repository and local_path modules
-    /// always count, and only the coordinator materializes registry, Git
-    /// and built-in trees: they need no noting.
+    /// A worker-fillable, invocation-wide memo served a value whose miss
+    /// path demands `repository`'s root (W6 review F2 follow-ups): a
+    /// module of `repository` from the shared `.bzl` cache — the
+    /// sequential engine's load of it reads it from that root
+    /// (`Loader::source_path`), the first load evaluates it there — or
+    /// `repository`'s ignored subdirectories
+    /// ([`Self::ignored_subdirectories`]). Whoever filled the memo may have
+    /// been a worker, possibly for a unit the build never commits or one
+    /// that aborted. Noted like a demand of the root that finds it filled:
+    /// on a loading worker in its unit, on the coordinator at once (an
+    /// inline re-run's load runs the module extensions it demands before
+    /// its commit). Never evaluates anything; only a filled direct or
+    /// extension-generated root slot is noted. The main repository and
+    /// local_path modules always count, and only the coordinator
+    /// materializes registry, Git and built-in trees: they need no noting.
     pub(crate) fn note_obtained(&self, repository: &str) {
         if repository.is_empty() {
             return;
@@ -4545,69 +4578,115 @@ mod tests {
         assert_ne!(second, first);
     }
 
-    /// W6 review F2 follow-up: `@a` records a read of `@b//:file.txt`, so
-    /// the sequential engine's (warm) evaluation of `@a` demands `@b`. A
-    /// loading worker's probe of `@a` obtains `@b` in its own scope and
-    /// stores it with `@a`'s publication; the worker's unit records only
-    /// `@a`. Neither counts for keys until the sequential engine obtains
-    /// `@a` — the coordinator's demand of the filled slot, the commit of a
-    /// unit that obtained it, or a shared-cache hit on one of its `.bzl`
-    /// modules — and then both do.
+    /// W6 review F2 follow-ups: `@a` records a read of `@b//:file.txt` and
+    /// `@b` one of `@c//:file.txt`, so the sequential engine's (warm)
+    /// evaluation of `@a` demands `@b`, whose evaluation demands `@c`. A
+    /// loading worker's probe of `@a` obtains `@b` in its own scope — and
+    /// `@b`'s nested probe `@c` in its own — and stores it with `@a`'s
+    /// publication (`@c` with `@b`'s); the worker's unit records only
+    /// `@a`, also when it computes `@a`'s ignored subdirectories. None of
+    /// them counts for keys until the sequential engine obtains `@a` — the
+    /// coordinator's demand of the filled slot, the commit of a unit that
+    /// obtained it, a shared-cache hit on one of its `.bzl` modules, or a
+    /// hit of its ignored subdirectories (review FU1 of 6474766) — and
+    /// then all three do: with `@a` a direct repository, and with `@a`
+    /// generated by a module extension (an ordinary root's probe).
     #[test]
     fn a_probed_root_counts_with_the_roots_its_probe_obtained() {
         use crate::repository_demand::{no_demand, reuse_only};
-        let f = Fixture::new();
-        f.write("BUILD", "");
-        f.write(
-            "rules.bzl",
-            "def implementation(ctx):\n    if ctx.attr.read_from:\n        ctx.read(ctx.attr.read_from)\n    ctx.file('BUILD.bazel', '')\n    ctx.file('file.txt', 'data')\nR = repository_rule(implementation, attrs = {'read_from': attr.label()})\n",
-        );
-        f.write(
-            "MODULE.bazel",
-            "r=use_repo_rule('//:rules.bzl','R')\nr(name='early')\nr(name='b')\nr(name='a', read_from='@b//:file.txt')\n",
-        );
-        let cold = RepositorySet::new(f.0.clone());
-        let canonical = |name: &str| {
-            cold.parse(&format!("@{name}//:file.txt"), "", "")
-                .unwrap()
-                .repository
-        };
-        let (early, a, b) = (canonical("early"), canonical("a"), canonical("b"));
-        cold.root(&a).unwrap();
-        let file_of = |root: &Path| std::fs::canonicalize(root.join("file.txt")).unwrap();
-        let (a_file, b_file) = (
-            file_of(cold.root(&a).unwrap()),
-            file_of(cold.root(&b).unwrap()),
-        );
-        let key = |name: &str| Some((name.to_owned(), PathBuf::from("file.txt")));
-        for obtained_by in ["demand", "commit", "cache hit"] {
-            // A new invocation: the coordinator prepares the group.
-            let warm = RepositorySet::new(f.0.clone());
-            warm.root(&early).unwrap();
-            let unit = {
-                let _guard = no_demand();
-                let _reuse = reuse_only();
-                let unit = UnitRoots::record();
-                warm.root(&a).unwrap();
-                // A second obtain (a cache hit) records nothing new.
-                warm.note_obtained(&a);
-                unit.finish()
-            };
-            assert_eq!(unit, std::slice::from_ref(&a));
-            let runtime = warm.direct_runtime().unwrap();
-            assert_eq!(runtime.roots[&a].obtained(), std::slice::from_ref(&b));
-            assert!(runtime.roots[&b].ready().is_some());
-            assert_eq!(warm.friendly_repository(&a_file), None, "{obtained_by}");
-            assert_eq!(warm.friendly_repository(&b_file), None, "{obtained_by}");
-            match obtained_by {
-                "demand" => {
-                    warm.root(&a).unwrap();
-                }
-                "commit" => warm.note_committed_roots(&unit),
-                _ => warm.note_obtained(&a),
+        for generated in [false, true] {
+            let f = Fixture::new();
+            f.write("BUILD", "");
+            f.write(
+                "rules.bzl",
+                "def implementation(ctx):\n    if ctx.attr.read_from:\n        ctx.read(ctx.attr.read_from)\n    ctx.file('BUILD.bazel', '')\n    ctx.file('file.txt', 'data')\nR = repository_rule(implementation, attrs = {'read_from': attr.label()})\n",
+            );
+            let chain = "r=use_repo_rule('//:rules.bzl','R')\nr(name='early')\nr(name='c')\nr(name='b', read_from='@c//:file.txt')\n";
+            if generated {
+                f.write(
+                    "extension.bzl",
+                    "load(':rules.bzl', 'R')\ndef implementation(ctx):\n    R(name='a', read_from='@b//:file.txt')\nextension=module_extension(implementation)\n",
+                );
+                f.write(
+                    "MODULE.bazel",
+                    &format!(
+                        "{chain}e=use_extension('//:extension.bzl','extension')\nuse_repo(e,'a')\n"
+                    ),
+                );
+            } else {
+                f.write(
+                    "MODULE.bazel",
+                    &format!("{chain}r(name='a', read_from='@b//:file.txt')\n"),
+                );
             }
-            assert_eq!(warm.friendly_repository(&a_file), key(&a), "{obtained_by}");
-            assert_eq!(warm.friendly_repository(&b_file), key(&b), "{obtained_by}");
+            let cold = RepositorySet::new(f.0.clone());
+            let canonical = |name: &str| {
+                cold.parse(&format!("@{name}//:file.txt"), "", "")
+                    .unwrap()
+                    .repository
+            };
+            let (early, a, b, c) = (
+                canonical("early"),
+                canonical("a"),
+                canonical("b"),
+                canonical("c"),
+            );
+            // `@a` is an ordinary (extension-generated) repository exactly
+            // when `generated`.
+            assert_eq!(
+                cold.direct_runtime()
+                    .unwrap()
+                    .catalog
+                    .repositories
+                    .contains_key(&a),
+                !generated
+            );
+            cold.root(&a).unwrap();
+            let file_of = |root: &Path| std::fs::canonicalize(root.join("file.txt")).unwrap();
+            let files = [&a, &b, &c].map(|name| (name, file_of(cold.root(name).unwrap())));
+            let key = |name: &str| Some((name.to_owned(), PathBuf::from("file.txt")));
+            for obtained_by in ["demand", "commit", "cache hit", "ignored hit"] {
+                let context = format!("generated={generated} {obtained_by}");
+                // A new invocation: the coordinator prepares the groups.
+                let warm = RepositorySet::new(f.0.clone());
+                warm.root(&early).unwrap();
+                if generated {
+                    warm.mapping(&a).unwrap();
+                }
+                let unit = {
+                    let _guard = no_demand();
+                    let _reuse = reuse_only();
+                    let unit = UnitRoots::record();
+                    warm.root(&a).unwrap();
+                    // A second obtain (a cache hit) records nothing new;
+                    // nor does filling the ignored-subdirectories memo.
+                    warm.note_obtained(&a);
+                    warm.ignored_subdirectories(&a).unwrap();
+                    unit.finish()
+                };
+                assert_eq!(unit, std::slice::from_ref(&a), "{context}");
+                let runtime = warm.direct_runtime().unwrap();
+                let slot = |name: &str| runtime.root_slot(name).unwrap();
+                assert_eq!(slot(&a).obtained(), std::slice::from_ref(&b), "{context}");
+                assert_eq!(slot(&b).obtained(), std::slice::from_ref(&c), "{context}");
+                assert!(slot(&c).ready().is_some(), "{context}");
+                for (_, file) in &files {
+                    assert_eq!(warm.friendly_repository(file), None, "{context}");
+                }
+                match obtained_by {
+                    "demand" => {
+                        warm.root(&a).unwrap();
+                    }
+                    "commit" => warm.note_committed_roots(&unit),
+                    "cache hit" => warm.note_obtained(&a),
+                    _ => {
+                        warm.ignored_subdirectories(&a).unwrap();
+                    }
+                }
+                for (name, file) in &files {
+                    assert_eq!(warm.friendly_repository(file), key(name), "{context}");
+                }
+            }
         }
     }
 

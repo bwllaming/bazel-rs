@@ -11,7 +11,7 @@
 //! only the coordinator materializes), a top-level aspect's `.bzl` a
 //! worker evaluated first (one print, one char model; review F1), and the
 //! recorded-input keys of a module extension's reads, which name only the
-//! roots the sequential engine has obtained (review F2 and its follow-up).
+//! roots the sequential engine has obtained (review F2 and its follow-ups).
 
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
@@ -619,6 +619,15 @@ enum ObtainedBy {
     /// re-run reads `@data//:defs.bzl` from the cache right before it runs
     /// the extension. (f2c)
     InlineRerunCachedBzl,
+    /// `register_toolchains('@data//ign/...', '@from_ext//:all')` with
+    /// `ign` ignored by `@data`'s REPO.bazel: `//tc:t`'s toolchain
+    /// resolution expands the patterns, and the `/...` expansion asks for
+    /// `@data`'s ignored subdirectories, warns and skips the pattern
+    /// without demanding `@data`'s root itself; only their miss demands
+    /// it. A worker computed them first, loading `@data//x` (`//app:app`
+    /// names it after `//tc:t`): the expansion's lookup is a hit. (Review
+    /// FU1 of 6474766.)
+    IgnoredMemo,
 }
 
 /// The [`ObtainedBy`] workspace: `@early` and the repositories of the
@@ -636,14 +645,20 @@ fn obtained_root_workspace(obtained: ObtainedBy) -> (Workspace, &'static str, Ve
             "b",
             vec!["@early//:files", "@a//:files", "@b//:files"],
         ),
-        ObtainedBy::CachedBzl | ObtainedBy::InlineRerunCachedBzl => (
+        ObtainedBy::CachedBzl | ObtainedBy::InlineRerunCachedBzl | ObtainedBy::IgnoredMemo => (
             "data_repo(name = 'early')\ndata_repo(name = 'data')\n",
             "data",
             vec!["@early//:files", "@data//:files"],
         ),
     };
+    let registrations = match obtained {
+        ObtainedBy::IgnoredMemo => {
+            "register_toolchains('@data//ign/...')\nregister_toolchains('@from_ext//:all')\n"
+        }
+        _ => "",
+    };
     let ws = Workspace::new(&format!(
-        "module(name = 'main')\ndata_repo = use_repo_rule('//:data.bzl', 'data_repo')\n{declarations}ext = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'from_ext')\n"
+        "module(name = 'main')\ndata_repo = use_repo_rule('//:data.bzl', 'data_repo')\n{declarations}ext = use_extension('//:ext.bzl', 'ext')\nuse_repo(ext, 'from_ext')\n{registrations}"
     ));
     ws.file("BUILD.bazel", "");
     ws.file(
@@ -669,6 +684,36 @@ fn obtained_root_workspace(obtained: ObtainedBy) -> (Workspace, &'static str, Ve
     );
     let many: Vec<String> = (0..1500).map(|i| format!("'//many:f{i}'")).collect();
     let many = many.join(", ");
+    if let ObtainedBy::IgnoredMemo = obtained {
+        // The trees ignore `ign`; `@data//x` is the package a worker loads.
+        ws.file(
+            "data.bzl",
+            "def _data_repo(ctx):\n    ctx.file('BUILD.bazel', 'filegroup(name = \"files\", srcs = [\"file.txt\"], visibility = [\"//visibility:public\"])\\n')\n    ctx.file('REPO.bazel', 'ignore_directories([\"ign\"])\\n')\n    ctx.file('x/BUILD.bazel', 'filegroup(name = \"files\", visibility = [\"//visibility:public\"])\\n')\n    ctx.file('ign/BUILD.bazel', 'filegroup(name = \"files\", visibility = [\"//visibility:public\"])\\n')\n    ctx.file('file.txt', 'data\\n')\n\ndata_repo = repository_rule(_data_repo)\n",
+        );
+        ws.file(
+            "os/BUILD.bazel",
+            "package(default_visibility = ['//visibility:public'])\nconstraint_setting(name = 'os')\nconstraint_value(name = 'linux', constraint_setting = ':os')\n",
+        );
+        ws.file(
+            "p/BUILD.bazel",
+            "package(default_visibility = ['//visibility:public'])\nplatform(name = 'linux', constraint_values = ['//os:linux'])\n",
+        );
+        ws.file(
+            "tc/defs.bzl",
+            "def _impl(ctx):\n    return [DefaultInfo()]\nneeds = rule(implementation = _impl, toolchains = [config_common.toolchain_type('//tc:tt', mandatory = False)])\n",
+        );
+        ws.file(
+            "tc/BUILD.bazel",
+            "load(':defs.bzl', 'needs')\ntoolchain_type(name = 'tt', visibility = ['//visibility:public'])\nneeds(name = 't', visibility = ['//visibility:public'])\n",
+        );
+        ws.file(
+            "app/BUILD.bazel",
+            &format!(
+                "load(':rules.bzl', 'r')\nr(name = 'app', deps = [{many}, '//tc:t', '@data//x:files'])\n"
+            ),
+        );
+        return (ws, repository, publish);
+    }
     if let ObtainedBy::InlineRerunCachedBzl = obtained {
         ws.file(
             "app/BUILD.bazel",
@@ -712,22 +757,26 @@ fn obtained_root_workspace(obtained: ObtainedBy) -> (Workspace, &'static str, Ve
     (ws, repository, publish)
 }
 
-/// W6 review F2 follow-up: the sequential engine obtains a root at more
+/// W6 review F2 follow-ups: the sequential engine obtains a root at more
 /// points than its demands on the coordinator and in committed units —
-/// through another root's warm-reuse check, and through a `.bzl` module
-/// the shared cache serves (also in an aborted unit's inline re-run, just
-/// before the module extension runs). d3f2582 counted only the demands,
-/// so in each workspace ([`ObtainedBy`]) the extension's read of the warm
-/// store file was in no known repository at threads 2/8/32 (update mode
-/// failed) where threads 1 records `@@+data_repo+NAME//file.txt`. Now
-/// every thread count records the threads-1 key: byte-identical exit,
-/// stdout, stderr and lockfile, a fresh lockfile per run.
+/// through another root's warm-reuse check, through a `.bzl` module the
+/// shared cache serves (also in an aborted unit's inline re-run, just
+/// before the module extension runs), and through ignored subdirectories
+/// a worker computed first (a filtered-out toolchain pattern asks for
+/// them without demanding the root). d3f2582 counted only the demands,
+/// 6474766 not the ignored-subdirectories hit, so in each workspace
+/// ([`ObtainedBy`]) the extension's read of the warm store file was in
+/// no known repository at threads 2/8/32 (update mode failed) where
+/// threads 1 records `@@+data_repo+NAME//file.txt`. Now every thread
+/// count records the threads-1 key: byte-identical exit, stdout, stderr
+/// and lockfile, a fresh lockfile per run.
 #[test]
 fn recorded_input_keys_count_every_root_the_sequential_engine_obtains() {
     for obtained in [
         ObtainedBy::AnotherRootsCheck,
         ObtainedBy::CachedBzl,
         ObtainedBy::InlineRerunCachedBzl,
+        ObtainedBy::IgnoredMemo,
     ] {
         let (ws, repository, publish) = obtained_root_workspace(obtained);
         // Publish the warm trees the workers probe.
@@ -743,7 +792,11 @@ fn recorded_input_keys_count_every_root_the_sequential_engine_obtains() {
             .unwrap_or_else(|| panic!("{obtained:?}: {stdout}"));
         let file = fs::canonicalize(file).unwrap();
         let repo_env = format!("--repo_env=DATA_PATH={}", file.display());
-        let args = [repo_env.as_str(), "@early//:files", "//app:app"];
+        let mut args = vec![repo_env.as_str(), "@early//:files", "//app:app"];
+        if let ObtainedBy::IgnoredMemo = obtained {
+            // The workspace's own platform for the toolchain resolution.
+            args.insert(1, "--host_platform=//p:linux");
+        }
         let (reference, lock) = assert_identical_lockfiles_across_threads(&ws, &args);
         assert!(
             reference.status.success(),
@@ -754,6 +807,15 @@ fn recorded_input_keys_count_every_root_the_sequential_engine_obtains() {
             lock.contains(&format!("\"FILE:@@+data_repo+{repository}//file.txt ")),
             "{obtained:?}: {lock}"
         );
+        if let ObtainedBy::IgnoredMemo = obtained {
+            assert!(
+                stderr(&reference).contains(
+                    "WARNING: Pattern '@data//ign/...' was filtered out by ignored directory 'ign'"
+                ),
+                "{}",
+                stderr(&reference)
+            );
+        }
     }
 }
 

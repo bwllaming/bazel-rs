@@ -692,21 +692,35 @@ there first:
     included);
   - the coordinator committed a load unit, or ran a load inline, that
     obtained it: the package's root and the root of every `.bzl` module
-    the load reached — evaluated, or served from the shared cache
-    (`RepositorySet::note_obtained`; the sequential engine's load of the
-    module read it from that root, whoever evaluated it here). A worker
-    records them in its unit (`LoadUnit::roots`, `repository::UnitRoots`),
-    noted at the commit; the coordinator notes them at once, so an aborted
-    unit's inline re-run counts a cached module's root before the module
-    extensions its later loads run;
+    the load reached. A worker records them in its unit (`LoadUnit::roots`,
+    `repository::UnitRoots`), noted at the commit; the coordinator notes
+    them at once, so an aborted unit's inline re-run counts a cached
+    module's root before the module extensions its later loads run;
+  - the root that a worker-fillable, invocation-wide memo demands on its
+    miss path counts at a hit (`RepositorySet::note_obtained`: at once on
+    the coordinator, in a worker's unit from its commit), whoever filled
+    the memo: the sequential engine's lookup there is the miss that
+    demands it, or a hit after one. There are two such memos:
+    - the shared BUILD-phase `.bzl` cache — a module's root
+      (`Loader::source_path`, at the module's entry). A worker may have
+      evaluated the module first, for a unit the build never commits or
+      one that aborted;
+    - the ignored subdirectories (`RepositorySet::ignored_subdirectories`,
+      IgnoredSubdirectoriesValue) — the repository's root, where REPO.bazel
+      and `.bazelignore` are read. A worker computes them when it loads
+      any package of the repository; target-pattern expansion (a `/...`
+      toolchain registration during phase 1, a command-line pattern) asks
+      for them before it demands the root, and never demands the root of
+      a pattern they filter out;
   - transitively, the warm-reuse probe that published a root that counts
     obtained it while checking that root's recorded inputs: the probe runs
     in its own `UnitRoots` scope and its roots are stored with the
     publication (`DemandSlot::get_or_probe_obtaining`,
     `DemandSlot::obtained`), and they count wherever the published root
     begins to count (`DirectRuntime::mark_sequential`: the coordinator's
-    demand of the filled slot, a commit, a cache hit). The coordinator's
-    evaluation of that root runs the same check and demands the same roots.
+    demand of the filled slot, a commit, a memo hit), down a chain of
+    nested probes. The coordinator's evaluation of that root runs the same
+    check and demands the same roots.
 
   Registry, Git and built-in roots are only ever materialized outside
   no-demand mode. So a key is the sequential engine's whatever the phase-1
@@ -716,12 +730,53 @@ there first:
   `.bzl` module a worker had evaluated first (for a unit the build never
   commits, or one that aborted and re-ran inline on a cache hit), never
   counted, and the extension failed at threads 2/8/32 where threads 1
-  recorded `@@NAME//file.txt` (review F2 follow-up). The link policy keeps
+  recorded `@@NAME//file.txt` (review F2 follow-up). 6474766 still missed
+  the ignored-subdirectories hit (review FU1 of 6474766): with
+  `register_toolchains('@data//ign/...', '@from_ext//:all')`, `ign`
+  ignored by `@data`'s REPO.bazel and a worker loading `@data//x` while
+  the coordinator analyzed, the expansion of `@data//ign/...` found the
+  memo filled, warned and skipped the pattern without obtaining `@data`,
+  and `@from_ext`'s extension failed the same way. The link policy keeps
   every published root: they are store trees, which anchor links in any
   order anyway (`tests/phase1_prefetch.rs`,
   `recorded_input_keys_name_only_roots_the_coordinator_has`,
   `recorded_input_keys_count_every_root_the_sequential_engine_obtains`;
-  `repository::tests::a_probed_root_counts_with_the_roots_its_probe_obtained`).
+  `repository::tests::a_probed_root_counts_with_the_roots_its_probe_obtained`:
+  a chain `@a` → `@b` → `@c` of recorded reads, `@a` direct or
+  extension-generated, counted by a demand, a commit, a `.bzl` cache hit
+  and an ignored-subdirectories hit).
+
+  The audit behind "two such memos" (FU1): every other memo shared by the
+  threads of one invocation either demands no root on its miss path, or a
+  worker cannot fill it.
+  - Filled by workers, no root on the miss path: a prepared group's
+    source-digest entries and an extension group's spec digests, which a
+    warm-reuse probe computes (in-memory sources; host and environment);
+    the path-to-value memos — canonical paths
+    (`RepositoryState::link_canonical`), the link policy's published-tree
+    verifications (`verified_trees`) and the recorded-input file digests
+    (`repository_ctx`'s `FILE_DIGESTS`; a probe resolves `@@NAME//path`
+    through `root()` on every check, before the digest); the catalog
+    (metadata only); the host and repository-environment snapshots; the
+    immutable globals. The root demand slots themselves are the obtains
+    above (the demand of a filled slot is its hit).
+  - Load units: a prefetch or P2 worker's unit commits at the demand
+    point with the roots it obtained (`note_committed_roots`); an aborted
+    unit re-runs inline. A unit the build never demands never counts.
+  - No memo at all: repository mappings (read from the catalog or a
+    prepared group), REPO.bazel's `repo()` defaults (`repo_args` evaluates
+    REPO.bazel, demanding the root, for every package), globs.
+  - Never filled by a worker: the module graph (resolved before any
+    worker starts), registry, Git and built-in roots (`guarded_root_slot`
+    returns the sentinel in no-demand mode), prepared groups (likewise
+    `DemandSlot::get_or_try_init`), and the definition `.bzl` cache: its
+    hits skip a module's root too, but only definition loads fill it —
+    group preparation, extension evaluation and lockfile-entry reuse, all
+    inside a prepared-group slot — so its misses and hits run on the
+    coordinator, in the sequential order.
+  - Per thread or per load, never shared: the label memos of one package
+    evaluation (`label::CANONICAL_MEMO`, `CONVERTED_MEMO`), a loader's own
+    module map.
 
 **What is queued** (target-directed, like a loading-phase transitive
 closure; hints only — a wrong guess costs a wasted load, never output):

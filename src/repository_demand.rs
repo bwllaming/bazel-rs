@@ -192,9 +192,10 @@ pub struct DemandSlot<T> {
     /// outside no-demand mode demanded it, or the coordinator noted it
     /// otherwise ([`Self::note_sequential`]: the commit of a load unit
     /// that obtained it on a worker, a shared-cache hit on one of its
-    /// `.bzl` modules, the obtains of a probe that published a value that
-    /// counts). A value a worker's probe published stays invisible to
-    /// [`Self::sequential`] until then (W6 review F2 and its follow-up).
+    /// `.bzl` modules or an ignored-subdirectories hit on its repository,
+    /// the obtains of a probe that published a value that counts). A value
+    /// a worker's probe published stays invisible to [`Self::sequential`]
+    /// until then (W6 review F2 and its follow-ups).
     sequential: AtomicBool,
     /// The keys of the values the probe that published this value
     /// obtained on its thread while it probed ([`Self::get_or_probe_obtaining`]):
