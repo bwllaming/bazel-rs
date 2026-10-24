@@ -264,3 +264,7 @@ Shared, loaded machine (overlayfs, 48-CPU quota): indicative, interleaved where 
   36.2 s before, 35.3 / 33.3 s after, hashing the same 9.3k files / 956.5 MB; the next warm build reads
   only the volatile status on both. A cold build records 33,090 records (32,656 before: blobs validated
   in a racy state now ride along as TRUSTED).
+- Upgrading: a cache whose table is `v1.dmemo` (cache-a above, built by 5d62bd61) starts from an empty
+  `v2.dmemo`. The first warm `oauth2token/...` build after the upgrade read 9,245 action files (955 MB),
+  14,886 registry files (337 MB), 421 `bazel_tools` files and 10 recorded inputs once (plan.end 9.5 s
+  instead of 6.2 s, tail 0.313 s) and saved 24,617 records; the next one read 1 file (tail 0.186 s).
