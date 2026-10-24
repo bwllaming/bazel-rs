@@ -6612,6 +6612,43 @@ mod tests {
         assert_eq!(run("remover").map(|_| ()), Err(modified("remover")));
     }
 
+    /// Only an alias of a repository tree's file runs through a link into
+    /// the store: an alias of a workspace source, of a published regular
+    /// output or of a file in a repository rule's working area keeps blob
+    /// staging, a regular file that resolves to itself in the execution
+    /// root.
+    #[test]
+    fn aliases_of_sources_and_outputs_keep_blob_staging() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let probe = "#!/bin/sh\nif [ -L \"$0\" ]; then echo link; else echo file; fi > out/result\nreadlink -f \"$0\" >> out/result\n";
+        let source = fixture.0.join("workspace/bin/tool");
+        let stage = root.join("repositories/direct/stages/slug/bin/tool");
+        for path in [&source, &stage] {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            write_executable_script(path, probe, 0o755);
+        }
+        let mut generate = fixture.write_action(probe.as_bytes().to_vec());
+        generate.outputs = vec!["bazel-out/bin/gen/tool".into()];
+        generate.write.as_mut().unwrap().executable = true;
+        let output = execute(&fixture.cache(), &generate).unwrap().outputs[0].clone();
+        assert!(fs::symlink_metadata(&output).unwrap().is_file());
+        for (name, target) in [("source", source), ("output", output), ("stage", stage)] {
+            let alias = alias_output(&fixture, &target, name);
+            assert_eq!(fs::read_link(&alias).unwrap(), target, "{name}");
+            let program = format!("bazel-out/bin/tools/{name}");
+            let ran = run_executable(&fixture, name, alias, &program).unwrap();
+            let result = fs::read_to_string(&ran.outputs[0]).unwrap();
+            let (kind, resolved) = result.split_once('\n').unwrap();
+            assert_eq!(kind, "file", "{name}");
+            assert!(
+                resolved.ends_with(&format!("/execroot/{program}\n")),
+                "{name}: {resolved}"
+            );
+        }
+    }
+
     /// A read-only file of a repository tree (rules_python's interpreter
     /// `lib/` after `chmod -R ugo-w`: 0444, the blob's own mode) is copied
     /// into the store, never hardlinked: the direct repository store

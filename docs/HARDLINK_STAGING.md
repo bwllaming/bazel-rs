@@ -256,9 +256,13 @@ Through the link a process can write to the tree file or, if the repository
 left them writable, next to it (a Python without rules_python's read-only
 `lib/` writes `__pycache__` there, as it does into Bazel's `external/`); the
 store's verification then makes the repository re-execute on the next
-command. Tests: `generated_executables_aliasing_tree_files_resolve_into_the_tree`
-(unit, standalone), `tests/tree_executables.rs` (CLI, sandboxed and
-standalone).
+command. Only repository tree files take this path: an alias of a workspace
+source, of a published regular output or of a file in a repository rule's
+working area keeps blob staging. Tests:
+`generated_executables_aliasing_tree_files_resolve_into_the_tree` (unit,
+standalone), `aliases_of_sources_and_outputs_keep_blob_staging` (unit),
+`tests/tree_executables.rs` (CLI, sandboxed and standalone; aliases of a
+repository file, a workspace source and a generated file).
 
 ## Benchmark
 

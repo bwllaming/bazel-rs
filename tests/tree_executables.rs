@@ -18,6 +18,8 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
+include!("support/executable_script.rs");
+
 const MODULE: &str = r##"module(name = "tree_executables")
 
 tool_repo = use_repo_rule("//:repo.bzl", "tool_repo")
@@ -90,7 +92,24 @@ aliased(name = "aliased", tool = "@tools//:bin/tool")
 # At its own execution path the executable keeps hardlink staging: its
 # declared installation mirrors the repository around it.
 direct(name = "direct", tool = "@tools//:bin/tool", data = ["@tools//:lib/landmark"])
+
+# Only an alias of a repository file runs through a link: aliases of a
+# workspace source and of a generated file keep hardlink staging.
+aliased(name = "aliased_source", tool = "probe.sh")
+
+genrule(
+    name = "generated_probe",
+    srcs = ["probe.sh"],
+    outs = ["generated_probe.sh"],
+    cmd = "cp $(location probe.sh) $@",
+    executable = True,
+)
+
+aliased(name = "aliased_output", tool = ":generated_probe")
 "##;
+
+/// Reports whether the program runs as a link or as a regular file.
+const PROBE: &str = "#!/bin/sh\nif [ -L \"$0\" ]; then echo link; else echo file; fi > \"$1\"\n";
 
 struct Workspace(tempfile::TempDir);
 
@@ -120,6 +139,9 @@ impl Workspace {
         ] {
             fs::write(ws.path().join(name), text).unwrap();
         }
+        // Not fs::write for an executable: see write_executable_script
+        // (ETXTBSY).
+        write_executable_script(&ws.path().join("probe.sh"), PROBE, 0o755);
         ws
     }
 
@@ -151,7 +173,15 @@ fn aliased_repository_executables_resolve_into_their_repository() {
         if let Some(strategy) = strategy {
             args.push(format!("--spawn_strategy={strategy}"));
         }
-        args.extend(["//:aliased".to_owned(), "//:direct".to_owned()]);
+        args.extend(
+            [
+                "//:aliased",
+                "//:direct",
+                "//:aliased_source",
+                "//:aliased_output",
+            ]
+            .map(str::to_owned),
+        );
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let output = ws.run(cache, &args);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -166,7 +196,12 @@ fn aliased_repository_executables_resolve_into_their_repository() {
             "{cache}: {stderr}"
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        for name in ["aliased", "direct"] {
+        for (name, expected) in [
+            ("aliased", "found beside the resolved executable\n"),
+            ("direct", "found beside the resolved executable\n"),
+            ("aliased_source", "file\n"),
+            ("aliased_output", "file\n"),
+        ] {
             let path = stdout
                 .lines()
                 .filter_map(|line| line.split_once('\t'))
@@ -175,7 +210,7 @@ fn aliased_repository_executables_resolve_into_their_repository() {
                 .unwrap_or_else(|| panic!("{cache}: no {name}.txt in {stdout}"));
             assert_eq!(
                 fs::read_to_string(path).unwrap(),
-                "found beside the resolved executable\n",
+                expected,
                 "{cache} {name}"
             );
         }
