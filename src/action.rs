@@ -2706,9 +2706,11 @@ struct StagedFile {
     destination: PathBuf,
     blob: PathBuf,
     state: InodeState,
-    /// A `cas/` blob, which a modification removes; never a repository
-    /// tree's file ([`stage_tree_link`]).
-    removable: bool,
+    /// A link to a repository tree's file ([`stage_tree_link`]): the keyed
+    /// digest, which that path must still hold after the process (with the
+    /// mode in `state`); the file is never removed. `None` for a `cas/`
+    /// blob, which a modification removes.
+    tree_link: Option<Sha256Digest>,
 }
 
 fn stage_file(
@@ -2730,7 +2732,7 @@ fn stage_file(
         destination: destination.to_path_buf(),
         blob,
         state: inode_state(&metadata),
-        removable: true,
+        tree_link: None,
     });
     Ok(())
 }
@@ -2747,8 +2749,8 @@ fn stage_file(
 /// resolved to itself: `Could not find platform independent libraries`.
 /// Once linked, the tree's file must still hold exactly the keyed input —
 /// its size, mode and content, which is hashed again (see below) like a
-/// blob's — and its inode state is checked after the process
-/// ([`check_staged`]).
+/// blob's — and after the process the file at its path must be that inode
+/// unchanged or a file with the keyed content and mode ([`check_staged`]).
 fn stage_tree_link(
     input: &Input,
     execroot: &Path,
@@ -2792,7 +2794,7 @@ fn stage_tree_link(
         destination: destination.to_path_buf(),
         blob: input.path.clone(),
         state: inode_state(&metadata),
-        removable: false,
+        tree_link: Some(input.digest),
     });
     Ok(())
 }
@@ -2833,7 +2835,14 @@ fn stage_inputs(
 
 /// After a process ran: every staged inode (reached through its execution
 /// root path, or the store when the process replaced that path) must be
-/// unchanged. A damaged blob is removed so no later action stages it.
+/// unchanged. A damaged blob is removed so no later action stages it. A
+/// link into a repository tree is judged by the tree's file alone (the
+/// link in the execution root is the process's own to replace): the same
+/// inode must be unchanged, and another inode at that path or none — a
+/// file renamed over it, a removal — counts as modified as well, unless it
+/// is a regular file that still holds the keyed content and mode (another
+/// process's republication of the same tree identity replaces every file
+/// by identical bytes and modes).
 fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
     let mut modified = Vec::new();
     for file in staged {
@@ -2843,13 +2852,22 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
                 .map(|metadata| inode_state(&metadata))
                 .filter(|state| state.inode == file.state.inode)
         };
-        let current = state(&execroot.join(&file.destination)).or_else(|| state(&file.blob));
-        if let Some(current) = current
-            && current != file.state
-        {
-            if file.removable && state(&file.blob).is_some() {
-                let _ = fs::remove_file(&file.blob);
+        let changed = match file.tree_link {
+            Some(digest) => match state(&file.blob) {
+                Some(current) => current != file.state,
+                None => !holds_keyed(&file.blob, digest, file.state.mode),
+            },
+            None => {
+                let current =
+                    state(&execroot.join(&file.destination)).or_else(|| state(&file.blob));
+                let changed = current.is_some_and(|current| current != file.state);
+                if changed && state(&file.blob).is_some() {
+                    let _ = fs::remove_file(&file.blob);
+                }
+                changed
             }
+        };
+        if changed {
             modified.push(file.destination.display().to_string());
         }
     }
@@ -2863,6 +2881,17 @@ fn check_staged(staged: &[StagedFile], execroot: &Path) -> Result<(), String> {
             .collect::<Vec<_>>()
             .join("\n"))
     }
+}
+
+/// Whether `path` is a regular file with permission bits `mode` whose
+/// content is `digest`, hashed by its change-time key like a tree link's
+/// file at staging ([`stage_tree_link`]).
+fn holds_keyed(path: &Path, digest: Sha256Digest, mode: u32) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_file()
+            && metadata.permissions().mode() & 0o7777 == mode
+            && hash_file_from(path, metadata, false, false).is_ok_and(|(found, _)| found == digest)
+    })
 }
 
 /// Publish an execution-root output file as `target`: normalized to
@@ -6525,6 +6554,62 @@ mod tests {
                 tool.display()
             )
         );
+    }
+
+    /// After the process, a link into a repository tree is judged by the
+    /// tree's file (the link itself is the process's own): another inode
+    /// renamed over that path, or its removal, fails the action like an
+    /// in-place write, unless the path holds a file with the keyed content
+    /// and mode (a republication of the same tree identity replaces every
+    /// inode by identical bytes and modes).
+    #[test]
+    fn tree_links_count_replaced_tree_files_as_modified_unless_identical() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.cache()).unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let bin = root.join("repositories/direct/trees/abc/bin");
+        fs::create_dir_all(&bin).unwrap();
+        // Each script finds its tree file through the link.
+        for (name, body) in [
+            // Different bytes renamed over it.
+            (
+                "renamer",
+                r#"cp "$t" "$t.new" && printf x >> "$t.new" && mv "$t.new" "$t""#,
+            ),
+            // The same bytes, another mode.
+            (
+                "moder",
+                r#"cp "$t" "$t.new" && chmod 644 "$t.new" && mv "$t.new" "$t""#,
+            ),
+            // The same bytes and mode, as another inode.
+            ("copier", r#"cp -p "$t" "$t.new" && mv "$t.new" "$t""#),
+            ("remover", r#"rm "$t""#),
+        ] {
+            write_executable_script(
+                &bin.join(name),
+                format!("#!/bin/sh\nt=$(readlink -f \"$0\")\n{body} && touch out/result\n"),
+                0o755,
+            );
+        }
+        let run = |name: &str| {
+            let alias = alias_output(&fixture, &bin.join(name), name);
+            run_executable(
+                &fixture,
+                name,
+                alias,
+                &format!("bazel-out/bin/tools/{name}"),
+            )
+        };
+        let modified = |name: &str| {
+            format!(
+                "action '{name}': input dependency bazel-out/bin/tools/{name} was modified during execution."
+            )
+        };
+        assert_eq!(run("renamer").map(|_| ()), Err(modified("renamer")));
+        assert_eq!(fs::read(bin.join("renamer")).unwrap().last(), Some(&b'x'));
+        assert_eq!(run("moder").map(|_| ()), Err(modified("moder")));
+        run("copier").unwrap();
+        assert_eq!(run("remover").map(|_| ()), Err(modified("remover")));
     }
 
     /// A read-only file of a repository tree (rules_python's interpreter

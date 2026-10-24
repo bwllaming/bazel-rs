@@ -240,10 +240,16 @@ the old ones (blob staging stages the blob of the keyed bytes instead). The
 check hashes the file by its change-time key, so the digest memo answers
 only for the unchanged file, never for a rewrite that kept the size and
 restored the modification time (test
-`tree_links_verify_the_keyed_content_when_staged`). Its inode state is
-re-checked after the process like a blob's; a modification fails the
-action, but the tree's file is never removed (the executor removes only
-`cas/` blobs).
+`tree_links_verify_the_keyed_content_when_staged`). After the process the
+tree path itself is checked (the link in the execution root is the
+process's own to replace): the same inode in a changed state (an in-place
+write, `touch`, `chmod`) fails the action like a modified blob, and so does
+another inode or none at that path — a file renamed over it, a removal —
+unless the path holds a regular file with the keyed content and mode
+(another process's republication of the same tree identity replaces every
+inode by identical bytes and modes; test
+`tree_links_count_replaced_tree_files_as_modified_unless_identical`). The
+tree's file is never removed (the executor removes only `cas/` blobs).
 Executables at their own path (`external/<repo>/...`) keep hardlink staging:
 their declared installation is staged around them, mirroring the repository.
 Through the link a process can write to the tree file or, if the repository
