@@ -252,6 +252,12 @@ impl Session {
                 &records,
                 tables.as_ref(),
                 replays.first(),
+                Some(&canonical_inputs_digest(
+                    &recording,
+                    policy,
+                    &records,
+                    tables.as_ref(),
+                )),
             )
         {
             observed_fs::diag(&format!(
@@ -603,9 +609,50 @@ pub fn summary(
     lines
 }
 
+/// The digest of the INPUTS section a snapshot of `recording` would hold
+/// (crate::snapshot::format::encode_inputs of `policy`'s selection, the
+/// replay records and their pinned tables) with what depends on when the
+/// run happened zeroed: the window start, the racy flags and the replay
+/// records' execution times. Two runs that observed the same inputs —
+/// e.g. at any `--loading_phase_threads`, with phase-1 prefetch (W6R) —
+/// have the same digest: the record mode's dump prints it as
+/// `INPUTS-CANONICAL <blake3>` (`BAZEL_RS_LOADING_JITTER` turns the `on`
+/// mode off, so determinism tests compare record-mode dumps).
+pub fn canonical_inputs_digest(
+    recording: &Recording,
+    policy: crate::snapshot::validate::Policy,
+    records: &[crate::snapshot::replay::ReplayRecord],
+    tables: Option<&crate::snapshot::replay::PinnedTables>,
+) -> String {
+    let mut selected = policy.select(recording);
+    selected.window_start_ns = 0;
+    selected.window = None;
+    for (_, observation) in &mut selected.observations {
+        if let Outcome::Read { racy, .. } | Outcome::Listing { racy, .. } = &mut observation.outcome
+        {
+            *racy = false;
+        }
+    }
+    for repository in &mut selected.repositories {
+        for entry in &mut repository.entries {
+            entry.racy = false;
+        }
+    }
+    let records: Vec<crate::snapshot::replay::ReplayRecord> = records
+        .iter()
+        .cloned()
+        .map(|mut record| {
+            record.elapsed = std::time::Duration::ZERO;
+            record
+        })
+        .collect();
+    let bytes = crate::snapshot::format::encode_inputs(&selected, &records, tables, false);
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
 /// Write the text dump (`BAZEL_RS_SNAPSHOT_DUMP`): the record mode's, and
 /// a hit's INPUTS (crate::snapshot::hit, for the syscall audit of the hit
-/// path).
+/// path). `canonical`: the record mode's [`canonical_inputs_digest`].
 pub(crate) fn write_dump(
     path: &std::path::Path,
     recording: &Recording,
@@ -613,10 +660,14 @@ pub(crate) fn write_dump(
     records: &[crate::snapshot::replay::ReplayRecord],
     tables: Option<&crate::snapshot::replay::PinnedTables>,
     replay: Option<&crate::snapshot::replay::Report>,
+    canonical: Option<&str>,
 ) -> std::io::Result<()> {
     let mut text = String::new();
     let _ = writeln!(text, "# bazel-rs snapshot recording (L2-W3, W4R) v2");
     let _ = writeln!(text, "window_start_ns {}", recording.window_start_ns);
+    if let Some(canonical) = canonical {
+        let _ = writeln!(text, "INPUTS-CANONICAL {canonical}");
+    }
     for (path, observation) in &recording.observations {
         let op = match &observation.op {
             Op::ReadDir(projection) => format!("READDIR[{projection}]"),

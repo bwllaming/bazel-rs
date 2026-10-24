@@ -157,6 +157,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
             &inputs.replay,
             inputs.tables.as_ref(),
             None,
+            None,
         );
     }
     // Validation, replay and decoding in parallel. They print nothing, but a
