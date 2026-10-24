@@ -477,21 +477,37 @@ store tree's repair is a mismatch, the local repository's silent); a unit
 test drives the check on real publications (intact trees keep the
 snapshot).
 
-**Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f): random
-sequences over a catalogue of 33 mutations (sources, same-size and
-mtime-restoring edits, glob-matching and swap files, BUILD and `.bzl`
-edits, new and removed packages, `.go` files, symlink retargets,
-`.bazelignore`, REPO.bazel, a local rule's environment, `--action_env`,
-`--repo_env`, `--define`, `.bazelrc`, MODULE.bazel, lockfile edits and
-deletions, store-tree deletions and additions, the status command's output
-and stderr, damaged and deleted snapshots, concurrent runs, a
-`local_path_override` module, a 2 s settle) and 8 commands (`build`,
-`--nobuild //...`, `test --test_output=all`, `run --script_path`, the
-`--action_env`, status, `--repo_env` and override targets), the snapshot
-side in `on` or (30%) strict `verify` mode: every step byte-identical,
-built outputs included. 50 steps in the gate
-(`BAZEL_RS_SNAPSHOT_FUZZ_STEPS`; `BAZEL_RS_SNAPSHOT_FUZZ_SEED` replays a
-sequence; a failure prints the seed and the steps).
+**Mutation fuzz** (`tests/snapshot.rs::mutation_fuzz`, L2-W5f, extended
+by L2-W5g): random sequences over a catalogue of 50 mutations (sources —
+same-size, mtime-restoring, future-stamped and backdated edits —,
+glob-matching and swap files, BUILD and `.bzl` edits, new and removed
+packages, `.go` files, symlink retargets and swaps of a package directory,
+a BUILD file and a `.bzl` file, `.bazelignore`, REPO.bazel, a local rule's
+environment, the module extension's `getenv` and watched file,
+`--action_env` inherited and set, `--repo_env` re-inherited and pinned,
+`--test_env`, `--incompatible_strict_action_env` and `PATH`, `--define`,
+`.bazelrc`, semantic MODULE.bazel edits (the generated repository's
+attribute) and lockfile edits (the extension repository's recorded
+attribute), corrupt and deleted lockfiles, `--lockfile_mode`, store-tree
+deletions and additions, the status command's output and stderr, damaged
+and deleted snapshots, concurrent runs of one command and of two
+different ones with stand-in snapshots that make a save collect (GC and
+refresh races), the `local_path_override` module's BUILD, `.bzl` and
+MODULE.bazel, failing builds and tests, a 2 s settle, and — in non-strict
+verify mode only — byte and mode tampering of a store-tree file, which a
+hit must log as `first=taint` with `taint=repository-rule-executed`) and
+10 commands (`build` including a consumer of the generated repository's
+`glob(["sub/**"])`, `--nobuild //...`, `test --test_output=all`,
+`run --script_path`, the `--action_env`, status, `--repo_env` and
+override targets, a relative pattern run from a subpackage, the symlink
+swaps), the snapshot side in `on` or (30%) strict `verify` mode: every step
+byte-identical (the heal line aside), built outputs and MODULE.bazel.lock
+included. About half the steps run without `BAZEL_RS_SNAPSHOT_EXPLAIN`
+— the production path, where the first failing check cancels the rest of
+the attempt — and take the outcome from the `PERF-SNAPSHOT` lines. 50
+steps in the gate (`BAZEL_RS_SNAPSHOT_FUZZ_STEPS`;
+`BAZEL_RS_SNAPSHOT_FUZZ_SEED` replays a sequence; the seed is printed, and
+a failure prints the seed and the steps).
 
 Fixture 19 (L2-W6, module `verify_mode` of tests/snapshot.rs): every
 fixture again with `BAZEL_RS_SNAPSHOT=verify` (and

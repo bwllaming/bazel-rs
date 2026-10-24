@@ -45,11 +45,18 @@ struct Twin {
     /// The snapshot side's `BAZEL_RS_SNAPSHOT` ([`MODE`]; the mutation fuzz
     /// switches it per step).
     mode: std::cell::Cell<&'static str>,
-    /// [`STRICT`].
-    strict: bool,
+    /// [`STRICT`] (the mutation fuzz switches it per step).
+    strict: std::cell::Cell<bool>,
     /// Read the workspace `.bazelrc` (`--nosystem_rc --nohome_rc`) instead
     /// of `--ignore_all_rc_files` (the mutation fuzz).
     workspace_rc: std::cell::Cell<bool>,
+    /// `BAZEL_RS_SNAPSHOT_EXPLAIN=1` on the snapshot side (else
+    /// `BAZEL_RS_TIMING=1`: the outcome from the `PERF-SNAPSHOT` lines; the
+    /// mutation fuzz switches it per step, L2-W5g).
+    explain: std::cell::Cell<bool>,
+    /// The working directory below the workspace (the mutation fuzz's
+    /// relative patterns), else the workspace root.
+    cwd: std::cell::RefCell<Option<&'static str>>,
 }
 
 /// The two runs of one step.
@@ -91,8 +98,10 @@ impl Twin {
         let twin = Self {
             base,
             mode: std::cell::Cell::new(MODE.with(std::cell::Cell::get)),
-            strict: STRICT.with(std::cell::Cell::get),
+            strict: std::cell::Cell::new(STRICT.with(std::cell::Cell::get)),
             workspace_rc: std::cell::Cell::new(false),
+            explain: std::cell::Cell::new(true),
+            cwd: std::cell::RefCell::new(None),
         };
         for side in [ON, OFF] {
             fs::create_dir_all(twin.side(side).join("ws")).unwrap();
@@ -186,17 +195,23 @@ impl Twin {
             })
             .arg(format!("--cache-dir={}", self.cache().display()))
             .args(args)
-            .current_dir(self.ws())
+            .current_dir(match *self.cwd.borrow() {
+                Some(directory) => self.ws().join(directory),
+                None => self.ws(),
+            })
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &home)
             .env("LC_ALL", "C");
         if snapshot {
-            command
-                .env("BAZEL_RS_SNAPSHOT", self.mode.get())
-                .env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1");
-            if self.mode.get() == VERIFY && self.strict {
+            command.env("BAZEL_RS_SNAPSHOT", self.mode.get());
+            if self.explain.get() {
+                command.env("BAZEL_RS_SNAPSHOT_EXPLAIN", "1");
+            } else {
+                command.env("BAZEL_RS_TIMING", "1");
+            }
+            if self.mode.get() == VERIFY && self.strict.get() {
                 command.env("BAZEL_RS_SNAPSHOT_VERIFY_STRICT", "1");
             }
         }
@@ -272,13 +287,20 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// stderr without the snapshot diagnostics and PERF lines, test durations
-/// normalized.
+/// The one line a failed hit prints when it removes its snapshot (the
+/// snapshot side's intended difference, crate::snapshot::hit).
+const HEAL_LINE: &str = "bazel-rs: removed the analysis snapshot of this build: ";
+
+/// stderr without the snapshot diagnostics, PERF lines and the heal line,
+/// test durations normalized.
 fn program_stderr(output: &Output) -> String {
     let stderr = text(&output.stderr);
     let mut kept = String::new();
     for line in stderr.split_inclusive('\n') {
-        if line.starts_with("bazel-rs-snapshot: ") || line.starts_with("PERF") {
+        if line.starts_with("bazel-rs-snapshot: ")
+            || line.starts_with("PERF")
+            || line.starts_with(HEAL_LINE)
+        {
             continue;
         }
         kept.push_str(line);
@@ -2495,7 +2517,7 @@ fn a_failed_hit_on_a_tampered_local_repository_heals() {
     a_failed_hit_on_a_tampered_tree_heals(true);
 }
 
-// ---- the mutation fuzz (L2-W5f) --------------------------------------------
+// ---- the mutation fuzz (L2-W5f, extended by L2-W5g) ------------------------
 
 /// A deterministic random sequence (xorshift64*).
 struct Rng(u64);
@@ -2519,13 +2541,17 @@ impl Rng {
     }
 }
 
-const FUZZ_MODULE: &str = r#"module(name = "snapshot_fuzz")
+/// The fuzz's MODULE.bazel; `flavor`: the generated repository's attribute
+/// (a semantic MODULE.bazel edit, L2-W5g).
+fn fuzz_module(flavor: bool) -> String {
+    format!(
+        r#"module(name = "snapshot_fuzz")
 
 lr = use_repo_rule("//:repos.bzl", "local_rule")
 lr(name = "localrepo")
 
 gr = use_repo_rule("//:repos.bzl", "gen_rule")
-gr(name = "genrepo")
+gr(name = "genrepo"{})
 
 er = use_repo_rule("//environ:repos.bzl", "environ_rule")
 er(name = "envrepo")
@@ -2533,9 +2559,12 @@ er(name = "envrepo")
 bazel_dep(name = "localdep", version = "1.0")
 local_path_override(module_name = "localdep", path = "../localdep")
 
-ext = use_extension("//:ext.bzl", "ext")
+ext = use_extension("//ext:ext.bzl", "ext")
 use_repo(ext, "extrepo")
-"#;
+"#,
+        if flavor { r#", flavor = "spicy""# } else { "" }
+    )
+}
 
 const FUZZ_REPOS: &str = r#"def _local(ctx):
     ctx.file("BUILD.bazel", "exports_files(['value'])\n")
@@ -2544,25 +2573,58 @@ const FUZZ_REPOS: &str = r#"def _local(ctx):
 local_rule = repository_rule(implementation = _local, local = True)
 
 def _gen(ctx):
-    ctx.file("BUILD.bazel", "exports_files(['sub/data.txt'])\n")
-    ctx.file("sub/data.txt", "generated\n")
+    ctx.file("BUILD.bazel", "exports_files(['sub/data.txt'])\nfilegroup(name = 'all', srcs = glob(['sub/**']), visibility = ['//visibility:public'])\n")
+    ctx.file("sub/data.txt", "generated %s\n" % ctx.attr.flavor)
     ctx.file("sub/deeper/more.txt", "more\n")
 
-gen_rule = repository_rule(implementation = _gen)
+gen_rule = repository_rule(implementation = _gen, attrs = {"flavor": attr.string(default = "plain")})
 "#;
 
+/// The fuzz's root BUILD file: the fixture's (the generated repository's
+/// nested file) plus a consumer of the repository's `glob(["sub/**"])`;
+/// `extra` adds a rule (a BUILD edit), `failing` makes the test fail.
+fn fuzz_build(extra: bool, failing: bool) -> String {
+    let mut build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
+    if failing {
+        build = build.replace("cat all.txt\\n", "cat all.txt\\nexit 1\\n");
+    }
+    build.push_str(
+        "\ngenrule(name = 'genall', srcs = ['@genrepo//:all'], outs = ['genall.txt'], cmd = 'cat $(SRCS) > $@')\n",
+    );
+    if extra {
+        build.push_str("\ngenrule(name = 'extra', outs = ['extra.txt'], cmd = 'echo > $@')\n");
+    }
+    build
+}
+
+/// `pkg/BUILD.bazel`; `failing`: its genrule fails.
+fn fuzz_pkg_build(failing: bool) -> String {
+    format!(
+        "exports_files(['in.txt', 'link.txt'])\ngenrule(name = 'l', srcs = ['link.txt'], outs = ['l.txt'], cmd = '{}')\n",
+        if failing { "exit 1" } else { "cp $< $@" }
+    )
+}
+
+/// The `local_path_override` module beside the workspace: its BUILD file
+/// loads a `.bzl` file of its own.
+fn localdep_build(variant: usize) -> String {
+    format!(
+        "load(':defs.bzl', 'WORD')\ngenrule(name = 'l', outs = ['l.txt'], cmd = 'echo localdep-{variant}-' + WORD + ' > $@', visibility = ['//visibility:public'])\n"
+    )
+}
+
 /// The mutation fuzz's workspace: the fixture with a nested generated
-/// repository (a verified store tree to tamper with), a `--repo_env`
-/// repository, a `local_path_override` module beside the workspace, a
-/// status command, a symlink, `.bazelrc`, `.bazelignore` and `REPO.bazel`.
+/// repository (a verified store tree to tamper with, globbed by an action),
+/// a `--repo_env` repository, a `local_path_override` module beside the
+/// workspace (BUILD, `.bzl` and MODULE.bazel), a module extension that
+/// reads an environment variable and a watched file, a status command,
+/// file, directory, package and `.bzl` symlinks, `.bazelrc`,
+/// `.bazelignore` and `REPO.bazel`.
 fn fuzz_fixture() -> Twin {
     let twin = fixture();
-    twin.write("MODULE.bazel", FUZZ_MODULE);
+    twin.write("MODULE.bazel", &fuzz_module(false));
     twin.write("repos.bzl", FUZZ_REPOS);
-    twin.write(
-        "BUILD.bazel",
-        &ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt"),
-    );
+    twin.write("BUILD.bazel", &fuzz_build(false, false));
     twin.write("environ/repos.bzl", ENVIRON_REPOS);
     twin.write(
         "environ/BUILD.bazel",
@@ -2573,18 +2635,42 @@ fn fuzz_fixture() -> Twin {
         "module(name = 'localdep', version = '1.0')\n",
     );
     twin.write_beside("localdep/BUILD.bazel", &localdep_build(0));
+    twin.write_beside("localdep/defs.bzl", "WORD = 'plain'\n");
     twin.write(
         "deps/BUILD.bazel",
         "genrule(name = 'd', srcs = ['@localdep//:l', '@extrepo//:v.txt', '//pkg:in.txt'], outs = ['d.txt'], cmd = 'cat $(SRCS) > $@')\n",
     );
-    // A module extension: the workspace has a lockfile to edit and delete.
-    twin.write("ext.bzl", EXTENSION);
+    // A module extension (getenv + a watched file): the workspace has a
+    // lockfile to edit, corrupt and delete.
+    twin.write("ext/ext.bzl", INPUT_EXTENSION);
+    twin.write("ext/input.txt", "first\n");
+    twin.write("ext/BUILD.bazel", "exports_files(['input.txt'])\n");
     twin.write("pkg/other.txt", "other\n");
-    twin.write(
-        "pkg/BUILD.bazel",
-        "exports_files(['in.txt', 'link.txt'])\ngenrule(name = 'l', srcs = ['link.txt'], outs = ['l.txt'], cmd = 'cp $< $@')\n",
-    );
+    twin.write("pkg/BUILD.bazel", &fuzz_pkg_build(false));
     twin.each(|root| std::os::unix::fs::symlink("in.txt", root.join("ws/pkg/link.txt")).unwrap());
+    // Symlink swaps (L2-W5g): a package directory, a BUILD file, a `.bzl`.
+    for (variant, word) in [("a", "alpha"), ("b", "beta")] {
+        twin.write(
+            &format!("swap_{variant}/BUILD.bazel"),
+            &format!(
+                "load('//:lib.bzl', 'VALUE')\ngenrule(name = 's', outs = ['s.txt'], cmd = 'echo {word}-' + VALUE + ' > $@')\n"
+            ),
+        );
+        twin.write(
+            &format!("lib_{variant}.bzl"),
+            &format!("VALUE = '{word}'\n"),
+        );
+        twin.write(
+            &format!("pkgl/BUILD.{variant}"),
+            &format!("genrule(name = 'x', outs = ['x.txt'], cmd = 'echo {word} > $@')\n"),
+        );
+    }
+    twin.each(|root| {
+        let ws = root.join("ws");
+        std::os::unix::fs::symlink("swap_a", ws.join("swap")).unwrap();
+        std::os::unix::fs::symlink("lib_a.bzl", ws.join("lib.bzl")).unwrap();
+        std::os::unix::fs::symlink("BUILD.a", ws.join("pkgl/BUILD.bazel")).unwrap();
+    });
     twin.write("stable.txt", "one\n");
     twin.each(|root| {
         write_executable_script(
@@ -2600,12 +2686,6 @@ fn fuzz_fixture() -> Twin {
     twin
 }
 
-fn localdep_build(variant: usize) -> String {
-    format!(
-        "genrule(name = 'l', outs = ['l.txt'], cmd = 'echo localdep-{variant} > $@', visibility = ['//visibility:public'])\n"
-    )
-}
-
 /// The published store tree of the generated repository, if fetched (by
 /// its BUILD file: the tree may be damaged).
 fn fuzz_tree(root: &Path) -> Option<PathBuf> {
@@ -2619,6 +2699,52 @@ fn fuzz_tree(root: &Path) -> Option<PathBuf> {
         })
 }
 
+/// Every published tree of the generated repository (a flavor change
+/// leaves the other flavor's tree behind).
+fn fuzz_trees(root: &Path) -> Vec<PathBuf> {
+    fs::read_dir(root.join("cache/repositories/direct/trees"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    fs::read_to_string(path.join("BUILD.bazel"))
+                        .is_ok_and(|build| build.contains("sub/data.txt"))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Retarget the symlink `link` (below the workspace) of both copies.
+fn retarget(twin: &Twin, link: &str, target: &str) {
+    twin.each(|root| {
+        let link = root.join("ws").join(link);
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(target, &link).unwrap();
+    });
+}
+
+/// Write `content` at `path` in both copies with the modification time
+/// `offset` seconds from now (a future or backdated stamp, L2-W5g).
+fn write_stamped(twin: &Twin, path: &str, content: &str, offset: i64) {
+    let when = if offset >= 0 {
+        std::time::SystemTime::now() + std::time::Duration::from_secs(offset as u64)
+    } else {
+        std::time::SystemTime::now() - std::time::Duration::from_secs(offset.unsigned_abs())
+    };
+    twin.each(|root| {
+        let path = root.join("ws").join(path);
+        fs::write(&path, content).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    });
+}
+
 /// What the fuzz holds besides the files: the client environment and
 /// the options of the next commands.
 #[derive(Default)]
@@ -2626,9 +2752,24 @@ struct FuzzState {
     local: usize,
     inherited: usize,
     repo_env: usize,
+    extension_env: usize,
+    path: usize,
     define: Option<usize>,
+    /// `--lockfile_mode`: update (the default, `None`), refresh, error or
+    /// off (`Some(1..=3)`).
+    lockfile_mode: Option<usize>,
+    /// `--action_env=W5_INHERITED=<n>` instead of the inherited value.
+    action_env: Option<usize>,
+    test_env: Option<usize>,
     toggles: std::collections::BTreeMap<&'static str, bool>,
     added: usize,
+    /// The lockfile was corrupted this step (deleted after it).
+    corrupt: bool,
+    /// Files tampered with this step: restored after it unless a full
+    /// analysis repaired them (a command that failed before fetching the
+    /// tree leaves it damaged; later `on` hits would then differ by the
+    /// documented deviation).
+    tampered: Vec<(PathBuf, Vec<u8>, u32)>,
 }
 
 impl FuzzState {
@@ -2638,33 +2779,65 @@ impl FuzzState {
         *value
     }
 
+    fn on(&self, name: &str) -> bool {
+        self.toggles.get(name).copied().unwrap_or_default()
+    }
+
     fn env(&self) -> Vec<(&'static str, String)> {
         let mut env = vec![
             ("W5_LOCAL", ["a", "b"][self.local % 2].to_owned()),
             ("W5_INHERITED", ["x", "y"][self.inherited % 2].to_owned()),
+            ("W5_EXT", ["one", "two"][self.extension_env % 2].to_owned()),
         ];
         match self.repo_env % 3 {
             0 => env.push(("W5X", "one".to_owned())),
             1 => env.push(("W5X", "two".to_owned())),
             _ => {}
         }
+        if self.path % 2 == 1 {
+            env.push(("PATH", "/bin:/usr/bin".to_owned()));
+        }
         env
     }
 }
 
+/// What a step does besides its command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Special {
+    None,
+    /// The command twice at once on the snapshot side.
+    Concurrent,
+    /// The command and another at once on the snapshot side (with stand-in
+    /// snapshots, so a save collects: GC and refresh races).
+    ConcurrentOther,
+    /// A store tree tampered with (bytes or mode) under non-strict verify:
+    /// a hit must log `first=taint` (L2-W5g).
+    Tamper,
+}
+
+/// The number of mutations of the catalogue ([`mutate`]).
+const MUTATIONS: usize = 51;
+
 /// Apply one random mutation of the catalogue (the same to both copies);
-/// returns its name. `concurrent` asks for the step's command to run twice
-/// at once on the snapshot side.
-fn mutate(
-    twin: &Twin,
-    rng: &mut Rng,
-    state: &mut FuzzState,
-    step: usize,
-    concurrent: &mut bool,
-) -> String {
-    let choice = rng.below(33);
+/// returns its name and what the step does besides its command.
+fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (String, Special) {
+    // `BAZEL_RS_SNAPSHOT_FUZZ_MUTATIONS=29,48,49`: only these (a debugging
+    // aid; the default is the whole catalogue).
+    let only: Vec<usize> = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_MUTATIONS")
+        .map(|list| {
+            list.split(',')
+                .filter_map(|n| n.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let choice = if only.is_empty() {
+        rng.below(MUTATIONS)
+    } else {
+        only[rng.below(only.len())]
+    };
     let name = |text: &str| format!("#{choice} {text}");
-    match choice {
+    let mut special = Special::None;
+    let name = match choice {
         0 => {
             twin.write("pkg/in.txt", &format!("input {step}\n"));
             name("edit pkg/in.txt")
@@ -2716,15 +2889,7 @@ fn mutate(
         }
         6 => {
             let extra = state.toggle("extra-rule");
-            let build = ROOT_BUILD.replace("@genrepo//:data.txt", "@genrepo//:sub/data.txt");
-            twin.write(
-                "BUILD.bazel",
-                &if extra {
-                    format!("{build}\ngenrule(name = 'extra', outs = ['extra.txt'], cmd = 'echo > $@')\n")
-                } else {
-                    build
-                },
-            );
+            twin.write("BUILD.bazel", &fuzz_build(extra, state.on("failing-test")));
             name("BUILD edit")
         }
         7 => {
@@ -2762,12 +2927,11 @@ fn mutate(
         }
         11 => {
             let other = state.toggle("link");
-            twin.each(|root| {
-                let link = root.join("ws/pkg/link.txt");
-                fs::remove_file(&link).unwrap();
-                std::os::unix::fs::symlink(if other { "other.txt" } else { "in.txt" }, &link)
-                    .unwrap();
-            });
+            retarget(
+                twin,
+                "pkg/link.txt",
+                if other { "other.txt" } else { "in.txt" },
+            );
             name("retarget a symlink")
         }
         12 => {
@@ -2812,28 +2976,28 @@ fn mutate(
             name(".bazelrc edit")
         }
         19 => {
-            let comment = state.toggle("module");
-            twin.write(
-                "MODULE.bazel",
-                &if comment {
-                    format!("{FUZZ_MODULE}# edited\n")
-                } else {
-                    FUZZ_MODULE.to_owned()
-                },
-            );
-            name("MODULE.bazel edit")
+            // Semantic (L2-W5g): the generated repository's attribute.
+            let flavor = state.toggle("module");
+            twin.write("MODULE.bazel", &fuzz_module(flavor));
+            name("MODULE.bazel edit (genrepo's flavor)")
         }
         20 => {
-            // Still valid JSON: one or two trailing newlines.
-            let two = state.toggle("lockfile");
+            // Semantic (L2-W5g): the extension's generated repository in
+            // the lockfile, its digests kept (still valid JSON).
             twin.each(|root| {
                 let path = root.join("ws/MODULE.bazel.lock");
-                if let Ok(text) = fs::read_to_string(&path) {
-                    let end = if two { "\n\n" } else { "\n" };
-                    fs::write(&path, format!("{}{end}", text.trim_end())).unwrap();
+                if let Ok(text) = fs::read_to_string(&path)
+                    && let Some(at) = text.find("\"content\": \"")
+                {
+                    let at = at + "\"content\": \"".len();
+                    fs::write(
+                        &path,
+                        format!("{}edited-{step}-{}", &text[..at], &text[at..]),
+                    )
+                    .unwrap();
                 }
             });
-            name("lockfile edit")
+            name("lockfile edit (the extension repository's content)")
         }
         21 => {
             twin.each(|root| {
@@ -2895,29 +3059,183 @@ fn mutate(
             name("the snapshots deleted")
         }
         29 => {
-            *concurrent = true;
+            special = Special::Concurrent;
             name("concurrent runs")
         }
         30 => {
-            twin.write_beside("localdep/BUILD.bazel", &localdep_build(step));
-            name("local_path_override module edit")
+            // L2-W5g: the override module's BUILD, `.bzl` or MODULE.bazel.
+            match step % 3 {
+                0 => twin.write_beside("localdep/BUILD.bazel", &localdep_build(step)),
+                1 => twin.write_beside("localdep/defs.bzl", &format!("WORD = 'w{step}'\n")),
+                _ => twin.write_beside(
+                    "localdep/MODULE.bazel",
+                    &if state.toggle("localdep-module") {
+                        "module(name = 'localdep', version = '1.0', compatibility_level = 1)\n"
+                            .to_owned()
+                    } else {
+                        "module(name = 'localdep', version = '1.0')\n".to_owned()
+                    },
+                ),
+            }
+            name("local_path_override module edit (BUILD, .bzl or MODULE.bazel)")
         }
         31 => {
             std::thread::sleep(std::time::Duration::from_millis(2100));
             name("settle (2 s)")
         }
+        32 => {
+            state.extension_env += 1;
+            name("W5_EXT (the extension's getenv)")
+        }
+        33 => {
+            twin.write("ext/input.txt", &format!("input {step}\n"));
+            name("the extension's watched file")
+        }
+        34 => {
+            twin.each(|root| {
+                let path = root.join("ws/MODULE.bazel.lock");
+                if path.exists() {
+                    fs::write(&path, "{ \"lockFileVersion\": ").unwrap();
+                }
+            });
+            state.corrupt = true;
+            name("lockfile corrupted (deleted after the step)")
+        }
+        35 => {
+            // Another mode, then back to the default.
+            state.lockfile_mode = match state.lockfile_mode {
+                Some(_) => None,
+                None => Some(1 + step % 3),
+            };
+            name("--lockfile_mode")
+        }
+        36 => {
+            state.toggle("pinned-repo-env");
+            name("--repo_env=W5X=pinned set/unset")
+        }
+        37 => {
+            state.action_env = match state.action_env {
+                Some(_) => None,
+                None => Some(step % 2),
+            };
+            name("--action_env=W5_INHERITED=<value>")
+        }
+        38 => {
+            state.test_env = match state.test_env {
+                Some(_) => None,
+                None => Some(step % 2),
+            };
+            name("--test_env")
+        }
+        39 => {
+            state.toggle("strict-env");
+            name("--incompatible_strict_action_env")
+        }
+        40 => {
+            state.path += 1;
+            name("PATH")
+        }
+        41 => {
+            let b = state.toggle("swap-dir");
+            retarget(twin, "swap", if b { "swap_b" } else { "swap_a" });
+            name("package directory symlink swapped")
+        }
+        42 => {
+            let b = state.toggle("swap-bzl");
+            retarget(twin, "lib.bzl", if b { "lib_b.bzl" } else { "lib_a.bzl" });
+            name(".bzl symlink swapped")
+        }
+        43 => {
+            let b = state.toggle("swap-build");
+            retarget(
+                twin,
+                "pkgl/BUILD.bazel",
+                if b { "BUILD.b" } else { "BUILD.a" },
+            );
+            name("BUILD file symlink swapped")
+        }
+        44 => {
+            write_stamped(twin, "pkg/in.txt", &format!("future {step}\n"), 86_400);
+            name("edit pkg/in.txt with a future mtime")
+        }
+        45 => {
+            let flip = state.toggle("backdated");
+            write_stamped(
+                twin,
+                "pkg/other.txt",
+                if flip { "backdated\n" } else { "other\n" },
+                -366 * 86_400,
+            );
+            name("edit pkg/other.txt with a backdated mtime")
+        }
+        46 => {
+            let failing = state.toggle("failing-build");
+            twin.write("pkg/BUILD.bazel", &fuzz_pkg_build(failing));
+            name("a failing genrule toggled (//pkg:l)")
+        }
+        47 => {
+            let failing = state.toggle("failing-test");
+            twin.write("BUILD.bazel", &fuzz_build(state.on("extra-rule"), failing));
+            name("a failing test toggled (//:pass_test)")
+        }
+        48 => {
+            special = Special::ConcurrentOther;
+            name("concurrent different commands (GC stand-ins)")
+        }
+        49 => {
+            // Bytes or mode of a file the hit's execution reads (verify
+            // mode only: under `on` the documented deviation).
+            let tampered = std::cell::RefCell::new(Vec::new());
+            let sides = std::cell::Cell::new(0);
+            twin.each(|root| {
+                let mut any = false;
+                for tree in fuzz_trees(root) {
+                    let file = tree.join("sub/data.txt");
+                    let (Ok(metadata), Ok(bytes)) = (fs::metadata(&file), fs::read(&file)) else {
+                        continue;
+                    };
+                    any = true;
+                    let mode = metadata.permissions().mode();
+                    tampered.borrow_mut().push((file.clone(), bytes, mode));
+                    if step.is_multiple_of(2) {
+                        let modified = metadata.modified().unwrap();
+                        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+                        fs::write(&file, "TAMPERED\n").unwrap();
+                        let handle = fs::File::options().write(true).open(&file).unwrap();
+                        handle.set_modified(modified).unwrap();
+                        drop(handle);
+                        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+                    } else {
+                        fs::set_permissions(&file, fs::Permissions::from_mode(mode ^ 0o100))
+                            .unwrap();
+                    }
+                }
+                sides.set(sides.get() + usize::from(any));
+            });
+            state.tampered = tampered.into_inner();
+            if sides.get() == 2 {
+                special = Special::Tamper;
+            }
+            name("store tree tampered (bytes or mode; verify mode)")
+        }
         _ => name("no change"),
-    }
+    };
+    (name, special)
 }
 
 /// The commands of the fuzz ([`fuzz_command`]).
-const FUZZ_COMMANDS: usize = 8;
+const FUZZ_COMMANDS: usize = 10;
 
-/// The fuzz's command `command` (below [`FUZZ_COMMANDS`]).
-fn fuzz_command(twin: &Twin, command: usize, state: &FuzzState) -> Vec<String> {
-    let define = state.define.map(|n| format!("--define=fz={n}"));
+/// The fuzz's command `command` (below [`FUZZ_COMMANDS`]) and the
+/// directory it runs in below the workspace (`None`: the root).
+fn fuzz_command(
+    twin: &Twin,
+    command: usize,
+    state: &FuzzState,
+) -> (Vec<String>, Option<&'static str>) {
+    let mut cwd = None;
     let mut args: Vec<String> = match command {
-        0 => vec!["build".into(), "//:all_inputs".into()],
+        0 => vec!["build".into(), "//:all_inputs".into(), "//:genall".into()],
         1 => vec!["build".into(), "--nobuild".into(), "//...".into()],
         2 => vec![
             "test".into(),
@@ -2926,7 +3244,10 @@ fn fuzz_command(twin: &Twin, command: usize, state: &FuzzState) -> Vec<String> {
         ],
         3 => vec![
             "build".into(),
-            "--action_env=W5_INHERITED".into(),
+            match state.action_env {
+                Some(value) => format!("--action_env=W5_INHERITED=fixed{value}"),
+                None => "--action_env=W5_INHERITED".into(),
+            },
             "//:env_echo".into(),
         ],
         4 => vec![
@@ -2945,40 +3266,113 @@ fn fuzz_command(twin: &Twin, command: usize, state: &FuzzState) -> Vec<String> {
             ),
             "//:tool".into(),
         ],
-        6 => vec![
-            "build".into(),
-            "--repo_env=W5X=default".into(),
-            "--repo_env=W5X".into(),
-            "//environ:g".into(),
-        ],
-        _ => vec!["build".into(), "//deps:d".into(), "//pkg:l".into()],
+        6 => {
+            let mut args = vec![
+                "build".into(),
+                "--repo_env=W5X=default".into(),
+                "--repo_env=W5X".into(),
+            ];
+            if state.on("pinned-repo-env") {
+                args.push("--repo_env=W5X=pinned".into());
+            }
+            args.push("//environ:g".into());
+            args
+        }
+        7 => vec!["build".into(), "//deps:d".into(), "//pkg:l".into()],
+        8 => {
+            // From a subpackage, with a relative pattern (L2-W5g).
+            cwd = Some("pkg");
+            vec!["build".into(), ":l".into()]
+        }
+        _ => vec!["build".into(), "//swap:s".into(), "//pkgl:x".into()],
     };
-    if let Some(define) = define {
-        args.insert(1, define);
+    let mut options = Vec::new();
+    if let Some(define) = state.define {
+        options.push(format!("--define=fz={define}"));
     }
-    args
+    match state.lockfile_mode {
+        Some(1) => options.push("--lockfile_mode=refresh".to_owned()),
+        Some(2) => options.push("--lockfile_mode=error".to_owned()),
+        Some(_) => options.push("--lockfile_mode=off".to_owned()),
+        None => {}
+    }
+    if state.on("strict-env") {
+        options.push("--incompatible_strict_action_env".to_owned());
+    }
+    if args[0] == "test"
+        && let Some(value) = state.test_env
+    {
+        options.push(format!("--test_env=W5T=t{value}"));
+    }
+    args.splice(1..1, options);
+    (args, cwd)
 }
 
-/// L2-W5f: random sequences of ~30 kinds of mutation (sources, globs,
-/// BUILD and `.bzl` files, packages, symlinks, `.bazelignore`,
-/// `REPO.bazel`, the environment of local rules, `--action_env` and
-/// `--repo_env`, options and `.bazelrc`, MODULE.bazel and the lockfile,
-/// store-tree tampering (deletions and additions: per tree they are
-/// misses), the status command, damaged or deleted snapshots, concurrent
-/// runs, a `local_path_override` module) and commands (`build`,
-/// `--nobuild //...`, `test`, `run --script_path`), each step run with the
-/// snapshot (`on`, or `verify` with the strict switch) and without: every
-/// step byte-identical. `BAZEL_RS_SNAPSHOT_FUZZ_STEPS` (default 50) and
-/// `BAZEL_RS_SNAPSHOT_FUZZ_SEED` (default: from the clock; printed) — a
+/// The step's outcome on the snapshot side, from EXPLAIN's lines or —
+/// without EXPLAIN — the `PERF-SNAPSHOT` lines.
+fn fuzz_outcome(pair: &Pair) -> &'static str {
+    let perf = |prefix: &str| {
+        text(&pair.on.stderr)
+            .lines()
+            .any(|line| line.starts_with(&format!("PERF-SNAPSHOT {prefix}")))
+    };
+    if pair.line("verified ").is_some() || perf("verify ") {
+        "verified hit"
+    } else if pair
+        .explain()
+        .iter()
+        .any(|line| line.starts_with("verify ") && line.contains("MISMATCH"))
+    {
+        "verify mismatch"
+    } else if pair.line("hit ").is_some() || perf("hit ") {
+        "hit"
+    } else if pair.line("saved ").is_some() {
+        "miss, saved"
+    } else if perf("miss ") {
+        "miss (no EXPLAIN)"
+    } else {
+        "miss"
+    }
+}
+
+/// The `verify.log` lines of the snapshot side.
+fn verify_log(twin: &Twin) -> Vec<String> {
+    fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log"))
+        .map(|text| text.lines().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// L2-W5f, extended by L2-W5g: random sequences of ~50 kinds of mutation
+/// (sources with same-size, mtime-restoring, future and backdated edits,
+/// globs, BUILD and `.bzl` files, packages, file, directory, package and
+/// `.bzl` symlink swaps, `.bazelignore`, `REPO.bazel`, the environment of
+/// local rules and of the extension, its watched file, `--action_env`
+/// inherited and set, `--repo_env` re-inherited and pinned, `--test_env`,
+/// `--incompatible_strict_action_env` and `PATH`, options and `.bazelrc`,
+/// semantic MODULE.bazel and lockfile edits, corrupt and deleted
+/// lockfiles, `--lockfile_mode`, store-tree deletions and additions, the
+/// status command, damaged or deleted snapshots, concurrent runs of one
+/// command or of two (with stand-in snapshots: collections and refreshes
+/// racing), a `local_path_override` module's BUILD, `.bzl` and
+/// MODULE.bazel, failing builds and tests, and — in non-strict verify mode
+/// — store-tree byte and mode tampering, which a hit must log as
+/// `first=taint`) and 10 commands (`build`, `--nobuild //...`, `test`,
+/// `run --script_path`, a relative pattern from a subpackage, ...), each
+/// step run with the snapshot (`on`, or `verify` with the strict switch)
+/// and without: every step byte-identical (the heal line aside), built
+/// outputs and MODULE.bazel.lock included. About half the steps run
+/// without `BAZEL_RS_SNAPSHOT_EXPLAIN` (the production path: the first
+/// failing check cancels the rest of the attempt; the outcome comes from
+/// the `PERF-SNAPSHOT` lines). `BAZEL_RS_SNAPSHOT_FUZZ_STEPS` (default 50)
+/// and `BAZEL_RS_SNAPSHOT_FUZZ_SEED` (default: from the clock; printed) — a
 /// failure prints the seed and the steps so far.
 ///
-/// Not in the catalogue (documented deviations, fixtures of their own): an
-/// in-place edit of a store-tree file's bytes or mode (a hit executes with
-/// the edited file, `a_hit_hashes_an_edited_tree_file_by_its_change_time`;
-/// a failure it causes heals once the failed hit verified the trees,
-/// `a_failed_hit_on_a_tampered_store_tree_heals`) and a store-tree runfile
-/// made unreadable (the hit fails once, then heals,
-/// `a_store_input_staged_by_the_test_runner_heals`).
+/// Not in the catalogue under `on` (documented deviations, fixtures of
+/// their own): an in-place byte or mode edit of a store-tree file (a hit
+/// executes with the edited file, `a_hit_hashes_an_edited_tree_file_by_its_change_time`;
+/// a failure it causes heals, `a_failed_hit_on_a_tampered_store_tree_heals`)
+/// and a store-tree runfile made unreadable
+/// (`a_store_input_staged_by_the_test_runner_heals`).
 #[test]
 fn mutation_fuzz() {
     let steps: usize = std::env::var("BAZEL_RS_SNAPSHOT_FUZZ_STEPS")
@@ -3003,88 +3397,177 @@ fn mutation_fuzz() {
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     let mut previous: Option<usize> = None;
     for step in 0..steps {
-        let mut concurrent = false;
         // Mostly a mutation, sometimes none; the command mostly the previous
         // one (hits need a repeated command), sometimes another.
-        let mutation = if step == 0 {
-            "#- cold".to_owned()
+        let (mutation, special) = if step == 0 {
+            ("#- cold".to_owned(), Special::None)
         } else if rng.percent(70) {
-            mutate(&twin, &mut rng, &mut state, step, &mut concurrent)
+            mutate(&twin, &mut rng, &mut state, step)
         } else {
-            "#- no change".to_owned()
+            ("#- no change".to_owned(), Special::None)
         };
         let command = match previous {
+            // A tampered tree is read by the default build's actions.
+            _ if special == Special::Tamper => 0,
             Some(command) if rng.percent(55) => command,
             _ => rng.below(FUZZ_COMMANDS),
         };
         previous = Some(command);
-        let args = fuzz_command(&twin, command, &state);
-        let mode = if rng.percent(30) { VERIFY } else { ON };
+        let (args, cwd) = fuzz_command(&twin, command, &state);
+        let mode = if special == Special::Tamper || rng.percent(30) {
+            VERIFY
+        } else {
+            ON
+        };
         twin.mode.set(mode);
+        twin.strict.set(special != Special::Tamper);
+        twin.explain.set(rng.percent(50));
+        *twin.cwd.borrow_mut() = cwd;
         let env_owned = state.env();
         let env: Vec<(&str, &str)> = env_owned
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        log.push(format!("step {step}: {mutation}; {mode} {argv:?} {env:?}"));
+        log.push(format!(
+            "step {step}: {mutation}; {mode}{}{} {argv:?}{} {env:?}",
+            if twin.strict.get() || mode == ON {
+                ""
+            } else {
+                " (not strict)"
+            },
+            if twin.explain.get() {
+                ""
+            } else {
+                " (no EXPLAIN)"
+            },
+            cwd.map(|cwd| format!(" in {cwd}")).unwrap_or_default(),
+        ));
+        let verify_lines = verify_log(&twin).len();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let pair = if concurrent {
-                // Once in sequence (concurrent runs share the action cache:
-                // which of them executes an action first is a race), then
-                // twice at once on the snapshot side.
-                twin.same(&argv, &env);
-                let off = twin.run_side(OFF, &argv, &env);
-                let outputs = twin.with_side(ON, || {
-                    let children: Vec<_> = (0..2)
-                        .map(|_| {
-                            twin.command(&argv, &env, true)
-                                .stdout(std::process::Stdio::piped())
-                                .stderr(std::process::Stdio::piped())
-                                .spawn()
-                                .unwrap()
+            let pair = match special {
+                Special::Concurrent => {
+                    // Once in sequence (concurrent runs share the action
+                    // cache: which of them executes an action first is a
+                    // race), then twice at once on the snapshot side.
+                    twin.same(&argv, &env);
+                    let off = twin.run_side(OFF, &argv, &env);
+                    let outputs = twin.with_side(ON, || {
+                        let children: Vec<_> = (0..2)
+                            .map(|_| {
+                                twin.command(&argv, &env, true)
+                                    .stdout(std::process::Stdio::piped())
+                                    .stderr(std::process::Stdio::piped())
+                                    .spawn()
+                                    .unwrap()
+                            })
+                            .collect();
+                        children
+                            .into_iter()
+                            .map(|child| child.wait_with_output().unwrap())
+                            .collect::<Vec<_>>()
+                    });
+                    let mut pairs: Vec<Pair> = outputs
+                        .into_iter()
+                        .map(|on| Pair {
+                            on,
+                            off: off.clone(),
+                            mode,
                         })
                         .collect();
-                    children
-                        .into_iter()
-                        .map(|child| child.wait_with_output().unwrap())
-                        .collect::<Vec<_>>()
-                });
-                let mut pairs: Vec<Pair> = outputs
-                    .into_iter()
-                    .map(|on| Pair {
-                        on,
-                        off: off.clone(),
+                    for pair in &pairs {
+                        pair.assert_same(&argv);
+                    }
+                    pairs.pop().unwrap()
+                }
+                Special::ConcurrentOther => {
+                    // Another command (from the root), warmed like the
+                    // first; fifteen stand-in snapshots make any save
+                    // collect, racing the other's hit and its refresh.
+                    let cwd = *twin.cwd.borrow();
+                    *twin.cwd.borrow_mut() = None;
+                    let (other, _) = fuzz_command(&twin, (command + 1) % 8, &state);
+                    let other: Vec<&str> = other.iter().map(String::as_str).collect();
+                    twin.same(&other, &env);
+                    let other_off = twin.run_side(OFF, &other, &env);
+                    *twin.cwd.borrow_mut() = cwd;
+                    twin.same(&argv, &env);
+                    let off = twin.run_side(OFF, &argv, &env);
+                    let store = twin.side(ON).join("cache/snapshots/v1");
+                    for n in 0..15 {
+                        let _ = fs::write(
+                            store.join(format!("0000000000000000000000000000{n:04}.snap")),
+                            b"x",
+                        );
+                    }
+                    let (mine, theirs) = twin.with_side(ON, || {
+                        let mine = twin
+                            .command(&argv, &env, true)
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .unwrap();
+                        let cwd = *twin.cwd.borrow();
+                        *twin.cwd.borrow_mut() = None;
+                        let theirs = twin
+                            .command(&other, &env, true)
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .spawn()
+                            .unwrap();
+                        *twin.cwd.borrow_mut() = cwd;
+                        (
+                            mine.wait_with_output().unwrap(),
+                            theirs.wait_with_output().unwrap(),
+                        )
+                    });
+                    for entry in fs::read_dir(&store).unwrap().flatten() {
+                        if entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("0000000000000000")
+                        {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                    Pair {
+                        on: theirs,
+                        off: other_off,
                         mode,
-                    })
-                    .collect();
-                for pair in &pairs {
-                    pair.assert_same(&argv);
-                }
-                pairs.pop().unwrap()
-            } else {
-                let pair = twin.same(&argv, &env);
-                // What the build wrote (stdout's `<label>\t<path>` lines).
-                if argv[0] == "build" {
-                    let outputs = |side: &str, output: &Output| -> Vec<(String, Vec<u8>)> {
-                        let stdout = text(&output.stdout);
-                        twin.with_side(side, || {
-                            stdout
-                                .lines()
-                                .filter_map(|line| line.split_once('\t'))
-                                .map(|(_, path)| {
-                                    (path.to_owned(), fs::read(path).unwrap_or_default())
-                                })
-                                .collect()
-                        })
+                    }
+                    .assert_same(&other);
+                    let pair = Pair {
+                        on: mine,
+                        off,
+                        mode,
                     };
-                    assert_eq!(
-                        outputs(ON, &pair.on),
-                        outputs(OFF, &pair.off),
-                        "{argv:?}: the outputs differ"
-                    );
+                    pair.assert_same(&argv);
+                    pair
                 }
-                pair
+                Special::None | Special::Tamper => {
+                    let pair = twin.same(&argv, &env);
+                    // What the build wrote (stdout's `<label>\t<path>` lines).
+                    if argv[0] == "build" {
+                        let outputs = |side: &str, output: &Output| -> Vec<(String, Vec<u8>)> {
+                            let stdout = text(&output.stdout);
+                            twin.with_side(side, || {
+                                stdout
+                                    .lines()
+                                    .filter_map(|line| line.split_once('\t'))
+                                    .map(|(_, path)| {
+                                        (path.to_owned(), fs::read(path).unwrap_or_default())
+                                    })
+                                    .collect()
+                            })
+                        };
+                        assert_eq!(
+                            outputs(ON, &pair.on),
+                            outputs(OFF, &pair.off),
+                            "{argv:?}: the outputs differ"
+                        );
+                    }
+                    pair
+                }
             };
             // A hit writes no lockfile: it may only hit when the full
             // analysis would not have written one either.
@@ -3095,19 +3578,44 @@ fn mutation_fuzz() {
                 lockfile(ON).map(|bytes| bytes.len()),
                 lockfile(OFF).map(|bytes| bytes.len())
             );
+            // A tampered tree under verify mode: a hit's shadow full
+            // analysis repairs it, which must be logged as a taint.
+            if special == Special::Tamper
+                && fuzz_outcome(&pair) != "miss"
+                && fuzz_outcome(&pair) != "miss, saved"
+                && fuzz_outcome(&pair) != "miss (no EXPLAIN)"
+            {
+                let lines = verify_log(&twin);
+                assert_eq!(lines.len(), verify_lines + 1, "{argv:?}: {lines:?}");
+                assert!(
+                    lines
+                        .last()
+                        .is_some_and(|line| line.contains(" first=taint ")
+                            && line.contains(" taint=repository-rule-executed ")),
+                    "{argv:?}: {lines:?}"
+                );
+            }
             pair
         }));
+        *twin.cwd.borrow_mut() = None;
+        for (file, bytes, mode) in std::mem::take(&mut state.tampered) {
+            use std::os::unix::fs::MetadataExt;
+            let current = fs::symlink_metadata(&file).map(|metadata| metadata.mode() & 0o7777);
+            if fs::read(&file).ok().as_ref() != Some(&bytes) || current.ok() != Some(mode & 0o7777)
+            {
+                let _ = fs::set_permissions(&file, fs::Permissions::from_mode(0o644));
+                let _ = fs::write(&file, &bytes);
+                let _ = fs::set_permissions(&file, fs::Permissions::from_mode(mode));
+            }
+        }
+        if std::mem::take(&mut state.corrupt) {
+            twin.each(|root| {
+                let _ = fs::remove_file(root.join("ws/MODULE.bazel.lock"));
+            });
+        }
         match outcome {
             Ok(pair) => {
-                let what = if pair.line("verified ").is_some() {
-                    "verified hit"
-                } else if pair.line("hit ").is_some() {
-                    "hit"
-                } else if pair.line("saved ").is_some() {
-                    "miss, saved"
-                } else {
-                    "miss"
-                };
+                let what = fuzz_outcome(&pair);
                 *counts.entry(what).or_default() += 1;
                 log.last_mut().unwrap().push_str(&format!(" -> {what}"));
             }
