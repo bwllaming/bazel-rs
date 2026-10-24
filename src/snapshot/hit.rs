@@ -572,7 +572,8 @@ pub const LOCAL_TREE_DIFFERS: &str = "its published tree differs from its manife
 /// Rewrite the snapshot with the keys the validation settled (PLAN-L2 §1c:
 /// "if any keys were refreshed, rewrite the file in the background"): the
 /// INPUTS section re-encoded, the other sections copied from the file the
-/// hit read.
+/// hit read — and renamed over it only while its path still names that
+/// file (crate::snapshot::store::Pending::commit_replacing, L2-W5h).
 fn refresh_in_background(
     reader: Reader,
     mut inputs: format::Inputs,
@@ -603,10 +604,13 @@ fn refresh_in_background(
             g: reader.header.key,
             binary: reader.header.binary,
         };
+        let read = reader.identity();
         drop(reader);
+        // Only over the file the hit read (L2-W5h): never brings back a
+        // snapshot healed, removed or replaced meanwhile.
         let _ = store::write_in_background(&cache, &key, sections)
             .logged(log)
-            .commit();
+            .commit_replacing(read);
     })
 }
 
@@ -622,37 +626,45 @@ pub struct Session {
     log: crate::snapshot::telemetry::Context,
 }
 
-/// The repository trees a hit used without looking into them (L2-W5g),
-/// verified when its command fails ([`heal`]): the snapshot's verified
-/// store trees (their REPO records, and the trees only a link crossed into)
-/// and the published trees of its local repositories, with the execution
-/// each must still hold.
+/// The repository trees a hit used without looking into their files
+/// (L2-W5g), verified when its command fails ([`heal`]): the snapshot's
+/// verified store trees — each once (L2-W5h): an owner's as its store's
+/// warm check does, one only a link crossed into as the crossing did
+/// (content only) — and the published trees of its local repositories,
+/// with the execution each must still hold. Under the full policy
+/// (`--verify_repo_tampering`) the store trees are left out: the lookup
+/// checked every file's INTEGRITY entry already (L2-W5h).
 #[derive(Debug, Default)]
 struct Trees {
+    /// Trees an owner recorded (a reused publication).
     store: Vec<crate::repository_store::PublishedTree>,
-    /// Roots of published trees a link crossed into (resolved against the
-    /// canonical store when verified).
-    crossed: Vec<PathBuf>,
+    /// Trees only a link crossed into (crate::source_links: verified
+    /// against their manifest's content on the crossing).
+    crossed: Vec<crate::repository_store::PublishedTree>,
     local: Vec<(String, PathBuf, crate::repository_store::LocalExecution)>,
 }
 
 impl Trees {
     fn of(inputs: &format::Inputs) -> Self {
-        Self {
-            store: inputs
-                .recording
-                .repositories
-                .iter()
-                .filter_map(|tree| {
-                    Some(crate::repository_store::PublishedTree {
-                        kind: tree.kind,
-                        id: tree.root.file_name()?.to_str()?.to_owned(),
-                        root: tree.root.clone(),
-                        manifest: tree.manifest.clone()?,
-                    })
+        let full =
+            crate::snapshot::validate::Policy::current() == crate::snapshot::validate::Policy::Full;
+        let (crossed, store): (Vec<_>, Vec<_>) = inputs
+            .recording
+            .repositories
+            .iter()
+            .filter(|_| !full)
+            .filter_map(|tree| {
+                Some(crate::repository_store::PublishedTree {
+                    kind: tree.kind,
+                    id: tree.root.file_name()?.to_str()?.to_owned(),
+                    root: tree.root.clone(),
+                    manifest: tree.manifest.clone()?,
                 })
-                .collect(),
-            crossed: inputs.recording.crossed.clone(),
+            })
+            .partition(|tree| inputs.recording.crossed.contains(&tree.root));
+        Self {
+            store,
+            crossed,
             local: inputs
                 .replay
                 .iter()
@@ -671,37 +683,18 @@ impl Trees {
     /// entry. The trees are verified on up to eight threads; the first
     /// mismatch found stops the others (which one is reported when several
     /// differ depends on the timing).
-    fn first_mismatch(&self, cache: &Path) -> Option<crate::repository_store::TreeMismatch> {
-        let crossed: Vec<crate::repository_store::PublishedTree> = if self.crossed.is_empty() {
-            Vec::new()
-        } else {
-            std::fs::canonicalize(cache.join("repositories"))
-                .map(|store| {
-                    self.crossed
-                        .iter()
-                        .filter_map(|root| crate::repository_store::store_tree_of(&store, root))
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        let store: Vec<&crate::repository_store::PublishedTree> =
-            self.store.iter().chain(&crossed).collect();
+    fn first_mismatch(&self) -> Option<crate::repository_store::TreeMismatch> {
+        let (store, crossed) = (self.store.len(), self.crossed.len());
         let check = |index: usize| -> Option<crate::repository_store::TreeMismatch> {
-            match store.get(index) {
-                Some(tree) => crate::repository_store::verify_as_reused(tree).err(),
-                None => {
-                    let (canonical, root, execution) = &self.local[index - store.len()];
-                    crate::repository_store::verify_local_publication(root, execution)
-                        .err()
-                        .map(|mut mismatch| {
-                            mismatch.message =
-                                format!("local repository {canonical}: {}", mismatch.message);
-                            mismatch
-                        })
-                }
+            if index < store {
+                crate::repository_store::verify_as_reused(&self.store[index]).err()
+            } else if index < store + crossed {
+                crate::repository_store::check_published_tree(&self.crossed[index - store]).err()
+            } else {
+                self.check_local(index - store - crossed).err()
             }
         };
-        let total = store.len() + self.local.len();
+        let total = self.len();
         let threads = std::thread::available_parallelism()
             .map(usize::from)
             .unwrap_or(1)
@@ -742,6 +735,43 @@ impl Trees {
     /// How many trees [`Trees::first_mismatch`] verifies at most.
     fn len(&self) -> usize {
         self.store.len() + self.crossed.len() + self.local.len()
+    }
+
+    /// The local repository `index`'s published tree against its execution.
+    fn check_local(&self, index: usize) -> Result<(), crate::repository_store::TreeMismatch> {
+        let (canonical, root, execution) = &self.local[index];
+        crate::repository_store::verify_local_publication(root, execution).map_err(
+            |mut mismatch| {
+                mismatch.message = format!("local repository {canonical}: {}", mismatch.message);
+                mismatch
+            },
+        )
+    }
+
+    /// The tree containing `path` — one of `spellings` of a path a failed
+    /// command's error named (L2-W5h) — checked as [`Trees::first_mismatch`]
+    /// checks it (a published tree of the store the snapshot did not record
+    /// as its store's warm check does), or `None` when the path lies in no
+    /// tree.
+    fn check_named(
+        &self,
+        store: &Path,
+        spellings: &[PathBuf],
+    ) -> Option<Result<(), crate::repository_store::TreeMismatch>> {
+        let within = |root: &Path| spellings.iter().any(|path| path.starts_with(root));
+        if let Some(index) = self.local.iter().position(|(_, root, _)| within(root)) {
+            return Some(self.check_local(index));
+        }
+        if let Some(tree) = self.crossed.iter().find(|tree| within(&tree.root)) {
+            return Some(crate::repository_store::check_published_tree(tree));
+        }
+        if let Some(tree) = self.store.iter().find(|tree| within(&tree.root)) {
+            return Some(crate::repository_store::verify_as_reused(tree));
+        }
+        let tree = spellings
+            .iter()
+            .find_map(|path| crate::repository_store::store_tree_of(store, path))?;
+        Some(crate::repository_store::verify_as_reused(&tree))
     }
 }
 
@@ -841,14 +871,16 @@ pub fn heal_after_failure(error: Option<&str>) {
 
 /// A hit's command failed (with `error`, when there is one: a failing test
 /// has none). The snapshot may have trusted a damaged tree — the per-tree
-/// validation does not look into a tree's files, a local repository's
-/// replay not into its published tree; the full analysis repairs both — so
-/// it is removed, with one line saying so, when
+/// validation does not look into a store tree's files, and execution may
+/// have changed a local repository's tree checked before it; the full
+/// analysis repairs both — so it is removed, with one line naming the
+/// first differing entry, when
 ///
-/// * the error names a path inside the repository store at all — quoted or
-///   not, missing or not (L2-W5f review F4; a failure that merely mentions
-///   a store path costs one full analysis next time); or
-/// * a tree of the snapshot no longer verifies ([`Trees::first_mismatch`],
+/// * the tree containing a repository-store path the error names (quoted
+///   or not, missing or not; L2-W5f review F4) no longer verifies — L2-W5h:
+///   that tree is checked first, no longer removed outright, so a failure
+///   that merely mentions an intact store path keeps the snapshot; or
+/// * any tree of the snapshot no longer verifies ([`Trees::first_mismatch`],
 ///   L2-W5g): a byte or mode edit whose failure names no store path (an
 ///   action citing a tampered tool by its execution-root path, a test
 ///   failing on a tampered runfile) — before, every hit failed the same way.
@@ -865,17 +897,33 @@ fn heal(
 ) -> bool {
     let started = Instant::now();
     let store = cache.join("repositories");
+    let canonical_store = std::fs::canonicalize(&store).ok();
     let named = error.and_then(|error| {
         store_path_in(error, &store).or_else(|| {
-            std::fs::canonicalize(&store)
-                .ok()
-                .and_then(|canonical| store_path_in(error, &canonical))
+            canonical_store
+                .as_ref()
+                .and_then(|canonical| store_path_in(error, canonical))
         })
     });
-    let mismatch = match named {
-        Some(_) => None,
-        None => match trees.first_mismatch(cache) {
-            Some(mismatch) => Some(mismatch),
+    // The tree the error names first (L2-W5h: verified, no longer removed
+    // outright — a failure that merely mentions an intact store path keeps
+    // the snapshot), then every tree of the snapshot.
+    let named_mismatch = named.as_ref().and_then(|path| {
+        let path = PathBuf::from(path);
+        let mut spellings = vec![path.clone()];
+        if let Some(canonical) = &canonical_store
+            && let Ok(rest) = path.strip_prefix(&store)
+        {
+            spellings.push(canonical.join(rest));
+        }
+        trees
+            .check_named(canonical_store.as_deref().unwrap_or(&store), &spellings)
+            .and_then(Result::err)
+    });
+    let (rule, mismatch) = match named_mismatch {
+        Some(mismatch) => ("store-path", mismatch),
+        None => match trees.first_mismatch() {
+            Some(mismatch) => ("tree", mismatch),
             None => {
                 timing_line(trees, started, false);
                 return false;
@@ -887,36 +935,25 @@ fn heal(
     if store::remove(cache, key).is_err() {
         return false;
     }
-    match (named, mismatch) {
-        (Some(path), _) => {
-            log.log_healed(
-                &key.short(),
-                "store-path",
-                "named",
-                Path::new(&path),
-                ms,
-                error.unwrap_or_default(),
-            );
-            eprintln!(
-                "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store; the next build re-analyzes and repairs it"
-            );
-        }
-        (None, Some(mismatch)) => {
-            log.log_healed(
-                &key.short(),
-                "tree",
-                mismatch.class,
-                &mismatch.path,
-                ms,
-                &mismatch.message,
-            );
-            eprintln!(
-                "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
-                mismatch.root.display(),
-                mismatch.entry_text()
-            );
-        }
-        (None, None) => {}
+    log.log_healed(
+        &key.short(),
+        rule,
+        mismatch.class,
+        &mismatch.path,
+        ms,
+        &mismatch.message,
+    );
+    match (rule, named) {
+        ("store-path", Some(path)) => eprintln!(
+            "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store, whose tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
+            mismatch.root.display(),
+            mismatch.entry_text()
+        ),
+        _ => eprintln!(
+            "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
+            mismatch.root.display(),
+            mismatch.entry_text()
+        ),
     }
     true
 }
@@ -968,13 +1005,42 @@ mod tests {
         }
     }
 
-    /// L2-W5f review F4: a failed hit whose error names any path in the
-    /// repository store — quoted or not, missing or not — removes the
-    /// snapshot (also after the build part, `heal_after_failure`); other
-    /// failures keep it.
+    /// A published direct tree in `store` holding `tool.sh` (0755) and
+    /// `data.txt`, under `key`.
+    fn published(store: &Path, key: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        crate::repository_store::materialize(
+            store,
+            key,
+            key.as_bytes(),
+            b"provenance",
+            |_, _| Ok(true),
+            |stage: &Path| {
+                let tool = stage.join("tool.sh");
+                std::fs::write(&tool, "#!/bin/sh\n").map_err(|e| e.to_string())?;
+                std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(stage.join("data.txt"), "good\n").map_err(|e| e.to_string())?;
+                Ok(crate::repository_store::Executed {
+                    inputs: key.as_bytes().to_vec(),
+                    recorded: br#"{"version":1}"#.to_vec(),
+                })
+            },
+        )
+        .unwrap()
+        .0
+    }
+
+    /// L2-W5f review F4, narrowed by L2-W5h: a failed hit whose error names
+    /// a path in the repository store — quoted or not, missing or not, as
+    /// given or canonical — checks the tree containing it first and removes
+    /// the snapshot when that tree no longer verifies (also after the build
+    /// part, `heal_after_failure`); a named path in an intact tree, or in no
+    /// tree, keeps it, like any other failure.
     #[test]
-    fn a_failed_hit_naming_the_store_removes_the_snapshot() {
+    fn a_failed_hit_naming_the_store_verifies_the_named_tree() {
         let cache = tempfile::tempdir().unwrap();
+        let store_root = cache.path().join("repositories");
         let key = Key {
             g: [3; 32],
             binary: [4; 32],
@@ -984,6 +1050,7 @@ mod tests {
                 .commit()
                 .unwrap();
         };
+        let root = published(&store_root, "+gen_rule+named");
         save();
         let session = |cache: &Path| Session {
             cache: cache.to_path_buf(),
@@ -993,34 +1060,84 @@ mod tests {
             trees: Trees::default(),
             log: crate::snapshot::telemetry::Context::default(),
         };
-        let present = cache.path().join("repositories/trees/ab");
-        std::fs::create_dir_all(&present).unwrap();
-        // A failure outside the store: kept.
+        let kept = || store::path(cache.path(), &key).exists();
+        // A failure outside the store, a named path in an intact tree or in
+        // no tree: kept.
         session(cache.path()).failed("cannot inspect '/surely/missing/w5': x");
         session(cache.path()).failed("compile error in //pkg:x");
-        assert!(store::path(cache.path(), &key).exists());
-        // An existing path in the store, unquoted: removed.
-        session(cache.path()).failed(&format!("cannot stage {}: x", present.display()));
-        assert!(!store::path(cache.path(), &key).exists());
+        session(cache.path()).failed(&format!(
+            "cannot stage {}: x",
+            root.join("data.txt").display()
+        ));
+        session(cache.path()).failed(&format!(
+            "cannot read '{}': x",
+            store_root.join("direct/specs/x").display()
+        ));
+        assert!(kept());
+        // A file of the named tree deleted: removed.
+        std::fs::remove_file(root.join("data.txt")).unwrap();
+        session(cache.path()).failed(&format!(
+            "cannot inspect '{}': No such file or directory (os error 2)",
+            root.join("data.txt").display()
+        ));
+        assert!(!kept());
         // Through the canonical store path (the cache reached by a link).
         save();
         let link = tempfile::tempdir().unwrap();
         let linked = link.path().join("cache");
         std::os::unix::fs::symlink(cache.path(), &linked).unwrap();
-        let canonical = std::fs::canonicalize(&present).unwrap();
-        session(&linked).failed(&format!("cannot inspect '{}': x", canonical.display()));
-        assert!(!store::path(cache.path(), &key).exists());
+        let canonical = std::fs::canonicalize(&root).unwrap();
+        session(&linked).failed(&format!(
+            "cannot inspect '{}': x",
+            canonical.join("data.txt").display()
+        ));
+        assert!(!kept());
         // After the build part succeeded (a test runner's error).
         save();
         session(cache.path()).finish();
         heal_after_failure(Some("a test failed"));
-        assert!(store::path(cache.path(), &key).exists());
+        assert!(kept());
         session(cache.path()).finish();
         heal_after_failure(Some(&format!(
             "cannot inspect '{}': No such file or directory",
-            present.join("gone.go").display()
+            root.join("data.txt").display()
         )));
-        assert!(!store::path(cache.path(), &key).exists());
+        assert!(!kept());
+    }
+
+    /// L2-W5h: a tree only a link crossed into is checked once, as the
+    /// crossing checked it — content, no modes — while an owner's tree is
+    /// checked as its store's warm check does (modes too).
+    #[test]
+    fn crossed_trees_are_checked_for_their_content_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let cache = tempfile::tempdir().unwrap();
+        let store_root = cache.path().join("repositories");
+        let root = published(&store_root, "+gen_rule+crossed");
+        let tree = crate::repository_store::published_tree(&store_root, &root).unwrap();
+        let crossed = Trees {
+            crossed: vec![tree.clone()],
+            ..Trees::default()
+        };
+        let owned = Trees {
+            store: vec![tree],
+            ..Trees::default()
+        };
+        assert!(crossed.first_mismatch().is_none() && owned.first_mismatch().is_none());
+        std::fs::set_permissions(root.join("tool.sh"), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert!(crossed.first_mismatch().is_none());
+        assert_eq!(
+            owned.first_mismatch().map(|mismatch| mismatch.class),
+            Some("mode")
+        );
+        std::fs::write(root.join("data.txt"), "bad!\n").unwrap();
+        let mismatch = crossed.first_mismatch().unwrap();
+        assert_eq!(
+            (mismatch.class, mismatch.path),
+            ("content", root.join("data.txt"))
+        );
+        assert_eq!(crossed.len(), 1);
     }
 
     /// L2-W5g: a failed hit verifies the trees it used without looking into

@@ -58,6 +58,16 @@ pub struct Reader {
     file: File,
     pub path: PathBuf,
     pub header: Header,
+    /// The file's device and inode ([`Pending::commit_replacing`]).
+    identity: FileIdentity,
+}
+
+/// A file's device and inode number: which file a path named.
+pub type FileIdentity = (u64, u64);
+
+fn identity_of(metadata: &fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt;
+    (metadata.dev(), metadata.ino())
 }
 
 impl Reader {
@@ -70,10 +80,11 @@ impl Reader {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("cannot open {}: {error}", path.display())),
         };
-        let len = file
+        let metadata = file
             .metadata()
-            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?
-            .len();
+            .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+        let len = metadata.len();
+        let identity = identity_of(&metadata);
         let mut bytes = [0u8; HEADER_LEN];
         file.read_exact_at(&mut bytes, 0)
             .map_err(|_| "truncated header".to_owned())?;
@@ -91,7 +102,17 @@ impl Reader {
         if header.key != key.g {
             return Err("the file holds another key".to_owned());
         }
-        Ok(Some(Self { file, path, header }))
+        Ok(Some(Self {
+            file,
+            path,
+            header,
+            identity,
+        }))
+    }
+
+    /// Which file the reader opened ([`Pending::commit_replacing`]).
+    pub fn identity(&self) -> FileIdentity {
+        self.identity
     }
 
     /// One section's bytes, checked against its checksum.
@@ -225,6 +246,30 @@ impl Pending {
     /// writer's note.
     pub fn commit(mut self) -> Result<(u64, String), String> {
         let written = self.join()?;
+        self.rename_and_collect(written)
+    }
+
+    /// [`Pending::commit`] of a hit's refresh (crate::snapshot::hit): only
+    /// while the key's path still names `read`, the file the hit read
+    /// (L2-W5h). A snapshot removed meanwhile — healed by a failed hit,
+    /// removed by a verify mismatch, evicted — or replaced by another save
+    /// is never brought back by the refresh of the old one (checked after
+    /// the writer finished, right before the rename).
+    pub fn commit_replacing(mut self, read: FileIdentity) -> Result<(u64, String), String> {
+        let written = self.join()?;
+        let current = fs::symlink_metadata(&self.path)
+            .ok()
+            .map(|metadata| identity_of(&metadata));
+        if current != Some(read) {
+            return Err(format!(
+                "{} was removed or replaced since the hit read it: not refreshed",
+                self.path.display()
+            ));
+        }
+        self.rename_and_collect(written)
+    }
+
+    fn rename_and_collect(&mut self, written: (u64, String)) -> Result<(u64, String), String> {
         fs::rename(&self.temporary, &self.path).map_err(|error| {
             let _ = fs::remove_file(&self.temporary);
             format!("cannot rename {}: {error}", self.temporary.display())
@@ -435,6 +480,43 @@ mod tests {
         reader.touch();
         let again = Reader::open(cache, &key(1)).unwrap().unwrap();
         assert_eq!(again.section(Section::Plan).unwrap(), b"newer");
+    }
+
+    /// L2-W5h: a hit's refresh replaces only the file the hit read; a
+    /// snapshot removed (healed, evicted) or replaced (saved anew) since
+    /// stays removed or replaced, and no temporary file is left behind.
+    #[test]
+    fn a_refresh_never_brings_back_a_removed_or_replaced_snapshot() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache = cache.path();
+        let refresh = |reader: &Reader, plan: &[u8]| {
+            write_in_background(cache, &key(1), sections(plan)).commit_replacing(reader.identity())
+        };
+        write_in_background(cache, &key(1), sections(b"old"))
+            .commit()
+            .unwrap();
+        // Unchanged since it was read: replaced by the refresh.
+        let reader = Reader::open(cache, &key(1)).unwrap().unwrap();
+        refresh(&reader, b"refreshed").unwrap();
+        let reader = Reader::open(cache, &key(1)).unwrap().unwrap();
+        assert_eq!(reader.section(Section::Plan).unwrap(), b"refreshed");
+        // Removed meanwhile (a heal): stays removed.
+        fs::remove_file(path(cache, &key(1))).unwrap();
+        assert!(refresh(&reader, b"resurrected").is_err());
+        assert!(!path(cache, &key(1)).exists());
+        // Replaced meanwhile (another save): the other save stays.
+        write_in_background(cache, &key(1), sections(b"newer"))
+            .commit()
+            .unwrap();
+        assert!(refresh(&reader, b"stale").is_err());
+        let again = Reader::open(cache, &key(1)).unwrap().unwrap();
+        assert_eq!(again.section(Section::Plan).unwrap(), b"newer");
+        let leftovers = fs::read_dir(directory(cache))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".tmp-"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

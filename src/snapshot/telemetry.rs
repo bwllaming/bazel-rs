@@ -576,6 +576,10 @@ mod tests {
             ("the command failed (taint network (1): x)", "failed"),
             ("cannot capture stderr: x", "capture"),
             (
+                "the stderr capture ended early (a caught panic?)",
+                "capture",
+            ),
+            (
                 "a process kept the captured stderr open after planning (a lingering child?)",
                 "capture",
             ),

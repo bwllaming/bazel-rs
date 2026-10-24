@@ -815,7 +815,14 @@ fn compare_window(snapshot: &[u8], window: Option<&Captured>, report: &mut Repor
         );
         return;
     };
-    if !window.complete {
+    if window.ended_early {
+        // L2-W5h: a caught panic, never a lingering child.
+        report.mismatch(
+            Class::Window,
+            "the full analysis's stderr capture ended early (a caught panic?)".to_owned(),
+            Vec::new(),
+        );
+    } else if !window.complete {
         report.mismatch(
             Class::Window,
             "a process kept the full analysis's captured stderr open (a lingering child?)"

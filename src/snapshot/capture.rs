@@ -134,6 +134,11 @@ pub struct Captured {
     /// [`Mode::Tee`]; for [`Mode::Shadow`] once it overflowed, ended early
     /// or stopped incomplete (L2-W5g).
     pub forwarded: bool,
+    /// The capture ended before its owner stopped it — a panic (caught
+    /// later, or the process would have ended) or the memory watchdog's
+    /// exit ([`restore_for_exit`]) — so `bytes` is empty and `complete`
+    /// false for that reason, not a lingering child (L2-W5h).
+    pub ended_early: bool,
 }
 
 /// Redirect file descriptor 2 into a capture (one at a time per process).
@@ -293,6 +298,7 @@ impl Capture {
         // restored stderr: what came after went there directly.
         finish(bound, false).unwrap_or(Captured {
             forwarded: true,
+            ended_early: true,
             ..Captured::default()
         })
     }
@@ -356,6 +362,7 @@ fn collect(
         complete,
         overflowed: state.overflowed,
         forwarded: mode == Mode::Tee || state.forwarding,
+        ended_early: early,
     }
 }
 
@@ -479,6 +486,7 @@ mod tests {
         let captured = rig.stop(true, false);
         assert_eq!(captured.bytes, b"planning printed\n");
         assert!(captured.complete && !captured.overflowed && !captured.forwarded);
+        assert!(!captured.ended_early);
         assert!(rig.original().is_empty());
     }
 
@@ -543,6 +551,9 @@ mod tests {
         rig.settle(|state| !state.bytes.is_empty());
         let captured = rig.stop(true, true);
         assert!(captured.forwarded);
+        // L2-W5h: an early end says so (a caught panic is no lingering
+        // child).
+        assert!(captured.ended_early);
         assert_eq!(rig.original(), b"before the panic\n");
     }
 

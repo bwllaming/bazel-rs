@@ -133,6 +133,11 @@ impl Save {
             .window
             .take()
             .ok_or("planning printed outside the capture")?;
+        // An early end first: its capture is incomplete too, but no child
+        // holds the pipe (L2-W5h: a caught panic was reported as one).
+        if window.ended_early || capture::broken() {
+            return Err("the stderr capture ended early (a caught panic?)".to_owned());
+        }
         if !window.complete {
             return Err(
                 "a process kept the captured stderr open after planning (a lingering child?)"
@@ -144,9 +149,6 @@ impl Save {
                 "planning printed more than {} bytes",
                 capture::LIMIT
             ));
-        }
-        if capture::broken() {
-            return Err("the stderr capture ended early (a panic?)".to_owned());
         }
         if let Some(session) = self.registry.as_ref().and_then(SessionHandle::session) {
             if session.updated_lockfile().is_some() {

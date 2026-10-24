@@ -95,7 +95,11 @@ safe by construction, or be covered like any other path:
 Any other path under the cache dir is an input like a workspace file: it
 must be covered by the INPUTS (counted as `covered-input`: e.g. the hidden
 lockfile, a READ observation the validation re-reads when racy) or it is
-reported as unrecorded (`CACHE <path>`).
+reported as unrecorded (`CACHE <path>`). The cache-root and
+store-directories classes admit only metadata calls (L2-W5h: stat, lstat,
+newfstatat, statx, readlink, readlinkat, mkdir, mkdirat): any other call on
+those directories — an open, a listing, a write — is reported
+(`CACHE <path> [<call> in <class>]`).
 
 usage: snapshot_fs_audit.py [--binary BIN] [--workspace DIR] [--cache DIR]
                             [--hit] [--keep] [--report FILE] [-- ARG...]
@@ -553,7 +557,7 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
         elif name == 'execve' and start < i < end:
             started.add(pid)
 
-    def covered(kind, p, line, opened, pid, read):
+    def covered(kind, p, line, opened, pid, read, name):
         if kind == 'dir':
             fd = FD_ARG.match(line.split('(', 1)[1]) if '(' in line else None
             logical = opened.get((pid, int(fd.group(1)))) if fd else None
@@ -565,6 +569,8 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
             return p, None
         if p == cache_root or p.startswith(cache_root + '/'):
             klass = cache_class(p[len(cache_root):], p, recorded, pinned, local_roots)
+            if klass in STAT_ONLY_CLASSES and (kind == 'dir' or name not in STAT_ONLY_CALLS):
+                return f'CACHE {p} [{"getdents64" if kind == "dir" else name} in {klass}]', False
             if klass is not None:
                 cache_classes[klass] = cache_classes.get(klass, 0) + 1
                 return p, None
@@ -607,7 +613,7 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
         # what it produced); validation's and the definition loads' do.
         read = tid not in current and reads_file(name, line, result)
         for kind, p in paths:
-            p, ok = covered(kind, p, line, opened, pid, read)
+            p, ok = covered(kind, p, line, opened, pid, read, name)
             if ok is None:
                 continue
             touched += 1
@@ -646,6 +652,14 @@ def load_local_roots(path):
     manifests = {os.path.join(os.path.dirname(os.path.dirname(root)), 'manifests', os.path.basename(root) + '.json')
                  for root in roots}
     return roots | manifests
+
+
+# The calls the cache-root and store-directories classes admit (L2-W5h): they
+# hold no content a hit may read, so only metadata calls and the mkdir of
+# create_dir_all may touch them.
+STAT_ONLY_CLASSES = {'cache-root', 'store-directories'}
+STAT_ONLY_CALLS = {'stat', 'lstat', 'newfstatat', 'fstatat64', 'statx', 'readlink', 'readlinkat',
+                   'mkdir', 'mkdirat'}
 
 
 def cache_class(rel, p, recorded, pinned, local_roots):

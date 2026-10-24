@@ -135,8 +135,11 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    executed by the same code as a planned one (`build_tail`, `test_tail`,
    `run_tail` in src/main.rs).
 6. After a hit: keys a content check found settled are written back — the
-   snapshot is rewritten in the background with the refreshed INPUTS — and
-   the file's modification time is set (LRU). When the command fails — in
+   snapshot is rewritten in the background with the refreshed INPUTS, and
+   renamed over the file the hit read only while its path still names
+   that file (L2-W5h: a snapshot healed, removed by a verify mismatch,
+   evicted or saved anew meanwhile is never brought back) — and the file's
+   modification time is set (LRU). When the command fails — in
    the build part, in the tests (`test` before it exits 3) or after the
    build part (`test`'s test runner staging a runfile, `run`'s
    preparation) — the hit may have trusted a damaged tree (per tree, a
@@ -144,31 +147,37 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    itself may have changed a local repository's tree checked before it;
    the full analysis repairs both), so the snapshot is removed, and one
    line says so, when
-   * the error names a path in the repository store at all — quoted or
-     not, existing or not (L2-W5f review F4: `bazel-rs: removed the
-     analysis snapshot of this build: its failure involves <path> in the
-     repository store; the next build re-analyzes and repairs it`); or
+   * the tree containing a repository-store path the error names —
+     quoted or not, existing or not, as given or canonical (L2-W5f review
+     F4) — no longer verifies; L2-W5h: that tree is checked first instead
+     of removing the snapshot outright, so a failure that merely mentions
+     an intact store path keeps it (`bazel-rs: removed the analysis
+     snapshot of this build: its failure involves <path> in the repository
+     store, whose tree <root> no longer matches what the analysis recorded
+     (<entry>); the next build re-analyzes and repairs it`); or
    * a tree of the snapshot no longer verifies (L2-W5g, verification-based
-     healing): each verified store tree as its store's warm check does
-     before reusing it — content, modes and links, trusted by stat outside
-     the racy window, every file read under `--verify_repo_tampering` —
-     and each local repository's published tree against its manifest,
-     which must record the replayed execution's identity and tree digest
-     (`bazel-rs: removed the analysis snapshot of this build: it failed,
-     and the repository tree <root> no longer matches what the analysis
-     recorded (<entry>); the next build re-analyzes and repairs it`, the
-     entry being the first that differs, L2-W5h: `extra`, `missing`,
-     `kind`, `mode`, `content` or `link` with its path below the root —
-     or `manifest`, `unreadable`, `other`).
+     healing): each verified store tree once — an owner's tree as its
+     store's warm check does before reusing it (content, modes and links,
+     trusted by stat outside the racy window, every file read under
+     `--verify_repo_tampering`), a tree only a link crossed into as the
+     crossing did (content only, L2-W5h) — and each local repository's
+     published tree against its manifest, which must record the replayed
+     execution's identity and tree digest (`bazel-rs: removed the analysis
+     snapshot of this build: it failed, and the repository tree <root> no
+     longer matches what the analysis recorded (<entry>); the next build
+     re-analyzes and repairs it`, the entry being the first that differs,
+     L2-W5h: `extra`, `missing`, `kind`, `mode`, `content` or `link` with
+     its path below the root — or `manifest`, `unreadable`, `other`).
+     Under the full policy the store trees are left out (L2-W5h: the
+     lookup validated every file's INTEGRITY entry already).
 
    The failure happens once: the next run's full analysis repairs the tree
    (the hit does not: re-executing a repository rule needs the analysis).
    A failure with intact trees keeps the snapshot — the check walks the
    trees (`PERF-SNAPSHOT heal trees=<n> healed=<bool> ms=<t>` under
-   `BAZEL_RS_TIMING=1`) — and a failure that merely mentions a store path
-   costs one full analysis next time. Each removal appends a `kind=healed`
-   line to the event log (below), whose reason is `<rule>:<entry>` and
-   whose path is the differing entry's.
+   `BAZEL_RS_TIMING=1`). Each removal appends a `kind=healed` line to the
+   event log (below), whose reason is `<rule>:<entry>` (`store-path` or
+   `tree`) and whose path is the differing entry's.
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
 decision on review F3; corrected and narrowed by L2-W5g and L2-W5h).**
@@ -393,8 +402,7 @@ A not-saved run's class is the first taint's name (`repository-rule-executed`,
 `failed` (the command failed), `capture`, `too-large`, `incomplete` or
 `other`. A heal's entry is the first differing entry's class
 (crate::repository_store::TreeMismatch: `extra`, `missing`, `kind`,
-`mode`, `content`, `link`, `manifest`, `unreadable`, `other`; `named` for
-a failure whose error named a store path). Each line is one `write`
+`mode`, `content`, `link`, `manifest`, `unreadable`, `other`). Each line is one `write`
 (O_APPEND); both logs rotate at 1 MiB to `<name>.1`, keeping one previous
 generation (best effort: two commands rotating at once may drop one).
 
@@ -444,7 +452,7 @@ by the INPUTS like any workspace path, or it is reported (`CACHE <path>`):
 
 | class | paths | why it is safe |
 |---|---|---|
-| `cache-root`, `store-directories` | the cache dir; `repositories` and its areas (`trees`, `direct`, `git`, `builtins`, with their `trees` and `manifests`), `direct/locks`, `direct/stages` | created, stat'ed or readlink'ed on realpath chains; no content is read |
+| `cache-root`, `store-directories` | the cache dir; `repositories` and its areas (`trees`, `direct`, `git`, `builtins`, with their `trees` and `manifests`), `direct/locks`, `direct/stages` | created, stat'ed or readlink'ed on realpath chains; no content is read — L2-W5h: any other call there (an open, a listing) is reported (`CACHE <path> [<call> in <class>]`) |
 | `snapshot-store` | `snapshots/` | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file, the event log the hit appends to (written, never read) |
 | `digest-table` | `digests/` | crate::digest_memo: a record holds a file's stat key with its digest and is used only while the file's current stat matches it |
 | `replay-stage` | `repositories/direct/stages/<slug>`, `repositories/direct/locks/stage-<slug>` | a replayed local rule's private stage, created fresh under its lock, compared (identity inputs and tree digests) and removed: nothing in it is trusted |
@@ -472,7 +480,11 @@ with a local rule 192 (`local-tree` 45, `replay-stage` 61, `verified-tree`
 21, ...; 96 outside), ~/code oauth2token/... build 18,949 (`local-tree`
 1,653, `verified-tree` 11,783, `replay-stage` 2,265, `store-directories`
 2,236, `cache-root` 921, `covered-input` 79, `snapshot-store` 10,
-`digest-table` 2; 3,764 outside, 45 replayed executions, 1 process).
+`digest-table` 2; 3,764 outside, 45 replayed executions, 1 process); and
+with the metadata-only assertion on `cache-root` and `store-directories`
+(the last L2-W5h commit): the fixtures alike, ~/code 18,943 (`cache-root`
+920 and `store-directories` 2,235 touches, every one a stat, readlink or
+mkdir).
 
 ## What is saved, and when
 

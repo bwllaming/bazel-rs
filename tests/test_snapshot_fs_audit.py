@@ -262,6 +262,8 @@ class SnapshotAuditTests(unittest.TestCase):
             f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/manifests/{local}.json", O_RDONLY|O_CLOEXEC) = 6</x>\n'
             f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}/BUILD.bazel", O_RDONLY|O_CLOEXEC) = 7</x>\n'
             f'3 statx(AT_FDCWD</ws>, "/cache/repositories/direct/manifests/{other}.json", 0, 0x1) = 0\n'
+            '3 openat(AT_FDCWD</ws>, "/cache/repositories/direct", O_RDONLY|O_CLOEXEC|O_DIRECTORY) = 8</x>\n'
+            '3 mkdir("/cache/repositories/trees", 0777) = -1 EEXIST (File exists)\n'
             f'1 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{tree}/sub", 0, 0x1) = 0\n'
             '1 openat(AT_FDCWD</ws>, "/cache/hidden-lockfiles/h/MODULE.bazel.lock", O_RDONLY|O_CLOEXEC) = 3</x>\n'
             '1 openat(AT_FDCWD</ws>, "/cache/repositories/direct/specs/x", O_RDONLY|O_CLOEXEC) = 3</x>\n'
@@ -281,16 +283,19 @@ class SnapshotAuditTests(unittest.TestCase):
             dump.write_text(dump_text)
             stats = {}
             touched, unrecorded = audit.audit_hit(trace, dump, "/ws", "/cache", [], stats)
-        self.assertEqual(touched, 3)
+        self.assertEqual(touched, 4)
+        # L2-W5h: an open of a store directory is no metadata call.
         self.assertEqual([u.split()[:2] for u in unrecorded], [
+            ["CACHE", "/cache/repositories/direct"],
             ["CACHE", f"/cache/repositories/direct/manifests/{other}.json"],
             ["CACHE", "/cache/repositories/direct/specs/x"],
             ["CACHE", f"/cache/repositories/direct/trees/{other}/f"],
         ])
+        self.assertIn("[openat in store-directories]", unrecorded[0])
         # L2-W5h: a local repository's tree and its manifest (checked on
         # every hit).
         self.assertEqual(stats["cache"], {
-            "snapshot-store": 2, "cache-root": 1, "store-directories": 1, "digest-table": 1,
+            "snapshot-store": 2, "cache-root": 1, "store-directories": 2, "digest-table": 1,
             "replay-stage": 3, "local-tree": 3, "verified-tree": 1, "covered-input": 1,
         })
 
