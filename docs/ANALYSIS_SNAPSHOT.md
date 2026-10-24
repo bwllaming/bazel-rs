@@ -17,7 +17,8 @@ ignored. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
 diagnostics stream (`bazel-rs-snapshot:` lines), why a lookup missed (the
 first failing input), what a hit validated and replayed, and why a run was
 or was not saved. `BAZEL_RS_TIMING=1` adds a `PERF-SNAPSHOT` line (key,
-inputs, validation, replay, decode, status and attempt times).
+inputs, validation, replay, local trees, decode, status and attempt
+times).
 
 ## What a hit does
 
@@ -188,7 +189,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    trees (`PERF-SNAPSHOT heal trees=<n> healed=<bool> ms=<t>` under
    `BAZEL_RS_TIMING=1`). Each removal appends a `kind=healed` line to the
    event log (below), whose reason is `<rule>:<entry>` (`store-path` or
-   `tree`) and whose path is the differing entry's.
+   `tree`) and whose path is the differing entry's; each failure that kept
+   the snapshot a `kind=heal-kept` line (L2-W5i: the trees it checked and
+   what that cost — a failure the snapshot had no part in, such as a
+   compile error or a failing test).
 
 **Repository tree files on a hit (an accepted deviation, L2-W5f lead
 decision on review F3; corrected and narrowed by L2-W5g and L2-W5h).**
@@ -401,13 +405,14 @@ line has the same fields:
 
 | kind | logged | reason | ms |
 |---|---|---|---|
-| `hit` | a lookup hit (in verify mode before its shadow analysis); `detail` splits the time (key, inputs, validate, replay, decode, status) | - | the attempt, key included |
+| `hit` | a lookup hit (in verify mode before its shadow analysis); `detail` splits the time (key, inputs, validate, replay, local, decode, status) | - | the attempt, key included |
 | `miss` | a lookup missed; `detail` is the reason EXPLAIN prints | its class (below) | the attempt |
 | `saved` | a full analysis was saved; `detail`: bytes, actions, replays | - | check point to rename |
 | `not-saved` | a full analysis was not saved | its class (below) | - |
 | `verified` | verify mode: the shadow analysis agreed | - | analysis and comparison |
 | `mismatch` | verify mode: it disagreed (`path`: the first differing path; verify.log and verify-details.log hold the rest) | the first difference's class | - |
 | `healed` | a failed hit removed its snapshot (`path`: the first differing entry) | `<store-path\|tree>:<entry>` | the trees' check |
+| `heal-kept` | a failed hit kept its snapshot: every tree verified (L2-W5i; `path`: the store path its error named, if any; `detail`: `trees:<n>`) | - | the trees' check |
 | `evicted` | garbage collection removed the snapshot of `key` (`command=-` and no targets: those of the evicted snapshot are not known there); `detail` names the save that collected it | `count` or `bytes` | - |
 | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (no key) | eligible: `yes`, `no`, `unless-pruned` | - |
 
@@ -457,10 +462,11 @@ between, its first and last time and the last miss's reason.
 A miss's class is `absent` (no snapshot for the key), `unreadable`, `env`,
 the failing check's operation (`read`, `readdir`, `stat`, `lstat`, `canon`,
 `readlink` or `integrity`, with the path it names), `tree` (a racy tree
-that no longer matches its manifest), `replay`, `status-stderr`, `capture`,
-`panic` or `other`; `detail` holds the reason EXPLAIN prints (its first
-240 bytes; without EXPLAIN a replay cancelled by the first failure is not
-named).
+that no longer matches its manifest), `replay`, `local-tree` (a local
+repository's published tree differs from its manifest; the path of its
+first differing entry), `status-stderr`, `capture`, `panic` or `other`;
+`detail` holds the reason EXPLAIN prints (its first 240 bytes; without
+EXPLAIN a replay cancelled by the first failure is not named).
 A not-saved run's class is the first taint's name (`repository-rule-executed`,
 `network`, `extension-evaluated`, `lockfile-write-pending`, `errors`, ...),
 `failed` (the command failed), `capture`, `too-large`, `incomplete` or
@@ -556,10 +562,15 @@ mkdir).
 On a miss (`snapshot::save`), the check point opens the recording window
 (crate::observed_fs), installs the replay capture and redirects file
 descriptor 2 into a **tee capture** (`snapshot::capture`: `dup2` into a
-pipe whose reader thread forwards every byte to the original stderr as it
-arrives and keeps it). When planning returns, the capture stops: stderr is
-restored first, then the reader drains the pipe (bounded); a process that
-still holds the pipe makes the capture incomplete. A panic during the
+pipe whose reader thread keeps every byte and forwards it to the original
+stderr whole lines at a time — L2-W5h: a partial line at its newline, the
+end of the pipe or, L2-W5i, once it holds 64 KiB). When planning returns,
+the capture stops: stderr is restored first, then the reader drains the
+pipe (bounded); a process that still holds the pipe makes the capture
+incomplete — the stop then forwards the partial line the reader holds
+back at once, and the detached reader forwards what still arrives as it
+arrives (L2-W5i; before, a partial line waited for its newline or the end
+of the pipe, and was lost when the process ended first). A panic during the
 window restores stderr before its message prints; the memory watchdog
 does the same before it exits.
 

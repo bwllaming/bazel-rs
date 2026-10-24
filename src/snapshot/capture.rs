@@ -29,10 +29,13 @@
 //! bytes go out whole lines at a time under the diagnostics stream's order
 //! lock (crate::snapshot::diag::ORDER, L2-W5h): a diagnostics line never
 //! lands inside a forwarded line (a partial line waits for its newline or
-//! the end of the pipe). A process
-//! that still holds the pipe (a lingering child) keeps the reader alive: it
-//! is detached — it keeps forwarding — and the capture is incomplete, which
-//! keeps the run from being saved. A panic while any capture is active
+//! the end of the pipe — L2-W5i: at most [`PENDING_LIMIT`] bytes of it). A
+//! process that still holds the pipe (a lingering child) keeps the reader
+//! alive: the stop forwards the partial line it holds back at once (L2-W5i;
+//! before, it waited for a newline or the end of the pipe, and was lost if
+//! the process ended first), the reader is detached — it forwards what
+//! still arrives as it arrives — and the capture is incomplete, which keeps
+//! the run from being saved. A panic while any capture is active
 //! restores stderr before the panic message prints (a [`Mode::Tee`] or
 //! [`Mode::Shadow`] capture is then marked broken; a [`Mode::Discard`] one —
 //! a hit attempt, which catches the panic and misses — is not: L2-W5f review
@@ -49,6 +52,9 @@ use std::time::Duration;
 /// Window stderr kept at most (beyond it the capture overflows: the run is
 /// not saved; the bytes are still forwarded).
 pub const LIMIT: usize = 16 << 20;
+/// Bytes of a partial line the reader holds back for its newline at most
+/// (L2-W5i): a longer one is forwarded as it is.
+pub const PENDING_LIMIT: usize = 64 << 10;
 
 /// What a capture does with the bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +89,15 @@ struct DrainState {
     /// [`Mode::Shadow`]: the kept bytes were written to the original stderr,
     /// and every later chunk goes straight there ([`forward_kept`]).
     forwarding: bool,
+    /// Bytes to forward, up to their last newline (L2-W5h: whole lines;
+    /// L2-W5i: here, not in the reader, so a stop can flush them).
+    pending: Vec<u8>,
+    /// The stop found the capture incomplete — a process still holds the
+    /// pipe — and flushed the partial line (L2-W5i): from then on the
+    /// detached reader forwards bytes as they arrive (before, a partial line
+    /// waited for its newline or the end of the pipe, and was lost when the
+    /// process ended first).
+    detached: bool,
 }
 
 #[derive(Default)]
@@ -153,7 +168,14 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
     let original = Arc::new(File::from(io::stderr().as_fd().try_clone_to_owned()?));
     let (reader, writer) = io::pipe()?;
     let drained = Arc::new(Drained::default());
-    spawn_reader(reader, original.clone(), mode, drained.clone(), LIMIT)?;
+    spawn_reader(
+        reader,
+        original.clone(),
+        mode,
+        drained.clone(),
+        LIMIT,
+        PENDING_LIMIT,
+    )?;
     // On failure the writer drops here: the reader sees the end of the pipe.
     rustix::stdio::dup2_stderr(&writer).map_err(io::Error::from)?;
     drop(writer);
@@ -171,7 +193,9 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
 /// `mode` (see [`Mode`]) until the pipe ends. What it forwards goes out
 /// whole lines at a time under crate::snapshot::diag's order lock (L2-W5h):
 /// a partial line waits for its newline — or the end of the pipe — so a
-/// diagnostics line never lands inside a forwarded one. It never writes
+/// diagnostics line never lands inside a forwarded one; L2-W5i: at most
+/// `line_limit` bytes of it (a longer partial line is forwarded as it is),
+/// and an incomplete stop flushes it ([`flush_pending`]). It never writes
 /// while holding the drain state's lock, on which the stop waits (bounded;
 /// L2-W5h: before, a Shadow forward wrote under it).
 fn spawn_reader(
@@ -180,13 +204,12 @@ fn spawn_reader(
     mode: Mode,
     drained: Arc<Drained>,
     limit: usize,
+    line_limit: usize,
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("stderr-capture".to_owned())
         .spawn(move || {
             let mut chunk = vec![0u8; 64 << 10];
-            // Bytes to forward, up to their last newline.
-            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut chunk) {
                     Ok(0) => break,
@@ -194,7 +217,7 @@ fn spawn_reader(
                         let chunk = &chunk[..count];
                         let forward = {
                             let mut state = drained.lock();
-                            if state.forwarding {
+                            let forward = if state.forwarding {
                                 // Shadow, past the switch: through, after
                                 // the kept bytes ([`forward_kept`] wrote
                                 // them under the order lock first).
@@ -209,23 +232,27 @@ fn spawn_reader(
                                     // what the shadow analysis prints is
                                     // the output — the kept bytes first.
                                     state.forwarding = true;
-                                    pending.extend_from_slice(&state.bytes);
+                                    let kept = state.bytes.clone();
+                                    state.pending.extend_from_slice(&kept);
                                     true
                                 } else {
                                     mode == Mode::Tee
                                 }
+                            };
+                            if forward {
+                                state.pending.extend_from_slice(chunk);
                             }
+                            forward
                         };
                         if forward {
-                            pending.extend_from_slice(chunk);
-                            forward_lines(&original, &mut pending, false);
+                            forward_pending(&drained, &original, false, line_limit);
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
-            forward_lines(&original, &mut pending, true);
+            forward_pending(&drained, &original, true, line_limit);
             let mut state = drained.lock();
             state.finished = true;
             drained.finished.notify_all();
@@ -233,30 +260,65 @@ fn spawn_reader(
         .map(drop)
 }
 
-/// Write `pending`'s whole lines — everything with `all` (the end of the
-/// pipe) — to `original` under the order lock, and drop them from it.
-fn forward_lines(original: &File, pending: &mut Vec<u8>, all: bool) {
-    let end = if all {
-        pending.len()
-    } else {
-        pending
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |at| at + 1)
+/// Write the pending bytes' whole lines — everything with `all` (the end of
+/// the pipe), once detached ([`DrainState::detached`]) or when the partial
+/// line is longer than `line_limit` — to `original` and drop them. The
+/// order lock is taken before the state's lock and held across the write:
+/// a chunk taken later never goes out before one taken earlier (the reader
+/// and [`flush_pending`] both forward).
+fn forward_pending(drained: &Drained, original: &File, all: bool, line_limit: usize) {
+    let _order = crate::snapshot::diag::ORDER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let bytes = {
+        let mut state = drained.lock();
+        let end = if all || state.detached || state.pending.len() > line_limit {
+            state.pending.len()
+        } else {
+            state
+                .pending
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |at| at + 1)
+        };
+        if end == 0 {
+            return;
+        }
+        state.pending.drain(..end).collect::<Vec<u8>>()
     };
-    if end == 0 {
-        return;
-    }
-    {
-        let _order = crate::snapshot::diag::ORDER
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+    let mut original = original;
+    let _ = original.write_all(&bytes).and_then(|()| original.flush());
+}
+
+/// An incomplete stop (a process still holds the pipe, L2-W5i): forward the
+/// partial line the reader holds back now — it would wait for a newline or
+/// the end of the pipe, and be lost if the process ended first — and let
+/// the detached reader forward what still arrives as it arrives. `early` (a
+/// panic hook, the watchdog's exit) waits for the order lock briefly only;
+/// without it the flag still lets the reader forward the rest.
+fn flush_pending(drained: &Drained, original: &File, early: bool) {
+    let order = if early {
+        crate::snapshot::diag::order_within(Duration::from_millis(50))
+    } else {
+        Some(
+            crate::snapshot::diag::ORDER
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    };
+    let bytes = {
+        let mut state = drained.lock();
+        state.detached = true;
+        if order.is_none() {
+            return;
+        }
+        std::mem::take(&mut state.pending)
+    };
+    if !bytes.is_empty() {
         let mut original = original;
-        let _ = original
-            .write_all(&pending[..end])
-            .and_then(|()| original.flush());
+        let _ = original.write_all(&bytes).and_then(|()| original.flush());
     }
-    pending.drain(..end);
+    drop(order);
 }
 
 /// [`Mode::Shadow`]: write the kept bytes to the original stderr (once) and
@@ -350,6 +412,11 @@ fn collect(
     if mode == Mode::Shadow && (early || !complete) {
         forward_kept(drained, original, early);
     }
+    if !complete {
+        // A lingering child holds the pipe: its partial line goes out now
+        // (L2-W5i), and the detached reader forwards the rest as it comes.
+        flush_pending(drained, original, early);
+    }
     let mut state = drained.lock();
     let bytes = if complete {
         std::mem::take(&mut state.bytes)
@@ -419,12 +486,24 @@ mod tests {
     }
 
     fn rig(mode: Mode, limit: usize) -> Rig {
+        rig_with(mode, limit, PENDING_LIMIT)
+    }
+
+    fn rig_with(mode: Mode, limit: usize, line_limit: usize) -> Rig {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("original");
         let original = Arc::new(File::create(&path).unwrap());
         let (reader, writer) = io::pipe().unwrap();
         let drained = Arc::new(Drained::default());
-        spawn_reader(reader, original.clone(), mode, drained.clone(), limit).unwrap();
+        spawn_reader(
+            reader,
+            original.clone(),
+            mode,
+            drained.clone(),
+            limit,
+            line_limit,
+        )
+        .unwrap();
         Rig {
             writer: Some(writer),
             original,
@@ -540,6 +619,36 @@ mod tests {
         assert_eq!(rig.original(), b"rules.bzl loaded\nmacro for root\npart");
         assert_eq!(captured.bytes, b"rules.bzl loaded\nmacro for root\npart");
         assert!(captured.complete && captured.forwarded);
+    }
+
+    /// L2-W5i: a partial line longer than the limit is forwarded as it is
+    /// (the reader holds back at most that much), and an incomplete stop —
+    /// a lingering child holds the pipe — forwards the partial line at once
+    /// and every later byte as it arrives (before, it waited for a newline
+    /// or the end of the pipe).
+    #[test]
+    fn partial_lines_are_bounded_and_flushed_by_an_incomplete_stop() {
+        let mut tee = rig_with(Mode::Tee, 64, 8);
+        tee.write(b"short");
+        tee.settle(|state| state.bytes.len() == 5);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(tee.original().is_empty());
+        tee.write(b" and much longer");
+        tee.wait_original(b"short and much longer");
+        let captured = tee.stop(true, false);
+        assert!(captured.complete);
+        let mut tee = rig(Mode::Tee, 64);
+        tee.write(b"line\npartial");
+        tee.wait_original(b"line\n");
+        tee.settle(|state| state.pending == b"partial");
+        let captured = tee.stop(false, false);
+        assert!(!captured.complete && captured.forwarded);
+        assert_eq!(tee.original(), b"line\npartial");
+        tee.write(b" more");
+        tee.wait_original(b"line\npartial more");
+        tee.writer = None;
+        tee.settle(|state| state.finished);
+        assert_eq!(tee.original(), b"line\npartial more");
     }
 
     /// L2-W5g: a shadow capture ended early (a panic, the memory watchdog's

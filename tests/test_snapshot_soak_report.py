@@ -55,6 +55,8 @@ CURRENT = "".join([
     line(25, "hit", "k2", command="test", ms="200.0", targets="//t:t"),
     line(26, "healed", "k2", command="test", reason="tree:mode", path="/c/repositories/direct/trees/cd/tool.sh",
          ms="150.0", detail="repository\\x20tree", targets="//t:t"),
+    # L2-W5i: a failed hit that kept its snapshot (every tree verified).
+    line(27, "heal-kept", "k1", ms="20.0", detail="trees:3"),
     # Verify mode: verified hits by command, one mismatch.
     line(30, "hit", "k3", mode="verify", command="run", ms="300.0", targets="//r:r"),
     line(31, "verified", "k3", mode="verify", command="run", ms="7000.0", targets="//r:r"),
@@ -118,7 +120,8 @@ class SoakReportTests(unittest.TestCase):
         self.assertEqual(counts["verify/verified"], 1)
         self.assertEqual(counts["verify/mismatch"], 1)
         self.assertEqual(counts["record/recorded"], 1)
-        self.assertEqual(self.report["events"], 26)
+        self.assertEqual(self.report["events"], 27)
+        self.assertEqual(counts["on/heal-kept"], 1)
         self.assertEqual(self.report["misses"]["absent"], 4)
         self.assertEqual(self.report["not_saved"], {"repository-rule-executed": 1})
 
@@ -163,6 +166,7 @@ class SoakReportTests(unittest.TestCase):
 
     def test_heals_verified_hits_mismatches_latency_and_store(self):
         self.assertEqual(self.report["heals"], {"tree:mode": 1})
+        self.assertEqual(self.report["heal_kept"], 1)
         self.assertEqual(self.report["heal_lines"][0]["path"], "/c/repositories/direct/trees/cd/tool.sh")
         self.assertEqual(self.report["verified_by_command"], {"run": 1})
         self.assertEqual(self.report["verify_mismatches"], [VERIFY.rstrip("\n")])
@@ -198,7 +202,8 @@ class SoakReportTests(unittest.TestCase):
         for expected in ("on/hit", "keys: 3 (and 1 seen only when garbage collection evicted them)",
                          "hit rate on unchanged re-runs 75.0% (3/4)",
                          "always-miss patterns",
-                         "heals by reason: tree:mode 1", "verified hits by command: run 1",
+                         "heals by reason: tree:mode 1; failed hits that kept their snapshot (heal-kept: every tree "
+                         "verified): 1", "verified hits by command: run 1",
                          VERIFY.rstrip("\n"), "p50 140.0, p95 310.0", "store: 2 snapshot(s), 1024 bytes",
                          "SUSPECT 1, likely your edits 0",
                          f"3 x integrity {self.cache}/repositories/trees/ab/sub [cache], 2 save(s) between",

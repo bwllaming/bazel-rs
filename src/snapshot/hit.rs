@@ -929,6 +929,15 @@ fn heal(
             Some(mismatch) => ("tree", mismatch),
             None => {
                 timing_line(trees, started, false);
+                // L2-W5i: logged too, so the soak tells a failure the
+                // snapshot had no part in (a compile error, a failing test)
+                // from a heal, and sees what the check cost.
+                log.log_heal_kept(
+                    &key.short(),
+                    trees.len(),
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    named.as_deref(),
+                );
                 return false;
             }
         },
@@ -1243,7 +1252,22 @@ mod tests {
         assert!(heals(None));
         assert!(!kept());
         let log_text = std::fs::read_to_string(cache.path().join("snapshots/events.log")).unwrap();
-        let lines: Vec<&str> = log_text.lines().collect();
+        // L2-W5i: each failure that kept the snapshot is logged too (the
+        // three with intact trees above), naming the trees it checked.
+        let kept: Vec<&str> = log_text
+            .lines()
+            .filter(|line| line.contains(" kind=heal-kept "))
+            .collect();
+        assert_eq!(kept.len(), 3, "{log_text}");
+        assert!(
+            kept.iter()
+                .all(|line| line.contains(" reason=- path=- ") && line.contains(" detail=trees:2 ")),
+            "{log_text}"
+        );
+        let lines: Vec<&str> = log_text
+            .lines()
+            .filter(|line| line.contains(" kind=healed "))
+            .collect();
         assert_eq!(lines.len(), 2, "{log_text}");
         // L2-W5h: each names the first differing entry.
         assert!(

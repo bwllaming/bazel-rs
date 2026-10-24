@@ -16,6 +16,7 @@
 //! | `verified` | verify mode: the shadow analysis agreed (crate::snapshot::verify) | - | analysis and comparison |
 //! | `mismatch` | verify mode: it disagreed (verify.log has the details) | the first difference's class | - |
 //! | `healed` | a failed hit removed its snapshot (crate::snapshot::hit) | `<rule>:<entry>` | the trees' check |
+//! | `heal-kept` | a failed hit kept its snapshot: every tree verified (L2-W5i; `path`: the store path its error named, `detail`: `trees:<n>`) | - | the trees' check |
 //! | `evicted` | garbage collection removed a snapshot (crate::snapshot::store; `command=-`, no targets) | `count` or `bytes` | - |
 //! | `recorded` | `BAZEL_RS_SNAPSHOT=record` reported (crate::snapshot::record) | eligible: `yes`, `no`, `unless-pruned` | - |
 //!
@@ -382,6 +383,21 @@ impl Context {
         });
     }
 
+    /// A failed hit kept the snapshot of `key` (L2-W5i): the `trees` it
+    /// checked in `ms` all verified; `named` is the repository-store path
+    /// its error named (whose tree verified), if any.
+    pub fn log_heal_kept(&self, key: &str, trees: usize, ms: f64, named: Option<&str>) {
+        let path = named.map(|path| escape(OsStr::new(path)));
+        self.log(&Event {
+            kind: "heal-kept",
+            key,
+            path: path.as_deref(),
+            ms: Some(ms),
+            detail: Some(&format!("trees:{trees}")),
+            ..Event::default()
+        });
+    }
+
     /// Garbage collection removed the snapshot of `key` (at `path`): over
     /// the store's count (`count`) or byte budget (`bytes`). The line names
     /// no command or targets (`command=-`, the evicted snapshot's are not
@@ -713,8 +729,8 @@ mod tests {
     }
 
     /// L2-W5h: every kind of event lands in `<cache>/snapshots/events.log`
-    /// with its mode, key, reason, path and wall time; a context without a
-    /// cache logs nothing.
+    /// with its mode, key, reason, path and wall time (L2-W5i: `heal-kept`
+    /// too); a context without a cache logs nothing.
     #[test]
     fn every_event_kind_is_logged() {
         let temp = tempfile::tempdir().unwrap();
@@ -736,6 +752,7 @@ mod tests {
             150.0,
             "mode of tool.sh",
         );
+        log.log_heal_kept("k1", 3, 12.5, Some("/c/repositories/trees/ab/f.go"));
         log.log_evicted("k0", "count", Path::new("/c/snapshots/v1/k0.snap"), "by:k1");
         let verify = Context {
             mode: MODE_VERIFY,
@@ -777,6 +794,7 @@ mod tests {
                 "kind=saved mode=on key=k1 reason=- path=- ms=900.0",
                 "kind=not-saved mode=on key=k1 reason=network path=- ms=-",
                 "kind=healed mode=on key=k1 reason=tree:mode path=/c/repositories/direct/trees/ab/tool.sh ms=150.0",
+                "kind=heal-kept mode=on key=k1 reason=- path=/c/repositories/trees/ab/f.go ms=12.5",
                 "kind=evicted mode=on key=k0 reason=count path=/c/snapshots/v1/k0.snap ms=-",
                 "kind=verified mode=verify key=k1 reason=- path=- ms=7000.0",
                 "kind=mismatch mode=verify key=k1 reason=taint path=/c/x\\x20y ms=-",

@@ -37,7 +37,8 @@ set aside), and prints:
     input at all (`absent` after each save, `unreadable`, ...) — split into
     SUSPECT (a path in the cache or an output tree, or none) and likely your
     edits (a workspace or host path);
-  * heals by reason (`<rule>:<first differing entry>`) with their paths;
+  * heals by reason (`<rule>:<first differing entry>`) with their paths, and
+    the failed hits that kept their snapshot (`heal-kept`, L2-W5i);
   * every verify.log mismatch line, verbatim, each with its verify-details.log
     block (where the snapshot went and every difference; L2-W5i);
   * hit latency (the attempt's wall time): p50 and p95, per mode and command;
@@ -395,6 +396,7 @@ def analyze(events, verify_lines, store=None, details=(), places=None):
             unescape(e.get('command', '-')) for e in events if e.get('kind') == 'verified')),
         'always_miss': always_miss,
         'heals': dict(collections.Counter(e.get('reason', '-') for e in heals)),
+        'heal_kept': sum(1 for e in events if e.get('kind') == 'heal-kept'),
         'heal_lines': [
             {'time': e['time'], 'key': e.get('key'), 'reason': e.get('reason'), 'path': unescape(e.get('path', '-')),
              'command': unescape(e.get('command', '-')), 'ms': milliseconds(e.get('ms'))}
@@ -546,7 +548,8 @@ def render(report, cache):
                          + f" ({run['first']} .. {run['last']}); last: {run['detail']}")
     lines.append('')
     heals = report['heals']
-    lines.append('heals by reason: ' + (', '.join(f'{k} {v}' for k, v in sorted(heals.items())) if heals else 'none'))
+    lines.append('heals by reason: ' + (', '.join(f'{k} {v}' for k, v in sorted(heals.items())) if heals else 'none')
+                 + f"; failed hits that kept their snapshot (heal-kept: every tree verified): {report.get('heal_kept', 0)}")
     for heal in report['heal_lines']:
         lines.append(f"  {heal['time']} {heal['key']} {heal['command']} {heal['reason']} {heal['path']} "
                      f"({number(heal['ms'])} ms)")
