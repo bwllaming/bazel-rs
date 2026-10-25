@@ -1,0 +1,2272 @@
+{
+ "schema": "tree-symlinks-reference-receipt/v1",
+ "fixture": "tree_symlinks",
+ "purpose": "Symlinks inside tree artifacts (declare_directory outputs): TreeArtifactValue.visitTree (skyframe/TreeArtifactValue.java:548-592) follows every symlink below a tree root, and ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem (skyframe/ActionOutputMetadataStore.java:245-316) makes the regular files reached the tree's children at their apparent paths (directories are no children; entries reached through a link are never chmod'ed); invalid links fail with reportOutputTreeArtifactErrors (SkyframeActionExecutor.java:1556-1569). Shapes: rules_oci 2.x image.sh with bazel_features.rules.permits_treeartifact_uplevel_symlinks (relative up-level links from blobs/sha256 to a layer and to an input image tree's blobs), links inside the tree, chains, directory links inside and out of the tree, links to source inputs (plain and executable), an empty-directory link, a link to another output of the same action, an absolute link to a host file, absolute links through the action's working directory (sandboxed and unsandboxed), dangling relative and absolute links, a link to a device, a link loop, directory cycles, a link to an undeclared source; consumers: Args expansion and reads in a sandboxed and an unsandboxed action, ctx.actions.symlink of a tree, `run` through the runfiles tree, `test` with the tree in the test's runfiles. Motivation: every rules_oci oci_image on ~/code failed natively (`symlinks inside tree artifacts are not supported by the native profile`; TEST-SURVEY L1).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no [--show_result=1000 for build/run] <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; default registry (bcr.bazel.build); one fresh copy of the fixture workspace per case (platforms extracted from tests/fixtures/label_repo_name/platforms_archive.json); default spawn strategy = processwrapper-sandbox on this host (no usable linux-sandbox)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "ee1b7c7e5372d2b91f39c8578e02754f6fd7f6697f816cb1395532998fd3cd94",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/tree-symlinks-capture.py, tree-symlinks-receipt.py (not committed)",
+  "sha256": {
+   "tree-symlinks-capture.py": "078f6317616e75bb3caca0acdd1fb68f8aa6af46de6242e9383d7d7c5b354e11",
+   "tree-symlinks-receipt.py": "39b78a9352e87b673dd9e91942a1ef71546128c166c64e85c5317c3c8ad5dd4d"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "8ba9553ae65da450d127f5d9ac0038421dc2a718186c7b0af63eb8212f7d2a31",
+  "pkg/BUILD.bazel": "ad9029306114bacbd8db43145c1c7e539b331bf657827086a49cf42be044804d",
+  "pkg/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
+  "pkg/defs.bzl": "fd5fd7966b604a26101c25ba04e727e47ef321c7233d0c9900b1f6c3730d7693",
+  "pkg/tool.sh": "bf664cf84f00f6ed76164c8457fdeaf8e4dee547226e9ffcf8274e2d2246fed9",
+  "pkg/undeclared.txt": "66f44dfe80a38e3d1773e9f0de18802c71ea04c438a1ee0db4a774e63c5524ef"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs: genuine --show_result's paths (bazel-bin = bazel-out/k8-fastbuild/bin), native the LABEL<TAB>PATH result lines with the path below the published action's outputs/ directory; a file is [mode, contents], a tree {followed: [path, x or -, size, sha256 prefix] of every regular file reached following symlinks (a file equal to the host's /bin/sh as host/host-bin-sh), raw: [path, l/d/f, link target] without following}. The consumers' listings (`.txt`) print the Args expansion of the tree (TreeArtifactValue children) and the followed files with their executable bit as the action sees them; `.raw` the staged entries' unfollowed types.",
+ "comparison (tests/tree_symlinks.rs, live)": "MATCH: success equal; a failing case's first genuine ERROR message (after its location) is contained in native stderr, or for ELOOP messages (which name genuine's absolute path) its parts around the path; built cases: every `.txt` listing (mode and contents) and every tree's followed view equal; `run`: the program's stdout equal; `test`: stdout (test logs and summary, times <T>) equal. DECLARED_DIVERGENCE: native fails with the recorded message. Not compared (evidence, docs/TREE_SYMLINKS.md): `.raw` listings and trees' raw views.",
+ "genuine_key_findings": [
+  "Every link that resolves is followed: the tree's children (the Args expansion) are the regular files reached, at the links' paths - files behind relative up-level links (rules_oci's blobs/sha256/<layer> -> ../../../layer.tar and links into an input image tree's blobs), links inside the tree, chains, files below directory links inside and out of the tree, links to source inputs, to another output of the same action, an absolute link to a host file (/bin/sh) and, unsandboxed, an absolute link into the execution root. Directories are no children: a link to an empty directory adds nothing.",
+  "Through a link a consumer sees the resolved file's content and mode: links to outputs and to files of the tree are executable (0555 after the action), a link to a plain source file (0644) is not, to an executable source (0755) is.",
+  "The published tree keeps the links as the action made them (`bazel-bin/pkg/uplevel/blobs/sha256/layer -> ../../../layer.tar`); a processwrapper-sandboxed consumer sees every child as a symlink to its execution-root path, an unsandboxed one the producer's own links.",
+  "`error while validating output tree artifact pkg/T: child y is a dangling symbolic link` for dangling relative and absolute links and for an absolute link into the action's sandbox (gone before the outputs are collected); `child null has an unsupported type` for a link to /dev/null; `[unix_jni.cc:382] <path> (Too many levels of symbolic links)` for a link loop and for directory cycles (sub/up -> .., self -> .) after the kernel's 40-link limit; then `TreeSymlinks pkg/T failed: not all outputs were created or valid`.",
+  "A relative link to a source file that is not an input of the action resolves (genuine reads the tree in its execution root, where every source is reachable).",
+  "`run` reads the tree through the runfiles tree (a link to the tree directory); `test` stages the tree's children into the test's runfiles; both read the linked files' contents."
+ ],
+ "known_divergences": [
+  "Publication materializes links: a native published tree holds the resolved files (store inodes with the resolved file's executable bits) and real directories, never symlinks, because a native output lives in its action's own cache entry, where a relative link would not resolve; `readlink`/`find -type l` see regular files (the raw views).",
+  "Consumers stage tree files as read-only hardlinks like every native input (genuine's sandbox stages symlinks to execution-root paths): the raw views differ, the followed listings are equal.",
+  "A native directory cycle fails at the link that closes it (genuine after 40 levels): ELOOP messages name a shorter path.",
+  "Native trees keep their empty directories (staged and published), a pre-existing difference: genuine's consumers see only the children.",
+  "Declared divergence: a relative link to a file that is not an input of the action (undeclared, undeclared_consumer).",
+  "Native needs --experimental-builtin-modules for the exec cases (the default host platform's @platforms//host); it is passed in every native case; native prints its own result format."
+ ],
+ "counts": {
+  "MATCH": 22,
+  "DECLARED_DIVERGENCE": 2
+ },
+ "scratch_removed": true,
+ "cases": {
+  "uplevel": {
+   "argv": [
+    "build",
+    "//pkg:uplevel",
+    "//pkg:inspect_uplevel"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.97,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_uplevel up-to-date:\n  bazel-bin/pkg/inspect_uplevel.txt\n  bazel-bin/pkg/inspect_uplevel.raw\nTarget //pkg:uplevel up-to-date:\n  bazel-bin/pkg/uplevel\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 1 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nl blobs/sha256/layer\nl index.json\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "l",
+        "../../../layer.tar"
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.436,
+    "stdout": "//pkg:inspect_uplevel\tbazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt\n//pkg:inspect_uplevel\tbazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw\n//pkg:uplevel\tbazel-out/k8-fastbuild/bin/pkg/uplevel\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf blobs/sha256/layer\nf index.json\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "f",
+        null
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+     "0o555",
+     "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+    ],
+    "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+     "followed": [
+      [
+       "blobs/sha256/layer",
+       "x",
+       "12",
+       "9d8fe276c95b0883"
+      ],
+      [
+       "index.json",
+       "x",
+       "3",
+       "ca3d163bab055381"
+      ]
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "oci_from": {
+   "argv": [
+    "build",
+    "//pkg:oci_from",
+    "//pkg:inspect_oci_from"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.301,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 11 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:oci_from up-to-date:\n  bazel-bin/pkg/oci_from\nTarget //pkg:inspect_oci_from up-to-date:\n  bazel-bin/pkg/inspect_oci_from.txt\n  bazel-bin/pkg/inspect_oci_from.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 1 internal, 4 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nl blobs/sha256/aaa\nl blobs/sha256/bbb\nl blobs/sha256/layer\nl index.json\nl oci-layout\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  blobs/sha256/layer\n  index.json\n  oci-layout\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 21 7a6a05b89219688e\n  oci-layout x 32 b99d771d5076daca\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/oci_from": {
+      "followed": [
+       [
+        "blobs/sha256/aaa",
+        "x",
+        "6",
+        "b79606fb3afea5bd"
+       ],
+       [
+        "blobs/sha256/bbb",
+        "x",
+        "8",
+        "05b3abf2579a5eb6"
+       ],
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "21",
+        "7a6a05b89219688e"
+       ],
+       [
+        "oci-layout",
+        "x",
+        "32",
+        "b99d771d5076daca"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/aaa",
+        "l",
+        "../../../base/blobs/sha256/aaa"
+       ],
+       [
+        "blobs/sha256/bbb",
+        "l",
+        "../../../base/blobs/sha256/bbb"
+       ],
+       [
+        "blobs/sha256/layer",
+        "l",
+        "../../../layer.tar"
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ],
+       [
+        "oci-layout",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.47,
+    "stdout": "//pkg:inspect_oci_from\tbazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.txt\n//pkg:inspect_oci_from\tbazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.raw\n//pkg:oci_from\tbazel-out/k8-fastbuild/bin/pkg/oci_from\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf blobs/sha256/aaa\nf blobs/sha256/bbb\nf blobs/sha256/layer\nf index.json\nf oci-layout\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  blobs/sha256/layer\n  index.json\n  oci-layout\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 21 7a6a05b89219688e\n  oci-layout x 32 b99d771d5076daca\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/oci_from": {
+      "followed": [
+       [
+        "blobs/sha256/aaa",
+        "x",
+        "6",
+        "b79606fb3afea5bd"
+       ],
+       [
+        "blobs/sha256/bbb",
+        "x",
+        "8",
+        "05b3abf2579a5eb6"
+       ],
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "21",
+        "7a6a05b89219688e"
+       ],
+       [
+        "oci-layout",
+        "x",
+        "32",
+        "b99d771d5076daca"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/aaa",
+        "f",
+        null
+       ],
+       [
+        "blobs/sha256/bbb",
+        "f",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "f",
+        null
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ],
+       [
+        "oci-layout",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_oci_from.txt": [
+     "0o555",
+     "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  blobs/sha256/layer\n  index.json\n  oci-layout\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 21 7a6a05b89219688e\n  oci-layout x 32 b99d771d5076daca\n"
+    ],
+    "bazel-out/k8-fastbuild/bin/pkg/oci_from": {
+     "followed": [
+      [
+       "blobs/sha256/aaa",
+       "x",
+       "6",
+       "b79606fb3afea5bd"
+      ],
+      [
+       "blobs/sha256/bbb",
+       "x",
+       "8",
+       "05b3abf2579a5eb6"
+      ],
+      [
+       "blobs/sha256/layer",
+       "x",
+       "12",
+       "9d8fe276c95b0883"
+      ],
+      [
+       "index.json",
+       "x",
+       "21",
+       "7a6a05b89219688e"
+      ],
+      [
+       "oci-layout",
+       "x",
+       "32",
+       "b99d771d5076daca"
+      ]
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "inside": {
+   "argv": [
+    "build",
+    "//pkg:inside",
+    "//pkg:inspect_inside"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.118,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inside up-to-date:\n  bazel-bin/pkg/inside\nTarget //pkg:inspect_inside up-to-date:\n  bazel-bin/pkg/inspect_inside.txt\n  bazel-bin/pkg/inspect_inside.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inside": {
+      "followed": [
+       [
+        "a.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ],
+       [
+        "alias.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ],
+       [
+        "sub/up.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ]
+      ],
+      "raw": [
+       [
+        "a.txt",
+        "f",
+        null
+       ],
+       [
+        "alias.txt",
+        "l",
+        "a.txt"
+       ],
+       [
+        "sub",
+        "d",
+        null
+       ],
+       [
+        "sub/up.txt",
+        "l",
+        "../a.txt"
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_inside.raw": [
+      "0o555",
+      "d sub\nl a.txt\nl alias.txt\nl sub/up.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_inside.txt": [
+      "0o555",
+      "expanded:\n  a.txt\n  alias.txt\n  sub/up.txt\nfiles:\n  a.txt x 1 ca978112ca1bbdca\n  alias.txt x 1 ca978112ca1bbdca\n  sub/up.txt x 1 ca978112ca1bbdca\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.435,
+    "stdout": "//pkg:inside\tbazel-out/k8-fastbuild/bin/pkg/inside\n//pkg:inspect_inside\tbazel-out/k8-fastbuild/bin/pkg/inspect_inside.txt\n//pkg:inspect_inside\tbazel-out/k8-fastbuild/bin/pkg/inspect_inside.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inside": {
+      "followed": [
+       [
+        "a.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ],
+       [
+        "alias.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ],
+       [
+        "sub/up.txt",
+        "x",
+        "1",
+        "ca978112ca1bbdca"
+       ]
+      ],
+      "raw": [
+       [
+        "a.txt",
+        "f",
+        null
+       ],
+       [
+        "alias.txt",
+        "f",
+        null
+       ],
+       [
+        "sub",
+        "d",
+        null
+       ],
+       [
+        "sub/up.txt",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_inside.raw": [
+      "0o555",
+      "d sub\nf a.txt\nf alias.txt\nf sub/up.txt\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_inside.txt": [
+      "0o555",
+      "expanded:\n  a.txt\n  alias.txt\n  sub/up.txt\nfiles:\n  a.txt x 1 ca978112ca1bbdca\n  alias.txt x 1 ca978112ca1bbdca\n  sub/up.txt x 1 ca978112ca1bbdca\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inside": {
+     "followed": [
+      [
+       "a.txt",
+       "x",
+       "1",
+       "ca978112ca1bbdca"
+      ],
+      [
+       "alias.txt",
+       "x",
+       "1",
+       "ca978112ca1bbdca"
+      ],
+      [
+       "sub/up.txt",
+       "x",
+       "1",
+       "ca978112ca1bbdca"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_inside.txt": [
+     "0o555",
+     "expanded:\n  a.txt\n  alias.txt\n  sub/up.txt\nfiles:\n  a.txt x 1 ca978112ca1bbdca\n  alias.txt x 1 ca978112ca1bbdca\n  sub/up.txt x 1 ca978112ca1bbdca\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "chain": {
+   "argv": [
+    "build",
+    "//pkg:chain",
+    "//pkg:inspect_chain"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.542,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_chain up-to-date:\n  bazel-bin/pkg/inspect_chain.txt\n  bazel-bin/pkg/inspect_chain.raw\nTarget //pkg:chain up-to-date:\n  bazel-bin/pkg/chain\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/chain": {
+      "followed": [
+       [
+        "a",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ],
+       [
+        "b",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ],
+       [
+        "c",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ]
+      ],
+      "raw": [
+       [
+        "a",
+        "l",
+        "b"
+       ],
+       [
+        "b",
+        "l",
+        "c"
+       ],
+       [
+        "c",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_chain.raw": [
+      "0o555",
+      "l a\nl b\nl c\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_chain.txt": [
+      "0o555",
+      "expanded:\n  a\n  b\n  c\nfiles:\n  a x 1 2e7d2c03a9507ae2\n  b x 1 2e7d2c03a9507ae2\n  c x 1 2e7d2c03a9507ae2\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.441,
+    "stdout": "//pkg:chain\tbazel-out/k8-fastbuild/bin/pkg/chain\n//pkg:inspect_chain\tbazel-out/k8-fastbuild/bin/pkg/inspect_chain.txt\n//pkg:inspect_chain\tbazel-out/k8-fastbuild/bin/pkg/inspect_chain.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/chain": {
+      "followed": [
+       [
+        "a",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ],
+       [
+        "b",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ],
+       [
+        "c",
+        "x",
+        "1",
+        "2e7d2c03a9507ae2"
+       ]
+      ],
+      "raw": [
+       [
+        "a",
+        "f",
+        null
+       ],
+       [
+        "b",
+        "f",
+        null
+       ],
+       [
+        "c",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_chain.raw": [
+      "0o555",
+      "f a\nf b\nf c\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_chain.txt": [
+      "0o555",
+      "expanded:\n  a\n  b\n  c\nfiles:\n  a x 1 2e7d2c03a9507ae2\n  b x 1 2e7d2c03a9507ae2\n  c x 1 2e7d2c03a9507ae2\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/chain": {
+     "followed": [
+      [
+       "a",
+       "x",
+       "1",
+       "2e7d2c03a9507ae2"
+      ],
+      [
+       "b",
+       "x",
+       "1",
+       "2e7d2c03a9507ae2"
+      ],
+      [
+       "c",
+       "x",
+       "1",
+       "2e7d2c03a9507ae2"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_chain.txt": [
+     "0o555",
+     "expanded:\n  a\n  b\n  c\nfiles:\n  a x 1 2e7d2c03a9507ae2\n  b x 1 2e7d2c03a9507ae2\n  c x 1 2e7d2c03a9507ae2\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dir_inside": {
+   "argv": [
+    "build",
+    "//pkg:dir_inside",
+    "//pkg:inspect_dir_inside"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.103,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_dir_inside up-to-date:\n  bazel-bin/pkg/inspect_dir_inside.txt\n  bazel-bin/pkg/inspect_dir_inside.raw\nTarget //pkg:dir_inside up-to-date:\n  bazel-bin/pkg/dir_inside\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dir_inside": {
+      "followed": [
+       [
+        "alias/deeper/g",
+        "x",
+        "1",
+        "cd0aa9856147b6c5"
+       ],
+       [
+        "alias/f",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "alias/f2",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "real/deeper/g",
+        "x",
+        "1",
+        "cd0aa9856147b6c5"
+       ],
+       [
+        "real/f",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "real/f2",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ]
+      ],
+      "raw": [
+       [
+        "alias",
+        "l",
+        "real"
+       ],
+       [
+        "alias/deeper",
+        "d",
+        null
+       ],
+       [
+        "alias/deeper/g",
+        "f",
+        null
+       ],
+       [
+        "alias/f",
+        "f",
+        null
+       ],
+       [
+        "alias/f2",
+        "l",
+        "f"
+       ],
+       [
+        "real",
+        "d",
+        null
+       ],
+       [
+        "real/deeper",
+        "d",
+        null
+       ],
+       [
+        "real/deeper/g",
+        "f",
+        null
+       ],
+       [
+        "real/f",
+        "f",
+        null
+       ],
+       [
+        "real/f2",
+        "l",
+        "f"
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.raw": [
+      "0o555",
+      "d alias\nd alias/deeper\nd real\nd real/deeper\nl alias/deeper/g\nl alias/f\nl alias/f2\nl real/deeper/g\nl real/f\nl real/f2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.txt": [
+      "0o555",
+      "expanded:\n  alias/deeper/g\n  alias/f\n  alias/f2\n  real/deeper/g\n  real/f\n  real/f2\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.471,
+    "stdout": "//pkg:dir_inside\tbazel-out/k8-fastbuild/bin/pkg/dir_inside\n//pkg:inspect_dir_inside\tbazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.txt\n//pkg:inspect_dir_inside\tbazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dir_inside": {
+      "followed": [
+       [
+        "alias/deeper/g",
+        "x",
+        "1",
+        "cd0aa9856147b6c5"
+       ],
+       [
+        "alias/f",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "alias/f2",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "real/deeper/g",
+        "x",
+        "1",
+        "cd0aa9856147b6c5"
+       ],
+       [
+        "real/f",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ],
+       [
+        "real/f2",
+        "x",
+        "1",
+        "252f10c83610ebca"
+       ]
+      ],
+      "raw": [
+       [
+        "alias",
+        "d",
+        null
+       ],
+       [
+        "alias/deeper",
+        "d",
+        null
+       ],
+       [
+        "alias/deeper/g",
+        "f",
+        null
+       ],
+       [
+        "alias/f",
+        "f",
+        null
+       ],
+       [
+        "alias/f2",
+        "f",
+        null
+       ],
+       [
+        "real",
+        "d",
+        null
+       ],
+       [
+        "real/deeper",
+        "d",
+        null
+       ],
+       [
+        "real/deeper/g",
+        "f",
+        null
+       ],
+       [
+        "real/f",
+        "f",
+        null
+       ],
+       [
+        "real/f2",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.raw": [
+      "0o555",
+      "d alias\nd alias/deeper\nd real\nd real/deeper\nf alias/deeper/g\nf alias/f\nf alias/f2\nf real/deeper/g\nf real/f\nf real/f2\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.txt": [
+      "0o555",
+      "expanded:\n  alias/deeper/g\n  alias/f\n  alias/f2\n  real/deeper/g\n  real/f\n  real/f2\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/dir_inside": {
+     "followed": [
+      [
+       "alias/deeper/g",
+       "x",
+       "1",
+       "cd0aa9856147b6c5"
+      ],
+      [
+       "alias/f",
+       "x",
+       "1",
+       "252f10c83610ebca"
+      ],
+      [
+       "alias/f2",
+       "x",
+       "1",
+       "252f10c83610ebca"
+      ],
+      [
+       "real/deeper/g",
+       "x",
+       "1",
+       "cd0aa9856147b6c5"
+      ],
+      [
+       "real/f",
+       "x",
+       "1",
+       "252f10c83610ebca"
+      ],
+      [
+       "real/f2",
+       "x",
+       "1",
+       "252f10c83610ebca"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_inside.txt": [
+     "0o555",
+     "expanded:\n  alias/deeper/g\n  alias/f\n  alias/f2\n  real/deeper/g\n  real/f\n  real/f2\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dir_outside": {
+   "argv": [
+    "build",
+    "//pkg:dir_outside",
+    "//pkg:inspect_dir_outside"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.535,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 9 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:dir_outside up-to-date:\n  bazel-bin/pkg/dir_outside\nTarget //pkg:inspect_dir_outside up-to-date:\n  bazel-bin/pkg/inspect_dir_outside.txt\n  bazel-bin/pkg/inspect_dir_outside.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 1 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dir_outside": {
+      "followed": [
+       [
+        "blobs/sha256/aaa",
+        "x",
+        "6",
+        "b79606fb3afea5bd"
+       ],
+       [
+        "blobs/sha256/bbb",
+        "x",
+        "8",
+        "05b3abf2579a5eb6"
+       ],
+       [
+        "own",
+        "x",
+        "3",
+        "5b3975651c3cab92"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "l",
+        "../base/blobs"
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/aaa",
+        "f",
+        null
+       ],
+       [
+        "blobs/sha256/bbb",
+        "f",
+        null
+       ],
+       [
+        "own",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nl blobs/sha256/aaa\nl blobs/sha256/bbb\nl own\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  own\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  own x 3 5b3975651c3cab92\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.459,
+    "stdout": "//pkg:dir_outside\tbazel-out/k8-fastbuild/bin/pkg/dir_outside\n//pkg:inspect_dir_outside\tbazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.txt\n//pkg:inspect_dir_outside\tbazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dir_outside": {
+      "followed": [
+       [
+        "blobs/sha256/aaa",
+        "x",
+        "6",
+        "b79606fb3afea5bd"
+       ],
+       [
+        "blobs/sha256/bbb",
+        "x",
+        "8",
+        "05b3abf2579a5eb6"
+       ],
+       [
+        "own",
+        "x",
+        "3",
+        "5b3975651c3cab92"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/aaa",
+        "f",
+        null
+       ],
+       [
+        "blobs/sha256/bbb",
+        "f",
+        null
+       ],
+       [
+        "own",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf blobs/sha256/aaa\nf blobs/sha256/bbb\nf own\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  own\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  own x 3 5b3975651c3cab92\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/dir_outside": {
+     "followed": [
+      [
+       "blobs/sha256/aaa",
+       "x",
+       "6",
+       "b79606fb3afea5bd"
+      ],
+      [
+       "blobs/sha256/bbb",
+       "x",
+       "8",
+       "05b3abf2579a5eb6"
+      ],
+      [
+       "own",
+       "x",
+       "3",
+       "5b3975651c3cab92"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_dir_outside.txt": [
+     "0o555",
+     "expanded:\n  blobs/sha256/aaa\n  blobs/sha256/bbb\n  own\nfiles:\n  blobs/sha256/aaa x 6 b79606fb3afea5bd\n  blobs/sha256/bbb x 8 05b3abf2579a5eb6\n  own x 3 5b3975651c3cab92\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "source_link": {
+   "argv": [
+    "build",
+    "//pkg:source_link",
+    "//pkg:inspect_source_link"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.241,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:source_link up-to-date:\n  bazel-bin/pkg/source_link\nTarget //pkg:inspect_source_link up-to-date:\n  bazel-bin/pkg/inspect_source_link.txt\n  bazel-bin/pkg/inspect_source_link.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_source_link.raw": [
+      "0o555",
+      "l data.txt\nl tool.sh\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_source_link.txt": [
+      "0o555",
+      "expanded:\n  data.txt\n  tool.sh\nfiles:\n  data.txt - 5 6667b2d1aab6a00c\n  tool.sh x 20 bf664cf84f00f6ed\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/source_link": {
+      "followed": [
+       [
+        "data.txt",
+        "-",
+        "5",
+        "6667b2d1aab6a00c"
+       ],
+       [
+        "tool.sh",
+        "x",
+        "20",
+        "bf664cf84f00f6ed"
+       ]
+      ],
+      "raw": [
+       [
+        "data.txt",
+        "l",
+        "../../../../../pkg/data.txt"
+       ],
+       [
+        "tool.sh",
+        "l",
+        "../../../../../pkg/tool.sh"
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.479,
+    "stdout": "//pkg:inspect_source_link\tbazel-out/k8-fastbuild/bin/pkg/inspect_source_link.txt\n//pkg:inspect_source_link\tbazel-out/k8-fastbuild/bin/pkg/inspect_source_link.raw\n//pkg:source_link\tbazel-out/k8-fastbuild/bin/pkg/source_link\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_source_link.raw": [
+      "0o555",
+      "f data.txt\nf tool.sh\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_source_link.txt": [
+      "0o555",
+      "expanded:\n  data.txt\n  tool.sh\nfiles:\n  data.txt - 5 6667b2d1aab6a00c\n  tool.sh x 20 bf664cf84f00f6ed\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/source_link": {
+      "followed": [
+       [
+        "data.txt",
+        "-",
+        "5",
+        "6667b2d1aab6a00c"
+       ],
+       [
+        "tool.sh",
+        "x",
+        "20",
+        "bf664cf84f00f6ed"
+       ]
+      ],
+      "raw": [
+       [
+        "data.txt",
+        "f",
+        null
+       ],
+       [
+        "tool.sh",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_source_link.txt": [
+     "0o555",
+     "expanded:\n  data.txt\n  tool.sh\nfiles:\n  data.txt - 5 6667b2d1aab6a00c\n  tool.sh x 20 bf664cf84f00f6ed\n"
+    ],
+    "bazel-out/k8-fastbuild/bin/pkg/source_link": {
+     "followed": [
+      [
+       "data.txt",
+       "-",
+       "5",
+       "6667b2d1aab6a00c"
+      ],
+      [
+       "tool.sh",
+       "x",
+       "20",
+       "bf664cf84f00f6ed"
+      ]
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "empty_dir_link": {
+   "argv": [
+    "build",
+    "//pkg:empty_dir_link",
+    "//pkg:inspect_empty_dir_link"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.661,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_empty_dir_link up-to-date:\n  bazel-bin/pkg/inspect_empty_dir_link.txt\n  bazel-bin/pkg/inspect_empty_dir_link.raw\nTarget //pkg:empty_dir_link up-to-date:\n  bazel-bin/pkg/empty_dir_link\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/empty_dir_link": {
+      "followed": [
+       [
+        "x",
+        "x",
+        "1",
+        "2d711642b726b044"
+       ]
+      ],
+      "raw": [
+       [
+        "empty",
+        "d",
+        null
+       ],
+       [
+        "empty_alias",
+        "l",
+        "empty"
+       ],
+       [
+        "x",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.raw": [
+      "0o555",
+      "l x\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.txt": [
+      "0o555",
+      "expanded:\n  x\nfiles:\n  x x 1 2d711642b726b044\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.41,
+    "stdout": "//pkg:empty_dir_link\tbazel-out/k8-fastbuild/bin/pkg/empty_dir_link\n//pkg:inspect_empty_dir_link\tbazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.txt\n//pkg:inspect_empty_dir_link\tbazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/empty_dir_link": {
+      "followed": [
+       [
+        "x",
+        "x",
+        "1",
+        "2d711642b726b044"
+       ]
+      ],
+      "raw": [
+       [
+        "empty",
+        "d",
+        null
+       ],
+       [
+        "empty_alias",
+        "d",
+        null
+       ],
+       [
+        "x",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.raw": [
+      "0o555",
+      "d empty\nd empty_alias\nf x\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.txt": [
+      "0o555",
+      "expanded:\n  x\nfiles:\n  x x 1 2d711642b726b044\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/empty_dir_link": {
+     "followed": [
+      [
+       "x",
+       "x",
+       "1",
+       "2d711642b726b044"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_empty_dir_link.txt": [
+     "0o555",
+     "expanded:\n  x\nfiles:\n  x x 1 2d711642b726b044\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "same_action": {
+   "argv": [
+    "build",
+    "//pkg:same_action",
+    "//pkg:inspect_same_action"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 15.584,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_same_action up-to-date:\n  bazel-bin/pkg/inspect_same_action.txt\n  bazel-bin/pkg/inspect_same_action.raw\nTarget //pkg:same_action up-to-date:\n  bazel-bin/pkg/same_action\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_same_action.raw": [
+      "0o555",
+      "l other\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_same_action.txt": [
+      "0o555",
+      "expanded:\n  other\nfiles:\n  other x 5 d9298a10d1b07358\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/same_action": {
+      "followed": [
+       [
+        "other",
+        "x",
+        "5",
+        "d9298a10d1b07358"
+       ]
+      ],
+      "raw": [
+       [
+        "other",
+        "l",
+        "../same_action.other"
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.415,
+    "stdout": "//pkg:inspect_same_action\tbazel-out/k8-fastbuild/bin/pkg/inspect_same_action.txt\n//pkg:inspect_same_action\tbazel-out/k8-fastbuild/bin/pkg/inspect_same_action.raw\n//pkg:same_action\tbazel-out/k8-fastbuild/bin/pkg/same_action\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_same_action.raw": [
+      "0o555",
+      "f other\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_same_action.txt": [
+      "0o555",
+      "expanded:\n  other\nfiles:\n  other x 5 d9298a10d1b07358\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/same_action": {
+      "followed": [
+       [
+        "other",
+        "x",
+        "5",
+        "d9298a10d1b07358"
+       ]
+      ],
+      "raw": [
+       [
+        "other",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_same_action.txt": [
+     "0o555",
+     "expanded:\n  other\nfiles:\n  other x 5 d9298a10d1b07358\n"
+    ],
+    "bazel-out/k8-fastbuild/bin/pkg/same_action": {
+     "followed": [
+      [
+       "other",
+       "x",
+       "5",
+       "d9298a10d1b07358"
+      ]
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "abs_host": {
+   "argv": [
+    "build",
+    "//pkg:abs_host",
+    "//pkg:inspect_abs_host"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.651,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:abs_host up-to-date:\n  bazel-bin/pkg/abs_host\nTarget //pkg:inspect_abs_host up-to-date:\n  bazel-bin/pkg/inspect_abs_host.txt\n  bazel-bin/pkg/inspect_abs_host.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/abs_host": {
+      "followed": [
+       [
+        "sh",
+        "x",
+        "host",
+        "host-bin-sh"
+       ],
+       [
+        "x",
+        "x",
+        "1",
+        "2d711642b726b044"
+       ]
+      ],
+      "raw": [
+       [
+        "sh",
+        "l",
+        "/bin/sh"
+       ],
+       [
+        "x",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.raw": [
+      "0o555",
+      "l sh\nl x\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.txt": [
+      "0o555",
+      "expanded:\n  sh\n  x\nfiles:\n  sh x host host-bin-sh\n  x x 1 2d711642b726b044\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.418,
+    "stdout": "//pkg:abs_host\tbazel-out/k8-fastbuild/bin/pkg/abs_host\n//pkg:inspect_abs_host\tbazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.txt\n//pkg:inspect_abs_host\tbazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/abs_host": {
+      "followed": [
+       [
+        "sh",
+        "x",
+        "host",
+        "host-bin-sh"
+       ],
+       [
+        "x",
+        "x",
+        "1",
+        "2d711642b726b044"
+       ]
+      ],
+      "raw": [
+       [
+        "sh",
+        "f",
+        null
+       ],
+       [
+        "x",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.raw": [
+      "0o555",
+      "f sh\nf x\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.txt": [
+      "0o555",
+      "expanded:\n  sh\n  x\nfiles:\n  sh x host host-bin-sh\n  x x 1 2d711642b726b044\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/abs_host": {
+     "followed": [
+      [
+       "sh",
+       "x",
+       "host",
+       "host-bin-sh"
+      ],
+      [
+       "x",
+       "x",
+       "1",
+       "2d711642b726b044"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_abs_host.txt": [
+     "0o555",
+     "expanded:\n  sh\n  x\nfiles:\n  sh x host host-bin-sh\n  x x 1 2d711642b726b044\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "absolute_local": {
+   "argv": [
+    "build",
+    "//pkg:absolute_local",
+    "//pkg:inspect_absolute_local"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 14.736,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:absolute_local up-to-date:\n  bazel-bin/pkg/absolute_local\nTarget //pkg:inspect_absolute_local up-to-date:\n  bazel-bin/pkg/inspect_absolute_local.txt\n  bazel-bin/pkg/inspect_absolute_local.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 1 internal, 1 local, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/absolute_local": {
+      "followed": [
+       [
+        "abs",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ]
+      ],
+      "raw": [
+       [
+        "abs",
+        "l",
+        "<OB>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/layer.tar"
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.raw": [
+      "0o555",
+      "l abs\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.txt": [
+      "0o555",
+      "expanded:\n  abs\nfiles:\n  abs x 12 9d8fe276c95b0883\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.437,
+    "stdout": "//pkg:absolute_local\tbazel-out/k8-fastbuild/bin/pkg/absolute_local\n//pkg:inspect_absolute_local\tbazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.txt\n//pkg:inspect_absolute_local\tbazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/absolute_local": {
+      "followed": [
+       [
+        "abs",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ]
+      ],
+      "raw": [
+       [
+        "abs",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.raw": [
+      "0o555",
+      "f abs\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.txt": [
+      "0o555",
+      "expanded:\n  abs\nfiles:\n  abs x 12 9d8fe276c95b0883\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/absolute_local": {
+     "followed": [
+      [
+       "abs",
+       "x",
+       "12",
+       "9d8fe276c95b0883"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_absolute_local.txt": [
+     "0o555",
+     "expanded:\n  abs\nfiles:\n  abs x 12 9d8fe276c95b0883\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "aliased": {
+   "argv": [
+    "build",
+    "//pkg:aliased",
+    "//pkg:inspect_aliased"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.054,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 11 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:aliased up-to-date:\n  bazel-bin/pkg/aliased\nTarget //pkg:inspect_aliased up-to-date:\n  bazel-bin/pkg/inspect_aliased.txt\n  bazel-bin/pkg/inspect_aliased.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 2 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/aliased": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "l",
+        "../../../layer.tar"
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_aliased.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nl blobs/sha256/layer\nl index.json\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_aliased.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.429,
+    "stdout": "//pkg:aliased\tbazel-out/k8-fastbuild/bin/pkg/aliased\n//pkg:inspect_aliased\tbazel-out/k8-fastbuild/bin/pkg/inspect_aliased.txt\n//pkg:inspect_aliased\tbazel-out/k8-fastbuild/bin/pkg/inspect_aliased.raw\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 2 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/aliased": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "f",
+        null
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     },
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_aliased.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf blobs/sha256/layer\nf index.json\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_aliased.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ]
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/aliased": {
+     "followed": [
+      [
+       "blobs/sha256/layer",
+       "x",
+       "12",
+       "9d8fe276c95b0883"
+      ],
+      [
+       "index.json",
+       "x",
+       "3",
+       "ca3d163bab055381"
+      ]
+     ]
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_aliased.txt": [
+     "0o555",
+     "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+    ]
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "absolute_sandboxed": {
+   "argv": [
+    "build",
+    "//pkg:absolute_sandboxed"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 8.237,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:absolute_sandboxed (6 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:144:5: error while validating output tree artifact pkg/absolute_sandboxed: child abs is a dangling symbolic link\nERROR: <WS>/pkg/BUILD.bazel:144:5: TreeSymlinks pkg/absolute_sandboxed failed: not all outputs were created or valid\nTarget //pkg:absolute_sandboxed failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.403,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:absolute_sandboxed#0': action '//pkg:absolute_sandboxed#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/absolute_sandboxed': error while validating output tree artifact pkg/absolute_sandboxed: child abs is a dangling symbolic link; its absolute target lies in the action's sandbox or temporary directory, which are gone once the action has run\n",
+    "outputs": {}
+   },
+   "expected_message": "error while validating output tree artifact pkg/absolute_sandboxed: child abs is a dangling symbolic link",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dangling_rel": {
+   "argv": [
+    "build",
+    "//pkg:dangling_rel"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.004,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:dangling_rel (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:162:5: error while validating output tree artifact pkg/dangling_rel: child y is a dangling symbolic link\nERROR: <WS>/pkg/BUILD.bazel:162:5: TreeSymlinks pkg/dangling_rel failed: not all outputs were created or valid\nTarget //pkg:dangling_rel failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.394,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:dangling_rel#0': action '//pkg:dangling_rel#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/dangling_rel': error while validating output tree artifact pkg/dangling_rel: child y is a dangling symbolic link\n",
+    "outputs": {}
+   },
+   "expected_message": "error while validating output tree artifact pkg/dangling_rel: child y is a dangling symbolic link",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dangling_abs": {
+   "argv": [
+    "build",
+    "//pkg:dangling_abs"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.121,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:dangling_abs (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:170:5: error while validating output tree artifact pkg/dangling_abs: child y is a dangling symbolic link\nERROR: <WS>/pkg/BUILD.bazel:170:5: TreeSymlinks pkg/dangling_abs failed: not all outputs were created or valid\nTarget //pkg:dangling_abs failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.392,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:dangling_abs#0': action '//pkg:dangling_abs#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/dangling_abs': error while validating output tree artifact pkg/dangling_abs: child y is a dangling symbolic link\n",
+    "outputs": {}
+   },
+   "expected_message": "error while validating output tree artifact pkg/dangling_abs: child y is a dangling symbolic link",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "special": {
+   "argv": [
+    "build",
+    "//pkg:special"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.049,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:special (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:177:5: error while validating output tree artifact pkg/special: child null has an unsupported type\nERROR: <WS>/pkg/BUILD.bazel:177:5: TreeSymlinks pkg/special failed: not all outputs were created or valid\nTarget //pkg:special failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.397,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:special#0': action '//pkg:special#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/special': error while validating output tree artifact pkg/special: child null has an unsupported type\n",
+    "outputs": {}
+   },
+   "expected_message": "error while validating output tree artifact pkg/special: child null has an unsupported type",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "loop": {
+   "argv": [
+    "build",
+    "//pkg:loop"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.022,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:loop (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:184:5: error while validating output tree artifact pkg/loop: [unix_jni.cc:382] <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/loop/b (Too many levels of symbolic links)\nERROR: <WS>/pkg/BUILD.bazel:184:5: TreeSymlinks pkg/loop failed: not all outputs were created or valid\nTarget //pkg:loop failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.396,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:loop#0': action '//pkg:loop#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/loop': error while validating output tree artifact pkg/loop: <CACHE>/work/7bdf84d7746c2b495a007f116b959072e339c312ea811353bdeec7c5885563ba-1587554-0/execroot/bazel-out/k8-fastbuild/bin/pkg/loop/a (Too many levels of symbolic links)\n",
+    "outputs": {}
+   },
+   "expected_message_parts": [
+    "error while validating output tree artifact pkg/loop: ",
+    "/pkg/loop/",
+    " (Too many levels of symbolic links)"
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "dir_cycle": {
+   "argv": [
+    "build",
+    "//pkg:dir_cycle"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.113,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:dir_cycle (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:192:5: error while validating output tree artifact pkg/dir_cycle: [unix_jni.cc:382] <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/dir_cycle/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up/sub/up (Too many levels of symbolic links)\nERROR: <WS>/pkg/BUILD.bazel:192:5: TreeSymlinks pkg/dir_cycle failed: not all outputs were created or valid\nTarget //pkg:dir_cycle failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.421,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:dir_cycle#0': action '//pkg:dir_cycle#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/dir_cycle': error while validating output tree artifact pkg/dir_cycle: <CACHE>/work/dd0ef4aebff4a193a73865c1623dc847e6268b89791b465e288010c17228de6a-1587750-0/execroot/bazel-out/k8-fastbuild/bin/pkg/dir_cycle/sub/up (Too many levels of symbolic links)\n",
+    "outputs": {}
+   },
+   "expected_message_parts": [
+    "error while validating output tree artifact pkg/dir_cycle: ",
+    "/pkg/dir_cycle/",
+    " (Too many levels of symbolic links)"
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "self_cycle": {
+   "argv": [
+    "build",
+    "//pkg:self_cycle"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.045,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:self_cycle (5 packages loaded, 7 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:201:5: error while validating output tree artifact pkg/self_cycle: [unix_jni.cc:382] <OB>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/self_cycle/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self/self (Too many levels of symbolic links)\nERROR: <WS>/pkg/BUILD.bazel:201:5: TreeSymlinks pkg/self_cycle failed: not all outputs were created or valid\nTarget //pkg:self_cycle failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.375,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:self_cycle#0': action '//pkg:self_cycle#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/self_cycle': error while validating output tree artifact pkg/self_cycle: <CACHE>/work/f1cf94c62d5dbe6fddfa19e6ab1e9443c576fffdeeb527ddc7ac723734640028-1587987-0/execroot/bazel-out/k8-fastbuild/bin/pkg/self_cycle/self (Too many levels of symbolic links)\n",
+    "outputs": {}
+   },
+   "expected_message_parts": [
+    "error while validating output tree artifact pkg/self_cycle: ",
+    "/pkg/self_cycle/",
+    " (Too many levels of symbolic links)"
+   ],
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "undeclared": {
+   "argv": [
+    "build",
+    "//pkg:undeclared"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.232,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:undeclared (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:undeclared up-to-date:\n  bazel-bin/pkg/undeclared\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/undeclared": {
+      "followed": [
+       [
+        "x",
+        "-",
+        "11",
+        "66f44dfe80a38e3d"
+       ]
+      ],
+      "raw": [
+       [
+        "x",
+        "l",
+        "../../../../../pkg/undeclared.txt"
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.387,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:undeclared#0': action '//pkg:undeclared#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/undeclared': error while validating output tree artifact pkg/undeclared: child x is a dangling symbolic link; its target '../../../../../pkg/undeclared.txt' lies outside the tree, and a native execution root holds only the action's inputs and outputs\n",
+    "outputs": {}
+   },
+   "declared_divergence": "a relative link to a file that is not an input of the action (pkg/undeclared.txt, a source file the action does not declare): genuine resolves the tree after moving it into its one execution root, which holds every source (symlinked top-level directories) and every output built so far, so the link resolves there; a native action runs in its own execution root holding only its inputs, where the link dangles, and the action fails with Bazel's dangling-link text plus the reason",
+   "native_message": "error while validating output tree artifact pkg/undeclared: child x is a dangling symbolic link; its target '../../../../../pkg/undeclared.txt' lies outside the tree, and a native execution root holds only the action's inputs and outputs",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "undeclared_consumer": {
+   "argv": [
+    "build",
+    "//pkg:inspect_undeclared"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 15.598,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:inspect_undeclared (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:inspect_undeclared up-to-date:\n  bazel-bin/pkg/inspect_undeclared.txt\n  bazel-bin/pkg/inspect_undeclared.raw\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_undeclared.raw": [
+      "0o555",
+      "l x\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_undeclared.txt": [
+      "0o555",
+      "expanded:\n  x\nfiles:\n  x - 11 66f44dfe80a38e3d\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.396,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:undeclared#0': action '//pkg:undeclared#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/pkg/undeclared': error while validating output tree artifact pkg/undeclared: child x is a dangling symbolic link; its target '../../../../../pkg/undeclared.txt' lies outside the tree, and a native execution root holds only the action's inputs and outputs\n",
+    "outputs": {}
+   },
+   "declared_divergence": "a relative link to a file that is not an input of the action (pkg/undeclared.txt, a source file the action does not declare): genuine resolves the tree after moving it into its one execution root, which holds every source (symlinked top-level directories) and every output built so far, so the link resolves there; a native action runs in its own execution root holding only its inputs, where the link dangles, and the action fails with Bazel's dangling-link text plus the reason",
+   "native_message": "error while validating output tree artifact pkg/undeclared: child x is a dangling symbolic link; its target '../../../../../pkg/undeclared.txt' lies outside the tree, and a native execution root holds only the action's inputs and outputs",
+   "verdict": "DECLARED_DIVERGENCE",
+   "exit_code_equal": false
+  },
+  "consumer_local": {
+   "argv": [
+    "build",
+    "--spawn_strategy=local",
+    "//pkg:uplevel",
+    "//pkg:inspect_uplevel"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.149,
+    "stdout": "",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (6 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:inspect_uplevel up-to-date:\n  bazel-bin/pkg/inspect_uplevel.txt\n  bazel-bin/pkg/inspect_uplevel.raw\nTarget //pkg:uplevel up-to-date:\n  bazel-bin/pkg/uplevel\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 1 internal, 3 local.\nINFO: Build completed successfully, 4 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf index.json\nl blobs/sha256/layer\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "l",
+        "../../../layer.tar"
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.365,
+    "stdout": "//pkg:inspect_uplevel\tbazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt\n//pkg:inspect_uplevel\tbazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw\n//pkg:uplevel\tbazel-out/k8-fastbuild/bin/pkg/uplevel\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 3 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.raw": [
+      "0o555",
+      "d blobs\nd blobs/sha256\nf blobs/sha256/layer\nf index.json\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+      "0o555",
+      "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+      "followed": [
+       [
+        "blobs/sha256/layer",
+        "x",
+        "12",
+        "9d8fe276c95b0883"
+       ],
+       [
+        "index.json",
+        "x",
+        "3",
+        "ca3d163bab055381"
+       ]
+      ],
+      "raw": [
+       [
+        "blobs",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256",
+        "d",
+        null
+       ],
+       [
+        "blobs/sha256/layer",
+        "f",
+        null
+       ],
+       [
+        "index.json",
+        "f",
+        null
+       ]
+      ]
+     }
+    }
+   },
+   "expected_outputs": {
+    "bazel-out/k8-fastbuild/bin/pkg/inspect_uplevel.txt": [
+     "0o555",
+     "expanded:\n  blobs/sha256/layer\n  index.json\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\n"
+    ],
+    "bazel-out/k8-fastbuild/bin/pkg/uplevel": {
+     "followed": [
+      [
+       "blobs/sha256/layer",
+       "x",
+       "12",
+       "9d8fe276c95b0883"
+      ],
+      [
+       "index.json",
+       "x",
+       "3",
+       "ca3d163bab055381"
+      ]
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "run_uplevel": {
+   "argv": [
+    "run",
+    "//pkg:show_uplevel"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.956,
+    "stdout": "expanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show_uplevel (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:show_uplevel up-to-date:\n  bazel-bin/pkg/show_uplevel.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 8 processes: 6 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 8 total actions\nINFO: Running command line: bazel-bin/pkg/show_uplevel.sh\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/show_uplevel.sh": [
+      "0o555",
+      "#!/bin/bash\nset -e\n\nlisting() {\n  tree=\"$1\"\n  shift\n  echo \"expanded:\"\n  for child in \"$@\"; do\n    echo \"  ${child#\"$tree\"/}\"\n  done\n  echo \"files:\"\n  (cd \"$tree\" && find -L . -type f | LC_ALL=C sort) | while read -r rel; do\n    rel=\"${rel#./}\"\n    if [ -x \"$tree/$rel\" ]; then x=x; else x=-; fi\n    size=$(wc -c < \"$tree/$rel\")\n    sum=$(sha256sum < \"$tree/$rel\" | cut -c1-16)\n    if [ \"$rel\" = \"sh\" ] && cmp -s \"$tree/$rel\" /bin/sh; then sum=host-bin-sh; size=host; fi\n    echo \"  $rel $x $size $sum\"\n  done\n}\n\nstatus=0\ncheck() {\n  if [ \"$(cat \"$tree/$1\")\" = \"$2\" ]; then echo \"ok $1\"; else echo \"mismatch $1\"; status=1; fi\n}\ntree=\"pkg/uplevel\"\nlisting \"$tree\"\ncheck \"blobs/sha256/layer\" \"layer-bytes\"\ncheck \"index.json\" \"{}\"\nexit $status\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.418,
+    "stdout": "expanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:show_uplevel\t<CACHE>/actions/05ee2216445230b6a2b397aec1e470e794b12773c981936b267a37b901380850/outputs/bazel-out/k8-fastbuild/bin/pkg/show_uplevel.sh\nbazel-rs: 4 actions executed, 2 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/165317a088152223720148891cd4a1c591efd88411f06fa4f008568796f998d4/outputs/bazel-out/k8-fastbuild/bin/pkg/show_uplevel.sh\n",
+    "outputs": null
+   },
+   "expected_stdout": "expanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "test_runfiles": {
+   "argv": [
+    "test",
+    "--test_output=all",
+    "//pkg:uplevel_test",
+    "//pkg:dir_inside_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 12.433,
+    "stdout": "==================== Test output for //pkg:uplevel_test:\nexpanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n================================================================================\n==================== Test output for //pkg:dir_inside_test:\nexpanded:\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\nok alias/deeper/g\nok alias/f\nok alias/f2\nok real/f2\n================================================================================\n//pkg:dir_inside_test                                                    PASSED in 0.0s\n//pkg:uplevel_test                                                       PASSED in 0.0s\n\nExecuted 2 out of 2 tests: 2 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (81 packages loaded, 840 targets configured).\nINFO: From Testing //pkg:uplevel_test:\nINFO: From Testing //pkg:dir_inside_test:\nINFO: Found 2 test targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 16 processes: 11 internal, 7 processwrapper-sandbox.\nINFO: Build completed successfully, 16 total actions\n",
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 32.123,
+    "stdout": "==================== Test output for //pkg:uplevel_test:\nexpanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n================================================================================\n==================== Test output for //pkg:dir_inside_test:\nexpanded:\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\nok alias/deeper/g\nok alias/f\nok alias/f2\nok real/f2\n================================================================================\n//pkg:dir_inside_test                                                    PASSED in 0.1s\n//pkg:uplevel_test                                                       PASSED in 0.1s\n\nExecuted 2 out of 2 tests: 2 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:dir_inside_test\t<CACHE>/actions/4c33f88b30be8d952d3bba4bd6991275ed74746cdd4acce506cd3908a88bf365/outputs/bazel-out/k8-fastbuild/bin/pkg/dir_inside_test.sh\n//pkg:uplevel_test\t<CACHE>/actions/f87c90c9873938e6c2ea36844614584a26375feb58048beed422a000b98cb73c/outputs/bazel-out/k8-fastbuild/bin/pkg/uplevel_test.sh\nbazel-rs: 8 actions executed, 3 cache hits (experimental local execution; not sandboxed)\nINFO: From Testing //pkg:uplevel_test:\nINFO: From Testing //pkg:dir_inside_test:\n",
+    "outputs": null
+   },
+   "expected_stdout": "==================== Test output for //pkg:uplevel_test:\nexpanded:\nfiles:\n  blobs/sha256/layer x 12 9d8fe276c95b0883\n  index.json x 3 ca3d163bab055381\nok blobs/sha256/layer\nok index.json\n================================================================================\n==================== Test output for //pkg:dir_inside_test:\nexpanded:\nfiles:\n  alias/deeper/g x 1 cd0aa9856147b6c5\n  alias/f x 1 252f10c83610ebca\n  alias/f2 x 1 252f10c83610ebca\n  real/deeper/g x 1 cd0aa9856147b6c5\n  real/f x 1 252f10c83610ebca\n  real/f2 x 1 252f10c83610ebca\nok alias/deeper/g\nok alias/f\nok alias/f2\nok real/f2\n================================================================================\n//pkg:dir_inside_test                                                    PASSED in <T>s\n//pkg:uplevel_test                                                       PASSED in <T>s\n\nExecuted 2 out of 2 tests: 2 tests pass.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  }
+ }
+}

@@ -118,12 +118,23 @@ Citations are to the pinned Bazel 9.3.0 sources
 
 ## Evidence
 
-`crate::action` unit tests cover the three read modes, the rules_oci shapes
-and every resolving link, materialization and its manifests, damage found on
-reuse, the validation errors (dangling, special, ELOOP, cycles, absolute
-targets in the working directory) and links to other outputs of the action;
-another reads a test's runfile sources (a file, a tree's files, an empty
-tree, a tree through a symlink output).
+`tests/fixtures/tree_symlinks/reference_receipt.json` (genuine Bazel 9.3.0,
+`--batch`, processwrapper-sandbox, against the native debug build; scripts
+`/tmp/opencode/perf-research/tree-symlinks-capture.py` and
+`tree-symlinks-receipt.py`) — 22 MATCH, 2 DECLARED_DIVERGENCE: the rules_oci
+shapes (up-level links to a layer; base_from links into an input image tree's
+blobs), links inside the tree, chains, directory links in and out of the tree,
+links to source inputs (plain and executable), a link to an empty directory, a
+link to another output of the same action, an absolute link to a host file,
+absolute links through the working directory (sandboxed: dangling;
+unsandboxed: resolved), dangling relative and absolute links, a link to
+`/dev/null`, a loop, two directory cycles, a sandboxed and an unsandboxed
+consumer, `ctx.actions.symlink` of a tree, `run` and `test` through runfiles.
+`tests/tree_symlinks.rs` replays every case live (and checks reuse and
+re-keying through a changed link target); `crate::action` unit tests cover
+the three read modes, materialization and its manifests, damage found on
+reuse, the validation errors and cycles, links to other outputs of the
+action and a test's runfile sources.
 
 ## Known differences
 
