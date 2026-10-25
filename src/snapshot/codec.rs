@@ -1406,6 +1406,7 @@ mod tests {
                         }),
                     },
                     configuration: 0,
+                    completion: vec!["write".into(), "tree".into()],
                 },
             )],
             configurations: vec![ConfigurationSummary {

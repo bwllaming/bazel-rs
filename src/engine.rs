@@ -619,6 +619,9 @@ struct RunPlan {
     settings: crate::runfiles::RunSettings,
     /// The configuration of the target (its output directory mnemonic).
     config: ConfigId,
+    /// The producers of the target's top-level artifacts
+    /// (crate::request::PlannedRun::completion).
+    completion: Vec<String>,
 }
 
 /// RunCommand.isExecutable (runtime/commands/RunCommand.java:1186-1211):
@@ -8501,6 +8504,7 @@ impl Engine {
                     }),
                     settings: plan.settings,
                     configuration,
+                    completion: plan.completion,
                 },
             ));
         }
@@ -12762,8 +12766,35 @@ impl Engine {
                         .map(|runfiles| runfiles.run.clone())
                         .unwrap_or_default(),
                     config: top,
+                    completion: Vec::new(),
                 };
                 self.run_plans.insert(label.clone(), plan);
+            }
+        }
+        // PERF(TEST): what each run target's completion builds — the
+        // producers of its requested and hidden top-level artifacts
+        // (TargetCompletionValue; a test action waits for it,
+        // TestCompletionFunction.java:55). The workspace status artifacts
+        // ride on the first label's key but belong to no target.
+        if !self.run_plans.is_empty() {
+            let mut completions: HashMap<ConfiguredTargetKey, BTreeSet<&str>> = self
+                .run_plans
+                .keys()
+                .map(|label| (self.configurations.top_key(label.clone()), BTreeSet::new()))
+                .collect();
+            for (owner, artifact) in requested.iter().chain(&hidden) {
+                if let Some(completion) = completions.get_mut(owner)
+                    && let Some((id, _)) = &artifact.producer
+                    && !id.starts_with(crate::request::STATUS_ID_PREFIX)
+                {
+                    completion.insert(id);
+                }
+            }
+            for (label, plan) in self.run_plans.iter_mut() {
+                let key = self.configurations.top_key(label.clone());
+                if let Some(completion) = completions.get(&key) {
+                    plan.completion = completion.iter().map(|id| (*id).to_owned()).collect();
+                }
             }
         }
         // Analyze everything first, but execute only the actions reachable from

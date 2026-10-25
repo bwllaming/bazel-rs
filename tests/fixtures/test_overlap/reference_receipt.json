@@ -1,0 +1,213 @@
+{
+ "schema": "perf-test-overlap-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of PERF(TEST) (docs/TEST_COMMAND.md, Scheduling): test actions run inside the build as soon as their target is complete, a build failure interrupts running tests and keeps finished results, exclusive tests after the parallel ones, --local_test_jobs, streamed output, validation before tests. Fixture: tests/test_overlap.rs. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS> --action_env=MARKER_DIR=<ws>/markers",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "target/release/bazel-rs",
+  "sha256": "95e088ee86a316db252788488dac04f4d3fc96937b82438eaff0f4cde33aada2",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --action_env=MARKER_DIR=<ws>/markers"
+ },
+ "script": "/tmp/opencode/perf-research/test-overlap-capture.py",
+ "script_sha256": "5deee8687e8852df4dc2190751d15fe747dc5a279b2a8ca4f05128da8fc80f94",
+ "fixture_sha256": "083a5267dee70e1cc363d3f57f03125a213337a859e9a0b9bdff12927fef70cd",
+ "distdir_seeded_count": 18,
+ "comparison": "exit code; stdout with timings normalized, test output blocks and streamed logs compared as sets (the parallel tests finish in either order, Bazel runs exclusive tests in its result map's hash order) keeping the parallel-before-exclusive phase order and one streamed test at a time; key stderr lines (sorted); the marker files the run left; surviving `sleep 120` processes of the run",
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 10
+ },
+ "rows": [
+  {
+   "scenario": "overlap",
+   "run": "main",
+   "argv": [
+    "//ov:waits_for_test",
+    "//ov:marks_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 3.45,
+   "native_seconds": 0.5,
+   "stdout": "//ov:marks_test                                                          PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\n",
+   "stderr_key": [],
+   "markers": [
+    "tested"
+   ]
+  },
+  {
+   "scenario": "overlap",
+   "run": "cached",
+   "argv": [
+    "//ov:waits_for_test",
+    "//ov:marks_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.54,
+   "native_seconds": 0.11,
+   "stdout": "//ov:marks_test                                                 (cached) PASSED in T\n\nExecuted 0 out of 1 test: 1 test passes.\n",
+   "stderr_key": [],
+   "markers": [
+    "tested"
+   ]
+  },
+  {
+   "scenario": "build_failure_while_testing",
+   "run": "main",
+   "argv": [
+    "//ov:fails_after_test",
+    "//ov:passes_test",
+    "//ov:sleeps_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 5.71,
+   "native_seconds": 2.52,
+   "stdout": "//ov:sleeps_test                                                      NO STATUS\n//ov:passes_test                                                         PASSED in T\n\nExecuted 1 out of 2 tests: 1 test passes and 1 was skipped.\n",
+   "stderr_key": [],
+   "markers": [
+    "passed",
+    "sleeping"
+   ]
+  },
+  {
+   "scenario": "build_failure_while_testing",
+   "run": "rerun_interrupted",
+   "argv": [
+    "//ov:passes_test",
+    "//ov:sleeps_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.62,
+   "native_seconds": 0.16,
+   "stdout": "//ov:passes_test                                                (cached) PASSED in T\n//ov:sleeps_test                                                         PASSED in T\n\nExecuted 1 out of 2 tests: 2 tests pass.\n",
+   "stderr_key": [],
+   "markers": [
+    "fast",
+    "passed",
+    "sleeping"
+   ]
+  },
+  {
+   "scenario": "build_failure_after_all_passed",
+   "run": "main",
+   "argv": [
+    "//ov:fails_after_pass",
+    "//ov:passes_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 5.6,
+   "native_seconds": 2.51,
+   "stdout": "//ov:passes_test                                                         PASSED in T\n\nExecuted 1 out of 1 test: 1 test passes.\nAll tests passed but there were other errors during the build.\n\n",
+   "stderr_key": [],
+   "markers": [
+    "passed"
+   ]
+  },
+  {
+   "scenario": "build_failure_while_a_shard_runs",
+   "run": "main",
+   "argv": [
+    "//ov:fails_after_shards",
+    "//ov:sharded_sleeps_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 5.62,
+   "native_seconds": 2.51,
+   "stdout": "//ov:sharded_sleeps_test                                              NO STATUS\n\nExecuted 1 out of 1 test: 1 was skipped.\n",
+   "stderr_key": [],
+   "markers": [
+    "shard0",
+    "shard1"
+   ]
+  },
+  {
+   "scenario": "exclusive_after_parallel",
+   "run": "main",
+   "argv": [
+    "--test_output=all",
+    "//ov:first_test",
+    "//ov:second_test",
+    "//ov:alone_test",
+    "//ov:alone_if_local_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 6.58,
+   "native_seconds": 3.53,
+   "stdout": "==================== Test output for //ov:first_test:\nfirst\n================================================================================\n==================== Test output for //ov:second_test:\nsecond\n================================================================================\n==================== Test output for //ov:alone_if_local_test:\nalone if local\n================================================================================\n==================== Test output for //ov:alone_test:\nalone\n================================================================================\n//ov:alone_if_local_test                                                 PASSED in T\n//ov:alone_test                                                          PASSED in T\n//ov:first_test                                                          PASSED in T\n//ov:second_test                                                         PASSED in T\n\nExecuted 4 out of 4 tests: 4 tests pass.\n",
+   "stderr_key": [],
+   "markers": [
+    "first",
+    "second"
+   ]
+  },
+  {
+   "scenario": "local_test_jobs",
+   "run": "main",
+   "argv": [
+    "--local_test_jobs=1",
+    "//ov:lock_a_test",
+    "//ov:lock_b_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 5.24,
+   "native_seconds": 2.48,
+   "stdout": "//ov:lock_a_test                                                         PASSED in T\n//ov:lock_b_test                                                         PASSED in T\n\nExecuted 2 out of 2 tests: 2 tests pass.\n",
+   "stderr_key": [],
+   "markers": []
+  },
+  {
+   "scenario": "streamed",
+   "run": "main",
+   "argv": [
+    "--test_output=streamed",
+    "//ov:stream_a_test",
+    "//ov:stream_b_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 5.54,
+   "native_seconds": 2.53,
+   "stdout": "stream a\nstream a done\nstream b\nstream b done\n//ov:stream_a_test                                                       PASSED in T\n//ov:stream_b_test                                                       PASSED in T\n\nExecuted 2 out of 2 tests: 2 tests pass.\n",
+   "stderr_key": [
+    "WARNING: Streamed test output requested. All tests will be run without sharding, one at a time"
+   ],
+   "markers": []
+  },
+  {
+   "scenario": "validation_failure",
+   "run": "main",
+   "argv": [
+    "//ov:validated_test"
+   ],
+   "verdict": "EXACT",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 5.42,
+   "native_seconds": 2.42,
+   "stdout": "//ov:validated_test                                             FAILED TO BUILD\n\nExecuted 0 out of 1 test: 1 fails to build.\n",
+   "stderr_key": [],
+   "markers": []
+  }
+ ]
+}

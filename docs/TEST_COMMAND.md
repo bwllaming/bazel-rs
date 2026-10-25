@@ -194,7 +194,64 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   `<cache>/tests` store until a REAPI encoding of test outputs (testlogs and
   the result status) exists.
 * exclusive tests (and `--test_strategy=exclusive`, streamed output) run after
-  the others, one at a time; others run with `--local_test_jobs` or `--jobs`.
+  the others, one at a time; the others run inside the build (Scheduling).
+
+## Scheduling (PERF(TEST))
+
+Like Bazel 9.3 (Skymeld: BuildDriverFunction.requestConfiguredTargetExecution,
+skyframe/BuildDriverFunction.java:589-642, and TestCompletionFunction) the
+test actions are part of the build's one execution graph
+(`crate::scheduler::Leaves`, `crate::request::execute_with_tests`,
+`crate::test_runner::Session`):
+
+* each parallel test action (one per shard and run) starts as soon as its
+  test target is complete — every artifact of the target's requested output
+  groups, validation outputs included, its runfiles support files and its
+  runfiles (TestCompletionFunction.java:55 requests the TargetCompletionValue
+  first; `PlannedRun::completion`) — while the rest of the build goes on.
+  Ready test actions are dispatched before ready build actions; build and
+  test actions in flight together never exceed `--jobs`, and
+  `--local_test_jobs=N` (N > 0) bounds the test actions running at once
+  (ExecutionTool.configureResourceManager; above `--jobs` it is ineffectual,
+  as in Bazel).
+* exclusive tests — tag `exclusive` or `exclusive-if-local` (no local
+  strategy runs the latter in parallel,
+  TestActionContext.forceExclusiveIfLocalTestsInParallel), every test under
+  `--test_strategy=exclusive` and under `--test_output=streamed`
+  (TestCommand.editOptions) — run one at a time after the graph succeeded
+  (SkyframeBuildView.analyzeAndExecuteTargets :759-794), in label order
+  (Bazel runs them in the hash order of its evaluation result map,
+  EvaluationResult.Builder).
+* a test action's own events (`FAIL: ...`, `INFO: From Testing ...` with the
+  output block on stdout, `STATUS: L (Summary)`, `Testing X failed: ...`) are
+  printed when it ends, while the build runs; after the execution phase
+  (exclusive tests included) come the analysis diagnostics, the built-target
+  lines and the action counts (build actions only), then the summary in
+  TestSummary order, as Bazel prints its build result after the exclusive
+  tests and the summary last.
+* a failing build action under `--nokeep_going`: no test or build action
+  starts after it; test actions in flight are interrupted (SIGTERM to their
+  group, SIGKILL after 15 s; no result, nothing published or cached), as
+  Bazel interrupts the in-flight actions (AbstractQueueVisitor
+  .awaitTermination); build actions in flight finish
+  (`crate::scheduler`); exclusive tests do not run. The summary keeps the
+  result of every test all of whose actions reported (AggregatingTestListener:
+  a posted summary stays), a partly run test is NO STATUS and counts as
+  executed (TestResultAggregator.markUnbuilt), every other test FAILED TO
+  BUILD or NO STATUS as before; `All tests passed but there were other errors
+  during the build.` when every test passed; exit code 1.
+* a test action error (TestExecException: sharding not advertised, a sandbox
+  setup failure) under `--nokeep_going` stops the test actions not started
+  yet (NO STATUS); unlike Bazel, whose evaluation stops, the build goes on.
+  A test with actions without a result is NO STATUS under `--nokeep_going`
+  (TestResultAggregator.markIncomplete with skipTargetsOnFailure), INCOMPLETE
+  under `--keep_going`.
+
+Fixture: `tests/test_overlap.rs`; paired genuine 9.3.0 capture of its
+scenarios (overlap, a build failure while tests run, all tests passed before
+a build failure, a partly run sharded test, exclusive after parallel,
+`--local_test_jobs=1`, streamed output, a failing validation action):
+`tests/fixtures/test_overlap/reference_receipt.json`.
 
 ## Output
 
@@ -209,10 +266,12 @@ formats (`    ERROR   .pkg/fail_test.sh (0.0s)`, `Test cases: finished with
 size note. Summaries are ordered by TestSummary.compareTo. stderr: `FAIL:
 NAME (Exit 1) (see LOG)` per failed attempt (`Segmentation fault` etc. by
 TerminationStatus), `INFO: From Testing NAME:`, `STATUS: L (Summary)` when
-UiEventHandler shows it, action errors, the built targets as `label<TAB>path`
-and the native action counts. Exit codes: 0 all passed, 3 tests failed or
-skipped, 4 no tests, 1 build failure (summary: FAILED TO BUILD for the tests
-the failing actions name, NO STATUS for the rest).
+UiEventHandler shows it, action errors (all of these as they happen, during
+the build: Scheduling), then the built targets as `label<TAB>path` and the
+native action counts. Exit codes: 0 all passed, 3 tests failed or skipped, 4
+no tests, 1 build failure (summary: the results of the tests that finished
+before it, FAILED TO BUILD for the tests the failing actions name, NO STATUS
+for the rest).
 
 ## `run` of a test target
 

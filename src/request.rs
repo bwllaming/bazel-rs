@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// The ids of the workspace status nodes (BazelWorkspaceStatusAction's
 /// stable and volatile outputs; the native executor has no two-output
@@ -34,7 +35,7 @@ pub const STABLE_STATUS_ID: &str = "BazelWorkspaceStatusAction#stable";
 pub const VOLATILE_STATUS_ID: &str = "BazelWorkspaceStatusAction#volatile";
 /// The prefix of the workspace status node ids (never counted in the
 /// build summary: Bazel reports the status action as an internal process).
-const STATUS_ID_PREFIX: &str = "BazelWorkspaceStatusAction#";
+pub const STATUS_ID_PREFIX: &str = "BazelWorkspaceStatusAction#";
 
 /// Where an artifact is reported or published after the execution phase:
 /// its planned path and its producer (action id, declaration-order output
@@ -67,6 +68,40 @@ pub struct PlannedRun {
     pub settings: crate::runfiles::RunSettings,
     /// Index into [`PlannedRequest::configurations`].
     pub configuration: usize,
+    /// The producers of the target's top-level artifacts (TargetCompletion:
+    /// its requested output groups, validation outputs and runfiles support
+    /// files; the workspace status nodes excluded), sorted: a test's actions
+    /// start once these are built (TestCompletionFunction.java:55 requests
+    /// the target's completion first), PERF(TEST).
+    pub completion: Vec<String>,
+}
+
+impl PlannedRun {
+    /// The actions a test of this run plan waits for: the target's
+    /// completion ([`PlannedRun::completion`]) and the producers of its
+    /// executable, runfiles tree and runfiles entries (deduplicated, in
+    /// that order).
+    pub fn test_dependencies(&self) -> Vec<String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut dependencies = Vec::new();
+        let produced = std::iter::once(&self.executable)
+            .chain(self.tree.as_ref().map(|(tree, _)| tree))
+            .chain(
+                self.entries
+                    .iter()
+                    .flatten()
+                    .filter_map(|(_, entry)| entry.as_ref()),
+            );
+        let ids = self.completion.iter().map(String::as_str).chain(
+            produced.filter_map(|produced| produced.producer.as_ref().map(|(id, _)| id.as_str())),
+        );
+        for id in ids {
+            if seen.insert(id) {
+                dependencies.push(id.to_owned());
+            }
+        }
+        dependencies
+    }
 }
 
 /// A path encoded as raw bytes (a tuple member).
@@ -338,6 +373,7 @@ impl PlannedRequest {
                     if let Some((tree, _)) = &mut run.tree {
                         redirect(tree);
                     }
+                    run.completion.iter_mut().for_each(redirect_stable);
                     for (_, entry) in run.entries.iter_mut().flatten() {
                         if let Some(entry) = entry {
                             redirect(entry);
@@ -415,9 +451,220 @@ pub struct Executed {
 /// diagnostics ([`PlannedRequest::take_diagnostics`]) after it, also when
 /// it fails.
 pub fn execute(
+    request: PlannedRequest,
+    status: StatusSource,
+    options: &ExecuteOptions<'_>,
+) -> Result<Executed, String> {
+    execute_with_tests(request, status, options, None)
+}
+
+/// Whether every test of a `test` request can be specified from its plan
+/// (crate::test_runner::TestSpec::new over the planned paths: a run plan,
+/// runfiles support, the default `test` exec group, a UTF-8 exec path), so
+/// its test actions can run inside the execution phase
+/// ([`execute_with_tests`]). The first problem is the error the command
+/// reports once the build has run, exactly as before PERF(TEST).
+pub fn test_preflight(request: &PlannedRequest) -> Result<(), String> {
+    let RequestCommand::Test { tests, .. } = &request.command else {
+        return Ok(());
+    };
+    for test in tests {
+        let plan = request
+            .run_plans
+            .iter()
+            .find(|(label, _)| *label == test.label)
+            .map(|(_, plan)| plan)
+            .ok_or_else(|| format!("internal error: {} was not built as a test", test.label))?;
+        let target = run_target(
+            &test.label,
+            plan,
+            &request.configurations,
+            &HashSet::new(),
+            &|produced| produced.real.clone(),
+        )?;
+        crate::test_runner::TestSpec::new(
+            &test.label,
+            test.info.clone(),
+            test.location.clone(),
+            &target,
+        )?;
+    }
+    Ok(())
+}
+
+/// The run plans' runfiles that are unresolved symlink outputs
+/// (crate::action::ActionExtra::symlink_outputs), read from the nodes
+/// before they execute.
+fn symlink_outputs(
+    nodes: &[PlannedAction],
+    run_plans: &[(Label, PlannedRun)],
+) -> HashSet<(String, usize)> {
+    let producers: HashSet<&str> = run_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.entries.iter().flatten())
+        .filter_map(|(_, produced)| Some(produced.as_ref()?.producer.as_ref()?.0.as_str()))
+        .collect();
+    nodes
+        .iter()
+        .filter(|node| {
+            !node.action.extra.symlink_outputs.is_empty()
+                && producers.contains(node.action.id.as_str())
+        })
+        .flat_map(|node| {
+            node.action
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, output)| node.action.extra.symlink_outputs.contains(*output))
+                .map(|(index, _)| (node.action.id.clone(), index))
+        })
+        .collect()
+}
+
+/// The run target of one run plan, its artifacts at the paths `published`
+/// gives (the scheduler's results, [`executed_path`]).
+fn run_target(
+    label: &Label,
+    plan: &PlannedRun,
+    configurations: &[ConfigurationSummary],
+    symlink_outputs: &HashSet<(String, usize)>,
+    published: &dyn Fn(&Produced) -> PathBuf,
+) -> Result<RunTarget, String> {
+    let runfiles = plan.tree.as_ref().and_then(|(tree, exec)| {
+        let manifest = published(tree);
+        let directory = manifest.parent()?.to_path_buf();
+        // `<root>/<tree exec dir>`: strip the exec path to find the root.
+        let exec_directory = exec.0.parent()?;
+        let mut root = directory.clone();
+        for _ in exec_directory.components() {
+            root = root.parent()?.to_path_buf();
+        }
+        Some(RunRunfiles {
+            executable: root.join(&plan.executable_exec),
+            directory,
+            root,
+        })
+    });
+    let entries = plan.entries.as_ref().map(|entries| {
+        entries
+            .iter()
+            .map(|(path, produced)| (path.clone(), produced.as_ref().map(published)))
+            .collect()
+    });
+    let symlinks = plan
+        .entries
+        .iter()
+        .flatten()
+        .filter(|(_, produced)| {
+            produced
+                .as_ref()
+                .and_then(|produced| produced.producer.as_ref())
+                .is_some_and(|producer| symlink_outputs.contains(producer))
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    let configuration = configurations
+        .get(plan.configuration)
+        .ok_or_else(|| format!("internal error: run plan of {label} has no configuration"))?;
+    Ok(RunTarget {
+        executable: published(&plan.executable),
+        executable_exec: plan.executable_exec.clone(),
+        executable_short_path: plan.executable_short_path.clone(),
+        runfiles,
+        entries,
+        symlinks,
+        mnemonic: configuration.mnemonic.clone(),
+        action_env: configuration.action_env.clone(),
+        test_env: configuration.test_env.clone(),
+        settings: plan.settings.clone(),
+    })
+}
+
+/// The execution phase of `bazel test` (PERF(TEST)): every parallel test
+/// action of `session` is a leaf of the execution graph, run as soon as its
+/// test's inputs are built (crate::scheduler::Leaves; Bazel requests each
+/// test's TestCompletionValue in the same evaluation as the build,
+/// skyframe/BuildDriverFunction.java:589-642); the exclusive ones run one at
+/// a time once the graph succeeded (SkyframeBuildView.java:759-794). The
+/// results are the build's; the tests report to the session.
+fn execute_tests(
+    options: &ExecuteOptions<'_>,
+    nodes: Vec<PlannedAction>,
+    run_plans: &[(Label, PlannedRun)],
+    configurations: &[ConfigurationSummary],
+    symlink_outputs: &HashSet<(String, usize)>,
+    session: &crate::test_runner::Session<'_>,
+) -> Result<BTreeMap<String, crate::action::ActionResult>, String> {
+    let plans: BTreeMap<&Label, &PlannedRun> = run_plans
+        .iter()
+        .map(|(label, plan)| (label, plan))
+        .collect();
+    let plan_of = |test: usize| -> Result<(&Label, &PlannedRun), String> {
+        let label = session.test_label(test);
+        plans
+            .get(label)
+            .map(|plan| (label, *plan))
+            .ok_or_else(|| format!("internal error: {label} was not built as a test"))
+    };
+    // A test without a plan never runs (test_preflight rules it out).
+    for test in 0..session.test_count() {
+        plan_of(test)?;
+    }
+    let leaf_tests = session.leaf_tests();
+    let dependencies = leaf_tests
+        .iter()
+        .map(|&test| plan_of(test).map(|(_, plan)| plan.test_dependencies()))
+        .collect::<Result<Vec<_>, String>>()?;
+    let run = |leaf: usize, inputs: &scheduler::LeafInputs, interrupt: &AtomicBool| {
+        session.run_leaf(leaf, interrupt, || {
+            let (label, plan) = plan_of(leaf_tests[leaf])?;
+            let by_id: HashMap<&str, &crate::action::ActionResult> = inputs
+                .iter()
+                .map(|(id, result)| (id.as_str(), &**result))
+                .collect();
+            run_target(
+                label,
+                plan,
+                configurations,
+                symlink_outputs,
+                &|produced: &Produced| match &produced.producer {
+                    Some((id, index)) => by_id[id.as_str()].outputs[*index].clone(),
+                    None => produced.real.clone(),
+                },
+            )
+        });
+    };
+    let results = scheduler::execute_graph_with_leaves(
+        options.cache,
+        nodes,
+        options.jobs,
+        Some(&scheduler::Leaves {
+            dependencies,
+            cap: session.leaf_cap(),
+            run: &run,
+        }),
+    )?;
+    session.run_exclusive(|test| {
+        let (label, plan) = plan_of(test)?;
+        run_target(
+            label,
+            plan,
+            configurations,
+            symlink_outputs,
+            &|produced: &Produced| executed_path(&results, true, produced),
+        )
+    });
+    Ok(results)
+}
+
+/// [`execute`], with the test actions of `bazel test` run inside its
+/// execution phase when `tests` is given ([`execute_tests`]); a failed build
+/// returns its error while the session keeps what its tests reported.
+pub fn execute_with_tests(
     mut request: PlannedRequest,
     status: StatusSource,
     options: &ExecuteOptions<'_>,
+    tests: Option<&crate::test_runner::Session<'_>>,
 ) -> Result<Executed, String> {
     request.finalize(status)?;
     if let Some(path) = options.action_dump
@@ -443,31 +690,7 @@ pub fn execute(
     // reports 0 executed / 0 hits. Planned artifacts are still reported
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
-    // The run plans' runfiles that are unresolved symlink outputs
-    // (crate::action::ActionExtra::symlink_outputs), read from the nodes
-    // before they execute.
-    let symlink_outputs: HashSet<(String, usize)> = {
-        let producers: HashSet<&str> = run_plans
-            .iter()
-            .flat_map(|(_, plan)| plan.entries.iter().flatten())
-            .filter_map(|(_, produced)| Some(produced.as_ref()?.producer.as_ref()?.0.as_str()))
-            .collect();
-        nodes
-            .iter()
-            .filter(|node| {
-                !node.action.extra.symlink_outputs.is_empty()
-                    && producers.contains(node.action.id.as_str())
-            })
-            .flat_map(|node| {
-                node.action
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, output)| node.action.extra.symlink_outputs.contains(*output))
-                    .map(|(index, _)| (node.action.id.clone(), index))
-            })
-            .collect()
-    };
+    let symlink_outputs = symlink_outputs(&nodes, &run_plans);
     let results = if execute {
         // The runfiles trees link as whole directories in the output tree.
         let runfiles_trees = nodes
@@ -480,7 +703,17 @@ pub fn execute(
             })
             .map(|node| node.action.id.clone())
             .collect();
-        let results = scheduler::execute_graph(options.cache, nodes, options.jobs)?;
+        let results = match tests {
+            Some(session) => execute_tests(
+                options,
+                nodes,
+                &run_plans,
+                &configurations,
+                &symlink_outputs,
+                session,
+            )?,
+            None => scheduler::execute_graph(options.cache, nodes, options.jobs)?,
+        };
         // `$(bazel-rs info bazel-bin)/...` names the built files
         // (crate::output_tree, docs/INFO.md); never fails the build.
         let published = crate::output_tree::publish(options.cache, &results, &runfiles_trees);
@@ -529,58 +762,9 @@ pub fn execute(
         })
         .collect();
     let mut targets = BTreeMap::new();
-    for (label, plan) in run_plans {
-        let runfiles = plan.tree.as_ref().and_then(|(tree, exec)| {
-            let manifest = published(tree);
-            let directory = manifest.parent()?.to_path_buf();
-            // `<root>/<tree exec dir>`: strip the exec path to find the root.
-            let exec_directory = exec.0.parent()?;
-            let mut root = directory.clone();
-            for _ in exec_directory.components() {
-                root = root.parent()?.to_path_buf();
-            }
-            Some(RunRunfiles {
-                executable: root.join(&plan.executable_exec),
-                directory,
-                root,
-            })
-        });
-        let entries = plan.entries.as_ref().map(|entries| {
-            entries
-                .iter()
-                .map(|(path, produced)| (path.clone(), produced.as_ref().map(published)))
-                .collect()
-        });
-        let symlinks = plan
-            .entries
-            .iter()
-            .flatten()
-            .filter(|(_, produced)| {
-                produced
-                    .as_ref()
-                    .and_then(|produced| produced.producer.as_ref())
-                    .is_some_and(|producer| symlink_outputs.contains(producer))
-            })
-            .map(|(path, _)| path.clone())
-            .collect();
-        let configuration = configurations
-            .get(plan.configuration)
-            .ok_or_else(|| format!("internal error: run plan of {label} has no configuration"))?;
-        targets.insert(
-            label,
-            RunTarget {
-                executable: published(&plan.executable),
-                executable_exec: plan.executable_exec,
-                executable_short_path: plan.executable_short_path,
-                runfiles,
-                entries,
-                symlinks,
-                mnemonic: configuration.mnemonic.clone(),
-                action_env: configuration.action_env.clone(),
-                test_env: configuration.test_env.clone(),
-                settings: plan.settings,
-            },
-        );
+    for (label, plan) in &run_plans {
+        let target = run_target(label, plan, &configurations, &symlink_outputs, &published)?;
+        targets.insert(label.clone(), target);
     }
     Ok(Executed {
         summary,
@@ -941,6 +1125,7 @@ mod tests {
                 ]),
                 settings: crate::runfiles::RunSettings::default(),
                 configuration: 0,
+                completion: Vec::new(),
             },
         )];
         request
@@ -973,6 +1158,7 @@ mod tests {
                 entries: None,
                 settings: crate::runfiles::RunSettings::default(),
                 configuration: 0,
+                completion: Vec::new(),
             },
         )];
         request

@@ -5,9 +5,18 @@
 //! Cancellation does not kill processes: an already-running command, including
 //! one blocked forever, must finish before this call can return. The action
 //! executor's unsandboxed-command and cache trust limitations still apply.
+//!
+//! `bazel test` adds its test actions to the same graph as leaves
+//! ([`Leaves`], [`execute_graph_with_leaves`]): a test action has no outputs
+//! another action reads, and runs as soon as the actions producing its
+//! inputs have finished, on the same pool of `jobs` workers, as Bazel's
+//! TestRunnerActions are actions of the one execution graph
+//! (skyframe/BuildDriverFunction.java:624-633). A failure interrupts the
+//! leaves in flight (the flag they get), like Bazel's interrupt of in-flight
+//! actions on a --nokeep_going error (AbstractQueueVisitor.awaitTermination).
 
 use crate::action::{self, Action, ActionResult};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -597,12 +606,61 @@ pub fn execute_graph(
     nodes: Vec<PlannedAction>,
     jobs: usize,
 ) -> Result<BTreeMap<String, crate::action::ActionResult>, String> {
+    execute_graph_with_leaves(cache, nodes, jobs, None)
+}
+
+/// [`execute_graph`] with leaf jobs ([`Leaves`]: `bazel test`'s test
+/// actions) scheduled in the same graph. The results are the actions' only;
+/// a leaf reports through its own closure.
+pub fn execute_graph_with_leaves(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+    leaves: Option<&Leaves<'_>>,
+) -> Result<BTreeMap<String, crate::action::ActionResult>, String> {
     // Process strings cross Bazel's internalToPlatform boundary first: lone
     // analysis-model bytes decode with replacement (bazel_bytes.rs).
-    execute_with(cache, nodes, jobs, &|cache: &Path, action: &Action| {
-        action::execute(cache, &crate::bazel_bytes::platform_action(action))
-    })
+    execute_with_leaves(
+        cache,
+        nodes,
+        jobs,
+        &|cache: &Path, action: &Action| {
+            action::execute(cache, &crate::bazel_bytes::platform_action(action))
+        },
+        leaves,
+    )
 }
+
+/// The results a leaf reads: each dependency's id and result, in the order
+/// of [`Leaves::dependencies`] (duplicates removed).
+pub type LeafInputs = [(String, Arc<ActionResult>)];
+
+/// Leaf jobs of the execution graph (PERF(TEST)): jobs that read the results
+/// of planned actions and produce nothing another job reads — `bazel test`'s
+/// test actions (TestRunnerAction, scheduled in Bazel's one execution graph,
+/// skyframe/BuildDriverFunction.java:624-633 and TestCompletionFunction).
+///
+/// A leaf is ready once every action it depends on has succeeded; ready
+/// leaves are dispatched before ready actions (lowest leaf index first),
+/// on the same pool: actions and leaves in flight together never exceed
+/// `jobs`, and at most [`Leaves::cap`] leaves run at once
+/// (`--local_test_jobs`, ExecutionTool.configureResourceManager). After a
+/// failure no leaf starts, and the leaves in flight see their interrupt flag
+/// set. The scheduler returns once every dispatched leaf has returned.
+pub struct Leaves<'a> {
+    /// Per leaf, the ids of the planned actions whose results it reads.
+    pub dependencies: Vec<Vec<String>>,
+    /// At most this many leaves run at once; 0: only `jobs` bounds them.
+    pub cap: usize,
+    /// Run leaf `index` with its inputs ([`LeafRun`]).
+    pub run: &'a LeafRun<'a>,
+}
+
+/// How a leaf runs: `(index, inputs, interrupt)`. The interrupt flag is set
+/// when the graph failed: a running leaf stops its work (Bazel interrupts
+/// in-flight actions on a --nokeep_going failure). The inputs' results must
+/// not be kept beyond the call (the scheduler unwraps them at the end).
+pub type LeafRun<'a> = dyn Fn(usize, &LeafInputs, &AtomicBool) + Sync + 'a;
 
 /// One dispatched action: the node and its producers' results in
 /// dependency order (shared with, not copied by, the dispatching thread).
@@ -612,9 +670,46 @@ struct Job {
     producers: Vec<Arc<ActionResult>>,
 }
 
+/// One dispatched unit of work: an action, or a leaf with its inputs.
+enum Work {
+    Action(Box<Job>),
+    Leaf(usize, Vec<(String, Arc<ActionResult>)>),
+}
+
 /// A finished job: `None` when it was skipped because a failure had been
 /// published before it started.
 type Completion = (String, Option<Result<ActionResult, String>>);
+
+/// A finished unit of work: an action's completion, or a leaf's (with the
+/// message of a panic it raised).
+enum Done {
+    Action(Completion),
+    Leaf(usize, Option<String>),
+}
+
+/// The message of a caught panic.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("non-string panic payload")
+        .to_owned()
+}
+
+/// Run one leaf on a worker; a panic fails the graph.
+fn run_leaf(
+    leaves: &Leaves<'_>,
+    leaf: usize,
+    inputs: &LeafInputs,
+    failed: &AtomicBool,
+) -> Option<String> {
+    let outcome = catch_unwind(AssertUnwindSafe(|| (leaves.run)(leaf, inputs, failed)));
+    outcome.err().map(|payload| {
+        failed.store(true, Ordering::Release);
+        format!("worker panicked: {}", panic_message(&*payload))
+    })
+}
 
 /// Run one job on a worker: its generated inputs (each producer's published
 /// output, in dependency order) and tree listings, then the deferred
@@ -667,14 +762,7 @@ where
         }
         Ok(result)
     }))
-    .unwrap_or_else(|payload| {
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("non-string panic payload");
-        Err(format!("worker panicked: {message}"))
-    });
+    .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
     if result.is_err() {
         // Publish cancellation before sending, so another ready node cannot
         // slip through behind a queued failure.
@@ -695,6 +783,7 @@ where
 // the shared producer results). Which actions run, in which order and how
 // many at once is exactly as before: ready actions in id order, at most
 // `jobs` in flight, none after a failure is observed.
+#[cfg(test)]
 fn execute_with<F>(
     cache: &Path,
     nodes: Vec<PlannedAction>,
@@ -704,40 +793,149 @@ fn execute_with<F>(
 where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
+    execute_with_leaves(cache, nodes, jobs, execute, None)
+}
+
+/// The leaves' scheduling state ([`Leaves`]): unfinished dependencies per
+/// leaf, the leaves waiting on each action, the ready leaves.
+struct LeafState {
+    dependencies: Vec<Vec<String>>,
+    remaining: Vec<usize>,
+    consumers: HashMap<String, Vec<usize>>,
+    ready: BTreeSet<usize>,
+    cap: usize,
+    running: usize,
+}
+
+impl LeafState {
+    /// The leaves' dependencies deduplicated and checked against the graph
+    /// before any action runs (a leaf of an unknown action is an internal
+    /// error of the caller).
+    fn new(leaves: Option<&Leaves<'_>>, graph: &Graph) -> Result<Self, String> {
+        let mut state = LeafState {
+            dependencies: Vec::new(),
+            remaining: Vec::new(),
+            consumers: HashMap::new(),
+            ready: BTreeSet::new(),
+            cap: usize::MAX,
+            running: 0,
+        };
+        let Some(leaves) = leaves else {
+            return Ok(state);
+        };
+        if leaves.cap > 0 {
+            state.cap = leaves.cap;
+        }
+        for (leaf, dependencies) in leaves.dependencies.iter().enumerate() {
+            let mut unique: Vec<String> = Vec::new();
+            for id in dependencies {
+                if !graph.index.contains_key(id) {
+                    return Err(format!(
+                        "internal error: test action {leaf} depends on unknown action '{id}'"
+                    ));
+                }
+                if !unique.contains(id) {
+                    unique.push(id.clone());
+                }
+            }
+            for id in &unique {
+                state.consumers.entry(id.clone()).or_default().push(leaf);
+            }
+            if unique.is_empty() {
+                state.ready.insert(leaf);
+            }
+            state.remaining.push(unique.len());
+            state.dependencies.push(unique);
+        }
+        Ok(state)
+    }
+
+    /// An action succeeded: the leaves it completes become ready.
+    fn completed(&mut self, id: &str) {
+        if let Some(leaves) = self.consumers.get(id) {
+            for &leaf in leaves {
+                self.remaining[leaf] -= 1;
+                if self.remaining[leaf] == 0 {
+                    self.ready.insert(leaf);
+                }
+            }
+        }
+    }
+
+    /// The next leaf to dispatch, if one is ready and the cap allows it.
+    fn next(&mut self) -> Option<usize> {
+        if self.running >= self.cap {
+            return None;
+        }
+        self.ready.pop_first()
+    }
+}
+
+/// [`execute_with`] with leaves: ready leaves go first, and actions and
+/// leaves in flight together never exceed `jobs`.
+fn execute_with_leaves<F>(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+    execute: &F,
+    leaves: Option<&Leaves<'_>>,
+) -> Result<BTreeMap<String, ActionResult>, String>
+where
+    F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
+{
     let mut graph = validate(nodes, jobs)?;
+    let mut lane = LeafState::new(leaves, &graph)?;
     let failed = AtomicBool::new(false);
     let mut results: BTreeMap<String, Arc<ActionResult>> = BTreeMap::new();
     let mut errors = BTreeMap::new();
-    let (job_sender, job_receiver) = mpsc::channel::<Job>();
+    let (job_sender, job_receiver) = mpsc::channel::<Work>();
     let job_receiver = Mutex::new(job_receiver);
-    let (done_sender, done_receiver) = mpsc::channel::<Completion>();
+    let (done_sender, done_receiver) = mpsc::channel::<Done>();
     thread::scope(|scope| {
         let mut job_sender = Some(job_sender);
         let mut workers = 0;
         let mut running = BTreeSet::new();
         loop {
-            while running.len() < jobs && !failed.load(Ordering::Acquire) {
-                let Some(id) = graph.ready.pop_first() else {
-                    break;
+            while running.len() + lane.running < jobs && !failed.load(Ordering::Acquire) {
+                // A ready leaf first: a test starts as soon as its inputs
+                // exist (it holds no action back: nothing reads its outputs).
+                let leaf = lane.next();
+                let id = match leaf {
+                    Some(_) => None,
+                    None => match graph.ready.pop_first() {
+                        Some(id) => Some(id),
+                        None => break,
+                    },
                 };
-                let node = graph.nodes[graph.index[&id]]
-                    .take()
-                    .expect("ready node exists");
                 // Every job in flight has a worker of its own.
-                if workers == running.len() {
+                if workers == running.len() + lane.running {
                     let done = done_sender.clone();
                     let (receiver, failed) = (&job_receiver, &failed);
                     let spawn = thread::Builder::new().spawn_scoped(scope, move || {
                         loop {
-                            let job = {
+                            let work = {
                                 let receiver = receiver.lock().unwrap_or_else(|e| e.into_inner());
                                 receiver.recv()
                             };
                             // Closed: everything was dispatched.
-                            let Ok(job) = job else {
+                            let Ok(work) = work else {
                                 return;
                             };
-                            if done.send(run_job(job, cache, failed, execute)).is_err() {
+                            let finished = match work {
+                                Work::Action(job) => {
+                                    Done::Action(run_job(*job, cache, failed, execute))
+                                }
+                                Work::Leaf(leaf, inputs) => {
+                                    let leaves = leaves.expect("leaf work has leaves");
+                                    let panicked = run_leaf(leaves, leaf, &inputs, failed);
+                                    // The inputs' results are released before
+                                    // the completion: the dispatcher unwraps
+                                    // them once every worker is joined.
+                                    drop(inputs);
+                                    Done::Leaf(leaf, panicked)
+                                }
+                            };
+                            if done.send(finished).is_err() {
                                 return;
                             }
                         }
@@ -746,50 +944,82 @@ where
                         Ok(_) => workers += 1,
                         Err(error) => {
                             failed.store(true, Ordering::Release);
-                            errors.insert(id, format!("cannot spawn worker: {error}"));
+                            let key = match (&id, leaf) {
+                                (Some(id), _) => id.clone(),
+                                (None, leaf) => format!("test action {}", leaf.unwrap_or(0)),
+                            };
+                            errors.insert(key, format!("cannot spawn worker: {error}"));
                             continue;
                         }
                     }
                 }
-                let producers = node
-                    .all_dependencies()
-                    .map(|dependency| Arc::clone(&results[&dependency.action_id]))
-                    .collect();
+                let work = match (id, leaf) {
+                    (Some(id), _) => {
+                        let node = graph.nodes[graph.index[&id]]
+                            .take()
+                            .expect("ready node exists");
+                        let producers = node
+                            .all_dependencies()
+                            .map(|dependency| Arc::clone(&results[&dependency.action_id]))
+                            .collect();
+                        running.insert(id.clone());
+                        Work::Action(Box::new(Job {
+                            id,
+                            node,
+                            producers,
+                        }))
+                    }
+                    (None, Some(leaf)) => {
+                        let inputs = lane.dependencies[leaf]
+                            .iter()
+                            .map(|id| (id.clone(), Arc::clone(&results[id])))
+                            .collect();
+                        lane.running += 1;
+                        Work::Leaf(leaf, inputs)
+                    }
+                    (None, None) => unreachable!("a job or a leaf was taken"),
+                };
                 job_sender
                     .as_ref()
                     .expect("dispatching")
-                    .send(Job {
-                        id: id.clone(),
-                        node,
-                        producers,
-                    })
+                    .send(work)
                     .expect("workers outlive dispatching");
-                running.insert(id);
             }
-            if running.is_empty() {
+            if running.is_empty() && lane.running == 0 {
                 break;
             }
             // Every dispatched job sends one completion, including caught
             // panics and jobs skipped on cancellation.
-            let (id, outcome) = done_receiver.recv().expect("workers send completion");
-            assert!(running.remove(&id), "completion from a running job");
-            match outcome {
-                Some(Ok(result)) => {
-                    results.insert(id.clone(), Arc::new(result));
-                    if let Some(children) = graph.consumers.get(&id) {
-                        for child in children {
-                            let count = graph.remaining.get_mut(child).expect("known consumer");
-                            *count -= 1;
-                            if *count == 0 {
-                                graph.ready.insert(child.clone());
+            match done_receiver.recv().expect("workers send completion") {
+                Done::Action((id, outcome)) => {
+                    assert!(running.remove(&id), "completion from a running job");
+                    match outcome {
+                        Some(Ok(result)) => {
+                            results.insert(id.clone(), Arc::new(result));
+                            if let Some(children) = graph.consumers.get(&id) {
+                                for child in children {
+                                    let count =
+                                        graph.remaining.get_mut(child).expect("known consumer");
+                                    *count -= 1;
+                                    if *count == 0 {
+                                        graph.ready.insert(child.clone());
+                                    }
+                                }
                             }
+                            lane.completed(&id);
                         }
+                        Some(Err(error)) => {
+                            errors.insert(id, error);
+                        }
+                        None => {}
                     }
                 }
-                Some(Err(error)) => {
-                    errors.insert(id, error);
+                Done::Leaf(leaf, panicked) => {
+                    lane.running -= 1;
+                    if let Some(error) = panicked {
+                        errors.insert(format!("test action {leaf}"), error);
+                    }
                 }
-                None => {}
             }
         }
         // Idle workers see the closed channel and exit; the scope joins them.
@@ -1342,6 +1572,212 @@ mod tests {
         );
         assert!(execute_graph(&fixture.cache(), vec![], 0).is_err());
         assert!(!fixture.cache().exists());
+    }
+
+    /// PERF(TEST): a leaf runs once its dependencies succeeded, with their
+    /// results, and goes before the ready actions (here with one job: the
+    /// order of execution is the order of dispatch).
+    #[test]
+    fn leaves_run_after_their_dependencies_before_ready_actions() {
+        let order = Mutex::new(Vec::new());
+        let worker = |_: &Path, action: &Action| {
+            order.lock().unwrap().push(action.id.clone());
+            success(action)
+        };
+        let mut producer = node("p");
+        producer.action.outputs = vec!["first".into(), "second".into()];
+        let mut graph = vec![producer];
+        graph.extend((1..=3).map(|i| node(&format!("x{i}"))));
+        let seen = Mutex::new(Vec::new());
+        let run = |leaf: usize, inputs: &LeafInputs, interrupt: &AtomicBool| {
+            assert!(!interrupt.load(Ordering::SeqCst));
+            order.lock().unwrap().push(format!("leaf{leaf}"));
+            seen.lock().unwrap().push(
+                inputs
+                    .iter()
+                    .map(|(id, result)| (id.clone(), result.outputs.clone()))
+                    .collect::<Vec<_>>(),
+            );
+        };
+        let leaves = Leaves {
+            // Duplicates are one dependency; a leaf without any is ready at once.
+            dependencies: vec![vec!["p".into(), "p".into()], vec!["x3".into()], vec![]],
+            cap: 0,
+            run: &run,
+        };
+        let results =
+            execute_with_leaves(Path::new("unused"), graph, 1, &worker, Some(&leaves)).unwrap();
+        assert_eq!(results.len(), 4);
+        assert_eq!(
+            order.into_inner().unwrap(),
+            ["leaf2", "p", "leaf0", "x1", "x2", "x3", "leaf1"]
+        );
+        let seen = seen.into_inner().unwrap();
+        assert_eq!(seen[0], []);
+        assert_eq!(
+            seen[1],
+            [(
+                "p".to_owned(),
+                vec![PathBuf::from("first"), "second".into()]
+            )]
+        );
+        assert_eq!(seen[2], [("x3".to_owned(), vec![PathBuf::from("out")])]);
+    }
+
+    /// Actions and leaves in flight together never exceed `jobs`, and leaves
+    /// never exceed their cap (`--local_test_jobs`).
+    #[test]
+    fn leaves_share_the_jobs_and_respect_their_cap() {
+        let active = AtomicUsize::new(0);
+        let active_leaves = AtomicUsize::new(0);
+        let maximum = AtomicUsize::new(0);
+        let maximum_leaves = AtomicUsize::new(0);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let hold = |leaf: bool| {
+            let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+            maximum.fetch_max(count, Ordering::SeqCst);
+            if leaf {
+                let count = active_leaves.fetch_add(1, Ordering::SeqCst) + 1;
+                maximum_leaves.fetch_max(count, Ordering::SeqCst);
+            }
+            started_tx.send(leaf).unwrap();
+            release_rx.lock().unwrap().recv_timeout(TIMEOUT).unwrap();
+            if leaf {
+                active_leaves.fetch_sub(1, Ordering::SeqCst);
+            }
+            active.fetch_sub(1, Ordering::SeqCst);
+        };
+        let worker = |_: &Path, action: &Action| {
+            hold(false);
+            success(action)
+        };
+        let run = |_: usize, _: &LeafInputs, _: &AtomicBool| hold(true);
+        let leaves = Leaves {
+            dependencies: vec![vec![]; 5],
+            cap: 2,
+            run: &run,
+        };
+        thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let graph = (0..5).map(|i| node(&format!("node-{i}"))).collect();
+                execute_with_leaves(Path::new("unused"), graph, 3, &worker, Some(&leaves))
+            });
+            // Saturated at once: two leaves (the cap) and one action.
+            let first: Vec<bool> = (0..3)
+                .map(|_| started_rx.recv_timeout(TIMEOUT).unwrap())
+                .collect();
+            assert_eq!(first.iter().filter(|leaf| **leaf).count(), 2);
+            assert_eq!(active.load(Ordering::SeqCst), 3);
+            for _ in 0..7 {
+                release_tx.send(()).unwrap();
+                started_rx.recv_timeout(TIMEOUT).unwrap();
+            }
+            for _ in 0..3 {
+                release_tx.send(()).unwrap();
+            }
+            assert_eq!(handle.join().unwrap().unwrap().len(), 5);
+        });
+        assert_eq!(maximum.load(Ordering::SeqCst), 3);
+        assert_eq!(maximum_leaves.load(Ordering::SeqCst), 2);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    /// A failed action interrupts the leaves in flight (their flag is set and
+    /// the scheduler waits for them) and no other leaf or action starts.
+    #[test]
+    fn a_failure_interrupts_running_leaves_and_starts_no_more() {
+        let (leaf_started_tx, leaf_started_rx) = mpsc::channel();
+        let leaf_started_rx = Mutex::new(leaf_started_rx);
+        let interrupted = AtomicBool::new(false);
+        let worker = |_: &Path, action: &Action| match action.id.as_str() {
+            "a-fail" => {
+                leaf_started_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(TIMEOUT)
+                    .unwrap();
+                Err("intentional failure".into())
+            }
+            other => panic!("unexpected action {other} after the failure"),
+        };
+        let run = |leaf: usize, _: &LeafInputs, interrupt: &AtomicBool| {
+            assert_eq!(leaf, 0, "a leaf started after the failure");
+            leaf_started_tx.send(()).unwrap();
+            let start = std::time::Instant::now();
+            while !interrupt.load(Ordering::SeqCst) {
+                assert!(start.elapsed() < TIMEOUT, "never interrupted");
+                thread::sleep(Duration::from_millis(5));
+            }
+            interrupted.store(true, Ordering::SeqCst);
+        };
+        let leaves = Leaves {
+            dependencies: vec![vec![], vec!["b-queued".into()]],
+            cap: 0,
+            run: &run,
+        };
+        let error = execute_with_leaves(
+            Path::new("unused"),
+            vec![node("a-fail"), node("b-queued")],
+            2,
+            &worker,
+            Some(&leaves),
+        )
+        .unwrap_err();
+        assert_eq!(error, "action 'a-fail': intentional failure");
+        assert!(interrupted.load(Ordering::SeqCst));
+    }
+
+    /// A leaf of an action the graph does not plan is an internal error,
+    /// found before any action runs; a panicking leaf fails the graph.
+    #[test]
+    fn unknown_leaf_dependencies_and_panicking_leaves_fail() {
+        let calls = AtomicUsize::new(0);
+        let worker = |_: &Path, action: &Action| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            success(action)
+        };
+        let run = |_: usize, _: &LeafInputs, _: &AtomicBool| {};
+        let unknown = Leaves {
+            dependencies: vec![vec!["a".into(), "missing".into()]],
+            cap: 0,
+            run: &run,
+        };
+        let error = execute_with_leaves(
+            Path::new("unused"),
+            vec![node("a")],
+            2,
+            &worker,
+            Some(&unknown),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "internal error: test action 0 depends on unknown action 'missing'"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let panics = |_: usize, _: &LeafInputs, _: &AtomicBool| panic!("intentional leaf panic");
+        let panicking = Leaves {
+            dependencies: vec![vec![]],
+            cap: 0,
+            run: &panics,
+        };
+        let mut dependent = node("dependent");
+        dependent.dependencies = vec![dependency("a", 0, "input")];
+        let error = execute_with_leaves(
+            Path::new("unused"),
+            vec![node("a"), dependent],
+            1,
+            &worker,
+            Some(&panicking),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "action 'test action 0': worker panicked: intentional leaf panic"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     /// A group below `root`: sources `(path, destination)`, generated

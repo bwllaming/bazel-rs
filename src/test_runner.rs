@@ -85,6 +85,73 @@ pub struct TestSpec {
 }
 
 impl TestSpec {
+    /// The test spec of a built test target (TestActionBuilder.createTestAction,
+    /// analysis/test/TestActionBuilder.java:224-480).
+    pub fn new(
+        label: &crate::label::Label,
+        info: TestRuleInfo,
+        location: Option<String>,
+        target: &crate::engine::RunTarget,
+    ) -> Result<Self, String> {
+        let utf8 = |path: &Path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
+        };
+        let Some(entries) = target.entries.clone() else {
+            return Err(format!(
+                "{}: test target has no runfiles support",
+                label_print(label)
+            ));
+        };
+        let package = if label.repository.is_empty() {
+            label.package.clone()
+        } else if label.package.is_empty() {
+            format!("external/{}", label.repository)
+        } else {
+            format!("external/{}/{}", label.repository, label.package)
+        };
+        let testlogs_package = if package.is_empty() {
+            format!("bazel-out/{}/testlogs", target.mnemonic)
+        } else {
+            format!("bazel-out/{}/testlogs/{package}", target.mnemonic)
+        };
+        // The test rule's testing.ExecutionInfo (TestActionBuilder
+        // .setExecutionRequirements): its requirements join the test action's
+        // execution info (TestTargetProperties.java:115-118). Another exec group
+        // makes that group's action owner run the test
+        // (TestActionBuilder.getTestActionOwner :156-170: its execution platform,
+        // exec properties and unrunnable check), not modelled.
+        let requirements = match &target.settings.test_requirements {
+            None => Vec::new(),
+            Some(info) if info.default_exec_group() => info.requirements.clone(),
+            Some(info) => {
+                return Err(format!(
+                    "{}: testing.ExecutionInfo with exec_group = \"{}\" is not implemented in the native profile: the test action would run in that exec group (TestActionBuilder.getTestActionOwner); only the default \"test\" group is modelled",
+                    label_print(label),
+                    info.exec_group
+                ));
+            }
+        };
+        Ok(TestSpec {
+            label: label_print(label),
+            info,
+            location,
+            executable: target.executable.clone(),
+            executable_exec: utf8(&target.executable_exec)?,
+            binary: target.executable_short_path.clone(),
+            entries,
+            symlinks: target.symlinks.clone(),
+            testlogs_package,
+            args: target.settings.args.clone(),
+            target_env: target.settings.environment.clone(),
+            target_inherited: target.settings.inherited.clone(),
+            action_env: target.action_env.clone(),
+            test_env: target.test_env.clone(),
+            requirements,
+        })
+    }
+
     /// TestTargetProperties.getExecutionInfo (analysis/test/
     /// TestTargetProperties.java:84-122): the rule's execution info
     /// (crate::test_command::TestRuleInfo::execution_info) with the
@@ -93,6 +160,15 @@ impl TestSpec {
         let mut info = self.info.execution_info();
         info.extend(self.requirements.iter().cloned());
         info
+    }
+}
+
+/// Label.print: `//pkg:name` or `@@repo//pkg:name`.
+pub fn label_print(label: &crate::label::Label) -> String {
+    if label.repository.is_empty() {
+        format!("//{}:{}", label.package, label.name)
+    } else {
+        format!("@@{}//{}:{}", label.repository, label.package, label.name)
     }
 }
 
@@ -117,7 +193,6 @@ pub struct Runner<'a> {
     pub workspace: &'a Path,
     pub options: &'a TestOptions,
     pub client_env: &'a BTreeMap<String, String>,
-    pub jobs: usize,
     /// RunfilesSupport: whether runfiles symlinks exist (`--enable_runfiles`).
     pub runfiles_enabled: bool,
     pub tools: &'a Tools,
@@ -125,11 +200,19 @@ pub struct Runner<'a> {
 
 /// The results of a `test` invocation.
 pub struct Outcome {
+    /// One per test, in the session's (planned) order.
     pub summaries: Vec<TestSummary>,
+    /// Per test: whether every test action of it reported a result (its
+    /// summary was posted, TestResultAggregator.summaryPosted). A failed
+    /// build reports only these as they are; the others never ran or were
+    /// interrupted.
+    pub completed: Vec<bool>,
     /// Targets with at least one test action that ran (not cached).
     pub executed: usize,
     /// Action errors (`Testing X failed: ...`), reported again at the end.
     pub errors: Vec<String>,
+    /// The first infrastructure failure of a test action (the command fails).
+    pub failure: Option<String>,
 }
 
 /// The persisted result of a test action (Bazel's test.cache_status holds
@@ -162,7 +245,6 @@ fn status_from(name: &str) -> TestStatus {
 /// One test action of a target.
 struct Unit<'a> {
     spec: &'a TestSpec,
-    index: usize,
     shard: u32,
     shards: u32,
     run: u32,
@@ -173,6 +255,321 @@ struct Unit<'a> {
 enum UnitOutcome {
     Result(RunResult),
     Error(String),
+}
+
+/// One test action of a session (TestActionBuilder: one per shard and run).
+struct UnitKey {
+    test: usize,
+    shard: u32,
+    shards: u32,
+    run: u32,
+    runs: u32,
+}
+
+/// The test actions of one `bazel test` (PERF(TEST)), scheduled the way
+/// Bazel 9.3 schedules TestRunnerActions: the parallel ones are leaves of
+/// the execution graph (crate::scheduler::Leaves; crate::request runs each
+/// as soon as its test's inputs are built,
+/// skyframe/BuildDriverFunction.java:624-633), the exclusive ones run one at
+/// a time after the graph succeeded (ExclusiveTestBuildDriverValue,
+/// SkyframeBuildView.analyzeAndExecuteTargets :759-794). Results aggregate
+/// per test as they arrive (AggregatingTestListener); [`Session::finish`]
+/// summarizes them for the summary printed after the build.
+pub struct Session<'a> {
+    runner: Runner<'a>,
+    tests: Vec<crate::request::PlannedTest>,
+    units: Vec<UnitKey>,
+    /// The leaves of the execution graph (unit indices).
+    parallel: Vec<usize>,
+    /// The test actions run after the graph, in this order.
+    exclusive: Vec<usize>,
+    /// Test actions per test.
+    expected: Vec<usize>,
+    /// Each test's spec, made when its first test action runs.
+    specs: Vec<std::sync::OnceLock<Result<TestSpec, String>>>,
+    results: Mutex<Vec<Vec<UnitOutcome>>>,
+    summaries: Mutex<Vec<Option<TestSummary>>>,
+    printer: Mutex<()>,
+    failure: Mutex<Option<String>>,
+    /// --nokeep_going: a test action error (TestExecException) stops the
+    /// test actions not started yet (no result: NO STATUS).
+    abort: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> Session<'a> {
+    /// The test actions of `tests` (in order; the planned tests of the
+    /// request): one per shard and run, exclusive ones apart.
+    pub fn new(runner: Runner<'a>, tests: Vec<crate::request::PlannedTest>) -> Self {
+        let options = runner.options;
+        let streamed = options.output == TestOutput::Streamed;
+        let mut units = Vec::new();
+        let mut parallel = Vec::new();
+        let mut exclusive = Vec::new();
+        let mut expected = Vec::new();
+        for (test, planned) in tests.iter().enumerate() {
+            // TestCommand: streamed output disables sharding (TestCommand.java:84-92).
+            let shards = if streamed {
+                0
+            } else {
+                options.sharding.shards(planned.info.shard_count).max(0) as u32
+            };
+            let runs = options.runs_per_test;
+            // Exclusive tests run after the others, one at a time
+            // (SkyframeBuildView.determineTestTypeImpl :1115-1156: `exclusive`,
+            // `exclusive-if-local` and --test_strategy=exclusive, which
+            // streamed output implies; no local strategy runs them in
+            // parallel, TestActionContext.forceExclusive*InParallel).
+            let alone = streamed || options.exclusive || planned.info.runs_exclusively();
+            let before = units.len();
+            for shard in 0..shards.max(1) {
+                for run in 0..runs {
+                    if alone {
+                        exclusive.push(units.len());
+                    } else {
+                        parallel.push(units.len());
+                    }
+                    units.push(UnitKey {
+                        test,
+                        shard,
+                        shards,
+                        run,
+                        runs,
+                    });
+                }
+            }
+            expected.push(units.len() - before);
+        }
+        Session {
+            specs: tests.iter().map(|_| std::sync::OnceLock::new()).collect(),
+            results: Mutex::new(tests.iter().map(|_| Vec::new()).collect()),
+            summaries: Mutex::new(vec![None; tests.len()]),
+            runner,
+            tests,
+            units,
+            parallel,
+            exclusive,
+            expected,
+            printer: Mutex::new(()),
+            failure: Mutex::new(None),
+            abort: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The label of test `test`.
+    pub fn test_label(&self, test: usize) -> &crate::label::Label {
+        &self.tests[test].label
+    }
+
+    /// The number of tests.
+    pub fn test_count(&self) -> usize {
+        self.tests.len()
+    }
+
+    /// The leaves of the execution graph: the test of each parallel test
+    /// action, in dispatch-priority order.
+    pub fn leaf_tests(&self) -> Vec<usize> {
+        self.parallel
+            .iter()
+            .map(|&unit| self.units[unit].test)
+            .collect()
+    }
+
+    /// At most this many test actions run at once (`--local_test_jobs`; 0:
+    /// only `--jobs` bounds them, ExecutionTool.configureResourceManager).
+    pub fn leaf_cap(&self) -> usize {
+        self.runner.options.local_test_jobs
+    }
+
+    /// Run leaf `leaf` (the `leaf`-th parallel test action) once its test's
+    /// inputs are built; `target` resolves the test's built target the
+    /// first time one of its actions runs. Nothing runs once `interrupt` is
+    /// set (the build failed) or a test action error stopped the tests.
+    pub fn run_leaf(
+        &self,
+        leaf: usize,
+        interrupt: &std::sync::atomic::AtomicBool,
+        target: impl FnOnce() -> Result<crate::engine::RunTarget, String>,
+    ) {
+        self.run(self.parallel[leaf], interrupt, target);
+    }
+
+    /// Run the exclusive test actions one at a time, in order (after the
+    /// execution graph succeeded); `target` resolves a test's built target.
+    pub fn run_exclusive(
+        &self,
+        target: impl Fn(usize) -> Result<crate::engine::RunTarget, String>,
+    ) {
+        let never = std::sync::atomic::AtomicBool::new(false);
+        for &unit in &self.exclusive {
+            let test = self.units[unit].test;
+            self.run(unit, &never, || target(test));
+        }
+    }
+
+    fn run(
+        &self,
+        unit: usize,
+        interrupt: &std::sync::atomic::AtomicBool,
+        target: impl FnOnce() -> Result<crate::engine::RunTarget, String>,
+    ) {
+        use std::sync::atomic::Ordering;
+        if self.abort.load(Ordering::SeqCst) || interrupt.load(Ordering::Acquire) {
+            return;
+        }
+        let key = &self.units[unit];
+        let planned = &self.tests[key.test];
+        let spec = self.specs[key.test].get_or_init(|| {
+            target().and_then(|target| {
+                TestSpec::new(
+                    &planned.label,
+                    planned.info.clone(),
+                    planned.location.clone(),
+                    &target,
+                )
+            })
+        });
+        let spec = match spec {
+            Ok(spec) => spec,
+            Err(error) => {
+                self.fail(error.clone());
+                return;
+            }
+        };
+        let action = Unit {
+            spec,
+            shard: key.shard,
+            shards: key.shards,
+            run: key.run,
+            runs: key.runs,
+        };
+        match self.runner.run_unit(&action, &self.printer, interrupt) {
+            Ok(Some(outcome)) => self.record(key.test, outcome),
+            // Interrupted: the build failed while it ran (no result).
+            Ok(None) => {}
+            Err(error) => self.fail(error),
+        }
+    }
+
+    /// An infrastructure failure: the command fails (the first one is
+    /// reported); the other test actions go on.
+    fn fail(&self, error: String) {
+        self.failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert(error);
+    }
+
+    /// TestResultAggregator: the summary of a test's outcomes so far;
+    /// `expected` actions in all.
+    fn aggregate(&self, test: usize, outcomes: &[UnitOutcome]) -> TestSummary {
+        let options = self.runner.options;
+        let planned = &self.tests[test];
+        let collected: Vec<RunResult> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                UnitOutcome::Result(result) => Some(result.clone()),
+                UnitOutcome::Error(_) => None,
+            })
+            .collect();
+        let incomplete = collected.len() != self.expected[test];
+        let mut summary = TestSummary::aggregate(
+            &label_print(&planned.label),
+            planned.info.timeout,
+            &collected,
+            options.verbose_timeout_warnings,
+        );
+        // TestResultAggregator.markIncomplete (runtime/TestResultAggregator.java
+        // :270-282): a test with an action without a result is NO_STATUS when
+        // the build stops on the first failure (--nokeep_going:
+        // skipTargetsOnFailure, BuildTool.java:1128); otherwise NO_STATUS
+        // stays, any other status becomes INCOMPLETE.
+        if incomplete && summary.status != TestStatus::NoStatus {
+            summary.status = if options.keep_going {
+                summary.status.max(TestStatus::Incomplete)
+            } else {
+                TestStatus::NoStatus
+            };
+        }
+        // Under --keep_going a failed test action (TestExecException) fails
+        // its target like a build error (targetFailure: FAILED_TO_BUILD; its
+        // actions ran; genuine capture M36).
+        if options.keep_going
+            && outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, UnitOutcome::Error(_)))
+        {
+            summary.status = TestStatus::FailedToBuild;
+            summary.action_ran = true;
+        }
+        summary
+    }
+
+    /// Record one test action's outcome; the last one posts the test's
+    /// summary (UiEventHandler.testSummary prints it when it says more than
+    /// the summary line will).
+    fn record(&self, test: usize, outcome: UnitOutcome) {
+        use std::sync::atomic::Ordering;
+        // --nokeep_going (default): a failing test action (TestExecException)
+        // stops the build's tests; test actions not started yet get no
+        // result (NO STATUS, "skipped").
+        if matches!(outcome, UnitOutcome::Error(_)) && !self.runner.options.keep_going {
+            self.abort.store(true, Ordering::SeqCst);
+        }
+        let mut results = self.results.lock().unwrap_or_else(|e| e.into_inner());
+        results[test].push(outcome);
+        if results[test].len() == self.expected[test] {
+            let summary = self.aggregate(test, &results[test]);
+            // UiEventHandler.testSummary (runtime/UiEventHandler.java:938-966).
+            let new_information = !matches!(
+                summary.status,
+                TestStatus::Passed | TestStatus::FailedToBuild | TestStatus::NoStatus
+            ) && (summary.status != TestStatus::Failed
+                || summary.failed_logs.len() != 1);
+            if new_information {
+                let _guard = self.printer.lock().unwrap_or_else(|e| e.into_inner());
+                let mut text =
+                    format!("\n{}: {} (Summary)\n", summary.status.name(), summary.label);
+                for log in &summary.failed_logs {
+                    text.push_str(&format!("      {}\n", log.display()));
+                }
+                eprint!("{text}");
+            }
+            self.summaries.lock().unwrap_or_else(|e| e.into_inner())[test] = Some(summary);
+        }
+    }
+
+    /// The tests' summaries (AggregatingTestListener.differentialAnalyzeAndReport):
+    /// a test whose actions did not all report is summarized as it stands
+    /// (TestResultAggregator.aggregateAndReportSummary).
+    pub fn finish(self) -> Outcome {
+        let results = std::mem::take(&mut *self.results.lock().unwrap_or_else(|e| e.into_inner()));
+        let posted = std::mem::take(&mut *self.summaries.lock().unwrap_or_else(|e| e.into_inner()));
+        let completed: Vec<bool> = posted.iter().map(Option::is_some).collect();
+        let summaries: Vec<TestSummary> = posted
+            .into_iter()
+            .enumerate()
+            .map(|(test, summary)| summary.unwrap_or_else(|| self.aggregate(test, &results[test])))
+            .collect();
+        let errors = results
+            .into_iter()
+            .flatten()
+            .filter_map(|outcome| match outcome {
+                UnitOutcome::Error(error) => Some(error),
+                UnitOutcome::Result(_) => None,
+            })
+            .collect();
+        let executed = summaries
+            .iter()
+            .filter(|summary| summary.action_ran)
+            .count();
+        Outcome {
+            summaries,
+            completed,
+            executed,
+            errors,
+            failure: self.failure.into_inner().unwrap_or_else(|e| e.into_inner()),
+        }
+    }
 }
 
 fn io(context: &str, path: &Path, error: std::io::Error) -> String {
@@ -246,189 +643,6 @@ struct Paths {
 }
 
 impl Runner<'_> {
-    pub fn run(&self, specs: &[TestSpec]) -> Result<Outcome, String> {
-        let options = self.options;
-        let streamed = options.output == TestOutput::Streamed;
-        let mut units = Vec::new();
-        let mut exclusive_units = Vec::new();
-        for (index, spec) in specs.iter().enumerate() {
-            // TestCommand: streamed output disables sharding (TestCommand.java:84-92).
-            let shards = if streamed {
-                0
-            } else {
-                options.sharding.shards(spec.info.shard_count).max(0) as u32
-            };
-            let runs = options.runs_per_test;
-            for shard in 0..shards.max(1) {
-                for run in 0..runs {
-                    let unit = Unit {
-                        spec,
-                        index,
-                        shard,
-                        shards,
-                        run,
-                        runs,
-                    };
-                    // Exclusive tests run after the others, one at a time
-                    // (ExclusiveTestBuildDriverValue).
-                    if streamed || options.exclusive || spec.info.exclusive() {
-                        exclusive_units.push(unit);
-                    } else {
-                        units.push(unit);
-                    }
-                }
-            }
-        }
-        let expected: Vec<usize> = specs
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                units
-                    .iter()
-                    .chain(&exclusive_units)
-                    .filter(|unit| unit.index == index)
-                    .count()
-            })
-            .collect();
-        let results: Mutex<Vec<Vec<UnitOutcome>>> =
-            Mutex::new(specs.iter().map(|_| Vec::new()).collect());
-        let summaries: Mutex<Vec<Option<TestSummary>>> = Mutex::new(vec![None; specs.len()]);
-        let printer = Mutex::new(());
-        let failure: Mutex<Option<String>> = Mutex::new(None);
-        let aggregate = |spec: &TestSpec, outcomes: &[UnitOutcome], expected: usize| {
-            let collected: Vec<RunResult> = outcomes
-                .iter()
-                .filter_map(|outcome| match outcome {
-                    UnitOutcome::Result(result) => Some(result.clone()),
-                    UnitOutcome::Error(_) => None,
-                })
-                .collect();
-            let incomplete = collected.len() != expected;
-            let mut summary = TestSummary::aggregate(
-                &spec.label,
-                spec.info.timeout,
-                &collected,
-                options.verbose_timeout_warnings,
-            );
-            // TestResultAggregator.markIncomplete: a run without a
-            // result leaves NO_STATUS as is, or makes it INCOMPLETE.
-            if incomplete && summary.status != TestStatus::NoStatus {
-                summary.status = summary.status.max(TestStatus::Incomplete);
-            }
-            // Under --keep_going a failed test action (TestExecException)
-            // fails its target like a build error (targetFailure:
-            // FAILED_TO_BUILD; its actions ran; genuine capture M36).
-            if options.keep_going
-                && outcomes
-                    .iter()
-                    .any(|outcome| matches!(outcome, UnitOutcome::Error(_)))
-            {
-                summary.status = TestStatus::FailedToBuild;
-                summary.action_ran = true;
-            }
-            summary
-        };
-        // --nokeep_going (default): a failing test action (TestExecException)
-        // stops the build; test actions not started yet get no result
-        // (TestResultAggregator.markIncomplete: NO STATUS, "skipped").
-        let abort = std::sync::atomic::AtomicBool::new(false);
-        let finish = |unit: &Unit<'_>, outcome: UnitOutcome| {
-            if matches!(outcome, UnitOutcome::Error(_)) && !options.keep_going {
-                abort.store(true, std::sync::atomic::Ordering::SeqCst);
-            }
-            let mut results = results.lock().unwrap_or_else(|e| e.into_inner());
-            results[unit.index].push(outcome);
-            if results[unit.index].len() == expected[unit.index] {
-                let summary = aggregate(unit.spec, &results[unit.index], expected[unit.index]);
-                // UiEventHandler.testSummary (runtime/UiEventHandler.java:938-966).
-                let new_information = !matches!(
-                    summary.status,
-                    TestStatus::Passed | TestStatus::FailedToBuild | TestStatus::NoStatus
-                ) && (summary.status != TestStatus::Failed
-                    || summary.failed_logs.len() != 1);
-                if new_information {
-                    let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut text =
-                        format!("\n{}: {} (Summary)\n", summary.status.name(), summary.label);
-                    for log in &summary.failed_logs {
-                        text.push_str(&format!("      {}\n", log.display()));
-                    }
-                    eprint!("{text}");
-                }
-                summaries.lock().unwrap_or_else(|e| e.into_inner())[unit.index] = Some(summary);
-            }
-        };
-        let work = |unit: &Unit<'_>| {
-            if abort.load(std::sync::atomic::Ordering::SeqCst) {
-                return;
-            }
-            match self.run_unit(unit, &printer) {
-                Ok(outcome) => finish(unit, outcome),
-                Err(error) => {
-                    failure
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .get_or_insert(error);
-                }
-            }
-        };
-        let jobs = if options.local_test_jobs > 0 {
-            options.local_test_jobs
-        } else {
-            self.jobs
-        }
-        .max(1);
-        let queue = Mutex::new(units.iter());
-        std::thread::scope(|scope| {
-            for _ in 0..jobs.min(units.len().max(1)) {
-                scope.spawn(|| {
-                    loop {
-                        let next = queue.lock().unwrap_or_else(|e| e.into_inner()).next();
-                        let Some(unit) = next else {
-                            break;
-                        };
-                        work(unit);
-                    }
-                });
-            }
-        });
-        for unit in &exclusive_units {
-            work(unit);
-        }
-        if let Some(error) = failure.into_inner().unwrap_or_else(|e| e.into_inner()) {
-            return Err(error);
-        }
-        let results = results.into_inner().unwrap_or_else(|e| e.into_inner());
-        let summaries: Vec<TestSummary> = summaries
-            .into_inner()
-            .unwrap_or_else(|e| e.into_inner())
-            .into_iter()
-            .enumerate()
-            .map(|(index, summary)| {
-                // Targets with skipped actions (an aborted build).
-                summary
-                    .unwrap_or_else(|| aggregate(&specs[index], &results[index], expected[index]))
-            })
-            .collect();
-        let errors = results
-            .into_iter()
-            .flatten()
-            .filter_map(|outcome| match outcome {
-                UnitOutcome::Error(error) => Some(error),
-                UnitOutcome::Result(_) => None,
-            })
-            .collect();
-        let executed = summaries
-            .iter()
-            .filter(|summary| summary.action_ran)
-            .count();
-        Ok(Outcome {
-            summaries,
-            executed,
-            errors,
-        })
-    }
-
     fn paths(&self, unit: &Unit<'_>) -> Paths {
         let name = unit
             .spec
@@ -490,7 +704,16 @@ impl Runner<'_> {
         args
     }
 
-    fn run_unit(&self, unit: &Unit<'_>, printer: &Mutex<()>) -> Result<UnitOutcome, String> {
+    /// One test action (TestRunnerAction.execute): a cached result, or the
+    /// attempts in a fresh execution root and the published outputs. `None`:
+    /// an interrupt (the build failed) stopped it — no result, nothing
+    /// published or cached, like an interrupted TestRunnerAction.
+    fn run_unit(
+        &self,
+        unit: &Unit<'_>,
+        printer: &Mutex<()>,
+        interrupt: &std::sync::atomic::AtomicBool,
+    ) -> Result<Option<UnitOutcome>, String> {
         let spec = unit.spec;
         let options = self.options;
         let paths = self.paths(unit);
@@ -665,7 +888,10 @@ impl Runner<'_> {
             // logs (TestSummaryPrinter.printCachedOutput) before the summary;
             // crate::main does that from the summary.
             self.link_testlogs(&paths.base, &entry);
-            return Ok(UnitOutcome::Result(result));
+            return Ok(Some(UnitOutcome::Result(result)));
+        }
+        if interrupt.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(None);
         }
         // A fresh execution root.
         let work_parent = tests.join("work");
@@ -690,22 +916,29 @@ impl Runner<'_> {
         let mut failed_attempts: Vec<Attempt> = Vec::new();
         let mut printed = Vec::new();
         let outcome = loop {
-            let attempt =
-                match self.attempt(unit, &paths, &env, &args, &execroot, &test_name, parse_xml)? {
-                    Ok(attempt) => attempt,
-                    Err(error) => {
-                        remove_tree(&work)?;
-                        let location = spec
-                            .location
-                            .as_deref()
-                            .map(|location| format!("{location}: "))
-                            .unwrap_or_default();
-                        let message = format!("Testing {test_name} failed: {error}");
-                        let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
-                        eprintln!("ERROR: {location}{message}");
-                        break UnitOutcome::Error(error);
-                    }
-                };
+            let attempt = match self.attempt(
+                unit, &paths, &env, &args, &execroot, &test_name, parse_xml, interrupt,
+            )? {
+                Attempted::Finished(attempt) => attempt,
+                Attempted::Failed(error) => {
+                    remove_tree(&work)?;
+                    let location = spec
+                        .location
+                        .as_deref()
+                        .map(|location| format!("{location}: "))
+                        .unwrap_or_default();
+                    let message = format!("Testing {test_name} failed: {error}");
+                    let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
+                    eprintln!("ERROR: {location}{message}");
+                    break Some(UnitOutcome::Error(error));
+                }
+                // The build failed while the test ran: the action is
+                // interrupted, its outputs are neither published nor cached.
+                Attempted::Interrupted => {
+                    remove_tree(&work)?;
+                    break None;
+                }
+            };
             let last = attempt.status == TestStatus::Passed
                 || failed_attempts.len() + 1 >= max_attempts as usize;
             let number = failed_attempts.len() + 1;
@@ -772,7 +1005,7 @@ impl Runner<'_> {
                 self.link_testlogs(&paths.base, &entry);
                 write_index(&index_path, &key)?;
                 remove_tree(&work)?;
-                break UnitOutcome::Result(RunResult {
+                break Some(UnitOutcome::Result(RunResult {
                     shard: unit.shard,
                     status,
                     cached: false,
@@ -780,7 +1013,7 @@ impl Runner<'_> {
                     passed_log: saved.passed_log.as_ref().map(|log| entry.join(log)),
                     failed_logs: failed_logs.iter().map(|log| entry.join(log)).collect(),
                     test_case: attempt.test_case,
-                });
+                }));
             }
             failed_attempts.push(Attempt {
                 millis: attempt.millis,
@@ -788,7 +1021,7 @@ impl Runner<'_> {
             });
         };
         drop(lock);
-        if !printed.is_empty() {
+        if !printed.is_empty() && outcome.is_some() {
             let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
             eprintln!("INFO: From Testing {test_name}:");
             let mut stdout = std::io::stdout().lock();
@@ -905,9 +1138,11 @@ impl Runner<'_> {
     }
 
     /// One attempt (StandaloneTestRunnerSpawn.execute and runTestAttempt,
-    /// exec/StandaloneTestStrategy.java:577-842). The outer error is an
-    /// infrastructure failure; the inner one a TestExecException (the
-    /// action fails without a result).
+    /// exec/StandaloneTestStrategy.java:577-842). The error is an
+    /// infrastructure failure; [`Attempted::Failed`] a TestExecException (the
+    /// action fails without a result); [`Attempted::Interrupted`] an
+    /// interrupt while the test ran (SIGTERM to its group, SIGKILL after the
+    /// grace period, like a local spawn the build's failure interrupts).
     #[allow(clippy::too_many_arguments)]
     fn attempt(
         &self,
@@ -918,7 +1153,8 @@ impl Runner<'_> {
         execroot: &Path,
         test_name: &str,
         parse_xml: bool,
-    ) -> Result<Result<AttemptResult, String>, String> {
+        interrupt: &std::sync::atomic::AtomicBool,
+    ) -> Result<Attempted, String> {
         let options = self.options;
         let base = execroot.join(&paths.base);
         // TestRunnerAction.prepare: outputs of an earlier attempt are gone
@@ -994,6 +1230,7 @@ impl Runner<'_> {
             .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
         let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
         let mut timed_out = false;
+        let mut interrupted = false;
         let mut terminated_at = None;
         let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
         let status = loop {
@@ -1004,7 +1241,14 @@ impl Runner<'_> {
                 break status;
             }
             let elapsed = start.elapsed();
-            if !timed_out && elapsed >= timeout {
+            // The build failed (--nokeep_going): the test is interrupted like
+            // a timed-out one — SIGTERM, SIGKILL after the grace period —
+            // and reports no result (Bazel interrupts in-flight actions).
+            if !timed_out && !interrupted && interrupt.load(std::sync::atomic::Ordering::Acquire) {
+                interrupted = true;
+                terminated_at = Some(Instant::now());
+                child.terminate();
+            } else if !timed_out && !interrupted && elapsed >= timeout {
                 // SIGTERM to the test's process group, SIGKILL after the
                 // grace period (the process-wrapper's --timeout and
                 // --kill_delay, process-tools.cc:93-111).
@@ -1019,6 +1263,11 @@ impl Runner<'_> {
             }
             std::thread::sleep(Duration::from_millis(10));
         };
+        // What the interrupted test left was killed and reaped by its
+        // supervisor, as after any exit.
+        if interrupted {
+            return Ok(Attempted::Interrupted);
+        }
         // A sandbox setup failure is an infrastructure failure of the attempt
         // (crate::sandbox), not a test result.
         if sandboxed
@@ -1027,7 +1276,7 @@ impl Runner<'_> {
             && !error.is_empty()
         {
             crate::sandbox::note_setup_failure();
-            return Ok(Err(format!(
+            return Ok(Attempted::Failed(format!(
                 "{test_name}: could not set up the sandbox: {}",
                 error.trim_end()
             )));
@@ -1071,7 +1320,7 @@ impl Runner<'_> {
             && options.check_sharding_support
             && !base.join("test.shard").exists()
         {
-            return Ok(Err("Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.".to_owned()));
+            return Ok(Attempted::Failed("Sharding requested, but the test runner did not advertise support for it by touching TEST_SHARD_STATUS_FILE. Either remove the 'shard_count' attribute, use a test runner that supports sharding or temporarily disable this check via --noincompatible_check_sharding_support.".to_owned()));
         }
         // Append stray stderr output to the test log (:762-778).
         let mut stray = Vec::new();
@@ -1154,7 +1403,7 @@ impl Runner<'_> {
         } else {
             None
         };
-        Ok(Ok(AttemptResult {
+        Ok(Attempted::Finished(AttemptResult {
             status: test_status,
             exit_code,
             millis,
@@ -1162,6 +1411,15 @@ impl Runner<'_> {
             test_case,
         }))
     }
+}
+
+/// How an attempt ended ([`Runner::attempt`]).
+enum Attempted {
+    Finished(AttemptResult),
+    /// A TestExecException: the action fails without a result.
+    Failed(String),
+    /// The build failed while the test ran.
+    Interrupted,
 }
 
 /// A finished attempt.

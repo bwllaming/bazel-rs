@@ -776,6 +776,17 @@ impl TestRuleInfo {
         self.has_tag("exclusive")
     }
 
+    /// Whether the test's actions run one at a time after the build
+    /// (SkyframeBuildView.determineTestTypeImpl, skyframe/SkyframeBuildView.java
+    /// :1115-1156): `exclusive`, or `exclusive-if-local`
+    /// (TargetUtils.isExclusiveIfLocalTestRule) — EXCLUSIVE_IF_LOCAL tests run
+    /// exclusively too unless the test strategy forces them in parallel
+    /// (TestActionContext.forceExclusiveIfLocalTestsInParallel), which no
+    /// local strategy does.
+    pub fn runs_exclusively(&self) -> bool {
+        self.exclusive() || self.has_tag("exclusive-if-local")
+    }
+
     /// TargetUtils.isExternalTestRule: never cached.
     pub fn external(&self) -> bool {
         self.has_tag("external")

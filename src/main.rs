@@ -1,4 +1,4 @@
-use bazel_rs::{bazelrc, engine::Engine, workspace};
+use bazel_rs::{bazelrc, engine::Engine, test_runner::label_print, workspace};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1755,82 +1755,6 @@ struct TestTail<'a> {
     snapshot: bazel_rs::snapshot::Scope,
 }
 
-/// Label.print: `//pkg:name` or `@@repo//pkg:name`.
-fn label_print(label: &bazel_rs::label::Label) -> String {
-    if label.repository.is_empty() {
-        format!("//{}:{}", label.package, label.name)
-    } else {
-        format!("@@{}//{}:{}", label.repository, label.package, label.name)
-    }
-}
-
-/// The test spec of a built test target (TestActionBuilder.createTestAction,
-/// analysis/test/TestActionBuilder.java:224-480).
-fn test_spec(
-    label: &bazel_rs::label::Label,
-    info: bazel_rs::test_command::TestRuleInfo,
-    location: Option<String>,
-    target: &bazel_rs::engine::RunTarget,
-) -> Result<bazel_rs::test_runner::TestSpec, String> {
-    let utf8 = |path: &Path| {
-        path.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("non-UTF-8 path {} is not supported", path.display()))
-    };
-    let Some(entries) = target.entries.clone() else {
-        return Err(format!(
-            "{}: test target has no runfiles support",
-            label_print(label)
-        ));
-    };
-    let package = if label.repository.is_empty() {
-        label.package.clone()
-    } else if label.package.is_empty() {
-        format!("external/{}", label.repository)
-    } else {
-        format!("external/{}/{}", label.repository, label.package)
-    };
-    let testlogs_package = if package.is_empty() {
-        format!("bazel-out/{}/testlogs", target.mnemonic)
-    } else {
-        format!("bazel-out/{}/testlogs/{package}", target.mnemonic)
-    };
-    // The test rule's testing.ExecutionInfo (TestActionBuilder
-    // .setExecutionRequirements): its requirements join the test action's
-    // execution info (TestTargetProperties.java:115-118). Another exec group
-    // makes that group's action owner run the test
-    // (TestActionBuilder.getTestActionOwner :156-170: its execution platform,
-    // exec properties and unrunnable check), not modelled.
-    let requirements = match &target.settings.test_requirements {
-        None => Vec::new(),
-        Some(info) if info.default_exec_group() => info.requirements.clone(),
-        Some(info) => {
-            return Err(format!(
-                "{}: testing.ExecutionInfo with exec_group = \"{}\" is not implemented in the native profile: the test action would run in that exec group (TestActionBuilder.getTestActionOwner); only the default \"test\" group is modelled",
-                label_print(label),
-                info.exec_group
-            ));
-        }
-    };
-    Ok(bazel_rs::test_runner::TestSpec {
-        label: label_print(label),
-        info,
-        location,
-        executable: target.executable.clone(),
-        executable_exec: utf8(&target.executable_exec)?,
-        binary: target.executable_short_path.clone(),
-        entries,
-        symlinks: target.symlinks.clone(),
-        testlogs_package,
-        args: target.settings.args.clone(),
-        target_env: target.settings.environment.clone(),
-        target_inherited: target.settings.inherited.clone(),
-        action_env: target.action_env.clone(),
-        test_env: target.test_env.clone(),
-        requirements,
-    })
-}
-
 /// `test` (runtime/commands/TestCommand.java:124-243): build the targets,
 /// run the selected tests (crate::test_runner), print the summary and exit
 /// with Bazel's code: 0 when every test passed, 3 (TESTS_FAILED) otherwise,
@@ -1929,8 +1853,49 @@ fn test_tail(
         Ok(request) => request.test_labels(),
         Err(_) => selected,
     };
+    // PERF(TEST): the test actions run inside the execution phase, each as
+    // soon as its test's inputs are built (crate::request::execute_with_tests,
+    // like Bazel's TestRunnerActions in the build's one execution graph), so
+    // they overlap the rest of the build; the summary is printed after it.
+    // A test the plan cannot specify (crate::request::test_preflight) fails
+    // the command after the build, before any test runs, as before.
+    let mut unspecified = None;
+    let session_tests = match &planned.request {
+        Ok(request) if request.execute => match &request.command {
+            bazel_rs::request::RequestCommand::Test { tests, .. } if !tests.is_empty() => {
+                match bazel_rs::request::test_preflight(request) {
+                    Ok(()) => Some(tests.clone()),
+                    Err(error) => {
+                        unspecified = Some(error);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let tools = match &session_tests {
+        Some(_) => Some(bazel_rs::test_runner::Tools::embedded(cache)?),
+        None => None,
+    };
+    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
+    let session = match (session_tests, &tools) {
+        (Some(tests), Some(tools)) => Some(bazel_rs::test_runner::Session::new(
+            bazel_rs::test_runner::Runner {
+                cache,
+                workspace: root,
+                options,
+                client_env: &client_env,
+                runfiles_enabled: runfiles.enable_runfiles,
+                tools,
+            },
+            tests,
+        )),
+        _ => None,
+    };
     let result = planned.request.and_then(|request| {
-        bazel_rs::request::execute(
+        bazel_rs::request::execute_with_tests(
             request,
             planned.status,
             &bazel_rs::request::ExecuteOptions {
@@ -1938,6 +1903,7 @@ fn test_tail(
                 jobs,
                 action_dump: None,
             },
+            session.as_ref(),
         )
     });
     report_diagnostics(planned.diagnostics);
@@ -1949,12 +1915,19 @@ fn test_tail(
     }
     let bazel_rs::request::Executed {
         summary,
-        targets,
+        targets: _,
         command: planned_command,
         execute,
     } = match result {
         Ok(executed) => executed,
-        Err(error) => return test_build_failure(&error, &test_labels, options),
+        Err(error) => {
+            return test_build_failure(
+                &error,
+                &test_labels,
+                options,
+                session.map(bazel_rs::test_runner::Session::finish),
+            );
+        }
     };
     let planned_tests = match planned_command {
         bazel_rs::request::RequestCommand::Test { tests, .. } => tests,
@@ -2029,25 +2002,16 @@ fn test_tail(
         bazel_rs::digest_memo::finish();
         std::process::exit(1);
     }
-    let mut specs = Vec::new();
-    for test in planned_tests {
-        let target = targets
-            .get(&test.label)
-            .ok_or_else(|| format!("internal error: {} was not built as a test", test.label))?;
-        specs.push(test_spec(&test.label, test.info, test.location, target)?);
-    }
-    let tools = bazel_rs::test_runner::Tools::embedded(cache)?;
-    let client_env: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-    let runner = bazel_rs::test_runner::Runner {
-        cache,
-        workspace: root,
-        options,
-        client_env: &client_env,
-        jobs,
-        runfiles_enabled: runfiles.enable_runfiles,
-        tools: &tools,
+    let outcome = match session {
+        Some(session) => session.finish(),
+        None => {
+            return Err(unspecified
+                .unwrap_or_else(|| "internal error: the planned tests did not run".to_owned()));
+        }
     };
-    let outcome = runner.run(&specs)?;
+    if let Some(error) = outcome.failure {
+        return Err(error);
+    }
     let mut sorted: Vec<&bazel_rs::test_command::TestSummary> = outcome.summaries.iter().collect();
     sorted.sort_by(|a, b| a.compare(b));
     use std::io::Write;
@@ -2153,17 +2117,22 @@ fn pattern_phase_failure(phase: &bazel_rs::engine::TargetPatternPhase) -> Option
 }
 
 /// A failed build of `bazel test` (TestCommand.java:200-243 with
-/// AggregatingTestListener.differentialAnalyzeAndReport): the summary
-/// shows each test that failed to build (named by the failing actions'
-/// messages) as FAILED TO BUILD and the others as NO STATUS (never run,
-/// --nokeep_going); exit code 1. Under --keep_going Bazel would still run
-/// the tests that built, which the native all-or-nothing build cannot.
+/// AggregatingTestListener.differentialAnalyzeAndReport): a test all of
+/// whose actions reported before the build failed keeps its result (its
+/// summary was posted; PERF(TEST): tests run inside the build), every other
+/// test shows FAILED TO BUILD when the failing actions' messages name it and
+/// NO STATUS otherwise (never run or interrupted, --nokeep_going); the exit
+/// code is 1. Under --keep_going Bazel would still run the tests that built,
+/// which the native all-or-nothing build cannot.
 fn test_build_failure(
     error: &str,
     tests: &[bazel_rs::label::Label],
     options: &bazel_rs::test_command::TestOptions,
+    outcome: Option<bazel_rs::test_runner::Outcome>,
 ) -> Result<(), String> {
-    use bazel_rs::test_command::{TestStatus, TestSummary, TestTimeout, summary_text};
+    use bazel_rs::test_command::{
+        TestStatus, TestSummary, TestTimeout, should_output_log, summary_text,
+    };
     if options.keep_going {
         return Err(format!(
             "{error}\n--keep_going with a build failure is not supported by the native test command: the native build stops at the first failing action, so tests that would build are not run"
@@ -2180,7 +2149,28 @@ fn test_build_failure(
     };
     let summaries: Vec<TestSummary> = tests
         .iter()
-        .map(|label| {
+        .enumerate()
+        .map(|(index, label)| {
+            let reported = outcome.as_ref().and_then(|outcome| {
+                Some((
+                    outcome.summaries.get(index)?,
+                    *outcome.completed.get(index)?,
+                ))
+            });
+            match reported {
+                // Every action of the test reported: its posted summary.
+                Some((summary, true)) => return summary.clone(),
+                // Some did (a shard ran, another was interrupted or never
+                // started): the summary as it stands, NO STATUS
+                // (TestResultAggregator.markUnbuilt with skipTargetsOnFailure;
+                // its actions ran).
+                Some((summary, false)) if !summary.test_times.is_empty() => {
+                    let mut summary = summary.clone();
+                    summary.status = TestStatus::NoStatus;
+                    return summary;
+                }
+                _ => {}
+            }
             let shown = label_print(label);
             let mut summary = TestSummary::aggregate(&shown, TestTimeout::Moderate, &[], false);
             summary.status = if mentions(&shown) {
@@ -2191,9 +2181,30 @@ fn test_build_failure(
             summary
         })
         .collect();
-    print!("{}", summary_text(&summaries, 0, options));
+    // TerminalTestResultNotifier.notify: the locally cached results' logs,
+    // then the summary.
+    let mut text = Vec::new();
+    let mut sorted: Vec<&TestSummary> = summaries.iter().collect();
+    sorted.sort_by(|a, b| a.compare(b));
+    for summary in sorted {
+        if summary.num_cached > 0 && should_output_log(options.output, summary.status.passed()) {
+            text.extend(bazel_rs::test_runner::cached_output(summary, options));
+        }
+    }
+    let executed = summaries
+        .iter()
+        .filter(|summary| summary.action_ran)
+        .count();
+    text.extend(summary_text(&summaries, executed, options).into_bytes());
+    // TestCommand.java:216-223: every test passed, the build did not.
+    if !summaries.is_empty() && summaries.iter().all(|summary| summary.status.passed()) {
+        text.extend(b"All tests passed but there were other errors during the build.\n\n");
+    }
     use std::io::Write;
-    let _ = std::io::stdout().flush();
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(&text);
+    let _ = stdout.flush();
+    drop(stdout);
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
@@ -2240,7 +2251,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     let Some(planned) = test_info? else {
         return Err(format!("internal error: {label} is not a test rule"));
     };
-    let spec = test_spec(label, planned.info, planned.location, target)?;
+    let spec = bazel_rs::test_runner::TestSpec::new(label, planned.info, planned.location, target)?;
     // TestProvider.getTestStatusArtifacts must be a single action.
     let shards = test.sharding.shards(spec.info.shard_count).max(0) as u32;
     if shards > 1 || test.runs_per_test > 1 {
