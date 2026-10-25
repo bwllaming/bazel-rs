@@ -1628,6 +1628,104 @@ mod tests {
             && blocker.detail == "keyed"));
     }
 
+    /// integration-22: what parity-ts added to planned actions survives the
+    /// codec — an unresolved symlink artifact output and its
+    /// UnresolvedSymlinkAction transform, a tree passed unexpanded to a
+    /// DirectoryExpander map_each (Item::Unexpanded, the `expander` flag) and
+    /// File's `is_symlink` — so a hit plans what the full analysis planned.
+    /// (A retained map_each closure keeps the request unencodable, like a
+    /// frozen one: [`a_map_each_makes_the_request_unencodable`].)
+    #[test]
+    fn unresolved_symlinks_and_unexpanded_trees_survive_the_codec() {
+        let mut request = sample();
+        let link = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/link");
+        request.nodes.push(PlannedAction {
+            action: Action {
+                id: "//pkg:link".into(),
+                outputs: vec![link.clone()],
+                extra: ActionExtra {
+                    symlink_outputs: BTreeSet::from([link.clone()]),
+                    mnemonic: "UnresolvedSymlink".into(),
+                    transform: Some(Transform::UnresolvedSymlink {
+                        target: "../x/y".into(),
+                        target_type: crate::action::SymlinkTargetType::Directory,
+                        progress: "Creating symlink link".into(),
+                    }),
+                    ..ActionExtra::default()
+                },
+                ..Action::default()
+            },
+            dependencies: Vec::new(),
+            deferred: None,
+            groups: Vec::new(),
+        });
+        request.nodes.push(PlannedAction {
+            action: Action {
+                id: "//pkg:unexpanded".into(),
+                outputs: vec!["bazel-out/u".into()],
+                write: Some(WriteAction {
+                    content: Vec::new(),
+                    executable: false,
+                }),
+                ..Action::default()
+            },
+            dependencies: Vec::new(),
+            deferred: Some(Deferred::new(DeferredSpec::WriteArgs {
+                snapshot: crate::args::ArgsSnapshot {
+                    groups: vec![Group::Deferred(Arc::new(DeferredVector {
+                        shape: VectorShape::default(),
+                        items: vec![Item::Unexpanded(tree())],
+                        map_each: None,
+                        expander: true,
+                    }))],
+                    flag_per_line: false,
+                    file_type: ParamFileType::Unquoted,
+                    param: None,
+                },
+                extra_param_files: Vec::new(),
+            })),
+            groups: Vec::new(),
+        });
+        let bytes = encode(&request).unwrap();
+        let decoded = decode(&bytes).unwrap();
+        assert_eq!(encode(&decoded).unwrap(), bytes, "re-encoded");
+        let count = decoded.nodes.len();
+        let extra = &decoded.nodes[count - 2].action.extra;
+        assert_eq!(extra.symlink_outputs, BTreeSet::from([link]));
+        assert!(matches!(
+            &extra.transform,
+            Some(Transform::UnresolvedSymlink {
+                target,
+                target_type: crate::action::SymlinkTargetType::Directory,
+                progress,
+            }) if target == "../x/y" && progress == "Creating symlink link"
+        ));
+        let Some(DeferredSpec::WriteArgs { snapshot, .. }) =
+            decoded.nodes[count - 1].deferred.as_ref().map(|d| &*d.0)
+        else {
+            panic!("the write keeps its deferred Args");
+        };
+        let [Group::Deferred(vector)] = snapshot.groups.as_slice() else {
+            panic!("one deferred vector");
+        };
+        assert!(vector.expander && vector.map_each.is_none());
+        assert!(matches!(vector.items.as_slice(), [Item::Unexpanded(file)] if *file == tree()));
+        // File's every field, `is_symlink` included.
+        #[derive(Serialize, Deserialize)]
+        struct Wrapped(#[serde(with = "super::file")] File);
+        let symlink = File {
+            path: "bazel-out/k8-fastbuild/bin/pkg/link".into(),
+            short_path: "pkg/link".into(),
+            owner: "//pkg:link".into(),
+            is_source: false,
+            is_directory: false,
+            is_symlink: true,
+        };
+        let encoded = postcard::to_stdvec(&Wrapped(symlink.clone())).unwrap();
+        let Wrapped(back) = postcard::from_bytes(&encoded).unwrap();
+        assert!(back == symlink && back.is_symlink);
+    }
+
     /// The bound attributes of a replay record (crate::snapshot::replay)
     /// round-trip through postcard (L2-W5 saves them).
     #[test]
