@@ -1624,11 +1624,15 @@ pub(crate) struct AspectApplication {
     /// The base rule, select-resolved, with its configured attribute values
     /// (`ctx.rule`).
     pub rule: Rule,
-    /// The application's dependencies: the aspect's own attributes and the
-    /// base rule's attribute edges (aspect-applied where they propagate),
-    /// keyed with the rule-context dependency keys of
-    /// [`crate::analysis::dependency_key`] and friends.
+    /// The base rule's attribute edges (aspect-applied where they
+    /// propagate; `ctx.rule`), keyed with the rule-context dependency keys
+    /// of [`crate::analysis::dependency_key`] and friends.
     pub dependencies: BTreeMap<String, DependencyTarget>,
+    /// The aspect's own attribute dependencies (`ctx.attr`/`ctx.file(s)`/
+    /// `ctx.executable`), each configured by its attribute's `cfg`
+    /// (AspectContext.getMainAspectPrerequisitesCollection), keyed by
+    /// [`attribute_dependency_key`].
+    pub aspect_dependencies: BTreeMap<String, DependencyTarget>,
     pub repositories: Arc<RepositorySet>,
 }
 
@@ -1892,7 +1896,7 @@ fn make_aspect_ctx<'v>(
                             label,
                             name,
                             spec,
-                            &application.dependencies,
+                            &application.aspect_dependencies,
                             &prefix,
                             consumer,
                         ) {
@@ -1902,7 +1906,16 @@ fn make_aspect_ctx<'v>(
                                 continue;
                             }
                         };
-                        attrs.insert(name.clone(), alloc_dependency(module.heap(), target));
+                        let value = alloc_dependency(module.heap(), target);
+                        // A label attribute with a Starlark transition is a
+                        // list of its prerequisites (StarlarkAttributesCollection.
+                        // convertAttributeValue: the transition factory isSplit).
+                        let value = if starlark_transition(spec) {
+                            module.heap().alloc(vec![value])
+                        } else {
+                            value
+                        };
+                        attrs.insert(name.clone(), value);
                         let list: Vec<Value> = target
                             .files
                             .iter()
@@ -1920,7 +1933,14 @@ fn make_aspect_ctx<'v>(
                             );
                         }
                     } else {
-                        attrs.insert(name.clone(), Value::new_none());
+                        attrs.insert(
+                            name.clone(),
+                            if starlark_transition(spec) {
+                                module.heap().alloc(Vec::<Value>::new())
+                            } else {
+                                Value::new_none()
+                            },
+                        );
                         files.insert(name.clone(), module.heap().alloc(Vec::<Value>::new()));
                         if spec.allow_single_file {
                             single_files.insert(name.clone(), Value::new_none());

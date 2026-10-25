@@ -22,16 +22,44 @@ impl Workspace {
     }
 
     fn new() -> Self {
+        Self::fixture("aspects")
+    }
+
+    /// A fresh copy of tests/fixtures/NAME/workspace.
+    fn fixture(name: &str) -> Self {
         let ws = Self(
             tempfile::Builder::new()
                 .prefix("aspects-")
                 .tempdir_in("/tmp/opencode")
                 .unwrap(),
         );
-        let fixture =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aspects/workspace");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+            .join("workspace");
         copy(&fixture, ws.path());
         ws
+    }
+
+    /// `build` under the built-in module profile (the default host
+    /// platform's exec configurations, rules_cc's toolchain types) with
+    /// the fixture registry, as the paired captures run it.
+    fn build_builtin(&self, flags: &[&str], targets: &[&str]) -> Output {
+        let registry = format!(
+            "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let mut all = vec!["--experimental-builtin-modules", registry.as_str()];
+        all.extend_from_slice(flags);
+        self.build_with(&all, targets)
+    }
+
+    /// The materialized outputs whose names end with `suffix`.
+    fn outputs_ending(&self, suffix: &str) -> Vec<String> {
+        self.outputs()
+            .into_iter()
+            .filter(|name| name.ends_with(suffix))
+            .collect()
     }
 
     fn build_with(&self, flags: &[&str], targets: &[&str]) -> Output {
@@ -432,5 +460,112 @@ fn query_still_lists_aspect_attribute_edges() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "//:a\n//:app\n//:b\n//:c\n"
+    );
+}
+
+/// The print() lines of `text` starting with `marker`, sorted.
+fn prints(text: &str, marker: &str) -> Vec<String> {
+    let mut lines = text
+        .lines()
+        .filter(|line| line.starts_with(marker))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    lines.sort();
+    lines
+}
+
+/// `cfg_aspect`'s line for a base target in the target configuration
+/// (tests/fixtures/aspect_configuration/reference_receipt.json).
+fn target_configured(name: &str) -> String {
+    format!(
+        "CFG {name} bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt"
+    )
+}
+
+#[test]
+fn aspect_attributes_take_their_own_configurations() {
+    // Every label attribute of an aspect is configured by its own `cfg`
+    // per application (DependencyProducer over the main aspect's
+    // attributes): the exec transition for the ASPECT's execution platform
+    // (`cfg = "exec"` and `config.exec()`), the base target's
+    // configuration (`cfg = "target"`), a Starlark transition applied to
+    // the base configuration (a list in ctx.attr); the aspect's exec tool
+    // runs from bazel-out/k8-opt-exec. Genuine Bazel 9.3.0 strings
+    // (tests/fixtures/aspect_configuration/reference_receipt.json, MATCH).
+    let ws = Workspace::fixture("aspect_configuration");
+    let text = ok(&ws.build_builtin(
+        &[
+            "--aspects=//:defs.bzl%cfg_aspect",
+            "--output_groups=cfg_out",
+        ],
+        &["//:b"],
+    ));
+    assert_eq!(
+        prints(&text, "CFG "),
+        [target_configured("a"), target_configured("b")]
+    );
+    assert_eq!(
+        ws.outputs_ending(".cfg"),
+        ["k8-fastbuild/bin/a.cfg", "k8-fastbuild/bin/b.cfg"]
+    );
+    assert_eq!(
+        ws.output("b.cfg"),
+        "tool=bazel-out/k8-opt-exec/bin/tool.sh base=b\n"
+    );
+    // Attribute aspects, also on an exec-configured base (//:x through
+    // `use`'s exec `tools`): the aspect context's configuration surface is
+    // the base target's (ctx.bin_dir/ctx.var), the exec transition of an
+    // exec configuration is itself, and the Starlark transition applies on
+    // top of it.
+    let ws = Workspace::fixture("aspect_configuration");
+    let text = ok(&ws.build_builtin(&[], &["//:u"]));
+    assert_eq!(
+        prints(&text, "CFG "),
+        [
+            target_configured("a"),
+            target_configured("b"),
+            "CFG x bin=bazel-out/k8-opt-exec/bin mode=opt exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-opt-exec/bin/tool.sh transitioned=via-aspect:bazel-out/k8-opt-exec-ST-d828efcc8d19/bin/reader.txt".to_owned(),
+        ]
+    );
+    assert_eq!(
+        ws.outputs_ending(".cfg"),
+        [
+            "k8-fastbuild/bin/a.cfg",
+            "k8-fastbuild/bin/b.cfg",
+            "k8-opt-exec/bin/x.cfg"
+        ]
+    );
+    assert_eq!(
+        ws.output("x.cfg"),
+        "tool=bazel-out/k8-opt-exec/bin/tool.sh base=x\n"
+    );
+    // --nobuild analyzes the same applications and builds nothing.
+    let ws = Workspace::fixture("aspect_configuration");
+    let text = ok(&ws.build_builtin(
+        &[
+            "--nobuild",
+            "--aspects=//:defs.bzl%cfg_aspect",
+            "--output_groups=cfg_out",
+        ],
+        &["//:b"],
+    ));
+    assert_eq!(
+        prints(&text, "CFG "),
+        [target_configured("a"), target_configured("b")]
+    );
+    assert_eq!(ws.outputs_ending(".cfg"), Vec::<String>::new());
+}
+
+#[test]
+fn undeclared_aspect_exec_group_fails_at_the_base_target() {
+    // `cfg = config.exec("nope")` on an aspect without that exec group:
+    // DependencyProducer.ExecGroupErrorEmitter, at the base target's
+    // location, naming the attribute by its native name (genuine
+    // `BUILD.bazel:12:4: Attr '$tool' declares a transition for
+    // non-existent exec group 'nope'`).
+    let ws = Workspace::fixture("aspect_configuration");
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%bad_group_aspect"], &["//:a"]),
+        "BUILD.bazel:12:4: Attr '$tool' declares a transition for non-existent exec group 'nope'",
     );
 }

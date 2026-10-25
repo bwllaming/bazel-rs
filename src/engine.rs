@@ -1291,6 +1291,17 @@ fn test_suite_filter_tags(rule: &Rule) -> Option<BTreeSet<String>> {
     Some(tags)
 }
 
+/// The label texts of an aspect attribute's value (its default; parameters
+/// are never labels): the dependencies of the aspect's own attributes,
+/// resolved from the aspect's `.bzl` package.
+fn aspect_attribute_labels(spec: &crate::custom_rule::AttrSpec) -> Vec<String> {
+    match &spec.default {
+        crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
+        crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
+        _ => Vec::new(),
+    }
+}
+
 fn dependency_edges(rule: &Rule) -> Vec<Edge> {
     let mut edges = attribute_edges(rule);
     edges.extend(rule.package_metadata.iter().map(|label| Edge {
@@ -1783,6 +1794,12 @@ pub struct Engine {
     /// target key (aspect applications read the base target's configured
     /// attribute values for `ctx.rule`, N58).
     configured_rules: BTreeMap<ConfiguredTargetKey, Rule>,
+    /// The configuration of each label attribute of each aspect
+    /// application (base configured target key, aspect identity), computed
+    /// when phase 1 analyzes the application's own attribute dependencies
+    /// (Self::aspect_attribute_configurations) and read by its planning.
+    aspect_attribute_configs:
+        BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, ConfigId>>>,
     /// Whether the building command runs tests (BuildRequest.shouldRunTests
     /// keeps the `default` group for failure reporting).
     tests_requested: bool,
@@ -1870,6 +1887,7 @@ impl Engine {
             requested_aspects: Vec::new(),
             aspect_parameters: BTreeMap::new(),
             configured_rules: BTreeMap::new(),
+            aspect_attribute_configs: BTreeMap::new(),
             tests_requested: false,
             run_requests: BTreeSet::new(),
             run_trees: true,
@@ -4056,6 +4074,15 @@ impl Engine {
         seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
     ) -> Result<(), String> {
         let key = ConfiguredTargetKey::new(label.clone(), config);
+        // The application's configuration is the base configured target's,
+        // after a rule transition's delegation (AspectKeyCreator over the
+        // ConfiguredTargetKey; as Self::plan_aspect_collection).
+        let config = self.delegated_config(&key, config);
+        // Aspects never apply in the no-config configuration
+        // (AspectFunction.java:296-305: NonApplicableAspect).
+        if self.configurations.get(config).native.no_config {
+            return Ok(());
+        }
         let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
         // Aspects do not apply to source files or package groups
         // (AspectFunction.java:327-334); an output file applies its
@@ -4110,19 +4137,21 @@ impl Engine {
             if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
                 continue;
             }
-            // The aspect's own attribute dependencies, validated from the
-            // aspect's `.bzl` package (CommonPrerequisiteValidator).
+            // The aspect's own attribute dependencies, each in its
+            // attribute's configuration (Self::aspect_attribute_configurations),
+            // validated from the aspect's `.bzl` package
+            // (CommonPrerequisiteValidator).
             let authority = crate::label::PackageId {
                 repository: aspect.definition_label.repository.clone(),
                 package: aspect.definition_label.package.clone(),
             };
-            for (_, spec) in &aspect.declaration.attrs {
-                let labels = match &spec.default {
-                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
-                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
-                    _ => Vec::new(),
+            let attribute_configs = self
+                .aspect_attribute_configurations(&base_rule, &base_key, aspect, configured, plan)?;
+            for (name, spec) in &aspect.declaration.attrs {
+                let Some(&attribute_config) = attribute_configs.get(name) else {
+                    continue;
                 };
-                for text in labels {
+                for text in aspect_attribute_labels(spec) {
                     // Aspect attribute labels resolve relative to the
                     // aspect's `.bzl` package (LabelConverter.
                     // forBzlEvaluatingThread at aspect() declaration).
@@ -4131,7 +4160,7 @@ impl Engine {
                         &aspect.definition_label.repository,
                         &aspect.definition_label.package,
                     )?;
-                    self.analyze(&dependency, config, active, configured, plan)
+                    self.analyze(&dependency, attribute_config, active, configured, plan)
                         .map_err(|error| {
                             format!(
                                 "in {} aspect on {} rule {}: {error}",
@@ -4159,7 +4188,9 @@ impl Engine {
         }
         // The applications propagated along the base target's edges: each
         // aspect of the collection that propagates along the attribute name
-        // applies to the edge's dependency (computePropagatingAspects).
+        // applies to the edge's dependency (computePropagatingAspects), in
+        // the edge's configuration exactly as the application's planning
+        // reaches it (Self::plan_aspect_application).
         for edge in self.rule_edges(&base_rule) {
             let attribute_aspects = base_rule
                 .custom
@@ -4189,8 +4220,20 @@ impl Engine {
                     .get(&(base_key.clone(), group.clone()))
                     .copied()
                     .unwrap_or(config),
+                // Aspects never apply in the no-config configuration
+                // (AspectFunction.java:296-305: NonApplicableAspect).
                 EdgeCfg::NoConfig => continue,
-                EdgeCfg::Starlark(_) => continue,
+                // The attribute's Starlark-transitioned configuration (N28c).
+                EdgeCfg::Starlark(attribute) => {
+                    match self
+                        .edge_configs
+                        .get(&base_key)
+                        .and_then(|configs| configs.get(attribute))
+                    {
+                        Some(&transitioned) => transitioned,
+                        None => continue,
+                    }
+                }
             };
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
             self.analyze_aspect_applications(
@@ -4204,6 +4247,136 @@ impl Engine {
             )?;
         }
         Ok(())
+    }
+
+    /// The configuration of each label attribute of `aspect` applied to the
+    /// configured target `base_key` (AspectFunction's dependency
+    /// resolution: DependencyProducer over the main aspect's attributes,
+    /// analysis/producers/DependencyProducer.java:184-219, with
+    /// DependencyResolutionHelpers.getExecutionPlatformLabel,
+    /// analysis/DependencyResolutionHelpers.java:195-253): the base
+    /// target's configuration for `cfg = "target"`; for `cfg = "exec"` or
+    /// `config.exec()` (ExecutionTransitionFactory) the exec transition for
+    /// the execution platform of the ASPECT's own default exec group (its
+    /// toolchain context, AspectFunction.getUnloadedToolchainContextsInputs,
+    /// AspectFunction.java:811-838 — the host platform natively, the only
+    /// execution platform; docs/TOOLCHAINS.md), never the base rule's; the
+    /// attribute's Starlark transition applied to the base configuration
+    /// over the base target's attributes (AttributeTransitionData.attributes,
+    /// the base rule's attribute map). A named exec group the aspect does
+    /// not declare is DependencyProducer.ExecGroupErrorEmitter's error at
+    /// the base target. Memoized per application
+    /// (Self::aspect_attribute_configs), read by its planning.
+    fn aspect_attribute_configurations(
+        &mut self,
+        base_rule: &Rule,
+        base_key: &ConfiguredTargetKey,
+        aspect: &crate::aspects::AspectDefinition,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<Arc<BTreeMap<String, ConfigId>>, String> {
+        use crate::rule_declarations::Cfg;
+        let memo = (base_key.clone(), aspect.identity.clone());
+        if let Some(configs) = self.aspect_attribute_configs.get(&memo) {
+            return Ok(configs.clone());
+        }
+        let config = base_key.config;
+        let mut exec_config = None;
+        let mut configs = BTreeMap::new();
+        for (name, spec) in &aspect.declaration.attrs {
+            if aspect_attribute_labels(spec).is_empty() {
+                continue;
+            }
+            // Attribute.getName: the native name (`$x` for `_x`).
+            let attribute =
+                crate::custom_rule::native_attribute_name(name, spec.declaration.late_bound);
+            let edge_config = match &spec.declaration.cfg {
+                Cfg::Target => config,
+                Cfg::Exec(group)
+                    if group.as_deref().is_none_or(|group| {
+                        group == crate::exec_groups::DEFAULT_EXEC_GROUP_NAME
+                    }) =>
+                {
+                    match exec_config {
+                        Some(exec) => exec,
+                        None => {
+                            let exec =
+                                self.exec_configuration(base_rule, config, None, configured, plan)?;
+                            exec_config = Some(exec);
+                            exec
+                        }
+                    }
+                }
+                Cfg::Exec(Some(group)) => {
+                    return Err(located(
+                        base_rule.location.as_deref(),
+                        format!(
+                            "Attr '{attribute}' declares a transition for non-existent exec group '{group}'"
+                        ),
+                    ));
+                }
+                Cfg::Starlark {
+                    analysis_test: false,
+                    ..
+                } => {
+                    let transition = aspect.attribute_transition(name).ok_or_else(|| {
+                        format!(
+                            "aspect {}: attribute '{name}' declares a Starlark transition that the native profile did not retain; {}",
+                            aspect.identity,
+                            crate::rule_declarations::NOT_ANALYZED
+                        )
+                    })?;
+                    let def = crate::starlark_transitions::TransitionDef::of(&transition)?;
+                    let attributes =
+                        configured_attributes::transition_attributes(base_rule, None, &[]);
+                    let dependency = aspect_attribute_labels(spec)
+                        .first()
+                        .and_then(|text| {
+                            self.repositories
+                                .parse(
+                                    text,
+                                    &aspect.definition_label.repository,
+                                    &aspect.definition_label.package,
+                                )
+                                .ok()
+                        })
+                        .map(|label| crate::rule_declarations::canonical_form(&label))
+                        .unwrap_or_default();
+                    self.apply_transition(
+                        &def,
+                        crate::starlark_transitions::Kind::Attribute,
+                        &base_rule.label,
+                        config,
+                        &attributes,
+                    )
+                    .map_err(|failure| {
+                        let mut lines = failure.events;
+                        lines.push(located(
+                            base_rule.location.as_deref(),
+                            format!(
+                                "on dependency edge {} ({}) -|{attribute}|-> {dependency}: {}",
+                                crate::rule_declarations::canonical_form(&base_rule.label),
+                                &config.to_string()[..7],
+                                failure.message
+                            ),
+                        ));
+                        lines.join("\n")
+                    })?
+                }
+                other => {
+                    return Err(format!(
+                        "aspect {}: attribute '{name}' cfg={} (configuration transition): {}",
+                        aspect.identity,
+                        other.describe(),
+                        crate::rule_declarations::NOT_ANALYZED
+                    ));
+                }
+            };
+            configs.insert(name.clone(), edge_config);
+        }
+        let configs = Arc::new(configs);
+        self.aspect_attribute_configs.insert(memo, configs.clone());
+        Ok(configs)
     }
 
     /// ResolvedToolchainContext.load (analysis/ResolvedToolchainContext.java:48-110)
@@ -9185,16 +9358,28 @@ impl Engine {
                 info,
             )]));
         }
-        // The application's dependencies: the aspect's own attributes and
-        // the base rule's edges (aspect-applied where they propagate).
-        let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
+        // The application's dependencies: the aspect's own attributes, each
+        // in its attribute's configuration (phase 1 analyzed them there,
+        // Self::aspect_attribute_configurations), and the base rule's edges
+        // (aspect-applied where they propagate). The aspect's attributes are
+        // a prerequisite collection of their own (AspectContext.
+        // getMainAspectPrerequisitesCollection), never the base rule's.
+        let attribute_configs = self
+            .aspect_attribute_configs
+            .get(&(base_key.clone(), aspect.identity.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "internal analysis order error: aspect {} on {} was not analyzed",
+                    aspect.identity, base_key.label
+                )
+            })?;
+        let mut aspect_dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
         for (name, spec) in &aspect.declaration.attrs {
-            let labels = match &spec.default {
-                crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
-                crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
-                _ => Vec::new(),
+            let Some(&attribute_config) = attribute_configs.get(name) else {
+                continue;
             };
-            for text in labels {
+            for text in aspect_attribute_labels(spec) {
                 let dependency = self.repositories.parse(
                     &text,
                     &aspect.definition_label.repository,
@@ -9204,15 +9389,16 @@ impl Engine {
                     state,
                     configured,
                     &dependency,
-                    base_key.config,
+                    attribute_config,
                     Vec::new(),
                 )?;
-                dependencies.insert(
+                aspect_dependencies.insert(
                     analysis::attribute_dependency_key(&dependency.to_string(), name, spec),
                     view,
                 );
             }
         }
+        let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
         let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
             .used
             .iter()
@@ -9262,6 +9448,13 @@ impl Engine {
                     })?,
                 EdgeCfg::NoConfig => self.configurations.intern_no_config(),
             };
+            // Aspects never apply in the no-config configuration
+            // (AspectFunction.java:296-305: NonApplicableAspect).
+            let propagating = if edge.cfg == EdgeCfg::NoConfig {
+                Vec::new()
+            } else {
+                propagating
+            };
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
             let (view, _) = self.plan_aspect_dependency(
                 state,
@@ -9310,12 +9503,47 @@ impl Engine {
             runfiles: self.runfiles_options,
             loaded_functions: Some(&loaded_functions),
         };
+        // The aspect's RuleContext is built in the aspect's configuration,
+        // the base configured target's (AspectFunction.java:296-310,
+        // ConfiguredTargetFactory.createAspect): `ctx.bin_dir`, `ctx.var`,
+        // `ctx.configuration`, `ctx.fragments` and the target platform are
+        // the base target's configuration's, never a default one.
+        let mut analyzed_rule = base_rule.clone();
+        if analyzed_rule.custom.is_some() {
+            let platform = match self.platforms.get(&ConfiguredTargetKey::new(
+                self.configurations
+                    .get(base_key.config)
+                    .native
+                    .target_platform()
+                    .clone(),
+                base_key.config,
+            )) {
+                Some(Ok(platform)) => crate::platforms::TargetPlatform::Resolved(platform.clone()),
+                _ => crate::platforms::TargetPlatform::Deferred,
+            };
+            let surface = Arc::new(self.ctx_surface(
+                &base_rule,
+                base_key.config,
+                &output_root,
+                platform.clone(),
+                Vec::new(),
+            ));
+            let cpp = crate::custom_rule::CppConfigurationView::of(
+                &self.configurations.get(base_key.config).native,
+            );
+            if let Some(custom) = analyzed_rule.custom.as_mut() {
+                custom.cpp = cpp;
+                custom.target_platform = platform;
+                custom.surface = surface;
+            }
+        }
         let application = analysis::AspectApplication {
             aspect: aspect.clone(),
             aspect_ids: collection.descriptions(),
             target: merged_target,
-            rule: base_rule.clone(),
+            rule: analyzed_rule,
             dependencies: dependencies.clone(),
+            aspect_dependencies,
             repositories: self.repositories.clone(),
         };
         let (analyzed, printed) = analysis::analyze_aspect_buffered(&application, &outputs);
@@ -11478,39 +11706,37 @@ impl Engine {
                 None => error,
             })?;
         }
-        // N58: the top-level aspects' own attribute dependencies are
-        // analyzed like any dependency (AspectFunction's AspectValue
-        // depends on the aspect's implicit attributes), validated from the
-        // aspect's `.bzl` package.
+        // N58: the top-level aspects' applications on each requested target
+        // and along their `attr_aspects` closure are analyzed like any
+        // dependency (ToplevelStarlarkAspectFunction over AspectFunction:
+        // the AspectValue depends on the aspect's own attributes, each in
+        // its attribute's configuration, Self::aspect_attribute_configurations),
+        // their attribute dependencies validated from the aspect's `.bzl`
+        // package.
+        let mut aspects = Vec::new();
         for identity in self.effective_aspects() {
             let Some(definition) = self.aspect_definition(&identity, false)? else {
                 return Err(format!("Aspect '{identity}' is unknown"));
             };
-            if definition.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+            aspects.push(definition);
+        }
+        if aspects.is_empty() {
+            return Ok(());
+        }
+        let mut seen = BTreeSet::new();
+        for label in labels {
+            if !matches!(self.target(label)?, Target::Rule(_) | Target::Output(..)) {
                 continue;
             }
-            let authority = crate::label::PackageId {
-                repository: definition.definition_label.repository.clone(),
-                package: definition.definition_label.package.clone(),
-            };
-            for (_, spec) in &definition.declaration.attrs {
-                let labels = match &spec.default {
-                    crate::custom_rule::AttrValue::Label(Some(label)) => vec![label.clone()],
-                    crate::custom_rule::AttrValue::Labels(labels) => labels.clone(),
-                    _ => Vec::new(),
-                };
-                for text in labels {
-                    let dependency = self.repositories.parse(
-                        &text,
-                        &definition.definition_label.repository,
-                        &definition.definition_label.package,
-                    )?;
-                    self.analyze(&dependency, top, &mut Vec::new(), configured, plan)?;
-                    if let Target::Rule(dep_rule) = self.target(&dependency)? {
-                        self.visible(&dep_rule.visibility, &authority, None)?;
-                    }
-                }
-            }
+            self.analyze_aspect_applications(
+                label,
+                top,
+                aspects.clone(),
+                &mut Vec::new(),
+                configured,
+                plan,
+                &mut seen,
+            )?;
         }
         Ok(())
     }
@@ -11631,6 +11857,7 @@ impl Engine {
         self.edge_configs.clear();
         self.rule_delegations.clear();
         self.configured_rules.clear();
+        self.aspect_attribute_configs.clear();
         self.action_planning = Some(ActionPlanning::default());
         // BuildConfigurationKeyProducer resolves an explicit --platforms
         // entry when the top-level configuration is created, before analysis

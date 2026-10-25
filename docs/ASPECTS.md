@@ -128,6 +128,65 @@ The `target` parameter is the base configured target merged with the
 directly required aspects' providers (`AspectFunction.java:341-346`), so an
 aspect reads its required aspects' providers through `target[Provider]`.
 
+## Aspect attribute configurations
+
+Every label attribute of an aspect is resolved per application in its own
+configuration (AspectFunction's dependency resolution: DependencyProducer
+over the main aspect's attributes, `analysis/producers/DependencyProducer.java:184-219`,
+with `DependencyResolutionHelpers.getExecutionPlatformLabel`, `:195-253`),
+never the base rule's attribute configuration:
+
+- `cfg = "target"`: the base configured target's configuration;
+- `cfg = "exec"` / `config.exec()`: the exec transition
+  (ExecutionTransitionFactory) for the execution platform of the ASPECT's
+  own default exec group — its toolchain context
+  (`AspectFunction.getUnloadedToolchainContextsInputs`, `AspectFunction.java:811-838`),
+  the host platform natively (the only execution platform,
+  docs/TOOLCHAINS.md) — so a tool lands in `bazel-out/k8-opt-exec`; on an
+  exec-configured base target the exec transition of the exec
+  configuration is itself;
+- `config.exec("g")` of an exec group the aspect does not declare:
+  DependencyProducer.ExecGroupErrorEmitter at the base target, with the
+  attribute's native name (`BUILD.bazel:12:4: Attr '$tool' declares a
+  transition for non-existent exec group 'nope'`);
+- a Starlark transition: applied to the base configuration with the base
+  target's attributes as `attr` (AttributeTransitionData.attributes); the
+  `transition()` objects are kept on the aspect value (`AspectGen::transitions`)
+  and the configuration is memoized with the application. Like a rule's, a
+  Starlark-transitioned label attribute is a LIST in `ctx.attr`
+  (StarlarkAttributesCollection.convertAttributeValue: `isSplit()`);
+- `config.none()` and `analysis_test_transition` fail explicitly, as on a
+  rule attribute.
+
+Phase 1 (`Engine::analyze_aspect_applications`, also for the top-level
+`--aspects` over each requested target) computes these configurations
+(`Engine::aspect_attribute_configurations`, memoized per application key)
+and analyzes the attribute dependencies there; the application's planning
+reads the memo, so every application the planner reaches was analyzed:
+both walk the base rule's edges alike (Starlark-transitioned edges in their
+transitioned configuration; aspects never apply in the no-config
+configuration, `AspectFunction.java:296-305` NonApplicableAspect), and the
+application's configuration is the base target's after a rule transition's
+delegation. The aspect's attributes are a prerequisite collection of their
+own (`AspectApplication::aspect_dependencies`,
+AspectContext.getMainAspectPrerequisitesCollection), so an aspect attribute
+and a base rule attribute naming the same label never share a view.
+
+The aspect context's configuration surface is the base configured
+target's configuration (the aspect's RuleContext is built in it,
+ConfiguredTargetFactory.createAspect): `ctx.bin_dir`, `ctx.var`,
+`ctx.configuration`, `ctx.fragments` and `ctx.target_platform_has_constraint`
+read it (they read a default fastbuild surface before: an aspect on an
+exec-configured target saw `bazel-out/k8-fastbuild/bin`, genuine
+`bazel-out/k8-opt-exec/bin`).
+
+Paired capture tests/fixtures/aspect_configuration (reference_receipt.json,
+4/4 MATCH; tests/aspects.rs `aspect_attributes_take_their_own_configurations`,
+`undeclared_aspect_exec_group_fails_at_the_base_target`); the oracle repro
+`/tmp/opencode/oracle-aspect-exec/ws` (genuine `bazel-out/k8-opt-exec/bin/tool`)
+now matches. Aspect actions running such tools changed their keys once (the
+tools moved to exec paths); ~/code plans no aspect-owned action.
+
 ## Top-level aspects and validation
 
 - `--aspects={bzl-file-label}%{name}` applies aspects to the top-level
@@ -192,22 +251,6 @@ identity unchanged, and depset snapshots taken from either agree.
   (identical providers), so cross-consumer `Target` equality differs.
 - `--aspect_filters` does not exist in Bazel 9.3 (probed in the reference
   tree); nothing to implement.
-- **An aspect attribute's `cfg` is ignored (parity gap, recorded in
-  integration-21, not fixed).** Every label attribute of an aspect is planned
-  in the base target's configuration (`Engine::plan_aspect_application`
-  resolves `aspect.declaration.attrs` with `base_key.config`). Bazel applies
-  each attribute's transition per aspect — `cfg = "exec"`
-  (ExecutionTransitionFactory), an exec group's, a Starlark transition — with
-  the aspect's own toolchain context and execution platform
-  (`AspectFunction.java:811-838`, `DependencyResolutionHelpers.java:581-605`,
-  `DependencyProducer.java:184-219`). Repro `/tmp/opencode/oracle-aspect-exec/ws`
-  (`build --aspects=//:defs.bzl%a //:b`, an aspect printing its
-  `cfg = "exec"` tool's path): genuine `bazel-out/k8-opt-exec/bin/tool`,
-  native `bazel-out/k8-fastbuild/bin/tool`. Fixing it changes the keys of
-  every aspect action with such a tool once; ~/code plans no aspect-owned
-  action today (every A/B dump), so nothing there depends on it. The rule's
-  attributes an aspect reads through `ctx.rule.attr` keep their own
-  configuration (planned with the base rule's edges).
 - **`ctx.executable` of an aspect is always empty (parity gap, not fixed).**
   The aspect context's `executable` is an empty struct
   (`analysis_ctx::aspect_properties`, whose comment assumes an aspect's own

@@ -1,0 +1,25 @@
+load(":defs.bzl", "lib", "reader", "string_flag", "tool", "use")
+
+string_flag(
+    name = "flag",
+    build_setting_default = "default",
+)
+
+tool(name = "tool")
+
+reader(name = "reader")
+
+lib(name = "a")
+
+lib(
+    name = "b",
+    deps = [":a"],
+)
+
+lib(name = "x")
+
+use(
+    name = "u",
+    tools = [":x"],
+    deps = [":b"],
+)

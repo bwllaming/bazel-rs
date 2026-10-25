@@ -707,10 +707,21 @@ fn aspect_actions_stage_their_tools_runfiles() {
     ws.file(&format!("{package}/defs.bzl"), ASPECT_DEFS, 0o644);
     ws.file(&format!("{package}/BUILD.bazel"), ASPECT_BUILD, 0o644);
     ws.file(&format!("{package}/d.txt"), "aspect-data\n", 0o644);
+    // The aspect's `cfg = "exec"` tools are configured by the exec
+    // transition for the aspect's execution platform (docs/ASPECTS.md
+    // "Aspect attribute configurations"): the default host platform, which
+    // the built-in module profile provides (genuine Bazel 9.3.0 builds the
+    // same outputs, pa1fu-b6-capture.py).
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let output = ws
         .command(
             &[
                 "build",
+                "--experimental-builtin-modules",
+                &registry,
                 &format!("--aspects=//{package}:defs.bzl%use_tools"),
                 "--output_groups=tool_out",
                 &format!("//{package}:b"),

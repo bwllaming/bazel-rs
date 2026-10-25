@@ -3173,7 +3173,7 @@ fn computed_default_function(value: Value<'_>) -> Option<Value<'_>> {
 }
 
 /// The retained Starlark `transition()` of an attribute descriptor.
-fn attribute_transition(value: Value<'_>) -> Option<Value<'_>> {
+pub(crate) fn attribute_transition(value: Value<'_>) -> Option<Value<'_>> {
     ComputedDescriptor::from_value(value)
         .map(|value| value.transition.to_value())
         .filter(|transition| !transition.is_none())

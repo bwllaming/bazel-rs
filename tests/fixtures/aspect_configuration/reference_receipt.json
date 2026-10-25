@@ -1,0 +1,162 @@
+{
+ "schema": "parity-aspects-reference-receipt/v1",
+ "fixture": "aspect_configuration",
+ "purpose": "Aspect attribute configurations (AspectFunction.java:811-838, DependencyResolutionHelpers.java:195-253, DependencyProducer.java:184-219): every label attribute of an aspect is configured per application by its own cfg - the base target's configuration for cfg='target', the exec transition for the ASPECT's execution platform for cfg='exec'/config.exec() (k8-opt-exec), a Starlark transition applied to the base configuration (k8-fastbuild-ST-..., also on top of an exec-configured base: k8-opt-exec-ST-...); a Starlark-transitioned label attribute is a list in ctx.attr; config.exec('nope') of an undeclared group fails at the base target; the aspect context's configuration surface (ctx.bin_dir, ctx.var) is the base target's configuration (k8-opt-exec/opt for an exec-configured base).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of tests/fixtures/aspect_configuration/workspace per case"
+ },
+ "native": {
+  "binary": "bazel-rs",
+  "sha256": "14ffdeb8e925e2b69aaaaac6fef02a4bdb8919eed5bfd2246ec9450d354ccfa2",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pasp-capture.py, pasp-receipt.py (not committed)",
+  "sha256": {
+   "pasp-capture.py": "23d926fc875a0b2c1560c507086cce39d3195f4d5acd42581b6ad6cdc438a93e",
+   "pasp-receipt.py": "f24a34892524895bbf2c5c33217d0a8d11111e97a010b86d1399fe7e4c34108b"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "92a2694d58d76f0284d965fd7781d61a99d11d2c7a32747b24d4d63e109cfb5c",
+  "MODULE.bazel": "c806a0d0ba4cfa46700bd37ec3d5472dc0a897ee680d7805047ddf929f59ccf9",
+  "defs.bzl": "8f4a4d800f87eefbf71f77d09d2231c58a0b67bc53367a5f8fa9d31524f56198"
+ },
+ "normalization": "<WS> = the case's workspace copy. prints: the print() lines carrying the case's marker, genuine's `DEBUG: <file>:<line>:<col>: ` prefix removed, sorted. outputs: every file below bazel-out whose name ends with one of the case's suffixes, by path below bazel-out (genuine: the bazel-out convenience symlink; native: the published action outputs), with its contents. errors: genuine's ERROR lines; native's stderr without the memory-limit notice.",
+ "comparison": "MATCH = equal exit code, prints and outputs, and for a failing case genuine's first error message (location removed) appears in a native error line.",
+ "counts": {
+  "MATCH": 4,
+  "DECLARED_DIVERGENCE": 0,
+  "DIFF": 0
+ },
+ "scratch_removed": true,
+ "cases": {
+  "top_level": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%cfg_aspect",
+    "--output_groups=cfg_out",
+    "//:b"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=a\n",
+     "k8-fastbuild/bin/b.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=b\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=a\n",
+     "k8-fastbuild/bin/b.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=b\n"
+    }
+   }
+  },
+  "attribute_aspects": {
+   "argv": [
+    "build",
+    "//:u"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG x bin=bazel-out/k8-opt-exec/bin mode=opt exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-opt-exec/bin/tool.sh transitioned=via-aspect:bazel-out/k8-opt-exec-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=a\n",
+     "k8-fastbuild/bin/b.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=b\n",
+     "k8-opt-exec/bin/x.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=x\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG x bin=bazel-out/k8-opt-exec/bin mode=opt exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-opt-exec/bin/tool.sh transitioned=via-aspect:bazel-out/k8-opt-exec-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=a\n",
+     "k8-fastbuild/bin/b.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=b\n",
+     "k8-opt-exec/bin/x.cfg": "tool=bazel-out/k8-opt-exec/bin/tool.sh base=x\n"
+    }
+   }
+  },
+  "nobuild": {
+   "argv": [
+    "build",
+    "--nobuild",
+    "--aspects=//:defs.bzl%cfg_aspect",
+    "--output_groups=cfg_out",
+    "//:b"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "CFG a bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt",
+     "CFG b bin=bazel-out/k8-fastbuild/bin mode=fastbuild exec=bazel-out/k8-opt-exec/bin/tool.sh default_exec=bazel-out/k8-opt-exec/bin/tool.sh target=bazel-out/k8-fastbuild/bin/tool.sh transitioned=via-aspect:bazel-out/k8-fastbuild-ST-d828efcc8d19/bin/reader.txt"
+    ],
+    "errors": [],
+    "outputs": {}
+   }
+  },
+  "missing_exec_group": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%bad_group_aspect",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:12:4: Attr '$tool' declares a transition for non-existent exec group 'nope'",
+     "ERROR: Analysis of aspects '[//:defs.bzl%bad_group_aspect] with parameters {} on //:a' failed; build aborted: Attr '$tool' declares a transition for non-existent exec group 'nope'",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: <WS>/BUILD.bazel:12:4: Attr '$tool' declares a transition for non-existent exec group 'nope'"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "Attr '$tool' declares a transition for non-existent exec group 'nope'"
+  }
+ }
+}

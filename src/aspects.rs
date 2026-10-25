@@ -61,6 +61,22 @@ pub(crate) fn is_parameter_attribute(name: &str, spec: &crate::custom_rule::Attr
 }
 
 impl AspectDefinition {
+    /// The `transition()` object of the aspect attribute `name`'s Starlark
+    /// transition (`cfg = some_transition`), kept alive by the aspect
+    /// value's owner.
+    pub fn attribute_transition(&self, name: &str) -> Option<OwnedFrozenValue> {
+        let aspect = crate::rule_declarations::Aspect::from_value(self.value.value())?;
+        let index = aspect.transition_keys.iter().position(|key| key == name)?;
+        aspect.transitions.get(index)?;
+        Some(self.value.map(|value| {
+            starlark::values::ValueLike::downcast_ref::<crate::rule_declarations::FrozenAspect>(
+                value,
+            )
+            .map(|aspect| aspect.transitions[index])
+            .unwrap_or(value)
+        }))
+    }
+
     /// The aspect's advertised providers (`provides`): what other aspects'
     /// `required_aspect_providers` are satisfied by
     /// (AspectDefinition.getAdvertisedProviders).

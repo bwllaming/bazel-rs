@@ -517,6 +517,13 @@ mod values {
         pub callbacks: Vec<V>,
         pub requires: Vec<V>,
         pub subrules: Vec<V>,
+        /// The `transition()` objects of the aspect's Starlark-transitioned
+        /// attributes, parallel to `transition_keys` (an aspect attribute's
+        /// transition applies per application, crate::engine).
+        pub transitions: Vec<V>,
+        #[trace(unsafe_ignore)]
+        #[freeze(identity)]
+        pub transition_keys: Vec<String>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub declaration: AspectDeclaration,
@@ -576,8 +583,8 @@ mod values {
     }
 }
 pub(crate) use values::{
-    Aspect, AspectGen, ExecTransition, NoOpTransition, OutputGroupInfoConstructor, SelectorList,
-    SelectorListGen, TestingProvider, Transition, TransitionGen,
+    Aspect, AspectGen, ExecTransition, FrozenAspect, NoOpTransition, OutputGroupInfoConstructor,
+    SelectorList, SelectorListGen, TestingProvider, Transition, TransitionGen,
 };
 
 /// Owned `aspect()` metadata (StarlarkRuleClassFunctions.java:1323-1520).
@@ -1612,6 +1619,21 @@ fn construct_aspect<'v>(
         })?;
     let definition_label = context.label.clone();
     let mut attrs = crate::custom_rule::attribute_dict(args.attrs)?;
+    // The attributes' Starlark transitions, applied per application
+    // (DependencyProducer over the aspect attribute's transition factory).
+    let mut transitions = Vec::new();
+    let mut transition_keys = Vec::new();
+    if let Some(dict) = DictRef::from_value(args.attrs) {
+        for (name, spec) in dict.iter() {
+            if let (Some(name), Some(transition)) = (
+                name.unpack_str(),
+                crate::custom_rule::attribute_transition(spec),
+            ) {
+                transition_keys.push(name.to_owned());
+                transitions.push(transition);
+            }
+        }
+    }
     // Subrules need the ALLOWLIST_RULE_EXTENSION_API restriction only when
     // --experimental_rule_extension_api is off (StarlarkRuleClassFunctions.java:1349-1353);
     // it defaults to true in 9.3 (FlagConstants.java:24), so any .bzl may pass them.
@@ -1688,6 +1710,8 @@ fn construct_aspect<'v>(
         callbacks,
         requires: required,
         subrules,
+        transitions,
+        transition_keys,
         declaration: AspectDeclaration {
             attr_aspects,
             toolchains_aspects,
