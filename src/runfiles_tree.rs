@@ -93,7 +93,9 @@ pub fn is_enable_runfiles(arg: &str) -> bool {
 }
 
 /// The repository mapping (apparent name -> canonical name) of a repository.
-pub type MappingLookup<'a> = &'a dyn Fn(&str) -> Result<BTreeMap<String, String>, String>;
+/// The mapping is borrowed: a large repository set (one per npm package)
+/// would otherwise be deep-copied once per runfiles tree.
+pub type MappingLookup<'a, 'm> = &'a dyn Fn(&str) -> Result<&'m BTreeMap<String, String>, String>;
 
 /// The repository name a runfiles artifact's owner belongs to (`""` is the
 /// main repository; Artifact.getOwner().getRepository().getName()).
@@ -132,10 +134,10 @@ fn same_prefix(first: &str, second: &str) -> bool {
 /// agree up to their last `+` segment (the repositories of one module
 /// extension, whose mappings Bazel shares by reference) become one
 /// `prefix+*` source.
-pub fn repo_mapping_manifest(
+pub fn repo_mapping_manifest<'m>(
     runfiles: &Runfiles,
-    transitive_repositories: &BTreeSet<String>,
-    mapping: MappingLookup<'_>,
+    transitive_repositories: &'m BTreeSet<String>,
+    mapping: MappingLookup<'_, 'm>,
     compact: bool,
 ) -> Result<Vec<u8>, String> {
     let mut in_runfiles: BTreeSet<String> = BTreeSet::new();
@@ -154,16 +156,15 @@ pub fn repo_mapping_manifest(
     // RepositoryName.getName of the mapping targets: a root symlink below
     // `_main` names no repository (the main repository's name is "").
     let relevant = |canonical: &str| in_runfiles.contains(canonical);
-    let mut sorted: Vec<(String, BTreeMap<String, String>)> = Vec::new();
+    let mut sorted: Vec<(&str, &BTreeMap<String, String>)> =
+        Vec::with_capacity(transitive_repositories.len());
     for repository in transitive_repositories {
-        sorted.push((repository.clone(), mapping(repository)?));
+        sorted.push((repository.as_str(), mapping(repository)?));
     }
-    let entries = |mapping: &BTreeMap<String, String>| -> Vec<(String, String)> {
+    let entries = |mapping: &'m BTreeMap<String, String>| {
         mapping
             .iter()
-            .filter(|(apparent, canonical)| !apparent.is_empty() && relevant(canonical))
-            .map(|(apparent, canonical)| (apparent.clone(), canonical.clone()))
-            .collect()
+            .filter(move |(apparent, canonical)| !apparent.is_empty() && relevant(canonical))
     };
     let mut out = Vec::new();
     let mut write = |source: &str, apparent: &str, canonical: &str| {
@@ -176,15 +177,18 @@ pub fn repo_mapping_manifest(
         let (first, first_mapping) = &sorted[index];
         let mut group = 1;
         if compact {
+            // The cheap name test first; equal mappings are often the
+            // same map (one repository asked twice) or long.
             while index + group < sorted.len()
-                && sorted[index + group].1 == *first_mapping
-                && same_prefix(first, &sorted[index + group].0)
+                && same_prefix(first, sorted[index + group].0)
+                && (std::ptr::eq(sorted[index + group].1, *first_mapping)
+                    || sorted[index + group].1 == *first_mapping)
             {
                 group += 1;
             }
         }
         let source = if group == 1 {
-            first.clone()
+            (*first).to_owned()
         } else {
             format!(
                 "{}*",
@@ -192,7 +196,7 @@ pub fn repo_mapping_manifest(
             )
         };
         for (apparent, canonical) in entries(first_mapping) {
-            write(&source, &apparent, &canonical);
+            write(&source, apparent, canonical);
         }
         index += group;
     }
@@ -250,7 +254,7 @@ mod tests {
                 ]),
             ),
         ]);
-        let lookup = |repository: &str| Ok(mappings[repository].clone());
+        let lookup = |repository: &str| Ok(&mappings[repository]);
         let repositories: BTreeSet<String> = ["", "ext+", "m+e+a", "m+e+b"]
             .map(str::to_owned)
             .into_iter()

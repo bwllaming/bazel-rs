@@ -14117,7 +14117,7 @@ impl Engine {
         let content = crate::runfiles_tree::repo_mapping_manifest(
             runfiles,
             transitive,
-            &|repository: &str| repositories.mapping(repository).cloned(),
+            &|repository: &str| repositories.mapping(repository),
             options.compact_repo_mapping,
         )?;
         let id = format!("{action_owner}#repo_mapping");
@@ -14456,7 +14456,7 @@ impl Engine {
         let content = crate::runfiles_tree::repo_mapping_manifest(
             &runfiles,
             transitive,
-            &|repository: &str| repositories.mapping(repository).cloned(),
+            &|repository: &str| repositories.mapping(repository),
             self.runfiles_options.compact_repo_mapping,
         )?;
         match registered.action.write.as_mut() {
