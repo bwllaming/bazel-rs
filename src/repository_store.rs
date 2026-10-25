@@ -146,6 +146,20 @@ fn recorded_version(recorded: &[u8]) -> Option<u64> {
         .map(|versioned| versioned.version)
 }
 
+/// The workspace recorded probes name (`workspace`, a string: the
+/// publication depends on where that workspace is, docs/WORKTREES.md), if
+/// any.
+fn recorded_workspace(recorded: &[u8]) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Located {
+        #[serde(default)]
+        workspace: Option<String>,
+    }
+    serde_json::from_slice::<Located>(recorded)
+        .ok()
+        .and_then(|located| located.workspace)
+}
+
 /// Whether an execution that recorded `new` probes and kept a publication's
 /// identity republishes it over the persisted manifest's `existing` probes
 /// (review i20): to add missing probes (a manifest older than the field),
@@ -754,12 +768,85 @@ fn refresh_manifest(
 /// publication (caller decides: sentinel under the guard, execute else).
 pub fn try_reuse<V>(cache: &Path, spec_key: &str, validate: V) -> Result<Option<PathBuf>, String>
 where
-    V: FnOnce(&Path, &[u8]) -> Result<bool, String>,
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
+{
+    try_reuse_in(cache, spec_key, None, validate)
+}
+
+/// The name of the specification pointer of `spec_key` for the publication
+/// of `workspace` (its canonical root as Latin-1 text, the `workspace` of
+/// recorded probes, crate::repository_warm), when that publication depends
+/// on where the workspace is (docs/WORKTREES.md): every worktree sharing a
+/// cache keeps its own, so switching between them neither executes the
+/// rule again nor changes a pointer another worktree's analysis snapshot
+/// read. The pointer of the specification itself names only publications
+/// that depend on no workspace.
+pub fn workspace_pointer(spec_key: &str, workspace: &str) -> String {
+    let digest = Sha256::digest(workspace.as_bytes());
+    let hash: String = digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{spec_key}.ws-{hash}")
+}
+
+/// [`try_reuse`] in `workspace` (see [`workspace_pointer`]; None: no
+/// workspace pointer is looked at): the specification's own pointer first,
+/// then, when it names nothing reusable, the workspace's pointer. Only the
+/// pointer followed is read; the specification pointer's absence is
+/// recorded for the analysis snapshot when the workspace's pointer is then
+/// followed (a later shared publication must be seen).
+pub fn try_reuse_in<V>(
+    cache: &Path,
+    spec_key: &str,
+    workspace: Option<&str>,
+    validate: V,
+) -> Result<Option<PathBuf>, String>
+where
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
 {
     let direct = cache.join("direct");
-    let pointer = direct.join("specs").join(spec_key);
-    let Some(identity) = read_pointer(&pointer)? else {
-        return Ok(None);
+    let shared = direct.join("specs").join(spec_key);
+    let found = reuse_through(&direct, &shared, spec_key, &validate)?;
+    match (found, workspace) {
+        (Reuse::Found(root), _) => Ok(Some(root)),
+        (_, None) => Ok(None),
+        (reuse, Some(workspace)) => {
+            if reuse == Reuse::NoPointer {
+                let _ = crate::observed_fs::symlink_metadata(&shared);
+            }
+            let own = direct
+                .join("specs")
+                .join(workspace_pointer(spec_key, workspace));
+            Ok(match reuse_through(&direct, &own, spec_key, &validate)? {
+                Reuse::Found(root) => Some(root),
+                Reuse::NoPointer | Reuse::Invalid => None,
+            })
+        }
+    }
+}
+
+/// What following one specification pointer found ([`reuse_through`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Reuse {
+    /// The publication's root: reusable.
+    Found(PathBuf),
+    /// No pointer at that path.
+    NoPointer,
+    /// A pointer whose publication is not reusable here.
+    Invalid,
+}
+
+/// Follow the specification pointer at `pointer` (of `spec_key`) to a
+/// reusable publication ([`try_reuse_in`]).
+fn reuse_through(
+    direct: &Path,
+    pointer: &Path,
+    spec_key: &str,
+    validate: Validate<'_>,
+) -> Result<Reuse, String> {
+    let Some(identity) = read_pointer(pointer)? else {
+        return Ok(Reuse::NoPointer);
     };
     let destination = direct.join("trees").join(&identity);
     let manifest_path = direct.join("manifests").join(format!("{identity}.json"));
@@ -768,15 +855,15 @@ where
         // A missing manifest under a valid pointer may be a republication
         // between its two renames: looked for again (bounded).
         let Some(bytes) = read_published(&manifest_path, true).ok() else {
-            return Ok(None);
+            return Ok(Reuse::Invalid);
         };
         let Some(existing) = parse_manifest(&bytes) else {
-            return Ok(None);
+            return Ok(Reuse::Invalid);
         };
         (bytes, existing)
     };
     if existing.identity != identity || existing.recorded.is_none() {
-        return Ok(None);
+        return Ok(Reuse::Invalid);
     }
     let recorded_ok = {
         let _m = timing::mark(&timing::PHASES.recorded_check);
@@ -787,7 +874,7 @@ where
         .unwrap_or(false)
     };
     if !recorded_ok {
-        return Ok(None);
+        return Ok(Reuse::Invalid);
     }
     let verified = {
         let _m = timing::mark(&timing::PHASES.snapshot_check);
@@ -800,7 +887,7 @@ where
                 if outcome.matched && !outcome.refreshed.is_empty() {
                     // Best-effort refresh (review R3): failure only costs
                     // re-hashing next time, never correctness.
-                    let _ = refresh_manifest(&direct, &identity, &bytes, &outcome.refreshed);
+                    let _ = refresh_manifest(direct, &identity, &bytes, &outcome.refreshed);
                 }
                 outcome.matched
             }
@@ -808,7 +895,7 @@ where
         }
     };
     if !verified {
-        return Ok(None);
+        return Ok(Reuse::Invalid);
     }
     // REPO + INTEGRITY records of the analysis snapshot (after the
     // fingerprint refresh above, so the manifest's key is the final one).
@@ -816,7 +903,7 @@ where
     timing::PHASES
         .reused
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(Some(destination))
+    Ok(Reuse::Found(destination))
 }
 
 /// [`materialize`] with the caller-computed specification pointer identity:
@@ -860,12 +947,38 @@ where
     V: Fn(&Path, &[u8]) -> Result<bool, String>,
     P: FnOnce() -> Result<Vec<u8>, String>,
 {
+    materialize_lazy_in(
+        cache, stage_key, spec_key, None, provenance, validate, execute,
+    )
+}
+
+/// [`materialize_lazy`] in `workspace`: the warm probes also follow the
+/// workspace's own pointer of a workspace-dependent publication
+/// ([`try_reuse_in`], [`workspace_pointer`]).
+#[allow(clippy::too_many_arguments)]
+pub fn materialize_lazy_in<F, V, P>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    workspace: Option<&str>,
+    provenance: P,
+    validate: V,
+    execute: F,
+) -> Result<(PathBuf, Publication), String>
+where
+    F: FnOnce(&Path) -> Result<Executed, String>,
+    V: Fn(&Path, &[u8]) -> Result<bool, String>,
+    P: FnOnce() -> Result<Vec<u8>, String>,
+{
     materialize_inner(
         cache,
         stage_key,
         spec_key,
         provenance,
-        Probe::Warm(&validate),
+        Probe::Warm {
+            validate: &validate,
+            workspace,
+        },
         execute,
     )
 }
@@ -1090,9 +1203,12 @@ type Validate<'a> = &'a dyn Fn(&Path, &[u8]) -> Result<bool, String>;
 
 /// How [`materialize_inner`] treats an existing publication.
 enum Probe<'a> {
-    /// [`materialize_lazy`]: the warm probe's recorded-input check may
-    /// reuse it.
-    Warm(Validate<'a>),
+    /// [`materialize_lazy_in`]: the warm probe's recorded-input check may
+    /// reuse it (also through `workspace`'s own pointer).
+    Warm {
+        validate: Validate<'a>,
+        workspace: Option<&'a str>,
+    },
     /// [`materialize_local`]: never reused; the execution's runtime
     /// identity parts are reported here.
     Local(&'a mut Option<LocalExecution>),
@@ -1125,10 +1241,16 @@ impl ExecutedTaint {
     /// execution taints, as the next invocation would print nothing). Any
     /// other outcome (a probe error, another publication, no window, a
     /// verify shadow, a run already tainted otherwise) taints as before.
+    ///
+    /// `pointer` is the one this publication wrote: the specification's,
+    /// or `workspace`'s own for a workspace-dependent publication
+    /// ([`workspace_pointer`]), which the re-probe follows like the next
+    /// invocation's ([`try_reuse_in`]).
     fn reprobe(
         mut self,
         cache: &Path,
         spec_key: &str,
+        workspace: Option<&str>,
         pointer: &Path,
         destination: &Path,
         validate: Validate<'_>,
@@ -1140,7 +1262,10 @@ impl ExecutedTaint {
             return;
         }
         observed_fs::supersede(pointer);
-        if matches!(try_reuse(cache, spec_key, validate), Ok(Some(found)) if found == destination) {
+        if matches!(
+            try_reuse_in(cache, spec_key, workspace, validate),
+            Ok(Some(found)) if found == destination
+        ) {
             self.detail = None;
         }
     }
@@ -1182,8 +1307,11 @@ where
     // check is the shared `try_reuse` probe (worker-safe); a local rule
     // never reuses.
     let call_start = timing::enabled().then(std::time::Instant::now);
-    if let Probe::Warm(validate) = &probe
-        && let Some(destination) = try_reuse(cache, spec_key, *validate)?
+    if let Probe::Warm {
+        validate,
+        workspace,
+    } = &probe
+        && let Some(destination) = try_reuse_in(cache, spec_key, *workspace, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
@@ -1203,8 +1331,11 @@ where
     // A concurrent publisher may have won while this process waited on
     // the stage lock: re-probe before executing (sequential semantics
     // unchanged; the pre-lock probe stays the fast path).
-    if let Probe::Warm(validate) = &probe
-        && let Some(destination) = try_reuse(cache, spec_key, *validate)?
+    if let Probe::Warm {
+        validate,
+        workspace,
+    } = &probe
+        && let Some(destination) = try_reuse_in(cache, spec_key, *workspace, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
@@ -1223,7 +1354,7 @@ where
     // run again after the publication below, reuses exactly what was
     // published ([`ExecutedTaint::reprobe`]); every early return taints.
     let mut executed_taint = match &probe {
-        Probe::Warm(_) => Some(ExecutedTaint {
+        Probe::Warm { .. } => Some(ExecutedTaint {
             detail: Some(format!(
                 "{stage_key} ({:.1} ms)",
                 started.elapsed().as_secs_f64() * 1000.0
@@ -1232,6 +1363,12 @@ where
         Probe::Local(_) => None,
     };
     let executed = executed?;
+    // A publication that depends on where the workspace is gets the
+    // workspace's own pointer; every other one the specification's.
+    let pointer = match recorded_workspace(&executed.recorded) {
+        Some(workspace) => specs.join(workspace_pointer(spec_key, &workspace)),
+        None => specs.join(spec_key),
+    };
     let (files, encoded_snapshot) = stage_content(stage.path())?;
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
@@ -1349,15 +1486,23 @@ where
     // re-execution, never a wrong reuse.
     {
         let _m = timing::mark(&timing::PHASES.publish);
-        publish_pointer(&specs, &specs.join(spec_key), &identity)?;
+        publish_pointer(&specs, &pointer, &identity)?;
     }
     // Released first: the re-probe's manifest refresh coordinates on it.
     drop(lock);
-    if let (Probe::Warm(validate), Some(taint)) = (&probe, executed_taint.take()) {
+    if let (
+        Probe::Warm {
+            validate,
+            workspace,
+        },
+        Some(taint),
+    ) = (&probe, executed_taint.take())
+    {
         taint.reprobe(
             cache,
             spec_key,
-            &specs.join(spec_key),
+            *workspace,
+            &pointer,
             &destination,
             *validate,
         );
@@ -3061,6 +3206,106 @@ mod tests {
                 })
             },
         )
+    }
+
+    /// docs/WORKTREES.md: a publication whose recorded probes name a
+    /// workspace — it depends on where that workspace is — gets that
+    /// workspace's own pointer, never the specification's: each workspace
+    /// sharing the store reuses its own, switching between them executes
+    /// nothing, and no other workspace (nor a caller without one) follows
+    /// it. A publication of no workspace keeps the specification's
+    /// pointer, which every workspace follows first.
+    #[test]
+    fn workspace_dependent_publications_get_a_pointer_per_workspace() {
+        let cache = temp();
+        let key = spec_identity(b"spec");
+        // Like crate::repository_warm::unchanged: probes naming a workspace
+        // validate there only.
+        let validate = |workspace: &'static str| {
+            move |_: &Path, recorded: &[u8]| -> Result<bool, String> {
+                Ok(recorded_workspace(recorded).is_none_or(|named| named == workspace))
+            }
+        };
+        let run = |workspace: &'static str, recorded: Option<&'static str>| {
+            move |stage: &Path| -> Result<Executed, String> {
+                fs::write(stage.join("value.txt"), workspace).map_err(|e| e.to_string())?;
+                Ok(Executed {
+                    inputs: workspace.as_bytes().to_vec(),
+                    recorded: match recorded {
+                        Some(named) => format!(r#"{{"version":3,"workspace":"{named}"}}"#),
+                        None => r#"{"version":2}"#.to_owned(),
+                    }
+                    .into_bytes(),
+                })
+            }
+        };
+        let materialize_in = |workspace: &'static str, dependent: bool| {
+            materialize_lazy_in(
+                cache.path(),
+                "test-key",
+                &key,
+                Some(workspace),
+                || Ok(b"provenance".to_vec()),
+                validate(workspace),
+                run(workspace, dependent.then_some(workspace)),
+            )
+            .unwrap()
+        };
+        let (a, first) = materialize_in("/ws/a", true);
+        let (b, second) = materialize_in("/ws/b", true);
+        assert_eq!(
+            (first, second),
+            (Publication::Executed, Publication::Executed)
+        );
+        assert_ne!(a, b);
+        for _ in 0..2 {
+            assert_eq!(
+                materialize_in("/ws/a", true),
+                (a.clone(), Publication::Reused)
+            );
+            assert_eq!(
+                materialize_in("/ws/b", true),
+                (b.clone(), Publication::Reused)
+            );
+        }
+        let specs = cache.path().join("direct/specs");
+        assert!(!specs.join(&key).exists());
+        for workspace in ["/ws/a", "/ws/b"] {
+            let pointer = specs.join(workspace_pointer(&key, workspace));
+            assert!(pointer.is_file(), "{}", pointer.display());
+        }
+        assert_ne!(
+            workspace_pointer(&key, "/ws/a"),
+            workspace_pointer(&key, "/ws/b")
+        );
+        assert_eq!(
+            try_reuse(cache.path(), &key, |_, _| Ok(true)).unwrap(),
+            None
+        );
+        assert_eq!(
+            try_reuse_in(cache.path(), &key, Some("/ws/c"), validate("/ws/c")).unwrap(),
+            None
+        );
+        // A publication of no workspace: the specification's pointer, which
+        // every workspace follows first.
+        let (shared, third) = materialize_in("/ws/c", false);
+        assert_eq!(third, Publication::Executed);
+        assert!(specs.join(&key).is_file());
+        for workspace in ["/ws/a", "/ws/c", "/ws/d"] {
+            assert_eq!(
+                try_reuse_in(cache.path(), &key, Some(workspace), validate(workspace)).unwrap(),
+                Some(shared.clone()),
+                "{workspace}"
+            );
+        }
+        // ... unless it is not reusable there: then the workspace's own.
+        let refuse_shared = |_: &Path, recorded: &[u8]| -> Result<bool, String> {
+            Ok(recorded_workspace(recorded).as_deref() == Some("/ws/b"))
+        };
+        assert_eq!(
+            try_reuse_in(cache.path(), &key, Some("/ws/b"), refuse_shared).unwrap(),
+            Some(b.clone())
+        );
     }
 
     /// rules_python's python_repository after extracting the interpreter:

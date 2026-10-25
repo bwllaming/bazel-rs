@@ -7,14 +7,21 @@
 //! of one repository build the same and different commits at the same time,
 //! test results are cached per worktree (switching reruns nothing),
 //! concurrent `run`s of one test keep their execution roots, analysis
-//! snapshots are per worktree, and the hidden lockfile is seeded from the
-//! main checkout.
+//! snapshots are per worktree, the hidden lockfile is seeded from the main
+//! checkout, and repositories whose content depends on a worktree's files
+//! or path are never reused by another worktree — while paths into the
+//! shared cache inside the main checkout are no such dependence.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+
+const BUILTIN_REGISTRY: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/builtin_modules/registry"
+);
 
 /// A scratch git repository: the main checkout `<base>/main` and linked
 /// worktrees beside it.
@@ -605,6 +612,170 @@ fn the_hidden_lockfile_is_seeded_from_the_main_checkout() {
     assert_eq!(fs::read(&own).unwrap(), fs::read(&legacy).unwrap());
 }
 
+const PROBES: &str = r#"
+def _impl(ctx):
+    mode = ctx.attr.mode
+    if mode == "workspace_root":
+        ctx.file("value.txt", str(ctx.workspace_root) + "\n")
+    elif mode == "symlink":
+        ctx.symlink(ctx.path(Label("//:same.txt")), "value.txt")
+    elif mode == "str_path":
+        ctx.file("value.txt", str(ctx.path(Label("//:same.txt"))) + "\n")
+    elif mode == "watch":
+        ctx.file("value.txt", ctx.read(Label("//:seed.txt")))
+    print("PROBE_EXECUTED " + mode)
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+
+probe = repository_rule(_impl, attrs = {"mode": attr.string()})
+"#;
+
+const PROBE_MODULE: &str = r#"module(name = "main")
+bazel_dep(name = "dep", version = "1.0")
+local_path_override(module_name = "dep", path = "dep")
+bazel_dep(name = "reg", version = "1.0")
+new_local_repository = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "new_local_repository")
+new_local_repository(name = "loc", path = "loc", build_file_content = "exports_files(['value.txt'])")
+probe = use_repo_rule("//:probe.bzl", "probe")
+probe(name = "wsroot", mode = "workspace_root")
+probe(name = "wslink", mode = "symlink")
+probe(name = "wsfile", mode = "str_path")
+probe(name = "watched", mode = "watch")
+"#;
+
+const PROBE_SOURCES: &str = r#"["@dep//:value.txt", "@reg//:value.txt", "@loc//:value.txt", "@wsroot//:value.txt", "@wslink//:value.txt", "@wsfile//:value.txt", "@watched//:value.txt"]"#;
+
+/// Repositories whose content depends on a worktree — a
+/// `local_path_override` module, a `file://` registry in the worktree, a
+/// `new_local_repository`, a watched workspace file, the workspace's path
+/// (`workspace_root`, a link into the workspace, a written path) — are
+/// never reused by another worktree: each worktree builds its own content,
+/// also after switching back and forth.
+#[test]
+fn override_and_local_repositories_are_never_reused_across_worktrees() {
+    let build = format!(
+        "genrule(name = 'out', srcs = {PROBE_SOURCES}, outs = ['out.txt'], cmd = 'for f in $(SRCS); do cat $$f; done > $@')\n"
+    );
+    let repo = Repo::new(&[
+        ("MODULE.bazel", PROBE_MODULE),
+        ("probe.bzl", PROBES),
+        ("BUILD.bazel", &build),
+        ("same.txt", "same\n"),
+        ("seed.txt", "seed main\n"),
+        (
+            "dep/MODULE.bazel",
+            "module(name = 'dep', version = '1.0')\n",
+        ),
+        ("dep/BUILD.bazel", "exports_files(['value.txt'])\n"),
+        ("dep/value.txt", "dep main\n"),
+        ("loc/value.txt", "loc main\n"),
+        (
+            "registry/bazel_registry.json",
+            r#"{"module_base_path": "."}"#,
+        ),
+        (
+            "registry/modules/reg/metadata.json",
+            r#"{"versions": ["1.0"]}"#,
+        ),
+        (
+            "registry/modules/reg/1.0/MODULE.bazel",
+            "module(name = 'reg', version = '1.0')\n",
+        ),
+        (
+            "registry/modules/reg/1.0/source.json",
+            r#"{"type": "local_path", "path": "src/reg"}"#,
+        ),
+        (
+            "registry/src/reg/MODULE.bazel",
+            "module(name = 'reg', version = '1.0')\n",
+        ),
+        (
+            "registry/src/reg/BUILD.bazel",
+            "exports_files(['value.txt'])\n",
+        ),
+        ("registry/src/reg/value.txt", "reg main\n"),
+    ]);
+    let main = repo.main();
+    let wt = repo.worktree("wt");
+    for (path, content) in [
+        ("seed.txt", "seed wt\n"),
+        ("dep/value.txt", "dep wt\n"),
+        ("loc/value.txt", "loc wt\n"),
+        ("registry/src/reg/value.txt", "reg wt\n"),
+    ] {
+        repo.write(&wt, path, content);
+    }
+    repo.commit(&wt, "worktree content");
+    let expected = |checkout: &Path, name: &str| {
+        let root = checkout.display();
+        format!("dep {name}\nreg {name}\nloc {name}\n{root}\nsame\n{root}/same.txt\nseed {name}\n")
+    };
+    let builtin = format!("--registry=file://{BUILTIN_REGISTRY}");
+    for round in 0..2 {
+        for (checkout, name) in [(&main, "main"), (&wt, "wt")] {
+            let registry = format!("--registry=file://{}/registry", checkout.display());
+            let output = repo.run(
+                checkout,
+                &[
+                    "build",
+                    "--experimental-builtin-modules",
+                    &registry,
+                    &builtin,
+                    "//:out",
+                ],
+            );
+            assert!(output.status.success(), "{}", stderr(&output));
+            assert_eq!(
+                outputs(&output)[0].1,
+                expected(checkout, name),
+                "round {round} in {name}"
+            );
+            // Each worktree's workspace-dependent publication has its own
+            // pointer: after the first round, switching runs none of those
+            // rules again. (`watched` reads a file that differs between the
+            // branches: its one pointer flips, docs/WORKTREES.md hazard 1.)
+            if round > 0 {
+                let executed: Vec<String> = stderr(&output)
+                    .lines()
+                    .filter_map(|line| line.split("PROBE_EXECUTED ").nth(1))
+                    .filter(|mode| *mode != "watch")
+                    .map(str::to_owned)
+                    .collect();
+                assert!(executed.is_empty(), "round {round} in {name}: {executed:?}");
+            }
+        }
+    }
+    // The workspace-dependent publications record their workspace
+    // (version-3 probes), one per worktree, and each worktree's link names
+    // its own file.
+    let manifests = repo.cache().join("repositories/direct/manifests");
+    let mut workspaces = std::collections::BTreeSet::new();
+    let mut links = std::collections::BTreeSet::new();
+    for entry in fs::read_dir(&manifests).unwrap().flatten() {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(entry.path()).unwrap()).unwrap();
+        if let Some(target) = manifest["files"]["value.txt"]["symlink"].as_str() {
+            links.insert(target.to_owned());
+        }
+        // The recorded probes are stored as their bytes.
+        if let Some(bytes) = manifest["recorded"].as_array() {
+            let bytes: Vec<u8> = bytes.iter().map(|b| b.as_u64().unwrap() as u8).collect();
+            let recorded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            if let Some(workspace) = recorded["workspace"].as_str() {
+                assert_eq!(recorded["version"], 3);
+                workspaces.insert(workspace.to_owned());
+            }
+        }
+    }
+    let both = |suffix: &str| {
+        [main.display(), wt.display()]
+            .map(|root| format!("{root}{suffix}"))
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(workspaces, both(""));
+    assert!(links.is_superset(&both("/same.txt")), "{links:?}");
+}
+
 /// `(executed, cache hits)` of a build's action summary line.
 fn action_counts(text: &str) -> (usize, usize) {
     let line = text
@@ -708,6 +879,139 @@ fn worktrees_build_the_same_and_different_commits_concurrently() {
         assert_eq!(outputs(&again)[0].1, contents(value));
     }
     assert_eq!(repo.states().len(), 3, "{:?}", repo.states());
+}
+
+const CACHE_PATHS: &str = r#"
+def _base(ctx):
+    ctx.file("base.txt", "base\n")
+    ctx.file("BUILD.bazel", "exports_files(['base.txt'])\n")
+
+base = repository_rule(_base)
+
+def _impl(ctx):
+    print("REPO_EXECUTED " + ctx.name)
+    # The repository's own directory (in the cache inside the main
+    # checkout), and an absolute link into another repository's tree there.
+    ctx.file("where.txt", "stage=" + str(ctx.path(".")) + "\n")
+    ctx.symlink(ctx.path(Label("@base//:base.txt")), "base.txt")
+    ctx.file("BUILD.bazel", "exports_files(['where.txt', 'base.txt'])\n")
+
+cached = repository_rule(_impl)
+"#;
+
+/// The main checkout's cache lies inside its workspace: a repository whose
+/// files name a path into that cache, or link into it, depends on no
+/// workspace (every worktree sharing the cache sees the same paths), so a
+/// linked worktree reuses it.
+#[test]
+fn paths_into_the_shared_cache_are_no_workspace_dependence() {
+    let repo = Repo::new(&[
+        (
+            "MODULE.bazel",
+            "module(name = 'main')\nbase = use_repo_rule('//:repo.bzl', 'base')\nbase(name = 'base')\ncached = use_repo_rule('//:repo.bzl', 'cached')\ncached(name = 'cached')\n",
+        ),
+        ("repo.bzl", CACHE_PATHS),
+        (
+            "BUILD.bazel",
+            "genrule(name = 'out', srcs = ['@cached//:where.txt', '@cached//:base.txt'], outs = ['out.txt'], cmd = 'cat $(SRCS) > $@')\n",
+        ),
+    ]);
+    let main = repo.main();
+    let wt = repo.worktree("wt");
+    let first = repo.run(&main, &["build", "//:out"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(count(&stderr(&first), "REPO_EXECUTED"), 1);
+    let content = outputs(&first)[0].1.clone();
+    assert!(
+        content.starts_with(&format!("stage={}/", repo.cache().display()))
+            && content.ends_with("\nbase\n"),
+        "{content}"
+    );
+    let second = repo.run(&wt, &["build", "//:out"]);
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert_eq!(
+        count(&stderr(&second), "REPO_EXECUTED"),
+        0,
+        "{}",
+        stderr(&second)
+    );
+    assert_eq!(action_counts(&stderr(&second)), (0, 1));
+    assert_eq!(outputs(&second)[0].1, content);
+    // No publication recorded a workspace, and no workspace pointer exists.
+    let specs = repo.cache().join("repositories/direct/specs");
+    for entry in fs::read_dir(&specs).unwrap().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        assert!(!name.contains(".ws-"), "{name}");
+    }
+}
+
+const LOCATING_RULE: &str = r#"
+def _impl(ctx):
+    print("REPO_EXECUTED " + ctx.name)
+    # Finds a workspace file through workspace_root (as aspect's telemetry
+    # repository does) but writes no path.
+    readme = ctx.path(str(ctx.workspace_root) + "/README.md")
+    ctx.file("value.txt", ctx.read(readme))
+    ctx.file("BUILD.bazel", "exports_files(['value.txt'])\n")
+
+locating = repository_rule(_impl)
+"#;
+
+/// A repository rule that read `workspace_root` depends on the workspace
+/// (docs/WORKTREES.md): each worktree executes it once and keeps its own
+/// publication under its own pointer — switching between the worktrees then
+/// executes nothing, and each one's analysis snapshot keeps hitting.
+#[test]
+fn workspace_dependent_repositories_are_kept_per_worktree_without_thrashing() {
+    let repo = Repo::new(&[
+        (
+            "MODULE.bazel",
+            "module(name = 'main')\nlocating = use_repo_rule('//:repo.bzl', 'locating')\nlocating(name = 'located')\n",
+        ),
+        ("repo.bzl", LOCATING_RULE),
+        ("README.md", "readme\n"),
+        (
+            "BUILD.bazel",
+            "genrule(name = 'out', srcs = ['@located//:value.txt'], outs = ['out.txt'], cmd = 'cat $< > $@')\n",
+        ),
+    ]);
+    let main = repo.main();
+    let wt = repo.worktree("wt");
+    let env = [
+        ("BAZEL_RS_SNAPSHOT", "on"),
+        ("BAZEL_RS_SNAPSHOT_EXPLAIN", "1"),
+    ];
+    let build = |checkout: &Path| {
+        let output = repo.run_with(checkout, &["build", "//:out"], &env);
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(outputs(&output)[0].1, "readme\n");
+        stderr(&output)
+    };
+    for checkout in [&main, &wt] {
+        let first = build(checkout);
+        assert_eq!(count(&first, "REPO_EXECUTED"), 1, "{first}");
+    }
+    // Settle: each worktree saves once its repositories were reused.
+    for checkout in [&main, &wt] {
+        let settled = build(checkout);
+        assert_eq!(count(&settled, "REPO_EXECUTED"), 0, "{settled}");
+        assert!(settled.contains("bazel-rs-snapshot: saved "), "{settled}");
+    }
+    for _ in 0..2 {
+        for checkout in [&main, &wt] {
+            let hit = build(checkout);
+            assert!(hit.contains("bazel-rs-snapshot: hit "), "{hit}");
+            assert_eq!(count(&hit, "REPO_EXECUTED"), 0, "{hit}");
+        }
+    }
+    let specs: Vec<String> = fs::read_dir(repo.cache().join("repositories/direct/specs"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    assert_eq!(specs.len(), 2, "{specs:?}");
+    assert!(specs.iter().all(|name| name.contains(".ws-")), "{specs:?}");
 }
 
 /// The layouts git itself writes: a worktree added with relative paths

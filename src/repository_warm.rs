@@ -58,6 +58,13 @@ struct WatchedProbe {
 /// still revalidated as written, except that a probe into the repository
 /// store is never trusted ([`unchanged`]).
 ///
+/// Version 3 (docs/WORKTREES.md) is version 2 plus `workspace`: the
+/// canonical workspace root of an execution whose result depends on where
+/// the workspace is (crate::repository_ctx::ExecutionInputs::workspace); it
+/// validates only in that workspace, so the worktrees sharing a cache never
+/// reuse each other's publication. Only such probes are written as version
+/// 3; every other probe keeps its version-2 bytes.
+///
 /// Any change to the probe bytes — a field, a path spelling, a state
 /// encoding, what a probe covers — must bump `version`. Binaries sharing a
 /// cache rely on it in both directions: an older binary never trusts a
@@ -76,11 +83,21 @@ struct RecordedInputs {
     files: Vec<FileProbe>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     watched_env: Option<WatchedProbe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<String>,
 }
 
 fn sha256(bytes: &[u8]) -> String {
     use sha2::Digest;
     format!("{:x}", sha2::Sha256::digest(bytes))
+}
+
+/// The canonical `workspace` root as recorded probes spell it (Latin-1
+/// text, crate::repository_ctx::ExecutionInputs::workspace), and as the
+/// repository store names a workspace's own specification pointer
+/// (crate::repository_store::workspace_pointer).
+pub(crate) fn workspace_text(workspace: &Path) -> String {
+    crate::host_os::latin1_text(workspace.as_os_str().as_encoded_bytes())
 }
 
 /// Serialize the repository specification: length-framed provenance, the host
@@ -308,7 +325,7 @@ pub(crate) fn record(
         Ok(crate::lockfile_extensions::FriendlyPath::of_label(&label).to_string())
     };
     let recorded = RecordedInputs {
-        version: 2,
+        version: if inputs.workspace.is_some() { 3 } else { 2 },
         templates: inputs
             .templates
             .iter()
@@ -334,6 +351,7 @@ pub(crate) fn record(
             sha256: watched.sha256.clone(),
             names: watch_names.to_vec(),
         }),
+        workspace: inputs.workspace.clone(),
     };
     serde_json::to_vec(&recorded)
         .map_err(|error| format!("cannot record repository inputs: {error}"))
@@ -352,9 +370,17 @@ pub(crate) fn unchanged(
         .map_err(|error| format!("cannot parse recorded repository inputs: {error}"))?;
     let resolve = match recorded.version {
         1 => resolve_v1,
-        2 => resolve_friendly,
+        2 | 3 => resolve_friendly,
         _ => return Ok(false),
     };
+    // Version 3: the publication of the workspace it names only (as
+    // written: a probe of version 2 or 1 with a workspace is foreign).
+    if recorded.version == 3 || recorded.workspace.is_some() {
+        let current = workspace_text(workspace);
+        if recorded.version != 3 || recorded.workspace.as_deref() != Some(current.as_str()) {
+            return Ok(false);
+        }
+    }
     if recorded.version == 1 {
         // Version 1 spelled paths into other repositories as host paths into
         // their content-addressed store trees, which are never rewritten: such

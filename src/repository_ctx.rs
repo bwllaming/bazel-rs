@@ -66,6 +66,15 @@ pub struct ExecutionInputs {
     /// fetch-once `external/<name>` directories.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub host_facilities: BTreeSet<&'static str>,
+    /// The canonical workspace root, when a non-local repository rule's
+    /// result depends on where the workspace is (crate::worktree,
+    /// docs/WORKTREES.md): it read `workspace_root`, wrote a file naming the
+    /// workspace's path or left a link into the workspace. Part of the
+    /// identity and recorded as a probe (crate::repository_warm), so another
+    /// worktree sharing the cache executes the rule itself. Omitted
+    /// otherwise, so pre-existing repository identities are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
     /// Module extensions only: the RepoRecordedInput.WithValue observations
     /// in recording order (StarlarkBaseExternalContext.recordInputWithValue,
     /// java:255-280), for MODULE.bazel.lock. Never part of a provenance.
@@ -191,6 +200,17 @@ mod values {
         pub live: bool,
         /// Set when the execution reads `repository_ctx.os.environ`.
         pub environ_read: Arc<std::sync::atomic::AtomicBool>,
+        /// Set when the execution depends on the workspace's path
+        /// (crate::worktree, docs/WORKTREES.md): it read `workspace_root`
+        /// or wrote a file naming the workspace; with links into the
+        /// workspace (`replant_symlinks`) a non-local rule's publication
+        /// records the workspace ([`ExecutionInputs::workspace`]).
+        pub workspace_observed: Arc<std::sync::atomic::AtomicBool>,
+        /// A repository rule's mentions of the workspace's path — paths
+        /// into the cache excepted, which every worktree sharing it sees
+        /// alike (a main checkout's `bazel-rs-out`); None for a module
+        /// extension, whose results the lockfile keeps instead.
+        pub mentions: Option<crate::worktree::WorkspaceMentions>,
     }
 
     #[derive(
@@ -211,6 +231,9 @@ mod values {
         pub original_name: String,
         /// Absolute main workspace root as Latin-1 text (`workspace_root`).
         pub workspace_root: String,
+        /// The execution's [`WorkspaceObservation`], set by a
+        /// `workspace_root` read (None in unit tests).
+        pub observed: V,
     }
 
     impl<V> fmt::Display for RepositoryCtxGen<V> {
@@ -241,22 +264,58 @@ mod values {
                 "os" => Some(self.os.to_value()),
                 "name" => Some(heap.alloc(self.name.as_str())),
                 "original_name" => Some(heap.alloc(self.original_name.as_str())),
-                "workspace_root" => Some(
-                    heap.alloc(RepositoryPath {
-                        bytes: crate::repository_rule::latin1_bytes(&self.workspace_root)
-                            .unwrap_or_default(),
-                    }),
-                ),
+                "workspace_root" => {
+                    if let Some(observed) = self
+                        .observed
+                        .to_value()
+                        .downcast_ref::<WorkspaceObservation>()
+                    {
+                        observed
+                            .flag
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Some(
+                        heap.alloc(RepositoryPath {
+                            bytes: crate::repository_rule::latin1_bytes(&self.workspace_root)
+                                .unwrap_or_default(),
+                        }),
+                    )
+                }
                 _ => None,
             }
         }
 
+        /// `hasattr` reads nothing (no workspace observation).
+        fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {
+            REPOSITORY_ATTRIBUTES.contains(&attribute)
+        }
+
         fn dir_attr(&self) -> Vec<String> {
-            ["attr", "name", "original_name", "os", "workspace_root"]
-                .map(str::to_owned)
-                .to_vec()
+            REPOSITORY_ATTRIBUTES.map(str::to_owned).to_vec()
         }
     }
+
+    const REPOSITORY_ATTRIBUTES: [&str; 5] =
+        ["attr", "name", "original_name", "os", "workspace_root"];
+
+    /// One repository rule execution's workspace-path flag
+    /// ([`Context::workspace_observed`]), reachable from its repository_ctx
+    /// only; never part of an identity.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
+    pub(super) struct WorkspaceObservation {
+        #[allocative(skip)]
+        pub flag: Arc<std::sync::atomic::AtomicBool>,
+    }
+    starlark::starlark_simple_value!(WorkspaceObservation);
+
+    impl fmt::Display for WorkspaceObservation {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("<workspace observation>")
+        }
+    }
+
+    #[starlark_value(type = "workspace_observation")]
+    impl<'v> StarlarkValue<'v> for WorkspaceObservation {}
 
     /// Bazel `path` (StarlarkPath.java): an absolute, lexically normalized
     /// host path. Immutable, hashable, equal by path. str() is the path,
@@ -475,6 +534,7 @@ mod values {
 pub(crate) use values::{Context, PendingDownload};
 use values::{
     ExecResult, RepoDefinitionGen, RepoMetadata, RepoMetadataGen, RepositoryCtxGen, RepositoryPath,
+    WorkspaceObservation,
 };
 
 /// The repository-rule callback's own context (not a module extension's).
@@ -1444,6 +1504,8 @@ impl Context {
             output: RefCell::default(),
             live: true,
             environ_read: Arc::default(),
+            workspace_observed: Arc::default(),
+            mentions: None,
         })
     }
 
@@ -1665,6 +1727,12 @@ impl Context {
             "Could not create {}: is the repository directory",
             display(path)
         );
+        if let Some(mentions) = &self.mentions
+            && mentions.named_in(bytes)
+        {
+            self.workspace_observed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let path = self.output_parents(&relative)?;
         self.state.borrow_mut().created = true;
         // `p.getPath().delete()` removes a file, a symlink (never its target)
@@ -4005,12 +4073,20 @@ fn path_methods(builder: &mut MethodsBuilder) {
 /// content-addressed directory whose name depends on these very links, so an
 /// absolute link cannot name its final location; links into the stage are
 /// therefore rewritten relative after the callback (same resolved contents).
-fn replant_symlinks(stage: &Path) -> anyhow::Result<()> {
+/// Returns whether a link leads into the workspace `mentions` names
+/// (crate::worktree::WorkspaceMentions: such a tree depends on where the
+/// workspace is; a link into the shared cache does not).
+fn replant_symlinks(
+    stage: &Path,
+    mentions: Option<&crate::worktree::WorkspaceMentions>,
+) -> anyhow::Result<bool> {
     fn visit(
         stage: &Path,
+        mentions: Option<&crate::worktree::WorkspaceMentions>,
         directory: &Path,
         depth: usize,
         count: &mut usize,
+        into_workspace: &mut bool,
     ) -> anyhow::Result<()> {
         // No depth cap: total path length is bounded by the store profile.
         let _ = depth;
@@ -4024,9 +4100,16 @@ fn replant_symlinks(stage: &Path) -> anyhow::Result<()> {
             let path = entry.path();
             let kind = entry.file_type()?;
             if kind.is_dir() {
-                visit(stage, &path, depth + 1, count)?;
+                visit(stage, mentions, &path, depth + 1, count, into_workspace)?;
             } else if kind.is_symlink() {
                 let target = fs::read_link(&path)?;
+                if !*into_workspace
+                    && let Some(mentions) = mentions
+                    && let Some(parent) = path.parent()
+                    && mentions.contains(&parent.join(&target))
+                {
+                    *into_workspace = true;
+                }
                 if let Ok(inside) = target.strip_prefix(stage) {
                     let parent_depth = path
                         .parent()
@@ -4047,7 +4130,9 @@ fn replant_symlinks(stage: &Path) -> anyhow::Result<()> {
         }
         Ok(())
     }
-    visit(stage, stage, 0, &mut 0)
+    let mut into_workspace = false;
+    visit(stage, mentions, stage, 0, &mut 0, &mut into_workspace)?;
+    Ok(into_workspace)
 }
 
 fn is_latin1(text: &str) -> bool {
@@ -4320,6 +4405,12 @@ fn execute_with(
                 repositories.main_root().display()
             )
         })?;
+        // The repository store's paths name no workspace dependence, also
+        // when the cache lies inside the workspace (crate::worktree).
+        let mentions = Some(match repositories.source_cache_path() {
+            Ok(store) => crate::worktree::WorkspaceMentions::except_cache(&workspace, store),
+            Err(_) => crate::worktree::WorkspaceMentions::new(&workspace, []),
+        });
         let context = Context {
             repositories: repositories.clone(),
             kind: Kind::Repository,
@@ -4332,6 +4423,8 @@ fn execute_with(
             output: RefCell::default(),
             live,
             environ_read: Arc::default(),
+            workspace_observed: Arc::default(),
+            mentions,
         };
         let evaluated = Module::with_temp_heap(|module| -> anyhow::Result<()> {
             let heap = module.heap();
@@ -4349,12 +4442,16 @@ fn execute_with(
                 context.environ_read.clone(),
             )?;
             let attr_value = alloc_attrs(heap, attrs, canonical_name)?;
+            let observed = heap.alloc(WorkspaceObservation {
+                flag: context.workspace_observed.clone(),
+            });
             let ctx = heap.alloc(RepositoryCtxGen {
                 attrs: attr_value,
                 os,
                 name: canonical_name.to_owned(),
                 original_name: original_name.to_owned(),
                 workspace_root: latin1_text(context.workspace.as_os_str().as_bytes()),
+                observed,
             });
             for function in functions {
                 heap.access_owned_frozen_value(function);
@@ -4410,12 +4507,23 @@ fn execute_with(
             Ok(())
         });
         evaluated?;
-        replant_symlinks(&context.stage)?;
+        let links_into_workspace = replant_symlinks(&context.stage, context.mentions.as_ref())?;
         let environ_read = context
             .environ_read
             .load(std::sync::atomic::Ordering::Relaxed);
+        // A non-local publication that depends on the workspace's path
+        // records the workspace (docs/WORKTREES.md): another worktree
+        // sharing the cache never reuses it. A local rule never reuses a
+        // publication anyway; its identity stays as it was.
+        let workspace = (!definition.local
+            && (links_into_workspace
+                || context
+                    .workspace_observed
+                    .load(std::sync::atomic::Ordering::Relaxed)))
+        .then(|| latin1_text(context.workspace.as_os_str().as_bytes()));
         let output = context.output.take();
-        let (inputs, watch_names) = context.finish_with_names()?;
+        let (mut inputs, watch_names) = context.finish_with_names()?;
+        inputs.workspace = workspace;
         Ok(ExecutedRepository {
             inputs,
             watch_names,
@@ -4910,6 +5018,7 @@ mod tests {
                     name: "repo".into(),
                     original_name: "original".into(),
                     workspace_root: "/".into(),
+                    observed: Value::new_none(),
                 }),
             );
             module.freeze().unwrap()
@@ -5072,6 +5181,7 @@ mod tests {
                 name: "repo".into(),
                 original_name: "repo".into(),
                 workspace_root: "/".into(),
+                observed: Value::new_none(),
             });
             let method = ctx.get_attr("getenv", module.heap()).unwrap().unwrap();
             let loading = crate::loading::ExtensionContext {

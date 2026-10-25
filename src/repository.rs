@@ -2069,10 +2069,12 @@ impl RepositorySet {
         let spec_key = self.direct_spec_key(prepared, group, entry, attributes)?;
         let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let workspace_text = crate::repository_warm::workspace_text(&workspace);
         let validating = self.clone();
-        crate::repository_store::try_reuse(
+        crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
             &spec_key,
+            Some(&workspace_text),
             move |tree, recorded| {
                 crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
             },
@@ -2182,6 +2184,7 @@ impl RepositorySet {
                 crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
                 let workspace = crate::observed_fs::canonicalize(self.main_root())
                     .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+                let workspace_text = crate::repository_warm::workspace_text(&workspace);
                 let this = Arc::new(self.clone());
                 let validating = Arc::new(self.clone());
                 // A local rule never reuses a publication across invocations:
@@ -2252,10 +2255,11 @@ impl RepositorySet {
                     );
                     return Ok(root);
                 }
-                crate::repository_store::materialize_lazy(
+                crate::repository_store::materialize_lazy_in(
                     self.source_cache_path()?,
                     canonical,
                     &spec_key,
+                    Some(&workspace_text),
                     provenance,
                     move |tree, recorded| {
                         crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
@@ -2631,10 +2635,12 @@ impl RepositorySet {
         )?;
         let workspace = crate::observed_fs::canonicalize(self.main_root())
             .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let workspace_text = crate::repository_warm::workspace_text(&workspace);
         let validating = self.clone();
-        crate::repository_store::try_reuse(
+        crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
             &spec_key,
+            Some(&workspace_text),
             move |tree, recorded| {
                 crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
             },
@@ -2689,6 +2695,7 @@ impl RepositorySet {
                     crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
                     let workspace = crate::observed_fs::canonicalize(self.main_root())
                         .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+                    let workspace_text = crate::repository_warm::workspace_text(&workspace);
                     let this = Arc::new(self.clone());
                     let validating = Arc::new(self.clone());
                     // Local rules never reuse across invocations here either
@@ -2760,10 +2767,11 @@ impl RepositorySet {
                         );
                         return Ok(root);
                     }
-                    crate::repository_store::materialize_lazy(
+                    crate::repository_store::materialize_lazy_in(
                         self.source_cache_path()?,
                         &repository.canonical_name,
                         &spec_key,
+                        Some(&workspace_text),
                         provenance,
                         move |tree, recorded| {
                             crate::repository_warm::unchanged(
