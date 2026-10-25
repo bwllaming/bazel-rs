@@ -1281,7 +1281,9 @@ impl Runner<'_> {
                 error.trim_end()
             )));
         }
-        crate::sandbox::count(strategy);
+        // Test spawns stay out of crate::sandbox::count: the build summary's
+        // "(... sandboxed)" note describes the build's actions, as it did
+        // when the tests ran only after that summary was printed.
         let millis = start.elapsed().as_millis() as u64;
         if let Some(streamer) = streamer.as_mut() {
             streamer.pump(&log_path);

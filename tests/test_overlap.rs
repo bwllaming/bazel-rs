@@ -165,6 +165,12 @@ sh_like_test(
 
 # O6: a test runs only once its target is complete (validation included).
 validated_test(name = "validated_test")
+
+# A sandboxed test (the default strategy).
+sh_like_test(
+    name = "plain_test",
+    script = "#!/bin/bash\necho plain\n",
+)
 "##;
 
 /// The scenarios (name, `test` arguments), in the capture's order.
@@ -490,6 +496,30 @@ fn streamed_output_runs_the_tests_one_at_a_time() {
     assert!(stderr(&output).contains(
         "WARNING: Streamed test output requested. All tests will be run without sharding, one at a time"
     ));
+}
+
+/// The build summary's execution note describes the build's actions only,
+/// as when the tests ran after it was printed: a sandboxed test spawn of a
+/// fully cached build leaves it "not sandboxed".
+#[test]
+fn the_build_summary_note_counts_build_actions_only() {
+    let ws = Workspace::new();
+    let first = ws.test(&["//ov:plain_test"]);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr(&first));
+    let again = ws.test(&["--nocache_test_results", "//ov:plain_test"]);
+    assert_eq!(again.status.code(), Some(0), "{}", stderr(&again));
+    assert!(
+        summary(&again).ends_with("Executed 1 out of 1 test: 1 test passes.\n"),
+        "{}",
+        summary(&again)
+    );
+    assert!(
+        stderr(&again).contains(
+            "bazel-rs: 0 actions executed, 4 cache hits (experimental local execution; not sandboxed)"
+        ),
+        "{}",
+        stderr(&again)
+    );
 }
 
 /// A test runs only once its target is complete: its failing validation
