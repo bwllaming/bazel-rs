@@ -819,10 +819,13 @@ fn kill_remaining_children() {
 /// reparented orphan becomes the child of one live thread of the subreaper).
 fn children() -> Vec<i32> {
     let mut children = Vec::new();
+    // snapshot-unrecorded: the supervisor process's own /proc entry, read
+    // only in the re-executed supervisor (never during planning).
     let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
         return children;
     };
     for task in tasks.flatten() {
+        // snapshot-unrecorded: as above, this process's own task list.
         if let Ok(text) = std::fs::read_to_string(task.path().join("children")) {
             children.extend(
                 text.split_ascii_whitespace()
