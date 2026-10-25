@@ -59,6 +59,10 @@ const ALLOWED_MODULES: &[&str] = &[
     "output_tree",
     // `info` reads no planning input (it never plans).
     "info",
+    // Bootstrap before the recording window: the git layout of the
+    // workspace decides the cache root, which is part of the snapshot key
+    // (docs/WORKTREES.md).
+    "worktree",
 ];
 const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/"];
 

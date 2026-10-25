@@ -72,11 +72,15 @@ safe by construction, or be covered like any other path:
     `builtins` with their `trees` and `manifests`; `direct/locks` and
     `direct/stages`), created, stat'ed or readlink'ed on realpath chains —
     no content is read;
-  * snapshot-store: `snapshots/` — the hit's own file (header, sections and
-    checksums verified), `exe.id` (the binary identity, keyed by the
-    binary's stat), the store directory, the background refresh's
-    temporary file and the event log the hit appends to (L2-W5h: written,
-    never read);
+  * state-directories: `worktrees/` and a workspace's state directory
+    `worktrees/<name>-<hash>` (docs/WORKTREES.md), created or stat'ed — no
+    content is read;
+  * snapshot-store: `worktrees/<name>-<hash>/snapshots/` (`snapshots/` of
+    the flat layout before per-worktree state) — the hit's own file
+    (header, sections and checksums verified), `exe.id` (the binary
+    identity, keyed by the binary's stat), the store directory, the
+    background refresh's temporary file and the event log the hit appends
+    to (L2-W5h: written, never read);
   * digest-table: `digests/` — the execution tail's digest table, whose
     records hold a file's stat key with its digest and are used only when
     the file's current stat still matches (crate::digest_memo);
@@ -631,6 +635,9 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
 TREE = re.compile(r'^/repositories/(?:trees|direct/trees|git/trees|builtins/trees)/[0-9a-f]{64}(?:\.json)?(?:/.*)?$')
 MANIFEST = re.compile(r'^/repositories/(?:direct|git)/manifests/[0-9a-f]{64}\.json$')
 STAGE = re.compile(r'^/repositories/direct/(?:stages/[0-9a-f]{32}(?:/.*)?|locks/stage-[0-9a-f]{32})$')
+# A workspace's state directory (docs/WORKTREES.md) and its snapshot store.
+STATE_DIRECTORY = re.compile(r'^/worktrees(?:/[^/]+-[0-9a-f]{16})?$')
+STATE_SNAPSHOTS = re.compile(r'^/worktrees/[^/]+-[0-9a-f]{16}/snapshots(?:/.*)?$')
 # The repository store's own directories: the stores' areas and the parents of
 # their published trees (realpath chains readlink them; nothing in them is read).
 STORE_DIRECTORIES = {'/repositories', '/repositories/trees', '/repositories/direct',
@@ -670,8 +677,10 @@ def cache_class(rel, p, recorded, pinned, local_roots):
     None when it must be reported (see the module docs, L2-W5g)."""
     if rel == '':
         return 'cache-root'
-    if rel == '/snapshots' or rel.startswith('/snapshots/'):
+    if rel == '/snapshots' or rel.startswith('/snapshots/') or STATE_SNAPSHOTS.match(rel):
         return 'snapshot-store'
+    if STATE_DIRECTORY.match(rel):
+        return 'state-directories'
     if rel == '/digests' or rel.startswith('/digests/'):
         return 'digest-table'
     if rel in STORE_DIRECTORIES:

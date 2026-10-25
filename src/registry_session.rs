@@ -98,6 +98,10 @@ pub struct RegistrySession {
     /// BazelLockFileFunction.java:75-79), read in update mode; any read
     /// failure is the empty lockfile (:96-98). None without a cache path.
     hidden: Option<(PathBuf, Lockfile)>,
+    /// The hidden lockfile was read from a seed (crate::worktree::Seed): it
+    /// is written to its own path at the end even when nothing changed, so
+    /// the next command reads it there.
+    hidden_seeded: bool,
     /// The SingleExtensionValues done in this invocation, in completion order.
     extension_results: Mutex<Vec<crate::lockfile_extensions::ExtensionResult>>,
     /// `--native-lockfile=readonly`: a stateless probe mode that writes no
@@ -207,6 +211,7 @@ impl RegistrySession {
             resolved_extensions: AtomicUsize::new(0),
             spellings: BTreeMap::new(),
             hidden: None,
+            hidden_seeded: false,
             extension_results: Mutex::default(),
             readonly: *target == LockfileTarget::ReadOnly,
         })
@@ -214,12 +219,41 @@ impl RegistrySession {
 
     /// Use `path` as the hidden lockfile (native: under `--cache-dir`, keyed
     /// by the workspace, like Bazel's per-workspace output base).
-    pub fn with_hidden_lockfile(mut self, path: PathBuf) -> Self {
-        let lockfile = if self.mode == LockfileMode::Off {
-            Lockfile::default()
-        } else {
-            lockfile::read(&path, LockfileMode::Update).unwrap_or_default()
-        };
+    pub fn with_hidden_lockfile(self, path: PathBuf) -> Self {
+        self.with_seeded_hidden_lockfile(path, &[])
+    }
+
+    /// [`Self::with_hidden_lockfile`]; while `path` does not exist, the
+    /// first existing seed is read instead (docs/WORKTREES.md): the
+    /// workspace's hidden lockfile of the flat cache layout, then a linked
+    /// worktree's main checkout's. Every entry is validated before it is
+    /// used, like any lockfile entry (`reusable_lock_entry`), and the entries
+    /// of another workspace's lockfile that mention that workspace's path
+    /// are dropped ([`without_mentions`]). A seeded lockfile is written to
+    /// `path` when the command ends.
+    pub fn with_seeded_hidden_lockfile(
+        mut self,
+        path: PathBuf,
+        seeds: &[crate::worktree::Seed],
+    ) -> Self {
+        if self.mode == LockfileMode::Off {
+            self.hidden = Some((path, Lockfile::default()));
+            return self;
+        }
+        if !crate::observed_fs::exists(&path)
+            && let Some(seed) = seeds
+                .iter()
+                .find(|seed| crate::observed_fs::exists(&seed.path))
+        {
+            let mut lockfile = lockfile::read(&seed.path, LockfileMode::Update).unwrap_or_default();
+            if let Some(foreign) = &seed.foreign {
+                lockfile = without_mentions(lockfile, foreign);
+            }
+            self.hidden = Some((path, lockfile));
+            self.hidden_seeded = true;
+            return self;
+        }
+        let lockfile = lockfile::read(&path, LockfileMode::Update).unwrap_or_default();
         self.hidden = Some((path, lockfile));
         self
     }
@@ -607,7 +641,7 @@ impl RegistrySession {
             facts,
             facts_versions,
         };
-        (new != *old).then(|| (path.clone(), new))
+        (self.hidden_seeded || new != *old).then(|| (path.clone(), new))
     }
 
     /// Write the updated lockfiles, if any: the workspace lockfile to the
@@ -620,10 +654,17 @@ impl RegistrySession {
     pub fn finish(&self) -> Option<String> {
         let mut warnings = Vec::new();
         if let Some((path, hidden)) = self.updated_hidden_lockfile() {
+            // Written to a temporary file and renamed into place: another
+            // worktree may read it as its seed at any time.
+            let temporary = path.with_extension(format!("lock.tmp-{}", std::process::id()));
             let written = path
                 .parent()
                 .map_or(Ok(()), std::fs::create_dir_all)
-                .and_then(|()| std::fs::write(&path, hidden.serialize()));
+                .and_then(|()| std::fs::write(&temporary, hidden.serialize()))
+                .and_then(|()| std::fs::rename(&temporary, &path))
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&temporary);
+                });
             if let Err(error) = written {
                 warnings.push(format!(
                     "Error while updating the hidden MODULE.bazel.lock file: {error}"
@@ -650,14 +691,60 @@ impl RegistrySession {
 }
 
 /// The native hidden lockfile of `workspace` under `--cache-dir` (Bazel:
-/// `<output_base>/MODULE.bazel.lock`; an output base is per workspace).
+/// `<output_base>/MODULE.bazel.lock`; an output base is per workspace): in
+/// the workspace's state directory, `<cache>/worktrees/<name>-<hash>/`
+/// (crate::worktree).
 pub fn hidden_lockfile_path(cache_dir: &Path, workspace: &Path) -> PathBuf {
+    crate::worktree::state_directory_for(cache_dir, workspace).join(lockfile::LOCKFILE_NAME)
+}
+
+/// Where the hidden lockfile of `workspace` was before per-worktree state
+/// (`<cache>/hidden-lockfiles/<sha256 of the workspace>/`): a seed of the
+/// new one ([`RegistrySession::with_seeded_hidden_lockfile`]).
+pub fn legacy_hidden_lockfile_path(cache_dir: &Path, workspace: &Path) -> PathBuf {
     let canonical =
         crate::observed_fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     cache_dir
         .join("hidden-lockfiles")
         .join(sha256_hex(canonical.as_os_str().as_encoded_bytes()))
         .join(lockfile::LOCKFILE_NAME)
+}
+
+/// `lockfile` without the module extension results and facts whose JSON
+/// names the `foreign` workspace's path (a seed from another workspace,
+/// crate::worktree::Seed: such a result — a repository attribute holding a
+/// path below that workspace — would point this workspace's repositories
+/// into the other one). A path into the cache both share names nothing
+/// ([`crate::worktree::WorkspaceMentions`]).
+pub fn without_mentions(
+    mut lockfile: Lockfile,
+    foreign: &crate::worktree::WorkspaceMentions,
+) -> Lockfile {
+    let named = |text: &str| foreign.named_in(text.as_bytes());
+    lockfile
+        .module_extensions
+        .retain(|(id, entry)| !named(id) && !mentions(entry, &named));
+    lockfile
+        .facts
+        .retain(|(id, facts)| !named(id) && !mentions(facts, &named));
+    // A facts version without its facts (combine_facts keeps none either).
+    let facts = &lockfile.facts;
+    lockfile
+        .facts_versions
+        .retain(|(id, _)| facts.iter().any(|(kept, _)| kept == id));
+    lockfile
+}
+
+fn mentions(json: &lockfile::Json, named: &impl Fn(&str) -> bool) -> bool {
+    use lockfile::Json;
+    match json {
+        Json::String(text) => named(text),
+        Json::Array(items) => items.iter().any(|item| mentions(item, named)),
+        Json::Object(members) => members
+            .iter()
+            .any(|(key, value)| named(key) || mentions(value, named)),
+        Json::Null | Json::Bool(_) | Json::Number(_) => false,
+    }
 }
 
 impl SessionHandle {

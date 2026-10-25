@@ -264,7 +264,7 @@ impl Twin {
     /// The `healed` events of the snapshot side's event log so far (both
     /// generations).
     fn healed_events(&self) -> Vec<String> {
-        let snapshots = self.side(ON).join("cache/snapshots");
+        let snapshots = self.store(ON);
         ["events.log.1", "events.log"]
             .iter()
             .filter_map(|name| fs::read_to_string(snapshots.join(name)).ok())
@@ -306,9 +306,15 @@ impl Twin {
         }
     }
 
+    /// The snapshot store of the copy `side`: `snapshots/` in its
+    /// workspace's state directory (docs/WORKTREES.md).
+    fn store(&self, side: &str) -> PathBuf {
+        state_directory(&self.side(side).join("cache")).join("snapshots")
+    }
+
     /// The snapshot files of the `on` copy.
     fn snapshots(&self) -> Vec<PathBuf> {
-        let directory = self.side(ON).join("cache/snapshots/v1");
+        let directory = self.store(ON).join("v1");
         let mut files: Vec<PathBuf> = fs::read_dir(directory)
             .map(|entries| {
                 entries
@@ -321,6 +327,21 @@ impl Twin {
         files.sort();
         files
     }
+}
+
+/// The per-worktree state directory of the one workspace that used
+/// `cache`, `<cache>/worktrees/<name>-<hash>` (docs/WORKTREES.md; a twin's
+/// copies both run at `<base>/run/ws`), or where it would be.
+fn state_directory(cache: &Path) -> PathBuf {
+    let worktrees = cache.join("worktrees");
+    let mut states: Vec<PathBuf> = fs::read_dir(&worktrees)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert!(states.len() <= 1, "{states:?}");
+    states.pop().unwrap_or_else(|| worktrees.join("none"))
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -2329,7 +2350,7 @@ fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
             };
             let mut children = vec![spawn(), spawn()];
             if round % 2 == 0 {
-                for file in fs::read_dir(twin.cache().join("snapshots/v1"))
+                for file in fs::read_dir(state_directory(&twin.cache()).join("snapshots/v1"))
                     .unwrap()
                     .flatten()
                 {
@@ -2381,7 +2402,7 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
         // Fifteen newer snapshots of other keys (never read: stand-ins), the
         // hit's own made the least recently used.
         {
-            let store = twin.side(ON).join("cache/snapshots/v1");
+            let store = twin.store(ON).join("v1");
             for entry in fs::read_dir(&store).unwrap().flatten() {
                 if entry.path().extension().is_some_and(|ext| ext == "snap") {
                     fs::File::options()
@@ -2426,10 +2447,7 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
         pair.assert_same(BUILD_ALL);
         assert!(twin.snapshots().len() <= 16, "{}", twin.snapshots().len());
         // Back to one snapshot of this key (hit, or saved again).
-        for entry in fs::read_dir(twin.side(ON).join("cache/snapshots/v1"))
-            .unwrap()
-            .flatten()
-        {
+        for entry in fs::read_dir(twin.store(ON).join("v1")).unwrap().flatten() {
             if entry
                 .file_name()
                 .to_string_lossy()
@@ -2449,7 +2467,7 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
 /// L2-W5f, verify mode's default (no `BAZEL_RS_SNAPSHOT_VERIFY_STRICT`): a
 /// mismatch — the documented in-place-edit trade-off: the full analysis
 /// repairs the tree the hit trusted — prints the differences on the
-/// diagnostics stream, appends one line to `<cache>/snapshots/verify.log`,
+/// diagnostics stream, appends one line to `<state>/snapshots/verify.log`,
 /// removes the snapshot and executes the FULL ANALYSIS's plan: output and
 /// exit code are those of the run without the snapshot.
 #[test]
@@ -2492,23 +2510,28 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
     assert!(twin.snapshots().is_empty());
     // L2-W5i: set aside, not deleted, and every difference kept beside the
     // verify.log line.
-    let aside: Vec<PathBuf> = fs::read_dir(twin.side(ON).join("cache/snapshots/mismatched"))
+    let aside: Vec<PathBuf> = fs::read_dir(twin.store(ON).join("mismatched"))
         .unwrap()
         .flatten()
         .map(|entry| entry.path())
         .collect();
     assert_eq!(aside.len(), 1, "{aside:?}");
-    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log")).unwrap();
+    let log = fs::read_to_string(twin.store(ON).join("verify.log")).unwrap();
     assert_eq!(log.lines().count(), 1, "{log}");
-    let details =
-        fs::read_to_string(twin.side(ON).join("cache/snapshots/verify-details.log")).unwrap();
+    let details = fs::read_to_string(twin.store(ON).join("verify-details.log")).unwrap();
     // (Named where the command ran: the twins' shared path.)
     assert!(
         details.starts_with(&log)
             && details.contains(&format!(
                 "\n  snapshot: set aside as {}\n",
                 twin.run_root()
-                    .join("cache/snapshots/mismatched")
+                    .join("cache")
+                    .join(
+                        twin.store(ON)
+                            .strip_prefix(twin.side(ON).join("cache"))
+                            .unwrap()
+                    )
+                    .join("mismatched")
                     .join(aside[0].file_name().unwrap())
                     .display()
             ))
@@ -2533,10 +2556,11 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
 }
 
 /// L2-W5g/L2-W5h soak telemetry: every snapshot event of a command appends
-/// one line to `<cache>/snapshots/events.log` — a lookup's hit or miss (the
-/// reason's class and the path it names) with the attempt's wall time, a
-/// save, a full analysis that is not saved (the first taint's name, or
-/// `failed`) — with the mode; the run without the snapshot logs nothing.
+/// one line to `<state>/snapshots/events.log` (the workspace's state
+/// directory, docs/WORKTREES.md) — a lookup's hit or miss (the reason's
+/// class and the path it names) with the attempt's wall time, a save, a
+/// full analysis that is not saved (the first taint's name, or `failed`) —
+/// with the mode; the run without the snapshot logs nothing.
 #[test]
 fn the_event_log_names_each_outcome() {
     let twin = warmed(BUILD_ALL, &[]);
@@ -2551,7 +2575,7 @@ fn the_event_log_names_each_outcome() {
     );
     let failing = &["build", "//pkg:bad"];
     assert!(!twin.same(failing, &[]).on.status.success());
-    let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
+    let log = fs::read_to_string(twin.store(ON).join("events.log")).unwrap();
     let field = |line: &str, name: &str| -> String {
         line.split(' ')
             .find_map(|token| token.strip_prefix(name))
@@ -2610,7 +2634,7 @@ fn the_event_log_names_each_outcome() {
             _ => assert_eq!(ms, "-", "{line}"),
         }
     }
-    assert!(!twin.side(OFF).join("cache/snapshots/events.log").exists());
+    assert!(!twin.store(OFF).join("events.log").exists());
 }
 
 // ---- verification-based healing (L2-W5g) -----------------------------------
@@ -2737,7 +2761,7 @@ fn a_failed_hit_on_a_tampered_tree_heals(local: bool) {
                 repaired.explain()
             );
             assert!(!text(&repaired.on.stderr).contains(HEAL_LINE));
-            let log = fs::read_to_string(twin.side(ON).join("cache/snapshots/events.log")).unwrap();
+            let log = fs::read_to_string(twin.store(ON).join("events.log")).unwrap();
             let misses: Vec<&str> = log
                 .lines()
                 .filter(|line| line.contains(" kind=miss ") && line.contains(" reason=local-tree "))
@@ -3656,7 +3680,7 @@ fn fuzz_outcome(pair: &Pair) -> &'static str {
 
 /// The `verify.log` lines of the snapshot side.
 fn verify_log(twin: &Twin) -> Vec<String> {
-    fs::read_to_string(twin.side(ON).join("cache/snapshots/verify.log"))
+    fs::read_to_string(twin.store(ON).join("verify.log"))
         .map(|text| text.lines().map(str::to_owned).collect())
         .unwrap_or_default()
 }
@@ -3887,7 +3911,7 @@ fn mutation_fuzz() {
                     *twin.cwd.borrow_mut() = cwd;
                     twin.same(&argv, &env);
                     let off = twin.run_side(OFF, &argv, &env);
-                    let store = twin.side(ON).join("cache/snapshots/v1");
+                    let store = twin.store(ON).join("v1");
                     for n in 0..15 {
                         let _ = fs::write(
                             store.join(format!("0000000000000000000000000000{n:04}.snap")),
@@ -4197,7 +4221,8 @@ fn failing_test_suite_expansions_are_never_saved() {
 /// a value it does not know, which it reports) a build saves and hits like
 /// `on`, byte-identical with `off`; `off`, `0` and `false` turn everything
 /// off — no lookup, no recording, no store: a fresh cache gets no
-/// `snapshots/` directory at all, and EXPLAIN has nothing to say.
+/// `snapshots/` directory at all (none in the workspace's state directory),
+/// and EXPLAIN has nothing to say.
 #[test]
 fn the_snapshot_is_on_by_default_and_off_turns_everything_off() {
     let twin = fixture();
@@ -4251,6 +4276,9 @@ fn the_snapshot_is_on_by_default_and_off_turns_everything_off() {
     }
     let cache = twin.side(OFF).join("cache");
     assert!(cache.join("repositories").is_dir());
+    // Neither in the workspace's state directory (docs/WORKTREES.md) nor
+    // where the flat layout kept it.
+    assert!(!twin.store(OFF).exists());
     assert!(!cache.join("snapshots").exists());
 }
 

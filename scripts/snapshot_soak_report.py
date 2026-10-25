@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Summarize the analysis snapshot's soak logs of one cache (L2-W5h, L2-W5i).
+"""Summarize the analysis snapshot's soak logs of one workspace (L2-W5h, L2-W5i).
 
 usage: snapshot_soak_report.py [--json] [--workspace DIR] [--archive DIR] CACHE_DIR
 
-Reads `<cache>/snapshots/events.log`, `verify.log` and `verify-details.log`
+The snapshot store of a workspace is `<cache>/worktrees/<name>-<hash>/snapshots/`,
+its state directory in the cache (docs/WORKTREES.md: the git worktrees sharing a
+cache each have their own): `--workspace DIR` names the workspace (default: the
+parent of a cache named bazel-rs-out — the main checkout of the default cache —
+else the one workspace that used the cache); a cache of the flat layout before
+per-worktree state keeps it in `<cache>/snapshots/`.
+
+Reads the store's `events.log`, `verify.log` and `verify-details.log`
 (each after its rotated generation `<name>.1`; crate::snapshot::telemetry
-writes them, docs/ANALYSIS_SNAPSHOT.md "Soak") and the snapshot store
-`<cache>/snapshots/v1/` (and `mismatched/`, the snapshots verify mismatches
-set aside), and prints:
+writes them, docs/ANALYSIS_SNAPSHOT.md "Soak") and its snapshots, `v1/`
+(and `mismatched/`, the snapshots verify mismatches set aside), and prints:
 
   * the number of events per mode and kind (hit, miss, saved, not-saved,
     verified, mismatch, healed, evicted, recorded), misses and unsaved runs
@@ -51,14 +57,16 @@ set aside), and prints:
   * the soak's exit check: each threshold of docs/ANALYSIS_SNAPSHOT.md "Soak"
     with its value here and `ok`, `not yet` or `look` (a person must judge it).
 
-The cache is only read. `--archive DIR` (L2-W5i) first appends the cache's log
+The cache is only read. `--archive DIR` (L2-W5i) first appends the store's log
 lines that DIR does not hold yet to DIR/events.log, verify.log and
 verify-details.log (never rotated) and reports over DIR: run it daily during a
-soak, since the cache's logs keep only ~7,500 events. `--json` prints the same
+soak, since the store's logs keep only ~7,500 events (one archive per
+workspace). `--json` prints the same
 as one JSON object. Exit status 0 (2 when there are no snapshot logs).
 """
 import argparse
 import collections
+import hashlib
 import json
 import math
 import os
@@ -167,8 +175,51 @@ def snapshot_files(directory):
     return files, total
 
 
+def state_name(workspace):
+    """The state directory name of `workspace` in a cache (crate::worktree::
+    state_name): its canonical path's last component — ASCII letters, digits,
+    `.`, `_` and `-` kept, anything else `_`, at most 40 characters; `root` when
+    that leaves nothing or only dots — a dash and the first 8 bytes of the
+    SHA-256 of the canonical path, in hex."""
+    canonical = os.path.realpath(workspace)
+    digest = hashlib.sha256(os.fsencode(canonical)).hexdigest()[:16]
+    base = os.path.basename(canonical)
+    try:
+        base.encode('utf-8')
+    except UnicodeEncodeError:
+        base = ''
+    name = ''.join(c if (c.isascii() and c.isalnum()) or c in '._-' else '_' for c in base)[:40]
+    if not name or set(name) == {'.'}:
+        name = 'root'
+    return f'{name}-{digest}'
+
+
+def snapshot_store(cache, workspace=None):
+    """The snapshot store of `workspace` in `cache` (see the module docs): its
+    state directory's `snapshots/`, or the flat layout's `<cache>/snapshots/`
+    when only that exists. Without a workspace: the main checkout's for a cache
+    named bazel-rs-out when it has one, else the only state directory that has
+    a store. Exits when several workspaces used the cache and none was named."""
+    cache = Path(cache)
+    flat = cache / 'snapshots'
+    named = workspace is not None
+    if not named and os.path.basename(os.path.abspath(cache)) == 'bazel-rs-out':
+        workspace = os.path.dirname(os.path.abspath(cache))
+    if workspace is not None:
+        own = cache / 'worktrees' / state_name(workspace) / 'snapshots'
+        if own.is_dir() or (named and not flat.is_dir()):
+            return own
+        if flat.is_dir():
+            return flat
+    stores = sorted(p for p in (cache / 'worktrees').glob('*/snapshots') if p.is_dir())
+    if len(stores) > 1:
+        names = ', '.join(p.parent.name for p in stores)
+        sys.exit(f'several workspaces used {cache} ({names}): name one with --workspace')
+    return stores[0] if stores else flat
+
+
 def store_size(snapshots):
-    """Snapshot files and bytes below `<cache>/snapshots/v1`, those set aside in
+    """Snapshot files and bytes below the store's `v1/`, those set aside in
     `mismatched/` (L2-W5i), and the logs' sizes."""
     files, total = snapshot_files(snapshots / 'v1')
     aside, aside_bytes = snapshot_files(snapshots / 'mismatched')
@@ -566,7 +617,8 @@ def number(value, digits=1):
 
 
 def render(report, cache):
-    lines = [f'analysis snapshot soak report: {cache}']
+    store = report.get('store_path')
+    lines = [f'analysis snapshot soak report: {cache}' + (f' (store {store})' if store else '')]
     span = report['span']
     lines.append(f"events: {report['events']}" + (f' ({span[0]} .. {span[1]})' if span else ''))
     lines.append('')
@@ -745,11 +797,11 @@ def archive_logs(snapshots, directory):
     return appended
 
 
-def load(cache, archive=None):
-    """`(events, verify_lines, store, details)` of the cache's logs — or, with
-    `archive`, of the archive after the cache's new lines were added to it —
-    and the cache's store."""
-    snapshots = Path(cache) / 'snapshots'
+def load(cache, archive=None, workspace=None):
+    """`(events, verify_lines, store, details)` of the logs of `workspace`'s
+    store in the cache ([`snapshot_store`]) — or, with `archive`, of the archive
+    after the store's new lines were added to it — and the store's size."""
+    snapshots = snapshot_store(cache, workspace)
     logs = snapshots
     if archive is not None:
         archive_logs(snapshots, Path(archive))
@@ -763,15 +815,17 @@ def load(cache, archive=None):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--json', action='store_true', help='print the report as JSON')
-    ap.add_argument('--workspace', help='the workspace of the cache (its `bazel-*` entries are output trees; '
-                                        'default: the parent of a cache named bazel-rs-out)')
+    ap.add_argument('--workspace', help='the workspace whose snapshot store to read (its state directory in the '
+                                        'cache; its `bazel-*` entries are output trees; default: the parent of a '
+                                        'cache named bazel-rs-out, else the one workspace that used the cache)')
     ap.add_argument('--archive', metavar='DIR',
                     help="first append the cache's new log lines to DIR (one file per log, never rotated), then "
                          "report over DIR: run it daily during a soak (the logs keep ~7,500 events)")
     ap.add_argument('cache')
     a = ap.parse_args(argv)
-    events, verify_lines, store, details = load(a.cache, a.archive)
+    events, verify_lines, store, details = load(a.cache, a.archive, a.workspace)
     report = analyze(events, verify_lines, store, details, Places(a.cache, a.workspace))
+    report['store_path'] = str(snapshot_store(a.cache, a.workspace))
     if a.json:
         sys.stdout.write(json.dumps(report, indent=1, default=str) + '\n')
     else:

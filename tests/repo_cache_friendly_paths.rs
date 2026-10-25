@@ -198,11 +198,11 @@ fn recorded_inputs(path: &Path) -> Value {
 }
 
 /// The hidden lockfile of the one workspace that used `cache`
-/// (`<cache>/hidden-lockfiles/<sha256 of the workspace path>/MODULE.bazel.lock`).
+/// (`<cache>/worktrees/<name>-<hash>/MODULE.bazel.lock`, docs/WORKTREES.md).
 fn hidden_lockfile(cache: &Path) -> PathBuf {
-    let [workspace] = <[String; 1]>::try_from(listing(&cache.join("hidden-lockfiles"))).unwrap();
+    let [workspace] = <[String; 1]>::try_from(listing(&cache.join("worktrees"))).unwrap();
     cache
-        .join("hidden-lockfiles")
+        .join("worktrees")
         .join(workspace)
         .join("MODULE.bazel.lock")
 }

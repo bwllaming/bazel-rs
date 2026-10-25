@@ -1,6 +1,9 @@
 //! The snapshot store (PLAN-L2 §1d "Rules for the store"): one file per key
-//! G, `<cache>/snapshots/v1/<first 16 bytes of G in hex>.snap`, in the
-//! binary format of crate::snapshot::format.
+//! G, `<state>/snapshots/v1/<first 16 bytes of G in hex>.snap`, in the
+//! binary format of crate::snapshot::format. `<state>` is the workspace's
+//! state directory in the cache, `<cache>/worktrees/<name>-<hash>`
+//! (crate::worktree::state_directory): every worktree sharing a cache has
+//! its own store and its own garbage-collection budget.
 //!
 //! * **Reading** never locks: open, read and check the header (magic,
 //!   format, binary identity, the full G), then read single sections by
@@ -14,10 +17,10 @@
 //!   Several writers of the same G all write valid files; the last rename
 //!   wins. A reader that already opened a file keeps reading it.
 //! * **Garbage collection** after each save: at most [`KEEP`] snapshots and
-//!   [`BUDGET`] bytes per cache, least recently used first (a hit sets its
-//!   file's mtime), and temporary files older than an hour.
+//!   [`BUDGET`] bytes per store (per worktree), least recently used first (a
+//!   hit sets its file's mtime), and temporary files older than an hour.
 //! * **Set aside** (L2-W5i): a snapshot a verify-mode mismatch contradicted
-//!   is moved to `<cache>/snapshots/mismatched/` ([`set_aside`]) instead of
+//!   is moved to `<state>/snapshots/mismatched/` ([`set_aside`]) instead of
 //!   being deleted, so the soak's report can be acted on. Lookups never
 //!   look there and the garbage collection never counts it (neither the
 //!   [`KEEP`] snapshots nor the [`BUDGET`] bytes): its own bound is the
@@ -33,9 +36,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
-/// Snapshots kept per cache.
+/// Snapshots kept per store (per worktree).
 pub const KEEP: usize = 16;
-/// Bytes of snapshots kept per cache.
+/// Bytes of snapshots kept per store (per worktree).
 pub const BUDGET: u64 = 1 << 30;
 /// The largest snapshot written (PLAN-L2 §1b "Size").
 pub const MAX_BYTES: u64 = 512 << 20;
@@ -45,9 +48,11 @@ const TEMPORARY_PREFIX: &str = ".tmp-";
 const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
 const SUFFIX: &str = ".snap";
 
-/// `<cache>/snapshots`: the binary identity cache and the versioned store.
+/// `<state>/snapshots`: the binary identity cache and the versioned store
+/// of this process's workspace (crate::worktree::state_directory; without
+/// an installed workspace, `<cache>/snapshots`).
 pub fn root(cache: &Path) -> PathBuf {
-    cache.join("snapshots")
+    crate::worktree::state_directory(cache).join("snapshots")
 }
 
 /// The directory of this format's snapshot files.
@@ -351,7 +356,7 @@ pub enum SetAside {
 
 /// A verify mismatch contradicted the snapshot of `key` (L2-W5i): move it
 /// out of the store to
-/// `<cache>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` — the next
+/// `<state>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` — the next
 /// lookup misses, as when it was removed, but the file stays for the soak's
 /// report beside `verify-details.log` (crate::snapshot::telemetry) — and
 /// keep the [`MISMATCHED_KEEP`] newest there. A move that fails removes the

@@ -1,4 +1,5 @@
-//! The soak's logs below the snapshot store root (`<cache>/snapshots/`,
+//! The soak's logs below the snapshot store root (`<state>/snapshots/`, the
+//! workspace's state directory, crate::worktree;
 //! L2-W5g, L2-W5h, L2-W5i): `verify.log` — one line per verify-mode
 //! mismatch (crate::snapshot::verify) —, `verify-details.log` — per
 //! mismatch, that line followed by every difference as the diagnostics
@@ -74,7 +75,7 @@ pub const MODE_VERIFY: &str = "verify";
 /// The `mode=` of `BAZEL_RS_SNAPSHOT=record`.
 pub const MODE_RECORD: &str = "record";
 
-/// `<cache>/snapshots/<name>`.
+/// `<state>/snapshots/<name>` (crate::snapshot::store::root).
 pub fn log_path(cache: &Path, name: &str) -> PathBuf {
     crate::snapshot::store::root(cache).join(name)
 }
@@ -728,7 +729,7 @@ mod tests {
         );
     }
 
-    /// L2-W5h: every kind of event lands in `<cache>/snapshots/events.log`
+    /// L2-W5h: every kind of event lands in `<state>/snapshots/events.log`
     /// with its mode, key, reason, path and wall time (L2-W5i: `heal-kept`
     /// too); a context without a cache logs nothing.
     #[test]

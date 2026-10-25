@@ -41,18 +41,23 @@ Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMOR
 Repository verify: --verify-repo-tampering forces full re-hash of warm
   repository publications (default: stat-fingerprint trust, Bazel's model;
   env BAZEL_RS_VERIFY_REPOS=full is equivalent).
+Cache: --cache-dir=PATH, else <workspace>/bazel-rs-out; in a linked git worktree
+  the main checkout's (<main>/bazel-rs-out: repositories, actions, test results
+  are shared). Each workspace's own state (analysis snapshots, test result index,
+  hidden lockfile, `run` of tests) is <cache>/worktrees/<name>-<hash>/
+  (docs/WORKTREES.md).
 Digest memo: settled files' SHA-256 by path and stat key persist in
   <cache>/digests/v2.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off bypasses
   it while set (its records stay); deleting <cache>/digests/ drops them
   (docs/DIGEST_MEMO.md).
 Analysis snapshot (on by default): a build/test/run saves its analysis in
-  <cache>/snapshots/ and skips loading and analysis while every recorded input
-  is unchanged. BAZEL_RS_SNAPSHOT=off (or 0, false) turns it off: no lookup, no
-  recording, nothing written. BAZEL_RS_SNAPSHOT=verify (when a stale result is
-  suspected) also runs the full analysis on every hit, logs a difference to
-  <cache>/snapshots/verify.log and then executes the full analysis's plan;
-  BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why it missed or was not saved
-  (docs/ANALYSIS_SNAPSHOT.md).
+  <state>/snapshots/ (the workspace's state directory above) and skips loading
+  and analysis while every recorded input is unchanged. BAZEL_RS_SNAPSHOT=off
+  (or 0, false) turns it off: no lookup, no recording, nothing written.
+  BAZEL_RS_SNAPSHOT=verify (when a stale result is suspected) also runs the full
+  analysis on every hit, logs a difference to <state>/snapshots/verify.log and
+  then executes the full analysis's plan; BAZEL_RS_SNAPSHOT_EXPLAIN=1 says why
+  it missed or was not saved (docs/ANALYSIS_SNAPSHOT.md).
 Runfiles (build/run): --[no]build_runfile_links, --[no]build_runfile_manifests,
   --enable_runfiles=auto|yes|no, --[no]incompatible_compact_repo_mapping_manifest
   (runfiles trees, MANIFEST and _repo_mapping like Bazel 9.3; docs/RUNFILES_TREES.md).
@@ -335,12 +340,24 @@ fn run() -> Result<(), String> {
                 .map(|(name, value)| (name.as_os_str(), value.as_os_str())),
         ),
     )?;
-    let cache = cache.unwrap_or_else(|| root.join("bazel-rs-out"));
+    // The cache root (crate::worktree, docs/WORKTREES.md): `--cache-dir`,
+    // else found from the git metadata above the workspace — a linked git
+    // worktree shares its main checkout's `bazel-rs-out`, anything else
+    // keeps `<workspace>/bazel-rs-out`. The workspace's own state (analysis
+    // snapshots, test result index, hidden lockfile, `run` execution roots
+    // of tests) lives in `<cache>/worktrees/<name>-<hash>/` either way.
+    let explicit_cache = cache.is_some();
+    let layout = bazel_rs::worktree::detect(&root);
+    let cache = cache.unwrap_or_else(|| layout.default_cache());
     let cache = if cache.is_absolute() {
         cache
     } else {
         cwd.join(cache)
     };
+    bazel_rs::worktree::install(&root);
+    if !explicit_cache && let Some(note) = layout.legacy_cache_note(&cache) {
+        eprintln!("{note}");
+    }
     // The persistent file-digest memo of this cache (crate::digest_memo),
     // saved by `digest_memo::finish` when the command ends.
     bazel_rs::digest_memo::install(&cache);
@@ -602,9 +619,17 @@ fn run() -> Result<(), String> {
             Some(cache.join("repositories")),
             allowed_yanked,
         )?
-        .with_hidden_lockfile(bazel_rs::registry_session::hidden_lockfile_path(
-            &cache, &root,
-        ))
+        .with_seeded_hidden_lockfile(
+            bazel_rs::registry_session::hidden_lockfile_path(&cache, &root),
+            &bazel_rs::worktree::hidden_lockfile_seeds(
+                &cache,
+                &layout,
+                bazel_rs::lockfile::LOCKFILE_NAME,
+                |workspace| {
+                    bazel_rs::registry_session::legacy_hidden_lockfile_path(&cache, workspace)
+                },
+            ),
+        )
         .with_spellings(
             resolver_options
                 .registries
@@ -2188,7 +2213,9 @@ struct RunTest<'a> {
 /// in an execution root with the test environment (computeTestEnvironment
 /// with the run variables), BUILD_EXECROOT set (test-setup.sh then execs
 /// the test without job control). Natively the execution root is
-/// `<cache>/test-run/<key>/execroot`: test-setup.sh at its exec path and
+/// `<state>/test-run/<key>/execroot` in the workspace's state directory
+/// (crate::worktree: a `run` of the same test in another worktree of a
+/// shared cache never replaces it): test-setup.sh at its exec path and
 /// the runfiles tree linked at `<executable>.runfiles`.
 fn run_test(context: RunTest<'_>) -> Result<(), String> {
     use bazel_rs::run_command::{ENV_TO_CLEAR, random_uuid, shell_escape};
@@ -2227,7 +2254,10 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
         target.mnemonic.hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     };
-    let execroot = cache.join("test-run").join(key).join("execroot");
+    let execroot = bazel_rs::worktree::state_directory(cache)
+        .join("test-run")
+        .join(key)
+        .join("execroot");
     if execroot.exists() {
         add_user_write(&execroot);
         std::fs::remove_dir_all(&execroot)

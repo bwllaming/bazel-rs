@@ -26,12 +26,12 @@
 //!   -> match: the hit's own bytes print and the snapshot's plan executes
 //!      (what a user of `on` gets), refreshed keys are written back;
 //!      mismatch: every difference on the diagnostics stream, one line
-//!      appended to `<cache>/snapshots/verify.log` ([`LOG`]: time, command,
+//!      appended to `<state>/snapshots/verify.log` ([`LOG`]: time, command,
 //!      key, the first difference's class, the first taint's name and the
 //!      first differing path (L2-W5g), the target patterns;
 //!      crate::snapshot::telemetry) and — L2-W5i — that line with every
 //!      difference to `verify-details.log`, the snapshot set aside in
-//!      `<cache>/snapshots/mismatched/` (crate::snapshot::store::set_aside,
+//!      `<state>/snapshots/mismatched/` (crate::snapshot::store::set_aside,
 //!      the 3 newest kept; before, it was deleted: the next run analyzes
 //!      and saves anew, so a persistent cause shows on every other run),
 //!      nothing saved — then
@@ -72,7 +72,7 @@ pub const EXIT_MISMATCH: i32 = 70;
 /// before anything executes (tests, CI). Unset (the default for a soak): a
 /// mismatch is reported and logged, and the full analysis's plan executes.
 pub const STRICT_VAR: &str = "BAZEL_RS_SNAPSHOT_VERIFY_STRICT";
-/// The mismatch log below the snapshot store root (`<cache>/snapshots/`):
+/// The mismatch log below the snapshot store root (`<state>/snapshots/`):
 /// one line per mismatch, appended (crate::snapshot::telemetry: bounded,
 /// rotated).
 pub const LOG: &str = crate::snapshot::telemetry::VERIFY_LOG;
@@ -499,7 +499,7 @@ impl Report {
     /// Print every difference on the diagnostics stream, append the log
     /// line and — L2-W5i — the differences to `verify-details.log`, set the
     /// snapshot aside (`stored`, when `remove`: moved to
-    /// `<cache>/snapshots/mismatched/`, crate::snapshot::store::set_aside;
+    /// `<state>/snapshots/mismatched/`, crate::snapshot::store::set_aside;
     /// before, it was deleted) and — `strict` — exit with [`EXIT_MISMATCH`].
     fn conclude(
         self,
@@ -1360,7 +1360,7 @@ mod tests {
     }
 
     /// L2-W5i: a mismatch sets the snapshot aside — moved to
-    /// `<cache>/snapshots/mismatched/`, the lookup misses — and its
+    /// `<state>/snapshots/mismatched/`, the lookup misses — and its
     /// verify-details.log block holds every difference (a detail with
     /// newlines and control characters stays inside the block) and where
     /// the snapshot went.

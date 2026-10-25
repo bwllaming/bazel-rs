@@ -68,7 +68,7 @@ impl Workspace {
     /// `cache/actions/<key>/outputs/...`); empty when nothing executed —
     /// and nothing was saved: the commands whose cache this lists run with
     /// the analysis snapshot off (on by default, a `--nobuild` run saves its
-    /// snapshot in `cache/snapshots/`).
+    /// snapshot in the workspace's state directory, `cache/worktrees/`).
     fn cache_files(&self) -> Vec<String> {
         let mut names = Vec::new();
         collect(&self.path().join("cache"), &mut names);

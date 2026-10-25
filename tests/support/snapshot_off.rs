@@ -1,7 +1,8 @@
 // Shared by integration tests (`include!("support/snapshot_off.rs")`) whose
 // subject is something the analysis snapshot legitimately changes. The
 // snapshot is on by default (L2-W7, docs/ANALYSIS_SNAPSHOT.md): a `build`,
-// `test` or `run` sets up its store `<cache>/snapshots/` at the check point,
+// `test` or `run` sets up its store `<cache>/worktrees/<name>-<hash>/snapshots/`
+// (the workspace's state directory, docs/WORKTREES.md) at the check point,
 // before loading and analysis (also when the analysis then fails), saves a
 // snapshot there when it succeeds (also under `--nobuild`), and an unchanged
 // re-run is a hit that skips loading and analysis altogether. So a test that

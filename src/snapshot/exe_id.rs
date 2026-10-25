@@ -5,7 +5,7 @@
 //! snapshot.
 //!
 //! Hashing a 50 MB release binary costs 10–40 ms, so the identity is cached
-//! in `<cache>/snapshots/exe.id`, keyed by the binary's stat key (device,
+//! in `<state>/snapshots/exe.id`, keyed by the binary's stat key (device,
 //! inode, size, mtime, ctime): a steady-state lookup is one stat and one
 //! 104-byte read. An entry is only written for a binary that was settled
 //! when it was hashed — its mtime and ctime at least two seconds older than
@@ -104,7 +104,8 @@ fn hash(file: &mut File) -> io::Result<[u8; 32]> {
 }
 
 /// The identity of the running binary, through the cache in `directory`
-/// (`<cache>/snapshots`, created when an entry is written).
+/// (`<state>/snapshots`, crate::snapshot::store::root; created when an
+/// entry is written).
 pub fn binary_id(directory: &Path) -> io::Result<[u8; 32]> {
     let key = StatKey::of(&fs::metadata(EXE)?);
     let cache = directory.join(FILE_NAME);

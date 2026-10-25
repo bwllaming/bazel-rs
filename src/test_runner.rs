@@ -188,6 +188,17 @@ fn frame(hash: &mut Sha256, bytes: &[u8]) {
     hash.update(bytes);
 }
 
+/// Record `key` as the last key of a test action output in this
+/// workspace's index (a temporary file renamed into place).
+fn write_index(index_path: &Path, key: &str) -> Result<(), String> {
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
+    }
+    let temporary = index_path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary, key).map_err(|e| io("cannot write", &temporary, e))?;
+    fs::rename(&temporary, index_path).map_err(|e| io("cannot write", index_path, e))
+}
+
 /// Remove a directory tree, making read-only entries writable first.
 fn remove_tree(path: &Path) -> Result<(), String> {
     if fs::symlink_metadata(path).is_err() {
@@ -589,14 +600,26 @@ impl Runner<'_> {
         // The action cache holds one entry per test action output
         // (test.cache_status): only the last key of this action's testlogs
         // directory is reusable, so a result of an older configuration of
-        // the same test is not (genuine capture M37).
+        // the same test is not (genuine capture M37). The index of last keys
+        // is the workspace's own (crate::worktree::state_directory: every
+        // worktree sharing the cache has its output base's action cache),
+        // and a test this workspace never ran — no index entry — accepts the
+        // stored result of its exact key like a disk-cache hit: the first
+        // run in a new worktree of the commit another one tested is cached,
+        // and switching worktrees reruns nothing (docs/WORKTREES.md).
         let index_path = {
             let mut hash = Sha256::new();
             frame(&mut hash, b"native-test-index-v1");
             frame(&mut hash, paths.base.as_bytes());
-            tests.join("index").join(hex(&hash.finalize()))
+            crate::worktree::state_directory(self.cache)
+                .join("tests")
+                .join("index")
+                .join(hex(&hash.finalize()))
         };
-        let last_key = fs::read_to_string(&index_path).unwrap_or_default();
+        let (last_key, indexed) = match fs::read_to_string(&index_path) {
+            Ok(key) => (key, true),
+            Err(error) => (String::new(), error.kind() != std::io::ErrorKind::NotFound),
+        };
         // TestRunnerAction.shouldAcceptCachedResult/executeUnconditionally.
         let accept = !(spec.info.external()
             || options.cache_test_results == TriState::No
@@ -607,7 +630,7 @@ impl Runner<'_> {
             && status.format == STATUS_FORMAT
             && status.key == key
             && status.cachable
-            && last_key == key
+            && (last_key == key || !indexed)
             && !(options.cache_test_results == TriState::Auto
                 && !status_from(&status.status).passed())
             && status
@@ -616,6 +639,11 @@ impl Runner<'_> {
                 .chain(&status.failed_logs)
                 .all(|log| entry.join(log).is_file())
         {
+            if !indexed {
+                // This workspace's last key is now this one (best effort: a
+                // failed write only costs the same lookup next time).
+                let _ = write_index(&index_path, &key);
+            }
             let result = RunResult {
                 shard: unit.shard,
                 status: status_from(&status.status),
@@ -742,13 +770,7 @@ impl Runner<'_> {
                     !failed_attempts.is_empty(),
                 )?;
                 self.link_testlogs(&paths.base, &entry);
-                if let Some(parent) = index_path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
-                }
-                let temporary = index_path.with_extension(format!("tmp-{}", std::process::id()));
-                fs::write(&temporary, &key).map_err(|e| io("cannot write", &temporary, e))?;
-                fs::rename(&temporary, &index_path)
-                    .map_err(|e| io("cannot write", &index_path, e))?;
+                write_index(&index_path, &key)?;
                 remove_tree(&work)?;
                 break UnitOutcome::Result(RunResult {
                     shard: unit.shard,

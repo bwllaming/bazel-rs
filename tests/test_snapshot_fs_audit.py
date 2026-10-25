@@ -299,6 +299,36 @@ class SnapshotAuditTests(unittest.TestCase):
             "replay-stage": 3, "local-tree": 3, "verified-tree": 1, "covered-input": 1,
         })
 
+    def test_hit_path_state_directory_touches(self):
+        """docs/WORKTREES.md: the snapshot store and the hidden lockfile live
+        in the workspace's state directory `worktrees/<name>-<hash>`; the
+        store is a safe class, the directories are stat'ed only, and the
+        hidden lockfile is an input like any other (covered or reported)."""
+        state = "/cache/worktrees/ws-0123456789abcdef"
+        trace = (
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-begin", 0x1, 0) = -1 ENOENT\n'
+            '1 mkdir("/cache/worktrees", 0777) = -1 EEXIST (File exists)\n'
+            f'1 mkdir("{state}", 0777) = -1 EEXIST (File exists)\n'
+            f'1 mkdir("{state}/snapshots/v1", 0777) = -1 EEXIST (File exists)\n'
+            f'1 openat(AT_FDCWD</ws>, "{state}/snapshots/exe.id", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            f'1 openat(AT_FDCWD</ws>, "{state}/snapshots/v1/k.snap", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            f'1 openat(AT_FDCWD</ws>, "{state}/MODULE.bazel.lock", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            f'1 openat(AT_FDCWD</ws>, "{state}/tests/index/x", O_RDONLY|O_CLOEXEC) = 3</x>\n'
+            '1 newfstatat(AT_FDCWD</ws>, "/.bazel-rs-snapshot-marker/hit-end", 0x1, 0) = -1 ENOENT\n'
+        )
+        dump_text = f"OBS {state}/MODULE.bazel.lock READ sha256:00 key:1:2:3:4:5\n"
+        with tempfile.TemporaryDirectory() as temp:
+            dump = Path(temp) / "dump.txt"
+            dump.write_text(dump_text)
+            stats = {}
+            touched, unrecorded = audit.audit_hit(trace, dump, "/ws", "/cache", [], stats)
+        # The one touch counted is the unrecorded one.
+        self.assertEqual(touched, 1)
+        self.assertEqual([u.split()[:2] for u in unrecorded], [["CACHE", f"{state}/tests/index/x"]])
+        self.assertEqual(stats["cache"], {
+            "state-directories": 2, "snapshot-store": 3, "covered-input": 1,
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

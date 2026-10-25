@@ -1,7 +1,9 @@
 """Offline tests of scripts/snapshot_soak_report.py (the soak's event and verify logs, L2-W5h)."""
 
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -223,6 +225,72 @@ class SoakReportTests(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue())["counts"]["on/hit"], 4)
         with tempfile.TemporaryDirectory() as empty, redirect_stdout(io.StringIO()):
             self.assertEqual(report.main([empty]), 2)
+
+
+class StoreLayoutTests(unittest.TestCase):
+    """docs/WORKTREES.md: a workspace's snapshot store is in its state directory
+    `<cache>/worktrees/<name>-<hash>/snapshots/`; the flat layout's
+    `<cache>/snapshots/` is read when only that exists."""
+
+    def test_state_names_match_the_binary(self):
+        with tempfile.TemporaryDirectory() as base:
+            workspace = Path(base) / "we ird:näme"
+            workspace.mkdir()
+            name = report.state_name(str(workspace))
+            digest = hashlib.sha256(os.fsencode(os.path.realpath(workspace))).hexdigest()[:16]
+            self.assertEqual(name, "we_ird_n_me-" + digest)
+            long = Path(base) / ("l" * 100)
+            long.mkdir()
+            self.assertTrue(report.state_name(str(long)).startswith("l" * 40 + "-"))
+            self.assertTrue(report.state_name("/").startswith("root-"))
+            link = Path(base) / "link"
+            link.symlink_to(workspace)
+            self.assertEqual(report.state_name(str(link)), name)
+
+    def test_the_store_of_a_workspace_in_a_shared_cache(self):
+        with tempfile.TemporaryDirectory() as base:
+            main = Path(base) / "main"
+            wt = Path(base) / "wt"
+            for workspace in (main, wt):
+                workspace.mkdir()
+            cache = main / "bazel-rs-out"
+            stores = {}
+            for workspace, event in ((main, line(1, "hit", "k1")), (wt, line(2, "miss", "k2", reason="absent"))):
+                store = cache / "worktrees" / report.state_name(str(workspace)) / "snapshots"
+                (store / "v1").mkdir(parents=True)
+                (store / "events.log").write_text(event)
+                stores[workspace] = store
+            # The main checkout's by default (the cache is its bazel-rs-out),
+            # a worktree's when named.
+            self.assertEqual(report.snapshot_store(cache), stores[main])
+            self.assertEqual(report.snapshot_store(cache, str(wt)), stores[wt])
+            events, _, _, _ = report.load(cache, workspace=str(wt))
+            self.assertEqual([event["kind"] for event in events], ["miss"])
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(report.main(["--workspace", str(wt), str(cache)]), 0)
+            self.assertIn("misses by reason: absent 1\n", out.getvalue())
+            self.assertTrue(out.getvalue().startswith(
+                f"analysis snapshot soak report: {os.path.abspath(cache)} (store {stores[wt]})\n"), out.getvalue())
+            # Another cache used by several workspaces: one must be named.
+            other = Path(base) / "other-cache"
+            (other / "worktrees").mkdir(parents=True)
+            for workspace in (main, wt):
+                (other / "worktrees" / report.state_name(str(workspace)) / "snapshots").mkdir(parents=True)
+            with self.assertRaises(SystemExit) as raised:
+                report.snapshot_store(other)
+            self.assertIn("name one with --workspace", str(raised.exception))
+            self.assertEqual(report.snapshot_store(other, str(wt)),
+                             other / "worktrees" / report.state_name(str(wt)) / "snapshots")
+            # One workspace: that one; the flat layout when it alone exists.
+            single = Path(base) / "single"
+            (single / "worktrees" / "ws-0123456789abcdef" / "snapshots").mkdir(parents=True)
+            self.assertEqual(report.snapshot_store(single),
+                             single / "worktrees" / "ws-0123456789abcdef" / "snapshots")
+            flat = Path(base) / "flat"
+            (flat / "snapshots").mkdir(parents=True)
+            self.assertEqual(report.snapshot_store(flat), flat / "snapshots")
+            self.assertEqual(report.snapshot_store(flat, str(wt)), flat / "snapshots")
 
 
 class ExitCheckAndArchiveTests(unittest.TestCase):

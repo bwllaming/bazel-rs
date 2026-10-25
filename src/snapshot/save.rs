@@ -15,7 +15,7 @@
 //! to a temporary file while the actions execute. Only when the command (for
 //! `test` and `run`: its build part) succeeded does [`Save::finish`] rename
 //! it into place (crate::snapshot::store). Failures are never saved. A save
-//! appends a `kind=saved` line to `<cache>/snapshots/events.log`, a run that
+//! appends a `kind=saved` line to `<state>/snapshots/events.log`, a run that
 //! is not saved its reason (`kind=not-saved`, crate::snapshot::telemetry;
 //! L2-W5g, L2-W5h).
 

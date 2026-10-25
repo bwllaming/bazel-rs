@@ -21,7 +21,7 @@
 //!   stream why a lookup missed or why a run was not saved.
 //! * L2-W6: `BAZEL_RS_SNAPSHOT=verify` ([`verify`]): `on`, and every hit
 //!   also runs the full analysis in its shadow and compares the two (L2-W5f:
-//!   a mismatch is logged to `<cache>/snapshots/verify.log` and the full
+//!   a mismatch is logged to `<state>/snapshots/verify.log` and the full
 //!   analysis's plan executes; `BAZEL_RS_SNAPSHOT_VERIFY_STRICT=1` exits 70).
 //! * L2-W5f (the W5 review's follow-ups): ENV records validated against the
 //!   repository environment, the status flag of `--nobuild` plans, the
@@ -33,6 +33,10 @@
 //!   wall time (scripts/snapshot_soak_report.py summarizes them); L2-W5i:
 //!   `verify-details.log` keeps every mismatch's differences, and the
 //!   mismatching snapshot is set aside in `snapshots/mismatched/`.
+//!
+//! `<state>` is the workspace's state directory in the cache,
+//! `<cache>/worktrees/<name>-<hash>` (crate::worktree, docs/WORKTREES.md):
+//! the worktrees sharing a cache each have their own store.
 //!
 //! docs/ANALYSIS_SNAPSHOT.md describes the store, the hit path and the
 //! verify mode.

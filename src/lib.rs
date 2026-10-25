@@ -135,6 +135,7 @@ pub mod toolchains;
 pub mod visibility;
 pub mod workspace;
 pub mod workspace_status;
+pub mod worktree;
 
 /// Phase timestamps for the parallel-analysis baseline and gate
 /// (`BAZEL_RS_TIMING=1`): elapsed wall time, VmRSS and the peak RSS so far

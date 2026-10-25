@@ -236,19 +236,27 @@ fn edited_facts_are_passed_to_the_extension_and_validated() {
 #[test]
 fn readonly_probes_write_no_hidden_lockfile_but_read_existing_ones() {
     let f = Fixture::new();
-    let hidden = f.dir.path().join("cache/hidden-lockfiles");
+    // The hidden lockfile lives in the workspace's state directory,
+    // `<cache>/worktrees/<name>-<hash>/` (docs/WORKTREES.md).
+    let hidden = || {
+        fs::read_dir(f.dir.path().join("cache/worktrees"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|state| state.path().join("MODULE.bazel.lock").exists())
+    };
     for _ in 0..2 {
         let run = f.run_with("update", ALL, "a", &["--native-lockfile=readonly"]);
         assert!(run.status.success(), "{}", error(&run));
         // Stateless: every extension runs again, nothing is persisted.
         assert_eq!(evaluated(&run).len(), 6, "{:?}", evaluated(&run));
         assert!(f.lockfile().is_none());
-        assert!(!hidden.exists());
+        assert!(!hidden());
     }
     // Lockfiles written by an update run are still read (and reused).
     assert!(f.run("update", ALL, "a").status.success());
     let lockfile = f.lockfile().unwrap();
-    assert!(hidden.exists());
+    assert!(hidden());
     let run = f.run_with("update", ALL, "a", &["--native-lockfile=readonly"]);
     assert!(run.status.success(), "{}", error(&run));
     assert!(evaluated(&run).is_empty(), "{:?}", evaluated(&run));
