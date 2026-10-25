@@ -43,6 +43,7 @@
     "build (positive and negative target patterns)",
     "run (one executable or test target; --script_path, --run_env, --run_in_cwd, --[no]run, --run_under command prefixes; test targets run test-setup.sh with the test environment; docs/RUNFILES_TREES.md, docs/TEST_COMMAND.md)",
     "test (local TestRunnerAction semantics: genuine test-setup.sh/generate-xml.sh, test environment, testlogs, summaries, exit codes 0/1/3/4, caching, sharding, flaky attempts, timeouts, test_suite expansion and filters; docs/TEST_COMMAND.md)",
+    "info (Bazel 9.3 items in genuine order mapped to the native layout: bazel-bin/execution_root/output_path below <cache>/execroot/_main, where builds link their outputs; single/multiple keys, unknown keys exit 2, --show_make_env; docs/INFO.md)",
     "mod graph --output=json (explicit selected modules; optional registries)",
     "version",
     "capabilities"

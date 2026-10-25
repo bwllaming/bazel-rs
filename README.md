@@ -63,8 +63,11 @@ cd tests/fixtures/basic
 ```
 
 Build stdout contains `label<TAB>absolute artifact path`. Outputs live in an
-implementation-specific content-addressed cache, **not** Bazel's conventional
-`bazel-bin` tree. Default cache: `<workspace>/bazel-rs-out`; override with the
+implementation-specific content-addressed cache; every executing build also
+links them at their exec paths below `<cache>/execroot/_main`, so
+`$(bazel-rs info bazel-bin)/pkg/tool` names a built file like Bazel's
+`bazel-bin` (docs/INFO.md; no convenience symlinks are created in the
+workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
 The analysis snapshot is on by default: a `build`, `test` or `run` saves its
