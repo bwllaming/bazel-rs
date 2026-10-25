@@ -151,9 +151,13 @@ the spawn).
   input.
 * **Remote cache.** The REAPI input root holds the directory's files at their
   paths, links followed, without empty directories — MerkleTreeComputer
-  .explodeDirectory (unit test
-  `source_directories_enter_the_remote_input_root_as_their_files`: the key
-  equals the one of the same files as separate inputs). A dangling link: the
+  .explodeDirectory. `tests/remote_cache.rs::source_directory_inputs_enter_the_remote_input_root`
+  pins the AC key genuine Bazel 9.3.0 wrote for a `run_shell` over a source
+  directory with a file link, an executable and an empty directory
+  (`8631b164…`, capture `/tmp/opencode/perf-research/sd-remote-capture.py`
+  against a loopback HTTP cache): native writes the same key; the unit test
+  `source_directories_enter_the_remote_input_root_as_their_files` checks it
+  equals the key of the same files as separate inputs. A dangling link: the
   spawn is not cached remotely (`WARNING: Remote Cache: not used for …: The
   file type of 'P' is not supported.`) and runs locally, where genuine fails
   the spawn (declared).

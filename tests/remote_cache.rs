@@ -792,6 +792,74 @@ use = rule(_use, attrs = {"tool": attr.label(executable = True, cfg = "target")}
     assert!(log.contains(", 1 remote cache hits"), "{log}");
 }
 
+// The AC key genuine Bazel 9.3.0 wrote for `//pkg:ls` of the workspace below
+// (parity-ts2 capture /tmp/opencode/perf-research/sd-remote-capture.py:
+// genuine `--batch --ignore_all_rc_files` against a loopback HTTP cache,
+// docs/SOURCE_DIRECTORIES.md).
+const SOURCE_DIRECTORY_KEY: &str =
+    "8631b164a32dc01eeda8bd7006705f579d3ea19f17ae7ea1657cdbcdb1d0e252";
+
+#[test]
+fn source_directory_inputs_enter_the_remote_input_root() {
+    // MerkleTreeComputer.explodeDirectory: a source directory's files
+    // (links followed, no empty directories, every file executable) are the
+    // input root, so the key equals genuine Bazel's; a changed file inside
+    // is a new key, the old contents hit again.
+    let ws = Workspace::new();
+    ws.file(
+        "pkg/BUILD.bazel",
+        "load(\":defs.bzl\", \"lsdir\")\nlsdir(name = \"ls\", src = \"dir\")\n",
+    );
+    ws.file(
+        "pkg/defs.bzl",
+        r#"def _lsdir(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ctx.actions.run_shell(command = "find -L $1 | LC_ALL=C sort > $2 && cat $1/a.txt $1/link $1/sub/b.txt >> $2", arguments = [ctx.file.src.path, out.path], inputs = [ctx.file.src], outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+lsdir = rule(_lsdir, attrs = {"src": attr.label(allow_single_file = True)})
+"#,
+    );
+    ws.file("pkg/dir/a.txt", "a\n");
+    ws.file("pkg/dir/sub/b.txt", "b\n");
+    write_executable_script(&ws.ws().join("pkg/dir/x.sh"), "#!/bin/sh\n", 0o755);
+    std::os::unix::fs::symlink("a.txt", ws.ws().join("pkg/dir/link")).unwrap();
+    fs::create_dir_all(ws.ws().join("pkg/dir/empty")).unwrap();
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let first = ws.run("c1", &["build", &cache, "//pkg:ls"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    // Genuine's output (the staged directory as `find -L` lists it).
+    assert_eq!(
+        outputs(&first)["//pkg:ls"],
+        "pkg/dir\npkg/dir/a.txt\npkg/dir/empty\npkg/dir/link\npkg/dir/sub\npkg/dir/sub/b.txt\npkg/dir/x.sh\na\na\nb\n"
+    );
+    assert_eq!(server.keys("/ac/"), [SOURCE_DIRECTORY_KEY]);
+    ws.file("pkg/dir/sub/b.txt", "c\n");
+    let changed = ws.run("c2", &["build", &cache, "//pkg:ls"]);
+    assert!(changed.status.success(), "{}", stderr(&changed));
+    assert!(stderr(&changed).contains(", 0 remote cache hits"));
+    assert_eq!(server.keys("/ac/").len(), 2);
+    ws.file("pkg/dir/sub/b.txt", "b\n");
+    let again = ws.run("c3", &["build", &cache, "//pkg:ls"]);
+    assert!(
+        stderr(&again).contains(", 1 remote cache hits"),
+        "{}",
+        stderr(&again)
+    );
+    // A dangling link: not cached remotely (Bazel fails the spawn with
+    // explodeDirectory's IOException), the spawn runs locally.
+    std::os::unix::fs::symlink("missing", ws.ws().join("pkg/dir/dangling")).unwrap();
+    let dangling = ws.run("c4", &["build", &cache, "//pkg:ls"]);
+    assert!(dangling.status.success(), "{}", stderr(&dangling));
+    assert!(
+        stderr(&dangling).contains(
+            "WARNING: Remote Cache: not used for //pkg:ls#0: The file type of 'pkg/dir/dangling' is not supported."
+        ),
+        "{}",
+        stderr(&dangling)
+    );
+}
+
 #[test]
 fn strict_action_env_is_the_modelled_default() {
     let ws = Workspace::new();

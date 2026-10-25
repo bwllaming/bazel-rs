@@ -186,7 +186,12 @@ the spawns (the paired capture confirms every point):
   (docs/DIGEST_MEMO.md, "Upgrade note").
 * Parameter files (`args.use_param_file`) are files of the input root at
   their `<output>-N.params` execution paths (Bazel's ParamFileActionInput);
-  tree artifact inputs contribute their files (no empty subdirectories).
+  tree artifact inputs contribute their files (no empty subdirectories), and
+  so do source directory inputs, links followed
+  (MerkleTreeComputer.explodeDirectory; a dangling link keeps the spawn
+  local where Bazel fails it; docs/SOURCE_DIRECTORIES.md,
+  `tests/remote_cache.rs::source_directory_inputs_enter_the_remote_input_root`
+  pins genuine's key).
 * Tree artifact outputs need `ActionResult.output_directories`, which is not
   modelled: such spawns stay local (`WARNING: Remote Cache: not used for …
   output_directories are not modelled`). Cached entries with
