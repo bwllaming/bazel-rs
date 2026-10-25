@@ -629,6 +629,7 @@ impl Runner<'_> {
             // TerminalTestResultNotifier.notify prints locally cached
             // logs (TestSummaryPrinter.printCachedOutput) before the summary;
             // crate::main does that from the summary.
+            self.link_testlogs(&paths.base, &entry);
             return Ok(UnitOutcome::Result(result));
         }
         // A fresh execution root.
@@ -733,6 +734,7 @@ impl Runner<'_> {
                     &saved,
                     !failed_attempts.is_empty(),
                 )?;
+                self.link_testlogs(&paths.base, &entry);
                 if let Some(parent) = index_path.parent() {
                     fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
                 }
@@ -765,6 +767,16 @@ impl Runner<'_> {
             let _ = stdout.flush();
         }
         Ok(outcome)
+    }
+
+    /// `$(bazel-rs info bazel-testlogs)/<pkg>/<name>` names this result's
+    /// published testlogs (crate::output_tree); never fails the test.
+    fn link_testlogs(&self, base: &str, entry: &Path) {
+        if let Err(error) =
+            crate::output_tree::link_directory(self.cache, Path::new(base), &entry.join(base))
+        {
+            eprintln!("bazel-rs: warning: the output tree below execroot/ is incomplete: {error}");
+        }
     }
 
     /// Publish the testlogs of a finished action and its status below the

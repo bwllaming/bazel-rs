@@ -55,6 +55,8 @@ const ALLOWED_MODULES: &[&str] = &[
     "runfiles_tree",
     "lib",
     "observed_fs",
+    // The execution root's output tree, written after execution.
+    "output_tree",
 ];
 const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/"];
 

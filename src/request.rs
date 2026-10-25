@@ -444,7 +444,25 @@ pub fn execute(
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
     let results = if execute {
-        scheduler::execute_graph(options.cache, nodes, options.jobs)?
+        // The runfiles trees link as whole directories in the output tree.
+        let runfiles_trees = nodes
+            .iter()
+            .filter(|node| {
+                matches!(
+                    node.action.extra.transform,
+                    Some(Transform::RunfilesTree { .. })
+                )
+            })
+            .map(|node| node.action.id.clone())
+            .collect();
+        let results = scheduler::execute_graph(options.cache, nodes, options.jobs)?;
+        // `$(bazel-rs info bazel-bin)/...` names the built files
+        // (crate::output_tree, docs/INFO.md); never fails the build.
+        let published = crate::output_tree::publish(options.cache, &results, &runfiles_trees);
+        if let Some(error) = published.error {
+            eprintln!("bazel-rs: warning: the output tree below execroot/ is incomplete: {error}");
+        }
+        results
     } else {
         drop(nodes);
         BTreeMap::new()

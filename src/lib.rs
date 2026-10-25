@@ -74,6 +74,7 @@ pub mod module_graph;
 pub mod native_rules;
 pub mod observed_fs;
 pub mod output_group_info;
+pub mod output_tree;
 pub mod package;
 pub mod package_specification;
 pub mod patch_inputs;
