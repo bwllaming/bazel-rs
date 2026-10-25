@@ -172,7 +172,16 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   as observed) and the native `status.json` (TestResultData: status,
   cachable, test times, logs, parsed test case). Like the action cache only
   the last key of each test action output is reusable (a run with another
-  `--test_timeout` reruns the next default run).
+  `--test_timeout` reruns the next default run). That index of last keys is
+  the workspace's own, `<cache>/worktrees/<name>-<hash>/tests/index/`
+  (docs/WORKTREES.md: each git worktree sharing a cache is an output base of
+  its own), while the results themselves are shared: a test the workspace
+  never ran (no index entry) accepts the stored result of its exact key,
+  like a disk-cache hit in a fresh output base, so the first `test` in a new
+  worktree of a commit another worktree tested is `(cached)`, and two
+  worktrees testing different commits alternate without rerunning. (After
+  upgrading from the flat layout, whose index was `<cache>/tests/index/`,
+  each workspace starts without an index once.)
 * a cached result is used as stored, like TestRunnerAction.actionCacheHit
   (analysis/test/TestRunnerAction.java:686-700): its test case exists only if
   the run that produced it parsed test.xml (a detailed format), so a later
@@ -210,7 +219,10 @@ the failing actions name, NO STATUS for the rest).
 RunCommand.getTestCommandLine (runtime/commands/RunCommand.java:754-850): one
 shard and run only (`Run command does not support tests with more than one
 shard or run`); the command is `test-setup.sh EXE ARGS... RESIDUE` in an
-execution root `<cache>/test-run/<key>/execroot` holding test-setup.sh and a
+execution root `<cache>/worktrees/<name>-<hash>/test-run/<key>/execroot` (the
+workspace's state directory, docs/WORKTREES.md: a `run` of the same test in
+another worktree sharing the cache never replaces it; two concurrent `run`s
+of one test in the SAME workspace still share it) holding test-setup.sh and a
 link `<executable>.runfiles` to the built runfiles tree; the environment is
 `BUILD_*` plus the test environment (no `--run_env`); `BUILD_EXECROOT` makes
 test-setup.sh exec the test directly. `--script_path` writes the same command.

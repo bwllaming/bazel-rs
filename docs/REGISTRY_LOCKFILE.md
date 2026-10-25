@@ -206,12 +206,26 @@ skipped the write.
 
 Non-reproducible results go to the workspace lockfile. Results with
 `reproducible = True` go to the **hidden lockfile**: Bazel's
-`<output_base>/MODULE.bazel.lock`, which native keeps at
-`<cache-dir>/hidden-lockfiles/<sha256 of the workspace path>/MODULE.bazel.lock`.
+`<output_base>/MODULE.bazel.lock`, which native keeps in the workspace's
+state directory, `<cache-dir>/worktrees/<name>-<hash>/MODULE.bazel.lock`
+(docs/WORKTREES.md; before per-worktree state it was
+`<cache-dir>/hidden-lockfiles/<sha256 of the workspace path>/MODULE.bazel.lock`).
 That file is read in update mode, and any read failure counts as empty
 (`BazelLockFileFunction.java:75-98`). Facts go to both files. Results taken
 from a lockfile are recorded again unchanged. As before, a file is written
-only when its value changes.
+only when its value changes, through a temporary file and a rename (another
+worktree may read it as its seed at any time).
+
+While a workspace has no hidden lockfile of its own, the first that exists
+of these seeds it (native; an output base starts empty in Bazel): its own
+of the flat layout, then — in a linked git worktree — its main checkout's,
+in the per-worktree and the flat layout. A seed is validated entry by entry
+like any lockfile, so a reproducible extension the worktree uses unchanged
+is not evaluated again; the main checkout's entries (and facts) whose JSON
+names the main checkout's path are dropped first (an attribute holding a
+path below it would point the worktree's repositories into the main
+checkout; paths into the cache both share are kept). A seeded hidden
+lockfile is written to the workspace's own path when the command ends.
 
 ### Reuse and validation (`SingleExtensionEvalFunction.java:144-407`)
 

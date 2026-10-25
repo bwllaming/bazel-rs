@@ -91,6 +91,21 @@ after the repository's own materialization returned). Persistent
 per-repository working directories (a `GOPATH` outside every stage) would
 remove the shared path altogether.
 
+**Git worktrees make the hazard ordinary (docs/WORKTREES.md).** The linked
+worktrees of a repository share their main checkout's cache by default, so
+"a second native process on the same cache" is any build in another
+worktree. Two worktrees on commits with the same Go SDK and gazelle
+`go_repository_cache` specification (the usual case) never re-execute it
+and are safe. A worktree on a branch that changes what `go_repository_cache`
+is keyed by — a Go SDK or gazelle version bump, a changed `go_env` —
+executes it once for that new specification in the shared cache (every
+specification keeps its own publication afterwards, but all of them name
+the same stage path as their live `GOPATH`): while that execution runs, a
+concurrent build in another worktree can lose or contaminate its module
+downloads as described above. Until the lease exists, do not build such a
+branch for the first time while another worktree of the repository builds
+(or give that worktree its own `--cache-dir`).
+
 ## Privacy, identity and resource boundaries
 
 Only requested names are read; the process environment is never enumerated.

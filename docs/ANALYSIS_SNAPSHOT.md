@@ -8,6 +8,14 @@ recording layer and the local-repository replay
 `format`, `store`, `hit`, `save`, `capture`, `diag`, `telemetry`, plus
 `validate`, `replay`, `codec`, `record`), wired in `src/main.rs`.
 
+**Where.** `<state>` below is the workspace's state directory in the cache,
+`<cache>/worktrees/<name>-<hash>/` (docs/WORKTREES.md): the git worktrees
+sharing one cache each keep their own store, logs and budget, and the
+snapshot key G names the workspace anyway (a snapshot is never portable
+between worktrees). Before per-worktree state the store was
+`<cache>/snapshots/`; a cache of that layout is not migrated (its snapshots
+are simply never looked up again; delete the directory).
+
 **On by default (L2-W7).** With `BAZEL_RS_SNAPSHOT` unset or empty (or
 `=on`, `=1`, `=true`) every `build`, `test` and `run` reads and writes
 snapshots: an unchanged re-run is a hit, anything else runs the full
@@ -16,20 +24,20 @@ analysis and saves it. `query` and `mod` never use it. The other values:
 | `BAZEL_RS_SNAPSHOT` | |
 |---|---|
 | unset, empty, `on`, `1`, `true` | the default: look up, hit or run the full analysis and save it |
-| `off`, `0`, `false` | **the escape hatch**: nothing snapshot-related at all — no lookup, no recording window, no stderr capture, no store write (not even `<cache>/snapshots/`); every command runs the full analysis, exactly as before the snapshot existed |
-| `verify` | a debugging tool for when a hit is suspected of a stale result: `on`, plus a shadow full analysis on every hit, compared with the hit before it executes (see "Verify mode" below, L2-W6); a difference is logged to `<cache>/snapshots/verify.log` (every detail to `verify-details.log`, the snapshot set aside in `mismatched/`, L2-W5i) and the full analysis's plan executes, so the command's result is the snapshot-less one |
+| `off`, `0`, `false` | **the escape hatch**: nothing snapshot-related at all — no lookup, no recording window, no stderr capture, no store write (not even `<state>/snapshots/`); every command runs the full analysis, exactly as before the snapshot existed |
+| `verify` | a debugging tool for when a hit is suspected of a stale result: `on`, plus a shadow full analysis on every hit, compared with the hit before it executes (see "Verify mode" below, L2-W6); a difference is logged to `<state>/snapshots/verify.log` (every detail to `verify-details.log`, the snapshot set aside in `mismatched/`, L2-W5i) and the full analysis's plan executes, so the command's result is the snapshot-less one |
 | `record` | the recording-only report (docs/ANALYSIS_SNAPSHOT_RECORDING.md); never reads or writes snapshots |
 | anything else | reported on the diagnostics stream (`ignoring BAZEL_RS_SNAPSHOT=...`) and ignored: the default |
 
 When a result looks stale, run the command once with
 `BAZEL_RS_SNAPSHOT=verify`: it runs the full analysis beside the hit, names
 any difference on stderr, in `verify.log` and in `verify-details.log`, sets
-that snapshot aside in `<cache>/snapshots/mismatched/` and gives the full
+that snapshot aside in `<state>/snapshots/mismatched/` and gives the full
 analysis's result (the next run analyzes and saves anew) — please report
 such a mismatch ("Diagnosing a suspected stale result" below). `=off` gives the
 full analysis's result without touching the store (a later default run
 still uses the snapshot; the off run did repair any tampered repository
-tree, see "Repository tree files on a hit"); deleting `<cache>/snapshots/`
+tree, see "Repository tree files on a hit"); deleting `<state>/snapshots/`
 drops every snapshot and log. `BAZEL_RS_SNAPSHOT_EXPLAIN=1` says, on the
 diagnostics stream (`bazel-rs-snapshot:` lines), why a lookup missed (the
 first failing input), what a hit validated and replayed, and why a run was
@@ -53,7 +61,7 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    files, option parsing and the other bootstrap values; before the
    registry session opens): blake3 of the postcard encoding of the snapshot
    format and `CARGO_PKG_VERSION`; the **binary identity** (blake3 of
-   `/proc/self/exe`, cached in `<cache>/snapshots/exe.id` by the binary's
+   `/proc/self/exe`, cached in `<state>/snapshots/exe.id` by the binary's
    stat key and written only for a binary settled two seconds before it was
    hashed); the command; the canonical workspace root and cache dir, the
    working directory, its package and its directory below the root; the
@@ -81,7 +89,7 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    `BAZEL_RS_VERIFY_ARTIFACTS`, `BAZEL_RS_DIGEST_MEMO`,
    `BAZEL_RS_TIMING_ALLOC`, every `BAZEL_RS_DEBUG_*`) turn snapshots off
    for the command: neither read nor written.
-2. **Lookup**: `<cache>/snapshots/v1/<first 16 bytes of G in hex>.snap`;
+2. **Lookup**: `<state>/snapshots/v1/<first 16 bytes of G in hex>.snap`;
    the header must carry this format, this binary identity and the full G.
    The INPUTS and EVENTS sections are read by offset and checked against
    their checksums.
@@ -305,7 +313,7 @@ file differ, re-executes the rule and republishes the tree, a new
 directory — and the snapshot then misses on the renamed or changed
 directories (`integrity` with the tree's path in events.log) and saves
 anew; `BAZEL_RS_SNAPSHOT=verify` repairs it too (the shadow analysis), and
-removing `<cache>/snapshots/v1/` drops every snapshot. A local
+removing `<state>/snapshots/v1/` drops every snapshot. A local
 repository's tree needs nothing (every hit checks it).
 
 *Exits that never heal*: the healing check runs only when bazel-rs itself
@@ -347,8 +355,8 @@ hit (validated ∥ replayed ∥ decoded, nothing printed; refreshed keys held ba
   -> match: the hit's own window bytes print and the snapshot's plan executes (what `on` would run);
             the refreshed keys are written back
      mismatch: every difference on the diagnostics stream (`bazel-rs-snapshot: verify ...`), one line
-            appended to <cache>/snapshots/verify.log and that line with every difference to
-            verify-details.log (L2-W5i), the snapshot set aside in <cache>/snapshots/mismatched/
+            appended to <state>/snapshots/verify.log and that line with every difference to
+            verify-details.log (L2-W5i), the snapshot set aside in <state>/snapshots/mismatched/
             (L2-W5i; before, deleted — either way the next run analyzes and saves anew), nothing
             saved; then (the default, L2-W5f) what the full analysis printed while planning prints
             and the FULL ANALYSIS's plan executes — the command's output and exit code are those of
@@ -369,7 +377,7 @@ of these is a mismatch (`window`) or the end of the process, whose output
 is the full analysis's; the mismatch path then does not print the bytes a
 second time.
 
-`<cache>/snapshots/verify.log` (binary-safe: every field one token,
+`<state>/snapshots/verify.log` (binary-safe: every field one token,
 `\xNN`-escaped, `-` when absent) holds one line per mismatch:
 `<UTC time> <unix seconds> key=<short G> command=<command> first=<class> differences=<n> taint=<first taint> path=<first differing path> targets=<patterns>`,
 the class of the first difference being one of `plan`, `window`, `taint`,
@@ -395,7 +403,7 @@ set the mode themselves — tests/snapshot.rs — do not).
 **What a mismatch leaves behind (L2-W5i).** A `first=plan` line alone is
 not actionable, and the differences used to reach stderr only while the
 snapshot was deleted. Now each mismatch also appends a block to
-`<cache>/snapshots/verify-details.log` — its `verify.log` line, then
+`<state>/snapshots/verify-details.log` — its `verify.log` line, then
 `snapshot: set aside as <path>` (or `removed`, `kept` for `cannot-verify`,
 `gone already`) and every `verify mismatch:`, `verify   <detail>` and
 `verify note:` line the diagnostics stream shows (indented by two spaces;
@@ -403,7 +411,7 @@ a detail's own newlines become further indented lines, control
 characters `\xNN`; at most 4 KiB per line and about 64 KiB per block, the
 rest counted) — bounded and rotated like the other logs (1 MiB plus one
 `.1`). The mismatching snapshot is **moved** to
-`<cache>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` instead of being
+`<state>/snapshots/mismatched/<UTC time>-<key>-<pid>.snap` instead of being
 deleted (crate::snapshot::store::set_aside; a move that fails deletes it,
 and the block says so). The next lookup misses (`absent`) as before. The
 directory keeps the **3 newest** files; it is outside `v1/`, so lookups
@@ -413,7 +421,7 @@ snapshots / 1 GiB nor removes it — its own bound is those 3 files (at most
 on ~/code).
 
 **The event log (L2-W5g `miss.log`, renamed and completed by L2-W5h).**
-`<cache>/snapshots/events.log` (the same encoding) holds one line per
+`<state>/snapshots/events.log` (the same encoding) holds one line per
 snapshot event of every command with the snapshot on — in `on` and
 `verify` mode alike, plus `record`'s report — so the logs have a
 denominator: every lookup's hit or miss with the attempt's wall time, every
@@ -537,7 +545,8 @@ default on; the user decided against a soak period (the snapshot is new:
 problems are fixed as they appear), so nothing below gates anything. When
 a command's result looks stale — a hit seems to have built, tested or run
 something a full analysis would not have — or an unchanged re-run keeps
-missing, per cache:
+missing, per workspace (each worktree sharing a cache has its own store
+and logs):
 
 1. **Re-run the command with `BAZEL_RS_SNAPSHOT=verify`** (per command, or
    `export BAZEL_RS_SNAPSHOT=verify` for a session; optionally
@@ -553,9 +562,12 @@ missing, per cache:
    phase-1 prefetch off; the shadow analysis records, with the prefetch
    since W6R); a miss saves like `on`. Unset the variable again
    afterwards: the default gives hits of a few tenths of a second.
-2. **What it leaves behind**, in `<cache>/snapshots/` (`<cache>` is
-   `--cache-dir`, default `<workspace>/bazel-rs-out`, e.g.
-   `~/code/bazel-rs-out/snapshots/`): a mismatch prints a
+2. **What it leaves behind**, in `<state>/snapshots/` (the workspace's
+   state directory `<cache>/worktrees/<name>-<hash>/`; `<cache>` is
+   `--cache-dir`, default `<workspace>/bazel-rs-out` or, in a linked git
+   worktree, the main checkout's — e.g.
+   `~/code/bazel-rs-out/worktrees/code-<hash>/snapshots/`;
+   `scripts/snapshot_soak_report.py --workspace DIR CACHE` finds it): a mismatch prints a
    `bazel-rs-snapshot: verify … MISMATCH` line on stderr (it names the first
    difference, where the snapshot went and where the details were logged),
    appends one line to `verify.log` and that line with every difference to
@@ -574,10 +586,12 @@ missing, per cache:
    store's size. `--archive <dir>` first appends the cache's new log lines to
    that directory (one file per log, never rotated) and reports over the
    whole archive, so a series of commands longer than the logs' window is
-   counted completely; `--workspace <dir>` when the cache is not
-   `<workspace>/bazel-rs-out` (its `bazel-*` entries are output trees for the
-   SUSPECT classification); `--json` prints the report as JSON. One report
-   per cache: another workspace or `--cache-dir` has its own logs. The
+   counted completely; `--workspace <dir>` names the workspace whose store
+   to read — needed for a linked git worktree, whose store is in its main
+   checkout's cache, and for any cache that is not `<workspace>/bazel-rs-out`
+   (its `bazel-*` entries are output trees for the SUSPECT classification);
+   `--json` prints the report as JSON. One report per workspace: another
+   worktree or `--cache-dir` has its own logs. The
    report ends with a "soak exit check": the thresholds L2-W5i proposed for
    the default flip (verified hits, days, hit rate ≥ 90 % on unchanged
    re-runs, hit p95 ≤ 1 s, store ≤ 1 GiB, no mismatch, heal or SUSPECT
@@ -620,7 +634,7 @@ missing, per cache:
    and saves anew.
 6. **Escape hatch**: `BAZEL_RS_SNAPSHOT=off` — exactly the behaviour
    without the snapshot (nothing snapshot-related at all); deleting
-   `<cache>/snapshots/` drops every snapshot and log; one run with the
+   `<state>/snapshots/` drops every snapshot and log; one run with the
    snapshot off (or in verify mode) repairs a tampered repository tree.
 
 ## Syscall audit of the hit path (L2-W6, L2-W5g)
@@ -652,12 +666,13 @@ by the INPUTS like any workspace path, or it is reported (`CACHE <path>`):
 | class | paths | why it is safe |
 |---|---|---|
 | `cache-root`, `store-directories` | the cache dir; `repositories` and its areas (`trees`, `direct`, `git`, `builtins`, with their `trees` and `manifests`), `direct/locks`, `direct/stages` | created, stat'ed or readlink'ed on realpath chains; no content is read — L2-W5h: any other call there (an open, a listing) is reported (`CACHE <path> [<call> in <class>]`) |
-| `snapshot-store` | `snapshots/` | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file, the event log the hit appends to (written, never read) |
+| `state-directories` | `worktrees/` and a workspace's state directory `worktrees/<name>-<hash>` (docs/WORKTREES.md) | created or stat'ed; no content is read |
+| `snapshot-store` | `worktrees/<name>-<hash>/snapshots/` (`snapshots/` in the flat layout) | the hit's own file (header, sections and their checksums verified; its mtime set for LRU), `exe.id` (keyed by the binary's stat), the store directory, the refresh's temporary file, the event log the hit appends to (written, never read) |
 | `digest-table` | `digests/` | crate::digest_memo: a record holds a file's stat key with its digest and is used only while the file's current stat matches it |
 | `replay-stage` | `repositories/direct/stages/<slug>`, `repositories/direct/locks/stage-<slug>` | a replayed local rule's private stage, created fresh under its lock, compared (identity inputs and tree digests) and removed: nothing in it is trusted |
 | `verified-tree` | published store trees and manifests the INPUTS cover (REPO roots and manifests, INTEGRITY entries, paths inside a verified tree not below its links) | the per-tree validation's subject (a racy tree is verified against its manifest) |
 | `local-tree` | a replayed local repository's published tree (REPLAY `root:` and below) and its manifest (`repositories/direct/manifests/<identity>.json`) | the subject of the hit's local tree check (L2-W5h; `local-root` before: the root's existence only): read and compared with the replayed execution, a difference is a miss |
-| `covered-input` | any other cache path the INPUTS cover | an input like a workspace file: the hidden lockfile (`hidden-lockfiles/<hash>/MODULE.bazel.lock`), a READ observation a racy hit re-reads |
+| `covered-input` | any other cache path the INPUTS cover | an input like a workspace file: the hidden lockfile (`worktrees/<name>-<hash>/MODULE.bazel.lock`; `hidden-lockfiles/<hash>/` in the flat layout), a specification pointer (`repositories/direct/specs/<spec>`, or a workspace's own `<spec>.ws-<hash>`, docs/WORKTREES.md), a READ observation a racy hit re-reads |
 
 The `--hit` report prints the counts per class (`inside the cache: N
 touches (...)`). Clean (L2-W5g, nothing unclassified or uncovered): the
@@ -782,7 +797,7 @@ holds file descriptor 2; they are never part of the replayed bytes.
 
 ## The file
 
-`<cache>/snapshots/v1/<hex(G)[..32]>.snap`, binary (postcard and
+`<state>/snapshots/v1/<hex(G)[..32]>.snap`, binary (postcard and
 fixed-width fields; no JSON):
 
 | Offset | Content |
@@ -798,7 +813,8 @@ header or section (a torn write: no fsync) is a miss; writers use a
 temporary file in the same directory and a rename, so several writers of
 one key all write valid files and the last rename wins; readers never lock.
 Garbage collection after each save keeps at most 16 snapshots and 1 GiB per
-cache, least recently used first, and removes temporary files older than an
+store (per workspace: every worktree sharing a cache has its own budget),
+least recently used first, and removes temporary files older than an
 hour; the snapshots a verify mismatch set aside in `snapshots/mismatched/`
 are neither counted nor collected (their own bound: the 3 newest, L2-W5i). `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
 the identity, a checksum).

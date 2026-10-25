@@ -293,8 +293,9 @@ re-runs, once:
   outdated (`is a path into the native repository store (recorded by an
   older bazel-rs)`), so the extension re-evaluates once and records
   `@@NAME//path` keys, Bazel's own (EXTENSION_CTX_SURFACE.md). ~/code's
-  hidden lockfile (`<cache-dir>/hidden-lockfiles/<sha256 of the workspace
-  path>/MODULE.bazel.lock`) holds 11 such keys — go_deps 7, go_sdk 1, pip 3
+  hidden lockfile (then `<cache-dir>/hidden-lockfiles/<sha256 of the workspace
+  path>/MODULE.bazel.lock`; now in the workspace's state directory,
+  docs/WORKTREES.md) holds 11 such keys — go_deps 7, go_sdk 1, pip 3
   — so those three extensions re-evaluate once; its MODULE.bazel.lock holds
   none. With the cache outside the workspace the pre-i20 keys were already
   Bazel's `@@NAME//path`, and no bazel-rs has written an absolute key into a

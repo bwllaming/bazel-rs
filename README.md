@@ -70,11 +70,27 @@ links them at their exec paths below `<cache>/execroot/_main`, so
 workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
+**Git worktrees share one cache.** In a linked git worktree (`git worktree
+add`) the default cache is the main checkout's `bazel-rs-out` (found by
+reading `.git`, no git process), so a new worktree's first build reuses the
+repositories, actions and test results the other worktrees already have
+instead of paying a cold build and another copy of the cache. What belongs
+to one workspace — analysis snapshots, the test result index, the hidden
+lockfile, the execution roots of `run` of tests — lives in
+`<cache>/worktrees/<name>-<hash>/`. Repositories whose content depends on
+the worktree's path are kept per worktree. A worktree's old
+`bazel-rs-out` is left alone with a one-line note (delete it to free the
+space). Caveats — a branch that bumps Go or gazelle must not build for the
+first time while another worktree builds; repositories watching files that
+differ between branches re-run on each switch; no garbage collection yet —
+are in docs/WORKTREES.md.
+
 The analysis snapshot is on by default: a `build`, `test` or `run` saves its
-analysis in `<cache>/snapshots/`, and a re-run whose recorded inputs are all
-unchanged skips loading and analysis. `BAZEL_RS_SNAPSHOT=off` turns it off;
-`BAZEL_RS_SNAPSHOT=verify` checks every hit against a full analysis when a
-result looks stale (docs/ANALYSIS_SNAPSHOT.md).
+analysis in the workspace's `<cache>/worktrees/<name>-<hash>/snapshots/`, and
+a re-run whose recorded inputs are all unchanged skips loading and analysis.
+`BAZEL_RS_SNAPSHOT=off` turns it off; `BAZEL_RS_SNAPSHOT=verify` checks every
+hit against a full analysis when a result looks stale
+(docs/ANALYSIS_SNAPSHOT.md).
 
 Implemented:
 
