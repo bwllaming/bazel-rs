@@ -10667,6 +10667,8 @@ impl Engine {
             workspace_status,
             target_identities,
             views,
+            input_groups,
+            listed_tree_actions,
             ..
         } = state;
         let dependency_key = |label: Label| ConfiguredTargetKey::new(label, config);
@@ -10731,6 +10733,7 @@ impl Engine {
         // (else their files) and the outputs.
         let mut location_map = crate::location_expander::LocationMap::default();
         let mut tools = Vec::new();
+        let mut tool_trees = Vec::new();
         let mut template_variables: Vec<Vec<(String, String)>> = Vec::new();
         if let (RuleKind::Genrule, Some(native)) = (&rule.kind, &rule.native) {
             self.genrule_toolchains_errors(rule, config, configured, custom_providers)?;
@@ -10759,7 +10762,7 @@ impl Engine {
                 }
             }
             for (label, edge_config, both_labels) in tool_dependencies {
-                let artifacts = self.artifacts(&label, edge_config, dry, declared)?;
+                let mut artifacts = self.artifacts(&label, edge_config, dry, declared)?;
                 let files = artifacts.iter().map(Artifact::file).collect::<Vec<_>>();
                 let dependency = ConfiguredTargetKey::new(label.clone(), edge_config);
                 let actual = self
@@ -10771,7 +10774,29 @@ impl Engine {
                     &files,
                     runfiles_info.get(&ConfiguredTargetKey::new(actual.clone(), edge_config)),
                 );
-                let located = match runfiles.files_to_run(&files).executable() {
+                let files_to_run = runfiles.files_to_run(&files);
+                // A tool with runfiles support also brings its runfiles
+                // tree and its executable, which may be missing from its
+                // files to build (CommandHelper.java:156-166): staged at
+                // `<executable>.runfiles` like a Starlark action's tool
+                // (crate::analysis_runtime::tool_runfiles_tree), so a
+                // launcher finds its runfiles next to `$0`.
+                if let Some(tree) = crate::analysis_runtime::tool_runfiles_tree(&files_to_run) {
+                    if let Some(executable) = files_to_run.executable()
+                        && !files.contains(executable)
+                    {
+                        let artifact =
+                            artifact_index.get(executable).cloned().ok_or_else(|| {
+                                format!(
+                                    "{}: tool executable has no declared artifact: {}",
+                                    rule.label, executable.path
+                                )
+                            })?;
+                        artifacts.push(artifact);
+                    }
+                    tool_trees.push(tree);
+                }
+                let located = match files_to_run.executable() {
                     Some(executable) => vec![executable.clone()],
                     None => files,
                 };
@@ -10977,13 +11002,29 @@ impl Engine {
                 ..Action::default()
             };
             let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
-            source_inputs.insert(action.id.clone(), source_paths(&action_inputs).into());
-            nodes.push(plan_action(
+            // The tools' runfiles trees are shared input groups, as a
+            // Starlark action's tools' (GenRuleAction's spawn expands the
+            // runfiles tree artifacts CommandHelper resolved).
+            let mut commit = ActionCommit {
+                artifact_index,
+                workspace_status,
+                nodes,
+                producers,
+                source_inputs,
+                client_environment,
+                status_client_environment,
+                input_groups,
+                listed_tree_actions,
+            };
+            self.commit_action(
                 action,
                 action_inputs,
+                &tool_trees,
+                None,
+                &key.label.to_string(),
                 &main_ignored,
-                client_environment,
-            )?);
+                &mut commit,
+            )?;
             let artifacts = outputs
                 .into_iter()
                 .enumerate()

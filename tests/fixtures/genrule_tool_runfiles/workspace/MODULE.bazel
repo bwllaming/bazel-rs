@@ -1,0 +1,8 @@
+module(name = "genrule_tool_runfiles")
+
+# The genuine platforms 1.0.0 module (the default host platform's
+# @platforms//host for the exec configuration of genrule `tools`), extracted
+# into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json
+# before each run.
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")

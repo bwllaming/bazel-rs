@@ -1,0 +1,162 @@
+{
+ "schema": "genrule-tool-runfiles-reference-receipt/v1",
+ "fixture": "genrule_tool_runfiles",
+ "purpose": "A genrule tool with runfiles support brings its runfiles tree (and its executable) into the action (CommandHelper.java:156-166 resolvedTools: runfilesSupport.getRunfilesTreeArtifact(); GenRuleBase.java:102-106, 171 for tools, toolchains and resolved toolchains), staged at <executable>.runfiles: a js_binary-like launcher finds its runfiles via $0.runfiles and via RUNFILES_DIR, sandboxed and standalone. Motivation: ~/code //src/ts/packages/sandbox-types:sandbox-types_npm_pack (`tools = [\"@pnpm\"]`, `pnpm pack`) failed natively with `FATAL: aspect_rules_js[js_binary]: RUNFILES environment variable is not set`.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "build --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case (platforms extracted from tests/fixtures/label_repo_name/platforms_archive.json)"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "deb8cc590fd5aa8a58d808b4acc11777e4d891bff0ddbaf016702e9e15074d66",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> build --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/genrule-tool-runfiles-capture.py, genrule-tool-runfiles-receipt.py (not committed)",
+  "sha256": {
+   "genrule-tool-runfiles-capture.py": "9ee0664d9da3271d04f1135ccc417c0af3af20de9c7aa5e41da02f4442835cec",
+   "genrule-tool-runfiles-receipt.py": "1686ee0e57f684d86ca3d3deb952b73306a04ea33641cd374ff8cc4f26909217"
+  }
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "c25c2ac48456fa0c72fd0fa75f92a2474598f9dc5e6194acb1e2715524453aae",
+  "pkg/BUILD.bazel": "18d706aac40b15e4ffdc499e99e4c933041b5e7ab17ca0dd50dea933d0d9dec7",
+  "pkg/data.txt": "d4e4877bac978b7952f0d544fc52ebff5411d351d129f1f056fa43f11da9af2b",
+  "pkg/defs.bzl": "c89b302d074726a1bf72c124dfa6d4b2d1286a6f8d1fc47e2bc7c903ffc6611a"
+ },
+ "normalization": "<OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (path below bazel-out) as [mode, contents].",
+ "comparison (tests/genrule_tool_runfiles.rs, live)": "MATCH: success equal and built top-level outputs (path -> [mode, contents]) equal.",
+ "genuine_key_findings": [
+  "The tool's runfiles tree is at $(execpath :launcher).runfiles in the sandbox and standalone: `$0.runfiles` and RUNFILES_DIR both find _main/pkg/data.txt.",
+  "The staged tree (MANIFEST aside) is _main, _main/pkg, _main/pkg/data.txt, _main/pkg/launcher and _repo_mapping, sandboxed and standalone.",
+  "Before the fix the native genrule staged only the tool executable (the launcher failed with its RUNFILES FATAL)."
+ ],
+ "known_divergences": [],
+ "counts": {
+  "MATCH": 4
+ },
+ "scratch_removed": true,
+ "cases": {
+  "use": {
+   "argv": [
+    "build",
+    "//pkg:use"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 11.478,
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use up-to-date:\n  bazel-bin/pkg/use.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use.txt": [
+      "0o555",
+      "dollar0: payload\nRUNFILES_DIR: payload\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 3.19,
+    "stdout": "//pkg:use\tbazel-out/k8-fastbuild/bin/pkg/use.txt\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use.txt": [
+      "0o555",
+      "dollar0: payload\nRUNFILES_DIR: payload\n"
+     ]
+    }
+   },
+   "verdict": "MATCH"
+  },
+  "use_standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//pkg:use"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 8.95,
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use up-to-date:\n  bazel-bin/pkg/use.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 local.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use.txt": [
+      "0o555",
+      "dollar0: payload\nRUNFILES_DIR: payload\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 2.007,
+    "stdout": "//pkg:use\tbazel-out/k8-fastbuild/bin/pkg/use.txt\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/use.txt": [
+      "0o555",
+      "dollar0: payload\nRUNFILES_DIR: payload\n"
+     ]
+    }
+   },
+   "verdict": "MATCH"
+  },
+  "listing": {
+   "argv": [
+    "build",
+    "//pkg:listing"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.187,
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:listing (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:listing up-to-date:\n  bazel-bin/pkg/listing.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/listing.txt": [
+      "0o555",
+      "./_main\n./_main/pkg\n./_main/pkg/data.txt\n./_main/pkg/launcher\n./_repo_mapping\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.843,
+    "stdout": "//pkg:listing\tbazel-out/k8-fastbuild/bin/pkg/listing.txt\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/listing.txt": [
+      "0o555",
+      "./_main\n./_main/pkg\n./_main/pkg/data.txt\n./_main/pkg/launcher\n./_repo_mapping\n"
+     ]
+    }
+   },
+   "verdict": "MATCH"
+  },
+  "listing_standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//pkg:listing"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.307,
+    "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:listing (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:listing up-to-date:\n  bazel-bin/pkg/listing.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 local.\nINFO: Build completed successfully, 7 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/listing.txt": [
+      "0o555",
+      "./_main\n./_main/pkg\n./_main/pkg/data.txt\n./_main/pkg/launcher\n./_repo_mapping\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.806,
+    "stdout": "//pkg:listing\tbazel-out/k8-fastbuild/bin/pkg/listing.txt\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/listing.txt": [
+      "0o555",
+      "./_main\n./_main/pkg\n./_main/pkg/data.txt\n./_main/pkg/launcher\n./_repo_mapping\n"
+     ]
+    }
+   },
+   "verdict": "MATCH"
+  }
+ }
+}

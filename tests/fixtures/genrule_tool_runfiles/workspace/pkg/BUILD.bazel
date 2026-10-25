@@ -1,0 +1,25 @@
+load(":defs.bzl", "launcher")
+
+launcher(
+    name = "launcher",
+    data = ["data.txt"],
+)
+
+# The tool's runfiles tree is staged next to its executable: found through
+# `$0.runfiles` and through RUNFILES_DIR.
+genrule(
+    name = "use",
+    outs = ["use.txt"],
+    cmd = "$(execpath :launcher) > $@ && " +
+          "RUNFILES_DIR=$(execpath :launcher).runfiles $(execpath :launcher) >> $@",
+    tools = [":launcher"],
+)
+
+# The staged tree's entries (MANIFEST excluded: only a materialized tree
+# has one).
+genrule(
+    name = "listing",
+    outs = ["listing.txt"],
+    cmd = "(cd $(execpath :launcher).runfiles && find . -mindepth 1 ! -name MANIFEST | LC_ALL=C sort) > $@",
+    tools = [":launcher"],
+)
