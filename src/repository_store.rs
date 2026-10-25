@@ -494,7 +494,8 @@ pub mod timing {
 /// What one execution observed, for the identity digest and the manifest.
 pub struct Executed {
     /// Exact serialized runtime input provenance, after validating the result.
-    /// These bytes (never the incidental stage pathname) enter the identity.
+    /// These bytes (never the incidental repository directory pathname)
+    /// enter the identity.
     pub inputs: Vec<u8>,
     /// Opaque recorded watchable-input probes (caller JSON with a numeric
     /// `version`, see `recorded_version`) persisted in the manifest and
@@ -1277,6 +1278,55 @@ fn swept_stores() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf
     SWEPT.get_or_init(Default::default)
 }
 
+/// Remove the private stages `direct/stages/<slug>` of binaries before the
+/// slots (crate::repository_slots), once per process and store — the
+/// `go_repository_cache` stage there was the whole GOPATH of an earlier
+/// binary (2.5 GB on ~/code). A stage is removed only while its lock
+/// `locks/stage-<slug>` can be taken without waiting (no earlier binary
+/// executes in it); the lock files stay (removing a lock another process
+/// holds would break its exclusion). Best effort: a stage left behind is
+/// tried again by the next process. An earlier binary that still runs a
+/// rule needing that GOPATH (outside the stage's lock) loses what it held
+/// there, as it did when one of its own processes re-executed the cache.
+fn sweep_legacy_stages(direct: &Path) {
+    static SWEPT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> =
+        std::sync::OnceLock::new();
+    if !SWEPT
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(direct.to_path_buf())
+    {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(direct.join("stages")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(slug) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        no_follow(&mut options);
+        let lock = options.open(direct.join("locks").join(format!("stage-{slug}")));
+        let held = lock
+            .as_ref()
+            .ok()
+            .filter(|lock| FileExt::try_lock_exclusive(*lock).is_ok());
+        // A stage without a lock file never had a writer of its own.
+        let unlocked = lock
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound);
+        if held.is_some() || unlocked {
+            let _ = crate::repository_ctx::remove_tree(&entry.path());
+        }
+        if let Some(lock) = held {
+            let _ = FileExt::unlock(lock);
+        }
+    }
+}
+
 /// A finished execution's inventory and its encoded content view (the bytes
 /// the identity frames): a repository boundary file is added when missing.
 /// With `scan`, the bytes are also searched for store paths
@@ -1397,6 +1447,7 @@ where
     for path in [&trees, &manifests, &locks, &specs] {
         ensure_directory(path)?;
     }
+    sweep_legacy_stages(&direct);
     // The pointer is published by atomic rename; an unlocked reader sees
     // either the old or the new publication, never a partial one. The warm
     // check is the shared `try_reuse` probe (worker-safe); a local rule
@@ -4126,6 +4177,36 @@ mod tests {
             publish_spec(cache.path(), b"spec-a", b"a", false, |_| Ok(b"bd".to_vec())).unwrap();
         assert_ne!(a, b);
         assert_ne!(a, c);
+    }
+
+    /// The private stages of binaries before the slots are removed once per
+    /// process, except one an earlier binary executes in (its stage lock is
+    /// held); the lock files stay.
+    #[cfg(unix)]
+    #[test]
+    fn legacy_stages_are_swept_when_their_locks_are_free() {
+        let cache = temp();
+        let direct = cache.path().join("direct");
+        for slug in ["free", "held", "lockless"] {
+            fs::create_dir_all(direct.join("stages").join(slug).join("pkg/mod")).unwrap();
+            read_only_lib(&direct.join("stages").join(slug)).unwrap();
+        }
+        fs::create_dir_all(direct.join("locks")).unwrap();
+        for slug in ["free", "held"] {
+            fs::write(direct.join("locks").join(format!("stage-{slug}")), b"").unwrap();
+        }
+        let held = File::open(direct.join("locks/stage-held")).unwrap();
+        FileExt::lock_exclusive(&held).unwrap();
+        publish(cache.path(), b"", write).unwrap();
+        assert!(!direct.join("stages/free").exists());
+        assert!(!direct.join("stages/lockless").exists());
+        assert!(direct.join("stages/held/pkg/mod").is_dir());
+        assert!(direct.join("locks/stage-free").is_file());
+        FileExt::unlock(&held).unwrap();
+        // Once per process and store: the next publication sweeps nothing.
+        publish_spec(cache.path(), b"other", b"", true, write).unwrap();
+        assert!(direct.join("stages/held/pkg/mod").is_dir());
+        crate::repository_ctx::remove_tree(cache.path()).unwrap();
     }
 
     /// The profile bump of the slots (v1 -> v2): a pointer an earlier

@@ -57,7 +57,8 @@
 //! of the repository tree stores
 //! (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<id>/...`);
 //! never execution roots (`work/`), the working areas of repository rules
-//! and extensions (`modextwd/`, `direct/stages/`), stages or temporary names.
+//! and extensions (`modextwd/`, the repository directories `external/`, the
+//! legacy `direct/stages/`), stages or temporary names.
 //!
 //! The table is saved only when this process hashed files whose digests it
 //! did not hold yet: under the fs2 lock `v2.lock` the current file is read

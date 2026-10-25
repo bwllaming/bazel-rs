@@ -854,7 +854,8 @@ fn checked_path(
 /// content-addressed and only ever replaced as a whole by a tree of the same
 /// content). The execution roots under `work/` and the rest of
 /// `repositories/` (where repository rules and module extensions run
-/// arbitrary code: `modextwd/`, `direct/stages/`) are never remembered.
+/// arbitrary code: `modextwd/`, the repository directories `external/`) are
+/// never remembered.
 /// Other writers racing these checks are outside the module's trust model.
 fn verified_directories() -> &'static RwLock<HashSet<PathBuf>> {
     static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
@@ -929,8 +930,10 @@ fn relative_names(path: &Path, root: &Path) -> Option<Vec<u8>> {
 /// results of repository rules (crate::repository_store), Git sources
 /// (crate::git_source) and the embedded `bazel_tools` (crate::builtin_tools).
 /// Nothing else below `repositories/` is such a store: module extensions and
-/// repository rules run arbitrary code in `modextwd/` and `direct/stages/`,
-/// and downloads, locks, manifests and specification pointers are no trees.
+/// repository rules run arbitrary code in `modextwd/` and in the repository
+/// directories `external/<name>` (crate::repository_slots: a link to a tree,
+/// or mutable), and downloads, locks, manifests and specification pointers
+/// are no trees.
 const REPOSITORY_TREE_STORES: [&[u8]; 4] = [
     b"repositories/trees",
     b"repositories/direct/trees",

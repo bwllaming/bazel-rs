@@ -69,9 +69,9 @@ Inside the cache dir (L2-W5g) every touch must fall into a class that is
 safe by construction, or be covered like any other path:
   * cache-root, store-directories: the cache dir itself and the repository
     store's directories (`repositories`; the areas `trees`, `direct`, `git`,
-    `builtins` with their `trees` and `manifests`; `direct/locks` and
-    `direct/stages`), created, stat'ed or readlink'ed on realpath chains —
-    no content is read;
+    `builtins` with their `trees` and `manifests`; `direct/locks`,
+    `direct/slots`, `external` and the legacy `direct/stages`), created,
+    stat'ed or readlink'ed on realpath chains — no content is read;
   * state-directories: `worktrees/` and a workspace's state directory
     `worktrees/<name>-<hash>` (docs/WORKTREES.md), created or stat'ed — no
     content is read;
@@ -84,10 +84,14 @@ safe by construction, or be covered like any other path:
   * digest-table: `digests/` — the execution tail's digest table, whose
     records hold a file's stat key with its digest and are used only when
     the file's current stat still matches (crate::digest_memo);
-  * replay-stage: `repositories/direct/stages/<slug>` and its lock
-    `repositories/direct/locks/stage-<slug>` — a replayed local rule's
-    private stage, created fresh, compared (identity inputs and tree
-    digests) and removed: nothing in it is trusted;
+  * replay-slot: a replayed local rule's repository directory
+    `repositories/external/<name>` (crate::repository_slots; with the
+    temporary links `.bind-*` that re-bind it), its locks
+    `repositories/direct/locks/slot-<slug>{,.gate}` and its marker
+    `repositories/direct/slots/<slug>` — created fresh under the writer
+    lock, compared (identity inputs and tree digests) and restored for the
+    recorded tree: nothing in it is trusted (also a legacy private stage
+    `repositories/direct/stages/<slug>` and its lock `locks/stage-<slug>`);
   * verified-tree: a published store tree or manifest the INPUTS cover (a
     REPO root or manifest, an INTEGRITY entry, a path inside a verified
     tree not below its links) — the per-tree validation's subject;
@@ -264,6 +268,15 @@ def parse_strace(log, cwd):
         if name == 'getdents64':
             if fds:
                 paths.append(('dir', unescape_strace(fds[0])))
+        elif name in ('symlink', 'symlinkat') and len(strings) > 1:
+            # The first string is the new link's target (its content, e.g.
+            # a slot's `../direct/trees/<id>`), not a path the call touches.
+            link = strings[1]
+            if not link.startswith('/') and name == 'symlinkat' and fds:
+                link = os.path.join(unescape_strace(fds[0]), link)
+            if not link.startswith('/'):
+                link = os.path.join(cwd, link)
+            paths.append(('path', os.path.normpath(link)))
         elif strings:
             first = strings[0]
             # *at calls: a relative path is relative to the dirfd (strace -y
@@ -275,7 +288,7 @@ def parse_strace(log, cwd):
             if not first.startswith('/'):
                 first = os.path.join(cwd, first)
             paths.append(('path', os.path.normpath(first)))
-            if name in ('rename', 'renameat', 'renameat2', 'link', 'linkat', 'symlink', 'symlinkat') and len(strings) > 1:
+            if name in ('rename', 'renameat', 'renameat2', 'link', 'linkat') and len(strings) > 1:
                 second = strings[1]
                 if not second.startswith('/'):
                     second = os.path.join(cwd, second)
@@ -634,7 +647,11 @@ def audit_hit(log, dump, cwd, cache, extra_ignored, stats=None):
 # A published tree of the repository store (64 hex digits; its manifest).
 TREE = re.compile(r'^/repositories/(?:trees|direct/trees|git/trees|builtins/trees)/[0-9a-f]{64}(?:\.json)?(?:/.*)?$')
 MANIFEST = re.compile(r'^/repositories/(?:direct|git)/manifests/[0-9a-f]{64}\.json$')
-STAGE = re.compile(r'^/repositories/direct/(?:stages/[0-9a-f]{32}(?:/.*)?|locks/stage-[0-9a-f]{32})$')
+# A replayed local rule's repository directory (slot), its locks and marker
+# (crate::repository_slots), and the legacy private stage with its lock.
+SLOT = re.compile(r'^/repositories/(?:external/[^/]+(?:/.*)?'
+                  r'|direct/(?:locks/slot-[0-9a-f]{32}(?:\.gate)?|slots/(?:[0-9a-f]{32}|\.tmp[^/]*)'
+                  r'|stages/[0-9a-f]{32}(?:/.*)?|locks/stage-[0-9a-f]{32}))$')
 # A workspace's state directory (docs/WORKTREES.md) and its snapshot store.
 STATE_DIRECTORY = re.compile(r'^/worktrees(?:/[^/]+-[0-9a-f]{16})?$')
 STATE_SNAPSHOTS = re.compile(r'^/worktrees/[^/]+-[0-9a-f]{16}/snapshots(?:/.*)?$')
@@ -642,6 +659,7 @@ STATE_SNAPSHOTS = re.compile(r'^/worktrees/[^/]+-[0-9a-f]{16}/snapshots(?:/.*)?$
 # their published trees (realpath chains readlink them; nothing in them is read).
 STORE_DIRECTORIES = {'/repositories', '/repositories/trees', '/repositories/direct',
                      '/repositories/direct/locks', '/repositories/direct/stages',
+                     '/repositories/direct/slots', '/repositories/external',
                      '/repositories/direct/trees', '/repositories/direct/manifests',
                      '/repositories/git', '/repositories/git/trees', '/repositories/git/manifests',
                      '/repositories/builtins', '/repositories/builtins/trees'}
@@ -685,8 +703,8 @@ def cache_class(rel, p, recorded, pinned, local_roots):
         return 'digest-table'
     if rel in STORE_DIRECTORIES:
         return 'store-directories'
-    if STAGE.match(rel):
-        return 'replay-stage'
+    if SLOT.match(rel):
+        return 'replay-slot'
     if p in local_roots or any(p.startswith(root + '/') for root in local_roots):
         return 'local-tree'
     if (TREE.match(rel) or MANIFEST.match(rel)) and (p in recorded.observed or recorded.in_tree(p, pinned)):

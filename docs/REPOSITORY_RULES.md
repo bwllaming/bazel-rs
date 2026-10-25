@@ -70,8 +70,10 @@ hashable `path` value whose `str()` is the absolute path (bytes as Latin-1
 characters) with `basename`, `dirname` (None at `/`), `exists`, `is_dir`,
 `realpath`, `get_child(*relative_paths)` and `readdir(watch="auto")` in directory
 order (StarlarkPath.java:77-196). During execution the repository directory is
-the private stage, so absolute repository paths observed by the callback are not
-the published location (relative symlinks into it are replanted, below).
+its slot `<cache>/repositories/external/<canonical name>`, genuine's
+`<output_base>/external/<name>` (docs/REPOSITORY_SLOTS.md); an ordinary
+repository's slot links its published tree afterwards, a self-referencing one
+stays a mutable directory (absolute links into it are replanted, below).
 
 ### File operations
 
@@ -106,11 +108,14 @@ the published location (relative symlinks into it are replanted, below).
   exists)`. Divergence: genuine Bazel 9.3 leaves links into the repository
   directory absolute in `<output_base>/external/<repo>` (captured; its
   `RepositoryUtils.replantSymlinks` only runs when moving a repository into the
-  repository contents cache). The native stage is renamed to a content-addressed
-  directory whose name depends on these very links, so after the callback the
-  native profile rewrites links into the repository directory (from
-  `ctx.symlink` or executed tools) as relative links with the same resolved
-  contents. Other targets stay absolute. The store records link targets without
+  repository contents cache). The native repository directory is published as a
+  content-addressed directory whose name depends on these very links, so after
+  the callback the native profile rewrites links into the repository directory
+  (from `ctx.symlink` or executed tools) as relative links with the same
+  resolved contents. A link resolving outside it keeps what it resolved to
+  there: a relative one becomes absolute, one into a sibling repository's
+  directory is pinned to that repository's tree (docs/REPOSITORY_SLOTS.md).
+  Other absolute targets stay as they are. The store records link targets without
   following them. Archive links from `ctx.extract`/`ctx.download_and_extract`
   follow N19's extraction semantics (docs/ARCHIVE_SYMLINKS.md). When a file of
   the published repository is used as a source artifact or loaded as a `.bzl`,
@@ -608,7 +613,8 @@ within a library invocation.
 
 A replaced manifest is first renamed into a private `direct/trees/.trash-*`
 quarantine, which is deleted once the new publication is in place. A replaced
-tree is swapped with the finished stage in one step (`renameat2` with
+tree is swapped with the finished repository directory (the stage of the
+publication) in one step (`renameat2` with
 `RENAME_EXCHANGE`) and then moved from the stage path into that quarantine, so a
 reader in another process — an action running through a link into the tree
 (docs/HARDLINK_STAGING.md, "Executables aliasing repository files"), a command
@@ -619,8 +625,9 @@ that cannot exchange. Test:
 `republication_never_leaves_the_tree_path_without_a_tree`.
 Trees may hold read-only directories (a callback's `chmod -R ugo-w`,
 as rules_python's `python_repository` does for the interpreter's `lib/`), so
-quarantines and stages are deleted like `fresh_stage` deletes an interrupted
-stage: directories are made writable first and symlinks are never followed. A
+quarantines and repository directories are deleted like a writer clears an
+interrupted one: directories are made writable first and symlinks are never
+followed. A
 deletion failure leaves garbage and a `bazel-rs: warning: cannot remove ...`
 line, never a failed command (before, `TempDir::close`
 failed with `cannot remove direct quarantine: Permission denied` after the new

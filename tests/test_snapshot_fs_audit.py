@@ -255,9 +255,13 @@ class SnapshotAuditTests(unittest.TestCase):
             '1 readlink("/cache", 0x1, 1023) = -1 EINVAL (Invalid argument)\n'
             '1 readlink("/cache/repositories", 0x1, 1023) = -1 EINVAL (Invalid argument)\n'
             '1 openat(AT_FDCWD</ws>, "/cache/digests/v1.dmemo", O_RDONLY|O_CLOEXEC) = 3</cache/digests/v1.dmemo>\n'
-            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/locks/stage-{stage}", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 4</x>\n'
-            f'2 mkdir("/cache/repositories/direct/stages/{stage}", 0777) = 0\n'
-            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/stages/{stage}/BUILD.bazel", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 5</x>\n'
+            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/locks/slot-{stage}.gate", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 4</x>\n'
+            f'2 openat(AT_FDCWD</ws>, "/cache/repositories/direct/locks/slot-{stage}", O_RDWR|O_CREAT|O_CLOEXEC, 0666) = 4</x>\n'
+            '2 unlink("/cache/repositories/direct/slots/' + stage + '") = -1 ENOENT\n'
+            '2 mkdir("/cache/repositories/external/+local+repo", 0777) = 0\n'
+            '2 openat(AT_FDCWD</ws>, "/cache/repositories/external/+local+repo/BUILD.bazel", O_WRONLY|O_CREAT|O_CLOEXEC, 0666) = 5</x>\n'
+            '2 symlink("../direct/trees/' + local + '", "/cache/repositories/external/.bind-1-0") = 0\n'
+            '2 renameat2(AT_FDCWD</ws>, "/cache/repositories/external/.bind-1-0", AT_FDCWD</ws>, "/cache/repositories/external/+local+repo", RENAME_EXCHANGE) = 0\n'
             f'2 statx(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}", 0, 0x1) = 0\n'
             f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/manifests/{local}.json", O_RDONLY|O_CLOEXEC) = 6</x>\n'
             f'3 openat(AT_FDCWD</ws>, "/cache/repositories/direct/trees/{local}/BUILD.bazel", O_RDONLY|O_CLOEXEC) = 7</x>\n'
@@ -296,7 +300,7 @@ class SnapshotAuditTests(unittest.TestCase):
         # every hit).
         self.assertEqual(stats["cache"], {
             "snapshot-store": 2, "cache-root": 1, "store-directories": 2, "digest-table": 1,
-            "replay-stage": 3, "local-tree": 3, "verified-tree": 1, "covered-input": 1,
+            "replay-slot": 8, "local-tree": 3, "verified-tree": 1, "covered-input": 1,
         })
 
     def test_hit_path_state_directory_touches(self):

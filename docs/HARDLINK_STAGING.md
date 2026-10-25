@@ -116,8 +116,9 @@ once, like Bazel's per-build file metadata, instead of once per action:
   `repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`
   (registry modules, repository-rule results, Git sources, the embedded
   `bazel_tools`). Nothing else below `repositories/`: module extensions and
-  repository rules run arbitrary code in `modextwd/` and `direct/stages/`,
-  and downloads, locks and manifests are no trees;
+  repository rules run arbitrary code in `modextwd/` and the repository
+  directories `external/<name>` (a link to a tree, or mutable), and
+  downloads, locks and manifests are no trees;
 * the directories of `actions/`, `cas/` and those tree stores are lstat'ed
   once to establish that they are real directories;
 * many inputs (an SDK) or tree files are hashed on helper threads taken from

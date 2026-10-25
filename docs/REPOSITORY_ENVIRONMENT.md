@@ -30,8 +30,9 @@ The client environment reaches repository rules verbatim, as in Bazel 9.3
 `option_processor.cc:723-726`; `CommandEnvironment.java:333-346` builds the
 repository environment from it): a relative `HOME` or `TMPDIR` is not made
 absolute. `repository_ctx.execute` runs its child in the repository directory
-(Bazel: `external/<name>`; native: the private stage), so the child resolves
-such a value there and writes its `$HOME` files into the repository itself.
+(Bazel: `external/<name>`; native: the same slot `<cache>/repositories/external/
+<name>`, docs/REPOSITORY_SLOTS.md), so the child resolves such a value there and
+writes its `$HOME` files into the repository itself.
 Genuine Bazel 9.3.0 does exactly this (scratch fixture: `HOME=rel/home` puts
 `external/+r+r/rel/home/.config/go/counter` into the repository).
 
@@ -50,46 +51,44 @@ run's home stayed empty). Run the CLI with absolute `HOME` and `TMPDIR`
 (harnesses: resolve per-run directories before exporting them). Test:
 `relative_home_reaches_execute_verbatim_and_resolves_in_the_repository`.
 
-Checked without ptrace (inotify on `direct/stages/` during cold fetches of
-`//src/beyondwork.ai/utils/grpcfx:all` on ~/code): with a relative `HOME` the
-first fetched module's stage receives
+Checked without ptrace (inotify on the former `direct/stages/` during cold
+fetches of `//src/beyondwork.ai/utils/grpcfx:all` on ~/code): with a relative
+`HOME` the first fetched module's directory receives
 `runs/<name>-home/.config/go/telemetry/local/*.count` and `upload.token`, then
 `fetch_repo` reports the mismatch and removes the module's cache directory;
-with an absolute `HOME` no `.config` appears in any stage. In both runs the
-shared Go cache (`GOPATH`, which `go_repository_cache` records as its own stage
-path `direct/stages/<slug>`) is created by its stage, renamed away at
-publication and recreated by `go`, and never deleted while modules are
-fetched. A latent hazard remains across processes: a second native process on
-the same cache that re-executes `go_repository_cache` starts its fresh stage at
-that path and so deletes the module cache under the first process's fetches
+with an absolute `HOME` no `.config` appears in any repository directory.
+
+### The shared GOPATH across processes (implemented)
+
+gazelle's `go_repository_cache` records its own repository directory as
+`GOPATH` (and `GOCACHE` below it) in `go.env`; every `go_repository` fetch
+(`fetch_repo`, `go mod download`) and `go_repository_tools` run `go` with that
+environment and write the module cache there. Before the slots that directory
+was the private stage `direct/stages/<slug>`, which a re-execution of
+`go_repository_cache` in another native process on the same cache deleted
+under running fetches, or snapshotted with part of a foreign module cache
 (Bazel's single server per output base cannot interleave so).
 
-The reverse direction exists as well. While one process re-executes
-`go_repository_cache` (under its exclusive `direct/locks/stage-<slug>`, in a
-fresh stage at exactly that path), another process's `go` — a `go_repository`
-fetch (`fetch_repo`, `go mod download`) whose environment comes from the
-published `go.env` — writes `pkg/mod/` and the build cache (`GOCACHE`,
-`<stage>/gocache`) into the live stage. The re-executing `go_repository_cache`
-can then snapshot part of a foreign module cache into its tree (content, and
-an identity, that depend on the other process's timing) or fail mid-snapshot
-when a file changes or disappears while it is hashed; once its publication
-renames the stage away, the other process's `go` loses what it had written
-there.
-
-Planned fix (not implemented): a reader/writer lease on the stage lock. A
-consumer that resolves a label into a direct repository whose published
-content embeds that repository's own stage path (as `go.env` does; detectable
-at publication, when the stage path's bytes occur in a published file) takes
-`direct/locks/stage-<slug>` SHARED once that repository is materialized and
-holds it until its own `materialize_inner` returns, i.e. for as long as its
-rule may run tools that write below that path; writers — a re-execution of
-that repository (`lock_stage`, then `fresh_stage`) — keep taking it
-EXCLUSIVELY. A re-execution then waits for running consumers and consumers
-wait for a running re-execution, in both directions and across processes,
-and a consumer never waits for a writer of its own (the lease is taken only
-after the repository's own materialization returned). Persistent
-per-repository working directories (a `GOPATH` outside every stage) would
-remove the shared path altogether.
+Now (docs/REPOSITORY_SLOTS.md) the directory is the repository's slot
+`<cache>/repositories/external/<name>`, genuine's `external/<name>`. The
+store detects at publication that the published bytes contain the slot's own
+path (self-referencing): the slot stays a real, mutable directory, a copy is
+published as the tree, and a marker records it. Readers and writers
+coordinate on the slot's locks: a re-execution (or a replay, or remaking a
+missing slot) takes `direct/locks/slot-<slug>.gate`, then `slot-<slug>`
+exclusively; every `execute` of another repository that resolved a label into
+a self-referencing repository (or names a mutable slot in its arguments,
+environment or working directory) holds that slot shared while its
+subprocess runs — not for the whole execution, which could deadlock across
+processes (go_repository reads `go.env`, then demands go_repository_tools,
+which reads `go.env` too). So a re-execution waits for running consumer
+subprocesses, consumers wait for a running re-execution, and a waiting
+writer's gate holds new readers off. tests/repository_slots.rs exercises both
+directions with two processes on one cache (fails without the readers).
+No subprocess outlives its hold: the process-wrapper kills what an `execute`
+leaves (docs/PROCESS_WRAPPER.md). Not covered: build actions writing into a
+slot, and a tool that finds a mutable slot's path at run time without a label
+into it or its path in its arguments, environment or working directory.
 
 **Git worktrees make the hazard ordinary (docs/WORKTREES.md).** The linked
 worktrees of a repository share their main checkout's cache by default, so

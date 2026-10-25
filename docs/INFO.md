@@ -123,6 +123,9 @@ never fails the command.
 
 * `execution_root` holds `bazel-out/` only: no symlinks to the workspace's
   top-level entries or `external/` (genuine's execroot has them).
+* Repository directories are `<cache>/repositories/external/<name>`
+  (docs/REPOSITORY_SLOTS.md), not `$(bazel-rs info output_base)/external/<name>`:
+  the repository store is the output base of repositories.
 * `info --show_make_env` with an explicit `--platforms` fails explicitly:
   `$(TARGET_CPU)` is the target platform's CPU constraint, which needs the
   platform target loaded; for the default host platform it is the host CPU

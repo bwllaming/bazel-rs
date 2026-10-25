@@ -107,8 +107,9 @@ were keyed by change time (both while the format was unreleased; unit test
 - Only paths that recur across commands: files outside the cache root, and below it published action
   outputs (`actions/<key>/...`), store blobs (`cas/<blob>`) and the files of the repository tree stores
   (`repositories/{trees,direct/trees,git/trees,builtins/trees}/<identity>/...`); never execution roots
-  (`work/`), the working areas of repository rules and module extensions (`modextwd/`,
-  `direct/stages/`), stages or temporary names (`.stage-*`, `.tmp-*`, `.trash-*`).
+  (`work/`), the working areas of repository rules and module extensions (`modextwd/`, the
+  repository directories `external/<name>`, the legacy `direct/stages/`), stages or temporary
+  names (`.stage-*`, `.tmp-*`, `.trash-*`).
 
 ## When it is written
 
