@@ -4843,6 +4843,7 @@ fn remote_action(
         size: input.size,
     };
     let mut files = BTreeMap::new();
+    let mut symlinks = BTreeMap::new();
     for (path, staged) in &prepared.inputs {
         match staged {
             Staged::File(input) => {
@@ -4870,11 +4871,13 @@ fn remote_action(
                     files.insert(path_string(&path.join(name))?, file_digest(input));
                 }
             }
-            Staged::Symlink(_) => {
-                return Err(format!(
-                    "unresolved symlink input {}: input root symlinks are not modelled",
-                    path.display()
-                ));
+            // MerkleTreeComputer (remote/merkletree/MerkleTreeComputer.java:
+            // 651-662): a SymlinkNode with the link text.
+            Staged::Symlink(text) => {
+                let text = text
+                    .to_str()
+                    .ok_or_else(|| format!("non-UTF-8 symlink target of '{}'", path.display()))?;
+                symlinks.insert(path_string(path)?, text.to_owned());
             }
         }
     }
@@ -4899,9 +4902,34 @@ fn remote_action(
         arguments(action),
         &environment,
         &files,
+        &symlinks,
         &outputs,
         remote_policy(action).1,
     )
+}
+
+/// How UploadManifest.addFiles (remote/UploadManifest.java:238-300) uploads
+/// a symlink output: as a symlink with its text if it is relative or
+/// dangling, as the file it resolves to if it is absolute (`None`: an
+/// absolute symlink to a directory, uploaded as a directory, which the
+/// native remote cache does not model).
+fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, String> {
+    let text = fs::read_link(path).map_err(|e| io_error("cannot read link", path, e))?;
+    let as_symlink = || {
+        text.to_str()
+            .map(|text| Some(crate::remote_cache::Output::Symlink(text.to_owned())))
+            .ok_or_else(|| format!("non-UTF-8 symlink target of '{}'", path.display()))
+    };
+    if text.is_relative() {
+        return as_symlink();
+    }
+    match fs::metadata(path) {
+        Err(_) => as_symlink(),
+        Ok(metadata) if metadata.is_file() => Ok(Some(crate::remote_cache::Output::File(
+            fs::read(path).map_err(|e| io_error("cannot read output", path, e))?,
+        ))),
+        Ok(_) => Ok(None),
+    }
 }
 
 fn replay_logs(id: &str, stdout: &str, stderr: &str) {
@@ -5032,17 +5060,7 @@ pub fn execute_with_remote(
             );
             Some(tree_reason.as_str())
         }
-        (None, None) => match action.extra.symlink_outputs.first() {
-            Some(link) => {
-                tree_reason = format!(
-                    "{} (unresolved symlink output {}; output_symlinks are not modelled)",
-                    action.id,
-                    link.display()
-                );
-                Some(tree_reason.as_str())
-            }
-            None => None,
-        },
+        (None, None) => None,
     };
     let remote = match (remote, unsupported) {
         (Some(_), Some(reason)) => {
@@ -5074,8 +5092,13 @@ pub fn execute_with_remote(
         let declared = action
             .outputs
             .iter()
-            .map(|path| crate::remote_cache::path_string(path))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|path| {
+                Ok((
+                    crate::remote_cache::path_string(path)?,
+                    action.extra.symlink_outputs.contains(path),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         match remote.lookup(spec, &declared) {
             Ok(hit) => remote_hit = hit,
             Err(crate::remote_cache::CacheError::Credentials(error)) => {
@@ -5134,8 +5157,18 @@ pub fn execute_with_remote(
     } else if let Some(hit) = &remote_hit {
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
-        for (name, bytes) in action.outputs.iter().zip(&hit.outputs) {
-            write_executable_file(&execroot.join(name), bytes, 0o111)?;
+        for (name, output) in action.outputs.iter().zip(&hit.outputs) {
+            match output {
+                crate::remote_cache::Output::File(bytes) => {
+                    write_executable_file(&execroot.join(name), bytes, 0o111)?
+                }
+                // RemoteExecutionService.createSymlinks.
+                crate::remote_cache::Output::Symlink(target) => {
+                    let path = execroot.join(name);
+                    std::os::unix::fs::symlink(target, &path)
+                        .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
+                }
+            }
         }
         replay_logs(
             &action.id,
@@ -5518,16 +5551,32 @@ pub fn execute_with_remote(
             .iter()
             .map(|name| {
                 let path = cached.join("outputs").join(name);
-                Ok((
-                    crate::remote_cache::path_string(name)?,
-                    fs::read(&path).map_err(|e| io_error("cannot read output", &path, e))?,
-                ))
+                let output = if action.extra.symlink_outputs.contains(name) {
+                    symlink_upload(&path)?
+                } else {
+                    Some(crate::remote_cache::Output::File(
+                        fs::read(&path).map_err(|e| io_error("cannot read output", &path, e))?,
+                    ))
+                };
+                Ok(output.map(|output| (crate::remote_cache::path_string(name), output)))
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Option<Vec<_>>, String>>()?;
         // RemoteExecutionService.reportUploadError: every upload failure,
         // credential helper failures included, is a warning.
-        if let Err(error) = remote.upload(spec, &uploads, &logs.0, &logs.1, started, wall) {
-            crate::remote_cache::warn(&error);
+        match uploads {
+            Some(uploads) => {
+                let uploads = uploads
+                    .into_iter()
+                    .map(|(name, output)| Ok((name?, output)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                if let Err(error) = remote.upload(spec, &uploads, &logs.0, &logs.1, started, wall) {
+                    crate::remote_cache::warn(&error);
+                }
+            }
+            None => crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
+                "not uploaded for {}: an absolute symlink output to a directory is uploaded as that directory, output_directories are not modelled",
+                action.id
+            ))),
         }
     }
     // --sandbox_debug retains the sandbox build root after the build too

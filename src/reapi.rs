@@ -277,16 +277,20 @@ impl Action {
     }
 }
 
-/// One input file of the Merkle tree.
+/// One input of the Merkle tree: a file (`digest`) or, with `symlink`, an
+/// unresolved symlink artifact by its link text (a `SymlinkNode`,
+/// MerkleTreeComputer: `addSymlinksBuilder().setName(..).setTarget(..)`).
 #[derive(Clone, Debug)]
 pub struct InputFile {
     pub digest: Digest,
+    pub symlink: Option<String>,
 }
 
 /// The input root and every `Directory` blob of a spawn's inputs
 /// (remote/merkletree/MerkleTreeComputer): entries sorted by name, files
 /// before directories, every file `is_executable` (Bazel marks all inputs
-/// executable), no node properties.
+/// executable), no node properties; symlinks (`Directory.symlinks`, field
+/// 3) after the directories.
 pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Vec<u8>>), String> {
     #[derive(Default)]
     struct Node<'a> {
@@ -317,7 +321,7 @@ pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Ve
     }
     fn encode(node: &Node<'_>, blobs: &mut Vec<Vec<u8>>) -> Digest {
         let mut out = Vec::new();
-        for (name, file) in &node.files {
+        for (name, file) in node.files.iter().filter(|(_, file)| file.symlink.is_none()) {
             let mut entry = Vec::new();
             string(&mut entry, 1, name);
             message(&mut entry, 2, &file.digest.encode());
@@ -330,6 +334,16 @@ pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Ve
             string(&mut entry, 1, name);
             message(&mut entry, 2, &digest.encode());
             message(&mut out, 2, &entry);
+        }
+        for (name, target) in node
+            .files
+            .iter()
+            .filter_map(|(name, file)| Some((name, file.symlink.as_ref()?)))
+        {
+            let mut entry = Vec::new();
+            string(&mut entry, 1, name);
+            string(&mut entry, 2, target);
+            message(&mut out, 3, &entry);
         }
         let digest = Digest::of(&out);
         blobs.push(out);
@@ -348,6 +362,13 @@ pub struct OutputFile {
     pub is_executable: bool,
     /// Inlined contents, if any.
     pub contents: Vec<u8>,
+}
+
+/// `ActionResult.output_symlinks` entry (OutputSymlink: path, target).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputSymlink {
+    pub path: String,
+    pub target: String,
 }
 
 /// `Timestamp`.
@@ -371,6 +392,9 @@ impl Timestamp {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActionResult {
     pub output_files: Vec<OutputFile>,
+    /// Symlink outputs (UploadManifest.addFileSymbolicLink writes each to
+    /// `output_file_symlinks` and `output_symlinks`; a reader takes both).
+    pub output_symlinks: Vec<OutputSymlink>,
     /// Paths of outputs that are not plain files (directories, symlinks).
     pub other_outputs: Vec<String>,
     pub exit_code: i32,
@@ -416,6 +440,14 @@ impl ActionResult {
             message(&mut metadata, 8, &end.encode());
             message(&mut out, 9, &metadata);
         }
+        for field in [10, 12] {
+            for symlink in &self.output_symlinks {
+                let mut entry = Vec::new();
+                string(&mut entry, 1, &symlink.path);
+                string(&mut entry, 2, &symlink.target);
+                message(&mut out, field, &entry);
+            }
+        }
         out
     }
 
@@ -444,9 +476,39 @@ impl ActionResult {
                     }
                     result.output_files.push(file);
                 }
-                // output_directories, output_file_symlinks,
-                // output_directory_symlinks, output_symlinks: path is field 1.
-                (3 | 10 | 11 | 12, Value::Bytes(entry)) => {
+                // output_file_symlinks, output_symlinks
+                // (RemoteExecutionService.parseActionResultMetadata takes
+                // both, one entry per path).
+                (10 | 12, Value::Bytes(entry)) => {
+                    let mut symlink = OutputSymlink {
+                        path: String::new(),
+                        target: String::new(),
+                    };
+                    for field in fields(entry)? {
+                        match field {
+                            (1, Value::Bytes(value)) => symlink.path = utf8(value)?,
+                            (2, Value::Bytes(value)) => symlink.target = utf8(value)?,
+                            _ => {}
+                        }
+                    }
+                    match result
+                        .output_symlinks
+                        .iter()
+                        .find(|known| known.path == symlink.path)
+                    {
+                        Some(known) if known.target != symlink.target => {
+                            return Err(format!(
+                                "Symlink path collision: '{}' is mapped to both '{}' and '{}'",
+                                symlink.path, known.target, symlink.target
+                            ));
+                        }
+                        Some(_) => {}
+                        None => result.output_symlinks.push(symlink),
+                    }
+                }
+                // output_directories, output_directory_symlinks: path is
+                // field 1.
+                (3 | 11, Value::Bytes(entry)) => {
                     let mut path = String::new();
                     for field in fields(entry)? {
                         if let (1, Value::Bytes(value)) = field {
@@ -471,12 +533,53 @@ impl ActionResult {
 mod tests {
     use super::*;
 
+    /// Genuine Bazel 9.3.0's ActionResult of a spawn whose declared symlink
+    /// output `pkg/s` is `ln -s ../does/not/exist` (tests/remote_cache.rs
+    /// `unresolved_symlinks_enter_the_remote_cache`), without its execution
+    /// metadata (field 9, timestamps): UploadManifest.addFileSymbolicLink
+    /// writes the symlink to output_file_symlinks (10) and output_symlinks
+    /// (12).
+    #[test]
+    fn output_symlinks_equal_genuine_bazel() {
+        let genuine = "32420a406533623063343432393866633163313439616662663463383939366662393234323761653431653436343962393334636134393539393162373835326238353542420a406533623063343432393866633163313439616662663463383939366662393234323761653431653436343962393334636134393539393162373835326238353552350a2062617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f7312112e2e2f646f65732f6e6f742f657869737462350a2062617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f7312112e2e2f646f65732f6e6f742f6578697374";
+        let bytes = (0..genuine.len())
+            .step_by(2)
+            .map(|at| u8::from_str_radix(&genuine[at..at + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        let decoded = ActionResult::decode(&bytes).unwrap();
+        assert_eq!(
+            decoded.output_symlinks,
+            [OutputSymlink {
+                path: "bazel-out/k8-fastbuild/bin/pkg/s".into(),
+                target: "../does/not/exist".into(),
+            }]
+        );
+        assert!(decoded.output_files.is_empty() && decoded.other_outputs.is_empty());
+        assert_eq!(decoded.encode(), bytes);
+        // One path with two targets is Bazel's collision error.
+        let mut collision = decoded.clone();
+        collision.output_symlinks[0].target = "other".into();
+        let mut both = bytes.clone();
+        both.extend(&collision.encode()[136..]);
+        assert!(
+            ActionResult::decode(&both)
+                .unwrap_err()
+                .contains("Symlink path collision")
+        );
+    }
+
     // Genuine Bazel 9.3.0 blobs from the N41 probe (docs/REMOTE_CACHE.md):
     // the run_shell action of //pkg:sh with input pkg/in.txt ("hello\n").
     #[test]
     fn digests_equal_genuine_bazel() {
         let input = Digest::of(b"hello\n");
-        let files = BTreeMap::from([("pkg/in.txt".to_owned(), InputFile { digest: input })]);
+        let files = BTreeMap::from([(
+            "pkg/in.txt".to_owned(),
+            InputFile {
+                digest: input,
+                symlink: None,
+            },
+        )]);
         let (root, blobs) = input_root(&files).unwrap();
         assert_eq!(
             root,

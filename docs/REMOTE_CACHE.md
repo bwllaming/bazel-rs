@@ -195,9 +195,15 @@ the spawns (the paired capture confirms every point):
 * Tree artifact outputs need `ActionResult.output_directories`, which is not
   modelled: such spawns stay local (`WARNING: Remote Cache: not used for …
   output_directories are not modelled`). Cached entries with
-  `output_directories` or `output_symlinks` for a declared output are
+  `output_directories`, or `output_symlinks` for a declared file output, are
   rejected. Symlink outputs (`ctx.actions.symlink`) are native transforms,
   never spawns, so they never use the remote cache.
+* Unresolved symlink artifacts (`declare_symlink`): inputs are input-root
+  `SymlinkNode`s with their link text, a spawn's symlink outputs are
+  `output_file_symlinks`/`output_symlinks` entries restored as symlinks on a hit
+  (docs/UNRESOLVED_SYMLINKS.md;
+  `tests/remote_cache.rs::unresolved_symlinks_enter_the_remote_cache` pins
+  genuine's keys).
 * Execution properties (a target's `exec_properties`, an action's combined
   exec-group properties (N35), or an execution platform with
   `exec_properties`/`remote_execution_properties`) enter

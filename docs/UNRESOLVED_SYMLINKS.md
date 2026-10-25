@@ -71,9 +71,20 @@ Analysis (`ctx.actions.declare_symlink`, `ctx.actions.symlink(target_path=...)`,
   otherwise read paths only. `test` stages a test's symlink runfiles with their
   text (`RunTarget::symlinks`, `TestSpec::symlinks`); `run` uses the runfiles
   tree.
-- Remote cache: a spawn with an unresolved symlink input or output does not use
-  the remote cache yet (`Remote Cache: not used for ...` warning; it runs
-  locally): input-root SymlinkNodes and `output_symlinks` are not modelled.
+- Remote cache (Bazel: `remote/merkletree/MerkleTreeComputer.java:651-662`,
+  `remote/UploadManifest.java:238-345`, `RemoteExecutionService
+  .parseActionResultMetadata`/`createSymlinks`): an unresolved symlink input is a
+  `SymlinkNode` (name, link text) of its directory in the input root, after the
+  files and directories; a spawn's symlink output is uploaded as an
+  `OutputSymlink` in both `output_file_symlinks` and `output_symlinks` when it is
+  relative or dangling, as the file it resolves to when it is absolute (an
+  absolute link to a directory would be an output directory, not modelled: the
+  result is not uploaded, with a warning); a hit restores the symlink with its
+  text, and two targets for one path are Bazel's `Symlink path collision`. A
+  declared symlink output that the cache holds as a file is a miss natively
+  (genuine would fail the action as `not a symlink`). Genuine keys and entry
+  pinned in `tests/remote_cache.rs::unresolved_symlinks_enter_the_remote_cache`
+  and `reapi::tests::output_symlinks_equal_genuine_bazel`.
 
 ## Evidence
 

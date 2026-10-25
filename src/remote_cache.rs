@@ -454,10 +454,18 @@ fn decode_body(encoding: Option<&str>, body: Vec<u8>) -> Result<Vec<u8>, String>
 /// One output of a remote cache hit.
 #[derive(Debug)]
 pub struct Hit {
-    /// Declared output bytes in declaration order.
-    pub outputs: Vec<Vec<u8>>,
+    /// Declared outputs in declaration order.
+    pub outputs: Vec<Output>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+}
+
+/// One output of a spawn as the cache holds it: a file's bytes, or a
+/// symlink's text (`output_symlinks`, an unresolved symlink artifact).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Output {
+    File(Vec<u8>),
+    Symlink(String),
 }
 
 /// The REAPI form of one spawn.
@@ -475,6 +483,7 @@ pub fn remote_action(
     arguments: Vec<String>,
     environment: &BTreeMap<String, String>,
     inputs: &BTreeMap<String, Digest>,
+    symlinks: &BTreeMap<String, String>,
     outputs: &[String],
     may_be_executed_remotely: bool,
 ) -> Result<RemoteAction, String> {
@@ -488,17 +497,27 @@ pub fn remote_action(
     }
     .encode();
     let command_digest = Digest::of(&command);
-    let files = inputs
+    let mut files: BTreeMap<String, reapi::InputFile> = inputs
         .iter()
         .map(|(path, digest)| {
             (
                 path.clone(),
                 reapi::InputFile {
                     digest: digest.clone(),
+                    symlink: None,
                 },
             )
         })
         .collect();
+    for (path, target) in symlinks {
+        let symlink = reapi::InputFile {
+            digest: Digest::of(b""),
+            symlink: Some(target.clone()),
+        };
+        if files.insert(path.clone(), symlink).is_some() {
+            return Err(format!("conflicting input path '{path}'"));
+        }
+    }
     let (input_root_digest, _) = reapi::input_root(&files)?;
     let action = reapi::Action {
         command_digest: command_digest.clone(),
@@ -689,10 +708,12 @@ impl RemoteCache {
     /// (CacheNotFoundException). Every declared output is downloaded (the
     /// native profile always materializes outputs, like
     /// `--remote_download_outputs=all`).
+    /// `outputs`: the declared outputs and whether each is an unresolved
+    /// symlink artifact (read from `output_symlinks`).
     pub fn lookup(
         &self,
         action: &RemoteAction,
-        outputs: &[String],
+        outputs: &[(String, bool)],
     ) -> Result<Option<Hit>, CacheError> {
         let Some(bytes) = self.get(false, &action.key.hash)? else {
             return Ok(None);
@@ -704,12 +725,28 @@ impl RemoteCache {
             return Ok(None);
         }
         let mut downloaded = Vec::new();
-        for output in outputs {
+        for (output, symlink) in outputs {
+            let linked = result
+                .output_symlinks
+                .iter()
+                .find(|link| &link.path == output);
             match result.output_files.iter().find(|file| &file.path == output) {
+                // A declared symlink output must come back as a symlink
+                // (else SkyframeActionExecutor.checkOutputs fails it as `not
+                // a symlink`, a miss here).
+                Some(_) if *symlink => return Ok(None),
                 Some(file) => match self.blob(&file.digest, &file.contents, output)? {
-                    Some(bytes) => downloaded.push(bytes),
+                    Some(bytes) => downloaded.push(Output::File(bytes)),
                     None => return Ok(None),
                 },
+                None if *symlink && linked.is_some() => {
+                    downloaded.push(Output::Symlink(linked.expect("checked").target.clone()))
+                }
+                None if linked.is_some() => {
+                    return Err(CacheError::Other(format!(
+                        "cached output {output} is a directory or symlink, which the native profile does not materialize"
+                    )));
+                }
                 None if result.other_outputs.contains(output) => {
                     return Err(CacheError::Other(format!(
                         "cached output {output} is a directory or symlink, which the native profile does not materialize"
@@ -743,7 +780,7 @@ impl RemoteCache {
     pub fn upload(
         &self,
         action: &RemoteAction,
-        outputs: &[(String, Vec<u8>)],
+        outputs: &[(String, Output)],
         stdout: &[u8],
         stderr: &[u8],
         start: SystemTime,
@@ -754,15 +791,24 @@ impl RemoteCache {
             (action.command_digest.clone(), &action.command),
         ];
         let mut files = Vec::new();
-        for (path, bytes) in outputs {
-            let digest = Digest::of(bytes);
-            blobs.push((digest.clone(), bytes));
-            files.push(reapi::OutputFile {
-                path: path.clone(),
-                digest,
-                is_executable: true,
-                contents: Vec::new(),
-            });
+        let mut symlinks = Vec::new();
+        for (path, output) in outputs {
+            match output {
+                Output::File(bytes) => {
+                    let digest = Digest::of(bytes);
+                    blobs.push((digest.clone(), bytes));
+                    files.push(reapi::OutputFile {
+                        path: path.clone(),
+                        digest,
+                        is_executable: true,
+                        contents: Vec::new(),
+                    });
+                }
+                Output::Symlink(target) => symlinks.push(reapi::OutputSymlink {
+                    path: path.clone(),
+                    target: target.clone(),
+                }),
+            }
         }
         let stdout_digest = Digest::of(stdout);
         let stderr_digest = Digest::of(stderr);
@@ -789,6 +835,7 @@ impl RemoteCache {
         });
         let result = reapi::ActionResult {
             output_files: files,
+            output_symlinks: symlinks,
             stdout_digest: Some(stdout_digest),
             stderr_digest: Some(stderr_digest),
             execution,

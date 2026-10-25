@@ -860,6 +860,76 @@ lsdir = rule(_lsdir, attrs = {"src": attr.label(allow_single_file = True)})
     );
 }
 
+// Genuine Bazel 9.3.0's action keys of the spawn creating the declared
+// symlink `pkg/s` (`ln -s ../does/not/exist`) and of the consumer reading
+// `pkg/l` (UnresolvedSymlinkAction, `data.txt`) and `pkg/s` (input root
+// SymlinkNodes): /tmp/opencode/perf-research/us-remote-capture.py, a
+// loopback HTTP cache.
+const SPAWN_LINK_KEY: &str = "4f6054762e1500d00fc1a03109a9f632e78c4a5e9a1a4f380f76e99d23e4a48f";
+const READ_LINKS_KEY: &str = "7627e67ed2df6a133791b1e495fe56763fd38d2181123c6ca57c5863ab79e701";
+
+#[test]
+fn unresolved_symlinks_enter_the_remote_cache() {
+    // Unresolved symlink inputs are SymlinkNodes of the input root
+    // (MerkleTreeComputer), a spawn's symlink output an OutputSymlink
+    // (UploadManifest.addFileSymbolicLink): the keys equal genuine Bazel's,
+    // and a fresh cache directory gets both spawns from the remote cache,
+    // the symlink restored with its text (as genuine's second output base).
+    let ws = Workspace::new();
+    ws.file(
+        "pkg/BUILD.bazel",
+        "load(\":defs.bzl\", \"link\", \"rd\", \"spawn_link\")\nlink(name = \"l\")\nspawn_link(name = \"s\")\nrd(name = \"rd\", deps = [\":l\", \":s\"])\n",
+    );
+    ws.file(
+        "pkg/defs.bzl",
+        r#"def _link(ctx):
+    out = ctx.actions.declare_symlink(ctx.label.name)
+    ctx.actions.symlink(output = out, target_path = "data.txt")
+    return [DefaultInfo(files = depset([out]))]
+link = rule(_link)
+def _spawn_link(ctx):
+    out = ctx.actions.declare_symlink(ctx.label.name)
+    ctx.actions.run_shell(command = "ln -s ../does/not/exist $1", arguments = [out.path], outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+spawn_link = rule(_spawn_link)
+def _rd(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".out")
+    ins = ctx.files.deps
+    ctx.actions.run_shell(command = "readlink $1 > $3 && readlink $2 >> $3", arguments = [ins[0].path, ins[1].path, out.path], inputs = ins, outputs = [out])
+    return [DefaultInfo(files = depset([out]))]
+rd = rule(_rd, attrs = {"deps": attr.label_list()})
+"#,
+    );
+    let server = Server::new();
+    let cache = format!("--remote_cache={}", server.url());
+    let built = |name: &str| {
+        let output = ws.run(name, &["build", &cache, "//pkg:rd", "//pkg:s"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let paths: BTreeMap<String, PathBuf> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| {
+                let (label, path) = line.split_once('\t').unwrap();
+                (label.to_owned(), PathBuf::from(path))
+            })
+            .collect();
+        assert_eq!(
+            fs::read_to_string(&paths["//pkg:rd"]).unwrap(),
+            "data.txt\n../does/not/exist\n"
+        );
+        assert_eq!(
+            fs::read_link(&paths["//pkg:s"]).unwrap(),
+            Path::new("../does/not/exist")
+        );
+        stderr(&output)
+    };
+    built("c1");
+    let mut keys = server.keys("/ac/");
+    keys.sort();
+    assert_eq!(keys, [SPAWN_LINK_KEY, READ_LINKS_KEY]);
+    let again = built("c2");
+    assert!(again.contains(", 2 remote cache hits"), "{again}");
+}
+
 #[test]
 fn strict_action_env_is_the_modelled_default() {
     let ws = Workspace::new();
