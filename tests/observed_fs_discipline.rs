@@ -41,6 +41,10 @@ const ALLOWED_MODULES: &[&str] = &[
     "archive",
     "materializer",
     "repository_store",
+    // The repositories' directories (slots) of the store: locks, links,
+    // markers, copies; never an input of planning (the snapshot names
+    // trees only, docs/REPOSITORY_SLOTS.md).
+    "repository_slots",
     "builtin_tools",
     "patching",
     "repository_ctx",

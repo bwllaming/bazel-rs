@@ -282,8 +282,15 @@ impl Workspace {
     fn normalize(&self, stderr: &[u8]) -> String {
         // The receipt decodes both sides' bytes as Latin-1.
         let mut text: String = stderr.iter().map(|byte| char::from(*byte)).collect();
-        let stages = format!("{}/repositories/direct/stages/", self.cache().display());
-        text = replace_followed_by(&text, &stages, |c| c.is_ascii_hexdigit(), "<REPO>");
+        // A repository's directory: Bazel's `<output_base>/external/<name>`,
+        // natively `<cache>/repositories/external/<name>`.
+        let slots = format!("{}/repositories/external/", self.cache().display());
+        text = replace_followed_by(
+            &text,
+            &slots,
+            |c| c.is_ascii_alphanumeric() || "+_-.~".contains(c),
+            "<REPO>",
+        );
         text = text.replace(&self.cache().display().to_string(), "<CACHE>");
         let ws = self.ws();
         for path in [ws.clone(), fs::canonicalize(&ws).unwrap()] {

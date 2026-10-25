@@ -435,13 +435,20 @@ r = repository_rule(_impl, local = True, attrs = {"value": attr.string(default =
             .any(|line| line.starts_with("replay dry-run: 2/2 matching")),
         "{text}"
     );
-    // The replay printed nothing: "loud" appears once.
-    assert!(
-        !Path::new(&f.0.path().join("cache/repositories/direct/stages"))
-            .read_dir()
-            .unwrap()
-            .any(|_| true)
-    );
+    // The replay printed nothing: "loud" appears once. The replays left
+    // the repositories' directories linking their trees, no scratch.
+    for entry in Path::new(&f.0.path().join("cache/repositories/external"))
+        .read_dir()
+        .unwrap()
+    {
+        let entry = entry.unwrap();
+        assert!(!entry.file_name().to_string_lossy().starts_with('.'));
+        assert!(
+            fs::read_link(entry.path())
+                .unwrap()
+                .starts_with("../direct/trees")
+        );
+    }
 }
 
 /// The mismatch count of the record mode's `validation dry-run [POLICY]`

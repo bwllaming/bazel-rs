@@ -167,10 +167,15 @@ impl Fixture {
     }
 
     fn clean_failure(&self) {
-        // Deterministic stage locks persist (empty files); trees, manifests
-        // and stage directories stay empty after failures.
-        for name in ["trees", "manifests", "stages"] {
-            let path = self.store().join(name);
+        // The repository directories' locks persist (empty files, like
+        // publication locks); trees, manifests and the repository
+        // directories (`external/<name>`) stay empty after failures.
+        for path in [
+            self.store().join("trees"),
+            self.store().join("manifests"),
+            self.store().parent().unwrap().join("external"),
+        ] {
+            let name = path.display();
             assert!(
                 !path.exists() || fs::read_dir(&path).unwrap().next().is_none(),
                 "{name} not empty after failure"
@@ -184,7 +189,7 @@ impl Fixture {
                         .file_name()
                         .to_str()
                         .unwrap()
-                        .starts_with("stage-")
+                        .starts_with("slot-")
                 );
             }
         }
@@ -321,6 +326,15 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             for entry in entries {
                 let entry = entry.unwrap();
                 let kind = entry.file_type().unwrap();
+                // A repository's directory links its published tree.
+                if kind.is_symlink() && at.ends_with("repositories/external") {
+                    assert!(
+                        fs::read_link(entry.path())
+                            .unwrap()
+                            .starts_with("../direct/trees")
+                    );
+                    continue;
+                }
                 assert!(!kind.is_symlink(), "unexpected private-cache symlink");
                 if kind.is_dir() {
                     visit(root, &entry.path(), out);

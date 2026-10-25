@@ -56,8 +56,8 @@ impl Fixture {
                 .join(directory);
             assert!(!path.exists() || fs::read_dir(path).unwrap().next().is_none());
         }
-        // Deterministic stage locks persist (like publication locks); no
-        // other lock entry may exist.
+        // The repository directories' locks persist (like publication
+        // locks); no other lock entry may exist.
         let locks = self.0.path().join("cache/repositories/direct/locks");
         assert!(
             !locks.exists()
@@ -66,7 +66,7 @@ impl Fixture {
                     .file_name()
                     .to_str()
                     .unwrap()
-                    .starts_with("stage-"))
+                    .starts_with("slot-"))
         );
     }
 }

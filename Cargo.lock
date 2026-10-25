@@ -149,6 +149,7 @@ dependencies = [
  "hyper",
  "landlock",
  "lzma-rust2",
+ "memchr",
  "num-bigint",
  "postcard",
  "reqwest",

@@ -68,6 +68,30 @@ struct Manifest {
     /// on warm calls before any reuse; never part of the identity digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     recorded: Option<Vec<u8>>,
+    /// The tree embeds its repository's own directory (`<store>/external/
+    /// <name>`, crate::repository_slots): its slot stays a real, mutable
+    /// directory and the tree is a copy. Written only when true; a manifest
+    /// without it (every ordinary publication, and those of binaries before
+    /// the field) describes an ordinary one. A function of the content (the
+    /// identity covers it) for one store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    self_ref: Option<bool>,
+    /// The other store trees the tree's bytes name (`direct/trees/<id>`,
+    /// `trees/<id>`, ...: a GOROOT in `go.env`, absolute links into another
+    /// tree), for a collector; informational, never compared.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    refs: Vec<String>,
+}
+
+impl Manifest {
+    /// The slot class this publication's manifest records.
+    fn slot_class(&self) -> crate::repository_slots::SlotClass {
+        if self.self_ref == Some(true) {
+            crate::repository_slots::SlotClass::SelfReferencing
+        } else {
+            crate::repository_slots::SlotClass::Ordinary
+        }
+    }
 }
 
 /// One tree entry of a [`Manifest`]. Unknown fields are tolerated: reuse
@@ -649,19 +673,21 @@ fn framed(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-/// Execute into a private stage, then verify and publish its complete tree;
-/// or, when the specification already owns a valid publication whose recorded
-/// watchable inputs are unchanged, reuse it without executing. `execute`
-/// returns exact serialized runtime input provenance plus recorded probes
-/// after validating its result. `provenance` identifies the definition,
-/// attributes and mappings; it is kept byte-for-byte in the identity digest so
-/// existing content identities are unchanged. Neither byte string may contain
-/// the incidental stage pathname; the stage pathname itself is derived from
-/// `stage_key` (the repository's canonical name) so repository content that
-/// embeds its own working directory — `ctx.path(".")`, as gazelle's `go_env`
-/// does — addresses a path that is identical in every process and invocation,
-/// keeping the tree identity stable. Concurrent evaluations of the same key
-/// serialize on a stage lock in the cache, like module extension working
+/// Execute in the repository's directory, then verify and publish its
+/// complete tree; or, when the specification already owns a valid
+/// publication whose recorded watchable inputs are unchanged, reuse it
+/// without executing. `execute` returns exact serialized runtime input
+/// provenance plus recorded probes after validating its result.
+/// `provenance` identifies the definition, attributes and mappings; it is
+/// kept byte-for-byte in the identity digest so existing content identities
+/// are unchanged. The directory is the slot `<cache>/external/<stage_key>`
+/// (`stage_key` is the repository's canonical name; crate::repository_slots)
+/// — Bazel's `<output_base>/external/<name>` — so repository content that
+/// embeds its own working directory (`ctx.path(".")`, as gazelle's `go_env`
+/// does, or a path derived from it, as gazelle's `${SRCDIR}` is) addresses a
+/// path that is identical in every process and invocation, keeping the tree
+/// identity stable. Concurrent evaluations of the same key serialize on the
+/// slot's writer lock in the cache, like module extension working
 /// directories.
 pub fn materialize<F, V>(
     cache: &Path,
@@ -760,17 +786,25 @@ fn refresh_manifest(
 
 /// Reuse-only probe (Step C): if the specification pointer names a valid
 /// publication whose recorded inputs validate and whose tree verifies,
-/// return its root WITHOUT executing and without taking any stage lock.
-/// Reads only, except one best-effort write: a fallback hash match may
-/// refresh stat fingerprints into the manifest ([`refresh_manifest`]:
-/// try-locked, compare-and-swap, atomic rename, idempotent) — safe on
-/// worker threads and across processes. `Ok(None)` = no reusable
-/// publication (caller decides: sentinel under the guard, execute else).
-pub fn try_reuse<V>(cache: &Path, spec_key: &str, validate: V) -> Result<Option<PathBuf>, String>
+/// return its root WITHOUT executing and without taking any lock. Reads
+/// only, except two best-effort writes: a fallback hash match may refresh
+/// stat fingerprints into the manifest ([`refresh_manifest`]: try-locked,
+/// compare-and-swap, atomic rename, idempotent), and the slot of repository
+/// `stage_key` is bound to the reused tree when it is ordinary
+/// (crate::repository_slots::bind: a link renamed into place, never over a
+/// real directory) — safe on worker threads and across processes.
+/// `Ok(None)` = no reusable publication (caller decides: sentinel under the
+/// guard, execute else).
+pub fn try_reuse<V>(
+    cache: &Path,
+    stage_key: &str,
+    spec_key: &str,
+    validate: V,
+) -> Result<Option<PathBuf>, String>
 where
     V: Fn(&Path, &[u8]) -> Result<bool, String>,
 {
-    try_reuse_in(cache, spec_key, None, validate)
+    try_reuse_in(cache, stage_key, spec_key, None, validate)
 }
 
 /// The name of the specification pointer of `spec_key` for the publication
@@ -798,6 +832,7 @@ pub fn workspace_pointer(spec_key: &str, workspace: &str) -> String {
 /// followed (a later shared publication must be seen).
 pub fn try_reuse_in<V>(
     cache: &Path,
+    stage_key: &str,
     spec_key: &str,
     workspace: Option<&str>,
     validate: V,
@@ -807,7 +842,7 @@ where
 {
     let direct = cache.join("direct");
     let shared = direct.join("specs").join(spec_key);
-    let found = reuse_through(&direct, &shared, spec_key, &validate)?;
+    let found = reuse_through(cache, &shared, stage_key, spec_key, &validate)?;
     match (found, workspace) {
         (Reuse::Found(root), _) => Ok(Some(root)),
         (_, None) => Ok(None),
@@ -818,10 +853,12 @@ where
             let own = direct
                 .join("specs")
                 .join(workspace_pointer(spec_key, workspace));
-            Ok(match reuse_through(&direct, &own, spec_key, &validate)? {
-                Reuse::Found(root) => Some(root),
-                Reuse::NoPointer | Reuse::Invalid => None,
-            })
+            Ok(
+                match reuse_through(cache, &own, stage_key, spec_key, &validate)? {
+                    Reuse::Found(root) => Some(root),
+                    Reuse::NoPointer | Reuse::Invalid => None,
+                },
+            )
         }
     }
 }
@@ -838,13 +875,15 @@ enum Reuse {
 }
 
 /// Follow the specification pointer at `pointer` (of `spec_key`) to a
-/// reusable publication ([`try_reuse_in`]).
+/// reusable publication of repository `stage_key` ([`try_reuse_in`]).
 fn reuse_through(
-    direct: &Path,
+    cache: &Path,
     pointer: &Path,
+    stage_key: &str,
     spec_key: &str,
     validate: Validate<'_>,
 ) -> Result<Reuse, String> {
+    let direct = &cache.join("direct");
     let Some(identity) = read_pointer(pointer)? else {
         return Ok(Reuse::NoPointer);
     };
@@ -900,10 +939,28 @@ fn reuse_through(
     // REPO + INTEGRITY records of the analysis snapshot (after the
     // fingerprint refresh above, so the manifest's key is the final one).
     crate::observed_fs::repository_tree("direct", spec_key, &destination, Some(&manifest_path));
+    settle_slot(cache, stage_key, &identity, existing.slot_class());
     timing::PHASES
         .reused
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(Reuse::Found(destination))
+}
+
+/// After a reuse: an ordinary repository's slot is bound to its tree (best
+/// effort: a failure leaves the slot as it was, which only relative paths of
+/// other rules' executions can observe); a self-referencing one's mutable
+/// slot is left alone (its readers convert a missing one,
+/// crate::repository_ctx). Either way this process notes what it uses.
+fn settle_slot(
+    cache: &Path,
+    stage_key: &str,
+    identity: &str,
+    class: crate::repository_slots::SlotClass,
+) {
+    if class == crate::repository_slots::SlotClass::Ordinary {
+        let _ = crate::repository_slots::bind(cache, stage_key, identity);
+    }
+    crate::repository_slots::note(cache, stage_key, identity, class);
 }
 
 /// [`materialize`] with the caller-computed specification pointer identity:
@@ -1038,82 +1095,80 @@ pub struct Replayed {
 }
 
 /// Replay a local repository rule (crate::snapshot::replay, PLAN-L2 update
-/// 1 §(a)): `execute` runs in the very stage directory, under the same stage
-/// lock, as [`materialize_local`] uses for `stage_key` — an execution may
-/// observe its working directory (`java -XshowSettings:properties` prints
-/// `user.dir`) — and the digests of its identity inputs and tree are taken
-/// exactly as a full run would. Nothing is published, no pointer or
-/// manifest is touched, and the stage is deleted afterwards.
-pub fn replay_local<F>(cache: &Path, stage_key: &str, execute: F) -> Result<Replayed, String>
+/// 1 §(a)): `execute` runs in the very directory, under the same writer
+/// lock, as [`materialize_local`] uses for `stage_key` — its slot
+/// `<cache>/external/<stage_key>`: an execution may observe its working
+/// directory (`java -XshowSettings:properties` prints `user.dir`) — and the
+/// digests of its identity inputs and tree are taken exactly as a full run
+/// would. Nothing is published, no pointer or manifest is touched. The slot
+/// is restored for the `recorded` publication afterwards: bound to its tree
+/// (an ordinary repository), or — a self-referencing one whose replay
+/// reproduced the recorded tree — kept as its mutable directory; else
+/// removed.
+pub fn replay_local<F>(
+    cache: &Path,
+    stage_key: &str,
+    recorded: &LocalExecution,
+    execute: F,
+) -> Result<Replayed, String>
 where
     F: FnOnce(&Path) -> Result<Executed, String>,
 {
     ensure_directory(cache)?;
     let direct = cache.join("direct");
     let locks = direct.join("locks");
-    let stages = direct.join("stages");
-    for path in [&direct, &locks, &stages] {
+    for path in [&direct, &locks] {
         ensure_directory(path)?;
     }
-    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
-    let _stage_guard = lock_stage(&locks, &slug)?;
-    let stage = fresh_stage(&stages, &slug)?;
-    let executed = execute(stage.path())?;
-    let (_, encoded_snapshot) = stage_content(stage.path())?;
+    let writer = crate::repository_slots::SlotWriter::acquire(cache, stage_key)?;
+    writer.unmark()?;
+    let slot = writer.fresh()?;
+    let scratch = crate::repository_slots::SlotScratch::new(&writer);
+    let executed = execute(&slot)?;
+    let mut embedded =
+        crate::repository_slots::EmbeddedPaths::new(&canonical_store(cache), stage_key);
+    let (_, encoded_snapshot) = stage_content(&slot, Some(&mut embedded))?;
+    let embedded = embedded.finish();
     let replayed = Replayed {
         inputs_digest: Sha256::digest(&executed.inputs).into(),
         snapshot_digest: Sha256::digest(&encoded_snapshot).into(),
     };
-    // A callback may have created read-only directories.
-    crate::repository_ctx::remove_tree(stage.path())
-        .map_err(|e| format!("cannot remove the replay stage of {stage_key}: {e}"))?;
-    drop(stage);
+    let tree = PublishedTree {
+        kind: "direct",
+        id: recorded.identity.clone(),
+        root: direct.join("trees").join(&recorded.identity),
+        manifest: direct
+            .join("manifests")
+            .join(format!("{}.json", recorded.identity)),
+    };
+    if is_published(&tree) {
+        if !embedded.self_referencing {
+            writer.bind(&recorded.identity)?;
+            scratch.keep();
+        } else if replayed.snapshot_digest == recorded.snapshot_digest {
+            writer.mark(&recorded.identity)?;
+            scratch.keep();
+        }
+    }
     Ok(replayed)
 }
 
-/// The stage lock of `slug`: the stage pathname `stages/<slug>` exists only
-/// while it is held (until the returned file is dropped).
-fn lock_stage(locks: &Path, slug: &str) -> Result<File, String> {
-    let stage_lock_path = locks.join(format!("stage-{slug}"));
-    if let Some(metadata) = optional_metadata(&stage_lock_path)? {
-        regular_metadata(&metadata)?;
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).truncate(false).read(true).write(true);
-    no_follow(&mut options);
-    let stage_lock = options.open(&stage_lock_path).map_err(|e| e.to_string())?;
-    regular_metadata(&stage_lock.metadata().map_err(|e| e.to_string())?)?;
-    FileExt::lock_exclusive(&stage_lock)
-        .map_err(|e| format!("cannot lock direct repository stage: {e}"))?;
-    Ok(stage_lock)
+/// The store root as a repository rule sees it (its canonical path: the
+/// slot a rule runs in is canonicalized, crate::repository_ctx), for the
+/// self-reference scan.
+fn canonical_store(cache: &Path) -> PathBuf {
+    fs::canonicalize(cache).unwrap_or_else(|_| cache.to_path_buf())
 }
 
-/// A fresh, empty `stages/<slug>` (under its lock): an interrupted stage
-/// is removed first. The [`Scratch`] owns cleanup on callback errors and
-/// Rust unwinding as well.
-fn fresh_stage(stages: &Path, slug: &str) -> Result<Scratch, String> {
-    let stage_path = stages.join(slug);
-    if optional_metadata(&stage_path)?.is_some() {
-        crate::repository_ctx::remove_tree(&stage_path)
-            .map_err(|e| format!("cannot remove interrupted direct repository stage: {e}"))?;
-    }
-    tempfile::Builder::new()
-        .prefix(slug)
-        .rand_bytes(0)
-        .tempdir_in(stages)
-        .map(Scratch::new)
-        .map_err(|e| format!("cannot stage direct repository: {e}"))
-}
-
-/// A private directory of a repository store (a stage or a quarantine;
-/// also the Git and registry stores' stages) that is deleted when dropped,
+/// A private directory of a repository store (a quarantine; also the Git
+/// and registry stores' stages) that is deleted when dropped,
 /// like the [`tempfile::TempDir`] that created it, but with
 /// [`crate::repository_ctx::remove_tree`]: a repository rule may have made
 /// directories read-only (`chmod -R ugo-w`, as rules_python does for its
 /// interpreter's `lib/`), and `TempDir`'s `remove_dir_all` cannot empty
 /// those. Symlinks are never followed. A removal failure only leaves
-/// garbage behind (cleared by [`fresh_stage`], [`quarantine_lock`] or the
-/// next replacement) and a warning; it never fails the command.
+/// garbage behind (cleared by [`quarantine_lock`] or the next replacement)
+/// and a warning; it never fails the command.
 pub(crate) struct Scratch(PathBuf);
 
 impl Scratch {
@@ -1188,12 +1243,17 @@ fn swept_stores() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf
     SWEPT.get_or_init(Default::default)
 }
 
-/// A finished stage's inventory and its encoded content view (the bytes the
-/// identity frames): a repository boundary file is added when missing.
-fn stage_content(stage: &Path) -> Result<(BTreeMap<String, Entry>, Vec<u8>), String> {
+/// A finished execution's inventory and its encoded content view (the bytes
+/// the identity frames): a repository boundary file is added when missing.
+/// With `scan`, the bytes are also searched for store paths
+/// (crate::repository_slots::EmbeddedPaths) as they are hashed.
+fn stage_content(
+    stage: &Path,
+    scan: Option<&mut crate::repository_slots::EmbeddedPaths>,
+) -> Result<(BTreeMap<String, Entry>, Vec<u8>), String> {
     required_directory(stage)?;
     ensure_boundary(stage)?;
-    let files = snapshot(stage)?;
+    let files = snapshot_scanned(stage, scan)?;
     let encoded = serde_json::to_vec(&content_view(&files)).map_err(|e| e.to_string())?;
     Ok((files, encoded))
 }
@@ -1246,9 +1306,11 @@ impl ExecutedTaint {
     /// or `workspace`'s own for a workspace-dependent publication
     /// ([`workspace_pointer`]), which the re-probe follows like the next
     /// invocation's ([`try_reuse_in`]).
+    #[allow(clippy::too_many_arguments)]
     fn reprobe(
         mut self,
         cache: &Path,
+        stage_key: &str,
         spec_key: &str,
         workspace: Option<&str>,
         pointer: &Path,
@@ -1263,7 +1325,7 @@ impl ExecutedTaint {
         }
         observed_fs::supersede(pointer);
         if matches!(
-            try_reuse_in(cache, spec_key, workspace, validate),
+            try_reuse_in(cache, stage_key, spec_key, workspace, validate),
             Ok(Some(found)) if found == destination
         ) {
             self.detail = None;
@@ -1297,9 +1359,8 @@ where
     let trees = direct.join("trees");
     let manifests = direct.join("manifests");
     let locks = direct.join("locks");
-    let stages = direct.join("stages");
     let specs = direct.join("specs");
-    for path in [&trees, &manifests, &locks, &stages, &specs] {
+    for path in [&trees, &manifests, &locks, &specs] {
         ensure_directory(path)?;
     }
     // The pointer is published by atomic rename; an unlocked reader sees
@@ -1311,7 +1372,7 @@ where
         validate,
         workspace,
     } = &probe
-        && let Some(destination) = try_reuse_in(cache, spec_key, *workspace, *validate)?
+        && let Some(destination) = try_reuse_in(cache, stage_key, spec_key, *workspace, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
@@ -1320,34 +1381,38 @@ where
     }
     // A failing or absent validation falls through to execution, exactly
     // like Bazel refetching when a watched dependency changed. Only now —
-    // under the stage lock, after the double-checked reuse below — is the
+    // under the writer lock, after the double-checked reuse below — is the
     // provenance serialized (review R1).
     let provenance = provenance()?;
     let provenance = provenance.as_slice();
-    // 128 bits: two repositories sharing a slug would share a stage.
-    let slug = blake3::hash(stage_key.as_bytes()).to_hex()[..32].to_owned();
-    // Held until return: the stage pathname exists only under this lock.
-    let _stage_guard = lock_stage(&locks, &slug)?;
+    // Held until return: the slot changes only under this lock (its gate
+    // first: a waiting writer holds new readers off).
+    let writer = crate::repository_slots::SlotWriter::acquire(cache, stage_key)?;
     // A concurrent publisher may have won while this process waited on
-    // the stage lock: re-probe before executing (sequential semantics
+    // the writer lock: re-probe before executing (sequential semantics
     // unchanged; the pre-lock probe stays the fast path).
     if let Probe::Warm {
         validate,
         workspace,
     } = &probe
-        && let Some(destination) = try_reuse_in(cache, spec_key, *workspace, *validate)?
+        && let Some(destination) = try_reuse_in(cache, stage_key, spec_key, *workspace, *validate)?
     {
         if let Some(start) = call_start {
             timing::record_root(stage_key, start.elapsed().as_secs_f64(), "reused");
         }
         return Ok((destination, Publication::Reused));
     }
-    let stage = fresh_stage(&stages, &slug)?;
+    // Bazel deletes the marker before a fetch (RepositoryFetchFunction.java
+    // :311): the slot is incomplete from now on until it is marked again.
+    writer.unmark()?;
+    let slot = writer.fresh()?;
+    // Removes the slot's directory on every early return below.
+    let scratch = crate::repository_slots::SlotScratch::new(&writer);
     let started = std::time::Instant::now();
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
         let _tainted = crate::observed_fs::tainted_section();
-        execute(stage.path())
+        execute(&slot)
     };
     // A local rule's execution is recorded for replay by the caller instead.
     // A non-local one taints the analysis snapshot unless the warm probe,
@@ -1369,7 +1434,17 @@ where
         Some(workspace) => specs.join(workspace_pointer(spec_key, &workspace)),
         None => specs.join(spec_key),
     };
-    let (files, encoded_snapshot) = stage_content(stage.path())?;
+    // The tree's bytes are searched for the slot's own path while they are
+    // hashed: a self-referencing repository keeps a mutable slot.
+    let mut embedded =
+        crate::repository_slots::EmbeddedPaths::new(&canonical_store(cache), stage_key);
+    let (files, encoded_snapshot) = stage_content(&slot, Some(&mut embedded))?;
+    let embedded = embedded.finish();
+    let class = if embedded.self_referencing {
+        crate::repository_slots::SlotClass::SelfReferencing
+    } else {
+        crate::repository_slots::SlotClass::Ordinary
+    };
     let mut digest = Sha256::new();
     digest.update(PROFILE.as_bytes());
     digest.update([0]);
@@ -1381,15 +1456,16 @@ where
         framed(&mut digest, bytes);
     }
     let identity = format!("{:x}", digest.finalize());
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         format: MANIFEST_FORMAT,
         profile: PROFILE.into(),
         identity: identity.clone(),
         files,
         spec: Some(spec_key.to_owned()),
         recorded: Some(executed.recorded),
+        self_ref: embedded.self_referencing.then_some(true),
+        refs: embedded.refs.into_iter().collect(),
     };
-    let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
     // A local execution's runtime identity parts, for its replay record.
     if let Probe::Local(execution) = &mut probe {
         **execution = Some(LocalExecution {
@@ -1400,7 +1476,7 @@ where
     }
 
     // Recheck parents after the callback, before touching persistent entries.
-    for path in [&trees, &manifests, &locks, &stages, &specs] {
+    for path in [&trees, &manifests, &locks, &specs] {
         ensure_directory(path)?;
     }
     let lock_path = locks.join(&identity);
@@ -1428,7 +1504,9 @@ where
     // the rule would re-execute on every run. A NEWER binary's probes are
     // never replaced. Equal identities record equal probes otherwise (the
     // identity covers the observations they are derived from), so this
-    // republishes nothing else. Only the specification pointer below
+    // republishes nothing else; the slot class is a function of the content
+    // too, and only a self-referencing manifest without it (a coincidence
+    // of an older binary) is upgraded. Only the specification pointer below
     // records this specification's claim.
     if !(read_stable(&manifest_path)
         .ok()
@@ -1437,6 +1515,7 @@ where
             existing.identity == identity
                 && content_view(&existing.files) == content_view(&manifest.files)
                 && existing.spec.is_some()
+                && existing.slot_class() == class
                 && !upgrades_recorded(
                     existing.recorded.as_deref(),
                     manifest.recorded.as_deref().unwrap_or_default(),
@@ -1445,22 +1524,46 @@ where
         && verify_snapshot(&destination, &manifest.files, verify_mode())
             .is_ok_and(|matched| matched))
     {
-        // Prepare metadata before replacing anything. Quarantine names are private
-        // to this publisher, and renaming a corrupt symlink never follows it.
-        let mut metadata_stage = tempfile::NamedTempFile::new_in(&manifests)
-            .map_err(|e| format!("cannot stage direct manifest: {e}"))?;
-        metadata_stage
-            .write_all(&encoded)
-            .and_then(|()| metadata_stage.as_file().sync_all())
-            .map_err(|e| e.to_string())?;
+        // Quarantine names are private to this publisher, and renaming a
+        // corrupt symlink never follows it.
         let quarantining = quarantine_lock(&locks, &trees)?;
         let trash = tempfile::Builder::new()
             .prefix(".trash-")
             .tempdir_in(&trees)
             .map(Scratch::new)
             .map_err(|e| e.to_string())?;
+        // An ordinary slot becomes the tree (one rename); a self-referencing
+        // one stays the repository's mutable directory and a copy of it —
+        // fresh single-link files, made inside this publisher's quarantine
+        // (removed with it on every exit) — is published, with the copy's
+        // own stat fingerprints. Nothing writes into the slot meanwhile: its
+        // readers wait for this writer (crate::repository_ctx).
+        let tree_source = match class {
+            crate::repository_slots::SlotClass::Ordinary => slot.clone(),
+            crate::repository_slots::SlotClass::SelfReferencing => {
+                let copy = trash.path().join("copy");
+                crate::repository_slots::copy_tree(&slot, &copy)?;
+                let copied = snapshot(&copy)?;
+                if content_view(&copied) != content_view(&manifest.files) {
+                    return Err(format!(
+                        "the repository directory {} changed while it was published",
+                        slot.display()
+                    ));
+                }
+                manifest.files = copied;
+                copy
+            }
+        };
+        let encoded = serde_json::to_vec(&manifest).map_err(|e| e.to_string())?;
+        // Prepare metadata before replacing anything.
+        let mut metadata_stage = tempfile::NamedTempFile::new_in(&manifests)
+            .map_err(|e| format!("cannot stage direct manifest: {e}"))?;
+        metadata_stage
+            .write_all(&encoded)
+            .and_then(|()| metadata_stage.as_file().sync_all())
+            .map_err(|e| e.to_string())?;
         quarantine(&manifest_path, &trash.path().join("manifest"))?;
-        install_tree(stage.path(), &destination, &trash.path().join("tree"))?;
+        install_tree(&tree_source, &destination, &trash.path().join("tree"))?;
         // These are two atomic renames, not an atomic pair. A failure/crash leaves
         // missing metadata, which forces repair on the next evaluated invocation.
         metadata_stage
@@ -1488,6 +1591,16 @@ where
         let _m = timing::mark(&timing::PHASES.publish);
         publish_pointer(&specs, &pointer, &identity)?;
     }
+    // The slot: an ordinary one links the tree (replacing the finished
+    // directory if it was not moved into place: an existing equal tree); a
+    // self-referencing one is marked complete after the pointer, like
+    // genuine's marker file after the repository.
+    match class {
+        crate::repository_slots::SlotClass::Ordinary => writer.bind(&identity)?,
+        crate::repository_slots::SlotClass::SelfReferencing => writer.mark(&identity)?,
+    }
+    scratch.keep();
+    crate::repository_slots::note(cache, stage_key, &identity, class);
     // Released first: the re-probe's manifest refresh coordinates on it.
     drop(lock);
     if let (
@@ -1500,6 +1613,7 @@ where
     {
         taint.reprobe(
             cache,
+            stage_key,
             spec_key,
             *workspace,
             &pointer,
@@ -1853,8 +1967,39 @@ fn read_opened(path: &Path) -> Result<Vec<u8>, Unread> {
 
 /// SHA-256 and size of a regular file, hashed incrementally (constant memory).
 fn hash_stable(path: &Path) -> Result<(u64, String), String> {
+    hash_scanned(path, None)
+}
+
+/// [`hash_stable`], the same bytes also searched with `scan`.
+fn hash_scanned(
+    path: &Path,
+    scan: Option<&mut crate::repository_slots::EmbeddedPaths>,
+) -> Result<(u64, String), String> {
+    /// Both sinks of one read.
+    struct Tee<'a, 'b>(
+        &'a mut Sha256,
+        &'a mut crate::repository_slots::FileScan<'b>,
+    );
+    impl Write for Tee<'_, '_> {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.update(bytes);
+            self.1.write_all(bytes)?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
     let mut digest = Sha256::new();
-    let size = stream_stable(path, &mut digest)?;
+    let size = match scan {
+        None => stream_stable(path, &mut digest)?,
+        Some(paths) => {
+            let mut file = paths.file();
+            let size = stream_stable(path, &mut Tee(&mut digest, &mut file))?;
+            file.finish();
+            size
+        }
+    };
     Ok((size, format!("{:x}", digest.finalize())))
 }
 
@@ -2863,6 +3008,15 @@ fn tree_content(
 }
 
 fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
+    snapshot_scanned(root, None)
+}
+
+/// [`snapshot`], searching every file's bytes (as they are hashed) and every
+/// link target with `scan`.
+fn snapshot_scanned(
+    root: &Path,
+    mut scan: Option<&mut crate::repository_slots::EmbeddedPaths>,
+) -> Result<BTreeMap<String, Entry>, String> {
     // Recording moment for fingerprint settling (review R3): taken once
     // before the walk; files younger than the racy margin get no stat.
     let recorded_at = std::time::SystemTime::now();
@@ -2871,6 +3025,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
         path: &Path,
         files: &mut BTreeMap<String, Entry>,
         recorded_at: std::time::SystemTime,
+        scan: &mut Option<&mut crate::repository_slots::EmbeddedPaths>,
     ) -> Result<(), String> {
         let before = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
         let name = path
@@ -2902,6 +3057,9 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
             ) {
                 return Err("direct repository changed during snapshot".into());
             }
+            if let Some(scan) = scan.as_deref_mut() {
+                scan.link(target.as_bytes());
+            }
             files.insert(
                 name,
                 Entry {
@@ -2925,7 +3083,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
         };
         if !entry.directory {
             regular_metadata(&before)?;
-            let (size, sha256) = hash_stable(path)?;
+            let (size, sha256) = hash_scanned(path, scan.as_deref_mut())?;
             entry.size = size;
             entry.sha256 = sha256;
         }
@@ -2938,6 +3096,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
                     &child.map_err(|e| e.to_string())?.path(),
                     files,
                     recorded_at,
+                    scan,
                 )?;
             }
         }
@@ -2951,7 +3110,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<String, Entry>, String> {
     }
     required_directory(root)?;
     let mut files = BTreeMap::new();
-    visit(root, root, &mut files, recorded_at)?;
+    visit(root, root, &mut files, recorded_at, &mut scan)?;
     Ok(files)
 }
 
@@ -3279,11 +3438,18 @@ mod tests {
             workspace_pointer(&key, "/ws/b")
         );
         assert_eq!(
-            try_reuse(cache.path(), &key, |_, _| Ok(true)).unwrap(),
+            try_reuse(cache.path(), "test-key", &key, |_, _| Ok(true)).unwrap(),
             None
         );
         assert_eq!(
-            try_reuse_in(cache.path(), &key, Some("/ws/c"), validate("/ws/c")).unwrap(),
+            try_reuse_in(
+                cache.path(),
+                "test-key",
+                &key,
+                Some("/ws/c"),
+                validate("/ws/c")
+            )
+            .unwrap(),
             None
         );
         // A publication of no workspace: the specification's pointer, which
@@ -3293,7 +3459,14 @@ mod tests {
         assert!(specs.join(&key).is_file());
         for workspace in ["/ws/a", "/ws/c", "/ws/d"] {
             assert_eq!(
-                try_reuse_in(cache.path(), &key, Some(workspace), validate(workspace)).unwrap(),
+                try_reuse_in(
+                    cache.path(),
+                    "test-key",
+                    &key,
+                    Some(workspace),
+                    validate(workspace)
+                )
+                .unwrap(),
                 Some(shared.clone()),
                 "{workspace}"
             );
@@ -3303,7 +3476,7 @@ mod tests {
             Ok(recorded_workspace(recorded).as_deref() == Some("/ws/b"))
         };
         assert_eq!(
-            try_reuse_in(cache.path(), &key, Some("/ws/b"), refuse_shared).unwrap(),
+            try_reuse_in(cache.path(), "test-key", &key, Some("/ws/b"), refuse_shared).unwrap(),
             Some(b.clone())
         );
     }
@@ -3500,6 +3673,10 @@ mod tests {
         ))
     }
 
+    /// No scratch survives a completed materialization: no `.trash-*` in
+    /// the trees, no temporary link among the slots, and every slot is
+    /// settled — the link to a published tree (an ordinary repository) or
+    /// a real directory with its marker (a self-referencing one).
     fn no_stages(cache: &Path) {
         assert!(
             fs::read_dir(cache.join("direct/trees"))
@@ -3511,28 +3688,60 @@ mod tests {
                     .unwrap()
                     .starts_with('.'))
         );
-        // Deterministic stages live in their own directory and never survive
-        // a completed materialization.
-        assert_eq!(
-            fs::read_dir(cache.join("direct/stages"))
-                .map(|entries| entries.count())
-                .unwrap_or(0),
-            0
-        );
+        let Ok(slots) = fs::read_dir(cache.join("external")) else {
+            return;
+        };
+        for slot in slots {
+            let slot = slot.unwrap();
+            let name = slot.file_name().into_string().unwrap();
+            assert!(!name.starts_with('.'), "scratch {name} left in the slots");
+            let path = slot.path();
+            match fs::read_link(&path) {
+                Ok(target) => {
+                    let identity = target.strip_prefix("../direct/trees").unwrap();
+                    assert!(
+                        is_published(&PublishedTree {
+                            kind: "direct",
+                            id: identity.to_str().unwrap().to_owned(),
+                            root: cache.join("direct/trees").join(identity),
+                            manifest: cache
+                                .join("direct/manifests")
+                                .join(format!("{}.json", identity.display())),
+                        }),
+                        "{name} links {}",
+                        target.display()
+                    );
+                    assert!(path.join("REPO.bazel").exists() || path.join("MODULE.bazel").exists());
+                }
+                Err(_) => {
+                    assert!(fs::symlink_metadata(&path).unwrap().is_dir());
+                    assert!(
+                        crate::repository_slots::marker(cache, &name).is_some(),
+                        "{name} is a real directory without a marker"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The slot of `key`.
+    fn slot(cache: &Path, key: &str) -> PathBuf {
+        crate::repository_slots::slot_path(cache, key)
     }
 
     #[test]
-    fn stage_paths_are_deterministic_across_materializations() {
+    fn slot_paths_are_deterministic_across_materializations() {
         // Repository content may embed its own working directory (gazelle's
-        // go_env writes `ctx.path(".")` into go.env). With a stage keyed by
-        // the repository name, that path is a pure function of the cache and
-        // the key, so re-evaluation reproduces the identity and warm reuse
-        // holds — in this process and in any other sharing the cache.
+        // go_env writes `ctx.path(".")` into go.env). Every execution of a
+        // repository runs in its slot `<cache>/external/<name>`, a pure
+        // function of the cache and the name, so re-evaluation reproduces
+        // the identity and warm reuse holds — in this process and in any
+        // other sharing the cache.
         //
         // The second materialization FORCES re-execution (a failing
-        // `validate` falls through to the stage, exactly like a changed
+        // `validate` falls through to the slot, exactly like a changed
         // watched input): a warm-reusing second call would just follow the
-        // spec pointer to the first tree and prove nothing about the stage
+        // spec pointer to the first tree and prove nothing about the slot
         // pathname's determinism.
         let cache = temp();
         let embed = |stage: &Path| {
@@ -3556,42 +3765,42 @@ mod tests {
         )
         .unwrap()
         .0;
-        // The embedded working directory is the deterministic stage:
-        // <cache>/direct/stages/<32-hex slug of the key>.
+        // The embedded working directory is the slot, Bazel's
+        // <output_base>/external/<name>: <cache>/external/<name>.
         let embedded = fs::read_to_string(first.join("go.env")).unwrap();
-        let stages_dir = cache.path().join("direct/stages");
-        assert!(embedded.starts_with(&format!("GOPATH='{}", stages_dir.display())));
+        let go_env = slot(cache.path(), "rules_gazelle++go_env");
+        assert_eq!(embedded, format!("GOPATH='{}'\n", go_env.display()));
+        // It embeds its own directory: the slot stays a real, marked
+        // directory and the tree is a copy.
+        assert!(fs::symlink_metadata(&go_env).unwrap().is_dir());
+        assert_eq!(fs::read_to_string(go_env.join("go.env")).unwrap(), embedded);
+        let identity = first.file_name().unwrap().to_str().unwrap().to_owned();
         assert_eq!(
-            embedded
-                .lines()
-                .next()
-                .unwrap()
-                .trim_end_matches('\'')
-                .rsplit('/')
-                .next()
-                .unwrap()
-                .len(),
-            32
+            crate::repository_slots::marker(cache.path(), "rules_gazelle++go_env"),
+            Some(identity.clone())
         );
+        let manifest =
+            parse_manifest(&fs::read(metadata_path(cache.path(), &first)).unwrap()).unwrap();
+        assert_eq!(manifest.self_ref, Some(true));
         let (second, publication) = materialize(
             cache.path(),
             "rules_gazelle++go_env",
             b"spec-go-env",
             b"provenance",
             // Invalidate the recorded watchable inputs: the rule must
-            // re-execute into the same keyed stage.
+            // re-execute into the same slot.
             |_, _| Ok(false),
             embed,
         )
         .unwrap();
         assert_eq!(publication, Publication::Executed);
-        // Re-executed (not warm-reused), into the same deterministic stage,
-        // so the embedded path and the content identity both reproduce and
-        // no second tree is published.
+        // Re-executed (not warm-reused), into the same slot, so the embedded
+        // path and the content identity both reproduce and no second tree
+        // is published.
         assert_eq!(
             fs::read_to_string(second.join("go.env")).unwrap(),
             embedded,
-            "re-execution must embed the same stage pathname"
+            "re-execution must embed the same slot pathname"
         );
         assert_eq!(first, second);
         assert_eq!(
@@ -3600,7 +3809,7 @@ mod tests {
                 .count(),
             1
         );
-        // A different repository embeds a different stage pathname and gets
+        // A different repository embeds a different slot pathname and gets
         // a different content address.
         assert_ne!(
             materialize(
@@ -3618,16 +3827,163 @@ mod tests {
         no_stages(cache.path());
     }
 
+    /// An ordinary repository's slot becomes its tree (renamed) and links it
+    /// afterwards; a warm reuse binds a slot that links elsewhere, is
+    /// missing or is an interrupted execution's leftover.
     #[test]
-    fn interrupted_stage_directory_is_replaced_under_its_lock() {
+    fn ordinary_slots_link_their_trees_and_reuse_rebinds_them() {
         let cache = temp();
-        let slug = blake3::hash(b"stale-key").to_hex()[..32].to_owned();
-        let stale = cache.path().join("direct/stages").join(&slug);
+        let (tree, _) = publish_keyed(cache.path(), "ordinary", b"", write).unwrap();
+        let link = slot(cache.path(), "ordinary");
+        let target =
+            crate::repository_slots::link_target(tree.file_name().unwrap().to_str().unwrap());
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        assert_eq!(fs::read(link.join("data")).unwrap(), [0, 255, 128, 10]);
+        assert_eq!(
+            parse_manifest(&fs::read(metadata_path(cache.path(), &tree)).unwrap())
+                .unwrap()
+                .self_ref,
+            None
+        );
+        for disturb in [
+            |link: &Path| {
+                fs::remove_file(link).unwrap();
+                std::os::unix::fs::symlink("../direct/trees/elsewhere", link).unwrap();
+            },
+            |link: &Path| fs::remove_file(link).unwrap(),
+            |link: &Path| {
+                fs::remove_file(link).unwrap();
+                fs::create_dir(link).unwrap();
+                fs::write(link.join("partial"), b"interrupted").unwrap();
+            },
+        ] {
+            disturb(&link);
+            let (again, status) =
+                publish_keyed(cache.path(), "ordinary", b"", |_| panic!("must reuse")).unwrap();
+            assert_eq!((again, status), (tree.clone(), Publication::Reused));
+            assert_eq!(fs::read_link(&link).unwrap(), target);
+        }
+        no_stages(cache.path());
+    }
+
+    #[test]
+    fn interrupted_slot_directory_is_replaced_under_its_lock() {
+        let cache = temp();
+        let stale = slot(cache.path(), "stale-key");
         fs::create_dir_all(&stale).unwrap();
         fs::write(stale.join("leftover"), b"interrupted").unwrap();
         let (tree, _) = publish_keyed(cache.path(), "stale-key", b"", write).unwrap();
         assert_eq!(fs::read(tree.join("data")).unwrap(), [0, 255, 128, 10]);
         assert!(!tree.join("leftover").exists());
+        no_stages(cache.path());
+    }
+
+    /// A self-referencing repository's tree is a copy: writes into its slot
+    /// (another repository's `go` filling GOPATH) never change the tree,
+    /// and a warm reuse keeps what was written there; a re-execution
+    /// starts the slot afresh and publishes only what the rule wrote.
+    #[test]
+    fn writes_into_a_self_referencing_slot_never_change_its_tree() {
+        let cache = temp();
+        let embed = |stage: &Path| {
+            fs::write(
+                stage.join("go.env"),
+                format!("GOPATH={}\n", stage.display()),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(b"inputs".to_vec())
+        };
+        let (tree, _) = publish_keyed(cache.path(), "gocache", b"", embed).unwrap();
+        let gopath = slot(cache.path(), "gocache");
+        fs::create_dir_all(gopath.join("pkg/mod/example.com")).unwrap();
+        fs::write(gopath.join("pkg/mod/example.com/m.go"), b"package m\n").unwrap();
+        assert!(!tree.join("pkg").exists());
+        let (again, status) =
+            publish_keyed(cache.path(), "gocache", b"", |_| panic!("must reuse")).unwrap();
+        assert_eq!((again, status), (tree.clone(), Publication::Reused));
+        assert!(gopath.join("pkg/mod/example.com/m.go").is_file());
+        // The tree still verifies: its copy has its own inodes.
+        let published = published_tree(cache.path(), &tree).unwrap();
+        verify_published_tree(&published).unwrap();
+        // Re-executed (the recorded inputs changed): the slot starts empty.
+        let (third, status) = materialize(
+            cache.path(),
+            "gocache",
+            b"spec",
+            b"",
+            |_, _| Ok(false),
+            |stage| {
+                assert!(!stage.join("pkg").exists());
+                embed(stage).map(|inputs| Executed {
+                    inputs,
+                    recorded: br#"{"version":1}"#.to_vec(),
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (third.clone(), status),
+            (tree.clone(), Publication::Executed)
+        );
+        let names: Vec<_> = fs::read_dir(&tree)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert_eq!(names, ["REPO.bazel", "go.env"]);
+        no_stages(cache.path());
+    }
+
+    /// A replay of a local rule runs in its slot and restores it: the link
+    /// to the recorded tree (ordinary), the marked mutable directory (a
+    /// self-referencing one that reproduced its tree).
+    #[test]
+    fn replays_run_in_the_slot_and_restore_it() {
+        let cache = temp();
+        for (key, self_referencing) in [("local-ordinary", false), ("local-self", true)] {
+            let run = |stage: &Path| {
+                let text = if self_referencing {
+                    format!("{}\n", stage.display())
+                } else {
+                    "constant\n".to_owned()
+                };
+                fs::write(stage.join("out"), text).map_err(|e| e.to_string())?;
+                Ok(Executed {
+                    inputs: b"inputs".to_vec(),
+                    recorded: Vec::new(),
+                })
+            };
+            let (root, execution) = materialize_local(
+                cache.path(),
+                key,
+                &spec_identity(key.as_bytes()),
+                || Ok(Vec::new()),
+                run,
+            )
+            .unwrap();
+            let replayed = replay_local(cache.path(), key, &execution, |stage| {
+                assert_eq!(stage, slot(cache.path(), key));
+                run(stage)
+            })
+            .unwrap();
+            assert_eq!(replayed.snapshot_digest, execution.snapshot_digest);
+            assert_eq!(replayed.inputs_digest, execution.inputs_digest);
+            let path = slot(cache.path(), key);
+            if self_referencing {
+                assert!(fs::symlink_metadata(&path).unwrap().is_dir());
+                assert_eq!(
+                    crate::repository_slots::marker(cache.path(), key),
+                    Some(execution.identity.clone())
+                );
+            } else {
+                assert_eq!(
+                    fs::read_link(&path).unwrap(),
+                    crate::repository_slots::link_target(&execution.identity)
+                );
+            }
+            verify_local_publication(&root, &execution).unwrap();
+        }
         no_stages(cache.path());
     }
 
@@ -3859,9 +4215,9 @@ mod tests {
                 0
             );
         }
-        // The stage lock file persists like a publication lock (deleting a
+        // The slot's lock files persist like a publication lock (deleting a
         // lock file that other processes may hold would break exclusion);
-        // no stage directory and no tree survive the failure.
+        // no slot directory and no tree survive the failure.
         assert!(
             fs::read_dir(cache.path().join("direct/locks"))
                 .unwrap()
@@ -3870,8 +4226,9 @@ mod tests {
                     .file_name()
                     .to_str()
                     .unwrap()
-                    .starts_with("stage-"))
+                    .starts_with("slot-"))
         );
+        assert!(!slot(cache.path(), "test-key").exists());
         no_stages(cache.path());
     }
 
@@ -4814,7 +5171,7 @@ mod tests {
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    try_reuse(&cache, &spec_key, |_, _| Ok(true))
+                    try_reuse(&cache, "test-key", &spec_key, |_, _| Ok(true))
                 })
             })
             .collect();
@@ -4842,7 +5199,7 @@ mod tests {
             .collect();
         assert_eq!(manifests, [path.file_name().unwrap()]);
         assert_eq!(
-            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            try_reuse(cache.path(), "test-key", &spec_key, |_, _| Ok(true)).unwrap(),
             Some(tree.clone())
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -4880,7 +5237,7 @@ mod tests {
         };
         let misses = (0..2000)
             .filter(|_| {
-                try_reuse(cache.path(), &spec_key, |_, _| Ok(true))
+                try_reuse(cache.path(), "test-key", &spec_key, |_, _| Ok(true))
                     .unwrap()
                     .is_none()
             })
@@ -4923,14 +5280,20 @@ mod tests {
         fs::rename(&path, &away).unwrap();
         hook(true);
         assert_eq!(
-            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            try_reuse(cache.path(), "test-key", &spec_key, |_, _| Ok(true)).unwrap(),
             Some(tree.clone())
         );
         assert_eq!(*retries.lock().unwrap(), [1, 2]);
         // A specification never published: no waiting.
         retries.lock().unwrap().clear();
         assert_eq!(
-            try_reuse(cache.path(), &spec_identity(b"other"), |_, _| Ok(true)).unwrap(),
+            try_reuse(
+                cache.path(),
+                "test-key",
+                &spec_identity(b"other"),
+                |_, _| Ok(true)
+            )
+            .unwrap(),
             None
         );
         assert!(retries.lock().unwrap().is_empty());
@@ -4938,7 +5301,7 @@ mod tests {
         fs::rename(&path, &away).unwrap();
         hook(false);
         assert_eq!(
-            try_reuse(cache.path(), &spec_key, |_, _| Ok(true)).unwrap(),
+            try_reuse(cache.path(), "test-key", &spec_key, |_, _| Ok(true)).unwrap(),
             None
         );
         assert_eq!(

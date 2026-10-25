@@ -20,6 +20,10 @@ fs2 = "0.4"
 hyper = { version = "=1.12.0", default-features = false }
 landlock = "=0.4.7"
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
+# SIMD substring search: the store-path scan of a repository tree rides on
+# its hashing read (crate::repository_slots); same version the lock already
+# has through regex/aho-corasick (no new code is built).
+memchr = "=2.8.3"
 num-bigint = "=0.4.8"
 # The binary snapshot formats (PLAN-L2 §1d; the user directive: no JSON for
 # new stores): serde with varint integers, already in the lock through

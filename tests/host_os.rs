@@ -166,10 +166,15 @@ impl Fixture {
     }
 
     fn clean_failure(&self) {
-        // Deterministic stage locks persist (empty files, like publication
-        // locks); trees, manifests and stage directories stay empty.
-        for name in ["trees", "manifests", "stages"] {
-            let path = self.store().join(name);
+        // The repository directories' locks persist (empty files, like
+        // publication locks); trees, manifests and the repository
+        // directories (`external/<name>`) stay empty after failures.
+        for path in [
+            self.store().join("trees"),
+            self.store().join("manifests"),
+            self.store().parent().unwrap().join("external"),
+        ] {
+            let name = path.display();
             assert!(
                 !path.exists() || fs::read_dir(&path).unwrap().next().is_none(),
                 "{name} not empty after failure"
@@ -183,7 +188,7 @@ impl Fixture {
                         .file_name()
                         .to_str()
                         .unwrap()
-                        .starts_with("stage-")
+                        .starts_with("slot-")
                 );
             }
         }
@@ -283,7 +288,20 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32)> {
         if let Ok(entries) = fs::read_dir(at) {
             for entry in entries {
                 let entry = entry.unwrap();
-                assert!(!entry.file_type().unwrap().is_symlink());
+                // A repository's directory links its published tree.
+                if entry.file_type().unwrap().is_symlink() {
+                    assert!(
+                        at.ends_with("repositories/external"),
+                        "{}",
+                        entry.path().display()
+                    );
+                    assert!(
+                        fs::read_link(entry.path())
+                            .unwrap()
+                            .starts_with("../direct/trees")
+                    );
+                    continue;
+                }
                 if entry.file_type().unwrap().is_dir() {
                     visit(root, &entry.path(), result);
                 } else {

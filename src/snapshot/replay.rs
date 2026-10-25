@@ -479,25 +479,30 @@ fn replay_one(
         escape(OsStr::new(&record.canonical))
     ));
     let mut output = None;
-    let result = crate::repository_store::replay_local(source_cache, &record.canonical, |stage| {
-        let executed = crate::repository_ctx::execute_captured(
-            repositories.clone(),
-            definition,
-            functions,
-            &record.attributes,
-            &record.canonical,
-            &record.original_name,
-            &record.definition_label,
-            stage,
-        )?;
-        let inputs =
-            crate::host_os::repository_inputs(repositories.host()?.as_ref(), &executed.inputs)?;
-        output = Some(executed.output);
-        Ok(crate::repository_store::Executed {
-            inputs,
-            recorded: Vec::new(),
-        })
-    });
+    let result = crate::repository_store::replay_local(
+        source_cache,
+        &record.canonical,
+        &record.execution,
+        |stage| {
+            let executed = crate::repository_ctx::execute_captured(
+                repositories.clone(),
+                definition,
+                functions,
+                &record.attributes,
+                &record.canonical,
+                &record.original_name,
+                &record.definition_label,
+                stage,
+            )?;
+            let inputs =
+                crate::host_os::repository_inputs(repositories.host()?.as_ref(), &executed.inputs)?;
+            output = Some(executed.output);
+            Ok(crate::repository_store::Executed {
+                inputs,
+                recorded: Vec::new(),
+            })
+        },
+    );
     marker(MARKER_REPLAY_EXEC_END);
     let mismatch = match result {
         Err(error) => Some(format!("replay failed: {error}")),
@@ -848,13 +853,27 @@ R = repository_rule(implementation = _impl, local = True)
             &records,
         );
         assert_eq!(report.matched(), 1, "{:?}", report.replayed);
-        // Replays publish nothing and leave no stage behind.
+        // Replays publish nothing and leave the repository's directory as
+        // they found it: the link to the recorded tree, no scratch beside.
         assert_eq!(published_trees(&workspace.cache()), 1);
+        assert_slot_links_the_recorded_tree(&workspace.cache(), &records[0]);
+    }
+
+    /// The slot of `record`'s repository links its recorded tree, and no
+    /// scratch is left among the slots.
+    fn assert_slot_links_the_recorded_tree(cache: &Path, record: &ReplayRecord) {
         assert_eq!(
-            fs::read_dir(workspace.cache().join("direct/stages"))
+            fs::read_link(crate::repository_slots::slot_path(cache, &record.canonical)).unwrap(),
+            crate::repository_slots::link_target(&record.execution.identity)
+        );
+        assert!(
+            fs::read_dir(cache.join(crate::repository_slots::SLOTS))
                 .unwrap()
-                .count(),
-            0
+                .all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with('.'))
         );
     }
 
@@ -883,13 +902,8 @@ R = repository_rule(implementation = _impl, local = True)
         assert_eq!(report.matched(), 0);
         assert_eq!(report.replayed[0].mismatch.as_deref(), Some(CANCELLED));
         assert_eq!(report.definitions[0].error.as_deref(), Some(CANCELLED));
-        // Nothing was staged.
-        assert_eq!(
-            fs::read_dir(workspace.cache().join("direct/stages"))
-                .map(|entries| entries.count())
-                .unwrap_or(0),
-            0
-        );
+        // Nothing ran: the slot still links the recorded tree.
+        assert_slot_links_the_recorded_tree(&workspace.cache(), &records[0]);
     }
 
     #[test]

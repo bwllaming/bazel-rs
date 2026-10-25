@@ -2167,7 +2167,7 @@ impl RepositorySet {
     /// (sentinel; coordinator fetches inline, exactly as before Step C).
     fn try_reuse_direct(
         &self,
-        _canonical: &str,
+        canonical: &str,
         entry: &crate::repository_catalog::DirectRepository,
     ) -> Result<Option<PathBuf>, String> {
         let runtime = self.direct_runtime()?;
@@ -2192,6 +2192,7 @@ impl RepositorySet {
         let validating = self.clone();
         crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
+            canonical,
             &spec_key,
             Some(&workspace_text),
             move |tree, recorded| {
@@ -2747,6 +2748,7 @@ impl RepositorySet {
         let validating = self.clone();
         crate::repository_store::try_reuse_in(
             self.source_cache_path()?,
+            &repository.canonical_name,
             &spec_key,
             Some(&workspace_text),
             move |tree, recorded| {
@@ -5462,7 +5464,8 @@ mod tests {
                         0
                     );
                 }
-                // Deterministic stage locks persist; nothing else does.
+                // The slot's lock files persist; nothing else does (no
+                // repository directory either).
                 assert!(
                     std::fs::read_dir(f.0.join("bazel-rs-out/repositories/direct/locks"))
                         .unwrap()
@@ -5471,7 +5474,11 @@ mod tests {
                             .file_name()
                             .to_str()
                             .unwrap()
-                            .starts_with("stage-"))
+                            .starts_with("slot-"))
+                );
+                assert!(
+                    std::fs::read_dir(f.0.join("bazel-rs-out/repositories/external"))
+                        .map_or(true, |mut entries| entries.next().is_none())
                 );
             }
         }
