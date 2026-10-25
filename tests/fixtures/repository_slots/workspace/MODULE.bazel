@@ -1,0 +1,9 @@
+module(name = "repository_slots")
+
+probe = use_repo_rule("//:probe.bzl", "probe")
+
+probe(name = "probed")
+
+cgo_like = use_repo_rule("//:cgo_like.bzl", "cgo_like")
+
+cgo_like(name = "cgo")

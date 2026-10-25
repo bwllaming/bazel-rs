@@ -1,0 +1,21 @@
+{
+  "about": "Genuine Bazel 9.3.0 (tests/fixtures/repository_slots/capture.py): --batch --ignore_all_rc_files, env -i PATH=/usr/bin:/bin HOME=<private>, workspace tests/fixtures/repository_slots/workspace. Outputs are the built files' bytes; <OUTPUT_BASE> is the output base.",
+  "genuine_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "cases": {
+    "repopath": {
+      "target": "@probed//:show",
+      "exit": 0,
+      "output": "external/+probe+probed\n"
+    },
+    "repopath_full": {
+      "target": "@probed//:full",
+      "exit": 0,
+      "output": "<OUTPUT_BASE>/external/+probe+probed\n"
+    },
+    "cgo_srcdir": {
+      "target": "@cgo//:link_flags",
+      "exit": 0,
+      "output": "-Lexternal/+cgo_like+cgo/ -lfoo\n"
+    }
+  }
+}
