@@ -4238,7 +4238,14 @@ fn remove_stale(path: &Path) -> Result<(), String> {
             } else {
                 fs::remove_file(path)
             };
-            result.map_err(|e| io_error("cannot remove invalid cache entry", path, e))
+            match result {
+                // Another thread removed it first (two actions validating
+                // one shared blob): the entry is gone either way.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                result => {
+                    result.map_err(|e| io_error("cannot remove invalid cache entry", path, e))
+                }
+            }
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(io_error("cannot inspect cache entry", path, e)),
