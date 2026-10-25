@@ -25,6 +25,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+include!("support/explicit_modules.rs");
 
 /// tests/cc_compile.rs's module closure: stubs and vendored genuine modules.
 const STUBBED: &[&str] = &[
@@ -274,6 +275,7 @@ impl Workspace {
             .env("TMPDIR", self.keep.path().join("tmp"))
             .env("LANG", "C.UTF-8")
             .env("LC_ALL", "C.UTF-8")
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {argv:?}");

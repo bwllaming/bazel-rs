@@ -8,6 +8,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -85,6 +86,7 @@ impl Fixture {
             .env("LC_ALL", "C.UTF-8")
             .env("LOCKEXT_STATIC", "s 1")
             .env("LOCKEXT_DYN", dyn_value)
+            .explicit_modules()
             .output()
             .unwrap()
     }

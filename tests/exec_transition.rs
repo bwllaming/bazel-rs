@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use base64::Engine as _;
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -48,6 +49,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

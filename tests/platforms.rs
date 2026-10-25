@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use base64::Engine as _;
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -57,6 +58,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
@@ -1039,7 +1041,7 @@ has(name = "has_linux", cv = "@platforms//os:linux")
     let output = ws.run(&["build", &builtin[1], "//:host"]);
     assert_eq!(output.status.code(), Some(1), "{}", errors(&output));
     assert!(
-        errors(&output).starts_with("bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide ("),
+        errors(&output).starts_with("bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide ("),
         "{}",
         errors(&output)
     );

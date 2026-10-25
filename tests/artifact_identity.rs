@@ -15,6 +15,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -68,6 +69,7 @@ impl Workspace {
             .env("BAZEL_RS_VERIFY_ARTIFACTS", "1")
             .env("BAZEL_RS_VERIFY_VIEWS", "1")
             .envs(env.iter().copied())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

@@ -13,6 +13,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -60,6 +61,7 @@ impl Workspace {
             .args(["--experimental-builtin-modules", &registry])
             .args(&args[1..])
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

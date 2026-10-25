@@ -6,6 +6,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -80,6 +81,7 @@ go_sdk = module_extension(_impl, tag_classes={'download': tag_class({'version': 
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("XDG_CONFIG_HOME", self.0.path().join("xdg"))
             .env("LANG", "C")
+            .explicit_modules()
             .output()
             .unwrap()
     }

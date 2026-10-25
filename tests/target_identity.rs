@@ -29,6 +29,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+include!("support/explicit_modules.rs");
 
 /// cc_internal through a main-repository file on cc_common's private-API
 /// allowlist ("", "third_party/bazel_rules/rules_cc"); freeze itself has no
@@ -329,6 +330,7 @@ impl Workspace {
             .args(args)
             .current_dir(&self.0)
             .env("BAZEL_RS_VERIFY_VIEWS", "1")
+            .explicit_modules()
             .output()
             .unwrap()
     }

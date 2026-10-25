@@ -15,6 +15,7 @@ include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -103,6 +104,7 @@ impl Fixture {
             ])
             .args(all)
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

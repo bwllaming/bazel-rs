@@ -9,6 +9,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -126,6 +127,7 @@ impl Fixture {
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("LC_ALL", "C")
+            .explicit_modules()
             .output()
             .unwrap();
         assert!(!matches!(output.status.code(), Some(124 | 137)), "timeout");

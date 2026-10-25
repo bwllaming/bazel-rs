@@ -12,6 +12,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+include!("support/explicit_modules.rs");
 
 fn manifest_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -74,6 +75,7 @@ impl Workspace {
             .args(extra)
             .arg("@reader//:all + @from_ext//:all")
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         (

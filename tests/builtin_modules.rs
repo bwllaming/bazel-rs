@@ -156,10 +156,8 @@ fn genuine_builtin_query_build_and_helper_loading_use_standalone_native_resource
     let query = run(
         root.path(),
         "query",
-        &[
-            "--experimental-builtin-modules",
-            "@bazel_tools//tools/build_defs/repo:utils.bzl",
-        ],
+        // The default profile.
+        &["@bazel_tools//tools/build_defs/repo:utils.bzl"],
     );
     success(&query);
     assert_eq!(
@@ -257,17 +255,40 @@ fn ignore_dev_preserves_builtin_and_ignored_aliases_still_collide() {
 }
 
 #[test]
-fn explicit_default_and_invalid_flag_do_not_silently_switch_profiles() {
+fn builtin_default_explicit_opt_out_and_invalid_flag_do_not_silently_switch_profiles() {
     let root = workspace("module(name='main')\n");
+    // Like Bazel 9.3, the built-in modules are the default; the native-only
+    // switch (and `=true`) is a no-op.
+    let builtin = run(
+        root.path(),
+        "query",
+        &["@bazel_tools//tools/build_defs/repo:utils.bzl"],
+    );
+    success(&builtin);
+    for flag in [
+        "--experimental-builtin-modules",
+        "--experimental-builtin-modules=true",
+    ] {
+        let explicit = run(
+            root.path(),
+            "query",
+            &[flag, "@bazel_tools//tools/build_defs/repo:utils.bzl"],
+        );
+        success(&explicit);
+        assert_eq!(explicit.stdout, builtin.stdout);
+    }
     rejected(
         &run(
             root.path(),
             "query",
-            &["@bazel_tools//tools/build_defs/repo:utils.bzl"],
+            &[
+                "--experimental-builtin-modules=false",
+                "@bazel_tools//tools/build_defs/repo:utils.bzl",
+            ],
         ),
         // The mapping entry exists in every module, like Bazel; the explicit
         // profile only lacks the contents.
-        "built-in repository @@bazel_tools is visible to every module but has no contents",
+        "built-in repository @@bazel_tools is visible to every module but has no contents in the explicit-module profile; drop --experimental-builtin-modules=false",
     );
     rejected(
         &run(
@@ -366,4 +387,38 @@ fn metadata_override_cannot_bypass_unsupported_builtin_graph_presentation() {
         .unwrap();
     rejected(&output, "builtin module graph presentation is unsupported");
     assert!(!root.path().join("cache").exists());
+}
+
+#[test]
+fn graph_command_presents_the_explicit_module_graph_by_default() {
+    // Native `mod graph` presents the explicit-module graph by default (the
+    // built-in profile's presentation is not implemented); query and build
+    // default to the built-in modules.
+    let root = workspace("module(name='main')\n");
+    let graph = |extra: &[&str]| {
+        Command::new("timeout")
+            .args([
+                "600s",
+                env!("CARGO_BIN_EXE_bazel-rs"),
+                "--ignore_all_rc_files",
+                "--cache-dir=cache",
+                "mod",
+                "graph",
+                "--output=json",
+                // Explicit offline registry: never the default https://bcr.bazel.build/.
+                "--registry=file:///nonexistent-offline-registry",
+            ])
+            .args(extra)
+            .current_dir(root.path())
+            .output()
+            .unwrap()
+    };
+    let default = graph(&[]);
+    success(&default);
+    let json: Value = serde_json::from_slice(&default.stdout).unwrap();
+    assert_eq!(json["key"], "<root>", "{json}");
+    assert_eq!(json["dependencies"], Value::Array(Vec::new()), "{json}");
+    let explicit = graph(&["--experimental-builtin-modules=false"]);
+    success(&explicit);
+    assert_eq!(explicit.stdout, default.stdout);
 }

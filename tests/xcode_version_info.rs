@@ -9,6 +9,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/xcode_dotted");
 
@@ -53,6 +54,7 @@ impl Workspace {
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("LC_ALL", "C")
+            .explicit_modules()
             .output()
             .unwrap();
         assert!(

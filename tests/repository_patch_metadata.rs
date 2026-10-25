@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+include!("support/explicit_modules.rs");
 
 /// Serves files below `root` with Content-Length and Connection: close.
 struct Server {
@@ -135,6 +136,7 @@ impl Fixture {
             .args(["--experimental-builtin-modules", registry.as_str()])
             .args(&args[1..])
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

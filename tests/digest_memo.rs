@@ -20,6 +20,7 @@ use std::process::Command;
 use std::time::Duration;
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 const BUILD: &str = "\
 genrule(name = 'a', srcs = ['in.txt'], outs = ['a.out'], cmd = 'cat $< > $@; echo more >> $@')
@@ -137,6 +138,7 @@ impl Workspace {
             .env("BAZEL_RS_TIMING", "1")
             .envs(environment.iter().copied())
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         let run = Run {
@@ -663,6 +665,7 @@ fn outputs_of_one_size_keep_their_own_bytes() {
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(["build", "//:w"])
             .current_dir(workspace.path())
+            .explicit_modules()
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

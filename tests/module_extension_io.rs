@@ -14,6 +14,7 @@ use std::sync::{
 };
 use std::thread;
 use std::time::Duration;
+include!("support/explicit_modules.rs");
 
 struct Server {
     url: String,
@@ -134,6 +135,7 @@ impl Fixture {
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("XDG_CONFIG_HOME", self.0.path().join("xdg"))
             .env("LANG", "C")
+            .explicit_modules()
             .output()
             .unwrap()
     }

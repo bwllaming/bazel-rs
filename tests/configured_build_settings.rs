@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -66,6 +67,7 @@ impl Fixture {
             ))
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "timed out: {args:?}");

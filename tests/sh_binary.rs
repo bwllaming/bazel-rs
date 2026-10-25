@@ -15,6 +15,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 /// The builtin-closure modules replaced by N30's stubs
 /// (tests/fixtures/test_flags/stubs) so nothing is downloaded; rules_shell
@@ -127,6 +128,7 @@ impl Fixture {
             ])
             .args(args)
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

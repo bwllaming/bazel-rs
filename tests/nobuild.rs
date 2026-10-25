@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -56,6 +57,7 @@ impl Workspace {
             .args(arguments)
             .envs(env.iter().copied())
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out");

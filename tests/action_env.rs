@@ -10,6 +10,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -92,7 +93,7 @@ impl Workspace {
             command.env("PATH", "/usr/bin:/bin");
         }
         command.envs(client.iter().copied());
-        let output = command.output().unwrap();
+        let output = command.explicit_modules().output().unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
         output
     }

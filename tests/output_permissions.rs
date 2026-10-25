@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+include!("support/explicit_modules.rs");
 
 #[test]
 fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
@@ -30,6 +31,7 @@ fn genrule_outputs_are_executable_on_cold_and_warm_builds() {
                 "//:copy",
             ])
             .current_dir(root.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert!(
@@ -102,6 +104,7 @@ outputs = rule(implementation=_impl)
                 "//:probe",
             ])
             .current_dir(root.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert!(

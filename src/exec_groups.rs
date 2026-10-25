@@ -515,7 +515,7 @@ fn context_methods(builder: &mut MethodsBuilder) {
                 Some(data.clone()),
             )),
             GroupToolchains::BuiltinOnly => bail!(
-                "the toolchains of the default `test` exec group need the built-in @bazel_tools repository (--experimental-builtin-modules); without it the group is not resolved by the native profile (divergence D3, docs/TEST_FLAGS.md)"
+                "the toolchains of the default `test` exec group need the built-in @bazel_tools repository, which --experimental-builtin-modules=false disables; without it the group is not resolved by the native profile (divergence D3, docs/TEST_FLAGS.md)"
             ),
         }
     }

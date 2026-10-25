@@ -12,6 +12,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -43,6 +44,7 @@ impl Workspace {
             .args(targets)
             .current_dir(self.path())
             .env("BAZEL_RS_VERIFY_VIEWS", "1")
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -55,6 +57,7 @@ impl Workspace {
             .args(arguments)
             .current_dir(self.path())
             .env("BAZEL_RS_VERIFY_VIEWS", "1")
+            .explicit_modules()
             .output()
             .unwrap()
     }

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+include!("support/explicit_modules.rs");
 
 const DEFS: &str = r##"def _t(ctx):
     out = ctx.actions.declare_file(ctx.label.name + ".sh")
@@ -222,6 +223,7 @@ genrule(name = 'tmpwrite', outs = ['tmpwrite.txt'], cmd = 'echo t > /tmp/n59-tmp
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

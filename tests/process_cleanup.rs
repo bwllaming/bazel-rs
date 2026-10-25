@@ -24,6 +24,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+include!("support/explicit_modules.rs");
 
 /// Starts `sleep 300` as a daemon that escapes the caller's process group in
 /// the requested way, writes the daemon's PID to PIDFILE and returns once it
@@ -108,6 +109,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
@@ -282,6 +284,7 @@ fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
+        .explicit_modules()
         .spawn()
         .unwrap();
     let names = kinds("i", "slow");
@@ -440,6 +443,7 @@ impl Supervisor {
             .stdin(Stdio::from(OwnedFd::from(theirs)))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .explicit_modules()
             .spawn()
             .unwrap();
         control

@@ -19,6 +19,7 @@ use std::process::{Command, Output};
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -87,6 +88,7 @@ impl Workspace {
             .args(["--experimental-builtin-modules", &registry])
             .args(&argv[1..])
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {argv:?}");

@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -52,7 +53,7 @@ impl Fixture {
         for (name, value) in env {
             command.env(name, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 }
 

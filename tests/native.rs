@@ -5,6 +5,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
@@ -32,6 +33,7 @@ impl Workspace {
             .args(args)
             .envs(env.iter().copied())
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -178,6 +180,7 @@ fn flags_test_command_and_rc_are_not_silently_ignored() {
         .args(["--nosystem_rc", "--nohome_rc", "build", ":ok"])
         .env_remove("BAZELRC")
         .current_dir(&ws.0)
+        .explicit_modules()
         .output()
         .unwrap();
     assert!(!result.status.success());

@@ -34,7 +34,7 @@ pub(crate) fn link_canonical_form(path: &Path) -> std::io::Result<PathBuf> {
 
 /// Demanding `@@bazel_tools` without the built-in profile. Its mapping entry
 /// exists in every module, like Bazel; only its contents are absent.
-pub(crate) const BAZEL_TOOLS_UNAVAILABLE: &str = "the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules";
+pub(crate) const BAZEL_TOOLS_UNAVAILABLE: &str = "the built-in repository @@bazel_tools is visible to every module but has no contents in the explicit-module profile; drop --experimental-builtin-modules=false";
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 

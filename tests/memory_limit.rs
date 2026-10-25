@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -54,7 +55,7 @@ impl Workspace {
         for (name, value) in env {
             command.env(name, value);
         }
-        let output = command.output().unwrap();
+        let output = command.explicit_modules().output().unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
         output
     }
@@ -266,7 +267,7 @@ fn watchdog_installs_no_rlimit_as() {
         .env_remove("BAZEL_RS_MAX_MEMORY_MB")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().unwrap();
+    let mut child = command.explicit_modules().spawn().unwrap();
     let pid = child.id();
     // Drain stdout/stderr so the child never blocks on a full pipe.
     let drain_out = child.stdout.take().unwrap();

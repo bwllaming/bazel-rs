@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -64,6 +65,7 @@ impl Workspace {
             .arg("query")
             .args(args)
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }

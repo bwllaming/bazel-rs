@@ -16,6 +16,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -258,6 +259,8 @@ fn a_failing_script_fails_even_without_a_status_consumer() {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", ws.path())
         .env("LC_ALL", "C")
+        .explicit_modules()
+        .explicit_modules()
         .output()
         .unwrap();
     assert!(!queried.status.success());

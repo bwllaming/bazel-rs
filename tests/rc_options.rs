@@ -10,6 +10,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -64,7 +65,7 @@ impl Fixture {
         for (name, value) in environment {
             command.env(name, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 
     fn run(&self, args: &[&str]) -> Output {

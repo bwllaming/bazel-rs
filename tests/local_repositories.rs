@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -30,6 +31,7 @@ impl Fixture {
             ])
             .args(args)
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

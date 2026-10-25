@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const RULES: &str = "def _impl(ctx):\n    ctx.file('BUILD.bazel', \"exports_files(['data.txt', 'defs.bzl'])\\n\")\n    ctx.file('data.txt', 'hello ' + ctx.attr.text + '\\n', executable=False)\n    ctx.file('defs.bzl', 'x = 1\\n', executable=False)\nmaker=repository_rule(_impl,attrs={'text':attr.string()})\n";
 const GOOD_EXT: &str = "load(':rules.bzl','maker')\ndef _impl(ctx):\n    maker(name='made',text='Ada')\nfiles=module_extension(_impl)\n";
@@ -49,6 +50,7 @@ impl Fixture {
             ])
             .args(args)
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -230,6 +232,7 @@ fn commands_that_end_the_process_write_the_lockfile_first() {
             .args(*args)
             .current_dir(f.0.path())
             .env("HOME", f.0.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_eq!(

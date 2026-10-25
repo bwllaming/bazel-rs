@@ -8,6 +8,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace {
     root: tempfile::TempDir,
@@ -98,7 +99,11 @@ impl Workspace {
     }
 
     fn run_with(&self, startup: &[&str], args: &[&str]) -> Output {
-        let output = self.command(startup, args).output().unwrap();
+        let output = self
+            .command(startup, args)
+            .explicit_modules()
+            .output()
+            .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
         output
     }

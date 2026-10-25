@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -271,7 +272,7 @@ impl Workspace {
                 process.env(key, value);
             }
         }
-        let output = process.output().unwrap();
+        let output = process.explicit_modules().output().unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {command}");
         output
     }

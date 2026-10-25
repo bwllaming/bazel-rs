@@ -26,7 +26,7 @@ def record(stdout='', stderr='', returncode=0, **changes):
 
 
 MESSAGES = {
-    'explicit': 'the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules',
+    'explicit': 'the built-in repository @@bazel_tools is visible to every module but has no contents in the explicit-module profile; drop --experimental-builtin-modules=false',
     'malformed': '--experimental-builtin-modules expects true or false',
     'filesystem-override': 'unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem',
     'collision': "The repo name 'bazel_tools' cannot be defined as a built-in dependency at <builtin> as it is already defined by a bazel_dep at /private/MODULE.bazel:1:10, 'bazel_tools' is a built-in dependency and cannot be used by any 'bazel_dep' or 'use_repo' directive",
@@ -110,6 +110,8 @@ class PlanAndFixtureTests(unittest.TestCase):
     def test_profile_and_collisions_are_native_only_precise_subprobes(self):
         item = builtin.CASES[2]
         self.assertIsNone(builtin.specification(item, 'default', ROOTS)['selector'])
+        self.assertIsNone(builtin.specification(item, 'default', ROOTS)['diagnostic'])
+        self.assertEqual(builtin.specification(item, 'false', ROOTS)['diagnostic'], 'explicit')
         self.assertEqual(builtin.specification(item, 'false', ROOTS)['selector'], builtin.SELECTOR + '=false')
         self.assertEqual(builtin.specification(item, 'malformed', ROOTS)['selector'], builtin.SELECTOR + '=maybe')
         self.assertEqual(builtin.specification(item, 'filesystem-override', ROOTS)['extra'], ['--override_repository=bazel_tools=metadata'])

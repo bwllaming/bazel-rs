@@ -33,7 +33,7 @@ pub fn run_with_source_cache(root: &Path, args: &[String], cache: &Path) -> Resu
         reject_extensions(&module.module, true, &module.name)?;
     }
     if options.resolver.builtin_profile == module_graph::BuiltinProfile::Bazel93Builtins {
-        return Err("builtin module graph presentation is unsupported; the genuine builtin profile currently supports query/build repository access only".to_owned());
+        return Err("builtin module graph presentation is unsupported; native mod graph presents the explicit-module graph (its default, as if --experimental-builtin-modules=false); query/build/run/test use the built-in modules by default".to_owned());
     }
     let output = format_graph(
         &graph,
@@ -226,7 +226,10 @@ pub fn reject_unsupported_repo_env_argument(arg: &std::ffi::OsStr) -> Result<(),
     }
 }
 
-/// Native-only transition switch, independent of graph display/registry policy.
+/// Native-only switch, independent of graph display/registry policy. The
+/// built-in profile (Bazel 9.3's behaviour) is the default of query, build,
+/// run and test; `=false` selects the explicit-module profile, which native
+/// `mod graph` presents by default.
 pub fn builtin_profile_argument(arg: &str) -> Result<Option<module_graph::BuiltinProfile>, String> {
     use module_graph::BuiltinProfile;
     match arg {

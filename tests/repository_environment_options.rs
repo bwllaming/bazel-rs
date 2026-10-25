@@ -2,6 +2,7 @@
 //! is modelled, crate::repo_env), and the library `mod` entry's rejection.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::process::Command;
+include!("support/explicit_modules.rs");
 
 const SECRET: &str = "SYNTHETIC_SECRET_42";
 const ERROR: &str =
@@ -43,6 +44,7 @@ fn override_forms_never_echo_values() {
                 .args(&command)
                 .args(form)
                 .current_dir(workspace.path())
+                .explicit_modules()
                 .output()
                 .unwrap();
             assert_eq!(output.status.code(), Some(1), "{command:?} {form:?}");
@@ -145,6 +147,7 @@ fn non_utf8_arguments_cannot_bypass_override_redaction_or_panic() {
             .args(["--kill-after=5", "15", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(args)
             .current_dir(workspace.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(1));
@@ -160,6 +163,7 @@ fn non_utf8_arguments_cannot_bypass_override_redaction_or_panic() {
     let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
         .arg(bad_value)
         .current_dir(workspace.path())
+        .explicit_modules()
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));

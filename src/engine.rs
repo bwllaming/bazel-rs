@@ -3653,8 +3653,8 @@ impl Engine {
             let late_bound = late_bound_rule || analysis_dependent.contains(&src);
             let dependency = self.resolve_rule_src(&rule, &src)?;
             // The allowlist Bazel adds to rules with a Starlark transition
-            // lives in @bazel_tools, which only the built-in module profile
-            // provides natively.
+            // lives in @bazel_tools, which the explicit-module profile
+            // (--experimental-builtin-modules=false) does not provide.
             if edge.attribute == crate::custom_rule::FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE
                 && dependency.repository == "bazel_tools"
                 && self.repositories.root("bazel_tools").is_err()
@@ -3662,7 +3662,7 @@ impl Engine {
                 return Err(located(
                     rule.location.as_deref(),
                     format!(
-                        "the Starlark transition allowlist {} of {} needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name",
+                        "the Starlark transition allowlist {} of {} needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide; drop --experimental-builtin-modules=false, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name",
                         crate::rule_declarations::canonical_form(&dependency),
                         crate::rule_declarations::canonical_form(&rule.label)
                     ),
@@ -6874,7 +6874,7 @@ impl Engine {
             return Err(located(
                 rule.location.as_deref(),
                 format!(
-                    "config_feature_flag rule {shown}: its allowlist {} needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules",
+                    "config_feature_flag rule {shown}: its allowlist {} needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide; drop --experimental-builtin-modules=false",
                     crate::rule_declarations::canonical_form(&allowlist)
                 ),
             ));
@@ -7063,7 +7063,7 @@ impl Engine {
             && let Err(error) = self.repositories.root("bazel_tools")
         {
             return Err(PlatformError::Other(format!(
-                "the target platform {shown} (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide ({error}); use --experimental-builtin-modules, or select a platform with --platforms"
+                "the target platform {shown} (the default host platform) needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide ({error}); drop --experimental-builtin-modules=false, or select a platform with --platforms"
             )));
         }
         // PlatformLookupUtil.hasPlatformInfo before analysis (:160-172);

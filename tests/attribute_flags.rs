@@ -14,6 +14,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
@@ -46,6 +47,7 @@ impl Workspace {
         Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
             .args(["--ignore_all_rc_files", "build", target])
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -226,6 +228,7 @@ r(name = "x", deps = ["a.h"])
             "//:a.h",
         ])
         .current_dir(&ws.0)
+        .explicit_modules()
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", errors(&output));

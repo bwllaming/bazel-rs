@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 const DEFS: &str = r##"def _tree_impl(ctx):
     d = ctx.actions.declare_directory(ctx.label.name + "_dir")
@@ -216,7 +217,7 @@ impl Workspace {
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
             .arg(format!("--cache-dir={}", self.cache().display()))
-            .args(arguments)
+            .args(with_explicit_modules(arguments))
             .current_dir(self.root())
             .env_clear()
             .env("PATH", "/usr/bin:/bin")

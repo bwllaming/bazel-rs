@@ -18,6 +18,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const STUBBED: &[&str] = &[
     "buildozer",
@@ -201,7 +202,7 @@ impl Workspace {
         for (name, value) in env {
             command.env(name, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 
     /// sha256 of every artifact under the cache (bazel-out relative path).

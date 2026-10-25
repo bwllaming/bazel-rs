@@ -12,6 +12,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -53,6 +54,7 @@ impl Fixture {
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("LC_ALL", "C");
+        command.explicit_modules();
         eprintln!("N2_COMMAND {command:?}");
         let output = command.output().unwrap();
         eprintln!(

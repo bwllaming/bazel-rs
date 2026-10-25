@@ -24,6 +24,7 @@ include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const STUBBED: &[&str] = &[
     "buildozer",
@@ -146,6 +147,7 @@ impl Workspace {
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
             .env("LC_ALL", "C")
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -384,6 +386,7 @@ fn stamped_build_info_translates_the_workspace_status() {
             .env("TMPDIR", ws.0.path().join("tmp"))
             .env("LC_ALL", "C")
             .env("SOURCE_DATE_EPOCH", "1800000000")
+            .explicit_modules()
             .output()
             .unwrap()
     };

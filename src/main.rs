@@ -62,7 +62,10 @@ Repository options: --registry=URL (file/http/https, repeatable; default https:/
   --ignore_dev_dependency
   --repository_disable_download[=BOOL] blocks uncached archive/overlay/patch acquisition.
   Verified caches, registry metadata and Git execution are unaffected (not an offline mode).
-Native transition: --experimental-builtin-modules[=true|false] opts into genuine Bazel 9.3 built-ins.
+Built-in modules: like Bazel 9.3, @bazel_tools and its MODULE closure are always injected
+  (query/build/run/test). Native-only --experimental-builtin-modules=false selects the explicit-module
+  profile (no @bazel_tools); --experimental-builtin-modules[=true] is the default (a no-op).
+  mod graph presents the explicit-module graph (built-ins are not presented).
 Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE.bazel.lock
   (registryFileHashes, selectedYankedVersions; moduleExtensions/facts entries computed,
   reused and written with Bazel's digests since N52; docs/REGISTRY_LOCKFILE.md).
@@ -2394,6 +2397,11 @@ impl NativeOptions {
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
                 allow_remote: matches!(command, "build" | "query" | "run" | "test"),
+                // Bazel 9.3 always injects @bazel_tools and its MODULE
+                // closure (ModuleFileFunction, BazelRepositoryModule); the
+                // native explicit-module profile is an opt-out
+                // (--experimental-builtin-modules=false).
+                builtin_profile: bazel_rs::module_graph::BuiltinProfile::Bazel93Builtins,
                 ..Default::default()
             },
             downloads: true,

@@ -18,6 +18,7 @@ include!("support/executable_script.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -64,6 +65,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
@@ -270,7 +272,7 @@ fn analysis_of_unmodeled_native_rules_fails_explicitly() {
     assert!(build.status.success(), "{}", errors(&build));
 }
 
-const HOST_PLATFORM_UNAVAILABLE: &str = "bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which this module profile does not provide (";
+const HOST_PLATFORM_UNAVAILABLE: &str = "bazel-rs: the target platform @@bazel_tools//tools:host_platform (the default host platform) needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide (";
 
 #[test]
 fn rules_go_toolchain_targets_analyze() {

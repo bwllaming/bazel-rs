@@ -14,6 +14,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const A: &str = "BAZEL_RS_HOST_A";
 const UNUSED: &str = "BAZEL_RS_HOST_UNUSED";
@@ -113,7 +114,7 @@ impl Fixture {
             assert!(matches!(*name, A | UNUSED | "SYNTHETIC_SECRET"));
             command.env(name, value);
         }
-        let output = command.output().unwrap();
+        let output = command.explicit_modules().output().unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timeout");
         assert_ne!(output.status.code(), Some(137), "CLI forced termination");
         assert!(!error(&output).contains("panicked"), "{}", error(&output));

@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 // multi-threaded, spawning test process (ETXTBSY race).
 include!("support/executable_script.rs");
 include!("support/verify_env.rs");
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -244,7 +245,7 @@ shell = rule(_shell, attrs = {"src": attr.label(allow_single_file = True)})
         if upload_opt_in {
             command.env("BAZEL_RS_ALLOW_REMOTE_UPLOAD", "1");
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 
     fn ws(&self) -> PathBuf {

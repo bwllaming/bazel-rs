@@ -9,6 +9,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture {
     workspace: tempfile::TempDir,
@@ -59,6 +60,7 @@ impl Fixture {
             ])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

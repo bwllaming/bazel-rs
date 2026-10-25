@@ -12,6 +12,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -57,6 +58,7 @@ impl Fixture {
             .arg("--ignore_all_rc_files")
             .arg(cache)
             .args(args)
+            .explicit_modules()
             .output()
             .unwrap()
     }

@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -48,6 +49,7 @@ fn build(ws: &Path, target: &str) -> Output {
         ))
         .arg(target)
         .current_dir(ws)
+        .explicit_modules()
         .output()
         .unwrap();
     assert_ne!(output.status.code(), Some(124), "CLI timed out");

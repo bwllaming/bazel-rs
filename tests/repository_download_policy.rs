@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+include!("support/explicit_modules.rs");
 
 const ARCHIVE: &[u8] = include_bytes!("fixtures/build_settings/bazel-skylib-1.8.2.tar.gz");
 const MODULE: &[u8] =
@@ -278,6 +279,7 @@ impl Fixture {
             .arg(format!("--cache-dir={cache}"))
             .args(args)
             .current_dir(self.temp.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

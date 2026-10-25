@@ -87,8 +87,9 @@ pub(crate) fn configure(
 }
 
 /// A failed dependency edge whose label is the configured value of a
-/// late-bound default: the target's own error, then the native gap. Without
-/// `--experimental-builtin-modules` this profile has no `@bazel_tools`, so
+/// late-bound default: the target's own error, then the native gap. In the
+/// explicit-module profile (`--experimental-builtin-modules=false`) there is
+/// no `@bazel_tools`, so
 /// `apple.xcode_config_label` (an alias to the xcode_configure extension's
 /// `@local_config_xcode//:host_xcodes`, tools/cpp/BUILD.tools:124-128) cannot
 /// be analyzed.
@@ -103,7 +104,7 @@ pub(crate) fn edge_error(
         crate::rule_declarations::canonical_form(rule),
         crate::rule_declarations::canonical_form(dependency),
         if dependency.repository == "bazel_tools" {
-            " (@bazel_tools is provided only with --experimental-builtin-modules)"
+            " (@bazel_tools is not provided with --experimental-builtin-modules=false)"
         } else {
             ""
         }

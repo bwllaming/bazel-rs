@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Workspace(PathBuf);
@@ -36,6 +37,7 @@ impl Workspace {
             .args(args)
             .envs(env.iter().copied())
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }

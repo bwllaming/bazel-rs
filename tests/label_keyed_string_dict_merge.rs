@@ -6,6 +6,7 @@ include!("support/verify_env.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 fn write(root: &Path, path: &str, text: &str) {
     let path = root.join(path);
@@ -23,6 +24,7 @@ fn run(root: &Path, args: &[&str]) -> Output {
         .envs(verifier_environment())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
+        .explicit_modules()
         .output()
         .unwrap()
 }

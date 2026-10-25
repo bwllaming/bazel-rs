@@ -61,7 +61,7 @@ PLAN = [(c['name'], c['kind']) for c in CASES]
 DIAGNOSTICS = {
     # N51: every module maps @bazel_tools (ModuleThreadContext.java:383-401);
     # the explicit profile fails only when its contents are demanded.
-    'explicit': r'the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile',
+    'explicit': r'the built-in repository @@bazel_tools is visible to every module but has no contents in the explicit-module profile',
     'malformed': r'--experimental-builtin-modules expects true or false',
     'filesystem-override': r'unsupported option --override_repository; MODULE overrides do not replace the built-in repository filesystem',
     # ModuleThreadContext.buildModule (:383-401), in every profile since N51.
@@ -259,8 +259,11 @@ def specification(item, probe, roots):
     if item['name'] == 'genuine.helper-and-copy':
         spec.update(build=BUILD, target='//:copy')
     elif item['name'] == 'native.profile':
-        if probe in ('default', 'false'):
-            spec.update(selector=None if probe == 'default' else SELECTOR + '=false', diagnostic='explicit')
+        if probe == 'default':
+            # The built-in modules are the default (no selector, no rejection).
+            spec.update(selector=None)
+        elif probe == 'false':
+            spec.update(selector=SELECTOR + '=false', diagnostic='explicit')
         elif probe == 'malformed':
             spec.update(selector=SELECTOR + '=maybe', diagnostic='malformed')
         else:

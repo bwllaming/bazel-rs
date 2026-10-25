@@ -19,6 +19,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 include!("support/executable_script.rs");
+include!("support/explicit_modules.rs");
 
 const MODULE: &str = r##"module(name = "tree_executables")
 
@@ -155,6 +156,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");

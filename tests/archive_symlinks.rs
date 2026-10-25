@@ -8,6 +8,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const BUILD: &str = "\
 package(default_visibility = ['//visibility:public'])
@@ -132,6 +133,7 @@ impl Fixture {
             ))
             .args(&args[1..])
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

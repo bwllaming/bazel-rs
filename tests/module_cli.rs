@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Fixture(PathBuf);
@@ -47,6 +48,7 @@ impl Fixture {
             ))
             .args(extra)
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -66,6 +68,7 @@ impl Fixture {
                 .then_some(local),
             )
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -285,6 +288,7 @@ fn git_cli_relative_cache_is_cwd_relative_and_graph_uses_empty_key() {
             f.0.join("registry").display()
         ))
         .current_dir(f.0.join("subdir"))
+        .explicit_modules()
         .output()
         .unwrap();
     succeeded(&output);
@@ -474,6 +478,7 @@ fn cli_rejects_unsupported_profiles_and_missing_registry_dependencies() {
     let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
         .args(["--ignore_all_rc_files", "mod", "graph"])
         .current_dir(&fixture.0)
+        .explicit_modules()
         .output()
         .unwrap();
     assert!(!output.status.success());

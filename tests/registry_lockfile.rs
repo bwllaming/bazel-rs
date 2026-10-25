@@ -12,6 +12,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Arc, Mutex};
+include!("support/explicit_modules.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -149,6 +150,7 @@ impl Fixture {
             .args(flags)
             .arg("//:all")
             .current_dir(self.ws())
+            .explicit_modules()
             .output()
             .unwrap()
     }

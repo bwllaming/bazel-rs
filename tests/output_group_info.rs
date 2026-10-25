@@ -11,6 +11,7 @@ include!("support/module_archives.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -55,6 +56,7 @@ impl Workspace {
             .args(flags)
             .args(targets)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

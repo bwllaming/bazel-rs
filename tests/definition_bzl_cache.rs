@@ -13,6 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -103,7 +104,7 @@ make = repository_rule(_impl)
         for (key, value) in env {
             command.env(key, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 }
 

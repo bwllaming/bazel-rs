@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use base64::Engine as _;
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -55,6 +56,7 @@ impl Workspace {
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
@@ -981,7 +983,7 @@ defined_here(name = "by_definition")
     let error = ws.rejected(&["//e:x", "--host_platform=//p:linux"]);
     assert_eq!(
         error,
-        "bazel-rs: WS/e/BUILD.bazel:2:4: the Starlark transition allowlist @@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist of //e:x needs the built-in @bazel_tools repository, which this module profile does not provide; use --experimental-builtin-modules, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name\n"
+        "bazel-rs: WS/e/BUILD.bazel:2:4: the Starlark transition allowlist @@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist of //e:x needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide; drop --experimental-builtin-modules=false, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name\n"
     );
 }
 

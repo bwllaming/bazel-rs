@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -40,7 +41,7 @@ impl Fixture {
         command
     }
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).output().unwrap()
+        self.command(args).explicit_modules().output().unwrap()
     }
     /// Run with an exact client environment (Bazel `--client_env`).
     fn run_env(&self, args: &[&str], environment: &[(&str, String)]) -> Output {
@@ -60,7 +61,7 @@ impl Fixture {
         for (name, value) in environment {
             command.env(name, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
     fn build(&self, target: &str) -> Vec<(String, PathBuf)> {
         outputs(&self.run(&["build", target]))

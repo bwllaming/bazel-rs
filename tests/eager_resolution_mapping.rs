@@ -12,12 +12,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/eager_resolution_mapping"
 );
-const UNAVAILABLE: &str = "cannot load '@@bazel_tools//tools/build_defs/repo:utils.bzl': the built-in repository @@bazel_tools is visible to every module but has no contents in this module profile; use --experimental-builtin-modules";
+const UNAVAILABLE: &str = "cannot load '@@bazel_tools//tools/build_defs/repo:utils.bzl': the built-in repository @@bazel_tools is visible to every module but has no contents in the explicit-module profile; drop --experimental-builtin-modules=false";
 
 /// Serves the fixture registry on 127.0.0.1.
 fn serve(root: PathBuf) -> u16 {
@@ -125,6 +126,7 @@ impl Fixture {
             .arg("--repository_disable_download")
             .args(query)
             .current_dir(self.temp.path().join("ws"))
+            .explicit_modules()
             .output()
             .unwrap()
     }
@@ -243,6 +245,7 @@ fn eager_lockfile_path_fails_loudly_on_a_bad_extension_label() {
             .args(["query", &registry, &format!("--lockfile_mode={mode}")])
             .args(["--repository_disable_download", "@@badext+//:MODULE.bazel"])
             .current_dir(f.temp.path().join("ws"))
+            .explicit_modules()
             .output()
             .unwrap();
         assert_eq!(

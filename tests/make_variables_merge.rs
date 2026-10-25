@@ -5,6 +5,7 @@
 include!("support/verify_env.rs");
 use std::fs;
 use std::process::Command;
+include!("support/explicit_modules.rs");
 
 #[test]
 fn action_env_is_not_a_make_variable_source() {
@@ -40,6 +41,7 @@ fn action_env_is_not_a_make_variable_source() {
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", dir.path())
         .env("N53_VAR", "client")
+        .explicit_modules()
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -101,6 +103,7 @@ use = rule(_use, attrs = {"deps": attr.label_list(), "text": attr.string()})
             .envs(verifier_environment())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", dir.path())
+            .explicit_modules()
             .output()
             .unwrap()
     };

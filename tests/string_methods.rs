@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const DEFS: &str = include_str!("fixtures/string_methods/defs.bzl");
 const EXPECTED: &str = include_str!("fixtures/string_methods/expected.txt");
@@ -49,6 +50,7 @@ impl Workspace {
             ))
             .args(args)
             .current_dir(self.path())
+            .explicit_modules()
             .output()
             .unwrap();
         assert!(

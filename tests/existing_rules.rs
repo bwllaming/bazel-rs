@@ -2,6 +2,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -37,6 +38,7 @@ impl Fixture {
                 "//:copy",
             ])
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

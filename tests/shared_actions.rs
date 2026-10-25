@@ -21,6 +21,7 @@ use std::process::{Command, Output};
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+include!("support/explicit_modules.rs");
 
 fn manifest() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -120,7 +121,11 @@ impl Workspace {
             // memoized dependency views.
             .env("BAZEL_RS_VERIFY_ARTIFACTS", "1")
             .env("BAZEL_RS_VERIFY_VIEWS", "1");
-        let output = command.envs(env.iter().copied()).output().unwrap();
+        let output = command
+            .envs(env.iter().copied())
+            .explicit_modules()
+            .output()
+            .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {argv:?}");
         output
     }

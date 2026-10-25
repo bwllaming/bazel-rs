@@ -11,6 +11,7 @@ use std::fs;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const A: &str = "BAZEL_RS_ENV_A";
 const B: &str = "BAZEL_RS_ENV_B";
@@ -214,7 +215,7 @@ fn definition(body: &str, value: &str, options: &str) -> String {
 }
 
 fn finish(command: &mut Command) -> Output {
-    let output = command.output().unwrap();
+    let output = command.explicit_modules().output().unwrap();
     assert_ne!(output.status.code(), Some(124), "CLI timed out");
     assert_ne!(
         output.status.code(),

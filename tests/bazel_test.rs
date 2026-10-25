@@ -12,6 +12,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const MODULE: &str = r#"module(name = "bt")
 "#;
@@ -242,7 +243,7 @@ impl Workspace {
         let output = Command::new("timeout")
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
-            .args(args)
+            .args(with_explicit_modules(args))
             .current_dir(self.path())
             .env_clear()
             .envs(verifier_environment())

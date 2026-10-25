@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Fixture(tempfile::TempDir);
 impl Fixture {
@@ -41,6 +42,7 @@ impl Fixture {
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.0.path().join("home"))
             .env("TMPDIR", self.0.path().join("tmp"))
+            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(result.status.code(), Some(124), "CLI timed out: {args:?}");

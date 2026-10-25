@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 include!("support/snapshot_off.rs");
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
@@ -57,6 +58,7 @@ impl Fixture {
                 .then(|| format!("--registry=file://{}", self.0.join("registry").display())),
             )
             .current_dir(&self.0)
+            .explicit_modules()
             .output()
             .unwrap()
     }

@@ -23,6 +23,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 const ON: &str = "on";
 const OFF: &str = "off";
@@ -197,7 +198,7 @@ impl Twin {
                 &["--ignore_all_rc_files"][..]
             })
             .arg(format!("--cache-dir={}", self.cache().display()))
-            .args(args)
+            .args(with_explicit_modules(args))
             .current_dir(match *self.cwd.borrow() {
                 Some(directory) => self.ws().join(directory),
                 None => self.ws(),

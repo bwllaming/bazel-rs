@@ -9,6 +9,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
 use std::process::{Command, Output};
+include!("support/explicit_modules.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -40,6 +41,7 @@ impl Workspace {
             ))
             .args(args)
             .current_dir(self.0.path())
+            .explicit_modules()
             .output()
             .unwrap()
     }

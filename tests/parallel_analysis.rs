@@ -12,6 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -46,7 +47,7 @@ impl Workspace {
         for (key, value) in env {
             command.env(key, value);
         }
-        command.output().unwrap()
+        command.explicit_modules().output().unwrap()
     }
 
     fn run(&self, args: &[&str]) -> Output {
