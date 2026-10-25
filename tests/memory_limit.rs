@@ -1,7 +1,7 @@
 //! Memory ceiling CLI coverage (crate::memory_limit, perf follow-ups
-//! 2+3): watchdog-only (no RLIMIT_AS), Bazel's OOM exit code 33, the
-//! <256 MB rejection, and the sliding-scale default cap when unset
-//! (70% of RAM below 32 GB, 50% from 32–128 GB, flat 64 GB above).
+//! 2+3, MEM2): watchdog-only (no RLIMIT_AS), Bazel's OOM exit code 33,
+//! the <256 MB rejection, and the default cap when unset (the smaller
+//! of 16 GB and 50% of RAM).
 //! The kill path is exercised with a small-but-legal cap against a
 //! query whose warm peak is larger; the child-group kill is exercised
 //! with a build whose action spawns a long-lived grandchild.
@@ -65,13 +65,13 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// Unset cap: the sliding-scale default is announced once, naming the
-/// exact policy tier for this host, and the run completes. The default
-/// stays silent otherwise (no peak line — that is explicit-cap-only,
-/// so ordinary runs keep their summary as the last bazel-rs line).
-/// (Warm peaks of this fixture are tens of MB, far below any host's
-/// default.) On this 251 GB host the announcement must name the flat
-/// 64 GB tier (65536 MB), NOT ~50% (~128 GB).
+/// Unset cap: the default is announced once, naming the rule that
+/// produced it for this host, and the run completes. The default stays
+/// silent otherwise (no peak line — that is explicit-cap-only, so
+/// ordinary runs keep their summary as the last bazel-rs line). (Warm
+/// peaks of this fixture are tens of MB, far below any host's default.)
+/// On a host with at least 32 GB the announcement must name the 16 GB
+/// cap (16384 MB), NOT the old 64 GB tier nor ~50% of the host.
 #[test]
 fn default_cap_is_announced_and_completes() {
     let ws = Workspace::new(&[("BUILD.bazel", "filegroup(name='x', srcs=[])\n")]);
@@ -92,9 +92,11 @@ fn default_cap_is_announced_and_completes() {
     );
     assert!(err.contains("not child actions"), "{err}");
     assert!(!err.contains("peak RSS (VmHWM)"), "{err}");
-    if total_mb >= 128 * 1024 {
-        assert_eq!(cap_mb, 64 * 1024, "large hosts get the flat 64 GB cap");
-        assert!(err.contains("65536 MB (64 GB flat cap"), "{err}");
+    if total_mb >= 32 * 1024 {
+        assert_eq!(cap_mb, 16 * 1024, "hosts from 32 GB get the 16 GB cap");
+        assert!(err.contains("16384 MB (the 16 GB default cap"), "{err}");
+    } else {
+        assert_eq!(cap_mb, total_mb / 2, "small hosts get 50% of RAM");
     }
 }
 

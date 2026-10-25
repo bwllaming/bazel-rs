@@ -16,7 +16,7 @@ import ab_bench as ab
 
 CACHE = "/tmp/opencode/x-ab/cache-a"
 
-ERR = f"""bazel-rs: memory limit defaulted to 65536 MB
+ERR = f"""bazel-rs: memory limit defaulted to 16384 MB
 PERF     0.000s rss=19448kB main.start hwm=19448kB
 ACTION a1 GoCompilePkg
   input {CACHE}/repositories/direct/trees/0123456789abcdef0123/x.go -> external/x/x.go
@@ -53,7 +53,7 @@ class NormalisationTests(unittest.TestCase):
             "  output bazel-out/k8-fastbuild/bin/x.a",
         ])
         self.assertEqual(rest, [
-            "bazel-rs: memory limit defaulted to 65536 MB",
+            "bazel-rs: memory limit defaulted to 16384 MB",
             "--native-lockfile=/tmp/opencode/x-ab/lock-<SIDE> ok",
             "INFO: done",
         ])

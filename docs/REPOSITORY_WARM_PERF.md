@@ -426,6 +426,9 @@ assumed 64 GB host (→ 32 GB). This host has 251 GB, so the default
 was **128,683 MB** — a runaway had ~128 GB of headroom before the
 watchdog fired, on a host whose other services need the memory.
 
+(Superseded by MEM2: the default is now the smaller of 16 GB and 50% of
+MemTotal — docs/MEMORY.md. The follow-up-3 text below is kept as the record.)
+
 **New exact policy** (`memory_limit::default_cap_for_total_mb`,
 sliding scale; 1 GB = 1024 MB, boundaries inclusive at the low end):
 

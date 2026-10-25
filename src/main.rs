@@ -35,10 +35,9 @@ Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped t
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMORY_MB
   caps bazel-rs's own RSS (watchdog only, exit 33 = Bazel's OOM; no RLIMIT_AS, so
-  child actions keep host limits); flag wins over env; unset = sliding-scale default
-  (70% of RAM below 32 GB, 50% from 32-128 GB, flat 64 GB at/above 128 GB).
-  Prefer the env var: --memory-limit in a shared .bazelrc breaks genuine Bazel
-  (docs/REPOSITORY_WARM_PERF.md).
+  child actions keep host limits); flag wins over env; unset = the smaller of
+  16 GB and 50% of RAM. Prefer the env var: --memory-limit in a shared .bazelrc
+  breaks genuine Bazel (docs/MEMORY.md).
 Repository verify: --verify-repo-tampering forces full re-hash of warm
   repository publications (default: stat-fingerprint trust, Bazel's model;
   env BAZEL_RS_VERIFY_REPOS=full is equivalent).
@@ -280,10 +279,9 @@ fn run() -> Result<(), String> {
     };
     // Memory ceiling (native-only safety valve, crate::memory_limit):
     // --memory-limit=<MB> wins over BAZEL_RS_MAX_MEMORY_MB (Bazel's
-    // CLI-over-env convention). Unset both = the sliding-scale default
-    // cap (70% of MemTotal below 32 GB, 50% from 32–128 GB, flat 64 GB
-    // at/above 128 GB), announced once below. Installed before any
-    // heavy work.
+    // CLI-over-env convention). Unset both = the default cap (the
+    // smaller of 16 GB and 50% of MemTotal), announced once below.
+    // Installed before any heavy work.
     // Watchdog-only (no RLIMIT_AS, which would hard-cap every child):
     // exceeding the RSS cap kills live child groups and exits 33
     // (Bazel's OUT_OF_MEMORY) instead of an OOM kill of the host.
@@ -2543,8 +2541,9 @@ struct NativeOptions {
     loading_phase_threads: Option<usize>,
     /// --memory-limit=<MB> (native-only): watchdog-only RSS ceiling for
     /// bazel-rs itself (not child actions); flag wins over
-    /// BAZEL_RS_MAX_MEMORY_MB; unset = the sliding-scale default
-    /// (crate::memory_limit). Prefer the env var in shared setups.
+    /// BAZEL_RS_MAX_MEMORY_MB; unset = the default cap, the smaller of
+    /// 16 GB and 50% of RAM (crate::memory_limit). Prefer the env var in
+    /// shared setups.
     memory_limit_mb: Option<u64>,
     /// The N40 rc options outside the configuration (crate::rc_options).
     rc: bazel_rs::rc_options::RcOptions,
