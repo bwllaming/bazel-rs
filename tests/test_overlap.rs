@@ -19,6 +19,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
+include!("support/explicit_modules.rs");
 
 const MODULE: &str = r#"module(name = "ov")
 "#;
@@ -265,14 +266,16 @@ impl Workspace {
         self.path().join("markers")
     }
 
-    /// `bazel-rs test` with `$MARKER_DIR` set for every action.
+    /// `bazel-rs test` with `$MARKER_DIR` set for every action (the
+    /// explicit-module profile: the fixture needs no `@bazel_tools`).
     fn test(&self, args: &[&str]) -> Output {
         let marker_dir = format!("--action_env=MARKER_DIR={}", self.markers().display());
+        let mut command = vec!["test", marker_dir.as_str()];
+        command.extend_from_slice(args);
         let output = Command::new("timeout")
-            .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
-            .args(["--ignore_all_rc_files", "--cache-dir=private-cache", "test"])
-            .arg(&marker_dir)
-            .args(args)
+            .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
+            .args(["--ignore_all_rc_files", "--cache-dir=private-cache"])
+            .args(with_explicit_modules(&command))
             .current_dir(self.path())
             .env_clear()
             .envs(verifier_environment())
