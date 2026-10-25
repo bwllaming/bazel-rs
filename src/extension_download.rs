@@ -670,6 +670,10 @@ pub(crate) fn copy_hashed(
     let mut buffer = vec![0u8; BUFFER];
     let mut total = 0u64;
     loop {
+        // A speculative fetch the pool stopped (crate::repository_speculation).
+        if crate::repository_speculation::cancelled() {
+            return Err(io::Error::other(crate::repository_speculation::CANCELLED));
+        }
         let n = match reader.read(&mut buffer) {
             Ok(0) => return Ok(total),
             Ok(n) => n,

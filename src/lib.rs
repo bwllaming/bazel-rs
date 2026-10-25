@@ -103,6 +103,7 @@ pub mod repository_links;
 mod repository_process;
 pub mod repository_rule;
 pub mod repository_slots;
+mod repository_speculation;
 pub mod repository_store;
 pub mod repository_text;
 mod repository_warm;

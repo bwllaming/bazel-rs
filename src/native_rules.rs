@@ -1128,7 +1128,7 @@ fn concat(ty: NativeType, values: Vec<AttrValue>) -> AttrValue {
     })
 }
 
-const DEFAULT_CONDITION: &str = "//conditions:default";
+pub(crate) const DEFAULT_CONDITION: &str = "//conditions:default";
 
 /// Value of a converted attribute: plain or a retained select.
 pub(crate) enum Converted {
@@ -1393,7 +1393,7 @@ pub(crate) fn did_you_mean(input: &str, words: &[&str]) -> String {
     starlark::errors::bazel_did_you_mean(input, words.iter().copied())
 }
 
-fn collect_labels(value: &AttrValue, labels: &mut Vec<Label>) {
+pub(crate) fn collect_labels(value: &AttrValue, labels: &mut Vec<Label>) {
     let mut push = |text: &str| {
         if let Ok(label) = Label::parse_canonical_memo(text) {
             labels.push(label);

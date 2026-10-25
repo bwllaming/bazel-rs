@@ -68,25 +68,42 @@ struct Wanted {
     /// Every non-test rule (a `:all` toolchain pattern).
     all: bool,
     names: BTreeSet<String>,
+    /// The names the build certainly analyzes (see [`Reach`]): their
+    /// package's repository is fetched ahead of its sequential demand
+    /// (crate::repository_speculation).
+    certain: BTreeSet<String>,
 }
 
 impl Wanted {
-    fn of(name: Option<String>) -> Self {
+    fn of(name: Option<String>, certain: bool) -> Self {
         let mut wanted = Self::default();
-        wanted.add(name);
+        wanted.add(name, certain);
         wanted
     }
 
-    /// Add `name` (`None`: all); whether it was new.
-    fn add(&mut self, name: Option<String>) -> bool {
+    /// Add `name` (`None`: all, never certain); whether it was new or
+    /// newly certain.
+    fn add(&mut self, name: Option<String>, certain: bool) -> bool {
         match name {
-            _ if self.all => false,
+            None if self.all => false,
             None => {
                 self.all = true;
                 true
             }
-            Some(name) => self.names.insert(name),
+            Some(name) => {
+                let newly_certain = certain && !self.certain.contains(&name);
+                if newly_certain {
+                    self.certain.insert(name.clone());
+                }
+                let new = !self.all && self.names.insert(name);
+                new || newly_certain
+            }
         }
+    }
+
+    /// Whether some wanted target is certainly analyzed.
+    fn any_certain(&self) -> bool {
+        !self.certain.is_empty()
     }
 }
 
@@ -100,7 +117,18 @@ struct State {
     /// Units being loaded.
     running: usize,
     counts: Counts,
+    /// Whether each select() condition matched wherever the coordinator
+    /// analyzed it (`None`: not in every configuration alike, or in error).
+    conditions: HashMap<Label, Option<bool>>,
+    /// The certainly analyzed rules (package, name, depth of their labels)
+    /// with a select() whose branch waits for the coordinator to analyze
+    /// this condition: expanded again once it did.
+    undecided: HashMap<Label, Vec<(PackageId, String, u32)>>,
 }
+
+/// Select() conditions an expansion could not decide yet, with the rule
+/// (package, name) and the depth of its labels ([`State::undecided`]).
+type Undecided = Vec<(Label, PackageId, String, u32)>;
 
 /// `PERF-PREFETCH` telemetry (BAZEL_RS_TIMING=1).
 #[derive(Default)]
@@ -166,8 +194,15 @@ impl Entry {
 }
 
 /// One target the expansion reached: its package, its name (`None`: every
-/// rule) and its depth.
-type Reach = (PackageId, Option<String>, u32);
+/// rule), its depth, and whether the build certainly analyzes it — the
+/// coordinator analyzes it, toolchain resolution selected it, or a target
+/// certainly analyzed names it outside select() or in a select() branch the
+/// coordinator's analysis of the conditions decides (a guess for another
+/// configuration costs a wasted fetch, never output). Only certain targets'
+/// repositories are fetched ahead of demand: a package load guessed wrong
+/// is cheap, a download is not (select() branches for other platforms,
+/// registered toolchains of other platforms).
+type Reach = (PackageId, Option<String>, u32, bool);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -175,10 +210,13 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 impl State {
     /// Add the reached targets (and, transitively, what already finished
-    /// units of their packages name); whether the queue changed.
-    fn reach(&mut self, mut work: Vec<Reach>) -> bool {
+    /// units of their packages name); whether the queue changed. The
+    /// sentinels of finished units blocked on a repository that a target
+    /// newly certain needs are added to `speculate`.
+    fn reach(&mut self, mut work: Vec<Reach>, speculate: &mut Vec<String>) -> bool {
         let mut changed = false;
-        while let Some((id, name, depth)) = work.pop() {
+        let mut undecided = Undecided::new();
+        while let Some((id, name, depth, certain)) = work.pop() {
             match self.entries.get_mut(&id) {
                 None => {
                     let key = (depth, self.next);
@@ -188,13 +226,13 @@ impl State {
                         id,
                         Entry::Queued {
                             key,
-                            wanted: Wanted::of(name),
+                            wanted: Wanted::of(name, certain),
                         },
                     );
                     changed = true;
                 }
                 Some(Entry::Queued { key, wanted }) => {
-                    wanted.add(name);
+                    wanted.add(name, certain);
                     if key.0 > depth {
                         let old = *key;
                         let new = (depth, self.next);
@@ -207,7 +245,7 @@ impl State {
                     }
                 }
                 Some(Entry::Running { wanted }) => {
-                    wanted.add(name);
+                    wanted.add(name, certain);
                 }
                 Some(Entry::Done {
                     unit,
@@ -215,48 +253,141 @@ impl State {
                     wanted,
                     ..
                 }) => {
+                    let was_certain = wanted.any_certain();
                     // An aborted unit follows its wanted targets once a
                     // retry finishes; a finished one follows a new target
                     // now.
-                    if wanted.add(name.clone())
+                    if wanted.add(name.clone(), certain)
                         && blocked.is_none()
                         && depth < MAX_DEPTH
                         && let Ok(package) = &unit.result
                     {
-                        work.extend(expansion(&package.rules, &Wanted::of(name), depth + 1));
+                        work.extend(expansion(
+                            &package.rules,
+                            &Wanted::of(name, certain),
+                            depth + 1,
+                            &self.conditions,
+                            &mut undecided,
+                        ));
+                    }
+                    if !was_certain
+                        && wanted.any_certain()
+                        && let Some(blocked) = blocked
+                    {
+                        speculate.push(blocked.clone());
                     }
                 }
                 Some(Entry::Taken { wanted, .. }) => {
-                    wanted.add(name);
+                    wanted.add(name, certain);
                 }
                 Some(Entry::Settled {
                     rules: Some(rules),
                     followed,
                 }) => {
-                    if followed.add(name.clone()) && depth < MAX_DEPTH {
-                        work.extend(expansion(rules, &Wanted::of(name), depth + 1));
+                    if followed.add(name.clone(), certain) && depth < MAX_DEPTH {
+                        work.extend(expansion(
+                            rules,
+                            &Wanted::of(name, certain),
+                            depth + 1,
+                            &self.conditions,
+                            &mut undecided,
+                        ));
                     }
                 }
                 Some(Entry::Settled { rules: None, .. }) => {}
             }
         }
+        self.note_undecided(undecided);
         changed
+    }
+
+    /// Remember [`Undecided`] conditions ([`Self::undecided`]).
+    fn note_undecided(&mut self, undecided: Undecided) {
+        for (condition, id, name, depth) in undecided {
+            let waiting = self.undecided.entry(condition).or_default();
+            if !waiting
+                .iter()
+                .any(|(other, rule, _)| *other == id && *rule == name)
+            {
+                waiting.push((id, name, depth));
+            }
+        }
+    }
+
+    /// The coordinator decided `condition`: the certainly analyzed rules
+    /// waiting for it are expanded again ([`Self::undecided`]).
+    fn decided(&mut self, condition: &Label, speculate: &mut Vec<String>) -> bool {
+        let Some(waiting) = self.undecided.remove(condition) else {
+            return false;
+        };
+        let mut work = Vec::new();
+        let mut undecided = Undecided::new();
+        for (id, name, depth) in waiting {
+            let rules = match self.entries.get(&id) {
+                Some(Entry::Done { unit, .. }) => unit.result.as_ref().ok().map(|p| &p.rules),
+                Some(Entry::Settled {
+                    rules: Some(rules), ..
+                }) => Some(rules),
+                _ => None,
+            };
+            if let Some(rules) = rules {
+                work.extend(
+                    expansion(
+                        rules,
+                        &Wanted::of(Some(name), true),
+                        depth,
+                        &self.conditions,
+                        &mut undecided,
+                    )
+                    .into_iter()
+                    .filter(|reach| reach.3),
+                );
+            }
+        }
+        self.note_undecided(undecided);
+        work.reverse();
+        self.reach(work, speculate)
     }
 }
 
 /// The targets the `wanted` rules of a package (its `rules`) name, at
-/// `depth`.
-fn expansion(package: &Rules, wanted: &Wanted, depth: u32) -> Vec<Reach> {
+/// `depth`; a target certainly analyzed certainly analyzes the labels
+/// [`certain_labels`] keeps (`conditions`: what the coordinator's analysis
+/// decided of select() conditions).
+fn expansion(
+    package: &Rules,
+    wanted: &Wanted,
+    depth: u32,
+    conditions: &HashMap<Label, Option<bool>>,
+    undecided: &mut Undecided,
+) -> Vec<Reach> {
     let mut reached = Vec::new();
-    let mut follow = |rule: &Rule| {
+    let mut follow = |rule: &Rule, certain: bool| {
+        let certain = if certain {
+            let mut waiting = Vec::new();
+            let labels = certain_labels(rule, conditions, &mut waiting);
+            undecided.extend(waiting.into_iter().map(|condition| {
+                (
+                    condition,
+                    rule.label.package_id(),
+                    rule.label.name.clone(),
+                    depth,
+                )
+            }));
+            labels
+        } else {
+            HashSet::new()
+        };
         for label in rule_dependency_labels(rule) {
             let id = label.package_id();
-            reached.push((id, Some(label.name), depth));
+            let certain = certain.contains(&label);
+            reached.push((id, Some(label.name), depth, certain));
         }
     };
     if wanted.all {
         for rule in package.values().filter(|rule| !is_test(rule)) {
-            follow(rule);
+            let certain = wanted.certain.contains(&rule.label.name);
+            follow(rule, certain);
         }
         return reached;
     }
@@ -264,25 +395,114 @@ fn expansion(package: &Rules, wanted: &Wanted, depth: u32) -> Vec<Reach> {
         return reached;
     };
     for name in &wanted.names {
+        let certain = wanted.certain.contains(name);
         let label = Label {
             repository: any.label.repository.clone(),
             package: any.label.package.clone(),
             name: name.clone(),
         };
         match package.get(&label) {
-            Some(rule) => follow(rule),
+            Some(rule) => follow(rule, certain),
             // An output file: its generating rule.
             None => {
                 if let Some(rule) = package
                     .values()
                     .find(|rule| rule.outs.iter().any(|out| out == name))
                 {
-                    follow(rule);
+                    follow(rule, certain);
                 }
             }
         }
     }
     reached
+}
+
+/// The labels of [`rule_dependency_labels`] that analyzing `rule` certainly
+/// analyzes: every label outside select() branches, and the labels of the
+/// branch a select() takes when the coordinator's analysis decided all of
+/// its conditions the same way everywhere (`conditions`): exactly one
+/// matches, or none does and the default branch is taken. A select() with
+/// an undecided condition, or several matching ones (specialization), keeps
+/// none of its branches' labels — unless another attribute names them; the
+/// conditions the coordinator has not analyzed yet are added to `undecided`.
+fn certain_labels(
+    rule: &Rule,
+    conditions: &HashMap<Label, Option<bool>>,
+    undecided: &mut Vec<Label>,
+) -> HashSet<Label> {
+    use crate::custom_rule::ConfigurablePart;
+    let mut branches: HashSet<Label> = HashSet::new();
+    let mut taken: Vec<Label> = Vec::new();
+    let configurable =
+        rule.native
+            .iter()
+            .map(|native| &native.configurable)
+            .chain(rule.custom.iter().flat_map(|custom| {
+                [
+                    &custom.declaration.configurable,
+                    &custom.declaration.builtin.target.configurable,
+                ]
+            }));
+    for attributes in configurable {
+        for parts in attributes.values() {
+            for part in parts {
+                let ConfigurablePart::Select { branches: arms, .. } = part else {
+                    continue;
+                };
+                let mut labels = Vec::new();
+                for (_, value) in arms {
+                    if let Some(value) = value {
+                        crate::native_rules::collect_labels(value, &mut labels);
+                    }
+                }
+                branches.extend(labels);
+                if let Some(value) = taken_branch(arms, conditions, undecided) {
+                    crate::native_rules::collect_labels(value, &mut taken);
+                }
+            }
+        }
+    }
+    let taken: HashSet<Label> = taken.into_iter().collect();
+    rule_dependency_labels(rule)
+        .into_iter()
+        .filter(|label| !branches.contains(label) || taken.contains(label))
+        .collect()
+}
+
+/// The value of the branch a select() takes, if `conditions` decide it
+/// ([`certain_labels`]).
+fn taken_branch<'a>(
+    arms: &'a [(String, Option<crate::custom_rule::AttrValue>)],
+    conditions: &HashMap<Label, Option<bool>>,
+    undecided: &mut Vec<Label>,
+) -> Option<&'a crate::custom_rule::AttrValue> {
+    let mut matched = None;
+    let mut default = None;
+    let mut decided = true;
+    let mut ambiguous = false;
+    for (key, value) in arms {
+        if key == crate::native_rules::DEFAULT_CONDITION {
+            default = Some(value);
+            continue;
+        }
+        let Ok(label) = Label::parse_canonical(key) else {
+            return None;
+        };
+        match conditions.get(&label) {
+            None => {
+                undecided.push(label);
+                decided = false;
+            }
+            Some(None) => ambiguous = true,
+            Some(Some(true)) if matched.is_some() => ambiguous = true,
+            Some(Some(true)) => matched = Some(value),
+            Some(Some(false)) => {}
+        }
+    }
+    if !decided || ambiguous {
+        return None;
+    }
+    matched.or(default)?.as_ref()
 }
 
 impl Prefetcher {
@@ -307,43 +527,61 @@ impl Prefetcher {
         if workers <= 1 {
             return None;
         }
-        Some(Self {
-            shared: Arc::new(Shared {
-                repositories,
-                state: Mutex::new(state),
-                work: Condvar::new(),
-                done: Condvar::new(),
-                jitter_millis,
-                max_workers: workers.min(MAX_WORKERS),
-                workers: Mutex::new(Vec::new()),
+        let shared = Arc::new(Shared {
+            repositories,
+            state: Mutex::new(state),
+            work: Condvar::new(),
+            done: Condvar::new(),
+            jitter_millis,
+            max_workers: workers.min(MAX_WORKERS),
+            workers: Mutex::new(Vec::new()),
+        });
+        // Parallel fetching (crate::repository_speculation): the
+        // repositories units are blocked on execute ahead of their
+        // sequential demand; a published root lets the blocked units load.
+        let listener = Arc::downgrade(&shared);
+        shared.repositories.start_speculation(
+            workers,
+            Arc::new(move || {
+                if let Some(shared) = listener.upgrade() {
+                    retry(&shared);
+                }
             }),
-        })
+            jitter_millis,
+        );
+        Some(Self { shared })
     }
 
     fn reach(&self, work: Vec<Reach>) {
+        let mut speculate = Vec::new();
         let changed = {
             let mut state = lock(&self.shared.state);
             if state.shutdown {
                 return;
             }
-            state.reach(work)
+            state.reach(work, &mut speculate)
         };
         if changed {
             grow(&self.shared);
             self.shared.work.notify_all();
         }
+        for blocked in speculate {
+            self.shared.repositories.speculate(&blocked);
+        }
     }
 
     /// Queue targets (a package and a target name, `None` for every
-    /// non-test rule) at `depth`, in order.
+    /// non-test rule) at `depth`, in order; `certain`: the build certainly
+    /// analyzes them ([`Reach`]).
     pub(crate) fn submit_targets(
         &self,
         targets: impl IntoIterator<Item = (PackageId, Option<String>)>,
         depth: u32,
+        certain: bool,
     ) {
         let mut work: Vec<Reach> = targets
             .into_iter()
-            .map(|(id, name)| (id, name, depth))
+            .map(|(id, name)| (id, name, depth, certain))
             .collect();
         // `reach` pops from the end: keep the submission order.
         work.reverse();
@@ -353,12 +591,61 @@ impl Prefetcher {
     /// Queue the targets `rule` (one the coordinator analyzes) names, at
     /// depth 1.
     pub(crate) fn submit_rule(&self, rule: &Rule) {
+        let certain = {
+            let mut state = lock(&self.shared.state);
+            let mut waiting = Vec::new();
+            let certain = certain_labels(rule, &state.conditions, &mut waiting);
+            let undecided = waiting
+                .into_iter()
+                .map(|condition| {
+                    (
+                        condition,
+                        rule.label.package_id(),
+                        rule.label.name.clone(),
+                        1,
+                    )
+                })
+                .collect();
+            state.note_undecided(undecided);
+            certain
+        };
         let mut work: Vec<Reach> = rule_dependency_labels(rule)
             .into_iter()
-            .map(|label| (label.package_id(), Some(label.name), 1))
+            .map(|label| {
+                let certain = certain.contains(&label);
+                (label.package_id(), Some(label.name), 1, certain)
+            })
             .collect();
         work.reverse();
         self.reach(work);
+    }
+
+    /// The coordinator analyzed the select() condition `label`: whether it
+    /// matched (`None`: in error) — a hint for [`certain_labels`].
+    pub(crate) fn note_condition(&self, label: &Label, matched: Option<bool>) {
+        let mut speculate = Vec::new();
+        let changed = {
+            let mut state = lock(&self.shared.state);
+            match state.conditions.get_mut(label) {
+                None => {
+                    state.conditions.insert(label.clone(), matched);
+                    !state.shutdown && state.decided(label, &mut speculate)
+                }
+                Some(known) => {
+                    if *known != matched {
+                        *known = None;
+                    }
+                    false
+                }
+            }
+        };
+        if changed {
+            grow(&self.shared);
+            self.shared.work.notify_all();
+        }
+        for blocked in speculate {
+            self.shared.repositories.speculate(&blocked);
+        }
     }
 
     /// The finished unit of `id` for the coordinator's commit, waiting for
@@ -441,6 +728,7 @@ impl Prefetcher {
     /// (its unit was aborted, or the coordinator loaded it itself) are
     /// followed now; targets reached later are followed from its rules.
     pub(crate) fn committed(&self, id: &PackageId, package: &Package) {
+        let mut speculate = Vec::new();
         let changed = {
             let mut state = lock(&self.shared.state);
             if state.shutdown {
@@ -471,7 +759,16 @@ impl Prefetcher {
             let reached = if expanded {
                 Vec::new()
             } else {
-                expansion(&package.rules, &followed, 1)
+                let mut undecided = Undecided::new();
+                let reached = expansion(
+                    &package.rules,
+                    &followed,
+                    1,
+                    &state.conditions,
+                    &mut undecided,
+                );
+                state.note_undecided(undecided);
+                reached
             };
             state.entries.insert(
                 id.clone(),
@@ -480,11 +777,14 @@ impl Prefetcher {
                     followed,
                 },
             );
-            state.reach(reached)
+            state.reach(reached, &mut speculate)
         };
         if changed {
             grow(&self.shared);
             self.shared.work.notify_all();
+        }
+        for blocked in speculate {
+            self.shared.repositories.speculate(&blocked);
         }
     }
 
@@ -492,39 +792,8 @@ impl Prefetcher {
     /// blocking demand `ready` reports satisfied (the coordinator prepared
     /// the group or materialized the root since).
     pub(crate) fn retry(&self, ready: impl Fn(&str) -> bool) {
-        let mut changed = false;
-        {
-            let mut state = lock(&self.shared.state);
-            if state.shutdown {
-                return;
-            }
-            let ready_ids: Vec<PackageId> = state
-                .entries
-                .iter()
-                .filter_map(|(id, entry)| match entry {
-                    Entry::Done {
-                        blocked: Some(blocked),
-                        ..
-                    } if ready(blocked) => Some(id.clone()),
-                    _ => None,
-                })
-                .collect();
-            for id in ready_ids {
-                let Some(Entry::Done { depth, wanted, .. }) = state.entries.remove(&id) else {
-                    continue;
-                };
-                state.counts.retried += 1;
-                let key = (depth, state.next);
-                state.next += 1;
-                state.queue.insert(key, id.clone());
-                state.entries.insert(id, Entry::Queued { key, wanted });
-                changed = true;
-            }
-        }
-        if changed {
-            grow(&self.shared);
-            self.shared.work.notify_all();
-        }
+        retry_ready(&self.shared, ready);
+        self.shared.repositories.retry_speculations();
     }
 
     /// Stop the workers (each finishes the unit it is loading) and drop
@@ -534,6 +803,7 @@ impl Prefetcher {
     }
 
     fn stop(&mut self) {
+        self.shared.repositories.stop_speculation();
         {
             let mut state = lock(&self.shared.state);
             if state.shutdown {
@@ -577,6 +847,52 @@ impl Prefetcher {
 impl Drop for Prefetcher {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+/// A speculation published a root (crate::repository_speculation): the
+/// units blocked on a demand satisfied now, and the speculations, are
+/// queued again.
+fn retry(shared: &Arc<Shared>) {
+    let repositories = shared.repositories.clone();
+    retry_ready(shared, |blocked| repositories.sentinel_ready(blocked));
+    repositories.retry_speculations();
+}
+
+/// [`Prefetcher::retry`] of the units.
+fn retry_ready(shared: &Arc<Shared>, ready: impl Fn(&str) -> bool) {
+    let mut changed = false;
+    {
+        let mut state = lock(&shared.state);
+        if state.shutdown {
+            return;
+        }
+        let ready_ids: Vec<PackageId> = state
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| match entry {
+                Entry::Done {
+                    blocked: Some(blocked),
+                    ..
+                } if ready(blocked) => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        for id in ready_ids {
+            let Some(Entry::Done { depth, wanted, .. }) = state.entries.remove(&id) else {
+                continue;
+            };
+            state.counts.retried += 1;
+            let key = (depth, state.next);
+            state.next += 1;
+            state.queue.insert(key, id.clone());
+            state.entries.insert(id, Entry::Queued { key, wanted });
+            changed = true;
+        }
+    }
+    if changed {
+        grow(shared);
+        shared.work.notify_all();
     }
 }
 
@@ -647,6 +963,8 @@ fn worker(shared: &Arc<Shared>, index: usize) {
         let mut state = lock(&shared.state);
         state.running -= 1;
         let mut queued = false;
+        let mut speculate = None;
+        let mut speculated = Vec::new();
         match loaded {
             Ok(unit) => {
                 let blocked = match &unit.result {
@@ -667,10 +985,22 @@ fn worker(shared: &Arc<Shared>, index: usize) {
                         Ok(package)
                             if blocked.is_none() && depth < MAX_DEPTH && !state.shutdown =>
                         {
-                            expansion(&package.rules, &wanted, depth + 1)
+                            let mut undecided = Undecided::new();
+                            let reached = expansion(
+                                &package.rules,
+                                &wanted,
+                                depth + 1,
+                                &state.conditions,
+                                &mut undecided,
+                            );
+                            state.note_undecided(undecided);
+                            reached
                         }
                         _ => Vec::new(),
                     };
+                    if wanted.any_certain() {
+                        speculate.clone_from(&blocked);
+                    }
                     state.entries.insert(
                         id,
                         Entry::Done {
@@ -680,7 +1010,7 @@ fn worker(shared: &Arc<Shared>, index: usize) {
                             wanted,
                         },
                     );
-                    queued = state.reach(reached);
+                    queued = state.reach(reached, &mut speculated);
                 }
             }
             // A panicking load is the coordinator's to repeat (inline, at
@@ -691,6 +1021,11 @@ fn worker(shared: &Arc<Shared>, index: usize) {
         }
         drop(state);
         shared.done.notify_all();
+        // The repository the unit was blocked on executes ahead of its
+        // sequential demand (crate::repository_speculation).
+        for blocked in speculate.iter().chain(&speculated) {
+            shared.repositories.speculate(blocked);
+        }
         if queued {
             grow(shared);
             shared.work.notify_all();

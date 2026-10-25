@@ -386,6 +386,32 @@ impl<T> DemandSlot<T> {
         self.ready.get().and_then(|result| result.as_ref().ok())
     }
 
+    /// Publish a value a speculation computed on a worker
+    /// (crate::repository_speculation) with what it obtained, exactly like
+    /// a probe's publication ([`Self::get_or_probe_obtaining`]): the keys
+    /// and observations count where the value begins to count for the
+    /// sequential engine. Only into an empty slot and only while no
+    /// evaluator runs (the coordinator demanding the slot takes the
+    /// speculation's outcome itself): otherwise the value and what it
+    /// obtained are handed back.
+    pub fn publish_speculated(&self, value: T, obtained: Obtained) -> Result<(), (T, Obtained)> {
+        let running = match self.running.lock() {
+            Ok(running) => running,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if running.is_some() || self.ready.get().is_some() {
+            return Err((value, obtained));
+        }
+        if !obtained.keys.is_empty() {
+            let _ = self.obtained.set(obtained.keys);
+        }
+        if let Some(observations) = obtained.observations {
+            let _ = self.observations.set(observations);
+        }
+        let _ = self.ready.set(Ok(value));
+        Ok(())
+    }
+
     /// Evaluate once, caching either the value or its error in this slot.
     ///
     /// A panicking evaluator releases its claim without caching a result.
@@ -1438,6 +1464,34 @@ mod tests {
             Ok(&2)
         );
         assert!(evaluated.obtained().is_empty());
+    }
+
+    /// A speculation (crate::repository_speculation) publishes its value
+    /// with what it obtained only into an empty slot no evaluator is
+    /// running; otherwise it gets its value back for the coordinator.
+    #[test]
+    fn a_speculation_publishes_only_into_an_idle_empty_slot() {
+        let speculated = |keys: &[&str]| Obtained {
+            keys: keys.iter().map(|key| (*key).to_owned()).collect(),
+            observations: None,
+        };
+        let slot = DemandSlot::new();
+        assert!(slot.publish_speculated(5, speculated(&["b"])).is_ok());
+        assert_eq!(slot.ready(), Some(&5));
+        assert_eq!(slot.obtained(), ["b"]);
+        assert_eq!(slot.sequential(), None, "counts only once noted");
+        let (value, obtained) = slot.publish_speculated(6, speculated(&["c"])).unwrap_err();
+        assert_eq!((value, obtained.keys), (6, vec!["c".to_owned()]));
+        assert_eq!(slot.obtained(), ["b"]);
+
+        // The coordinator evaluates the slot: the speculation is refused
+        // and the evaluator's value stands.
+        let slot = Arc::new(DemandSlot::new());
+        let (evaluator, evaluating) = blocked_worker(Arc::clone(&slot), "repository:x", 17);
+        evaluating.recv_timeout(TIMEOUT).unwrap();
+        assert!(slot.publish_speculated(4, speculated(&[])).is_err());
+        assert_eq!(evaluator.finish().unwrap(), Ok(17));
+        assert_eq!(slot.ready(), Some(&17));
     }
 
     /// W6R: what a probe observed for the analysis snapshot is stored with

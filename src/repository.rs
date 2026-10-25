@@ -174,6 +174,9 @@ struct RepositoryState {
     /// Published store trees a link crossed into, verified once per set
     /// (crate::source_links::StoreTrees).
     verified_trees: Arc<std::sync::Mutex<BTreeMap<PathBuf, bool>>>,
+    /// Repository rules executing ahead of their sequential demand
+    /// (parallel fetching, crate::repository_speculation).
+    speculation: crate::repository_speculation::Speculations,
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
@@ -216,6 +219,32 @@ fn taint_printed_output(canonical: &str, executed: &crate::repository_ctx::Execu
             format!("{canonical} printed {} bytes", executed.output.len())
         });
     }
+}
+
+/// A speculation (crate::repository_speculation) whose execution formed a
+/// recorded-input key that depends on the roots the sequential engine will
+/// have obtained when it executes the rule
+/// ([`RepositorySet::friendly_repository`]) never publishes it: it aborts
+/// before the publication, and the coordinator executes the rule itself.
+fn speculation_order_check() -> Result<(), String> {
+    if crate::repository_speculation::active() && crate::repository_demand::take_order_dependent() {
+        return Err(crate::repository_demand::order_dependent(
+            "a recorded input's repository key",
+        ));
+    }
+    Ok(())
+}
+
+/// The canonical repository a no-demand sentinel (crate::repository_demand::
+/// NEEDS_REPOSITORY) names when it was blocked on a direct or
+/// extension-generated repository's root (`runtime N:repository:NAME`).
+fn sentinel_repository(error: &str) -> Option<&str> {
+    let start = error.find(crate::repository_demand::NEEDS_REPOSITORY)?;
+    let rest =
+        error[start + crate::repository_demand::NEEDS_REPOSITORY.len()..].strip_prefix(": ")?;
+    let (subject, _) = rest.split_once(" is unfetched")?;
+    let (_, key) = subject.strip_prefix("runtime ")?.split_once(':')?;
+    key.strip_prefix("repository:")
 }
 
 /// The error of everything a pinned repository set does not answer.
@@ -746,6 +775,7 @@ impl RepositorySet {
                 pinned: None,
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
+                speculation: Default::default(),
             }),
         }
     }
@@ -1619,6 +1649,195 @@ impl RepositorySet {
         runtime.note_obtained(repository, slot);
     }
 
+    /// Start parallel fetching for this set (crate::repository_speculation,
+    /// with the phase-1 prefetcher): at most `width` repository rules
+    /// execute ahead of their sequential demand; `listener` runs after each
+    /// root a speculation published. Off for a pinned set, while a replay
+    /// capture records local rules only the coordinator executes anyway,
+    /// and with `BAZEL_RS_DEBUG_NO_SPECULATION`.
+    pub(crate) fn start_speculation(
+        &self,
+        width: usize,
+        listener: crate::repository_speculation::Listener,
+        jitter_millis: u64,
+    ) {
+        if width <= 1
+            || self.state.pinned.is_some()
+            || std::env::var_os("BAZEL_RS_DEBUG_NO_SPECULATION").is_some()
+        {
+            return;
+        }
+        let this = self.clone();
+        self.state.speculation.start(
+            width,
+            Arc::new(move |canonical: &str| this.speculation_job(canonical)),
+            listener,
+            jitter_millis,
+        );
+    }
+
+    /// Stop parallel fetching: speculations in flight are cancelled (and
+    /// awaited), queued ones dropped; finished outcomes stay for the
+    /// coordinator's demand.
+    pub(crate) fn stop_speculation(&self) {
+        self.state.speculation.stop();
+    }
+
+    /// A loading worker's unit was blocked on `sentinel` (the no-demand
+    /// sentinel): when it names a direct or extension-generated repository,
+    /// execute that repository's rule ahead of its sequential demand.
+    pub(crate) fn speculate(&self, sentinel: &str) {
+        if let Some(canonical) = sentinel_repository(sentinel) {
+            self.state.speculation.request(canonical);
+        }
+    }
+
+    /// Queue again the speculations blocked on a demand that is satisfied
+    /// now ([`Self::sentinel_ready`]).
+    pub(crate) fn retry_speculations(&self) {
+        self.state
+            .speculation
+            .retry(&|blocked| self.sentinel_ready(blocked));
+    }
+
+    /// One speculation of `canonical` on a fetch worker
+    /// (crate::repository_speculation): the materialization the coordinator
+    /// runs at its demand, in no-demand + reuse-only mode, recording the
+    /// roots it obtains and capturing what it observes.
+    fn speculation_job(&self, canonical: &str) -> crate::repository_speculation::Finished {
+        use crate::repository_speculation::{Finished, Outcome};
+        let _guard = crate::repository_demand::no_demand();
+        let _reuse = crate::repository_demand::reuse_only();
+        let _ = crate::repository_demand::take_order_dependent();
+        let slot = match self.speculation_slot(canonical) {
+            Ok(slot) if slot.ready().is_none() => slot,
+            Ok(_) => return Finished::Failed,
+            Err(error) if crate::repository_demand::is_needs_repository(&error) => {
+                return Finished::Blocked(error);
+            }
+            Err(_) => return Finished::Failed,
+        };
+        let (result, obtained) = UnitRoots::during(|| self.speculative_materialize(canonical));
+        let order_dependent = crate::repository_demand::take_order_dependent();
+        let root = match result {
+            Err(error) if crate::repository_demand::is_needs_repository(&error) => {
+                return if order_dependent {
+                    Finished::Failed
+                } else {
+                    Finished::Blocked(error)
+                };
+            }
+            Err(_) => return Finished::Failed,
+            Ok(root) => root,
+        };
+        let output = crate::repository_speculation::take_output();
+        let (root, obtained) = if output.is_empty() {
+            match slot.publish_speculated(root, obtained) {
+                Ok(()) => return Finished::Published,
+                // The coordinator evaluates the slot: it takes the outcome.
+                Err(kept) => kept,
+            }
+        } else {
+            (root, obtained)
+        };
+        let withdraw = self.speculation_withdrawal(canonical, &root);
+        Finished::Done(Box::new(Outcome {
+            root,
+            output,
+            obtained,
+            withdraw,
+        }))
+    }
+
+    /// How to withdraw the publication at `root` a speculation of
+    /// `canonical` made (crate::repository_speculation::withdraw_pointer), when
+    /// the coordinator never commits it.
+    fn speculation_withdrawal(
+        &self,
+        canonical: &str,
+        root: &Path,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
+        let identity = root.file_name()?.to_str()?.to_owned();
+        let cache = self.source_cache_path().ok()?.to_path_buf();
+        // Memoized already; what computing them observes counts nowhere.
+        let (spec_key, workspace) = crate::observed_fs::discard(|| {
+            let runtime = self.direct_runtime().ok()?;
+            let spec_key = if let Some(entry) = runtime.catalog.repositories.get(canonical) {
+                let prepared = runtime.groups.get(&entry.group_id)?.ready()?;
+                let group = &runtime.catalog.groups[&entry.group_id];
+                let attributes = &prepared.attributes[entry.declaration_index];
+                self.direct_spec_key(prepared, group, entry, attributes)
+                    .ok()?
+            } else {
+                let (prepared, repository) = self.ordinary_repository(canonical).ok()?;
+                prepared
+                    .spec_key(
+                        self,
+                        &repository.canonical_name,
+                        &repository.definition.environ,
+                    )
+                    .ok()?
+            };
+            let workspace = crate::observed_fs::canonicalize(self.main_root()).ok()?;
+            Some((spec_key, crate::repository_warm::workspace_text(&workspace)))
+        })?;
+        Some(Box::new(move || {
+            crate::repository_speculation::withdraw_pointer(
+                &cache,
+                &spec_key,
+                Some(&workspace),
+                &identity,
+            );
+        }))
+    }
+
+    /// The root slot of a direct or extension-generated repository that may
+    /// be speculated: a direct repository, or a repository of an extension
+    /// group the coordinator prepared (an unprepared group blocks the
+    /// speculation instead, [`Self::speculative_materialize`]).
+    fn speculation_slot(&self, canonical: &str) -> Result<&DemandSlot<PathBuf>, String> {
+        let runtime = self.direct_runtime()?;
+        if let Some(slot) = runtime.roots.get(canonical) {
+            return Ok(slot);
+        }
+        let (_, repository) = self.ordinary_repository(canonical)?;
+        Ok(&repository.root)
+    }
+
+    /// [`Self::speculation_job`]'s materialization: exactly the
+    /// coordinator's, for non-local rules only.
+    fn speculative_materialize(&self, canonical: &str) -> Result<PathBuf, String> {
+        let runtime = self.direct_runtime()?;
+        if let Some(entry) = runtime.catalog.repositories.get(canonical) {
+            let prepared = self.prepare_direct_group(&entry.group_id)?;
+            if prepared.definition.local {
+                return Err("a local repository rule is never speculated".to_owned());
+            }
+            return self.materialize_direct(canonical, entry, prepared);
+        }
+        let (prepared, repository) = self.ordinary_repository(canonical)?;
+        if repository.definition.local {
+            return Err("a local repository rule is never speculated".to_owned());
+        }
+        self.materialize_ordinary(prepared, repository)
+    }
+
+    /// The coordinator demands a repository a speculation executed: what
+    /// the execution observed reaches the analysis snapshot's recording,
+    /// the roots it obtained count, and what it printed is written — where
+    /// the sequential engine executes the rule.
+    fn commit_speculation(&self, outcome: crate::repository_speculation::Outcome) -> PathBuf {
+        crate::observed_fs::replay_some(outcome.obtained.observations.as_ref());
+        self.note_committed_roots(&outcome.obtained.keys);
+        if !outcome.output.is_empty() {
+            use std::io::Write as _;
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(&outcome.output);
+            let _ = stderr.flush();
+        }
+        outcome.root
+    }
+
     /// The repository of a host path for RepoCacheFriendlyPath
     /// (RepoRecordedInput.java:325-405, formed by toRepoCacheFriendlyPath,
     /// StarlarkBaseExternalContext.java:1656-1704): the repository whose
@@ -1649,6 +1868,61 @@ impl RepositorySet {
         // The sequential engine's roots (W6 review F2): a root a phase-1
         // prefetch worker happened to probe first must not change a key.
         let roots = self.sequential_roots();
+        if crate::repository_speculation::active() {
+            return self.speculative_friendly_repository(roots, path);
+        }
+        self.friendly_in(roots, path)
+    }
+
+    /// [`Self::friendly_repository`] on a speculation's thread
+    /// (crate::repository_speculation): the sequential engine forms the key
+    /// where it executes the rule, with the roots that count then — those
+    /// that count now, those the rule obtains itself (and, transitively, the
+    /// roots their publishing probes obtained), and possibly roots that only
+    /// begin to count later. A root that begins to count later could change
+    /// the key only of a path in the repository store (every other root
+    /// counts from the start), and only if it is materialized by then. So
+    /// the key is the one formed with the roots that count now plus the
+    /// rule's own, and when every materialized root would form another key,
+    /// or the path is in the store but in no such root, the speculation
+    /// notes an order-dependent decision and never publishes
+    /// (`speculation_order_check`). Residual: two repositories publishing
+    /// the very same tree, the one with the smaller name materialized later.
+    fn speculative_friendly_repository(
+        &self,
+        mut roots: Vec<(String, PathBuf)>,
+        path: &Path,
+    ) -> Option<(String, PathBuf)> {
+        if let Some(Ok(runtime)) = self.state.direct.get() {
+            let mut pending: Vec<String> = UNIT_ROOTS
+                .with(|obtained| obtained.borrow().clone())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let mut seen = BTreeSet::new();
+            while let Some(name) = pending.pop() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                if let Some(slot) = runtime.root_slot(&name)
+                    && let Some(root) = slot.ready()
+                {
+                    roots.push((name, root.clone()));
+                    pending.extend(slot.obtained().iter().cloned());
+                }
+            }
+        }
+        let speculative = self.friendly_in(roots, path);
+        let materialized = self.friendly_in(self.materialized_roots(), path);
+        if speculative != materialized || (speculative.is_none() && self.in_repository_store(path))
+        {
+            crate::repository_demand::note_order_dependent();
+        }
+        speculative
+    }
+
+    /// [`Self::friendly_repository`] over `roots`.
+    fn friendly_in(&self, roots: Vec<(String, PathBuf)>, path: &Path) -> Option<(String, PathBuf)> {
         let found = {
             let mut memo = self
                 .state
@@ -2222,6 +2496,20 @@ impl RepositorySet {
         canonical: &str,
         entry: &crate::repository_catalog::DirectRepository,
     ) -> Result<Option<PathBuf>, String> {
+        // Before and after: a speculation that starts while this probe runs
+        // may publish the tree it reads (crate::repository_speculation).
+        if self.state.speculation.hides(canonical) {
+            return Ok(None);
+        }
+        let reused = self.try_reuse_direct_unhidden(canonical, entry)?;
+        Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
+    }
+
+    fn try_reuse_direct_unhidden(
+        &self,
+        canonical: &str,
+        entry: &crate::repository_catalog::DirectRepository,
+    ) -> Result<Option<PathBuf>, String> {
         let runtime = self.direct_runtime()?;
         let group = &runtime.catalog.groups[&entry.group_id];
         if group.owner_profile_error.is_some() {
@@ -2320,129 +2608,147 @@ impl RepositorySet {
                     );
                     self.prepare_direct_group(&entry.group_id)?
                 };
-                let group = &runtime.catalog.groups[&entry.group_id];
-                let declaration = &group.declarations[entry.declaration_index];
-                let attributes = &prepared.attributes[entry.declaration_index];
-                // Digest-form specification (Step A + review R1): the spec
-                // key streams the group's ONCE-computed source-digest
-                // entries + this repo's attributes/mappings. The full
-                // provenance bytes are serialized LAZILY, only on the
-                // execute path inside materialize (closure runs there).
-                let owner_mapping = runtime.catalog.owner_mappings[&group.owner].clone();
-                let spec_key = {
-                    let _m = crate::repository_store::timing::mark(
-                        &crate::repository_store::timing::PHASES.spec_serialize,
-                    );
-                    self.direct_spec_key(prepared, group, entry, attributes)?
-                };
-                // Hidden diagnostic (N62 cold-variance hunt,
-                // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
-                // repository, so two cold runs can be diffed field by field.
-                // Only computed when the diagnostic is requested (lazy
-                // provenance otherwise stays unserialized on reuse paths).
-                if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
-                    let provenance = direct_provenance_bytes(
-                        prepared,
-                        group,
-                        entry,
-                        attributes,
-                        &owner_mapping,
-                    )?;
-                    eprintln!(
-                        "PROVENANCE {canonical} {}",
-                        String::from_utf8_lossy(&provenance)
-                    );
+                // Executed already by a speculation (parallel fetching,
+                // crate::repository_speculation): committed here, where the
+                // sequential engine executes the rule.
+                if !prepared.definition.local
+                    && let Some(outcome) = self.state.speculation.take(canonical)
+                {
+                    return Ok(self.commit_speculation(*outcome));
                 }
-                crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
-                let workspace = crate::observed_fs::canonicalize(self.main_root())
-                    .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
-                let workspace_text = crate::repository_warm::workspace_text(&workspace);
-                let this = Arc::new(self.clone());
-                let validating = Arc::new(self.clone());
-                // A local rule never reuses a publication across invocations:
-                // Bazel's RepositoryFetchFunction.shouldUseCachedRepoContents
-                // keeps local repositories refetching while fetching is
-                // enabled, and every native invocation is a fresh server —
-                // their unrecorded dependencies (which/execute/executed-file
-                // reads) make stale reuse dangerous.
-                let local = prepared.definition.local;
-                let provenance = move || {
-                    direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)
-                };
-                // A local execution's observations for its replay record.
-                let observed = std::cell::RefCell::new(None);
-                let observed_by = &observed;
-                let execute = move |stage: &Path| {
-                    let started = std::time::Instant::now();
-                    let pinning = if local { this.replay_scope() } else { None };
-                    let executed = crate::repository_ctx::execute(
-                        this.clone(),
-                        &prepared.definition,
-                        &prepared.loaded.functions,
-                        attributes,
-                        canonical,
-                        &declaration.name,
-                        &prepared.label,
-                        stage,
-                    )?;
-                    drop(pinning);
-                    if local {
-                        *observed_by.borrow_mut() =
-                            Some(LocalObservation::of(&executed, started.elapsed()));
-                    } else {
-                        taint_printed_output(canonical, &executed);
-                    }
-                    let inputs =
-                        crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
-                    let recorded =
-                        crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
-                    Ok(crate::repository_store::Executed { inputs, recorded })
-                };
-                if local {
-                    let (root, execution) = crate::repository_store::materialize_local(
-                        self.source_cache_path()?,
-                        canonical,
-                        &spec_key,
-                        provenance,
-                        execute,
-                    )?;
-                    // A local rule executes on every run (PERF-REPO).
-                    crate::repository_store::timing::record_local_execution(canonical);
-                    self.record_local_execution(
-                        canonical,
-                        &declaration.name,
-                        || {
-                            let (_, symbol) = group.definition_request()?;
-                            Ok(crate::snapshot::replay::DefinitionSource::Direct {
-                                label: prepared.label.clone(),
-                                symbol: symbol.to_owned(),
-                            })
-                        },
-                        &prepared.definition,
-                        &prepared.label,
-                        attributes,
-                        &root,
-                        execution,
-                        observed.into_inner(),
-                    );
-                    return Ok(root);
-                }
-                crate::repository_store::materialize_lazy_in(
-                    self.source_cache_path()?,
-                    canonical,
-                    &spec_key,
-                    Some(&workspace_text),
-                    provenance,
-                    move |tree, recorded| {
-                        crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
-                    },
-                    execute,
-                )
-                .map(|(root, _)| root)
+                self.materialize_direct(canonical, entry, prepared)
             },
         )
         .inspect(|_| runtime.note_obtained(canonical, slot))
         .map(PathBuf::as_path)
+    }
+
+    /// Execute (or reuse) the direct repository `canonical` (`entry`) of the
+    /// prepared group `prepared`: the evaluation of its root slot, on the
+    /// coordinator or — non-local rules only — on a speculation worker
+    /// ([`Self::speculation_job`]).
+    fn materialize_direct(
+        &self,
+        canonical: &str,
+        entry: &crate::repository_catalog::DirectRepository,
+        prepared: &PreparedGroup,
+    ) -> Result<PathBuf, String> {
+        let runtime = self.direct_runtime()?;
+        let group = &runtime.catalog.groups[&entry.group_id];
+        let declaration = &group.declarations[entry.declaration_index];
+        let attributes = &prepared.attributes[entry.declaration_index];
+        // Digest-form specification (Step A + review R1): the spec
+        // key streams the group's ONCE-computed source-digest
+        // entries + this repo's attributes/mappings. The full
+        // provenance bytes are serialized LAZILY, only on the
+        // execute path inside materialize (closure runs there).
+        let owner_mapping = runtime.catalog.owner_mappings[&group.owner].clone();
+        let spec_key = {
+            let _m = crate::repository_store::timing::mark(
+                &crate::repository_store::timing::PHASES.spec_serialize,
+            );
+            self.direct_spec_key(prepared, group, entry, attributes)?
+        };
+        // Hidden diagnostic (N62 cold-variance hunt,
+        // BAZEL_RS_DEBUG_PROVENANCE=1): provenance bytes per
+        // repository, so two cold runs can be diffed field by field.
+        // Only computed when the diagnostic is requested (lazy
+        // provenance otherwise stays unserialized on reuse paths).
+        if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some()
+            && !crate::repository_speculation::active()
+        {
+            let provenance =
+                direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping)?;
+            eprintln!(
+                "PROVENANCE {canonical} {}",
+                String::from_utf8_lossy(&provenance)
+            );
+        }
+        crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
+        let workspace = crate::observed_fs::canonicalize(self.main_root())
+            .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let workspace_text = crate::repository_warm::workspace_text(&workspace);
+        let this = Arc::new(self.clone());
+        let validating = Arc::new(self.clone());
+        // A local rule never reuses a publication across invocations:
+        // Bazel's RepositoryFetchFunction.shouldUseCachedRepoContents
+        // keeps local repositories refetching while fetching is
+        // enabled, and every native invocation is a fresh server —
+        // their unrecorded dependencies (which/execute/executed-file
+        // reads) make stale reuse dangerous.
+        let local = prepared.definition.local;
+        let provenance =
+            move || direct_provenance_bytes(prepared, group, entry, attributes, &owner_mapping);
+        // A local execution's observations for its replay record.
+        let observed = std::cell::RefCell::new(None);
+        let observed_by = &observed;
+        let execute = move |stage: &Path| {
+            let started = std::time::Instant::now();
+            let pinning = if local { this.replay_scope() } else { None };
+            let executed = crate::repository_ctx::execute(
+                this.clone(),
+                &prepared.definition,
+                &prepared.loaded.functions,
+                attributes,
+                canonical,
+                &declaration.name,
+                &prepared.label,
+                stage,
+            )?;
+            drop(pinning);
+            speculation_order_check()?;
+            if local {
+                *observed_by.borrow_mut() =
+                    Some(LocalObservation::of(&executed, started.elapsed()));
+            } else {
+                taint_printed_output(canonical, &executed);
+            }
+            let inputs =
+                crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
+            let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
+            Ok(crate::repository_store::Executed { inputs, recorded })
+        };
+        if local {
+            let (root, execution) = crate::repository_store::materialize_local(
+                self.source_cache_path()?,
+                canonical,
+                &spec_key,
+                provenance,
+                execute,
+            )?;
+            // A local rule executes on every run (PERF-REPO).
+            crate::repository_store::timing::record_local_execution(canonical);
+            self.record_local_execution(
+                canonical,
+                &declaration.name,
+                || {
+                    let (_, symbol) = group.definition_request()?;
+                    Ok(crate::snapshot::replay::DefinitionSource::Direct {
+                        label: prepared.label.clone(),
+                        symbol: symbol.to_owned(),
+                    })
+                },
+                &prepared.definition,
+                &prepared.label,
+                attributes,
+                &root,
+                execution,
+                observed.into_inner(),
+            );
+            return Ok(root);
+        }
+        crate::repository_store::materialize_lazy_in(
+            self.source_cache_path()?,
+            canonical,
+            &spec_key,
+            Some(&workspace_text),
+            provenance,
+            move |tree, recorded| {
+                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+            },
+            execute,
+        )
+        .map(|(root, _)| root)
     }
 
     fn prepare_ordinary_group(&self, id: &str) -> Result<&PreparedOrdinary, String> {
@@ -2772,6 +3078,16 @@ impl RepositorySet {
     /// ready — extension evaluation itself is coordinator-only) and the
     /// rule is not local.
     fn try_reuse_ordinary(&self, canonical: &str) -> Result<Option<PathBuf>, String> {
+        // Before and after: a speculation that starts while this probe runs
+        // may publish the tree it reads (crate::repository_speculation).
+        if self.state.speculation.hides(canonical) {
+            return Ok(None);
+        }
+        let reused = self.try_reuse_ordinary_unhidden(canonical)?;
+        Ok(reused.filter(|_| !self.state.speculation.hides(canonical)))
+    }
+
+    fn try_reuse_ordinary_unhidden(&self, canonical: &str) -> Result<Option<PathBuf>, String> {
         let Some((prefix, _name)) = canonical.rsplit_once('+') else {
             return Ok(None);
         };
@@ -2819,18 +3135,6 @@ impl RepositorySet {
                 &format!("repository:{canonical}"),
                 || UnitRoots::during(|| self.try_reuse_ordinary(canonical)),
                 || {
-                    let (label, _) =
-                        repository
-                            .definition
-                            .identity
-                            .split_once('%')
-                            .ok_or_else(|| {
-                                format!(
-                                    "invalid repository rule identity {:?}",
-                                    repository.definition.identity
-                                )
-                            })?;
-                    let definition_label = Label::parse_canonical(label)?;
                     if std::env::var_os("BAZEL_RS_DEBUG_PROVENANCE").is_some() {
                         eprintln!(
                             "PROVENANCE-ORDINARY {} {}",
@@ -2838,118 +3142,138 @@ impl RepositorySet {
                             String::from_utf8_lossy(prepared.provenance()?)
                         );
                     }
-                    // The spec digest is cached on the prepared group
-                    // (review R1); framed provenance bytes are built on
-                    // demand, unretained, on the execute path only
-                    // (materialize_lazy; perf follow-up 2 — no per-repo
-                    // ~31 MB cache).
-                    let canonical_name = repository.canonical_name.clone();
-                    let spec_key = {
-                        let _m = crate::repository_store::timing::mark(
-                            &crate::repository_store::timing::PHASES.spec_serialize,
-                        );
-                        prepared.spec_key(
-                            self,
-                            &repository.canonical_name,
-                            &repository.definition.environ,
-                        )?
-                    };
-                    crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
-                    let workspace = crate::observed_fs::canonicalize(self.main_root())
-                        .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
-                    let workspace_text = crate::repository_warm::workspace_text(&workspace);
-                    let this = Arc::new(self.clone());
-                    let validating = Arc::new(self.clone());
-                    // Local rules never reuse across invocations here either
-                    // (shouldUseCachedRepoContents; see the direct path).
-                    let local = repository.definition.local;
-                    let provenance = move || prepared.framed_provenance(&canonical_name);
-                    // A local execution's observations for its replay record.
-                    let observed = std::cell::RefCell::new(None);
-                    let observed_by = &observed;
-                    let definition_label_ref = &definition_label;
-                    let execute = move |stage: &Path| {
-                        let started = std::time::Instant::now();
-                        let pinning = if local { this.replay_scope() } else { None };
-                        let executed = crate::repository_ctx::execute(
-                            this.clone(),
-                            &repository.definition,
-                            &prepared.loaded.functions,
-                            &repository.attributes,
-                            &repository.canonical_name,
-                            &repository.original_name,
-                            definition_label_ref,
-                            stage,
-                        )?;
-                        drop(pinning);
-                        if local {
-                            *observed_by.borrow_mut() =
-                                Some(LocalObservation::of(&executed, started.elapsed()));
-                        } else {
-                            taint_printed_output(&repository.canonical_name, &executed);
-                        }
-                        let inputs = crate::host_os::repository_inputs(
-                            this.host()?.as_ref(),
-                            &executed.inputs,
-                        )?;
-                        let recorded = crate::repository_warm::record(
-                            &executed.inputs,
-                            &executed.watch_names,
-                        )?;
-                        Ok(crate::repository_store::Executed { inputs, recorded })
-                    };
-                    if local {
-                        let (root, execution) = crate::repository_store::materialize_local(
-                            self.source_cache_path()?,
-                            &repository.canonical_name,
-                            &spec_key,
-                            provenance,
-                            execute,
-                        )?;
-                        // A local rule executes on every run (PERF-REPO).
-                        crate::repository_store::timing::record_local_execution(
-                            &repository.canonical_name,
-                        );
-                        self.record_local_execution(
-                            &repository.canonical_name,
-                            &repository.original_name,
-                            || {
-                                Ok(crate::snapshot::replay::DefinitionSource::Ordinary {
-                                    rule_id: crate::lockfile_extensions::repo_rule_id(
-                                        &repository.definition.identity,
-                                    )?,
-                                })
-                            },
-                            &repository.definition,
-                            &definition_label,
-                            &repository.attributes,
-                            &root,
-                            execution,
-                            observed.into_inner(),
-                        );
-                        return Ok(root);
+                    // Executed already by a speculation (parallel fetching,
+                    // crate::repository_speculation): committed here, where
+                    // the sequential engine executes the rule.
+                    if !repository.definition.local
+                        && let Some(outcome) = self.state.speculation.take(canonical)
+                    {
+                        return Ok(self.commit_speculation(*outcome));
                     }
-                    crate::repository_store::materialize_lazy_in(
-                        self.source_cache_path()?,
-                        &repository.canonical_name,
-                        &spec_key,
-                        Some(&workspace_text),
-                        provenance,
-                        move |tree, recorded| {
-                            crate::repository_warm::unchanged(
-                                &validating,
-                                &workspace,
-                                tree,
-                                recorded,
-                            )
-                        },
-                        execute,
-                    )
-                    .map(|(root, _)| root)
+                    self.materialize_ordinary(prepared, repository)
                 },
             )
             .inspect(|_| runtime.note_obtained(canonical, &repository.root))
             .map(PathBuf::as_path)
+    }
+
+    /// Execute (or reuse) the extension-generated repository `repository`
+    /// of the prepared group `prepared`: the evaluation of its root slot,
+    /// on the coordinator or — non-local rules only — on a speculation
+    /// worker ([`Self::speculation_job`]).
+    fn materialize_ordinary(
+        &self,
+        prepared: &PreparedOrdinary,
+        repository: &OrdinaryRepository,
+    ) -> Result<PathBuf, String> {
+        let (label, _) = repository
+            .definition
+            .identity
+            .split_once('%')
+            .ok_or_else(|| {
+                format!(
+                    "invalid repository rule identity {:?}",
+                    repository.definition.identity
+                )
+            })?;
+        let definition_label = Label::parse_canonical(label)?;
+        // The spec digest is cached on the prepared group
+        // (review R1); framed provenance bytes are built on
+        // demand, unretained, on the execute path only
+        // (materialize_lazy; perf follow-up 2 — no per-repo
+        // ~31 MB cache).
+        let canonical_name = repository.canonical_name.clone();
+        let spec_key = {
+            let _m = crate::repository_store::timing::mark(
+                &crate::repository_store::timing::PHASES.spec_serialize,
+            );
+            prepared.spec_key(
+                self,
+                &repository.canonical_name,
+                &repository.definition.environ,
+            )?
+        };
+        crate::repository_store::timing::count_spec(spec_key.len() as u64, 0);
+        let workspace = crate::observed_fs::canonicalize(self.main_root())
+            .map_err(|e| format!("cannot resolve workspace root: {e}"))?;
+        let workspace_text = crate::repository_warm::workspace_text(&workspace);
+        let this = Arc::new(self.clone());
+        let validating = Arc::new(self.clone());
+        // Local rules never reuse across invocations here either
+        // (shouldUseCachedRepoContents; see the direct path).
+        let local = repository.definition.local;
+        let provenance = move || prepared.framed_provenance(&canonical_name);
+        // A local execution's observations for its replay record.
+        let observed = std::cell::RefCell::new(None);
+        let observed_by = &observed;
+        let definition_label_ref = &definition_label;
+        let execute = move |stage: &Path| {
+            let started = std::time::Instant::now();
+            let pinning = if local { this.replay_scope() } else { None };
+            let executed = crate::repository_ctx::execute(
+                this.clone(),
+                &repository.definition,
+                &prepared.loaded.functions,
+                &repository.attributes,
+                &repository.canonical_name,
+                &repository.original_name,
+                definition_label_ref,
+                stage,
+            )?;
+            drop(pinning);
+            speculation_order_check()?;
+            if local {
+                *observed_by.borrow_mut() =
+                    Some(LocalObservation::of(&executed, started.elapsed()));
+            } else {
+                taint_printed_output(&repository.canonical_name, &executed);
+            }
+            let inputs =
+                crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
+            let recorded = crate::repository_warm::record(&executed.inputs, &executed.watch_names)?;
+            Ok(crate::repository_store::Executed { inputs, recorded })
+        };
+        if local {
+            let (root, execution) = crate::repository_store::materialize_local(
+                self.source_cache_path()?,
+                &repository.canonical_name,
+                &spec_key,
+                provenance,
+                execute,
+            )?;
+            // A local rule executes on every run (PERF-REPO).
+            crate::repository_store::timing::record_local_execution(&repository.canonical_name);
+            self.record_local_execution(
+                &repository.canonical_name,
+                &repository.original_name,
+                || {
+                    Ok(crate::snapshot::replay::DefinitionSource::Ordinary {
+                        rule_id: crate::lockfile_extensions::repo_rule_id(
+                            &repository.definition.identity,
+                        )?,
+                    })
+                },
+                &repository.definition,
+                &definition_label,
+                &repository.attributes,
+                &root,
+                execution,
+                observed.into_inner(),
+            );
+            return Ok(root);
+        }
+        crate::repository_store::materialize_lazy_in(
+            self.source_cache_path()?,
+            &repository.canonical_name,
+            &spec_key,
+            Some(&workspace_text),
+            provenance,
+            move |tree, recorded| {
+                crate::repository_warm::unchanged(&validating, &workspace, tree, recorded)
+            },
+            execute,
+        )
+        .map(|(root, _)| root)
     }
 
     /// Select exactly the mapping parsing needs, without demanding an extension

@@ -934,3 +934,142 @@ switch as its A/B reference (two extensions
 of one `.bzl`, a repository rule shared by both and by a
 `use_repo_rule`, top-level prints, cold and warm lockfile). oauth2token:
 881 evaluations instead of 1,607, peak RSS −150 MB.
+
+## Parallel repository fetching (`src/repository_speculation.rs`)
+
+A cold build executed every repository rule at its sequential demand, one
+after another: on ~/code a cold `build --nobuild //src/python:bworker_env`
+spent ~310 s of its ~350–410 s fetching and extracting 284 pip wheel
+repositories one at a time. Genuine Bazel fetches independent repositories
+concurrently (Skyframe evaluates the `RepositoryDirectoryValue`s analysis
+and loading demand in parallel, up to `--loading_phase_threads`; downloads
+are bounded by `--http_max_parallel_downloads`, default 8,
+CommonCommandOptions.java). The native engine now does too, in the
+scheduling layer only — who executes which repository when — while what it
+shows stays the sequential engine's.
+
+**Who.** A pool of at most 8 fetch workers (the genuine download bound;
+also at most `--loading_phase_threads`; 16 MiB stacks) lives exactly as
+long as the phase-1 prefetcher (`--loading_phase_threads=1` runs no pool
+and is the sequential engine; `BAZEL_RS_DEBUG_NO_SPECULATION` switches the
+pool off alone; never for a pinned set).
+
+**What.** A prefetch unit aborted by the no-demand sentinel on a direct or
+extension-generated repository (`runtime N:repository:NAME`) asks for that
+repository — but only when the build *certainly* analyzes one of the
+unit's targets (`prefetch::Reach`): the coordinator analyzes it (or the
+requested targets), toolchain resolution selected it, or a certainly
+analyzed target names it outside select() or in the select() branch the
+coordinator's analysis of the conditions decides (`Prefetcher::note_condition`
+records each condition's match result; a condition matching in one
+configuration and not in another, or in error, decides nothing; a
+select() waiting for an unanalyzed condition is expanded again once the
+coordinator analyzed it). Registered toolchain patterns, compatible
+toolchains and branches not (yet) decided are loaded as before but never
+fetched ahead: a wrong package-load guess is cheap, a download is not (the
+first cut fetched every select() branch and every registered toolchain's
+repositories — macOS multitool binaries, other Go SDKs — 831 requested,
+~600 not needed). Module extensions stay sequential (coordinator-only, as
+do local rules, registry/Git/built-in roots and group preparation).
+
+**How.** A speculation runs the coordinator's own materialization
+(`RepositorySet::materialize_ordinary` / `materialize_direct`, through
+crate::repository_store, unchanged) on a fetch worker in no-demand +
+reuse-only mode: a demand of anything not available yet (an unprepared
+group, a repository nobody fetched, one another speculation is executing)
+aborts it with the sentinel, and it is queued again (at most 4 attempts)
+once `sentinel_ready` finds that demand satisfied (after each inline load,
+each published speculation). While it runs:
+
+- everything the rule writes to stderr — print(), the `execute(quiet=False)`
+  echo, the reproducibility DEBUG lines, download retry warnings — goes to
+  the speculation's buffer (`repository_speculation::defer_stderr`);
+- what it observes for the analysis snapshot is captured in a detached
+  frame and the roots it obtains are recorded (`UnitRoots::during`);
+- a recorded-input key (`friendly_repository`) is formed with the roots
+  that count for the sequential engine now plus the ones the rule obtained
+  itself; when the key could depend on a root that only begins to count
+  later (a store path in no such root, or a materialized root naming it
+  otherwise), the speculation notes an order-dependent decision and aborts
+  before publishing (`speculation_order_check`); the coordinator executes
+  the rule. Residual: two repositories publishing the very same tree, the
+  one with the smaller name materialized later.
+
+**Commit at the demand point.** A successful speculation that printed
+nothing is published into the repository's demand slot like a warm-reuse
+probe's value (`DemandSlot::publish_speculated`): its observations and
+obtained roots count where the root begins to count for the sequential
+engine (`DirectRuntime::mark_sequential`), and the prefetcher retries the
+units blocked on it at once (the expansion runs ahead of the coordinator
+through chains such as hub alias → wheel → hub alias). One that printed (or
+finished while the coordinator was already evaluating the slot) is kept,
+and every probe misses on it (`Speculations::hides`, checked before and
+after a probe) until the coordinator demands the repository
+(`Speculations::take`, waiting for a running one): the coordinator replays
+its observations, counts its roots and writes its output there — exactly
+where the sequential engine executes the rule. A failed or aborted
+speculation is dropped and the coordinator executes the rule itself, so
+errors (the first in sequential order) and their prints are the sequential
+ones (a failing repository executes twice).
+
+**Stop.** When phase 1 ends (however it ends) the pool stops: queued and
+blocked speculations are dropped, running ones are cancelled — downloads
+fail at their next read (`extension_download::copy_hashed`), `execute()`
+subprocesses are killed at the next poll (`repository_process::run`); the
+pool waits at most 2 s, then leaves a stuck worker (a server that never
+answers) to end on its own. An outcome nobody committed has its
+specification pointer withdrawn (`repository_speculation::withdraw_pointer`, only
+when it still names that publication): the next invocation executes the
+rule — and prints — again. Ctrl-C ends the process as before (the store is
+crash-safe; `execute()` children run in their own process group, as on the
+sequential path).
+
+**Intended differences.** Repositories the build needed but did not reach
+because of an earlier failure may be published (as genuine Bazel's
+parallel fetches complete); none whose output was not shown. A
+speculation whose repository the coordinator never demands (a certainty
+guess wrong for another configuration) costs a fetch. Within the recording
+the taint details keep their insertion order, so a diagnostics summary may
+list them in another order (the recorder is a set).
+
+**Telemetry.** With `BAZEL_RS_TIMING=1`, `PERF-FETCH workers= requested=
+started= published= done= blocked= failed= retried= taken= waited= wait=
+missed= withdrawn=` when the pool stops.
+
+**Determinism evidence.** `tests/parallel_fetch.rs`: a workspace with 15
+slow repository rules downloading from a loopback HTTP fixture that answers
+late (direct and extension-generated, printing ones, one demanding another
+repository's file, one reading a workspace file and the client
+environment, one on a select() branch not taken): cold builds at threads 1
+/ 8 / 32 / 8 + jitter byte-identical in exit code, stdout, stderr,
+lockfile and every published tree; downloads overlap (peak > 1) and the
+build is faster; the select() branch not taken is never fetched; the
+snapshot recording's observations, environment reads and taints are the
+sequential run's; the first failure in sequential order is reported, and
+after fixing it the next build prints exactly what the sequential engine's
+does (pointer withdrawal); a failing build does not wait for a trickling
+speculative download; SIGINT during speculative downloads leaves a store
+the next build completes from. Unit rows in `repository_speculation` and
+`repository_demand`.
+
+**Measured** (~/code, cold private cache and lockfile copy, release, 64
+cores, public PyPI/GitHub; shared machine, indicative):
+
+| cold build | before | after |
+|---|---|---|
+| `build --nobuild //src/python:bworker_env` (base 06da546) | 408.8 s (phase 1 366.8 s) | 143.9 s (phase 1 75.6 s) |
+| same, rebased on f4d460f (installed aed1e34e vs this) | 456.4 s (phase 1 351.8 s) | 160.8 s (phase 1 73.5 s) |
+| `build //src/beyondwork.ai/tools/oauth2token/...` (692 actions) | 144.1 s (phase 1 88.5 s) | 112.3 s (phase 1 55.6 s) |
+
+bworker_env: 264 speculations requested, ~225 published into slots, 5–11
+taken with output or by an evaluating coordinator, 0 withdrawn; stdout,
+stderr (minus PERF lines) and the lockfile byte-identical; tree identities
+differ only where they differ between sequential runs already
+(rules_python's generated BUILD files order platform sets by Python's
+randomized string hash; the interpreter tree embeds the cache path).
+oauth2token (same cache path for both runs): stdout, stderr including the
+full `BAZEL_RS_DUMP_ACTIONS` dump (46k lines), lockfile and the set of
+published tree identities identical. Peak RSS unchanged (the high-water
+mark is set during pattern loading). The pattern-loading span (~80 s of
+bworker_env: extension evaluation, the interpreter download) is untouched:
+module extensions stay sequential.

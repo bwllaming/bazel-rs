@@ -1519,7 +1519,8 @@ impl Context {
     /// captured replay, and into the execution's output record when one is
     /// kept ([`Self::collects_output`]).
     fn print_line(&self, text: &str) {
-        if self.live {
+        if self.live && !crate::repository_speculation::defer_stderr(format!("{text}\n").as_bytes())
+        {
             eprintln!("{text}");
         }
         if self.collects_output() {
@@ -1533,7 +1534,11 @@ impl Context {
     /// it to its stderr, StarlarkExecutionResult.java:205-207), recorded
     /// like [`Self::print_line`].
     fn echo(&self, stdout: &[u8], stderr: &[u8]) {
-        if self.live {
+        if self.live
+            && !(crate::repository_speculation::active()
+                && crate::repository_speculation::defer_stderr(stdout)
+                && crate::repository_speculation::defer_stderr(stderr))
+        {
             crate::repository_process::echo(stdout, stderr);
         }
         if self.collects_output() {
@@ -2212,10 +2217,13 @@ impl Context {
             },
             keep_failed,
             &mut |url, failure| {
-                eprintln!(
+                let warning = format!(
                     "WARNING: Download from {url} failed: class {} {}",
                     failure.class, failure.message
                 );
+                if !crate::repository_speculation::defer_stderr(format!("{warning}\n").as_bytes()) {
+                    eprintln!("{warning}");
+                }
                 last = Some(failure.clone());
             },
         );

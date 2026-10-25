@@ -6817,7 +6817,7 @@ impl Engine {
                 if self.prefetch_followed.insert(label.clone())
                     && let Some(prefetch) = &self.prefetch
                 {
-                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1);
+                    prefetch.submit_targets([(label.package_id(), Some(label.name))], 1, true);
                 }
             }
         }
@@ -6846,6 +6846,7 @@ impl Engine {
                     Some(declared.resolved.name.clone()),
                 )],
                 1,
+                false,
             );
         }
     }
@@ -7131,7 +7132,7 @@ impl Engine {
             }
             targets
         });
-        prefetch.submit_targets(targets, 0);
+        prefetch.submit_targets(targets, 0, false);
     }
 
     /// TargetPatternUtil.expandTargetPatterns (skyframe/TargetPatternUtil.java:44-87)
@@ -8090,6 +8091,20 @@ impl Engine {
                     ),
                 ));
             };
+            // Phase-1 prefetch: which select() branches the build certainly
+            // takes (crate::prefetch::certain_labels).
+            if let Some(prefetch) = &self.prefetch
+                && let Ok(key) = Label::parse_canonical(&text)
+            {
+                prefetch.note_condition(
+                    &key,
+                    match &matching.result {
+                        crate::configured_attributes::MatchResult::Match => Some(true),
+                        crate::configured_attributes::MatchResult::NoMatch(_) => Some(false),
+                        crate::configured_attributes::MatchResult::InError(_) => None,
+                    },
+                );
+            }
             conditions.push((text, matching));
         }
         Ok(conditions)

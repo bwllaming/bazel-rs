@@ -337,6 +337,11 @@ pub(crate) fn run(request: &Request<'_>) -> Result<Outcome, String> {
                 timed_out = true;
                 break;
             }
+            // A speculative fetch the pool stopped (crate::repository_speculation).
+            if crate::repository_speculation::cancelled() {
+                errors.push(crate::repository_speculation::CANCELLED.to_owned());
+                break;
+            }
             match child.try_wait() {
                 Ok(Some(exit)) => {
                     status = Some(exit);
