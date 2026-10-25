@@ -168,7 +168,7 @@ pub(crate) fn specification_digest(
         .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
     let mut digest = sha2::Sha256::new();
     use sha2::Digest as _;
-    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update(crate::repository_store::SPEC_DIGEST_PROFILE);
     digest.update([0]);
     digest.update(
         crate::repository_store::spec_digest_identity(provenance_fields, source_entries)?
@@ -213,14 +213,14 @@ pub(crate) fn specification_digest_streaming(
     let mut counter = crate::repository_store::CountWriter(0);
     frame_count(&mut counter)?;
     let mut seeded = crate::repository_store::SeededDigestWriter::new(
-        b"direct-repository-spec-digest-v1",
+        crate::repository_store::SPEC_DIGEST_PROFILE,
         counter.0,
     );
     frame_hash(&mut seeded)?;
     let identity = seeded.finish_hex();
     use sha2::Digest as _;
     let mut digest = sha2::Sha256::new();
-    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update(crate::repository_store::SPEC_DIGEST_PROFILE);
     digest.update([0]);
     digest.update(identity.as_bytes());
     digest.update((host.len() as u64).to_le_bytes());
@@ -257,7 +257,8 @@ pub(crate) fn specification_digest_mixed(
         .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
     let mut digest = sha2::Sha256::new();
     use sha2::Digest as _;
-    digest.update(b"ordinary-repository-spec-digest-v2");
+    // v3: the slots' profile bump (crate::repository_store::SPEC_PROFILE).
+    digest.update(b"ordinary-repository-spec-digest-v3");
     digest.update([0]);
     digest.update((canonical_name.len() as u64).to_le_bytes());
     digest.update(canonical_name.as_bytes());
@@ -294,7 +295,7 @@ pub(crate) fn specification_digest_bytes(
         .map_err(|error| format!("cannot serialize declared repository environment: {error}"))?;
     let mut digest = sha2::Sha256::new();
     use sha2::Digest as _;
-    digest.update(b"direct-repository-spec-digest-v1");
+    digest.update(crate::repository_store::SPEC_DIGEST_PROFILE);
     digest.update([0]);
     digest.update((provenance.len() as u64).to_le_bytes());
     digest.update(provenance);

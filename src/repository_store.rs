@@ -34,7 +34,12 @@ const PROFILE: &str = "direct-file-template-v1";
 const MANIFEST_FORMAT: u32 = 1;
 const PATH_LIMIT: usize = 4096;
 const NAME_LIMIT: usize = 255;
-const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v1";
+/// Bumped (v1 -> v2) when repository rules moved from private stages into
+/// their slots `<store>/external/<name>` (crate::repository_slots): a
+/// publication an earlier binary made in a stage may embed that stage's path
+/// (gazelle's go.env, a `-L../<stage>` link flag), so no pointer of the
+/// earlier profile is ever reused; identical content keeps its identity.
+const SPEC_PROFILE: &[u8] = b"direct-repository-spec-v2";
 
 /// A publication's manifest.
 ///
@@ -519,7 +524,9 @@ pub fn spec_identity(spec: &[u8]) -> String {
     format!("{:x}", digest.finalize()) // RepositoryFunction's key digest
 }
 
-const SPEC_DIGEST_PROFILE: &[u8] = b"direct-repository-spec-digest-v1";
+/// Bumped with [`SPEC_PROFILE`] (v1 -> v2); the streaming twins in
+/// crate::repository_warm frame the same bytes.
+pub(crate) const SPEC_DIGEST_PROFILE: &[u8] = b"direct-repository-spec-digest-v2";
 
 /// Per-source digests of one loaded `.bzl` closure, computed ONCE per
 /// prepared group per invocation (review R1): children of a group share
@@ -4119,6 +4126,53 @@ mod tests {
             publish_spec(cache.path(), b"spec-a", b"a", false, |_| Ok(b"bd".to_vec())).unwrap();
         assert_ne!(a, b);
         assert_ne!(a, c);
+    }
+
+    /// The profile bump of the slots (v1 -> v2): a pointer an earlier
+    /// binary published for the same specification (made in a private
+    /// stage, maybe embedding its path) is never reused — the rule runs
+    /// once more — while identical content keeps its identity.
+    #[test]
+    fn earlier_profile_pointers_are_never_reused() {
+        let cache = temp();
+        let v1 = {
+            let mut digest = Sha256::new();
+            digest.update(b"direct-repository-spec-v1");
+            digest.update([0]);
+            digest.update(b"spec");
+            format!("{:x}", digest.finalize())
+        };
+        assert_ne!(v1, spec_identity(b"spec"));
+        let (old, _) = materialize_keyed(
+            cache.path(),
+            "test-key",
+            &v1,
+            b"",
+            |_, _| Ok(true),
+            |stage| {
+                write(stage).map(|inputs| Executed {
+                    inputs,
+                    recorded: br#"{"version":1}"#.to_vec(),
+                })
+            },
+        )
+        .unwrap();
+        let executions = AtomicUsize::new(0);
+        let (new, status) = publish(cache.path(), b"", |stage| {
+            executions.fetch_add(1, Ordering::SeqCst);
+            write(stage)
+        })
+        .unwrap();
+        assert_eq!(
+            (status, executions.load(Ordering::SeqCst)),
+            (Publication::Executed, 1)
+        );
+        assert_eq!(new, old);
+        assert_ne!(
+            super::SPEC_DIGEST_PROFILE,
+            b"direct-repository-spec-digest-v1"
+        );
+        no_stages(cache.path());
     }
 
     #[test]
