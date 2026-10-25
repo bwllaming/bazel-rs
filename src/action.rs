@@ -4196,6 +4196,37 @@ pub fn read_content_input(cache_root: &Path, path: &Path) -> Result<ContentInput
     read_input(path, Some(&root), true).map(ContentInput)
 }
 
+/// A runfile's source read by content ([`read_content_source`]).
+pub enum ContentSource {
+    File(ContentInput),
+    /// A tree artifact: its files by their paths below the tree (none for
+    /// an empty tree).
+    Tree(Vec<(PathBuf, ContentInput)>),
+}
+
+/// [`read_content_input`] for a runfile that may be a tree artifact (or
+/// another directory): a directory is read like a tree input (a published
+/// tree from the tree memo) and taken as its files, as a spawn's runfiles
+/// expand a tree into its children (SpawnInputExpander
+/// .addSingleRunfilesTreeToInputs, exec/SpawnInputExpander.java:87-132).
+pub fn read_content_source(cache_root: &Path, path: &Path) -> Result<ContentSource, String> {
+    let (root, _) = cache_store(cache_root)?;
+    let (resolved, _) = resolve_published(path, Some(&root))?;
+    if !fs::symlink_metadata(&resolved).is_ok_and(|metadata| metadata.is_dir()) {
+        return read_input(path, Some(&root), true)
+            .map(|input| ContentSource::File(ContentInput(input)));
+    }
+    match read_staged(path, true, Some(&root))? {
+        Staged::Tree(tree) => Ok(ContentSource::Tree(
+            tree.files
+                .iter()
+                .map(|(name, input)| (name.clone(), ContentInput(input.clone())))
+                .collect(),
+        )),
+        Staged::File(input) => Ok(ContentSource::File(ContentInput(input))),
+    }
+}
+
 /// Stage content inputs below `execroot` at their relative destinations:
 /// read-only hardlinks of the cache's content-addressed store (N36), like
 /// stage_inputs for an action.
@@ -6394,6 +6425,65 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             assert_eq!(mode(&path), OUTPUT_MODE, "{}", path.display());
         }
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+    }
+
+    /// A runfile read by content (a test's) is a file, or a tree's files
+    /// (none for an empty tree), also through a symlink output of a tree.
+    #[test]
+    fn content_sources_are_files_or_the_files_of_trees() {
+        let fixture = Fixture::new();
+        let mut producer = fixture.action();
+        producer.inputs.clear();
+        producer.outputs = vec!["out/tree".into(), "out/empty".into(), "out/file".into()];
+        producer.extra.tree_outputs =
+            BTreeSet::from([PathBuf::from("out/tree"), PathBuf::from("out/empty")]);
+        producer.command =
+            "printf a > out/tree/a; mkdir out/tree/d; ln -s ../a out/tree/d/b; printf f > out/file"
+                .into();
+        let produced = execute(&fixture.cache(), &producer).unwrap();
+        let mut link = fixture.action();
+        link.id = "tree-link".into();
+        link.command.clear();
+        link.inputs = vec![(produced.outputs[0].clone(), "in/tree".into())];
+        link.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
+        link.outputs = vec!["out/link".into()];
+        link.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/link")]);
+        link.extra.transform = Some(Transform::Symlink {
+            target: "in/tree".into(),
+            require_executable: false,
+            progress: "Creating symlink".into(),
+        });
+        let linked = execute(&fixture.cache(), &link).unwrap();
+        let digest_a = digest(b"a").hex();
+        for tree in [&produced.outputs[0], &linked.outputs[0]] {
+            let ContentSource::Tree(files) = read_content_source(&fixture.cache(), tree).unwrap()
+            else {
+                panic!("a tree");
+            };
+            let files: Vec<(PathBuf, String, bool)> = files
+                .into_iter()
+                .map(|(name, input)| (name, input.digest(), input.executable()))
+                .collect();
+            assert_eq!(
+                files,
+                [
+                    (PathBuf::from("a"), digest_a.clone(), true),
+                    (PathBuf::from("d/b"), digest_a.clone(), true)
+                ]
+            );
+        }
+        let ContentSource::Tree(files) =
+            read_content_source(&fixture.cache(), &produced.outputs[1]).unwrap()
+        else {
+            panic!("an empty tree");
+        };
+        assert!(files.is_empty());
+        let ContentSource::File(file) =
+            read_content_source(&fixture.cache(), &produced.outputs[2]).unwrap()
+        else {
+            panic!("a file");
+        };
+        assert_eq!(file.digest(), digest(b"f").hex());
     }
 
     /// A tree input that is no published output (here a directory of the

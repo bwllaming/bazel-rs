@@ -111,7 +111,10 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
   (bytes of the embedded bundle) at `external/bazel_tools/tools/test/...`, and
   the test's runfiles mapping (N23f, `_repo_mapping` included) staged **by
   content** at `<executable>.runfiles/<path>` (N36 read-only store hardlinks,
-  empty files as empty files, no `MANIFEST`), like a sandboxed spawn. The
+  empty files as empty files, a tree artifact as its files at
+  `<path>/<file>` and an empty tree as its directory like
+  SpawnInputExpander.addSingleRunfilesTreeToInputs, docs/TREE_SYMLINKS.md,
+  no `MANIFEST`), like a sandboxed spawn. The
   action key frames those contents, the arguments, the environment, tags,
   the execution info, size/timeout, shard/run numbers and
   `--zip_undeclared_test_outputs` (TestRunnerAction.computeKey, :526-561) —

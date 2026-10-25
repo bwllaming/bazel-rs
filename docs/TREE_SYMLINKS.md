@@ -106,7 +106,11 @@ Citations are to the pinned Bazel 9.3.0 sources
 * **Consumers** stage a tree's files as read-only store hardlinks like every
   native input (docs/HARDLINK_STAGING.md); `Args.add_all(tree)` expands to
   the same children as genuine's. `run` reads the published tree through the
-  runfiles tree's link.
+  runfiles tree's link; a test's runfiles expand a tree into its files (an
+  empty tree into its directory), like SpawnInputExpander
+  (`crate::action::read_content_source`, `crate::test_runner`), which also
+  makes trees usable as test data at all (before, a tree in a test's runfiles
+  failed with `expected regular file`).
 * **Remote cache.** Spawns with tree outputs stay local
   (`output_directories are not modelled`, docs/REMOTE_CACHE.md); a tree
   input's linked files enter the input root as files with their digests, as
@@ -117,7 +121,9 @@ Citations are to the pinned Bazel 9.3.0 sources
 `crate::action` unit tests cover the three read modes, the rules_oci shapes
 and every resolving link, materialization and its manifests, damage found on
 reuse, the validation errors (dangling, special, ELOOP, cycles, absolute
-targets in the working directory) and links to other outputs of the action.
+targets in the working directory) and links to other outputs of the action;
+another reads a test's runfile sources (a file, a tree's files, an empty
+tree, a tree through a symlink output).
 
 ## Known differences
 

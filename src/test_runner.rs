@@ -22,7 +22,9 @@
 //! Paths below are under src/main/java/com/google/devtools/build/lib/ of the
 //! pinned Bazel 9.3 sources.
 
-use crate::action::{ContentInput, read_content_input, stage_content_inputs};
+use crate::action::{
+    ContentInput, ContentSource, read_content_input, read_content_source, stage_content_inputs,
+};
 use crate::test_command::{
     EnvInputs, RunResult, TestCase, TestOptions, TestOutput, TestRuleInfo, TestStatus, TestSummary,
     TestSummaryFormat, TriState, filter_header, should_output_log, termination_short,
@@ -492,10 +494,22 @@ impl Runner<'_> {
             ),
         ];
         let mut empty_files = Vec::new();
+        // A tree artifact's files are staged at their paths below the
+        // tree's runfile; an empty tree is its directory
+        // (SpawnInputExpander.addSingleRunfilesTreeToInputs).
+        let mut empty_trees = Vec::new();
         for (path, source) in &spec.entries {
             let destination = PathBuf::from(&paths.runfiles).join(path);
             match source {
-                Some(source) => inputs.push((read_content_input(self.cache, source)?, destination)),
+                Some(source) => match read_content_source(self.cache, source)? {
+                    ContentSource::File(input) => inputs.push((input, destination)),
+                    ContentSource::Tree(files) if files.is_empty() => empty_trees.push(destination),
+                    ContentSource::Tree(files) => inputs.extend(
+                        files
+                            .into_iter()
+                            .map(|(name, input)| (input, destination.join(name))),
+                    ),
+                },
                 None => empty_files.push(destination),
             }
         }
@@ -538,6 +552,10 @@ impl Runner<'_> {
         for destination in &empty_files {
             frame(&mut hash, destination.as_os_str().as_encoded_bytes());
             frame(&mut hash, b"empty");
+        }
+        for destination in &empty_trees {
+            frame(&mut hash, destination.as_os_str().as_encoded_bytes());
+            frame(&mut hash, b"empty-tree");
         }
         // The output format decides whether test.xml is parsed (and stored).
         let parse_xml = matches!(
@@ -627,6 +645,10 @@ impl Runner<'_> {
                 fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
             }
             fs::write(&path, b"").map_err(|e| io("cannot write", &path, e))?;
+        }
+        for destination in &empty_trees {
+            let path = execroot.join(destination);
+            fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
         }
         let max_attempts = options.attempts(&spec.info);
         let mut failed_attempts: Vec<Attempt> = Vec::new();
