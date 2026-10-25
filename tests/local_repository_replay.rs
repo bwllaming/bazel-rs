@@ -820,17 +820,13 @@ k = repository_rule(_linker)
         trees
     };
     let before = trees(&f);
-    // `dep` republishes (a new tree; the run executed it, so nothing is
-    // named), `linker` is reused with its link into the old tree.
+    // `dep` republishes (a new tree; its warm probe, run again after the
+    // publication, reuses it: the execution does not taint), `linker` is
+    // reused with its link into the old tree — named at once.
     f.file("MODULE.bazel", &module("two"));
     let changed = f.run_env(&record, &build);
-    let text = stderr(&changed);
-    assert!(changed.status.success(), "{text}");
-    assert_eq!(
-        anchors(&snapshot_lines(&text)),
-        Vec::<String>::new(),
-        "{text}"
-    );
+    let changed_text = stderr(&changed);
+    assert!(changed.status.success(), "{changed_text}");
     let old = trees(&f)
         .into_iter()
         .find(|tree| {
@@ -844,6 +840,12 @@ k = repository_rule(_linker)
             }
         })
         .expect("dep's old tree");
+    let named = anchors(&snapshot_lines(&changed_text));
+    assert_eq!(named.len(), 1, "{changed_text}");
+    assert!(
+        named[0].starts_with("link anchors: 1 store tree(s)") && named[0].ends_with(&old),
+        "{changed_text}"
+    );
     let warm = f.run_env(&record, &build);
     let text = stderr(&warm);
     assert!(warm.status.success(), "{text}");

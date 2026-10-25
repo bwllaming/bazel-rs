@@ -1098,6 +1098,62 @@ enum Probe<'a> {
     Local(&'a mut Option<LocalExecution>),
 }
 
+/// The analysis snapshot's `repository-rule-executed` taint of one non-local
+/// execution, held until its publication is complete: recorded when dropped
+/// (an error after the execution, an execution that did not publish), or
+/// settled by [`Self::reprobe`].
+struct ExecutedTaint {
+    /// `None` once settled without a taint.
+    detail: Option<String>,
+}
+
+impl ExecutedTaint {
+    /// The publication is complete. While the window records a run that
+    /// may be saved (crate::observed_fs::reprobes_executions), the warm
+    /// probe runs again, exactly as the next invocation's full analysis
+    /// would run it ([`try_reuse`]): it reads the specification pointer
+    /// (whose outcome before this publication is forgotten: this process
+    /// replaced the file), revalidates the manifest's recorded inputs
+    /// through the recording facade and claims the verified tree (REPO).
+    /// When it reuses `destination` the execution stands as that reuse —
+    /// a snapshot saved from this run validates the same pointer, inputs
+    /// and tree, so a later hit is valid exactly when that invocation's
+    /// full analysis would reuse this publication — and does not taint.
+    /// What the execution itself read needs no record: it only shaped the
+    /// tree and the recorded inputs, both validated through the probe.
+    /// What it printed is the caller's (crate::repository: a printing
+    /// execution taints, as the next invocation would print nothing). Any
+    /// other outcome (a probe error, another publication, no window, a
+    /// verify shadow, a run already tainted otherwise) taints as before.
+    fn reprobe(
+        mut self,
+        cache: &Path,
+        spec_key: &str,
+        pointer: &Path,
+        destination: &Path,
+        validate: Validate<'_>,
+    ) {
+        use crate::observed_fs::{self, Taint};
+        if !observed_fs::reprobes_executions()
+            || observed_fs::tainted_otherwise(Taint::RepositoryRuleExecuted)
+        {
+            return;
+        }
+        observed_fs::supersede(pointer);
+        if matches!(try_reuse(cache, spec_key, validate), Ok(Some(found)) if found == destination) {
+            self.detail = None;
+        }
+    }
+}
+
+impl Drop for ExecutedTaint {
+    fn drop(&mut self) {
+        if let Some(detail) = self.detail.take() {
+            crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || detail);
+        }
+    }
+}
+
 /// [`materialize_lazy`] or [`materialize_local`] (see [`Probe`]).
 fn materialize_inner<F, P>(
     cache: &Path,
@@ -1163,14 +1219,18 @@ where
         execute(stage.path())
     };
     // A local rule's execution is recorded for replay by the caller instead.
-    if let Probe::Warm(_) = &probe {
-        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
-            format!(
+    // A non-local one taints the analysis snapshot unless the warm probe,
+    // run again after the publication below, reuses exactly what was
+    // published ([`ExecutedTaint::reprobe`]); every early return taints.
+    let mut executed_taint = match &probe {
+        Probe::Warm(_) => Some(ExecutedTaint {
+            detail: Some(format!(
                 "{stage_key} ({:.1} ms)",
                 started.elapsed().as_secs_f64() * 1000.0
-            )
-        });
-    }
+            )),
+        }),
+        Probe::Local(_) => None,
+    };
     let executed = executed?;
     let (files, encoded_snapshot) = stage_content(stage.path())?;
     let mut digest = Sha256::new();
@@ -1290,6 +1350,17 @@ where
     {
         let _m = timing::mark(&timing::PHASES.publish);
         publish_pointer(&specs, &specs.join(spec_key), &identity)?;
+    }
+    // Released first: the re-probe's manifest refresh coordinates on it.
+    drop(lock);
+    if let (Probe::Warm(validate), Some(taint)) = (&probe, executed_taint.take()) {
+        taint.reprobe(
+            cache,
+            spec_key,
+            &specs.join(spec_key),
+            &destination,
+            *validate,
+        );
     }
     timing::PHASES
         .executed

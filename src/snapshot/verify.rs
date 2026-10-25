@@ -150,6 +150,9 @@ pub fn start(hit: Box<Hit>, context: Context) -> Option<Box<Verify>> {
     } else if !observed_fs::open_window() {
         Some("the recording window was already open".to_owned())
     } else {
+        // A repository rule the shadow executes is a difference from the
+        // hit, which executed none: never re-probed away.
+        observed_fs::mark_shadow_window();
         crate::snapshot::replay::install();
         match capture::start(capture::Mode::Shadow) {
             Ok(capture) => {

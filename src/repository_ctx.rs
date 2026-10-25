@@ -1478,11 +1478,16 @@ impl Context {
     }
 
     /// Whether [`Self::output`] collects what a repository rule prints: for
-    /// a replay (which never prints live) and while the record mode's
-    /// replay capture records local executions — otherwise nobody reads it,
-    /// and a chatty rule's output would only cost memory.
+    /// a replay (which never prints live), while the record mode's replay
+    /// capture records local executions, and while the analysis snapshot's
+    /// window records (a non-local rule that printed taints the run,
+    /// crate::repository) — otherwise nobody reads it, and a chatty rule's
+    /// output would only cost memory.
     fn collects_output(&self) -> bool {
-        self.kind == Kind::Repository && (!self.live || self.repositories.records_for_replay())
+        self.kind == Kind::Repository
+            && (!self.live
+                || self.repositories.records_for_replay()
+                || crate::observed_fs::recording())
     }
 
     /// Use `client` for downloads (tests: a private trust root).
@@ -4211,8 +4216,9 @@ pub struct ExecutedRepository {
     /// Everything the execution printed, in order: print(), the
     /// `execute(quiet=False)` echo and the reproducibility DEBUG lines.
     /// [`execute`] wrote it to stderr as it happened (and collects it only
-    /// while the record mode's replay capture records local executions:
-    /// empty otherwise); [`execute_captured`] did not.
+    /// while the record mode's replay capture records local executions or
+    /// the analysis snapshot's window records: empty otherwise);
+    /// [`execute_captured`] did not.
     pub output: Vec<u8>,
     /// The execution read `repository_ctx.os.environ`. With
     /// `inputs.host_facilities` (`execute`, `which`, downloads) these are a

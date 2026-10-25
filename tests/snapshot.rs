@@ -612,12 +612,13 @@ fn fixture() -> Twin {
 const BUILD_ALL: &[&str] = &["build", "//:all_inputs"];
 
 /// A fixture whose snapshot of `args` was just saved (the cold run executes
-/// the generated repository: not saved; the warm one saves).
+/// the generated repository, whose warm probe — run again after the
+/// publication — reuses it: saved at once) and hit once.
 fn warmed(args: &[&str], env: &[(&str, &str)]) -> Twin {
     let twin = fixture();
     let cold = twin.same(args, env);
-    cold.assert_not_saved("repository-rule-executed");
-    twin.same(args, env).assert_saved();
+    cold.assert_saved();
+    twin.same(args, env).assert_hit();
     twin
 }
 
@@ -916,15 +917,15 @@ fn a_file_or_directory_deleted_from_a_repository_tree_misses() {
         } else {
             &[]
         };
-        twin.same(BUILD_ALL, env)
-            .assert_not_saved("repository-rule-executed");
+        // The cold run executes the generated repository and saves.
+        twin.same(BUILD_ALL, env).assert_saved();
         // A racy tree head or directory (published, or its manifest
         // refreshed, less than two seconds before the recording) is
         // verified against its manifest on every hit, which would see the
         // deletion at once: let the hit settle the keys first (it rewrites
         // the snapshot), so the directory keys alone must catch it.
         std::thread::sleep(std::time::Duration::from_millis(2200));
-        twin.same(BUILD_ALL, env).assert_saved();
+        twin.same(BUILD_ALL, env).assert_hit();
         std::thread::sleep(std::time::Duration::from_millis(2200));
         twin.same(BUILD_ALL, env).assert_hit();
         // Deleted (the action's cached output stays valid by its digest:
@@ -949,7 +950,7 @@ fn a_file_or_directory_deleted_from_a_repository_tree_misses() {
         } else {
             miss.assert_miss("INTEGRITY ");
         }
-        twin.same(BUILD_ALL, env).assert_saved();
+        twin.settle(&miss, BUILD_ALL, env);
         twin.same(BUILD_ALL, env).assert_hit();
     }
 }
@@ -968,10 +969,9 @@ fn a_hit_hashes_an_edited_tree_file_by_its_change_time() {
     let twin = fixture();
     twin.write("repos.bzl", NESTED_REPOS);
     twin.write("BUILD.bazel", &build);
-    twin.same(BUILD_ALL, &[])
-        .assert_not_saved("repository-rule-executed");
-    std::thread::sleep(std::time::Duration::from_millis(2200));
     twin.same(BUILD_ALL, &[]).assert_saved();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_hit();
     std::thread::sleep(std::time::Duration::from_millis(2200));
     twin.same(BUILD_ALL, &[]).assert_hit();
     twin.each(|root| {
@@ -1202,9 +1202,8 @@ fn symlink_retargets_and_bazelignore_edits_miss() {
     );
     twin.each(|root| std::os::unix::fs::symlink("in.txt", root.join("ws/pkg/link.txt")).unwrap());
     let args = &["build", "//pkg:l", "//..."];
-    twin.same(args, &[])
-        .assert_not_saved("repository-rule-executed");
     twin.same(args, &[]).assert_saved();
+    twin.same(args, &[]).assert_hit();
     twin.same(args, &[]).assert_hit();
     twin.each(|root| {
         let link = root.join("ws/pkg/link.txt");
@@ -1503,10 +1502,72 @@ r = repository_rule(_gen)
         ),
     );
     let args = &["build", "@gen//:g"];
-    twin.same(args, &[])
-        .assert_not_saved("repository-rule-executed");
     twin.same(args, &[]).assert_saved();
     twin.same(args, &[]).assert_hit();
+    twin.same(args, &[]).assert_hit();
+    twin.same(args, &[]).assert_hit();
+}
+
+/// A non-local repository rule executed by the full analysis (cold, or
+/// again because a file it watches changed — here the workspace's
+/// MODULE.bazel.lock-like `watched.txt`, as aspect_tools_telemetry reads
+/// MODULE.bazel.lock) no longer keeps the run from being saved when its
+/// warm probe, run again after the publication, reuses what it published:
+/// the next run hits instead of analysing once more. One that printed
+/// (here: only when the watched file says so) is not saved — the next
+/// invocation would reuse the publication and print nothing — and the run
+/// after it, reusing the repository, saves.
+#[test]
+fn an_executed_repository_rule_saves_unless_it_printed() {
+    let twin = fixture();
+    twin.write(
+        "watch/repos.bzl",
+        r#"def _watching(ctx):
+    content = ctx.read(Label("//watch:watched.txt"))
+    if "print" in content:
+        print("watched says print")
+    ctx.file("BUILD.bazel", "exports_files(['v.txt'])\n")
+    ctx.file("v.txt", content)
+
+watching_rule = repository_rule(implementation = _watching)
+"#,
+    );
+    twin.write("watch/watched.txt", "first\n");
+    twin.write(
+        "watch/BUILD.bazel",
+        "exports_files(['watched.txt'])\ngenrule(name = 'w', srcs = ['@watching//:v.txt'], outs = ['w.txt'], cmd = 'cp $< $@')\n",
+    );
+    twin.write(
+        "MODULE.bazel",
+        &format!(
+            "{MODULE}\nwr = use_repo_rule('//watch:repos.bzl', 'watching_rule')\nwr(name = 'watching')\n"
+        ),
+    );
+    let args = &["build", "//watch:w"];
+    twin.same(args, &[]).assert_saved();
+    twin.same(args, &[]).assert_hit();
+    twin.write("watch/watched.txt", "second\n");
+    let edited = twin.same(args, &[]);
+    edited.assert_miss("watched.txt").assert_saved();
+    assert_eq!(built_output(&twin, ON, &edited.on), "second\n");
+    twin.same(args, &[]).assert_hit();
+    twin.write("watch/watched.txt", "print\n");
+    let printed = twin.same(args, &[]);
+    printed
+        .assert_miss("watched.txt")
+        .assert_not_saved("printed");
+    assert!(
+        text(&printed.on.stderr).contains("watched says print"),
+        "{}",
+        text(&printed.on.stderr)
+    );
+    let reused = twin.same(args, &[]);
+    reused.assert_miss("specs/").assert_saved();
+    assert!(
+        !text(&reused.on.stderr).contains("watched says print"),
+        "{}",
+        text(&reused.on.stderr)
+    );
     twin.same(args, &[]).assert_hit();
 }
 
@@ -1834,7 +1895,7 @@ fn a_reinherited_repo_env_name_follows_the_client() {
         .assert_success()
         .assert_miss("ENV W5X: value changed");
     assert_eq!(built_output(&twin, ON, &changed.on), "X=two\n");
-    twin.save(args, &two);
+    twin.settle(&changed, args, &two);
     twin.same(args, &two).assert_hit();
     // Without a client value the set value stands (Inherit keeps it).
     let unset = twin.same(args, &[]);
@@ -1937,13 +1998,13 @@ fn a_reused_rule_misses_on_its_environ_variable_or_watched_file() {
     let changed = twin.same(args, &two);
     changed.assert_success().assert_miss("ENV W5_GEN");
     assert_eq!(built_output(&twin, ON, &changed.on), "two|first\n");
-    twin.save(args, &two);
+    twin.settle(&changed, args, &two);
     twin.same(args, &two).assert_hit();
     twin.write("watch/watched.txt", "second\n");
     let edited = twin.same(args, &two);
     edited.assert_success().assert_miss("watched.txt");
     assert_eq!(built_output(&twin, ON, &edited.on), "two|second\n");
-    twin.save(args, &two);
+    twin.settle(&edited, args, &two);
     twin.same(args, &two).assert_hit();
 }
 
@@ -2237,8 +2298,16 @@ fn a_store_input_staged_by_the_test_runner_heals() {
 #[test]
 fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
     let twin = fixture();
-    twin.same(BUILD_ALL, &[])
-        .assert_not_saved("repository-rule-executed");
+    twin.same(BUILD_ALL, &[]).assert_saved();
+    // Each round starts with a fresh save.
+    twin.with_side(ON, || {
+        for file in fs::read_dir(twin.cache().join("snapshots/v1"))
+            .unwrap()
+            .flatten()
+        {
+            fs::remove_file(file.path()).unwrap();
+        }
+    });
     let off = twin.run_side(OFF, BUILD_ALL, &[]);
     for round in 0..3 {
         // A fresh save (its keys racy: the next hits refresh them), then
@@ -2391,10 +2460,9 @@ fn verify_mismatches_execute_the_full_analysis_by_default() {
     let twin = fixture();
     twin.write("repos.bzl", NESTED_REPOS);
     twin.write("BUILD.bazel", &build);
-    twin.same(BUILD_ALL, &[])
-        .assert_not_saved("repository-rule-executed");
-    std::thread::sleep(std::time::Duration::from_millis(2200));
     twin.same(BUILD_ALL, &[]).assert_saved();
+    std::thread::sleep(std::time::Duration::from_millis(2200));
+    twin.same(BUILD_ALL, &[]).assert_hit();
     std::thread::sleep(std::time::Duration::from_millis(2200));
     twin.same(BUILD_ALL, &[]).assert_hit();
     twin.each(|root| {
@@ -2504,14 +2572,8 @@ fn the_event_log_names_each_outcome() {
     let mode = twin.mode.get();
     let expected = [
         ["miss", mode, "absent", "//:all_inputs"],
-        [
-            "not-saved",
-            mode,
-            "repository-rule-executed",
-            "//:all_inputs",
-        ],
-        ["miss", mode, "absent", "//:all_inputs"],
         ["saved", mode, "-", "//:all_inputs"],
+        ["hit", mode, "-", "//:all_inputs"],
         ["miss", mode, "read", "//:all_inputs"],
         ["saved", mode, "-", "//:all_inputs"],
         ["hit", mode, "-", "//:all_inputs"],
@@ -2523,14 +2585,14 @@ fn the_event_log_names_each_outcome() {
         expected.map(|row| row.map(str::to_owned)),
         "{log}"
     );
-    let read = log.lines().nth(4).unwrap();
+    let read = log.lines().nth(3).unwrap();
     assert!(
         read.contains("/run/ws/BUILD.bazel ms=") && read.contains(" detail=READ\\x20"),
         "{read}"
     );
     // L2-W5i: a save names the binary (the first 8 bytes of its identity),
     // so the soak report sees an upgrade.
-    let saved = log.lines().nth(5).unwrap();
+    let saved = log.lines().nth(4).unwrap();
     let binary = field(saved, "detail=")
         .split(',')
         .find_map(|part| part.strip_prefix("binary:"))
@@ -4157,11 +4219,9 @@ fn the_snapshot_is_on_by_default_and_off_turns_everything_off() {
         pair.assert_same(BUILD_ALL);
         pair
     };
-    // The cold run executes the generated repository (not saved).
-    step(None)
-        .assert_miss("no snapshot")
-        .assert_not_saved("repository-rule-executed");
+    // The cold run executes the generated repository (re-probed: saved).
     step(None).assert_miss("no snapshot").assert_saved();
+    step(None).assert_hit().assert_success();
     step(None).assert_hit().assert_success();
     step(Some("")).assert_hit();
     let unknown = step(Some("sometimes"));

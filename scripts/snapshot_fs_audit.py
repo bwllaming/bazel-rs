@@ -28,8 +28,10 @@ snapshot would not validate.
 
 Not audited: calls of a thread between the tainted-section markers
 (/.bazel-rs-snapshot-marker/tainted-{begin,end}: a repository rule or module
-extension executing, which taints the run or — a local repository rule — is
-replayed and compared instead), and every call of a process that execs inside
+extension executing, which taints the run, or — a local repository rule — is
+replayed and compared instead, or — a non-local repository rule whose warm
+probe, run again after the publication, reuses it — stands as that reuse: the
+probe's own accesses, after the end marker, are audited), and every call of a process that execs inside
 the window (processes such executions start; threads are joined to their
 process through the traced clone calls).
 
@@ -119,7 +121,8 @@ FIXTURE = ROOT / 'tests' / 'fixtures' / 'snapshot_audit' / 'workspace'
 MARKER_OPEN = '/.bazel-rs-snapshot-marker/window-open'
 MARKER_CLOSE = '/.bazel-rs-snapshot-marker/window-close'
 # Bracket, on the executing thread, a repository rule or module extension
-# executing (crate::observed_fs::tainted_section): the run is tainted, its
+# executing (crate::observed_fs::tainted_section): the run is tainted (or the
+# execution is re-probed after its publication, crate::repository_store), its
 # accesses need no record. Processes started inside the window (they execve)
 # belong to such executions too.
 MARKER_TAINTED_BEGIN = '/.bazel-rs-snapshot-marker/tainted-begin'

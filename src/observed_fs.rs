@@ -79,10 +79,13 @@ pub const RACY_MARGIN_NS: i64 = 2_000_000_000;
 pub const MARKER_OPEN: &str = "/.bazel-rs-snapshot-marker/window-open";
 pub const MARKER_CLOSE: &str = "/.bazel-rs-snapshot-marker/window-close";
 /// Marker paths bracketing, on the executing thread, work whose filesystem
-/// accesses need no record because it taints the run anyway or is replayed
+/// accesses need no record because it taints the run anyway, is replayed
 /// and compared instead (a repository rule or module extension executing,
-/// [`tainted_section`]; local repository rules, crate::snapshot::replay):
-/// the syscall audit skips that thread's calls between them.
+/// [`tainted_section`]; local repository rules, crate::snapshot::replay),
+/// or — a non-local repository rule whose publication the warm probe
+/// re-reads after it (crate::repository_store, [`reprobes_executions`]) —
+/// stands as the reuse of that publication the next run would make: the
+/// syscall audit skips that thread's calls between them.
 pub const MARKER_TAINTED_BEGIN: &str = "/.bazel-rs-snapshot-marker/tainted-begin";
 pub const MARKER_TAINTED_END: &str = "/.bazel-rs-snapshot-marker/tainted-end";
 
@@ -93,6 +96,8 @@ const TAINT_DETAILS: usize = 1000;
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORDER: OnceLock<Recorder> = OnceLock::new();
+/// The window is a verify shadow ([`mark_shadow_window`]).
+static SHADOW: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 thread_local! {
@@ -114,6 +119,55 @@ fn active() -> Option<&'static Recorder> {
         RECORDER.get()
     } else {
         None
+    }
+}
+
+/// The window is the shadow of a snapshot hit (crate::snapshot::verify): the
+/// full analysis is compared with the hit, so a repository rule it executes
+/// is a difference in itself (the hit executed none) and always taints —
+/// never re-probed ([`reprobes_executions`]).
+pub fn mark_shadow_window() {
+    SHADOW.store(true, Ordering::SeqCst);
+}
+
+/// Whether a non-local repository rule executed now may be re-probed instead
+/// of tainting the run (crate::repository_store::materialize_lazy): the
+/// window is open and may be saved (not a verify shadow). The warm probe
+/// then reads the publication back exactly as the next invocation's would —
+/// the specification pointer, the manifest's recorded inputs, the REPO tree
+/// — so a snapshot saved from this run validates what that invocation's
+/// full analysis would reuse.
+pub fn reprobes_executions() -> bool {
+    active().is_some() && !SHADOW.load(Ordering::Relaxed)
+}
+
+/// Whether the window's recorder already holds a taint that keeps the run
+/// from being saved, other than `except` (events still in a frame of some
+/// thread are not seen: an optimisation only — it saves a re-probe that
+/// could not make the run saveable).
+pub fn tainted_otherwise(except: Taint) -> bool {
+    active().is_some_and(|recorder| {
+        lock(&recorder.taints)
+            .keys()
+            .any(|taint| *taint != except && !taint.plan_dependent())
+    })
+}
+
+/// Forget what the window recorded for `path` (every operation): a store
+/// file this process itself just replaced — a repository's specification
+/// pointer, re-read by the warm probe after a publication
+/// (crate::repository_store) — whose earlier outcome described the state
+/// before the replacement. Ordered like every other event: inside a frame
+/// it applies at the frame's commit, after the frame's earlier events (an
+/// earlier outcome kept in a captured child set that is replayed later
+/// still conflicts with the new one: Unstable, never saved).
+pub fn supersede(path: &Path) {
+    if let Some(recorder) = active() {
+        if recorder.redirected() {
+            push_event(Event::Supersede(path.to_path_buf()));
+        } else {
+            recorder.store_supersede(path);
+        }
     }
 }
 
@@ -389,8 +443,11 @@ pub enum Taint {
     /// downloads, Git fetches.
     Network,
     /// A repository rule that is not `local = True` was executed (a cold
-    /// fetch or a changed specification). Local rules always execute; they
-    /// are replayed and compared instead (crate::snapshot::replay).
+    /// fetch or a changed specification) and the warm probe run again after
+    /// its publication did not reuse it, or it printed
+    /// (crate::repository_store's `ExecutedTaint`, [`reprobes_executions`]).
+    /// Local rules always execute; they are replayed and compared instead
+    /// (crate::snapshot::replay).
     RepositoryRuleExecuted,
     /// A local repository rule printed (print(), `execute(quiet=False)`,
     /// the reproducibility DEBUG lines): v1 of the replay protocol does not
@@ -661,6 +718,11 @@ impl Recorder {
         if let Some(conflict) = conflict {
             self.store_taint(Taint::Unstable, conflict);
         }
+    }
+
+    /// [`supersede`] in the recorder itself.
+    fn store_supersede(&self, path: &Path) {
+        lock(&self.shards[shard_of(path)]).remove(path);
     }
 
     fn taint(&self, kind: Taint, detail: String) {
@@ -1213,6 +1275,7 @@ impl Recorder {
             Event::Taint(kind, detail) => self.store_taint(kind, detail),
             Event::Env(name, observation) => self.store_env(&name, observation),
             Event::Claim(claim) => self.apply_claim(claim),
+            Event::Supersede(path) => self.store_supersede(&path),
         }
     }
 
@@ -1343,6 +1406,8 @@ enum Event {
     Taint(Taint, String),
     Env(OsString, EnvObservation),
     Claim(ClaimEvent),
+    /// [`supersede`].
+    Supersede(PathBuf),
 }
 
 /// A repository tree claim observed inside a frame ([`Recorder::claim_tree`]).
@@ -2123,6 +2188,41 @@ mod tests {
         let unit = unit_scope();
         assert!(exists(&path));
         commit(unit.finish());
+        assert_eq!(window.recorder.taints()[&Taint::Unstable].count, 1);
+    }
+
+    /// A superseded path's earlier outcome is forgotten, in order: the
+    /// replacement's outcome conflicts with nothing — directly and inside a
+    /// frame (where the supersede applies at the commit, after the frame's
+    /// earlier events) — while an outcome observed before the supersede but
+    /// committed after it still conflicts (Unstable).
+    #[test]
+    fn a_superseded_outcome_is_forgotten_in_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("pointer");
+        let window = record_this_thread();
+        fs::write(&path, b"old").unwrap();
+        note_read(&path, b"old");
+        fs::write(&path, b"new!").unwrap();
+        supersede(&path);
+        note_read(&path, b"new!");
+        assert!(window.recorder.taints().is_empty());
+        let unit = unit_scope();
+        fs::write(&path, b"newer").unwrap();
+        supersede(&path);
+        note_read(&path, b"newer");
+        commit(unit.finish());
+        assert!(window.recorder.taints().is_empty());
+        let recorded = window.recorder.snapshot();
+        assert_eq!(recorded.observations.len(), 1, "{recorded:?}");
+        // An outcome from a frame that saw the file before the supersede.
+        let stale = unit_scope();
+        note_read(&path, b"newer");
+        let stale = stale.finish();
+        fs::write(&path, b"newest").unwrap();
+        supersede(&path);
+        note_read(&path, b"newest");
+        commit(stale);
         assert_eq!(window.recorder.taints()[&Taint::Unstable].count, 1);
     }
 

@@ -204,6 +204,20 @@ impl LocalObservation {
     }
 }
 
+/// A non-local repository rule printed while it executed (print(), the
+/// `execute(quiet=False)` echo, the reproducibility DEBUG lines): the
+/// analysis snapshot's window captured that output, which the next
+/// invocation — reusing the publication — would not print, so the run is
+/// not saved even when crate::repository_store's re-probe settles the
+/// execution itself.
+fn taint_printed_output(canonical: &str, executed: &crate::repository_ctx::ExecutedRepository) {
+    if !executed.output.is_empty() {
+        crate::observed_fs::taint(crate::observed_fs::Taint::RepositoryRuleExecuted, || {
+            format!("{canonical} printed {} bytes", executed.output.len())
+        });
+    }
+}
+
 /// The error of everything a pinned repository set does not answer.
 const NOT_PINNED: &str = "not pinned for the replay of local repositories";
 
@@ -2200,6 +2214,8 @@ impl RepositorySet {
                     if local {
                         *observed_by.borrow_mut() =
                             Some(LocalObservation::of(&executed, started.elapsed()));
+                    } else {
+                        taint_printed_output(canonical, &executed);
                     }
                     let inputs =
                         crate::host_os::repository_inputs(this.host()?.as_ref(), &executed.inputs)?;
@@ -2700,6 +2716,8 @@ impl RepositorySet {
                         if local {
                             *observed_by.borrow_mut() =
                                 Some(LocalObservation::of(&executed, started.elapsed()));
+                        } else {
+                            taint_printed_output(&repository.canonical_name, &executed);
                         }
                         let inputs = crate::host_os::repository_inputs(
                             this.host()?.as_ref(),

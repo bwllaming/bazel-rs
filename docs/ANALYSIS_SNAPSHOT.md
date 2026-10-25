@@ -610,7 +610,8 @@ missing, per cache:
    `readdir`, `stat`, `env`, …; the report's "likely your edits" patterns),
    `absent` after an `evicted` (the store keeps 16 snapshots / 1 GiB),
    `not-saved` for `lockfile-write-pending` (the run after a lockfile
-   change), `repository-rule-executed` (after a fetch), `network` or
+   change), `repository-rule-executed` (after a fetch that printed or
+   whose re-probe failed), `network` or
    another taint, `failed` (failed commands are never saved), keys never
    saved for those reasons, and `heal-kept` (a failed hit whose trees all
    verified: the failure was the build's own).
@@ -702,8 +703,9 @@ window restores stderr before its message prints; the memory watchdog
 does the same before it exits.
 
 The run is saved only when nothing taints it (crate::observed_fs::Taint:
-network, an executed non-local repository rule, a printing local
-repository rule — v1 of the printing protocol —, an evaluated extension, a
+network, an executed non-local repository rule — unless re-probed, see
+below —, a printing local or non-local repository rule — v1 of the
+printing protocol —, an evaluated extension, a
 (re)published tree, a symlink into a live repository root, build-info
 callbacks or `map_each` of planned actions, Unstable, and the new
 `workspace-status-stderr`: a status command that wrote to stderr would
@@ -713,7 +715,31 @@ test-suite expansion error (integration-21: such a `build`, `test` or `run`
 fails after its build with `command succeeded, but there were ... errors`,
 which a hit — it skips the phase and replays what the phase printed —
 could not reproduce; the phase taints the run with `errors`), the capture
-is complete and below 16 MiB, and the snapshot stays below 512 MiB. The plan is encoded on the main
+is complete and below 16 MiB, and the snapshot stays below 512 MiB.
+
+**An executed non-local repository rule is re-probed** (snapshot-real-hits):
+once its publication is complete (tree, manifest, specification pointer),
+crate::repository_store runs the warm probe again — exactly the probe the
+next invocation's full analysis runs: the pointer read (its outcome before
+the publication is forgotten, crate::observed_fs::supersede: this process
+replaced the file), the manifest's recorded inputs revalidated through the
+recording facade, the verified tree claimed (REPO). When that probe reuses
+the tree just published, the execution stands as that reuse and does not
+taint: a snapshot saved from the run validates the same pointer, inputs
+and tree, so a later hit is valid exactly when the next full analysis
+would reuse the publication. What the execution itself read only shaped
+the tree and its recorded inputs, both validated through the probe; what
+it printed taints (`repository-rule-executed`, "printed N bytes": the next
+invocation would reuse the publication and print nothing). A failed probe,
+a verify shadow (crate::observed_fs::mark_shadow_window: an execution is a
+difference from the hit, which executed none), or a run already tainted
+otherwise keeps the taint. On ~/code this is the run after every
+MODULE.bazel.lock change: `aspect_tools_telemetry_report` reads
+MODULE.bazel.lock (a watched workspace file, exactly as in Bazel 9.3), so
+the run after a lockfile write re-executes it — it now saves, and the next
+run hits (before: one more full analysis, then the save).
+
+The plan is encoded on the main
 thread before execution; the recording is taken, selected by the policy
 and encoded on the writer thread, which writes a temporary file while the
 actions run. Only when the command (for `test` and `run`: its build part)

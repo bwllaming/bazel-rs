@@ -527,13 +527,15 @@ fn record_mode_records_reads_the_digest_memo_answered() {
             .to_owned()
     };
     // Cold: the rule runs; its just-written inputs are racy (never memoized
-    // or recorded in the table).
-    analyze(&[]);
+    // or recorded in the table). Without the analysis snapshot, which would
+    // save this run (the executed rule re-probed) and hit the next.
+    let off = [("BAZEL_RS_SNAPSHOT", "off")];
+    analyze(&off);
     settle();
     // Warm: the recorded inputs are revalidated, read once (the link's
     // canonical path and stat are the file's: an in-process hit) and
     // recorded in the table.
-    let warm = analyze(&[]);
+    let warm = analyze(&off);
     assert!(
         recorded(&warm).contains("hashed=1 ") && recorded(&warm).contains("memo_hits=1 "),
         "{}",
