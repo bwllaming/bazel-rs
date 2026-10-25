@@ -12,7 +12,9 @@
 //! The daemons write their PIDs to files under the test's own directory (in
 //! /tmp, writable inside the sandbox) before the spawn's main process
 //! continues, so every check first proves the daemon existed. The commands
-//! run with the analysis snapshot off: their subject is execution.
+//! run with the analysis snapshot's default (on): none repeats an earlier
+//! command on its cache, so each is a miss that runs the full analysis, and
+//! execution — the subject — is the same with the snapshot on or off.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
@@ -105,7 +107,6 @@ impl Workspace {
             .args(["--kill-after=5s", "180s", env!("CARGO_BIN_EXE_bazel-rs")])
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
-            .env("BAZEL_RS_SNAPSHOT", "off")
             .current_dir(self.path())
             .output()
             .unwrap();
@@ -276,7 +277,6 @@ fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
             "test",
             "//pkg:slow_test",
         ])
-        .env("BAZEL_RS_SNAPSHOT", "off")
         .current_dir(ws.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
