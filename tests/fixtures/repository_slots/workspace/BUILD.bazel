@@ -1,0 +1,12 @@
+genrule(
+    name = "read_links",
+    srcs = [
+        "@linker//:through_path",
+        "@linker//:relative",
+        "@linker//:absolute",
+        "@linker//:inside_relative",
+        "@linker//:inside_absolute",
+    ],
+    outs = ["read_links.txt"],
+    cmd = "cat $(SRCS) > $@",
+)

@@ -96,6 +96,17 @@ impl StoreTrees {
         path.starts_with(&self.root)
     }
 
+    /// Whether `path` lies in a repository's directory, its slot
+    /// `<store>/external/<name>` (lexically; crate::repository_slots):
+    /// what a slot holds depends on the process that bound it last (or is
+    /// a self-referencing repository's mutable directory), so no link is
+    /// followed through one — the store pins links into a sibling's
+    /// directory to its tree at publication.
+    pub fn in_slots(&self, path: &Path) -> bool {
+        path.strip_prefix(self.root.join(crate::repository_slots::SLOTS))
+            .is_ok_and(|rest| rest.components().next().is_some())
+    }
+
     /// The published tree containing `path` when it anchors a link instead
     /// of `owner`, the longest materialized root containing `path`: a tree
     /// deeper than `owner` that is one of `materialized` (its owner verified
@@ -412,6 +423,13 @@ fn resolve_across_inner(
                   resolved: &mut Vec<OsString>,
                   pending: &mut VecDeque<OsString>|
      -> bool {
+        // Never through a repository's directory (`StoreTrees::in_slots`).
+        if store
+            .as_ref()
+            .is_some_and(|store| store.in_slots(&absolute))
+        {
+            return false;
+        }
         let owned = owner(&absolute);
         let host = owned.is_none();
         let Some(next) = owned.or_else(|| {
@@ -482,6 +500,13 @@ fn resolve_across_inner(
             Err(error) => return Err(format!("cannot inspect source path {shown}: {error}")),
         };
         if metadata.file_type().is_symlink() {
+            // A host read continuing physically reaches a slot's link.
+            if store.as_ref().is_some_and(|store| store.in_slots(&path)) {
+                return Err(format!(
+                    "source symlink path {shown} resolves through the repository directory {} (native source resolution never follows links through a repository directory)",
+                    path.display()
+                ));
+            }
             let state = (path.clone(), pending.clone());
             if let Some(start) = followed.iter().position(|seen| *seen == state) {
                 return Err(cycle_message(
@@ -1083,6 +1108,17 @@ mod tests {
         )
         .unwrap();
         symlink(trash.join("defs.bzl"), base.join("gen/trash.bzl")).unwrap();
+        // The repository's directory links the published tree: a link
+        // through it is refused (unpinned; the store pins such links).
+        assert_eq!(
+            fs::read_link(store.join("external/dep")).unwrap(),
+            Path::new("../direct/trees").join(tree.file_name().unwrap())
+        );
+        symlink(
+            store.join("external/dep/defs.bzl"),
+            base.join("gen/slot.bzl"),
+        )
+        .unwrap();
         let gen_root = base.join("gen");
         let policy = |host_reads: bool| LinkPolicy {
             // The workspace contains the store (the default cache layout).
@@ -1105,7 +1141,7 @@ mod tests {
                 policy.anchor(&gen_root, &tree.join("sub/x")),
                 Some(tree.clone())
             );
-            for refused in ["stage.bzl", "trash.bzl"] {
+            for refused in ["stage.bzl", "trash.bzl", "slot.bzl"] {
                 assert!(
                     resolve_with_policy(&gen_root, Path::new(refused), &policy).is_err(),
                     "{refused}"

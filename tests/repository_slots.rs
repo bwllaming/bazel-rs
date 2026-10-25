@@ -533,3 +533,32 @@ fn a_re_execution_of_a_self_referencing_repository_waits_for_its_writers() {
         assert!(!module.join(format!("{name}-a1")).exists());
     }
 }
+
+/// Links a rule makes to a sibling repository's directory
+/// (`../<sibling>/file`, relative or absolute, or through rctx.symlink) read
+/// the sibling's file like genuine's; natively the published tree pins them
+/// to the sibling's tree (an absolute path: the tree lives elsewhere than
+/// the slot), never through the sibling's slot, whose link may change.
+/// Links within the repository stay relative.
+#[test]
+fn links_to_a_sibling_repository_directory_are_pinned_to_its_tree() {
+    let f = Fixture::new();
+    let (read, _) = f.build("//:read_links");
+    assert_eq!(read, genuine("sibling_links"));
+    let sibling = linked_tree(&f.store(), "+sibling+sibling");
+    let linker = linked_tree(&f.store(), "+linker+linker");
+    for name in ["through_path", "relative", "absolute"] {
+        assert_eq!(
+            fs::read_link(linker.join(name)).unwrap(),
+            sibling.join("file"),
+            "{name}"
+        );
+    }
+    for name in ["inside_relative", "inside_absolute"] {
+        assert_eq!(
+            fs::read_link(linker.join(name)).unwrap(),
+            Path::new("inner"),
+            "{name}"
+        );
+    }
+}

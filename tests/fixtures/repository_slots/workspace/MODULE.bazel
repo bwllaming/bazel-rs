@@ -7,3 +7,11 @@ probe(name = "probed")
 cgo_like = use_repo_rule("//:cgo_like.bzl", "cgo_like")
 
 cgo_like(name = "cgo")
+
+sibling = use_repo_rule("//:links.bzl", "sibling")
+
+sibling(name = "sibling")
+
+linker = use_repo_rule("//:links.bzl", "linker")
+
+linker(name = "linker")

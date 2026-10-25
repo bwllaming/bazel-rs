@@ -4172,10 +4172,17 @@ fn path_methods(builder: &mut MethodsBuilder) {
 /// and tool-created links into the repository directory ABSOLUTE in
 /// <output_base>/external/<repo> (captured). Its replanting
 /// (RepositoryUtils.java:88-...) applies only when a repository is moved into
-/// the repository contents cache. The native stage is renamed to a
-/// content-addressed directory whose name depends on these very links, so an
-/// absolute link cannot name its final location; links into the stage are
-/// therefore rewritten relative after the callback (same resolved contents).
+/// the repository contents cache. The native repository directory (its slot,
+/// crate::repository_slots) is published as a content-addressed directory
+/// whose name depends on these very links, so an absolute link cannot name
+/// its final location; links into the slot are therefore rewritten relative
+/// after the callback (same resolved contents). A link resolving OUTSIDE the
+/// slot keeps what it resolved to from the slot — where genuine's stays —
+/// so a relative one becomes absolute, and one into a sibling repository's
+/// directory that links its published tree (`<store>/external/<name>/rest`,
+/// genuine's `../<name>/rest`) is pinned to that tree: published trees never
+/// depend on what a slot links at the moment (crate::source_links refuses
+/// links through a slot).
 /// Returns whether a link leads into the workspace `mentions` names
 /// (crate::worktree::WorkspaceMentions: such a tree depends on where the
 /// workspace is; a link into the shared cache does not).
@@ -4183,16 +4190,52 @@ fn replant_symlinks(
     stage: &Path,
     mentions: Option<&crate::worktree::WorkspaceMentions>,
 ) -> anyhow::Result<bool> {
+    /// `path` without `.`/`..` components, lexically (`..` above the root
+    /// stays at the root).
+    fn lexical(path: &Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => out.push(other),
+            }
+        }
+        out
+    }
+    /// `absolute` pinned: below a sibling slot that links a published
+    /// tree, the same path below that tree.
+    fn pinned(slots: Option<&Path>, absolute: PathBuf) -> PathBuf {
+        let Some(slots) = slots else {
+            return absolute;
+        };
+        let Ok(rest) = absolute.strip_prefix(slots) else {
+            return absolute;
+        };
+        let mut components = rest.components();
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return absolute;
+        };
+        match fs::read_link(slots.join(name)) {
+            Ok(target)
+                if target.starts_with("../direct/trees") && target.components().count() == 4 =>
+            {
+                lexical(&slots.join(target)).join(components.as_path())
+            }
+            _ => absolute,
+        }
+    }
     fn visit(
         stage: &Path,
+        slots: Option<&Path>,
         mentions: Option<&crate::worktree::WorkspaceMentions>,
         directory: &Path,
-        depth: usize,
         count: &mut usize,
         into_workspace: &mut bool,
     ) -> anyhow::Result<()> {
         // No depth cap: total path length is bounded by the store profile.
-        let _ = depth;
         for entry in fs::read_dir(directory)? {
             let entry = entry?;
             *count += 1;
@@ -4203,38 +4246,56 @@ fn replant_symlinks(
             let path = entry.path();
             let kind = entry.file_type()?;
             if kind.is_dir() {
-                visit(stage, mentions, &path, depth + 1, count, into_workspace)?;
+                visit(stage, slots, mentions, &path, count, into_workspace)?;
             } else if kind.is_symlink() {
                 let target = fs::read_link(&path)?;
+                let parent = path.parent().unwrap_or(stage);
                 if !*into_workspace
                     && let Some(mentions) = mentions
-                    && let Some(parent) = path.parent()
                     && mentions.contains(&parent.join(&target))
                 {
                     *into_workspace = true;
                 }
-                if let Ok(inside) = target.strip_prefix(stage) {
-                    let parent_depth = path
-                        .parent()
-                        .and_then(|parent| parent.strip_prefix(stage).ok())
-                        .map_or(0, |relative| relative.components().count());
-                    let mut relative = PathBuf::new();
-                    for _ in 0..parent_depth {
-                        relative.push("..");
-                    }
-                    relative.push(inside);
-                    if relative.as_os_str().is_empty() {
-                        relative.push(".");
-                    }
+                let resolved = lexical(&parent.join(&target));
+                let replanted = if let Ok(inside) = resolved.strip_prefix(stage) {
+                    // Inside the slot: relative (an absolute link only).
+                    target.is_absolute().then(|| {
+                        let parent_depth = parent
+                            .strip_prefix(stage)
+                            .map_or(0, |relative| relative.components().count());
+                        let mut relative = PathBuf::new();
+                        for _ in 0..parent_depth {
+                            relative.push("..");
+                        }
+                        relative.push(inside);
+                        if relative.as_os_str().is_empty() {
+                            relative.push(".");
+                        }
+                        relative
+                    })
+                } else if target.is_absolute() {
+                    // Outside, absolute: kept, unless pinned below a
+                    // sibling's tree.
+                    let pinned = pinned(slots, resolved.clone());
+                    (pinned != resolved).then_some(pinned)
+                } else {
+                    // Outside, relative: what it resolves to from the slot,
+                    // absolute (pinned below a sibling's tree).
+                    Some(pinned(slots, resolved))
+                };
+                if let Some(replanted) = replanted {
                     fs::remove_file(&path)?;
-                    std::os::unix::fs::symlink(relative, &path)?;
+                    std::os::unix::fs::symlink(replanted, &path)?;
                 }
             }
         }
         Ok(())
     }
+    let slots = stage
+        .parent()
+        .filter(|parent| parent.file_name() == Some(std::ffi::OsStr::new("external")));
     let mut into_workspace = false;
-    visit(stage, mentions, stage, 0, &mut 0, &mut into_workspace)?;
+    visit(stage, slots, mentions, stage, &mut 0, &mut into_workspace)?;
     Ok(into_workspace)
 }
 

@@ -16,6 +16,11 @@
       "target": "@cgo//:link_flags",
       "exit": 0,
       "output": "-Lexternal/+cgo_like+cgo/ -lfoo\n"
+    },
+    "sibling_links": {
+      "target": "//:read_links",
+      "exit": 0,
+      "output": "sibling\nsibling\nsibling\ninner\ninner\n"
     }
   }
 }

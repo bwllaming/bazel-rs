@@ -1640,6 +1640,12 @@ impl RepositorySet {
     /// never an `@@//<cache>/...` key, which the lockfile check treats as
     /// outdated (`LockInputProbe`).
     pub(crate) fn friendly_repository(&self, path: &Path) -> Option<(String, PathBuf)> {
+        // A path in a repository's directory (its slot, genuine's
+        // `<output_base>/external/<name>/rel`, toRepoCacheFriendlyPath
+        // :1656-1704) is `@@<name>//rel`, whatever the slot links now.
+        if let Some(found) = self.in_repository_directory(path) {
+            return Some(found);
+        }
         // The sequential engine's roots (W6 review F2): a root a phase-1
         // prefetch worker happened to probe first must not change a key.
         let roots = self.sequential_roots();
@@ -1661,6 +1667,52 @@ impl RepositorySet {
             )
         };
         found.filter(|(name, _)| !(name.is_empty() && self.in_repository_store(path)))
+    }
+
+    /// The repository whose directory (`<store>/external/<name>`,
+    /// crate::repository_slots) contains `path`, and `path` relative to it —
+    /// spelled through the store path, its canonical form or, for a
+    /// workspace-relative store, the workspace root as given (like
+    /// [`Self::in_repository_store`]). Lexical: the path itself is not
+    /// resolved. A `#long-` directory names no repository (its name is a
+    /// digest).
+    fn in_repository_directory(&self, path: &Path) -> Option<(String, PathBuf)> {
+        let store = self.source_cache_path().ok()?;
+        let given = self
+            .state
+            .source_cache
+            .is_relative()
+            .then(|| self.state.root.join(&self.state.source_cache));
+        let canonical = {
+            let mut memo = self
+                .state
+                .link_canonical
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match memo.get(store) {
+                Some(canonical) => Some(canonical.clone()),
+                None => crate::observed_fs::canonicalize(store)
+                    .ok()
+                    .inspect(|canonical| {
+                        memo.insert(store.to_path_buf(), canonical.clone());
+                    }),
+            }
+        };
+        let rest = [Some(store.to_path_buf()), canonical, given]
+            .into_iter()
+            .flatten()
+            .find_map(|store| {
+                path.strip_prefix(store.join(crate::repository_slots::SLOTS))
+                    .ok()
+                    .map(Path::to_path_buf)
+            })?;
+        let mut components = rest.components();
+        let std::path::Component::Normal(name) = components.next()? else {
+            return None;
+        };
+        let name = name.to_str()?;
+        (!name.starts_with('#') && !name.starts_with('.'))
+            .then(|| (name.to_owned(), components.as_path().to_path_buf()))
     }
 
     /// Whether `path` lies in the native repository store
@@ -4736,6 +4788,26 @@ mod tests {
                 store.join("direct/trees"),
             ] {
                 assert!(repos.in_repository_store(&spelled), "{spelled:?}");
+                assert_eq!(repos.friendly_repository(&spelled), None, "{spelled:?}");
+            }
+            // A repository's directory (its slot) names that repository,
+            // genuine's `<output_base>/external/<name>/rel`; a digest-named
+            // or scratch entry there names none.
+            for spelled in [
+                root.join("bazel-rs-out/repositories/external/+r+sib/pkg/f.txt"),
+                store.join("external/+r+sib/pkg/f.txt"),
+            ] {
+                assert_eq!(
+                    repos.friendly_repository(&spelled),
+                    Some(("+r+sib".to_owned(), PathBuf::from("pkg/f.txt"))),
+                    "{spelled:?}"
+                );
+            }
+            for spelled in [
+                store.join("external/#long-0123/f"),
+                store.join("external/.bind-1-2"),
+                store.join("external"),
+            ] {
                 assert_eq!(repos.friendly_repository(&spelled), None, "{spelled:?}");
             }
             for (spelled, relative) in [

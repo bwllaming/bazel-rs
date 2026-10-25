@@ -1507,6 +1507,10 @@ mod tests {
             "repositories/trees/.stage-x/file",
             "repositories/direct/trees/.trash-x/tree/file",
             "repositories/direct/stages/slug/file",
+            // A repository's directory (its slot, crate::repository_slots):
+            // a rule's working area, a link to its tree, or mutable.
+            "repositories/external/+r+n/file",
+            "repositories/external/trees/x/file",
             "repositories/modextwd/trees/x/file",
             "repositories/downloads/trees/x/file",
             "repositories/trees/abc.json",
@@ -1630,6 +1634,7 @@ mod tests {
             root.join("repositories/modextwd/trees/x/file"),
             root.join("repositories/downloads/trees/x/file"),
             root.join("repositories/direct/stages/slug/file"),
+            root.join("repositories/external/+r+n/file"),
             root.join("repositories/trees/abc/BUILD.bazel"),
             root.join("repositories/git/trees/abc/file"),
             root.join("work/k1-1-0/execroot/out"),

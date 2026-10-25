@@ -9,7 +9,9 @@ rctx.path(".") and the whole path; `cgo_like` derives `${SRCDIR}` exactly as
 gazelle's go_repository mode does (language/go/generate.go:130-144: `external/<name>`
 when the parent directory is `external`, else `../<name>`) and a genrule checks
 `test -f <srcdir>/libfoo.a` from the execution root, as the duckdb Go bindings'
-`-L${SRCDIR}/` link flag needs.
+`-L${SRCDIR}/` link flag needs; `linker` links a file of the sibling repository's
+directory (`../+sibling+sibling/file`, relative, absolute and through rctx.symlink)
+and its own (relative, absolute), and `//:read_links` reads them all.
 """
 import hashlib
 import json
@@ -54,6 +56,7 @@ for name, target, output in [
     ("repopath", "@probed//:show", "bazel-bin/external/+probe+probed/show.txt"),
     ("repopath_full", "@probed//:full", "bazel-bin/external/+probe+probed/full.txt"),
     ("cgo_srcdir", "@cgo//:link_flags", "bazel-bin/external/+cgo_like+cgo/link_flags.txt"),
+    ("sibling_links", "//:read_links", "bazel-bin/read_links.txt"),
 ]:
     p = bazel("build", target)
     path = os.path.join(WS, output)
