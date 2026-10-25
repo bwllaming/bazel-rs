@@ -107,10 +107,21 @@ location):
 `ctx` of an aspect application (`StarlarkRuleContext` with an
 AspectDescriptor):
 
-- `ctx.attr`, `ctx.file`, `ctx.files`: the aspect's OWN attributes — its
+- `ctx.attr`, `ctx.file`, `ctx.files`, `ctx.executable`: the aspect's OWN
+  attributes (StarlarkRuleContext.java:270-285 over the main aspect's
+  attributes, StarlarkAttributesCollection.Builder.addAttribute) — its
   implicit label attributes (resolved as dependencies from the aspect's
-  `.bzl` package, visibility-checked from there) and its parameter values
-  (`--aspects_parameters` or defaults);
+  `.bzl` package, visibility-checked from there, each in its attribute's
+  configuration) and its parameter values (`--aspects_parameters` or
+  defaults). `ctx.attr` has no `name`; a label list is a list of Targets (an
+  alias as its actual); every dependency attribute has a `ctx.files` entry
+  (each File once, PrerequisiteArtifacts.nestedSet), an `allow_single_file`
+  one a `ctx.file` entry, an executable label one a `ctx.executable` entry
+  (an exec- or target-configured tool, a source file), and a spawn running
+  that File stages its FilesToRunProvider's runfiles; string dicts and int
+  lists are plain values; label-keyed dictionary attributes fail explicitly
+  (paired capture tests/fixtures/aspect_ctx_attributes, 2/2 MATCH; tests/
+  aspects.rs `aspect_context_lists_its_own_attributes`);
 - `ctx.rule`: the base target's attributes — `ctx.rule.attr.<name>` values
   are the aspect-applied `Target`s for attributes the aspect (or the path)
   propagates along, plain configured targets otherwise; `ctx.rule.kind` is
@@ -251,16 +262,7 @@ identity unchanged, and depset snapshots taken from either agree.
   (identical providers), so cross-consumer `Target` equality differs.
 - `--aspect_filters` does not exist in Bazel 9.3 (probed in the reference
   tree); nothing to implement.
-- **`ctx.executable` of an aspect is always empty (parity gap, not fixed).**
-  The aspect context's `executable` is an empty struct
-  (`analysis_ctx::aspect_properties`, whose comment assumes an aspect's own
-  attributes are never executable; the backing struct analysis.rs builds has
-  no `executable` entry), so `ctx.executable._tool` fails with
-  `'struct' value has no field or method '_tool'`. Bazel builds an aspect's
-  `attributesCollection` from the main aspect's attributes
-  (`StarlarkRuleContext.java:270-285`), and `getExecutable` (:692-697) lists its
-  executable label attributes. Aspects that run their tools reach them
-  through `ctx.attr._tool[DefaultInfo].files_to_run` (or
-  `ctx.rule.attr.<tool>`), which work; the tests (tests/runfiles_trees.rs
-  `aspect_actions_stage_their_tools_runfiles`,
-  `attribute_aspects_share_the_tool_group_of_rule_actions`) use those forms.
+- `ctx.rule.attr` holds the base rule's attributes only: Bazel also merges
+  the attributes of the base aspects of the path there (the first of a name
+  wins, StarlarkRuleContext.java:302-316), an aspect-on-aspect detail the
+  native context does not model.

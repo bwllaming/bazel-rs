@@ -1,0 +1,124 @@
+{
+ "schema": "parity-aspects-reference-receipt/v1",
+ "fixture": "aspect_ctx_attributes",
+ "purpose": "The aspect context's own attribute structs (StarlarkRuleContext.java:270-285 over the main aspect's attributes; StarlarkAttributesCollection.Builder.addAttribute :382-450): ctx.attr holds only the aspect's attributes (no name), label lists are lists of Targets (an alias as its actual), ctx.files has an entry for every dependency attribute (each File once), ctx.file for allow_single_file ones, ctx.executable for executable label ones (an exec-configured tool, a target-configured one, a source file); a spawn running ctx.executable._tool stages that tool's runfiles; non-dependency implicit attributes (string_dict, int_list) and --aspects_parameters values are plain values.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of tests/fixtures/aspect_ctx_attributes/workspace per case"
+ },
+ "native": {
+  "binary": "bazel-rs",
+  "sha256": "7e7f55d0307749ac8d5747b07899863b096b9d9e70a87228be859f1f22d87fde",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pasp-capture.py, pasp-receipt.py (not committed)",
+  "sha256": {
+   "pasp-capture.py": "5e06f896b31e956dfdb8ae5166600190cdf1f1472213d04ed91848bd6e998d9f",
+   "pasp-receipt.py": "f24a34892524895bbf2c5c33217d0a8d11111e97a010b86d1399fe7e4c34108b"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "7cb984a4c0203073de56ea7faaf4c74da9252f5c98aad8b951f3c48127540aa7",
+  "MODULE.bazel": "3f04680d6f0b954e93113e438912f24a63bc8b9580efce825faa9f94d558173e",
+  "config.toml": "741abfd64789245546f14caac4f2129cd86ad9f7dcb27307e37f0081ade02f40",
+  "data.txt": "7dc84e1c19620bddc4edd70d13cd52148dbff6672efcb9dac600a6c34c7148ab",
+  "defs.bzl": "1326e702b4e2ade005087a9b95661005249091ecba2c31ac18c6d1affb8695d7"
+ },
+ "normalization": "<WS> = the case's workspace copy. prints: the print() lines carrying the case's marker, genuine's `DEBUG: <file>:<line>:<col>: ` prefix removed, sorted. outputs: every file below bazel-out whose name ends with one of the case's suffixes, by path below bazel-out (genuine: the bazel-out convenience symlink; native: the published action outputs), with its contents. errors: genuine's ERROR lines; native's stderr without the memory-limit notice.",
+ "comparison": "MATCH = equal exit code, prints and outputs, and for a failing case genuine's first error message (location removed) appears in a native error line.",
+ "counts": {
+  "MATCH": 2,
+  "DECLARED_DIVERGENCE": 0,
+  "DIFF": 0
+ },
+ "scratch_removed": true,
+ "cases": {
+  "attributes": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%attrs_aspect",
+    "--output_groups=exe_out",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "DIR attr=[\"_config\", \"_dict\", \"_ints\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\", \"param\"]",
+     "DIR executable=[\"_optional\", \"_target_tool\", \"_tool\"]",
+     "DIR file=[\"_config\", \"_optional\"]",
+     "DIR files=[\"_config\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\"]",
+     "VAL config=config.toml list_attr=[\"two\", \"config.toml\", \"two\"] list_files=[\"bazel-out/k8-fastbuild/bin/two.1\", \"bazel-out/k8-fastbuild/bin/two.2\", \"config.toml\"]",
+     "VAL exec_tool=bazel-out/k8-opt-exec/bin/tool.sh target_tool=bazel-out/k8-fastbuild/bin/tool.sh optional=config.toml",
+     "VAL tool_files=[\"bazel-out/k8-opt-exec/bin/tool.sh\"] config_files=[\"config.toml\"] param=p dict={\"k\": \"v\"} ints=[1, 2]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.exe": "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "DIR attr=[\"_config\", \"_dict\", \"_ints\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\", \"param\"]",
+     "DIR executable=[\"_optional\", \"_target_tool\", \"_tool\"]",
+     "DIR file=[\"_config\", \"_optional\"]",
+     "DIR files=[\"_config\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\"]",
+     "VAL config=config.toml list_attr=[\"two\", \"config.toml\", \"two\"] list_files=[\"bazel-out/k8-fastbuild/bin/two.1\", \"bazel-out/k8-fastbuild/bin/two.2\", \"config.toml\"]",
+     "VAL exec_tool=bazel-out/k8-opt-exec/bin/tool.sh target_tool=bazel-out/k8-fastbuild/bin/tool.sh optional=config.toml",
+     "VAL tool_files=[\"bazel-out/k8-opt-exec/bin/tool.sh\"] config_files=[\"config.toml\"] param=p dict={\"k\": \"v\"} ints=[1, 2]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.exe": "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
+    }
+   }
+  },
+  "parameter": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%attrs_aspect",
+    "--aspects_parameters=param=q",
+    "--output_groups=exe_out",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "DIR attr=[\"_config\", \"_dict\", \"_ints\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\", \"param\"]",
+     "DIR executable=[\"_optional\", \"_target_tool\", \"_tool\"]",
+     "DIR file=[\"_config\", \"_optional\"]",
+     "DIR files=[\"_config\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\"]",
+     "VAL config=config.toml list_attr=[\"two\", \"config.toml\", \"two\"] list_files=[\"bazel-out/k8-fastbuild/bin/two.1\", \"bazel-out/k8-fastbuild/bin/two.2\", \"config.toml\"]",
+     "VAL exec_tool=bazel-out/k8-opt-exec/bin/tool.sh target_tool=bazel-out/k8-fastbuild/bin/tool.sh optional=config.toml",
+     "VAL tool_files=[\"bazel-out/k8-opt-exec/bin/tool.sh\"] config_files=[\"config.toml\"] param=q dict={\"k\": \"v\"} ints=[1, 2]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.exe": "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "DIR attr=[\"_config\", \"_dict\", \"_ints\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\", \"param\"]",
+     "DIR executable=[\"_optional\", \"_target_tool\", \"_tool\"]",
+     "DIR file=[\"_config\", \"_optional\"]",
+     "DIR files=[\"_config\", \"_list\", \"_optional\", \"_target_tool\", \"_tool\"]",
+     "VAL config=config.toml list_attr=[\"two\", \"config.toml\", \"two\"] list_files=[\"bazel-out/k8-fastbuild/bin/two.1\", \"bazel-out/k8-fastbuild/bin/two.2\", \"config.toml\"]",
+     "VAL exec_tool=bazel-out/k8-opt-exec/bin/tool.sh target_tool=bazel-out/k8-fastbuild/bin/tool.sh optional=config.toml",
+     "VAL tool_files=[\"bazel-out/k8-opt-exec/bin/tool.sh\"] config_files=[\"config.toml\"] param=q dict={\"k\": \"v\"} ints=[1, 2]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.exe": "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
+    }
+   }
+  }
+ }
+}

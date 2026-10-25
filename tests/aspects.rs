@@ -569,3 +569,42 @@ fn undeclared_aspect_exec_group_fails_at_the_base_target() {
         "BUILD.bazel:12:4: Attr '$tool' declares a transition for non-existent exec group 'nope'",
     );
 }
+
+#[test]
+fn aspect_context_lists_its_own_attributes() {
+    // ctx.attr/ctx.files/ctx.file/ctx.executable of an aspect are its own
+    // attributes' (StarlarkRuleContext.java:270-285,
+    // StarlarkAttributesCollection.Builder.addAttribute): no `name`, a
+    // `ctx.files` entry per dependency attribute (each File once), `ctx.file`
+    // for allow_single_file, `ctx.executable` for executable label
+    // attributes, whose runfiles a spawn running the File stages. Genuine
+    // Bazel 9.3.0 strings (tests/fixtures/aspect_ctx_attributes/
+    // reference_receipt.json, MATCH).
+    for (flags, param) in [(vec![], "p"), (vec!["--aspects_parameters=param=q"], "q")] {
+        let ws = Workspace::fixture("aspect_ctx_attributes");
+        let mut all = vec![
+            "--aspects=//:defs.bzl%attrs_aspect",
+            "--output_groups=exe_out",
+        ];
+        all.extend(flags);
+        let text = ok(&ws.build_builtin(&all, &["//:a"]));
+        let mut expected = [
+            r#"DIR attr=["_config", "_dict", "_ints", "_list", "_optional", "_target_tool", "_tool", "param"]"#.to_owned(),
+            r#"DIR executable=["_optional", "_target_tool", "_tool"]"#.to_owned(),
+            r#"DIR file=["_config", "_optional"]"#.to_owned(),
+            r#"DIR files=["_config", "_list", "_optional", "_target_tool", "_tool"]"#.to_owned(),
+            r#"VAL config=config.toml list_attr=["two", "config.toml", "two"] list_files=["bazel-out/k8-fastbuild/bin/two.1", "bazel-out/k8-fastbuild/bin/two.2", "config.toml"]"#.to_owned(),
+            "VAL exec_tool=bazel-out/k8-opt-exec/bin/tool.sh target_tool=bazel-out/k8-fastbuild/bin/tool.sh optional=config.toml".to_owned(),
+            format!(r#"VAL tool_files=["bazel-out/k8-opt-exec/bin/tool.sh"] config_files=["config.toml"] param={param} dict={{"k": "v"}} ints=[1, 2]"#),
+        ];
+        expected.sort();
+        let mut found = prints(&text, "DIR ");
+        found.extend(prints(&text, "VAL "));
+        found.sort();
+        assert_eq!(found, expected);
+        assert_eq!(
+            ws.output("a.exe"),
+            "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
+        );
+    }
+}

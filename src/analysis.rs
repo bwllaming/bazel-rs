@@ -1869,101 +1869,142 @@ fn make_aspect_ctx<'v>(
         rule_class: &aspect.exported_name,
         label: &shown_label,
     };
-    // The aspect's own attributes: implicit label attributes resolved from
-    // the application's dependencies, parameters from their values
-    // (AspectParameters). Frozen like a rule's (immutable in Bazel).
-    const NAMES: [&str; 4] = ["attr", "files", "file", "$aspect_ids"];
+    // The aspect's own attributes (StarlarkRuleContext.java:270-285 over the
+    // main aspect's attributes, StarlarkAttributesCollection.Builder
+    // .addAttribute, :382-450): implicit label attributes resolved from the
+    // application's own attribute dependencies, parameters from their
+    // values (AspectParameters). `ctx.attr` holds only the aspect's
+    // attributes (no `name`); every dependency attribute has a `ctx.files`
+    // entry (PrerequisiteArtifacts.nestedSet: each File once), an
+    // `allow_single_file` one a `ctx.file` entry and an executable label one
+    // a `ctx.executable` entry, whose FilesToRunProvider a spawn running the
+    // File picks up (the first one per executable, :410-433). Frozen like a
+    // rule's (immutable in Bazel).
+    const NAMES: [&str; 5] = ["attr", "files", "file", "executable", "$aspect_ids"];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
+        let heap = module.heap();
         let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
-        attrs.insert(
-            "name".to_owned(),
-            module.heap().alloc(rule.label.name.as_str()),
-        );
         let mut files: BTreeMap<String, Value> = BTreeMap::new();
         let mut single_files: BTreeMap<String, Value> = BTreeMap::new();
+        let mut executables: BTreeMap<String, Value> = BTreeMap::new();
         let mut parameter_errors = Vec::new();
         for (name, spec) in &aspect.declaration.attrs {
             let value = aspect.parameters.get(name).unwrap_or(&spec.default);
-            match value {
+            let prefix = crate::rule_errors::RuleEvents {
+                rule_class: &aspect.exported_name,
+                label: &shown_label,
+            }
+            .attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "");
+            let resolve = |label: &str| {
+                dependency(
+                    label,
+                    name,
+                    spec,
+                    &application.aspect_dependencies,
+                    &prefix,
+                    consumer,
+                )
+            };
+            let attr = match value {
                 AttrValue::Label(label) => {
-                    if let Some(label) = label {
-                        let prefix = crate::rule_errors::RuleEvents {
-                            rule_class: &aspect.exported_name,
-                            label: &shown_label,
+                    let target = match label.as_deref().map(resolve).transpose() {
+                        Ok(target) => target,
+                        Err(error) => {
+                            parameter_errors.push(format!("{prefix}{error}"));
+                            continue;
                         }
-                        .attribute_message(name, "");
-                        let target = match dependency(
-                            label,
-                            name,
-                            spec,
-                            &application.aspect_dependencies,
-                            &prefix,
-                            consumer,
-                        ) {
-                            Ok(target) => target,
-                            Err(error) => {
-                                parameter_errors.push(format!("{prefix}{error}"));
-                                continue;
-                            }
-                        };
-                        let value = alloc_dependency(module.heap(), target);
-                        // A label attribute with a Starlark transition is a
-                        // list of its prerequisites (StarlarkAttributesCollection.
-                        // convertAttributeValue: the transition factory isSplit).
-                        let value = if starlark_transition(spec) {
-                            module.heap().alloc(vec![value])
-                        } else {
-                            value
-                        };
-                        attrs.insert(name.clone(), value);
-                        let list: Vec<Value> = target
-                            .files
-                            .iter()
-                            .map(|file| alloc_file(module.heap(), file.clone()))
-                            .collect();
-                        files.insert(name.clone(), module.heap().alloc(list));
-                        if spec.allow_single_file {
-                            single_files.insert(
-                                name.clone(),
-                                target
-                                    .files
-                                    .first()
-                                    .map(|file| alloc_file(module.heap(), file.clone()))
-                                    .unwrap_or_else(Value::new_none),
-                            );
-                        }
-                    } else {
-                        attrs.insert(
+                    };
+                    let target_files = target.map(|target| target.files.as_slice());
+                    files.insert(
+                        name.clone(),
+                        prerequisite_files(heap, target_files.into_iter()),
+                    );
+                    if spec.allow_single_file {
+                        single_files.insert(
                             name.clone(),
-                            if starlark_transition(spec) {
-                                module.heap().alloc(Vec::<Value>::new())
-                            } else {
-                                Value::new_none()
-                            },
+                            target_files
+                                .and_then(|files| files.first())
+                                .map(|file| alloc_file(heap, file.clone()))
+                                .unwrap_or_else(Value::new_none),
                         );
-                        files.insert(name.clone(), module.heap().alloc(Vec::<Value>::new()));
-                        if spec.allow_single_file {
-                            single_files.insert(name.clone(), Value::new_none());
-                        }
+                    }
+                    if spec.declaration.executable {
+                        let executable = match target {
+                            Some(target) => {
+                                let files_to_run = target.runfiles.files_to_run(&target.files);
+                                let Some(file) = files_to_run.executable().cloned() else {
+                                    parameter_errors.push(format!(
+                                        "{prefix}{} does not refer to a valid executable target",
+                                        canonical_text(&target.label)
+                                    ));
+                                    continue;
+                                };
+                                context
+                                    .runfiles
+                                    .executables
+                                    .borrow_mut()
+                                    .entry(file.clone())
+                                    .or_insert(files_to_run);
+                                alloc_file(heap, file)
+                            }
+                            None => Value::new_none(),
+                        };
+                        executables.insert(name.clone(), executable);
+                    }
+                    let dependency = target.map(|target| alloc_dependency(heap, target));
+                    // A label attribute with a Starlark transition is a
+                    // list of its prerequisites (StarlarkAttributesCollection.
+                    // convertAttributeValue: the transition factory isSplit).
+                    if starlark_transition(spec) {
+                        heap.alloc(dependency.into_iter().collect::<Vec<_>>())
+                    } else {
+                        dependency.unwrap_or_else(Value::new_none)
                     }
                 }
-                AttrValue::String(value) => {
-                    attrs.insert(name.clone(), module.heap().alloc(value.as_str()));
+                AttrValue::Labels(labels) => {
+                    let targets = match labels
+                        .iter()
+                        .map(|label| resolve(label))
+                        .collect::<anyhow::Result<Vec<_>>>()
+                    {
+                        Ok(targets) => targets,
+                        Err(error) => {
+                            parameter_errors.push(format!("{prefix}{error}"));
+                            continue;
+                        }
+                    };
+                    files.insert(
+                        name.clone(),
+                        prerequisite_files(
+                            heap,
+                            targets.iter().map(|target| target.files.as_slice()),
+                        ),
+                    );
+                    heap.alloc(
+                        targets
+                            .iter()
+                            .map(|target| alloc_dependency(heap, target))
+                            .collect::<Vec<_>>(),
+                    )
                 }
-                AttrValue::Strings(values) => {
-                    attrs.insert(name.clone(), module.heap().alloc(values.clone()));
+                AttrValue::String(value) => heap.alloc(value.as_str()),
+                AttrValue::Strings(values) => heap.alloc(values.clone()),
+                AttrValue::Int(value) => heap.alloc(*value),
+                AttrValue::Ints(values) => heap.alloc(values.clone()),
+                AttrValue::Bool(value) => heap.alloc(*value),
+                AttrValue::StringDict(entries) => {
+                    crate::attribute_values::alloc_string_dict(heap, entries)?
                 }
-                AttrValue::Int(value) => {
-                    attrs.insert(name.clone(), module.heap().alloc(*value));
-                }
-                AttrValue::Bool(value) => {
-                    attrs.insert(name.clone(), module.heap().alloc(*value));
+                AttrValue::StringListDict(entries) => {
+                    crate::attribute_values::alloc_string_list_dict(heap, entries)?
                 }
                 _ => bail!(
-                    "aspect attribute '{}' has an unsupported parameter type",
-                    name
+                    "aspect attribute '{}' has a type the native profile does not analyze (label-keyed dictionaries, outputs); {}",
+                    name,
+                    crate::rule_declarations::NOT_ANALYZED
                 ),
-            }
+            };
+            attrs.insert(name.clone(), attr);
         }
         if !parameter_errors.is_empty() {
             return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
@@ -1989,6 +2030,12 @@ fn make_aspect_ctx<'v>(
             )),
         );
         module.set(
+            "executable",
+            module.heap().alloc(starlark::values::structs::AllocStruct(
+                executables.into_iter().collect::<Vec<_>>(),
+            )),
+        );
+        module.set(
             "$aspect_ids",
             module.heap().alloc(application.aspect_ids.clone()),
         );
@@ -2002,9 +2049,10 @@ fn make_aspect_ctx<'v>(
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
-    let owned = <[OwnedFrozenValue; 4]>::try_from(owned)
+    let owned = <[OwnedFrozenValue; 5]>::try_from(owned)
         .map_err(|_| anyhow!("internal error: aspect context attribute structs"))?;
-    let [attr, files, file, aspect_ids] = owned.map(|value| heap.access_owned_frozen_value(&value));
+    let [attr, files, file, executable, aspect_ids] =
+        owned.map(|value| heap.access_owned_frozen_value(&value));
     // ctx.rule: the base rule's attribute structs over the application's
     // dependencies (allocated beside the ctx; StarlarkAttributesCollection
     // is not frozen separately in Bazel either).
@@ -2035,6 +2083,7 @@ fn make_aspect_ctx<'v>(
         ("attr", attr),
         ("files", files),
         ("file", file),
+        ("executable", executable),
         ("label", label),
         ("actions", actions),
         ("$rule", rule_attributes),

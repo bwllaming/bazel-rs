@@ -1,0 +1,17 @@
+load(":defs.bzl", "lib", "tool", "two_files")
+
+exports_files(["config.toml"])
+
+tool(
+    name = "tool",
+    data = "data.txt",
+)
+
+two_files(name = "two")
+
+alias(
+    name = "two_alias",
+    actual = ":two",
+)
+
+lib(name = "a")
