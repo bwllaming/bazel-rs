@@ -235,7 +235,9 @@ pub struct Package {
     /// The BUILD file's direct `.bzl` loads and the load graph below them
     /// (Package.Declarations.visitLoadGraph), for `query buildfiles/loadfiles`.
     pub direct_loads: Vec<Label>,
-    pub load_graph: HashMap<Label, Vec<Label>>,
+    /// Shared by the packages whose graphs are equal (MEM2,
+    /// crate::loading::BzlCache::shared_load_graph).
+    pub load_graph: Arc<crate::loading::LoadGraph>,
 }
 
 impl std::ops::Deref for Package {
@@ -2233,7 +2235,7 @@ fn evaluate_at(
     // Both global environments are immutable: built once per invocation.
     let (globals, bzl_globals) = repositories.build_phase_globals();
     let timing_bzl = std::time::Instant::now();
-    let loaded = crate::loading::load_build_modules_in(
+    let mut loaded = crate::loading::load_build_modules_in(
         repositories.clone(),
         package,
         &ast,
@@ -2247,7 +2249,9 @@ fn evaluate_at(
         .map(|(name, module)| (name.as_str(), module))
         .collect::<HashMap<_, _>>();
     let direct_loads = loaded.direct_loads.clone();
-    let load_graph = loaded.load_graph.clone();
+    let load_graph = repositories
+        .build_bzl_cache()
+        .shared_load_graph(&direct_loads, std::mem::take(&mut loaded.load_graph));
     let loader = ReturnFileLoader { modules: &modules };
     let repo_defaults = repo_args(&repositories, &package.repository)?;
     let declarations = Declarations {

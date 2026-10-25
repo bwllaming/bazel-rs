@@ -802,7 +802,15 @@ pub(crate) struct BzlCache {
     /// (cache instance, label), so independent caches never couple.
     id: u64,
     modules: std::sync::Mutex<HashMap<Label, CachedResult>>,
+    /// Packages' `.bzl` load graphs by the BUILD file's direct loads
+    /// ([`BzlCache::shared_load_graph`], MEM2).
+    load_graphs: std::sync::Mutex<HashMap<Vec<Label>, Arc<LoadGraph>>>,
 }
+
+/// A package's `.bzl` load graph: each `.bzl` file reachable from the
+/// BUILD file's direct loads with its own direct loads
+/// (Package.Declarations.visitLoadGraph's graph).
+pub type LoadGraph = HashMap<Label, Vec<Label>>;
 
 static NEXT_BZL_CACHE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -811,6 +819,7 @@ impl Default for BzlCache {
         Self {
             id: NEXT_BZL_CACHE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             modules: std::sync::Mutex::new(HashMap::new()),
+            load_graphs: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -862,6 +871,40 @@ impl BzlCache {
                 })
             })
             .unwrap_or_default()
+    }
+
+    /// One shared copy of equal package load graphs (MEM2): every package
+    /// kept its own copy of its whole transitive `.bzl` load graph, and
+    /// thousands of packages load the same files (all gazelle-generated
+    /// Go repositories load the same rules_go macros): ~135 MB of copies
+    /// on ~/code's `bworker/wcb/...`. A package's graph is the DFS from
+    /// its direct loads over this cache's modules, so packages with the
+    /// same direct loads get equal graphs; the memo still compares by
+    /// value and keeps a differing graph unshared, so the result is
+    /// always exactly the package's own graph.
+    pub(crate) fn shared_load_graph(
+        &self,
+        direct_loads: &[Label],
+        graph: LoadGraph,
+    ) -> Arc<LoadGraph> {
+        let known = self
+            .load_graphs
+            .lock()
+            .ok()
+            .and_then(|graphs| graphs.get(direct_loads).cloned());
+        match known {
+            Some(shared) if *shared == graph => shared,
+            Some(_) => Arc::new(graph),
+            None => {
+                let shared = Arc::new(graph);
+                if let Ok(mut graphs) = self.load_graphs.lock() {
+                    graphs
+                        .entry(direct_loads.to_vec())
+                        .or_insert_with(|| shared.clone());
+                }
+                shared
+            }
+        }
     }
 
     /// The frozen heaps of the successfully evaluated modules, for the
