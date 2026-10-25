@@ -1,0 +1,147 @@
+load(":defs.bzl", "list_dir", "lister", "lister_test", "probe", "use_tool", "view")
+
+# `dir` is a source directory (a file target naming a directory); the
+# fixture's setup adds `empty/`, `link_a -> a.txt`, `link_sub -> sub` and
+# `dangling -> missing.txt` to it.
+probe(
+    name = "probe",
+    srcs = [
+        "dir",
+        "@npmish//:package",
+    ],
+)
+
+# Action inputs: a sandboxed and an unsandboxed spawn, the external
+# repository's package directory (directly and through a filegroup), and a
+# genrule.
+list_dir(
+    name = "list",
+    srcs = ["dir"],
+)
+
+list_dir(
+    name = "list_local",
+    srcs = ["dir"],
+    reqs = {"no-sandbox": "1"},
+)
+
+list_dir(
+    name = "list_ext",
+    srcs = ["@npmish//:package"],
+)
+
+list_dir(
+    name = "list_both",
+    srcs = [
+        "dir",
+        "@npmish//:pkg",
+    ],
+)
+
+genrule(
+    name = "gen",
+    srcs = ["dir"],
+    outs = [
+        "gen.txt",
+        "gen.stamp",
+    ],
+    cmd = "ls -a $(location dir) | LC_ALL=C sort > $(location gen.txt); echo $(location dir) >> $(location gen.txt); cat /proc/sys/kernel/random/uuid > $(location gen.stamp)",
+)
+
+# How the directory is staged (the entries themselves, links not followed).
+view(
+    name = "view",
+    srcs = ["dir"],
+)
+
+view(
+    name = "view_local",
+    srcs = ["dir"],
+    reqs = {"no-sandbox": "1"},
+)
+
+# A requested source directory, runfiles, a tool's runfiles, a test's
+# runfiles.
+filegroup(
+    name = "fg",
+    srcs = ["dir"],
+)
+
+lister(
+    name = "show",
+    data = [
+        "dir",
+        "@npmish//:package",
+    ],
+)
+
+use_tool(
+    name = "use_tool",
+    paths = [
+        "_main/pkg/dir",
+        "+pkg_repo+npmish/package",
+    ],
+    tool = ":show",
+)
+
+lister_test(
+    name = "show_test",
+    data = ["dir"],
+    expected = """== pkg/dir
+f- ./a.txt: a|
+? ./dangling
+d ./empty
+f- ./link_a: a|
+d ./link_sub
+f- ./link_sub/b.txt: b|
+d ./sub
+f- ./sub/b.txt: b|
+fx ./x.sh: #!/bin/sh|echo x|
+""",
+)
+
+# Traversal errors of an executing build: a subpackage below a source
+# directory of the main repository, a link to an enclosing directory, a
+# symlink cycle.
+list_dir(
+    name = "cross",
+    srcs = ["crossdir"],
+)
+
+genrule(
+    name = "gen_cross",
+    srcs = ["crossdir"],
+    outs = ["gen_cross.txt"],
+    cmd = "ls $(location crossdir) > $@",
+)
+
+filegroup(
+    name = "fg_cross",
+    srcs = ["crossdir"],
+)
+
+lister(
+    name = "show_cross",
+    data = ["crossdir"],
+)
+
+list_dir(
+    name = "loop",
+    srcs = ["loopdir"],
+)
+
+list_dir(
+    name = "cycle",
+    srcs = ["cycledir"],
+)
+
+# A source directory together with a file inside it (manual: native
+# analysis rejects it, a declared divergence).
+list_dir(
+    name = "nested",
+    srcs = [
+        "dir",
+        "dir/a.txt",
+    ],
+    tags = ["manual"],
+)

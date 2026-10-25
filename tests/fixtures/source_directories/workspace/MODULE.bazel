@@ -1,0 +1,14 @@
+module(name = "source_directories_fixture")
+
+# The genuine platforms 1.0.0 module (the default host platform's
+# @platforms//host for exec configurations), extracted into `platforms` from
+# tests/fixtures/label_repo_name/platforms_archive.json before each run.
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")
+
+# An npm_import-shaped repository: an extracted package directory that a
+# rule uses as a source directory (rules_js npm_package_internal(src =
+# "package")).
+pkg_repo = use_repo_rule("//:repo.bzl", "pkg_repo")
+
+pkg_repo(name = "npmish")

@@ -516,19 +516,18 @@ fn source_directories_are_file_targets_matched_by_name() {
         f.rejected("//:dir_bad"),
         "bazel-rs: WS/BUILD.bazel:32:11: in srcs attribute of go_library rule //:dir_bad: source file '//:dir' is misplaced here (expected .go or .s)\nWS/BUILD.bazel:32:11: in srcs attribute of go_library rule //:dir_bad: '//:dir' does not produce any go_library srcs files (expected .go or .s)\n"
     );
-    // As an action input it is an explicit native gap.
-    let stderr = f.rejected("//:dir_used");
-    assert!(
-        stderr.contains("source directory '//:godir.go' as an action input is not supported by the native profile"),
-        "{stderr}"
-    );
+    // As an action input it builds, like Bazel's (A6 dir_used): tracked by
+    // content and staged as a directory (docs/SOURCE_DIRECTORIES.md; the
+    // receipt's EXPECTED_NATIVE_UNSUPPORTED row is superseded).
+    assert_eq!(f.built("//:dir_used"), "");
 }
 
 /// Merge adaptations of N27 with N18c, N23a and N28c: a transitioned
 /// attribute's prerequisites are validated in its edge configuration (the
 /// dependency analyzed there), a source directory among a requested
-/// target's runfiles is the explicit gap, and package_metadata file errors
-/// precede the rule's own attribute errors in one prerequisite pass.
+/// target's runfiles builds (docs/SOURCE_DIRECTORIES.md), and
+/// package_metadata file errors precede the rule's own attribute errors in
+/// one prerequisite pass.
 #[test]
 fn transitioned_runfiles_and_metadata_prerequisites() {
     let f = Fixture::new();
@@ -630,12 +629,7 @@ rf(name = "rf_dir", data = ["godir.go"])
         .find("in srcs attribute of go_library rule //md:m: source file '//md:x.txt' is misplaced here (expected .go or .s)")
         .unwrap_or_else(|| panic!("{stderr}"));
     assert!(metadata < srcs, "{stderr}");
-    // A source directory among the requested target's runfiles.
-    let stderr = f.rejected("//:rf_dir");
-    assert!(
-        stderr.contains(
-            "//:rf_dir: source directory '//:godir.go' in its runfiles is not supported by the native profile"
-        ),
-        "{stderr}"
-    );
+    // A source directory among the requested target's runfiles needs
+    // nothing built (docs/SOURCE_DIRECTORIES.md).
+    assert_eq!(f.built("//:rf_dir"), "x");
 }

@@ -12147,43 +12147,76 @@ impl Engine {
                 .filter(|_| crate::observed_fs::symlink_metadata(real).is_err())
                 .map(crate::rule_declarations::canonical_form)
         };
-        // Bazel accepts source directories as inputs with unsound change
-        // tracking; the native executor does not plant or digest them.
-        let directories = self.source_directories.clone();
-        // Every label naming the directory (it and links to it, N28d).
-        let directory = |real: &Path| -> Vec<String> {
-            directories
-                .get(real)
-                .filter(|_| crate::observed_fs::is_dir(real))
-                .into_iter()
-                .flatten()
-                .map(crate::rule_declarations::canonical_form)
-                .collect()
+        // Source directories (source artifacts naming a directory) are
+        // tracked by content like Bazel 9.3's default
+        // (TrackSourceDirectoriesFlag; ArtifactFunction.createSourceValue,
+        // skyframe/ArtifactFunction.java:274-364): an action input is keyed
+        // by everything below it and staged as a real directory
+        // (crate::action, ActionExtra::source_directories); a requested
+        // output or runfile needs nothing built. An executing build
+        // traverses each one it needs and fails like Bazel's traversal
+        // (crate::source_directories), reported like a missing input file
+        // (docs/SOURCE_DIRECTORIES.md).
+        let source_directories = self.source_directories.clone();
+        let is_directory =
+            |real: &Path| source_directories.contains_key(real) && crate::observed_fs::is_dir(real);
+        // PA-1: a tool runfiles tree's shared group holding a source
+        // directory is listed in the node (exactly what planning lists
+        // without sharing), so its destination is marked like an own input.
+        let mut directory_groups: HashMap<*const scheduler::InputGroup, bool> = HashMap::new();
+        for node in &mut nodes {
+            let holds_directory = node.groups.iter().any(|group| {
+                *directory_groups
+                    .entry(Arc::as_ptr(group))
+                    .or_insert_with(|| group.sources.iter().any(|real| is_directory(real)))
+            });
+            if holds_directory {
+                *node = node.flattened();
+            }
+            let marked: Vec<PathBuf> = node
+                .action
+                .inputs
+                .iter()
+                .filter(|(real, _)| is_directory(real))
+                .map(|(_, exec)| exec.clone())
+                .collect();
+            node.action.extra.source_directories.extend(marked);
+        }
+        let main_ignored = self.ignored("")?;
+        // Each needed directory is traversed once; its separate error
+        // events (a symlink chain) are reported once, before the errors.
+        let mut traversals: BTreeMap<PathBuf, Option<String>> = BTreeMap::new();
+        let mut events: Vec<String> = Vec::new();
+        let execute_build = self.execute_build;
+        let mut traversal_error = |real: &Path| -> Option<String> {
+            if !execute_build || !is_directory(real) {
+                return None;
+            }
+            traversals
+                .entry(real.to_path_buf())
+                .or_insert_with(|| {
+                    // The owner label (the first of the labels naming it,
+                    // N28d).
+                    let label = source_directories.get(real)?.iter().next()?;
+                    let root_relative = if label.package.is_empty() {
+                        label.name.clone()
+                    } else {
+                        format!("{}/{}", label.package, label.name)
+                    };
+                    let boundaries = crate::source_directories::Boundaries {
+                        ignored: &main_ignored,
+                    };
+                    let error = crate::source_directories::traversal_error(
+                        real,
+                        &crate::rule_declarations::canonical_form(label),
+                        &root_relative,
+                        label.repository.is_empty().then_some(&boundaries),
+                    )?;
+                    events.extend(error.events);
+                    Some(error.message)
+                })
+                .clone()
         };
-        let mut unsupported = Vec::new();
-        for (key, artifact) in &requested {
-            if artifact.producer.is_none() {
-                for label in directory(&artifact.real) {
-                    unsupported.push(format!(
-                        "{}: source directory '{label}' as a requested output is not supported by the native profile",
-                        crate::rule_declarations::canonical_form(&key.label)
-                    ));
-                }
-            }
-        }
-        // N23a: a requested target's default runfiles are built (staged)
-        // with it (OutputGroupInfo.HIDDEN_TOP_LEVEL); a source directory
-        // among them is the same unmodelled input.
-        for (key, artifact) in &hidden {
-            if artifact.producer.is_none() {
-                for label in directory(&artifact.real) {
-                    unsupported.push(format!(
-                        "{}: source directory '{label}' in its runfiles is not supported by the native profile",
-                        crate::rule_declarations::canonical_form(&key.label)
-                    ));
-                }
-            }
-        }
         // PA-1: a node's source inputs are its own followed by its shared
         // groups' (SourceInputs::listed). A group none of whose sources is
         // a source directory or a missing file adds nothing to either check
@@ -12199,7 +12232,7 @@ impl Engine {
                     && group
                         .sources
                         .iter()
-                        .any(|real| !directory(real).is_empty() || missing(real).is_some())
+                        .any(|real| is_directory(real) || missing(real).is_some())
                 {
                     flagged_groups.insert(Arc::as_ptr(group));
                 }
@@ -12219,66 +12252,112 @@ impl Engine {
                 Some(sources) => sources.own.iter().collect(),
             }
         };
-        for node in &nodes {
-            for real in source_paths_of(node) {
-                for label in directory(real) {
-                    unsupported.push(format!(
-                        "{}: source directory '{label}' as an action input is not supported by the native profile",
-                        node.action.id
-                    ));
-                }
-            }
+        // An input's failure: `missing input file 'L'` (SOURCE_INPUT_MISSING)
+        // or the traversal error (SOURCE_INPUT_IO_EXCEPTION).
+        enum InputFailure {
+            Missing(String),
+            InError(String),
         }
-        if !unsupported.is_empty() {
-            let mut seen = BTreeSet::new();
-            unsupported.retain(|line| seen.insert(line.clone()));
-            return Err(unsupported.join("\n"));
-        }
+        // ActionExecutionFunction.createSourceErrorCodeAndMessage
+        // (:1543-1582): `N input file(s) are in error or do not exist`.
+        let summary = |failures: &[InputFailure]| {
+            let in_error = failures
+                .iter()
+                .any(|failure| matches!(failure, InputFailure::InError(_)));
+            let missing = failures
+                .iter()
+                .any(|failure| matches!(failure, InputFailure::Missing(_)));
+            let kinds = [
+                in_error.then_some("are in error"),
+                missing.then_some("do not exist"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" or ");
+            format!("{} input file(s) {kinds}", failures.len())
+        };
+        let failure_text = |failure: &InputFailure| match failure {
+            InputFailure::Missing(label) => format!("missing input file '{label}'"),
+            InputFailure::InError(message) => message.clone(),
+        };
         let mut errors = Vec::new();
-        // Requested targets: `LOC: TARGET: missing input file 'L'` lines, then
-        // `LOC: N input file(s) do not exist` (CompletionFunction).
-        let mut by_target: Vec<(Label, Vec<String>)> = Vec::new();
-        for (key, artifact) in requested.iter().chain(&hidden) {
-            if artifact.producer.is_none()
-                && let Some(missing_label) = missing(&artifact.real)
-            {
-                match by_target.iter_mut().find(|(seen, _)| *seen == key.label) {
-                    Some((_, labels)) => labels.push(missing_label),
-                    None => by_target.push((key.label.clone(), vec![missing_label])),
-                }
+        // Requested targets and their runfiles: `LOC: TARGET: missing input
+        // file 'L'` / `LOC: TARGET: error traversing directory ...` lines,
+        // then `LOC: N input file(s) ...` (CompletionFunction).
+        // An executable's runfiles reach the build through its runfiles
+        // tree (RunfilesSupport: the hidden group holds the tree artifact,
+        // whose SymlinkTreeAction has them as inputs), so a source
+        // directory among them fails that action, not the target.
+        let tree_runfiles: BTreeSet<&ConfiguredTargetKey> = hidden
+            .iter()
+            .map(|(key, _)| key)
+            .filter(|key| {
+                let actual = forwarded.get(*key).unwrap_or(&key.label);
+                runfiles_nodes.contains_key(&self.configurations.top_key(actual.clone()))
+            })
+            .collect();
+        let mut by_target: Vec<(Label, Vec<InputFailure>)> = Vec::new();
+        let targets = requested
+            .iter()
+            .map(|entry| (entry, false))
+            .chain(hidden.iter().map(|entry| (entry, true)));
+        for ((key, artifact), runfile) in targets {
+            if artifact.producer.is_some() {
+                continue;
+            }
+            let failure = match missing(&artifact.real) {
+                Some(missing_label) => InputFailure::Missing(missing_label),
+                None if runfile && tree_runfiles.contains(key) => continue,
+                None => match traversal_error(&artifact.real) {
+                    Some(message) => InputFailure::InError(message),
+                    None => continue,
+                },
+            };
+            match by_target.iter_mut().find(|(seen, _)| *seen == key.label) {
+                Some((_, failures)) => failures.push(failure),
+                None => by_target.push((key.label.clone(), vec![failure])),
             }
         }
-        for (label, labels) in &by_target {
+        for (label, failures) in &by_target {
             let location = match self.target(label) {
                 Ok(Target::Rule(rule) | Target::Output(rule, _)) => rule.location.clone(),
                 _ => None,
             };
             let shown = crate::rule_declarations::canonical_form(label);
-            for missing_label in labels {
+            for failure in failures {
                 errors.push(located(
                     location.as_deref(),
-                    format!("{shown}: missing input file '{missing_label}'"),
+                    format!("{shown}: {}", failure_text(failure)),
                 ));
             }
-            errors.push(located(
-                location.as_deref(),
-                format!("{} input file(s) do not exist", labels.len()),
-            ));
+            errors.push(located(location.as_deref(), summary(failures)));
         }
-        // Actions: `LOC: PROGRESS failed: missing input file 'L'` lines, then
-        // `LOC: PROGRESS failed: N input file(s) do not exist`. The genrule
-        // progress message is `Executing genrule L`
-        // (rules/genrule/GenRuleBase.java); custom actions use their action id.
+        // Actions: `LOC: PROGRESS failed: missing input file 'L'` (or the
+        // traversal error) lines, then `LOC: PROGRESS failed: N input
+        // file(s) ...`. The genrule progress message is `Executing genrule
+        // L` (rules/genrule/GenRuleBase.java); custom actions use their
+        // action id.
         let rules_by_label = plan
             .iter()
             .map(|(key, rule)| (key.action_owner(top), rule))
             .collect::<BTreeMap<_, _>>();
         for node in &nodes {
-            let absent = source_paths_of(node)
+            // SourceManifestAction has no inputs (SourceManifestAction.java:
+            // 168): its source directories are never traversed.
+            let paths_only = matches!(
+                node.action.extra.transform,
+                Some(crate::action::Transform::RunfilesManifest { .. })
+            );
+            let failures = source_paths_of(node)
                 .into_iter()
-                .filter_map(|real| missing(real))
+                .filter_map(|real| match missing(real) {
+                    Some(label) => Some(InputFailure::Missing(label)),
+                    None if paths_only => None,
+                    None => traversal_error(real).map(InputFailure::InError),
+                })
                 .collect::<Vec<_>>();
-            if absent.is_empty() {
+            if failures.is_empty() {
                 continue;
             }
             let owner = node.action.id.split('#').next().unwrap_or_default();
@@ -12291,19 +12370,19 @@ impl Engine {
                 _ => node.action.id.clone(),
             };
             let location = rule.and_then(|rule| rule.location.as_deref());
-            for label in &absent {
+            for failure in &failures {
                 errors.push(located(
                     location,
-                    format!("{progress} failed: missing input file '{label}'"),
+                    format!("{progress} failed: {}", failure_text(failure)),
                 ));
             }
             errors.push(located(
                 location,
-                format!(
-                    "{progress} failed: {} input file(s) do not exist",
-                    absent.len()
-                ),
+                format!("{progress} failed: {}", summary(&failures)),
             ));
+        }
+        if !errors.is_empty() {
+            errors.splice(0..0, events);
         }
         if !errors.is_empty() {
             return Err(errors.join("\n"));

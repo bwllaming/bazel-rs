@@ -325,11 +325,11 @@ fn label_keyed_string_dict_module_errors_use_bazel_texts() {
 
 /// Reference row `dlink_dirs0`: `glob(['*'], exclude_directories = 0)` returns
 /// a directory link and the directory itself; Bazel accepts both as genrule
-/// sources. They are input-file targets natively too (N27); only their use
-/// as action inputs is the explicit native gap, named for every label of the
-/// directory (the link and the directory resolve to one path).
+/// sources. They are input-file targets natively too (N27), and as action
+/// inputs source directories (docs/SOURCE_DIRECTORIES.md): each is staged at
+/// its own execution path (the link and the directory resolve to one path).
 #[test]
-fn directories_reached_through_links_are_file_targets_with_the_action_input_gap() {
+fn directories_reached_through_links_are_file_targets_and_action_inputs() {
     let f = Fixture::new();
     f.file("p/real/r.txt", "r\n");
     f.file("p/f.txt", "f\n");
@@ -346,10 +346,7 @@ fn directories_reached_through_links_are_file_targets_with_the_action_input_gap(
         stderr(&query)
     );
     let output = f.run(&["build", "//p:dump"]);
-    failed(
-        &output,
-        "//p:dump: source directory '//p:d' as an action input is not supported by the native profile\n//p:dump: source directory '//p:real' as an action input is not supported by the native profile",
-    );
+    assert!(output.status.success(), "{}", stderr(&output));
 }
 
 /// A repository rule that extracts an archive (N32 streaming xz decode) and

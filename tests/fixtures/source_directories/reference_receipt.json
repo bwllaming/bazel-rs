@@ -1,0 +1,1201 @@
+{
+ "schema": "source-directories-reference-receipt/v1",
+ "fixture": "source_directories",
+ "purpose": "Source directories (a source artifact naming a directory: a package directory used as a file target, an external repository's directory such as rules_js npm_import's extracted `package`) as action inputs, requested outputs and runfiles. Bazel 9.3 tracks them by content by default (skyframe/TrackSourceDirectoriesFlag.java: TRACK_SOURCE_DIRECTORIES_DEFAULT = true unless the JVM property BAZEL_TRACK_SOURCE_DIRECTORIES=0 is set, so the `input X is a directory; dependency checking of directories is unsound` warning of SkyframeActionExecutor.checkForUnsoundDirectoryInputs never prints at the default): ArtifactFunction.createSourceValue (skyframe/ArtifactFunction.java:274-364) traverses the directory with RecursiveFilesystemTraversalFunction (symlinks followed, empty directories and dangling links included, a main-repository subpackage is the error `Directory artifact P crosses package boundary into package rooted at Q`, external repositories unchecked by default) and fingerprints every entry's path and content digest (FileArtifactValue.createForDirectoryWithHash). Spawns see the directory (sandboxes: a symlink to it; local execution: the execroot's directory); runfiles trees link it; the remote cache's input root explodes its files (MerkleTreeComputer.explodeDirectory). Motivation: with unused_inputs_list accepted (parity-deb e57968a), `build --nobuild //src/ts/...` on ~/code analyses and then failed in action planning with 41 errors like `//src/ts:.aspect_rules_js/node_modules/esbuild@0.28.1/lc#0: source directory '@@aspect_rules_js++npm+npm__esbuild__0.28.1//:package' as an action input is not supported by the native profile` (rules_js npm_import packages with lifecycle hooks or patches: the `lc` lifecycle action and copy_directory's package store copy read the extracted `package` directory).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no --show_result=1000 <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace per case with setup.json applied (empty directory, symlinks, modes) and the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json; a case's steps share the workspace and the output base (the action cache across --batch invocations), each step's `mutate` operations applied before its command"
+ },
+ "native": {
+  "binary": "target/debug/bazel-rs",
+  "sha256": "3c59fa5b471fce0ed41761941f13751993e357366d17a419f4fef87bb631e5b3",
+  "argv": "--ignore_all_rc_files --cache-dir=<private, shared by a case's steps> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/sd-capture.py, sd-receipt.py (not committed)",
+  "sha256": {
+   "sd-capture.py": "b314edf80da478b0f62d5e297fce6f146ec606e61c61ced1acc0d4ba07231c8d",
+   "sd-receipt.py": "6adf632fb7518c8be90c9e663e2cc195cb68e305c819a3670fa777bb04e3d73e"
+  }
+ },
+ "fixture_files_sha256": {
+  "setup.json": "83c3e0dae74d571b79c853028f5fc957987e29e8ebaf8b5531a1453d5c09bedb",
+  "workspace/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "workspace/MODULE.bazel": "0931a943de0ce36fb79d468ea1eb0ed6d5acd263825d27dfff7951e1b9b7b781",
+  "workspace/pkg/BUILD.bazel": "11992bbcf2c1a13272d9da9e619fe75ac556e28ef1644900b195ab12393f209a",
+  "workspace/pkg/crossdir/c.txt": "a3a5e715f0cc574a73c3f9bebb6bc24f32ffd5b67b387244c2c909da779a1478",
+  "workspace/pkg/crossdir/sub/BUILD.bazel": "26d154ee6bbbf1e7926082166588a6321f33edfbd5923f5915f095d74052aa02",
+  "workspace/pkg/crossdir/sub/s.txt": "cbc80bb5c0c0f8944bf73b3a429505ac5cde16644978bc9a1e74c5755f8ca556",
+  "workspace/pkg/defs.bzl": "618ec4ae882e4fdcadd6b0cf2ac7faf3ba3b51f437d898742b404023cf26278b",
+  "workspace/pkg/dir/a.txt": "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7",
+  "workspace/pkg/dir/sub/b.txt": "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f",
+  "workspace/pkg/dir/x.sh": "50bb8b785d76ecb643a01e926592d51ab70987a5433f301c5ab985867e9f3ab7",
+  "workspace/pkg/loopdir/l.txt": "6d7ebc44c5bc26207e62f4f628f912e1a0f41ed11764891aa7dd99eab83228e7",
+  "workspace/repo.bzl": "8453a6a5be717a09b961caaf4b9d0abf0cefde33a7753da9cf3fdb15c4dbfc87"
+ },
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents], without the `.stamp` tokens (a fresh random token per execution); `reexecuted` maps each stamp to whether the step ran its action again (its token changed since the previous step).",
+ "comparison (tests/source_directories.rs, live)": "MATCH, per step: success equal; WARNING lines equal in order; a failing step's genuine message (the first ERROR after its `LOC: PROGRESS failed: ` or `LOC: LABEL: ` prefix, or the recorded part) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; the re-executions equal; a `test` step's stdout (` in N.Ns` as ` in <T>s`) equal; a successful `run` or `query` step's stdout equal. DECLARED_DIVERGENCE: native fails with the recorded message, or (succeeding cases) native's outputs and re-executions are the recorded native ones.",
+ "genuine_key_findings": [
+  "File of a source directory: path=pkg/dir short_path=pkg/dir is_directory=False is_source=True is_symlink=False basename=dir extension=\"\" dirname=pkg root=\"\" (an external package: path=external/+pkg_repo+npmish/package, short_path=../+pkg_repo+npmish/package); `query` lists them as source files.",
+  "As an action input (run_shell sandboxed and no-sandbox, a genrule, an external repository's package directly and through a filegroup), `find -L` sees every file with its content and executable bit, `link_a -> a.txt` and `link_sub -> sub` resolved, the empty directory, the dangling link as a dangling link; a genrule's `ls -a` lists the entries; an external repository's nested BUILD.bazel is no boundary.",
+  "A requested source directory is up-to-date (nothing to build); `run` of a binary with source directories in its data sees them through its runfiles tree (`root: symlink`); a tool's runfiles in an action and a test's runfiles hold them too.",
+  "An executing build only (`--nobuild` succeeds): a main-repository subpackage below the directory is `ListDir pkg/cross.txt failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub` then `... failed: 1 input file(s) are in error` (a genrule: `Executing genrule //pkg:gen_cross failed: ...`; a requested filegroup: `//pkg:fg_cross: error traversing directory ...` / `1 input file(s) are in error`; a binary's runfiles likewise); a link into an enclosing directory is `ERROR: infinite symlink expansion detected` with the chain [<WS>/pkg, <WS>/pkg/loopdir/up], then `Error while traversing directory pkg/loopdir/up: Infinite symlink expansion`; a symlink cycle is `ERROR: circular symlinks detected` [<WS>/pkg/cycledir/a, <WS>/pkg/cycledir/b], then `Error while traversing directory pkg/cycledir/<a or b>: Symlink cycle` (genuine reports either link: its children are evaluated in parallel; native the first in byte order).",
+  "Change tracking across --batch invocations (the action cache): no change, `touch` of a file or of directories: no action runs again; new content, a new empty directory, a retargeted dangling link, the dangling link's target appearing, a removed empty directory: the consumers run again, an unrelated directory's consumer does not. A chmod +x of a file inside: genuine does not run again (the digest is content only) and keeps the stale listing `f- ./a.txt`.",
+  "A spawn's staging (`find` without -L): genuine's sandbox shows the input as a symlink to the directory with the links inside unchanged; no-sandbox (local) execution shows the execroot's real directory with the links.",
+  "A directory and a file inside it as inputs of one action build (the file is reached through the directory)."
+ ],
+ "known_divergences": [
+  "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines; native result lines of source files are not compared (Bazel prints `up-to-date (nothing to build)`); native action progress is the action id for Starlark actions (`//pkg:cross#0 failed: ...`; genuine `ListDir pkg/cross.txt failed: ...`), the recorded messages are the part after it.",
+  "Declared divergences view, view_local, nested and incremental_chmod: see the cases.",
+  "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
+ ],
+ "counts": {
+  "MATCH": 15,
+  "DECLARED_DIVERGENCE": 4
+ },
+ "scratch_removed": true,
+ "cases": {
+  "probe": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:probe"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.36,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/probe.txt": [
+        "0o555",
+        "path=pkg/dir short_path=pkg/dir is_directory=False is_source=True is_symlink=False basename=dir extension=\"\" dirname=pkg owner=@@//pkg:dir root=\"\"\npath=external/+pkg_repo+npmish/package short_path=../+pkg_repo+npmish/package is_directory=False is_source=True is_symlink=False basename=package extension=\"\" dirname=external/+pkg_repo+npmish owner=@@+pkg_repo+npmish//:package root=\"\"\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.399,
+      "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/probe.txt": [
+        "0o555",
+        "path=pkg/dir short_path=pkg/dir is_directory=False is_source=True is_symlink=False basename=dir extension=\"\" dirname=pkg owner=@@//pkg:dir root=\"\"\npath=external/+pkg_repo+npmish/package short_path=../+pkg_repo+npmish/package is_directory=False is_source=True is_symlink=False basename=package extension=\"\" dirname=external/+pkg_repo+npmish owner=@@+pkg_repo+npmish//:package root=\"\"\n"
+       ]
+      }
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "inputs": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:list_local",
+      "//pkg:list_ext",
+      "//pkg:list_both",
+      "//pkg:gen"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.961,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 5 targets (7 packages loaded, 15 targets configured).\nINFO: Found 5 targets...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list_both up-to-date:\n  bazel-bin/pkg/list_both.txt\n  bazel-bin/pkg/list_both.stamp\nTarget //pkg:list_local up-to-date:\n  bazel-bin/pkg/list_local.txt\n  bazel-bin/pkg/list_local.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 1 internal, 1 local, 4 processwrapper-sandbox.\nINFO: Build completed successfully, 6 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_both.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_local.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.444,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_both\tbazel-out/k8-fastbuild/bin/pkg/list_both.txt\n//pkg:list_both\tbazel-out/k8-fastbuild/bin/pkg/list_both.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n//pkg:list_local\tbazel-out/k8-fastbuild/bin/pkg/list_local.txt\n//pkg:list_local\tbazel-out/k8-fastbuild/bin/pkg/list_local.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_both.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_local.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      }
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "use_tool": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:use_tool"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.88,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:use_tool (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:use_tool up-to-date:\n  bazel-bin/pkg/use_tool.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/use_tool.txt": [
+        "0o555",
+        "== bazel-out/k8-opt-exec/bin/pkg/show.sh.runfiles/_main/pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n== bazel-out/k8-opt-exec/bin/pkg/show.sh.runfiles/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 3.042,
+      "stdout": "//pkg:use_tool\tbazel-out/k8-fastbuild/bin/pkg/use_tool.txt\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/use_tool.txt": [
+        "0o555",
+        "== bazel-out/k8-opt-exec/bin/pkg/show.sh.runfiles/_main/pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n== bazel-out/k8-opt-exec/bin/pkg/show.sh.runfiles/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      }
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "requested": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:fg"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.708,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:fg up-to-date (nothing to build)\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+      "outputs": {}
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.371,
+      "stdout": "//pkg:fg\t<WS>/pkg/dir\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {}
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "run_show": {
+   "steps": [
+    {
+     "argv": [
+      "run",
+      "//pkg:show",
+      "--",
+      "--root",
+      "pkg/dir",
+      "../+pkg_repo+npmish/package"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.538,
+      "stdout": "root: symlink pkg/dir\n== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\nroot: symlink ../+pkg_repo+npmish/package\n== ../+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show (6 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:show up-to-date:\n  bazel-bin/pkg/show.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 6 internal.\nINFO: Build completed successfully, 6 total actions\nINFO: Running command line: bazel-bin/pkg/show.sh <args omitted>\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.437,
+      "stdout": "root: symlink pkg/dir\n== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\nroot: symlink ../+pkg_repo+npmish/package\n== ../+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:show\t<CACHE>/actions/f2c93b9a66ec27c32463a47df84d2482ba641f45eaa2f4b96c3558b0fe2704e4/outputs/bazel-out/k8-fastbuild/bin/pkg/show.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/249cac3aecf5c13227969987872f4e969576d782597b7e4d165fe18070c855ef/outputs/bazel-out/k8-fastbuild/bin/pkg/show.sh <args omitted>\n",
+      "outputs": null
+     },
+     "expected_stdout": "root: symlink pkg/dir\n== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\nroot: symlink ../+pkg_repo+npmish/package\n== ../+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "test": {
+   "steps": [
+    {
+     "argv": [
+      "test",
+      "//pkg:show_test"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 13.616,
+      "stdout": "//pkg:show_test                                                          PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show_test (80 packages loaded, 836 targets configured).\nINFO: Found 1 test target...\nTarget //pkg:show_test up-to-date:\n  bazel-bin/pkg/show_test.sh\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 7 processes: 6 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 7 total actions\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 20.495,
+      "stdout": "//pkg:show_test                                                          PASSED in 0.1s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:show_test\t<CACHE>/actions/75ea81110200215ad4812311f0cc983261690c12429b75b31c9bd52e88e4443f/outputs/bazel-out/k8-fastbuild/bin/pkg/show_test.sh\nbazel-rs: 4 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": null
+     },
+     "expected_stdout": "//pkg:show_test                                                          PASSED in <T>s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "nobuild_all": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "--nobuild",
+      "//pkg:all"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 13.355,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 18 targets (82 packages loaded, 860 targets configured).\nINFO: Found 18 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 18.093,
+      "stdout": "//pkg:cross\tbazel-out/k8-fastbuild/bin/pkg/cross.txt\n//pkg:cross\tbazel-out/k8-fastbuild/bin/pkg/cross.stamp\n//pkg:cycle\tbazel-out/k8-fastbuild/bin/pkg/cycle.txt\n//pkg:cycle\tbazel-out/k8-fastbuild/bin/pkg/cycle.stamp\n//pkg:fg\t<WS>/pkg/dir\n//pkg:fg_cross\t<WS>/pkg/crossdir\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:gen_cross\tbazel-out/k8-fastbuild/bin/pkg/gen_cross.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_both\tbazel-out/k8-fastbuild/bin/pkg/list_both.txt\n//pkg:list_both\tbazel-out/k8-fastbuild/bin/pkg/list_both.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n//pkg:list_local\tbazel-out/k8-fastbuild/bin/pkg/list_local.txt\n//pkg:list_local\tbazel-out/k8-fastbuild/bin/pkg/list_local.stamp\n//pkg:loop\tbazel-out/k8-fastbuild/bin/pkg/loop.txt\n//pkg:loop\tbazel-out/k8-fastbuild/bin/pkg/loop.stamp\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n//pkg:show\tbazel-out/k8-fastbuild/bin/pkg/show.sh\n//pkg:show_cross\tbazel-out/k8-fastbuild/bin/pkg/show_cross.sh\n//pkg:show_test\tbazel-out/k8-fastbuild/bin/pkg/show_test.sh\n//pkg:use_tool\tbazel-out/k8-fastbuild/bin/pkg/use_tool.txt\n//pkg:view\tbazel-out/k8-fastbuild/bin/pkg/view.txt\n//pkg:view_local\tbazel-out/k8-fastbuild/bin/pkg/view_local.txt\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": null
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "query": {
+   "steps": [
+    {
+     "argv": [
+      "query",
+      "//pkg:dir + //pkg:crossdir + @npmish//:package"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 9.629,
+      "stdout": "//pkg:crossdir\n//pkg:dir\n@npmish//:package\n",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.369,
+      "stdout": "//pkg:crossdir\n//pkg:dir\n@npmish//:package\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n",
+      "outputs": null
+     },
+     "expected_stdout": "//pkg:crossdir\n//pkg:dir\n@npmish//:package\n"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "view": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:view"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.715,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:view (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:view up-to-date:\n  bazel-bin/pkg/view.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/view.txt": [
+        "0o555",
+        "== pkg/dir\nroot: symlink\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nl ./link_a -> a.txt\nl ./link_sub -> sub\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.356,
+      "stdout": "//pkg:view\tbazel-out/k8-fastbuild/bin/pkg/view.txt\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/view.txt": [
+        "0o555",
+        "== pkg/dir\nroot: directory\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nf ./link_a\nd ./link_sub\nf ./link_sub/b.txt\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
+       ]
+      }
+     }
+    }
+   ],
+   "declared_divergence": "staging: native stages a source directory like a tree artifact input, a real directory of read-only hardlinked store files (docs/HARDLINK_STAGING.md), its links followed (a link to a file is that file, a link to a directory a directory) and only dangling links kept as symlinks; genuine's sandbox stages a symlink to the directory, which shows the links as they are. Contents, executable bits and names are equal (cases inputs, use_tool, test).",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "view_local": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:view_local"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.287,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:view_local (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:view_local up-to-date:\n  bazel-bin/pkg/view_local.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 local.\nINFO: Build completed successfully, 2 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/view_local.txt": [
+        "0o555",
+        "== pkg/dir\nroot: directory\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nl ./link_a -> a.txt\nl ./link_sub -> sub\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.348,
+      "stdout": "//pkg:view_local\tbazel-out/k8-fastbuild/bin/pkg/view_local.txt\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/view_local.txt": [
+        "0o555",
+        "== pkg/dir\nroot: directory\nf ./a.txt\nl ./dangling -> missing.txt\nd ./empty\nf ./link_a\nd ./link_sub\nf ./link_sub/b.txt\nd ./sub\nf ./sub/b.txt\nf ./x.sh\n"
+       ]
+      }
+     }
+    }
+   ],
+   "declared_divergence": "staging: genuine's local (no-sandbox) execution shows the execroot's real directory with its links; native stages a real directory with the links followed (dangling links kept), like every native input (docs/HARDLINK_STAGING.md).",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "err_cross": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:cross"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 10.01,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:cross (5 packages loaded, 8 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:106:9: ListDir pkg/cross.txt failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\nERROR: <WS>/pkg/BUILD.bazel:106:9: ListDir pkg/cross.txt failed: 1 input file(s) are in error\nTarget //pkg:cross failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: <WS>/pkg/BUILD.bazel:106:9 ListDir pkg/cross.txt failed: 1 input file(s) are in error\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.358,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:106:9: //pkg:cross#0 failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\n<WS>/pkg/BUILD.bazel:106:9: //pkg:cross#0 failed: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "err_gen_cross": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:gen_cross"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 9.643,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:gen_cross (6 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:111:8: Executing genrule //pkg:gen_cross failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\nERROR: <WS>/pkg/BUILD.bazel:111:8: Executing genrule //pkg:gen_cross failed: 1 input file(s) are in error\nTarget //pkg:gen_cross failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: <WS>/pkg/BUILD.bazel:111:8 Executing genrule //pkg:gen_cross failed: 1 input file(s) are in error\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.373,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:111:8: Executing genrule //pkg:gen_cross failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\n<WS>/pkg/BUILD.bazel:111:8: Executing genrule //pkg:gen_cross failed: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "err_fg_cross": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:fg_cross"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 10.036,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:fg_cross (5 packages loaded, 8 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:118:10: //pkg:fg_cross: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\nERROR: <WS>/pkg/BUILD.bazel:118:10: 1 input file(s) are in error\nTarget //pkg:fg_cross failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.369,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:118:10: //pkg:fg_cross: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\n<WS>/pkg/BUILD.bazel:118:10: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "err_runfiles_cross": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:show_cross"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 9.88,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show_cross (5 packages loaded, 8 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:123:7: RunfilesTree pkg/show_cross.sh.runfiles failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\nERROR: <WS>/pkg/BUILD.bazel:123:7: RunfilesTree pkg/show_cross.sh.runfiles failed: 1 input file(s) are in error\nTarget //pkg:show_cross failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: <WS>/pkg/BUILD.bazel:123:7 RunfilesTree pkg/show_cross.sh.runfiles failed: 1 input file(s) are in error\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 5 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.35,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: <WS>/pkg/BUILD.bazel:123:7: //pkg:show_cross#runfiles_tree failed: error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub\n<WS>/pkg/BUILD.bazel:123:7: //pkg:show_cross#runfiles_tree failed: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:crossdir': Directory artifact pkg/crossdir crosses package boundary into package rooted at pkg/crossdir/sub"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "err_loop": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:loop"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 9.903,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:loop (5 packages loaded, 8 targets configured).\nERROR: infinite symlink expansion detected\n[start of symlink chain]\n<WS>/pkg\n<WS>/pkg/loopdir/up\n[end of symlink chain]\nERROR: <WS>/pkg/BUILD.bazel:128:9: ListDir pkg/loop.txt failed: error traversing directory '//pkg:loopdir': Error while traversing directory pkg/loopdir/up: Infinite symlink expansion\nERROR: <WS>/pkg/BUILD.bazel:128:9: ListDir pkg/loop.txt failed: 1 input file(s) are in error\nTarget //pkg:loop failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: <WS>/pkg/BUILD.bazel:128:9 ListDir pkg/loop.txt failed: 1 input file(s) are in error\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.356,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: infinite symlink expansion detected\n[start of symlink chain]\n<WS>/pkg\n<WS>/pkg/loopdir/up\n[end of symlink chain]\n<WS>/pkg/BUILD.bazel:128:9: //pkg:loop#0 failed: error traversing directory '//pkg:loopdir': Error while traversing directory pkg/loopdir/up: Infinite symlink expansion\n<WS>/pkg/BUILD.bazel:128:9: //pkg:loop#0 failed: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:loopdir': Error while traversing directory pkg/loopdir/up: Infinite symlink expansion"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "err_cycle": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:cycle"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 1,
+      "seconds": 9.882,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:cycle (5 packages loaded, 8 targets configured).\nERROR: circular symlinks detected\n[start of symlink cycle]\n<WS>/pkg/cycledir/a\n<WS>/pkg/cycledir/b\n[end of symlink cycle]\nERROR: <WS>/pkg/BUILD.bazel:133:9: ListDir pkg/cycle.txt failed: error traversing directory '//pkg:cycledir': Error while traversing directory pkg/cycledir/b: Symlink cycle\nERROR: <WS>/pkg/BUILD.bazel:133:9: ListDir pkg/cycle.txt failed: 1 input file(s) are in error\nTarget //pkg:cycle failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: <WS>/pkg/BUILD.bazel:133:9 ListDir pkg/cycle.txt failed: 1 input file(s) are in error\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
+      "outputs": null
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.38,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: circular symlinks detected\n[start of symlink cycle]\n<WS>/pkg/cycledir/a\n<WS>/pkg/cycledir/b\n[end of symlink cycle]\n<WS>/pkg/BUILD.bazel:133:9: //pkg:cycle#0 failed: error traversing directory '//pkg:cycledir': Error while traversing directory pkg/cycledir/a: Symlink cycle\n<WS>/pkg/BUILD.bazel:133:9: //pkg:cycle#0 failed: 1 input file(s) are in error\n",
+      "outputs": null
+     },
+     "expected_message": "error traversing directory '//pkg:cycledir': Error while traversing directory pkg/cycledir/"
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "nested": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:nested"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 9.857,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:nested (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:nested up-to-date:\n  bazel-bin/pkg/nested.txt\n  bazel-bin/pkg/nested.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/nested.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n== pkg/dir/a.txt\n(file)\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 1,
+      "seconds": 0.349,
+      "stdout": "",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:nested: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:49, in _list_impl\n      ctx.actions.run_shell(\nerror: overlapping input destination 'pkg/dir/a.txt'\n  --> //pkg:defs.bzl:49:5\n   |\n49 |       ctx.actions.run_shell(\n   |  _____^\n50 | |         inputs = ctx.files.srcs,\n51 | |         outputs = [out, stamp],\n52 | |         command = _LIST + '''\n53 | | set -eu\n54 | | out=\"$1\"; stamp=\"$2\"; shift 2\n55 | | for d in \"$@\"; do list \"$d\"; done > \"$out\"\n56 | | cat /proc/sys/kernel/random/uuid > \"$stamp\"\n57 | | ''',\n58 | |         arguments = [out.path, stamp.path] + [f.path for f in ctx.files.srcs],\n59 | |         mnemonic = \"ListDir\",\n60 | |         execution_requirements = ctx.attr.reqs,\n61 | |     )\n   | |_____^\n   |\n\n",
+      "outputs": null
+     }
+    }
+   ],
+   "declared_divergence": "pre-existing native structure check: an action whose inputs include a source directory and a file below it is rejected at analysis (native validates input destinations before it knows which source inputs are directories); genuine stages the directory and reaches the file through it",
+   "native_message": "overlapping input destination 'pkg/dir/a.txt'",
+   "verdict": "DECLARED_DIVERGENCE"
+  },
+  "incremental": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 10.102,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 4 processes: 1 internal, 3 processwrapper-sandbox.\nINFO: Build completed successfully, 4 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.443,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 3 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.441,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 3 action cache hit, 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.462,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 3 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "touch",
+       "pkg/dir/a.txt"
+      ],
+      [
+       "touch",
+       "pkg/dir"
+      ],
+      [
+       "touch",
+       "pkg/dir/sub"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.538,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 3 action cache hit, 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.375,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 3 cache hits (experimental local execution; not sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": false,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "write",
+       "pkg/dir/sub/b.txt",
+       "b2\n"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.475,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 action cache hit, 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.423,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "mkdir",
+       "pkg/dir/empty2"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.625,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 action cache hit, 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.457,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "symlink",
+       "missing2.txt",
+       "pkg/dir/dangling"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.535,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 action cache hit, 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.457,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "write",
+       "pkg/dir/missing2.txt",
+       "m\n"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.427,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 action cache hit, 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nmissing2.txt\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\nf- ./dangling: m|\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nf- ./missing2.txt: m|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.437,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nempty2\nlink_a\nlink_sub\nmissing2.txt\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\nf- ./dangling: m|\nd ./empty\nd ./empty2\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nf- ./missing2.txt: m|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list",
+      "//pkg:gen",
+      "//pkg:list_ext"
+     ],
+     "mutate": [
+      [
+       "rmdir",
+       "pkg/dir/empty2"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.567,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (7 packages loaded, 12 targets configured).\nINFO: Found 3 targets...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nTarget //pkg:gen up-to-date:\n  bazel-bin/pkg/gen.txt\n  bazel-bin/pkg/gen.stamp\nTarget //pkg:list_ext up-to-date:\n  bazel-bin/pkg/list_ext.txt\n  bazel-bin/pkg/list_ext.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 1 action cache hit, 1 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nmissing2.txt\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\nf- ./dangling: m|\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nf- ./missing2.txt: m|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.428,
+      "stdout": "//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.txt\n//pkg:gen\tbazel-out/k8-fastbuild/bin/pkg/gen.stamp\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.txt\n//pkg:list_ext\tbazel-out/k8-fastbuild/bin/pkg/list_ext.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 1 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.txt": [
+        "0o555",
+        ".\n..\na.txt\ndangling\nempty\nlink_a\nlink_sub\nmissing2.txt\nsub\nx.sh\npkg/dir\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\nf- ./dangling: m|\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b2|\nf- ./missing2.txt: m|\nd ./sub\nf- ./sub/b.txt: b2|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ],
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.txt": [
+        "0o555",
+        "== external/+pkg_repo+npmish/package\nd ./bin\nfx ./bin/cli.js: #!/bin/sh|echo cli|\n? ./dangling\nd ./emptydir\nd ./lib\nf- ./lib/index.js: module.exports = 1;|\nf- ./main.js: module.exports = 1;|\nd ./nested\nf- ./nested/BUILD.bazel: # not a package boundary|\nf- ./nested/n.txt: n|\nfx ./package.json: {\"name\": \"npmish\"}|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/gen.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true,
+       "bazel-out/k8-fastbuild/bin/pkg/list_ext.stamp": false
+      }
+     }
+    }
+   ],
+   "verdict": "MATCH"
+  },
+  "incremental_chmod": {
+   "steps": [
+    {
+     "argv": [
+      "build",
+      "//pkg:list"
+     ],
+     "mutate": [],
+     "genuine": {
+      "exit": 0,
+      "seconds": 9.825,
+      "stdout": "",
+      "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:list (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.392,
+      "stdout": "//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      }
+     }
+    },
+    {
+     "argv": [
+      "build",
+      "//pkg:list"
+     ],
+     "mutate": [
+      [
+       "chmod",
+       "755",
+       "pkg/dir/a.txt"
+      ]
+     ],
+     "genuine": {
+      "exit": 0,
+      "seconds": 2.595,
+      "stdout": "",
+      "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:list (5 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //pkg:list up-to-date:\n  bazel-bin/pkg/list.txt\n  bazel-bin/pkg/list.stamp\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 action cache hit, 1 internal.\nINFO: Build completed successfully, 1 total action\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nf- ./a.txt: a|\n? ./dangling\nd ./empty\nf- ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": false
+      }
+     },
+     "native": {
+      "exit": 0,
+      "seconds": 0.438,
+      "stdout": "//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.txt\n//pkg:list\tbazel-out/k8-fastbuild/bin/pkg/list.stamp\n",
+      "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+      "outputs": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.txt": [
+        "0o555",
+        "== pkg/dir\nfx ./a.txt: a|\n? ./dangling\nd ./empty\nfx ./link_a: a|\nd ./link_sub\nf- ./link_sub/b.txt: b|\nd ./sub\nf- ./sub/b.txt: b|\nfx ./x.sh: #!/bin/sh|echo x|\n"
+       ]
+      },
+      "reexecuted": {
+       "bazel-out/k8-fastbuild/bin/pkg/list.stamp": true
+      }
+     }
+    }
+   ],
+   "declared_divergence": "change tracking: native keys every staged file's executable bits (they are part of the staged content, docs/HARDLINK_STAGING.md), so a chmod +x inside a source directory runs its consumers again with the new mode; genuine's source directory fingerprint is paths and content digests only, so the action is not run again and its output keeps the stale mode (sounder natively)",
+   "verdict": "DECLARED_DIVERGENCE"
+  }
+ }
+}

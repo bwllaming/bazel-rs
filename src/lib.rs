@@ -116,6 +116,7 @@ pub mod sandbox;
 pub mod scheduler;
 mod shared_actions;
 pub mod snapshot;
+mod source_directories;
 pub mod source_links;
 pub mod spawn_lock;
 pub mod starlark_options;

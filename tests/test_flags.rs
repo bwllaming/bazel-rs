@@ -346,17 +346,15 @@ show(name = "sel_dir", s = select({":data_dir_r": "D", "//conditions:default": "
         "{text}"
     );
     // (iii) N23a: runfiles of an early-planned key reach its dependents,
-    // and N27's source-directory gate covers a requested early-planned
-    // key's runfiles.
+    // and a requested early-planned key's runfiles may hold a source
+    // directory (docs/SOURCE_DIRECTORIES.md).
     let text = ok(&f.run("build", &["//:rf"]));
     assert!(
         text.contains("RF //:data [\"a.txt\", \"data.txt\"] matched"),
         "{text}"
     );
-    rejected(
-        &f.run("build", &["//:sel_dir", "//:data_dir"]),
-        "//:data_dir: source directory '//:dir' in its runfiles is not supported by the native profile",
-    );
+    let text = ok(&f.run("build", &["//:sel_dir", "//:data_dir"]));
+    assert!(text.contains("SHOW //:sel_dir D"), "{text}");
 }
 
 #[test]

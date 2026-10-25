@@ -989,6 +989,7 @@ fields!(crate::action::WriteAction { content });
 fields!(crate::action::ActionExtra {
     tree_outputs,
     tree_inputs,
+    source_directories,
     param_files,
     inherited_environment,
     client_environment,

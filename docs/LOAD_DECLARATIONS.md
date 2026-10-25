@@ -210,13 +210,9 @@ Every prerequisite of a Starlark `attr.label`, `attr.label_list`,
   prerequisite since N50, and `allow_rules` applies RuleContext's rule-class
   check with the mandatory-provider fallback (docs/SH_BINARY.md).
 * A source directory is an input-file target like any file, matched by name
-  (`godir.go` passes `[".go"]`, `dir` gets the error pair). Using one as an
-  action input or requested output (Bazel tracks source directories
-  unsoundly) fails explicitly: `source directory 'L' as an action input is
-  not supported by the native profile`; likewise as a requested target's
-  runfile, which is built with it (N23a hidden top-level runfiles): `T:
-  source directory 'L' in its runfiles is not supported by the native
-  profile`.
+  (`godir.go` passes `[".go"]`, `dir` gets the error pair). As an action
+  input, requested output or runfile it is tracked by content like Bazel
+  9.3's default and staged as a directory (docs/SOURCE_DIRECTORIES.md).
 
 ## Accepted but not analyzed (explicit analysis failure when used)
 

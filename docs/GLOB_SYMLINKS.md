@@ -105,11 +105,10 @@ Documented differences:
   with `exclude_directories = 0` used as a source (`dlink_dirs0`): Bazel accepts
   the directory as a source file target and as an action input. Natively (N27)
   it is an input-file target too (the receipt row records the earlier native
-  `source is not a regular file: LABEL`); only its use as an action input or
-  requested output is the explicit gap, named once per label of the
-  directory: `//dlink_dirs0:dump: source directory '//dlink_dirs0:d' as an
-  action input is not supported by the native profile` and the same for
-  `//dlink_dirs0:real`.
+  `source is not a regular file: LABEL`), and an action input: each label's
+  directory is staged at its own execution path (docs/SOURCE_DIRECTORIES.md;
+  until then its use as an action input or requested output was an explicit
+  native gap).
 * Native safety cap: one pattern visits at most 100000 entries below
   symlinked host directories (explicit error; Bazel has none). The native
   repository store and `--cache-dir` below a workspace are skipped by glob and

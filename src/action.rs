@@ -28,6 +28,10 @@
 //! file or directory it resolves to, like Bazel's TreeArtifactValue.visitTree
 //! (docs/TREE_SYMLINKS.md): the tree holds what it resolved to at its own
 //! path, and publication materializes it (a published tree has no symlinks).
+//! Source directories (source artifacts naming a directory,
+//! docs/SOURCE_DIRECTORIES.md) are directory inputs keyed by content like
+//! Bazel's tracked source directories: symlinks below them are followed,
+//! dangling ones kept, and each is read once per process.
 //!
 //! Staging and publication never copy file contents (docs/HARDLINK_STAGING.md).
 //! Every staged or published regular file is an inode of the cache's
@@ -269,9 +273,18 @@ pub struct ActionExtra {
     #[serde(with = "crate::snapshot::codec::path_set")]
     pub symlink_outputs: BTreeSet<PathBuf>,
     /// Input destinations that are tree artifacts (directories); every other
-    /// input must be a regular file.
+    /// input must be a regular file or a source directory.
     #[serde(with = "crate::snapshot::codec::path_set")]
     pub tree_inputs: BTreeSet<PathBuf>,
+    /// Input destinations that are source directories: source artifacts
+    /// naming a directory (a package's directory used as a file target, an
+    /// external repository's directory such as rules_js's npm `package`),
+    /// keyed by everything below them like Bazel 9.3's tracked source
+    /// directories (ArtifactFunction.createSourceValue,
+    /// TrackSourceDirectoriesFlag) and staged as a real directory of their
+    /// files ([`SourceDirectory`], docs/SOURCE_DIRECTORIES.md).
+    #[serde(with = "crate::snapshot::codec::path_set")]
+    pub source_directories: BTreeSet<PathBuf>,
     /// Parameter files (CommandLines.ParamFileActionInput): written below
     /// the execution root before the process starts; content-keyed.
     #[serde(with = "crate::snapshot::codec::path_contents")]
@@ -559,12 +572,44 @@ struct OutputTree<'a> {
     execroot: Option<&'a Path>,
 }
 
+/// A source directory input as Bazel 9.3 tracks it (source directory
+/// tracking is on by default in Bazel, TrackSourceDirectoriesFlag:
+/// ArtifactFunction.createSourceValue fingerprints what
+/// RecursiveFilesystemTraversalFunction finds below the directory): every
+/// regular file and directory below it, symlinks followed — a link to a file
+/// is that file at the link's path, a link to a directory is walked at the
+/// link's path — and the dangling symlinks, tracked by their link text
+/// (ResolvedFileFactory.danglingSymlink). Read once per process
+/// ([`read_source_directory`]), like Bazel's per-build artifact value.
+#[derive(Clone, PartialEq, Eq)]
+struct SourceDirectory {
+    /// Regular files by path relative to the directory; a file a symlink
+    /// led to is read at its canonical path (the target's content and
+    /// executable bits).
+    files: BTreeMap<PathBuf, Input>,
+    /// Every directory below the root, empty ones included
+    /// (DirectoryArtifactTraversalRequest.emitEmptyDirectoryNodes).
+    directories: BTreeSet<PathBuf>,
+    /// Dangling symlinks: relative path -> link text.
+    dangling: BTreeMap<PathBuf, PathBuf>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 enum Staged {
     File(Input),
     /// Shared: a published tree is read once per process and every consumer
     /// stages the same value ([`read_staged`]).
     Tree(Arc<Tree>),
+    /// Shared like a tree: a source directory is read once per process.
+    SourceDirectory(Arc<SourceDirectory>),
+}
+
+/// How [`prepare`] reads an input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputKind {
+    File,
+    Tree,
+    SourceDirectory,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2113,17 +2158,17 @@ fn relocated(tree: Tree, root: &Path) -> Tree {
 /// and no filesystem access is needed: a file of the immutable stores (no
 /// published symlink to follow there) or a memoized published tree (a real
 /// directory when it was read, and published trees stay in place).
-fn memoized_staged(path: &Path, tree: bool, root: Option<&Path>) -> Option<Staged> {
-    if tree {
-        published_output(root, path)
+fn memoized_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Option<Staged> {
+    match kind {
+        InputKind::Tree => published_output(root, path)
             .then(|| memoized_tree(path))
             .flatten()
-            .map(Staged::Tree)
-    } else {
-        store_file(root, path)
+            .map(Staged::Tree),
+        InputKind::File => store_file(root, path)
             .then(|| memoized_file(path))
             .flatten()
-            .map(Staged::File)
+            .map(Staged::File),
+        InputKind::SourceDirectory => memoized_source_directory(path).map(Staged::SourceDirectory),
     }
 }
 
@@ -2146,10 +2191,15 @@ fn absolute_input(source: &Path) -> io::Result<PathBuf> {
 
 /// A tree input that resolves to a published tree takes its value from the
 /// tree memo (read and remembered on a miss); any other tree is read, its
-/// symlinks followed ([`TreeRead::Input`]).
-fn read_staged(path: &Path, tree: bool, root: Option<&Path>) -> Result<Staged, String> {
-    if !tree {
-        return Ok(Staged::File(read_input(path, root, true)?));
+/// symlinks followed ([`TreeRead::Input`]). A source directory is read once
+/// per process ([`source_directory`]).
+fn read_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Result<Staged, String> {
+    match kind {
+        InputKind::File => return Ok(Staged::File(read_input(path, root, true)?)),
+        InputKind::SourceDirectory => {
+            return Ok(Staged::SourceDirectory(source_directory(path, root)?));
+        }
+        InputKind::Tree => {}
     }
     let (resolved, _) = resolve_published(path, root)?;
     if !published_output(root, &resolved) {
@@ -2191,6 +2241,205 @@ fn tree_listing(tree: &Tree) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = tree.files.keys().cloned().collect();
     files.sort_by(|a, b| a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes()));
     files
+}
+
+/// One source directory's memo slot: filled by the first reader while the
+/// others wait for it (single flight); only a successful read is kept.
+type SourceDirectorySlot = Arc<Mutex<Option<Arc<SourceDirectory>>>>;
+
+/// Source directories read by this process, by path ([`source_directory`]).
+/// Like Bazel's per-build artifact value of a source directory
+/// (ArtifactFunction.createSourceValue, computed once per build), every
+/// consumer in one command stages the value of the first read, so one build
+/// never keys or stages two states of one directory. Bounded like the tree
+/// memo (a memo that would exceed TREE_MEMO_LIMIT entries starts over).
+#[derive(Default)]
+struct SourceDirectoryMemo {
+    slots: HashMap<PathBuf, SourceDirectorySlot>,
+    /// Files, directories and dangling links of the filled slots.
+    entries: usize,
+}
+
+fn source_directory_memo() -> &'static Mutex<SourceDirectoryMemo> {
+    static MEMO: OnceLock<Mutex<SourceDirectoryMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(SourceDirectoryMemo::default()))
+}
+
+fn source_directory_entries(directory: &SourceDirectory) -> usize {
+    directory.files.len() + directory.directories.len() + directory.dangling.len()
+}
+
+/// The memoized value of the source directory at `path`, without waiting
+/// for a read in progress.
+fn memoized_source_directory(path: &Path) -> Option<Arc<SourceDirectory>> {
+    let slot = source_directory_memo()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .slots
+        .get(path)
+        .cloned()?;
+    let value = slot.try_lock().ok()?;
+    value.clone()
+}
+
+/// The source directory at `path`: its memoized value, or read (once per
+/// process, [`read_source_directory`]) and remembered.
+fn source_directory(path: &Path, root: Option<&Path>) -> Result<Arc<SourceDirectory>, String> {
+    let slot = Arc::clone(
+        source_directory_memo()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .slots
+            .entry(path.to_path_buf())
+            .or_default(),
+    );
+    let mut value = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(directory) = value.as_ref() {
+        return Ok(Arc::clone(directory));
+    }
+    let directory = Arc::new(read_source_directory(path, root)?);
+    *value = Some(Arc::clone(&directory));
+    drop(value);
+    let entries = source_directory_entries(&directory);
+    let mut memo = source_directory_memo()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if memo.entries + entries > TREE_MEMO_LIMIT {
+        memo.slots.retain(|_, other| Arc::ptr_eq(other, &slot));
+        memo.entries = 0;
+    }
+    if entries <= TREE_MEMO_LIMIT {
+        memo.entries += entries;
+    } else {
+        memo.slots.remove(path);
+    }
+    Ok(directory)
+}
+
+/// Walk a source directory like Bazel 9.3's source directory traversal
+/// (ArtifactFunction.createSourceValue over RecursiveFilesystemTraversal
+/// Function.traverseSourceChildren: one FileValue per entry, symlinks
+/// followed): a symlink to a file is that file at the link's path
+/// (ResolvedFileFactory.symlinkToFile, the target's metadata), a symlink to a
+/// directory is walked at the link's path (symlinkToDirectory), a dangling
+/// symlink is recorded with its link text (danglingSymlink), and every
+/// directory is recorded (DirectoryArtifactTraversalRequest.emitEmptyDirectory
+/// Nodes). A link chain that does not resolve (ELOOP) or a directory link back
+/// into a directory it lies in fails (Bazel's FileSymlinkCycleException and
+/// FileSymlinkInfiniteExpansionException, whose texts the planner reports
+/// before execution, crate::engine); special files fail explicitly. Files
+/// are read after the walk ([`try_map_ordered`]) at their own path, or a
+/// linked one at its canonical path; the first failure in walk order is
+/// reported.
+fn read_source_directory(root: &Path, cache: Option<&Path>) -> Result<SourceDirectory, String> {
+    let root_metadata = real_directory(root, cache)?;
+    let owned = owned_by(cache, root);
+    let mut directories = BTreeSet::new();
+    let mut dangling = BTreeMap::new();
+    // (relative path, where it is read, its lstat when read in place, owned)
+    let mut files: Vec<(PathBuf, PathBuf, Option<fs::Metadata>, bool)> = Vec::new();
+    // The directories the root lies in (itself included): a link back into
+    // any of them expands without bound (FileFunction checks a link's
+    // target against every ancestor of the link's path). `real_directory`
+    // admitted no linked ancestor, so these are the root's real ancestors.
+    let mut root_ancestors = vec![(root_metadata.dev(), root_metadata.ino())];
+    for ancestor in root.ancestors().skip(1) {
+        if let Ok(metadata) = fs::metadata(ancestor) {
+            root_ancestors.push((metadata.dev(), metadata.ino()));
+        }
+    }
+    let walk = || -> Result<(), String> {
+        // Directories to list: the relative path, whether a link led there,
+        // and the identities of the directories it lies in (itself included).
+        let mut pending = vec![(PathBuf::new(), false, root_ancestors)];
+        while let Some((relative, linked, ancestors)) = pending.pop() {
+            let directory = root.join(&relative);
+            let mut names = fs::read_dir(&directory)
+                .map_err(|e| io_error("cannot list directory", &directory, e))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| io_error("cannot list directory", &directory, e))?;
+            names.sort();
+            for name in names {
+                let child = relative.join(&name);
+                let path = root.join(&child);
+                let metadata = fs::symlink_metadata(&path)
+                    .map_err(|e| io_error("cannot inspect", &path, e))?;
+                let through_link = linked || metadata.file_type().is_symlink();
+                let metadata = if metadata.file_type().is_symlink() {
+                    match fs::metadata(&path) {
+                        Ok(resolved) => resolved,
+                        Err(e)
+                            if e.kind() == io::ErrorKind::NotFound
+                                || e.raw_os_error()
+                                    == Some(rustix::io::Errno::NOTDIR.raw_os_error()) =>
+                        {
+                            let target = fs::read_link(&path)
+                                .map_err(|e| io_error("cannot read link", &path, e))?;
+                            dangling.insert(child, target);
+                            continue;
+                        }
+                        Err(e)
+                            if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) =>
+                        {
+                            return Err(format!(
+                                "source directory entry '{}': Symlink cycle",
+                                path.display()
+                            ));
+                        }
+                        Err(e) => return Err(io_error("cannot inspect", &path, e)),
+                    }
+                } else {
+                    metadata
+                };
+                if metadata.is_dir() {
+                    let identity = (metadata.dev(), metadata.ino());
+                    if ancestors.contains(&identity) {
+                        return Err(format!(
+                            "source directory entry '{}': Infinite symlink expansion",
+                            path.display()
+                        ));
+                    }
+                    let mut inner = ancestors.clone();
+                    inner.push(identity);
+                    directories.insert(child.clone());
+                    pending.push((child, through_link, inner));
+                } else if metadata.is_file() && through_link {
+                    // Read where the links lead (ResolvedFile metadata of
+                    // the resolved file).
+                    let target = fs::canonicalize(&path)
+                        .map_err(|e| io_error("cannot resolve", &path, e))?;
+                    let owned = owned_by(cache, &target);
+                    files.push((child, target, None, owned));
+                } else if metadata.is_file() {
+                    files.push((child, path, Some(metadata), owned));
+                } else {
+                    return Err(format!(
+                        "source directory entry '{}' is not a regular file, directory or symlink; such entries are not supported by the native profile",
+                        path.display()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+    let walked = walk();
+    let inputs = try_map_ordered(&files, |(_, path, metadata, owned)| match metadata {
+        Some(metadata) => read_regular_from(path, metadata.clone(), *owned, false),
+        None => fs::symlink_metadata(path)
+            .map_err(|e| io_error("cannot inspect", path, e))
+            .and_then(|metadata| read_regular_from(path, metadata, *owned, false)),
+    });
+    let mut directory = SourceDirectory {
+        files: BTreeMap::new(),
+        directories,
+        dangling,
+    };
+    for ((child, _, _, _), input) in files.into_iter().zip(inputs) {
+        directory.files.insert(child, input?);
+    }
+    walked?;
+    Ok(directory)
 }
 
 struct PreparedAction {
@@ -2366,6 +2615,16 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             return Err(format!(
                 "tree input '{}' is not an action input",
                 tree.display()
+            ));
+        }
+    }
+    for directory in &action.extra.source_directories {
+        if !action.inputs.iter().any(|(_, name)| name == directory)
+            || action.extra.tree_inputs.contains(directory)
+        {
+            return Err(format!(
+                "source directory '{}' is not a non-tree action input",
+                directory.display()
             ));
         }
     }
@@ -2550,6 +2809,27 @@ fn frame_staged(hash: &mut Sha256, staged: &Staged) {
                 frame(hash, name.as_os_str().as_bytes());
             }
         }
+        // Everything Bazel's source directory fingerprint covers
+        // (ArtifactFunction.createSourceValue: each traversed entry's path
+        // and digest, empty directories and dangling links by link text),
+        // plus the executable bits native staging carries.
+        Staged::SourceDirectory(directory) => {
+            frame(hash, b"source-directory");
+            frame_count(hash, directory.files.len());
+            for (name, input) in &directory.files {
+                frame(hash, name.as_os_str().as_bytes());
+                frame_input(hash, input);
+            }
+            frame_count(hash, directory.directories.len());
+            for name in &directory.directories {
+                frame(hash, name.as_os_str().as_bytes());
+            }
+            frame_count(hash, directory.dangling.len());
+            for (name, target) in &directory.dangling {
+                frame(hash, name.as_os_str().as_bytes());
+                frame(hash, target.as_os_str().as_bytes());
+            }
+        }
     }
 }
 
@@ -2575,15 +2855,19 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         }) => manifest == destination || executable.as_ref() == Some(destination),
         Some(_) => false,
     };
-    let reads: Vec<(&Path, bool)> = action
+    let reads: Vec<(&Path, InputKind)> = action
         .inputs
         .iter()
         .filter(|(_, destination)| read(destination))
         .map(|(source, destination)| {
-            (
-                source.as_path(),
-                action.extra.tree_inputs.contains(destination),
-            )
+            let kind = if action.extra.tree_inputs.contains(destination) {
+                InputKind::Tree
+            } else if action.extra.source_directories.contains(destination) {
+                InputKind::SourceDirectory
+            } else {
+                InputKind::File
+            };
+            (source.as_path(), kind)
         })
         .collect();
     // Inputs the per-process memos hold need no filesystem access; the
@@ -2592,14 +2876,14 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // it fails exactly where a sequential read would.
     let mut staged: Vec<Option<Result<Staged, String>>> = reads
         .iter()
-        .map(|&(source, tree)| memoized_staged(source, tree, root).map(Ok))
+        .map(|&(source, kind)| memoized_staged(source, kind, root).map(Ok))
         .collect();
     let misses: Vec<usize> = (0..staged.len())
         .filter(|&index| staged[index].is_none())
         .collect();
     let read_misses = try_map_ordered(&misses, |&index| {
-        let (source, tree) = reads[index];
-        read_staged(source, tree, root)
+        let (source, kind) = reads[index];
+        read_staged(source, kind, root)
     });
     for (&index, result) in misses.iter().zip(read_misses) {
         staged[index] = Some(result);
@@ -2885,6 +3169,15 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         for (path, content) in params {
             frame(&mut hash, path.as_os_str().as_bytes());
             frame(&mut hash, content);
+        }
+    }
+    // Only actions with source directory inputs frame this block, so every
+    // other key is unchanged.
+    if !extra.source_directories.is_empty() {
+        frame(&mut hash, b"source-directories");
+        frame_count(&mut hash, extra.source_directories.len());
+        for name in &extra.source_directories {
+            frame(&mut hash, name.as_os_str().as_bytes());
         }
     }
     Ok(PreparedAction {
@@ -3398,6 +3691,8 @@ fn stage_tree_link(
 /// (writable) directories holding hardlinked files. `alias` is the
 /// process's executable when it is a generated artifact: if it resolves to
 /// a repository tree's file it becomes a link to it ([`stage_tree_link`]).
+/// A source directory is staged like a tree, its dangling symlinks as
+/// symlinks with their link text (docs/SOURCE_DIRECTORIES.md).
 fn stage_inputs(
     cas: &Path,
     root: &Path,
@@ -3421,6 +3716,20 @@ fn stage_inputs(
                 }
                 for (file, input) in &tree.files {
                     stage_file(cas, root, input, execroot, &name.join(file), &mut staged)?;
+                }
+            }
+            Staged::SourceDirectory(directory) => {
+                ensure_directory(&execroot.join(name))?;
+                for child in &directory.directories {
+                    ensure_directory(&execroot.join(name).join(child))?;
+                }
+                for (file, input) in &directory.files {
+                    stage_file(cas, root, input, execroot, &name.join(file), &mut staged)?;
+                }
+                for (link, target) in &directory.dangling {
+                    let path = execroot.join(name).join(link);
+                    std::os::unix::fs::symlink(target, &path)
+                        .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
                 }
             }
         }
@@ -4209,20 +4518,31 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 /// backoff). Once a child starts, its wait result and exit status are never retried.
 /// Input files are staged as read-only hardlinks to store blobs (0444 plus
 /// their executable bits); a process that changes one in place fails.
-/// A regular file read by content for a process outside the action graph
-/// (a test action, crate::test_runner, N23g): its digest and executable
-/// bits, staged like any action input.
+/// A regular file (or a source directory) read by content for a process
+/// outside the action graph (a test action, crate::test_runner, N23g): its
+/// digest and executable bits, staged like any action input.
 #[derive(Clone)]
-pub struct ContentInput(Input);
+pub struct ContentInput(Staged);
 
 impl ContentInput {
-    /// The SHA-256 in lowercase hex.
+    /// The SHA-256 in lowercase hex: a file's content digest, a source
+    /// directory's framed listing (the action key's framing of it).
     pub fn digest(&self) -> String {
-        self.0.digest.hex()
+        match &self.0 {
+            Staged::File(input) => input.digest.hex(),
+            staged => {
+                let mut hash = Sha256::new();
+                frame_staged(&mut hash, staged);
+                hex(&hash.finalize())
+            }
+        }
     }
 
     pub fn executable(&self) -> bool {
-        self.0.executable != 0
+        match &self.0 {
+            Staged::File(input) => input.executable != 0,
+            _ => false,
+        }
     }
 }
 
@@ -4237,10 +4557,21 @@ fn cache_store(cache_root: &Path) -> Result<(PathBuf, PathBuf), String> {
 }
 
 /// Read `path` (a source file or a published output; published symlink
-/// outputs are followed) by content, like an action input (prepare).
+/// outputs are followed) by content, like an action input (prepare). A
+/// source directory (a real directory outside the cache's published outputs,
+/// a runfile like Bazel's runfiles link to it) is read like a source
+/// directory input.
 pub fn read_content_input(cache_root: &Path, path: &Path) -> Result<ContentInput, String> {
     let (root, _) = cache_store(cache_root)?;
-    read_input(path, Some(&root), true).map(ContentInput)
+    let directory = !published_output(Some(&root), path)
+        && fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir());
+    if directory {
+        return Ok(ContentInput(Staged::SourceDirectory(source_directory(
+            path,
+            Some(&root),
+        )?)));
+    }
+    read_input(path, Some(&root), true).map(|input| ContentInput(Staged::File(input)))
 }
 
 /// A runfile's source read by content ([`read_content_source`]).
@@ -4258,36 +4589,43 @@ pub enum ContentSource {
 /// .addSingleRunfilesTreeToInputs, exec/SpawnInputExpander.java:87-132).
 pub fn read_content_source(cache_root: &Path, path: &Path) -> Result<ContentSource, String> {
     let (root, _) = cache_store(cache_root)?;
+    // A source directory is one staged directory (docs/SOURCE_DIRECTORIES.md).
+    if !published_output(Some(&root), path)
+        && fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+    {
+        return read_content_input(cache_root, path).map(ContentSource::File);
+    }
     let (resolved, _) = resolve_published(path, Some(&root))?;
     if !fs::symlink_metadata(&resolved).is_ok_and(|metadata| metadata.is_dir()) {
         return read_input(path, Some(&root), true)
-            .map(|input| ContentSource::File(ContentInput(input)));
+            .map(|input| ContentSource::File(ContentInput(Staged::File(input))));
     }
-    match read_staged(path, true, Some(&root))? {
+    match read_staged(path, InputKind::Tree, Some(&root))? {
         Staged::Tree(tree) => Ok(ContentSource::Tree(
             tree.files
                 .iter()
-                .map(|(name, input)| (name.clone(), ContentInput(input.clone())))
+                .map(|(name, input)| (name.clone(), ContentInput(Staged::File(input.clone()))))
                 .collect(),
         )),
-        Staged::File(input) => Ok(ContentSource::File(ContentInput(input))),
+        staged => Ok(ContentSource::File(ContentInput(staged))),
     }
 }
 
 /// Stage content inputs below `execroot` at their relative destinations:
 /// read-only hardlinks of the cache's content-addressed store (N36), like
-/// stage_inputs for an action.
+/// stage_inputs for an action (a source directory as a real directory).
 pub fn stage_content_inputs(
     cache_root: &Path,
     inputs: &[(ContentInput, PathBuf)],
     execroot: &Path,
 ) -> Result<(), String> {
     let (root, cas) = cache_store(cache_root)?;
-    let mut staged = Vec::new();
+    let mut staged = BTreeMap::new();
     for (input, destination) in inputs {
         validate_relative(destination)?;
-        stage_file(&cas, &root, &input.0, execroot, destination, &mut staged)?;
+        staged.insert(destination.clone(), input.0.clone());
     }
+    stage_inputs(&cas, &root, &staged, execroot, None)?;
     Ok(())
 }
 
@@ -4336,9 +4674,9 @@ fn with_embedded_inputs(action: &Action, cas: &Path) -> Result<Action, String> {
 /// The REAPI action of a prepared process action
 /// (RemoteExecutionService.buildRemoteAction, crate::remote_cache): the argv,
 /// [`resolved_environment`], the input root (every regular input file at its
-/// execution path; tree inputs as their files, without empty
-/// subdirectories; parameter files at their paths, ParamFileActionInput)
-/// and the declared outputs.
+/// execution path; tree inputs and source directories as their files,
+/// without empty subdirectories; parameter files at their paths,
+/// ParamFileActionInput) and the declared outputs.
 fn remote_action(
     action: &Action,
     prepared: &PreparedAction,
@@ -4356,6 +4694,23 @@ fn remote_action(
             }
             Staged::Tree(tree) => {
                 for (name, input) in &tree.files {
+                    files.insert(path_string(&path.join(name))?, file_digest(input));
+                }
+            }
+            // MerkleTreeComputer.explodeDirectory (remote/merkletree/
+            // MerkleTreeComputer.java:1113-1141): the files below a source
+            // directory, symlinks followed, without empty directories; any
+            // other entry (a dangling symlink) is `The file type of '...' is
+            // not supported.`, which fails genuine's spawn, while native
+            // runs it locally.
+            Staged::SourceDirectory(directory) => {
+                if let Some(link) = directory.dangling.keys().next() {
+                    return Err(format!(
+                        "The file type of '{}' is not supported.",
+                        path.join(link).display()
+                    ));
+                }
+                for (name, input) in &directory.files {
                     files.insert(path_string(&path.join(name))?, file_digest(input));
                 }
             }
@@ -4854,7 +5209,9 @@ pub fn execute_with_remote(
                         name,
                         sibling.map(|sibling| match &inputs[sibling] {
                             Staged::File(input) => (sibling, input),
-                            Staged::Tree(_) => unreachable!("checked by run_transform"),
+                            Staged::Tree(_) | Staged::SourceDirectory(_) => {
+                                unreachable!("checked by run_transform")
+                            }
                         }),
                     )?),
                     None => None,
@@ -4879,6 +5236,7 @@ pub fn execute_with_remote(
                             runfiles: None,
                         }
                     }
+                    Staged::SourceDirectory(_) => unreachable!("checked by run_transform"),
                 });
             }
             if tree_output {
@@ -6573,6 +6931,218 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
                 tree.display()
             )
         );
+    }
+
+    /// Serializes the tests that forget the process-wide source directory
+    /// memo, so that one test's forgetting never interleaves with another's
+    /// reads.
+    fn source_directory_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Forget the per-process source directory memo (a command reads a
+    /// source directory once; these tests change one within the process).
+    fn forget_source_directories() {
+        let mut memo = source_directory_memo()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        memo.slots.clear();
+        memo.entries = 0;
+    }
+
+    /// A source directory with files (one executable), a subdirectory, an
+    /// empty directory, links to a file and a directory and a dangling link.
+    fn source_tree(root: &Path) -> PathBuf {
+        let dir = root.join("srcdir");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::create_dir_all(dir.join("empty")).unwrap();
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        fs::set_permissions(dir.join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(dir.join("sub/b.txt"), "b\n").unwrap();
+        fs::write(dir.join("x.sh"), "#!/bin/sh\n").unwrap();
+        fs::set_permissions(dir.join("x.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink("a.txt", dir.join("link_a")).unwrap();
+        std::os::unix::fs::symlink("sub", dir.join("link_sub")).unwrap();
+        std::os::unix::fs::symlink("missing.txt", dir.join("dangling")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn source_directory_inputs_are_staged_and_keyed_by_content() {
+        let _lock = source_directory_test_lock();
+        let fixture = Fixture::new();
+        let dir = source_tree(&fixture.0);
+        let mut action = fixture.action();
+        action.inputs = vec![(dir.clone(), "in/dir".into())];
+        action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
+        action.command = [
+            "cd in/dir",
+            "test ! -L . && test ! -L link_a && test ! -L link_sub",
+            "test -x x.sh && test -d empty && test -L dangling",
+            "{ cat a.txt link_a sub/b.txt link_sub/b.txt; readlink dangling; test -x a.txt && echo x || echo -; } > ../../out/result",
+        ]
+        .join(" && ");
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert!(!first.cache_hit);
+        assert_eq!(
+            fs::read(&first.outputs[0]).unwrap(),
+            b"a\na\nb\nb\nmissing.txt\n-\n"
+        );
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // A new process sees an unchanged directory: the same key.
+        forget_source_directories();
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // touch changes no content.
+        let file = fs::File::open(dir.join("sub/b.txt")).unwrap();
+        file.set_modified(SystemTime::now()).unwrap();
+        forget_source_directories();
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // Content, an empty directory, a link's target text, executable
+        // bits: each is a new key.
+        let changes: [&dyn Fn(); 4] = [
+            &|| fs::write(dir.join("sub/b.txt"), "c\n").unwrap(),
+            &|| fs::create_dir(dir.join("empty/inner")).unwrap(),
+            &|| {
+                fs::remove_file(dir.join("dangling")).unwrap();
+                std::os::unix::fs::symlink("other.txt", dir.join("dangling")).unwrap();
+            },
+            &|| fs::set_permissions(dir.join("a.txt"), fs::Permissions::from_mode(0o755)).unwrap(),
+        ];
+        for (index, change) in changes.iter().enumerate() {
+            change();
+            forget_source_directories();
+            assert!(
+                !execute(&fixture.cache(), &action).unwrap().cache_hit,
+                "change {index}"
+            );
+        }
+        let result = execute(&fixture.cache(), &action).unwrap();
+        assert_eq!(
+            fs::read(&result.outputs[0]).unwrap(),
+            b"a\na\nc\nc\nother.txt\nx\n"
+        );
+        // Within one process the first read is kept, like Bazel's per-build
+        // value: a later change is not seen until the next command.
+        fs::set_permissions(dir.join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
+        forget_source_directories();
+        let kept = execute(&fixture.cache(), &action).unwrap();
+        fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        let again = execute(&fixture.cache(), &action).unwrap();
+        assert!(again.cache_hit);
+        assert_eq!(again.outputs, kept.outputs);
+        // Without the source directory flag a directory input is rejected.
+        action.extra.source_directories.clear();
+        assert!(
+            execute(&fixture.cache(), &action)
+                .unwrap_err()
+                .contains("expected regular file")
+        );
+        forget_source_directories();
+    }
+
+    #[test]
+    fn source_directory_reads_fail_on_link_cycles_and_special_entries() {
+        let fixture = Fixture::new();
+        let dir = fixture.0.join("loop");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("..", dir.join("up")).unwrap();
+        let error = read_source_directory(&dir, None).err().unwrap();
+        assert!(
+            error.ends_with("up': Infinite symlink expansion"),
+            "{error}"
+        );
+        let cycle = fixture.0.join("cycle");
+        fs::create_dir_all(&cycle).unwrap();
+        std::os::unix::fs::symlink("b", cycle.join("a")).unwrap();
+        std::os::unix::fs::symlink("a", cycle.join("b")).unwrap();
+        let error = read_source_directory(&cycle, None).err().unwrap();
+        assert!(error.ends_with("a': Symlink cycle"), "{error}");
+        let special = fixture.0.join("special");
+        fs::create_dir_all(&special).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(special.join("s")).unwrap();
+        let error = read_source_directory(&special, None).err().unwrap();
+        assert!(
+            error.contains("is not a regular file, directory or symlink"),
+            "{error}"
+        );
+        // A directory through a linked ancestor is no source directory path.
+        std::os::unix::fs::symlink(&dir, fixture.0.join("linked")).unwrap();
+        let error = read_source_directory(&fixture.0.join("linked/sub"), None)
+            .err()
+            .unwrap();
+        assert!(error.contains("symlink is not allowed"), "{error}");
+    }
+
+    /// MerkleTreeComputer.explodeDirectory: a source directory enters the
+    /// remote input root as its files at their paths (links followed, no
+    /// empty directories), exactly like those files as separate inputs; a
+    /// dangling link is not supported.
+    #[test]
+    fn source_directories_enter_the_remote_input_root_as_their_files() {
+        let _lock = source_directory_test_lock();
+        let fixture = Fixture::new();
+        let dir = source_tree(&fixture.0);
+        fs::remove_file(dir.join("dangling")).unwrap();
+        let mut action = fixture.action();
+        action.inputs = vec![(dir.clone(), "in/dir".into())];
+        action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
+        let directory_key = remote_action(&action, &prepare(&action, None).unwrap())
+            .unwrap()
+            .key;
+        let mut files = fixture.action();
+        files.inputs = [
+            ("a.txt", "a.txt"),
+            ("a.txt", "link_a"),
+            ("sub/b.txt", "sub/b.txt"),
+            ("sub/b.txt", "link_sub/b.txt"),
+            ("x.sh", "x.sh"),
+        ]
+        .iter()
+        .map(|(source, name)| (dir.join(source), Path::new("in/dir").join(name)))
+        .collect();
+        let files_key = remote_action(&files, &prepare(&files, None).unwrap())
+            .unwrap()
+            .key;
+        assert_eq!(directory_key, files_key);
+        std::os::unix::fs::symlink("missing.txt", dir.join("dangling")).unwrap();
+        forget_source_directories();
+        let error = remote_action(&action, &prepare(&action, None).unwrap())
+            .err()
+            .unwrap();
+        assert_eq!(
+            error,
+            "The file type of 'in/dir/dangling' is not supported."
+        );
+        forget_source_directories();
+    }
+
+    #[test]
+    fn content_inputs_read_and_stage_source_directories() {
+        let _lock = source_directory_test_lock();
+        let fixture = Fixture::new();
+        let dir = source_tree(&fixture.0);
+        let input = read_content_input(&fixture.cache(), &dir).unwrap();
+        assert!(!input.executable());
+        let digest = input.digest();
+        let execroot = fixture.0.join("execroot");
+        stage_content_inputs(&fixture.cache(), &[(input, "r/dir".into())], &execroot).unwrap();
+        assert_eq!(
+            fs::read(execroot.join("r/dir/link_sub/b.txt")).unwrap(),
+            b"b\n"
+        );
+        assert!(execroot.join("r/dir/empty").is_dir());
+        assert_eq!(
+            fs::read_link(execroot.join("r/dir/dangling")).unwrap(),
+            Path::new("missing.txt")
+        );
+        fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        forget_source_directories();
+        assert_ne!(
+            read_content_input(&fixture.cache(), &dir).unwrap().digest(),
+            digest
+        );
+        forget_source_directories();
     }
 
     fn tree_walks() -> u64 {

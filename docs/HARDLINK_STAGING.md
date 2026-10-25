@@ -236,7 +236,8 @@ never trusted, so every cache executes its actions once more; the keys stay
   published output whose digest this command and, through the persistent
   digest memo, later commands trust.
 * Inside the action every input is a regular file; Bazel's sandboxes show
-  symlinks. `readlink` of a published symlink output names a native path
+  symlinks (a source directory's dangling symlinks stay symlinks,
+  docs/SOURCE_DIRECTORIES.md). `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
   One exception (below): an executable aliasing a repository file.
 * The store persists one copy of each distinct input/output content; there is

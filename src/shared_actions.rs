@@ -450,6 +450,7 @@ impl Fingerprint {
             tree_outputs,
             symlink_outputs,
             tree_inputs,
+            source_directories,
             param_files,
             inherited_environment,
             client_environment,
@@ -484,6 +485,12 @@ impl Fingerprint {
         if !symlink_outputs.is_empty() {
             self.tag(9);
             self.paths(symlink_outputs.iter());
+        }
+        // Source directory inputs are marked when actions are planned
+        // (crate::engine), after this key; keyed in case that changes.
+        if !source_directories.is_empty() {
+            self.tag(10);
+            self.paths(source_directories.iter());
         }
     }
 

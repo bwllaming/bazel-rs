@@ -1,0 +1,12 @@
+[
+ ["mkdir", "pkg/dir/empty"],
+ ["symlink", "a.txt", "pkg/dir/link_a"],
+ ["symlink", "sub", "pkg/dir/link_sub"],
+ ["symlink", "missing.txt", "pkg/dir/dangling"],
+ ["chmod", "755", "pkg/dir/x.sh"],
+ ["chmod", "644", "pkg/dir/a.txt"],
+ ["symlink", "..", "pkg/loopdir/up"],
+ ["mkdir", "pkg/cycledir"],
+ ["symlink", "b", "pkg/cycledir/a"],
+ ["symlink", "a", "pkg/cycledir/b"]
+]

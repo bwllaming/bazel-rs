@@ -1215,6 +1215,7 @@ mod tests {
                 tree_outputs: BTreeSet::from([PathBuf::from("bazel-out/t")]),
                 symlink_outputs: BTreeSet::new(),
                 tree_inputs: BTreeSet::from([PathBuf::from("pkg/dir")]),
+                source_directories: BTreeSet::from([PathBuf::from("pkg/srcdir")]),
                 param_files: vec![("pkg/p.params".into(), vec![0, 255, b'\n'])],
                 inherited_environment: BTreeSet::from(["PATH".to_owned()]),
                 client_environment: BTreeMap::from([("PATH".to_owned(), OsString::from("/x"))]),
