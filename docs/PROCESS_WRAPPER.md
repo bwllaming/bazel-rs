@@ -51,7 +51,12 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   its own process group (bazel-rs's former `process_group(0)`; Rust cannot
   `setsid()` in the child without unsafe code) with an empty stdin and the
   inherited working directory, environment, stdout and stderr, and waits on a
-  pidfd (polling where pidfds are unavailable).
+  pidfd (polling where pidfds are unavailable). While the command runs, a
+  second thread reaps every reparented descendant as soon as it exits (the
+  process-wrapper's `wait()` loop discards such zombies, process-tools.cc:
+  194-199; linux-sandbox's pid 1 likewise), so a command that waits for a
+  daemon's end with `kill(pid, 0)` sees it gone; the command itself stays
+  unreaped until the group kill.
 * After the command has exited — still unreaped, so its PID pins its process
   group's ID — the supervisor SIGKILLs the group, reaps the command (its exact
   wait status), then repeatedly SIGKILLs every child it still has (reparented
@@ -105,8 +110,15 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   genrules (sandboxed and `local`) and repository `execute` (normal and timed
   out) that leave `setsid`, double-fork and same-group daemons: none survives the
   command; results, exit codes and failure messages (`signal: 9 (SIGKILL)`,
-  `signal: 13 (SIGPIPE)`, `exit status: 3`) are the spawn's own; the supervisor's
-  protocol (`S`/`E`/`X`, `T`, `K`, end-of-file, execvp candidates) directly.
-  With the cleanup disabled every one of these tests fails.
+  `signal: 13 (SIGPIPE)`, `exit status: 3`) are the spawn's own; Ctrl-C (SIGINT
+  to bazel-rs's process group) still ends bazel-rs by the signal and its running
+  test and daemons are killed; the supervisor's protocol (`S`/`E`/`X`, `T`, `K`,
+  end-of-file, execvp candidates) and the prompt reaping of an exited daemon
+  (`kill -0` loop) directly. With the cleanup, the end-of-file abort or the
+  reaper disabled, the corresponding tests fail.
+* ~/code (`test //src/beyondwork.ai/bworker/database/...`, survey recipe,
+  `--memory-limit=20000`): before (s2-ca7e18b) the passing database_test left
+  2 embedded PostgreSQL postmasters (+10 workers, PPID 1); after, the test still
+  passes (2 servers started per its log) and no new process remains.
 * src/process_wrapper.rs unit tests: report encoding, coalesced reports, option
   parsing, the direct-start group discipline.

@@ -263,6 +263,72 @@ fn test_daemons_are_killed_after_a_timeout() {
 }
 
 #[test]
+fn interrupting_bazel_rs_kills_its_running_test_and_daemons() {
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    let ws = Workspace::new();
+    test_fixture(&ws, "i");
+    // bazel-rs leads its own process group, like a shell job: Ctrl-C sends
+    // SIGINT to that group only (the spawns run in groups of their own).
+    let mut bazel = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
+        .args([
+            "--ignore_all_rc_files",
+            "--cache-dir=cache",
+            "test",
+            "//pkg:slow_test",
+        ])
+        .env("BAZEL_RS_SNAPSHOT", "off")
+        .current_dir(ws.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let names = kinds("i", "slow");
+    let deadline = Instant::now() + Duration::from_secs(150);
+    while !names
+        .iter()
+        .all(|name| fs::metadata(ws.pid_file(name)).is_ok_and(|meta| meta.len() > 0))
+    {
+        assert!(
+            bazel.try_wait().unwrap().is_none(),
+            "bazel-rs ended before the test ran"
+        );
+        assert!(Instant::now() < deadline, "the test never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let interrupted = Command::new("kill")
+        .args(["-INT", "--", &format!("-{}", bazel.id())])
+        .status()
+        .unwrap();
+    assert!(interrupted.success());
+    // SIGINT still ends bazel-rs at once, by the signal.
+    assert_eq!(bazel.wait().unwrap().signal(), Some(2));
+    // Its supervisors saw it go: the test and every daemon it started are
+    // killed (shortly after, not 60 s later when the test would end).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let alive: Vec<&String> = names
+            .iter()
+            .filter(|name| {
+                fs::read_to_string(ws.pid_file(name))
+                    .ok()
+                    .and_then(|text| text.trim().parse().ok())
+                    .is_some_and(is_daemon)
+            })
+            .collect();
+        if alive.is_empty() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemons outlived the interrupted bazel-rs: {alive:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
 fn action_and_repository_daemons_are_killed_and_statuses_are_exact() {
     let ws = Workspace::new();
     let daemon = ws.daemon_script();
@@ -442,6 +508,19 @@ fn the_supervisor_reports_exact_statuses_and_obeys_its_executor() {
     assert_eq!((end.as_str(), code), ("X768", Some(3)));
     let daemon = pid_of("exit.pid");
     assert!(!is_daemon(daemon), "{}", ps_line(daemon));
+
+    // A reparented daemon that ends while the command still runs is reaped at
+    // once, so a command that waits for its end with kill(pid, 0) sees it
+    // gone (the process-wrapper's wait() loop; an unreaped zombie would keep
+    // `kill -0` succeeding and the script would exit 42).
+    let daemon_script = ws.daemon_script();
+    let script = format!(
+        "{daemon_script} {file} double; pid=$(cat {file}); kill $pid; i=0; while kill -0 $pid 2>/dev/null; do i=$((i+1)); if [ $i -gt 300 ]; then exit 42; fi; sleep 0.01; done; exit 0",
+        file = file("reaped.pid")
+    );
+    let mut supervisor = Supervisor::start(&["--", "/bin/sh", "-c", &script]);
+    assert!(supervisor.line().starts_with('S'));
+    assert_eq!(supervisor.finish(), ("X0".to_owned(), Some(0)));
 
     // A signal the supervisor could not re-raise itself: SIGPIPE (13).
     let mut supervisor = Supervisor::start(&["--", "/bin/sh", "-c", "kill -PIPE $$"]);

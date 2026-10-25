@@ -616,14 +616,23 @@ fn supervise(mut child: Child, mut control: Option<Control>, subreaper: bool) ->
     // Readable once the child has exited; without pidfds (Linux < 5.3) the
     // exit is polled.
     let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok();
-    loop {
+    // Reparented descendants are reaped as they exit while the child runs.
+    let reaper = subreaper
+        .then(|| {
+            std::thread::Builder::new()
+                .name("orphan-reaper".into())
+                .spawn(move || reap_orphans_while_running(pid))
+                .ok()
+        })
+        .flatten();
+    let exited = loop {
         match rustix::process::waitid(
             WaitId::Pid(pid),
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         ) {
-            Ok(Some(_)) => break,
+            Ok(Some(_)) => break true,
             Ok(None) | Err(rustix::io::Errno::INTR) => {}
-            Err(_) => break,
+            Err(_) => break false,
         }
         wait_for_event(pidfd.as_ref(), control.as_ref());
         if let Some(channel) = control.as_mut() {
@@ -643,6 +652,11 @@ fn supervise(mut child: Child, mut control: Option<Control>, subreaper: bool) ->
                 control = None;
             }
         }
+    };
+    // The reaper ends once it sees the exited child (left unreaped for this
+    // thread); otherwise it is left to the process exit.
+    if exited && let Some(reaper) = reaper {
+        let _ = reaper.join();
     }
     // The child has exited and is not reaped yet: its PID still pins its
     // process group's ID, so only the group's own members are reached.
@@ -666,6 +680,50 @@ fn supervise(mut child: Child, mut control: Option<Control>, subreaper: bool) ->
                 .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
         }
         None => 1,
+    }
+}
+
+/// Reaps every other child of this subreaper as soon as it exits while
+/// `command` runs — the command's descendants reparented here — like the
+/// process-wrapper's wait() loop that discards such zombies until the
+/// command's own status arrives (process-tools.cc:194-199) and linux-sandbox's
+/// pid 1 (linux-sandbox-pid1.cc:591-610): a process that waits for a daemon's
+/// end with kill(pid, 0) sees it gone. Returns once `command` has exited,
+/// leaving it unreaped (its PID pins its process group's ID for the group
+/// kill that follows). waitid without WNOWAIT is only ever applied to a
+/// listed PID other than the command's.
+fn reap_orphans_while_running(command: Pid) {
+    let exited = |pid: Pid, options: WaitIdOptions| {
+        loop {
+            match rustix::process::waitid(WaitId::Pid(pid), WaitIdOptions::EXITED | options) {
+                Ok(status) => return status.is_some(),
+                Err(rustix::io::Errno::INTR) => {}
+                // ECHILD: no such child (any more).
+                Err(_) => return true,
+            }
+        }
+    };
+    loop {
+        // Blocks until some child has exited, reaping nothing.
+        match rustix::process::waitid(WaitId::All, WaitIdOptions::EXITED | WaitIdOptions::NOWAIT) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return,
+        }
+        if exited(command, WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT) {
+            return;
+        }
+        let mut reaped = false;
+        for child in children() {
+            if let Some(child) = Pid::from_raw(child)
+                && child != command
+            {
+                reaped |= exited(child, WaitIdOptions::NOHANG);
+            }
+        }
+        if !reaped {
+            // The exited child is not listed yet: look again shortly.
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 }
 
