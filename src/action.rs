@@ -2665,8 +2665,23 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         }
         None => {}
     }
+    // One hashed lookup per declared tree/directory/symlink input (an
+    // action with thousands of node_modules links and package directories
+    // is checked in linear time, not against every input).
+    let input_names: std::cell::OnceCell<HashSet<&Path>> = std::cell::OnceCell::new();
+    let is_input = |path: &Path| {
+        input_names
+            .get_or_init(|| {
+                action
+                    .inputs
+                    .iter()
+                    .map(|(_, name)| name.as_path())
+                    .collect()
+            })
+            .contains(path)
+    };
     for tree in &action.extra.tree_inputs {
-        if !action.inputs.iter().any(|(_, name)| name == tree) {
+        if !is_input(tree) {
             return Err(format!(
                 "tree input '{}' is not an action input",
                 tree.display()
@@ -2674,9 +2689,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         }
     }
     for directory in &action.extra.source_directories {
-        if !action.inputs.iter().any(|(_, name)| name == directory)
-            || action.extra.tree_inputs.contains(directory)
-        {
+        if !is_input(directory) || action.extra.tree_inputs.contains(directory) {
             return Err(format!(
                 "source directory '{}' is not a non-tree action input",
                 directory.display()
@@ -2703,7 +2716,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
         return Err("write action output cannot be a symlink artifact".into());
     }
     for link in &action.extra.symlink_inputs {
-        if !action.inputs.iter().any(|(_, name)| name == link)
+        if !is_input(link)
             || action.extra.tree_inputs.contains(link)
             || action.extra.source_directories.contains(link)
         {
