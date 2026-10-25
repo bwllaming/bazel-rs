@@ -82,6 +82,7 @@ impl Fixture {
             ));
             command.env(key, value);
         }
+        command.explicit_modules();
         command
     }
 
@@ -215,7 +216,7 @@ fn definition(body: &str, value: &str, options: &str) -> String {
 }
 
 fn finish(command: &mut Command) -> Output {
-    let output = command.explicit_modules().output().unwrap();
+    let output = command.output().unwrap();
     assert_ne!(output.status.code(), Some(124), "CLI timed out");
     assert_ne!(
         output.status.code(),

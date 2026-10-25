@@ -37,11 +37,12 @@ impl Fixture {
                 "--cache-dir=cache",
             ])
             .args(args)
-            .current_dir(self.0.path());
+            .current_dir(self.0.path())
+            .explicit_modules();
         command
     }
     fn run(&self, args: &[&str]) -> Output {
-        self.command(args).explicit_modules().output().unwrap()
+        self.command(args).output().unwrap()
     }
     /// Run with an exact client environment (Bazel `--client_env`).
     fn run_env(&self, args: &[&str], environment: &[(&str, String)]) -> Output {

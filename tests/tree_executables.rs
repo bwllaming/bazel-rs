@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 
 include!("support/executable_script.rs");
-include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 const MODULE: &str = r##"module(name = "tree_executables")
 
@@ -156,7 +156,6 @@ impl Workspace {
             .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
             .args(args)
             .current_dir(self.path())
-            .explicit_modules()
             .output()
             .unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
@@ -168,10 +167,8 @@ impl Workspace {
 fn aliased_repository_executables_resolve_into_their_repository() {
     let ws = Workspace::new();
     for (cache, strategy) in [("sandboxed", None), ("standalone", Some("standalone"))] {
-        let mut args = vec![
-            "build".to_owned(),
-            "--experimental-builtin-modules".to_owned(),
-        ];
+        // The built-in modules (the default) from the offline registry.
+        let mut args = vec!["build".to_owned(), builtin_registry_flag()];
         if let Some(strategy) = strategy {
             args.push(format!("--spawn_strategy={strategy}"));
         }
@@ -185,6 +182,8 @@ fn aliased_repository_executables_resolve_into_their_repository() {
             .map(str::to_owned),
         );
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        // The default host platform materializes @platforms: offline.
+        seed_module_archives(&ws.path().join(cache), &["platforms@1.0.0"]);
         let output = ws.run(cache, &args);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "{cache}: {stderr}");

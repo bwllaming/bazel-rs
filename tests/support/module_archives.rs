@@ -1,6 +1,6 @@
 // Genuine module source archives for the builtin fixture registry
-// (include!-ed by tests that build with `--experimental-builtin-modules`
-// and `--registry=file://<tests/fixtures/builtin_modules/registry>`).
+// (include!-ed by tests that build with the built-in modules, the default
+// profile, and `--registry=file://<tests/fixtures/builtin_modules/registry>`).
 //
 // The registry fixture carries MODULE files and source.json, not source
 // archives, so every test run that materialized such a module downloaded

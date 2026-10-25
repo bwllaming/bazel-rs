@@ -94,16 +94,13 @@ impl Workspace {
             .env_remove("COLUMNS")
             .env_remove("EMACS")
             .env_remove("INSIDE_EMACS")
-            .current_dir(self.path());
+            .current_dir(self.path())
+            .explicit_modules();
         command
     }
 
     fn run_with(&self, startup: &[&str], args: &[&str]) -> Output {
-        let output = self
-            .command(startup, args)
-            .explicit_modules()
-            .output()
-            .unwrap();
+        let output = self.command(startup, args).output().unwrap();
         assert_ne!(output.status.code(), Some(124), "CLI timed out: {args:?}");
         output
     }
