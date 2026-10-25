@@ -13,6 +13,7 @@
 //! shared cache inside the main checkout are no such dependence.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/explicit_modules.rs");
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -109,14 +110,15 @@ impl Repo {
     }
 
     /// bazel-rs in `checkout` with the default cache and the snapshot's
-    /// default mode (on; `env` may say otherwise).
+    /// default mode (on; `env` may say otherwise), in the explicit-module
+    /// profile unless `args` select one (offline fixtures).
     fn command(&self, checkout: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
         let mut command = Command::new("timeout");
         command
             .args(["--kill-after=5s", "240s"])
             .arg(env!("CARGO_BIN_EXE_bazel-rs"))
             .arg("--ignore_all_rc_files")
-            .args(args)
+            .args(with_explicit_modules(args))
             .current_dir(checkout)
             .env_clear()
             .envs(verifier_environment())
@@ -879,6 +881,31 @@ fn worktrees_build_the_same_and_different_commits_concurrently() {
         assert_eq!(outputs(&again)[0].1, contents(value));
     }
     assert_eq!(repo.states().len(), 3, "{:?}", repo.states());
+    // Each worktree's output tree (`info bazel-bin`, the output base) is
+    // its own: the other commit's build never relinked it; the store is
+    // shared.
+    for (checkout, value) in [(&main, "one"), (&same, "one"), (&other, "two")] {
+        let info = repo.run(
+            checkout,
+            &["info", "output_base", "bazel-bin", "repository_cache"],
+        );
+        assert!(info.status.success(), "{}", stderr(&info));
+        let state = repo.state(checkout);
+        let bin = state.join("execroot/_main/bazel-out/k8-fastbuild/bin");
+        assert_eq!(
+            stdout(&info),
+            format!(
+                "output_base: {}\nbazel-bin: {}\nrepository_cache: {}\n",
+                state.display(),
+                bin.display(),
+                repo.cache().join("repositories/downloads").display()
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(bin.join("second.txt")).unwrap(),
+            contents(value)
+        );
+    }
 }
 
 const CACHE_PATHS: &str = r#"

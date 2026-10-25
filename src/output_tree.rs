@@ -1,9 +1,13 @@
 //! The execution root's output tree (docs/INFO.md): `bazel info
 //! execution_root`, `output_path` and `bazel-bin`/`bazel-genfiles`/
-//! `bazel-testlogs` name directories below `<cache>/execroot/_main`, the
+//! `bazel-testlogs` name directories below `<state>/execroot/_main`, the
 //! native counterpart of Bazel's `<output_base>/execroot/<workspace>`
 //! (BlazeDirectories.getExecRoot; the main repository's directory is `_main`
-//! under Bzlmod).
+//! under Bzlmod). `<state>` is the workspace's state directory in the
+//! cache, `<cache>/worktrees/<name>-<hash>` (crate::worktree,
+//! docs/WORKTREES.md): the git worktrees sharing one cache each have their
+//! own output tree, so one worktree's build never relinks another's
+//! `bazel-bin` (the outputs themselves stay shared in the action cache).
 //!
 //! Native action outputs live in per-action cache entries
 //! (`<cache>/actions/<key>/outputs/<exec path>`, docs/ACTION_OUTPUTS.md),
@@ -41,14 +45,28 @@ use std::path::{Component, Path, PathBuf};
 /// (RepositoryUtils.WORKSPACE_SYMLINK_NAME, bazel/repository/RepositoryUtils.java:41).
 pub const MAIN_DIRECTORY: &str = "_main";
 
-/// `<cache>/execroot/_main`.
+/// `<state>/execroot/_main` of this process's workspace
+/// (crate::worktree::state_directory; without an installed workspace,
+/// `<cache>/execroot/_main`).
 pub fn execution_root(cache: &Path) -> PathBuf {
-    cache.join("execroot").join(MAIN_DIRECTORY)
+    execution_root_below(&crate::worktree::state_directory(cache))
 }
 
-/// `<cache>/execroot/_main/bazel-out` (BlazeDirectories.getOutputPath).
+/// `<output_base>/execroot/_main` (BlazeDirectories.getExecRoot), for the
+/// native output base: a workspace's state directory.
+pub fn execution_root_below(output_base: &Path) -> PathBuf {
+    output_base.join("execroot").join(MAIN_DIRECTORY)
+}
+
+/// `<state>/execroot/_main/bazel-out` of this process's workspace
+/// ([`execution_root`]).
 pub fn output_path(cache: &Path) -> PathBuf {
     execution_root(cache).join("bazel-out")
+}
+
+/// `<output_base>/execroot/_main/bazel-out` (BlazeDirectories.getOutputPath).
+pub fn output_path_below(output_base: &Path) -> PathBuf {
+    execution_root_below(output_base).join("bazel-out")
 }
 
 /// The outcome of one [`publish`].

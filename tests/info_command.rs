@@ -2,9 +2,10 @@
 //! genuine Bazel 9.3.0 captures (tests/fixtures/info/genuine_capture.json,
 //! written by tests/fixtures/info/capture.py): item order, key set, value
 //! shapes, single-key and multi-key output, unknown keys, `--show_make_env`.
-//! Genuine `<output_base>` maps to the native cache directory: the paths
-//! below it (`execroot/_main/bazel-out/<cfg>/bin`, `command.log`) are the
-//! same, so they compare exactly after substitution. And the output tree
+//! Genuine `<output_base>` maps to the workspace's state directory in the
+//! native cache, `<cache>/worktrees/<name>-<hash>` (docs/WORKTREES.md): the
+//! paths below it (`execroot/_main/bazel-out/<cfg>/bin`, `command.log`) are
+//! the same, so they compare exactly after substitution. And the output tree
 //! holds what a native build built.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
@@ -85,9 +86,16 @@ impl Workspace {
         self.run(&all)
     }
 
+    /// The output base: the workspace's state directory in the cache.
+    fn output_base(&self) -> PathBuf {
+        self.cache
+            .join("worktrees")
+            .join(bazel_rs::worktree::state_name(&self.root))
+    }
+
     /// A genuine value with the genuine layout mapped to this workspace.
     fn expected(&self, text: &str) -> String {
-        text.replace("<OUTPUT_BASE>", &self.cache.display().to_string())
+        text.replace("<OUTPUT_BASE>", &self.output_base().display().to_string())
             .replace("<WORKSPACE>", &self.root.display().to_string())
             .replace("<HOME>", &self.home.display().to_string())
     }
@@ -316,7 +324,7 @@ fn show_make_env_adds_the_make_variables_in_key_order() {
         stdout(&output),
         format!(
             "{}/execroot/_main/bazel-out/k8-fastbuild/bin\n",
-            ws.cache.display()
+            ws.output_base().display()
         )
     );
 }
@@ -338,7 +346,7 @@ fn info_inherits_rc_build_options() {
         stdout(&output),
         format!(
             "bazel-bin: {}/execroot/_main/bazel-out/k8-opt/bin\nX: 1\n",
-            ws.cache.display()
+            ws.output_base().display()
         )
     );
 }

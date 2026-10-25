@@ -48,18 +48,22 @@ values, output), `src/main.rs` (`info_command`: options, configuration),
 
 ## Item mapping
 
-`<cache>` is the native output base: `--cache-dir=PATH` (absolute, or
-relative to the client directory), default `<workspace>/bazel-rs-out`.
-Genuine's `<output_base>` is `<output_user_root>/<md5 of the workspace>`.
+`<cache>` is the native cache: `--cache-dir=PATH` (absolute, or relative to
+the client directory), default `<workspace>/bazel-rs-out` — in a linked git
+worktree its main checkout's (docs/WORKTREES.md). It is shared by every
+workspace that uses it, like genuine's output user root. The native output
+base `<state>` is the workspace's state directory in it,
+`<cache>/worktrees/<name>-<hash>` (one per workspace), like genuine's
+`<output_base>` = `<output_user_root>/<md5 of the workspace>`.
 
 | item | genuine | native |
 |---|---|---|
-| `bazel-bin`, `bazel-genfiles` | `<output_base>/execroot/_main/bazel-out/<cfg>/bin` | `<cache>/execroot/_main/bazel-out/<cfg>/bin` |
-| `bazel-testlogs` | `<output_base>/execroot/_main/bazel-out/<cfg>/testlogs` | `<cache>/execroot/_main/bazel-out/<cfg>/testlogs` |
-| `execution_root` | `<output_base>/execroot/_main` | `<cache>/execroot/_main` |
-| `output_path` | `<output_base>/execroot/_main/bazel-out` | `<cache>/execroot/_main/bazel-out` |
-| `output_base` | `<output_base>` | `<cache>` |
-| `command_log` | `<output_base>/command.log` | `<cache>/command.log` — never written (bazel-rs keeps no command log) |
+| `bazel-bin`, `bazel-genfiles` | `<output_base>/execroot/_main/bazel-out/<cfg>/bin` | `<state>/execroot/_main/bazel-out/<cfg>/bin` |
+| `bazel-testlogs` | `<output_base>/execroot/_main/bazel-out/<cfg>/testlogs` | `<state>/execroot/_main/bazel-out/<cfg>/testlogs` |
+| `execution_root` | `<output_base>/execroot/_main` | `<state>/execroot/_main` |
+| `output_path` | `<output_base>/execroot/_main/bazel-out` | `<state>/execroot/_main/bazel-out` |
+| `output_base` | `<output_base>` | `<state>` |
+| `command_log` | `<output_base>/command.log` | `<state>/command.log` — never written (bazel-rs keeps no command log) |
 | `repository_cache` | `<output_user_root>/cache/repos/v1` | `<cache>/repositories/downloads` (the native download cache, `sha256/<hex>` entries) |
 | `install_base` | `<output_user_root>/install/<md5>` | the directory of the running bazel-rs binary |
 | `install_md5` (hidden) | MD5 of the install | first 16 bytes (32 hex digits) of the binary's BLAKE3, the identity of crate::snapshot::exe_id |
@@ -82,7 +86,7 @@ Genuine's `<output_base>` is `<output_user_root>/<md5 of the workspace>`.
 | `worker_metrics` (hidden) | `No persistent workers active.` in a fresh process | same (no persistent workers) |
 | `build-language` (hidden) | the build language protocol buffer | fails explicitly (needs Bazel's rule class registry) |
 
-The genuine paths below `<output_base>` and the native paths below `<cache>`
+The genuine paths below `<output_base>` and the native paths below `<state>`
 are the same, so scripts like `$(bazel-rs info bazel-bin)/pkg/tool` and
 `cd $(bazel-rs info execution_root)` keep working.
 
@@ -92,8 +96,9 @@ Native action outputs live in per-action cache entries
 (`<cache>/actions/<key>/outputs/<exec path>`, docs/ACTION_OUTPUTS.md). After
 every executing `build`, `test` or `run` (not `--nobuild`, not a failed
 execution), every output of the request's actions — executed or a cache hit —
-is linked at its exec path below `<cache>/execroot/_main`
-(crate::output_tree):
+is linked at its exec path below `<state>/execroot/_main`
+(crate::output_tree) — the workspace's own tree: the git worktrees sharing a
+cache never relink each other's (docs/WORKTREES.md):
 
 * regular files are hardlinks of the read-only (`0555`) published output: a
   binary started as `$(bazel-rs info bazel-bin)/pkg/tool` sees that path as

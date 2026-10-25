@@ -30,7 +30,8 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
 Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped to the
-  native layout; built outputs are linked below <cache>/execroot/_main (docs/INFO.md).
+  native layout; built outputs are linked below <state>/execroot/_main, <state> the
+  workspace's state directory (the output base, see Cache below; docs/INFO.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMORY_MB
   caps bazel-rs's own RSS (watchdog only, exit 33 = Bazel's OOM; no RLIMIT_AS, so
@@ -1027,19 +1028,24 @@ fn info_command(
             .and_then(|value| bazel_rs::memory_limit::parse_cap_mb(&value)),
     };
     let memory_limit_mb = bazel_rs::memory_limit::effective_cap(explicit_mb).map(|(mb, _)| mb);
+    // The cache of `run` (crate::worktree: a linked git worktree's default
+    // is its main checkout's) and the workspace's state directory in it, the
+    // output base (docs/WORKTREES.md); read only, nothing is created.
     let cache = line
         .cache_dir
         .clone()
         .map(PathBuf::from)
-        .unwrap_or_else(|| root.join("bazel-rs-out"));
+        .unwrap_or_else(|| bazel_rs::worktree::detect(&root).default_cache());
     let cache = if cache.is_absolute() {
         cache
     } else {
         cwd.join(cache)
     };
+    let output_base = bazel_rs::worktree::state_directory_for(&cache, &root);
     let context = bazel_rs::info::Context {
         workspace: root,
         cache,
+        output_base,
         mnemonic,
         compilation_mode: configuration.compilation_mode.to_owned(),
         target_cpu,

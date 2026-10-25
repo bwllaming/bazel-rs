@@ -52,14 +52,18 @@ of its canonical path, hex), whatever chose the cache:
 | `tests/index/` — the last test result key per test (docs/TEST_COMMAND.md) | each worktree is its own output base; a test it never ran accepts the shared result of its exact key, so switching worktrees reruns nothing |
 | `test-run/` — execution roots of `run` of a test | concurrent `run`s of one test in two worktrees no longer delete each other's TEST_TMPDIR |
 | `MODULE.bazel.lock` — the hidden lockfile (docs/REGISTRY_LOCKFILE.md) | Bazel's `<output_base>/MODULE.bazel.lock`; seeded from the main checkout's |
+| `execroot/_main/` — the output tree (docs/INFO.md) | `bazel-rs info bazel-bin`, `execution_root`, `output_path`, `bazel-testlogs` name the workspace's own builds: another worktree's build of another commit never relinks them (the linked outputs themselves are the shared action cache's) |
 
-The state directory of a deleted worktree stays until removed by hand (no
-garbage collection yet).
+`bazel-rs info output_base` is the state directory — like Bazel's
+`<output_user_root>/<md5 of the workspace>`, one per workspace — while the
+store is shared like Bazel's output user root (`info repository_cache` is
+`<cache>/repositories/downloads`). The state directory of a deleted worktree
+stays until removed by hand (no garbage collection yet).
 
 A cache of the flat layout before per-worktree state is not migrated: its
-`snapshots/`, `hidden-lockfiles/`, `test-run/` and `tests/index/` are no
-longer used (an older binary sharing the cache still uses them) and can be
-deleted. The hidden lockfile is the exception: the flat
+`snapshots/`, `hidden-lockfiles/`, `test-run/`, `tests/index/` and
+`execroot/` are no longer used (an older binary sharing the cache still uses
+them) and can be deleted. The hidden lockfile is the exception: the flat
 layout's one seeds the workspace's own, so no extension is evaluated again.
 
 ## A new worktree's first build

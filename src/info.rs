@@ -18,8 +18,14 @@ pub struct Context {
     /// The workspace root (WorkspaceInfoItem).
     pub workspace: PathBuf,
     /// The native cache directory (`--cache-dir`, default
-    /// `<workspace>/bazel-rs-out`): the output base.
+    /// `<workspace>/bazel-rs-out` or, in a linked git worktree, the main
+    /// checkout's; crate::worktree): the store every workspace using it
+    /// shares, like Bazel's output user root (`repository_cache`).
     pub cache: PathBuf,
+    /// The output base: the workspace's state directory in the cache,
+    /// `<cache>/worktrees/<name>-<hash>` (crate::worktree, docs/WORKTREES.md),
+    /// one per workspace like Bazel's `<output_user_root>/<md5>`.
+    pub output_base: PathBuf,
     /// The top-level configuration's output directory name
     /// (`k8-fastbuild`, crate::config_registry::mnemonic).
     pub mnemonic: String,
@@ -311,7 +317,7 @@ pub fn pretty_print_bytes(bytes: u64) -> String {
 }
 
 fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
-    let output_path = crate::output_tree::output_path(&context.cache);
+    let output_path = crate::output_tree::output_path_below(&context.output_base);
     let configuration = output_path.join(&context.mnemonic);
     Ok(match kind {
         Kind::BazelBin | Kind::BazelGenfiles => path_line(&configuration.join("bin")),
@@ -336,14 +342,16 @@ fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
             }
             line(text)
         }
-        Kind::CommandLog => path_line(&context.cache.join("command.log")),
+        Kind::CommandLog => path_line(&context.output_base.join("command.log")),
         Kind::CommittedHeapSize | Kind::UsedHeapSize | Kind::UsedHeapSizeAfterGc => line(
             crate::memory_limit::rss_bytes()
                 .map_or_else(|| "unknown".to_owned(), pretty_print_bytes),
         ),
         Kind::DefaultPackagePath | Kind::PackagePath => line("%workspace%"),
         Kind::DefaultsPackage => line(""),
-        Kind::ExecutionRoot => path_line(&crate::output_tree::execution_root(&context.cache)),
+        Kind::ExecutionRoot => path_line(&crate::output_tree::execution_root_below(
+            &context.output_base,
+        )),
         // No garbage collector.
         Kind::GcCount => line("0"),
         Kind::GcTime => line("0ms"),
@@ -363,7 +371,7 @@ fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
             || "unknown".to_owned(),
             |mb| pretty_print_bytes(mb * 1024 * 1024),
         )),
-        Kind::OutputBase => path_line(&context.cache),
+        Kind::OutputBase => path_line(&context.output_base),
         Kind::OutputPath => path_line(&output_path),
         Kind::PeakHeapSize => line("unknown"),
         Kind::Release => line(format!(
@@ -435,6 +443,7 @@ mod tests {
         Context {
             workspace: PathBuf::from("/ws"),
             cache: PathBuf::from("/ws/bazel-rs-out"),
+            output_base: PathBuf::from("/ws/bazel-rs-out/worktrees/ws-0123456789abcdef"),
             mnemonic: "k8-fastbuild".to_owned(),
             compilation_mode: "fastbuild".to_owned(),
             target_cpu: Some("x86_64".to_owned()),
@@ -469,7 +478,7 @@ mod tests {
         let (single, _) = output(&context, &options, &["bazel-bin"]);
         assert_eq!(
             single,
-            "/ws/bazel-rs-out/execroot/_main/bazel-out/k8-fastbuild/bin\n"
+            "/ws/bazel-rs-out/worktrees/ws-0123456789abcdef/execroot/_main/bazel-out/k8-fastbuild/bin\n"
         );
         let (several, _) = output(&context, &options, &["workspace", "workspace"]);
         assert_eq!(several, "workspace: /ws\nworkspace: /ws\n");

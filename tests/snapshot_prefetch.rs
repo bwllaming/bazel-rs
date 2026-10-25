@@ -45,6 +45,15 @@ impl Workspace {
         ws
     }
 
+    /// The snapshot store: in the workspace's state directory of the
+    /// cache (docs/WORKTREES.md).
+    fn snapshots(&self) -> PathBuf {
+        self.root
+            .join("cache/worktrees")
+            .join(bazel_rs::worktree::state_name(&self.root))
+            .join("snapshots")
+    }
+
     fn file(&self, name: &str, content: &str) {
         let path = self.root.join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -956,7 +965,7 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
     });
     assert!(off.status.success(), "{}", stderr(&off));
     for (save, verifies) in [(1, [8, 32]), (8, [1, 32])] {
-        let _ = fs::remove_dir_all(ws.root.join("cache/snapshots"));
+        let _ = fs::remove_dir_all(ws.snapshots());
         let (saved, explain) = snapshot_run(&ws, "verify", save, &args);
         assert!(saved.status.success(), "{}", stderr(&saved));
         assert!(explain.contains(" saved "), "save at {save}: {explain}");
@@ -969,9 +978,9 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
                 stderr(&verified)
             );
             assert!(
-                !ws.root.join("cache/snapshots/verify.log").exists(),
+                !ws.snapshots().join("verify.log").exists(),
                 "saved at {save}, verified at {threads}: {}",
-                fs::read_to_string(ws.root.join("cache/snapshots/verify.log")).unwrap_or_default()
+                fs::read_to_string(ws.snapshots().join("verify.log")).unwrap_or_default()
             );
             assert_eq!(program_stderr(&verified), program_stderr(&off));
             assert_eq!(verified.stdout, off.stdout);
@@ -979,7 +988,7 @@ fn snapshots_saved_at_one_thread_count_verify_and_hit_at_the_others() {
     }
     // `on`: saved at threads 8 (prefetch on; its PERF-PREFETCH line goes
     // to the diagnostics stream), hits at 1 and 32 replay no PERF-PREFETCH.
-    let _ = fs::remove_dir_all(ws.root.join("cache/snapshots"));
+    let _ = fs::remove_dir_all(ws.snapshots());
     let (saved, explain) = snapshot_run(&ws, "on", 8, &args);
     assert!(saved.status.success(), "{}", stderr(&saved));
     assert!(explain.contains(" saved "), "{explain}");

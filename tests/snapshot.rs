@@ -2322,7 +2322,7 @@ fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
     twin.same(BUILD_ALL, &[]).assert_saved();
     // Each round starts with a fresh save.
     twin.with_side(ON, || {
-        for file in fs::read_dir(twin.cache().join("snapshots/v1"))
+        for file in fs::read_dir(state_directory(&twin.cache()).join("snapshots/v1"))
             .unwrap()
             .flatten()
         {

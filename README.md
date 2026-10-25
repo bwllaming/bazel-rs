@@ -64,10 +64,11 @@ cd tests/fixtures/basic
 
 Build stdout contains `label<TAB>absolute artifact path`. Outputs live in an
 implementation-specific content-addressed cache; every executing build also
-links them at their exec paths below `<cache>/execroot/_main`, so
-`$(bazel-rs info bazel-bin)/pkg/tool` names a built file like Bazel's
-`bazel-bin` (docs/INFO.md; no convenience symlinks are created in the
-workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
+links them at their exec paths below the workspace's
+`<cache>/worktrees/<name>-<hash>/execroot/_main` (`bazel-rs info
+output_base`), so `$(bazel-rs info bazel-bin)/pkg/tool` names a built file
+like Bazel's `bazel-bin` (docs/INFO.md; no convenience symlinks are created in
+the workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
 **Git worktrees share one cache.** In a linked git worktree (`git worktree
@@ -76,8 +77,9 @@ reading `.git`, no git process), so a new worktree's first build reuses the
 repositories, actions and test results the other worktrees already have
 instead of paying a cold build and another copy of the cache. What belongs
 to one workspace — analysis snapshots, the test result index, the hidden
-lockfile, the execution roots of `run` of tests — lives in
-`<cache>/worktrees/<name>-<hash>/`. Repositories whose content depends on
+lockfile, the output tree `bazel-rs info bazel-bin` names, the execution
+roots of `run` of tests — lives in `<cache>/worktrees/<name>-<hash>/` (the
+native output base). Repositories whose content depends on
 the worktree's path are kept per worktree. A worktree's old
 `bazel-rs-out` is left alone with a one-line note (delete it to free the
 space). Caveats — a branch that bumps Go or gazelle must not build for the
