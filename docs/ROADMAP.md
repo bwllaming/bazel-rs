@@ -84,11 +84,13 @@ cdeps stop at `cc_common.compile` (`cc_internal` natives), both as explicit
 failures.
 
 That progression is history. The current demonstrated `~/code` application
-boundaries are: build/test of `~/code` targets succeeds with
-`--experimental-builtin-modules` (gazelle_bin, str, str_test, aws_script;
+boundaries are: build/test of `~/code` targets succeeds with the built-in
+modules (now the default; formerly `--experimental-builtin-modules`)
+(gazelle_bin, str, str_test, aws_script;
 `bazel test` passes — the last gap was the rules_go `_validation` output
-group, lifted by N56); the default module profile stops at `@@bazel_tools`
-no-contents (use `--experimental-builtin-modules`); and lockfile update mode
+group, lifted by N56); the explicit-module profile
+(`--experimental-builtin-modules=false`) stops at `@@bazel_tools`
+no-contents; and lockfile update mode
 is functional since N52 (fail-closed write gate; `moduleExtensions` entries
 computed, reused and written with Bazel's digests; see
 [REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md)). Full-repository performance

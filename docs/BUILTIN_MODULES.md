@@ -1,18 +1,46 @@
 # Genuine Bazel 9.3 built-in profile
 
-`--experimental-builtin-modules` is a **native-only transitional option** for
-`query`, `build`, and `mod graph`. It selects genuine Bazel 9.3 built-in module
-discovery before evaluating the root MODULE. `=false` retains the existing
-explicit-module profile, which remains the default. This option is not claimed
-to be an upstream Bazel flag or complete default-semantics parity.
+Like genuine Bazel 9.3, `query`, `build`, `run` and `test` inject the built-in
+modules by default: genuine Bazel 9.3 built-in module discovery (`bazel_tools`
+and its MODULE closure) runs before evaluating the root MODULE.
+`--experimental-builtin-modules` is a **native-only option** (not an upstream
+Bazel flag; rejected in rc files, docs/BAZELRC.md):
 
-Registry and lockfile policy are independent: supply explicit registries, and
-use `--lockfile_mode=off` for remote registries. Missing registry metadata is an
-error, not a reason to switch profiles or omit genuine dependencies. The current
-`mod graph` command still rejects active extensions. Even if MODULE overrides
-remove those usages, genuine-profile graph presentation is explicitly rejected;
-it never silently includes built-ins while accepting `--noinclude_builtin`.
-Selecting this profile does not implement `--include_builtin` presentation.
+- `--experimental-builtin-modules` and `=true` select the built-in profile, the
+  default (a no-op, kept for existing command lines);
+- `--experimental-builtin-modules=false` selects the **explicit-module
+  profile**: `@bazel_tools` is mapped in every module but has no contents and
+  its MODULE closure is not discovered (below). It is an escape hatch, not
+  Bazel behaviour;
+- any other value fails (`--experimental-builtin-modules expects true or
+  false`).
+
+The explicit-module profile was the native default until the built-in profile
+became it; error texts of the explicit-module profile name the opt-out
+(`drop --experimental-builtin-modules=false`). Its library default
+(`module_graph::ResolverOptions::default()`) is unchanged.
+
+Registry and lockfile policy are independent: the built-in closure resolves
+through the selected registries (the default https://bcr.bazel.build/ without
+`--registry`). Missing registry metadata is an error, not a reason to switch
+profiles or omit genuine dependencies.
+
+**`mod graph`.** Native `mod graph` presents the explicit-module graph by
+default (as if `--experimental-builtin-modules=false`): built-in graph
+presentation (`--include_builtin`, built-in versions selected by MVS) is not
+implemented, and an explicit `--experimental-builtin-modules[=true]` there is
+rejected (`builtin module graph presentation is unsupported; ...`) rather than
+silently presenting a graph without built-ins. The command still rejects
+active extensions. Version selection of a root whose dependencies overlap the
+built-in closure (e.g. `platforms`) can therefore differ from genuine `bazel
+mod graph` (which selects with the built-in closure).
+
+Integration tests whose fixtures predate the default (offline file registries
+without the built-in closure, explicit-profile error texts) select the
+explicit-module profile through `tests/support/explicit_modules.rs`; tests of
+the built-in profile use the offline fixture registry
+(`tests/fixtures/builtin_modules/registry`) and seeded archives
+(`tests/support/module_archives.rs`), never the network.
 
 ## Discovery and ownership
 
@@ -31,14 +59,14 @@ discovery, nodep processing and version selection; they are not made universally
 visible to other modules. In particular, `platforms`, `rules_java` and `rules_cc`
 are not independently injected.
 
-## `@bazel_tools` in the default explicit-module profile (N51)
+## `@bazel_tools` in the explicit-module profile (N51)
 
 Bazel adds the built-in dependency to every module but `bazel_tools` itself
 (`bzlmod/ModuleThreadContext.java:383-401`), so every module's mapping
 (`Module.getRepoMappingWithBazelDepsOnly`, `Module.java:49-67`) has
 `bazel_tools -> @@bazel_tools` (`ModuleKey.java:45-55`).
 `BazelDepGraphFunction` (`:97-137`) resolves every module's extension labels
-with that mapping. The default profile now adds the same mapping entry to the
+with that mapping. The explicit-module profile adds the same mapping entry to the
 root and to every selected module. It does not discover the built-in MODULE or
 its closure (`buildozer`, `rules_license`, ...), and it does not materialize any
 contents:
@@ -52,8 +80,8 @@ contents:
   `@@bazel_tools//x:x` with `repo_name` `bazel_tools`.
 - Demanding the repository fails explicitly:
   `cannot load '@@bazel_tools//...': the built-in repository @@bazel_tools is
-  visible to every module but has no contents in this module profile; use
-  --experimental-builtin-modules`.
+  visible to every module but has no contents in the explicit-module profile;
+  drop --experimental-builtin-modules=false`.
 - With `--lockfile_mode=update`, `registryFileHashes` is a subset of Bazel's.
   The undiscovered built-in closure is missing.
 - In every profile, a module may not use the name itself. This covers a
@@ -79,9 +107,9 @@ every lockfile mode (docs/REGISTRY_LOCKFILE.md, "Eager resolution boundary").
 
 **Intentional repository identity re-key (N51).** Native repository provenance
 serialises the repository mapping. Adding `@bazel_tools` to every
-default-profile mapping therefore gives every default-profile direct and
-extension-generated repository a new native cache identity.
-`tests/repository_rules.rs` re-pins its two goldens. Retained default-profile
+explicit-module-profile mapping (then the default) therefore gave every such
+direct and extension-generated repository a new native cache identity.
+`tests/repository_rules.rs` re-pins its two goldens. Retained explicit-profile
 native identity evidence is historical and does not describe the current
 binary. Examples are the label_passthrough publication observation
 `2fb9dd9d…` (`tests/fixtures/label_passthrough/native_publication_observation.json`)
@@ -90,7 +118,7 @@ already contained the entry, so this change does not re-key them.
 
 Evidence comes from a paired capture against genuine Bazel 9.3.0, plus a
 follow-up check: `tests/fixtures/eager_resolution_mapping/reference_receipt.json`. With the
-built-in profile, all 6 steps match exactly. In the default profile, the
+built-in profile, all 6 steps match exactly. In the explicit-module profile, the
 outputs of 4 steps match exactly. The lockfile is a subset, and the `.bzl` load
 from `@bazel_tools` fails explicitly.
 
@@ -131,10 +159,9 @@ or successful whole-application builds/tests. Genuine loaded definitions still
 fail explicitly when they use unsupported APIs. No extension imports or
 transitive loads are suppressed to make an application appear to work.
 
-Making genuine built-ins the default requires a separate migration of graph
-presentation, registry/lockfile defaults and real command fixtures. The
-transitional option is not completion of that migration. Startup or performance
-improvements are not inferred from this functionality.
+Genuine built-ins are now the default of query/build/run/test; built-in graph
+presentation (`mod graph`) remains unimplemented (above). Startup or
+performance improvements are not inferred from this functionality.
 
 ## Observed application boundary
 

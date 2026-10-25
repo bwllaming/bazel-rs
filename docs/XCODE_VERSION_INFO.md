@@ -134,7 +134,8 @@ genuine apple_support module the native profile now analyzes
 rules_cc's `unix_cc_toolchain_config` (tests/cc_toolchain.rs,
 docs/CC_TOOLCHAIN.md).
 
-Without the builtin profile (the default explicit-module profile),
+Without the builtin profile (the explicit-module profile,
+`--experimental-builtin-modules=false`),
 `bazel_tools` has no contents (its mapping entry exists in every module, like
 Bazel, since N51), so analysis never reaches this point:
 
@@ -143,7 +144,7 @@ Bazel, since N51), so analysis never reaches this point:
 - `@@bazel_tools//tools/cpp:host_xcodes` and a main-repository attribute
   default `"@bazel_tools//tools/cpp:host_xcodes"` fail with `the built-in
   repository @@bazel_tools is visible to every module but has no contents in
-  this module profile; use --experimental-builtin-modules`.
+  the explicit-module profile; drop --experimental-builtin-modules=false`.
 
 The F3 fixture (`//:dump`) covers the provider surface without `ctx.fragments`.
 It copies apple_support's no-versions computation.

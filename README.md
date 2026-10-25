@@ -321,9 +321,10 @@ name/architecture view and explicit host-dependent repository fingerprints.
 identity without changing owner mappings or hiding invalid-label timing limits.
 [Label passthrough](docs/LABEL_PASSTHROUGH.md) preserves existing Label identity
 across lexical contexts while retaining explicit invalid-label timing limits.
-[Genuine built-in modules](docs/BUILTIN_MODULES.md) are available through the
-native-only `--experimental-builtin-modules` transition option, using complete
-verified Linux x86-64 resources; the default remains explicit modules only.
+[Genuine built-in modules](docs/BUILTIN_MODULES.md) are injected by default,
+like Bazel 9.3, using complete verified Linux x86-64 resources; the native-only
+`--experimental-builtin-modules=false` selects the explicit-module profile
+(no `@bazel_tools` contents), and native `mod graph` presents that profile.
 Active extension usages fail in `mod graph` even when
 hidden from output. Load caching is per package evaluation,
 not a persistent incremental graph.
@@ -426,8 +427,9 @@ lockfile fail-closed write gate).
 
 On the current tree the demonstrated `~/code` application boundaries are:
 
-- **Build/test of `~/code` targets succeeds with
-  `--experimental-builtin-modules`** (and `--lockfile_mode=off`): `build
+- **Build/test of `~/code` targets succeeds with the built-in modules**
+  (then opted into with `--experimental-builtin-modules`, now the default;
+  and `--lockfile_mode=off`): `build
   //src/beyondwork.ai/utils/str:str //:gazelle_bin //:aws_script` exits 0,
   and `test //src/beyondwork.ai/utils/str:str_test` passes
   (`Executed 1 out of 1 test: 1 test passes.`). The last analysis boundary
@@ -436,13 +438,14 @@ On the current tree the demonstrated `~/code` application boundaries are:
   `tests/fixtures/validation_actions/reference_receipt.json`; probe receipts
   `artifacts/i16-app-build-final.json`, `artifacts/i16-app-test-final.json`,
   isolated HOME/TMPDIR/cache, tracked checkout state asserted unchanged).
-- **The default module profile stops at `@@bazel_tools` no-contents**: a
-  build without `--experimental-builtin-modules` fails with `cannot load
+- **The explicit-module profile stops at `@@bazel_tools` no-contents**: a
+  build with `--experimental-builtin-modules=false` (the default before the
+  built-in modules became it) fails with `cannot load
   '@@bazel_tools//tools/build_defs/repo/utils.bzl': the built-in repository
-  @@bazel_tools is visible to every module but has no contents in this
-  module profile; use --experimental-builtin-modules` (receipt
-  `artifacts/i16-app-defaultprofile-final.json`;
-  docs/BUILTIN_MODULES.md).
+  @@bazel_tools is visible to every module but has no contents in the
+  explicit-module profile; drop --experimental-builtin-modules=false` (receipt
+  `artifacts/i16-app-defaultprofile-final.json`, recorded with the former
+  wording; docs/BUILTIN_MODULES.md).
 - **Lockfile update mode is functional (fail-closed)** since N52: with
   `--lockfile_mode=update --native-lockfile=<private path>` a `~/code`
   query resolves, writes the private lockfile (`moduleExtensions` entries

@@ -102,7 +102,9 @@ Deliberate differences from Bazel:
   Genuine Bazel reports them as unrecognized in an rc file, so native rejects
   them there too: `native-only option NAME from rc file FILE:LINE … is not a
   Bazel option and is rejected in rc files …; pass it on the command line`.
-  Command-line use is unchanged.
+  Command-line use is unchanged. (The built-in modules are the default, so
+  the switch only matters as `--experimental-builtin-modules=false`;
+  docs/BUILTIN_MODULES.md.)
 * **Redacted environment values in rc notes.** Bazel echoes rc arguments
   verbatim in `--announce_rc` and early-exit notes. Native shows the values of
   `--repo_env`, `--action_env`, `--host_action_env` and `--test_env` as

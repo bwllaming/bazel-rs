@@ -90,7 +90,7 @@ Natively:
   analyzed as its `exec(test)` edges (N23g, docs/TEST_COMMAND.md). The execution platform is the host
   platform (the only one natively).
 * **Divergence D3:** the group is resolved only in the built-in profile
-  (`--experimental-builtin-modules`). Without it there is no `@bazel_tools`,
+  (the default). With `--experimental-builtin-modules=false` there is no `@bazel_tools`,
   so its type cannot exist; like the lazy default host platform (D2,
   docs/TOOLCHAINS.md) the group is then not resolved, and test rules keep
   building as before N30.

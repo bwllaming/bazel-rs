@@ -146,7 +146,9 @@ modelled). Natively the alias edge is analyzed like any alias; the plain
 profile has no `@bazel_tools`, so it fails with the repository error followed
 by `//pkg:t: the late-bound configuration_field default resolves to
 @@bazel_tools//tools/cpp:host_xcodes, which the native profile cannot analyze
-here (@bazel_tools is provided only with --experimental-builtin-modules)`; the
+here (@bazel_tools is provided only with --experimental-builtin-modules)`
+(since the built-in modules became the default: `(@bazel_tools is not provided
+with --experimental-builtin-modules=false)`); the
 builtin-modules profile needs downloads (rules_cc, apple_support) and was not
 runnable offline. Late-bound edges skip visibility
 (`analysis/CommonPrerequisiteValidator.java:156-159`). Other fields (e.g.

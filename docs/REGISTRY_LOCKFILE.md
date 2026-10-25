@@ -285,8 +285,9 @@ invisible repository prints Bazel's
   output base does (their print output and side effects disappear). To observe
   evaluations, use a fresh `--cache-dir`, `--native-lockfile=readonly` on a
   fresh cache, or `--lockfile_mode=off`.
-- **Entries recorded inside `@@bazel_tools`'s load closure in the default
-  profile.** Without `--experimental-builtin-modules`, `@@bazel_tools` has no
+- **Entries recorded inside `@@bazel_tools`'s load closure in the
+  explicit-module profile.** With `--experimental-builtin-modules=false`
+  (the built-in modules are the default), `@@bazel_tools` has no
   contents (N51 makes it visible in every mapping but still unloadable;
   docs/BUILTIN_MODULES.md). A Bazel-written entry whose `recordedInputs` holds
   `REPO_MAPPING:bazel_tools,…` (a load or `Label()` inside a `@bazel_tools`

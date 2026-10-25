@@ -386,8 +386,9 @@ is the PlatformInfo label, the end of an alias chain
 lazy default host platform (docs/PLATFORMS.md, D2): a toolchain-using rule
 whose toolchain resolution needed no platform resolves the host platform
 when it has an exec edge, before any dependency; the default host platform
-then needs the built-in profile (`--experimental-builtin-modules`) or an
-explicit `--host_platform`, and fails explicitly as `While resolving
+then needs the built-in profile (the default; not
+`--experimental-builtin-modules=false`) or an explicit `--host_platform`, and
+fails explicitly as `While resolving
 toolchains for target L (CONFIG): ...` otherwise.
 
 **Exec options.** Bazel 9.3's exec transition is the built-in Starlark
@@ -788,8 +789,8 @@ rule L: Non-allowlisted use of Starlark transition`
 (RuleConfiguredTargetBuilder.handleAllowlistChecker,
 `analysis/RuleConfiguredTargetBuilder.java:104-112, 299-320`;
 `analysis/Allowlist.java:62-98`). Natively the `@bazel_tools` default needs
-the built-in module profile (`--experimental-builtin-modules`); without it
-the edge fails explicitly (`the Starlark transition allowlist ... needs the
+the built-in module profile (the default); with
+`--experimental-builtin-modules=false` the edge fails explicitly (`the Starlark transition allowlist ... needs the
 built-in @bazel_tools repository ...`), and rules can declare a workspace
 allowlist of that package and name, as rules_go declares the attribute
 (without `cfg = exec`).

@@ -194,13 +194,14 @@ embedded `tools/BUILD` alias to `@platforms//host`; that package loads
 `HOST_CONSTRAINTS` from `@host_platform//:constraints.bzl`, which the platforms
 module's `host_platform` module extension generates from `repository_ctx.os`
 (`linux`/`amd64` → `@platforms//os:linux`, `@platforms//cpu:x86_64`;
-docs/HOST_OS.md). This needs the genuine built-in profile
-(`--experimental-builtin-modules`, docs/BUILTIN_MODULES.md). Without it the
+docs/HOST_OS.md). This needs the genuine built-in profile (the default,
+docs/BUILTIN_MODULES.md). With `--experimental-builtin-modules=false` the
 native module graph has no `@bazel_tools`, and resolving the default host
 platform fails explicitly: `the target platform
 @@bazel_tools//tools:host_platform (the default host platform) needs the
-built-in @bazel_tools repository, which this module profile does not provide
-(...); use --experimental-builtin-modules, or select a platform with
+built-in @bazel_tools repository, which the explicit-module profile
+(--experimental-builtin-modules=false) does not provide (...); drop
+--experimental-builtin-modules=false, or select a platform with
 --platforms`. `--platforms=@bazel_tools//tools:host_platform` (any spelling of
 the default) is the default configuration and is resolved lazily too.
 
