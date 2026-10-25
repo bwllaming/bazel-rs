@@ -549,8 +549,9 @@ missing, per cache:
    executes, so the command's output and exit code are those of a run
    without the snapshot. A verified hit costs a full analysis (measured on
    ~/code: oauth2token build 8.4 s vs 7.1 s without the snapshot, B2
-   `--nobuild` 13.1 vs 12.3 s — the shadow analysis records, which turns
-   prefetching off); a miss saves like `on`. Unset the variable again
+   `--nobuild` 13.1 vs 12.3 s — measured while recording still turned the
+   phase-1 prefetch off; the shadow analysis records, with the prefetch
+   since W6R); a miss saves like `on`. Unset the variable again
    afterwards: the default gives hits of a few tenths of a second.
 2. **What it leaves behind**, in `<cache>/snapshots/` (`<cache>` is
    `--cache-dir`, default `<workspace>/bazel-rs-out`, e.g.
@@ -816,8 +817,9 @@ shared machine; wall and peak RSS by `wait4`, rounds interleaved):
 On a fresh cache the first command fetches and executes repository rules
 (not saved: `network`, `lockfile-write-pending`), the second saves, the third
 hits; the first hit after a save verifies the racy trees (0.37–0.71 s). A
-miss costs 2.4–4.6 s and 160–360 MB over the snapshot-off run (the recording
-without the phase-1 prefetch, above, and the save). A/B against the
+miss costs 2.4–4.6 s and 160–360 MB over the snapshot-off run (the recording,
+then without the phase-1 prefetch, and the save; W6R runs a miss with the
+prefetch: "What is saved, and when"). A/B against the
 installed i20 (exit code, stdout, stderr without diagnostics, the action
 dump), every run compared — the first (miss and save) and the later ones
 (hits): identical for oauth2token:all `--nobuild` (3 runs), oauth2token/...
