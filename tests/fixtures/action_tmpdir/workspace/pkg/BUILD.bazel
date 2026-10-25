@@ -1,0 +1,13 @@
+load(":defs.bzl", "probe_test")
+
+genrule(
+    name = "probe",
+    srcs = ["probe.sh"],
+    outs = ["probe.txt"],
+    cmd = "bash $(location probe.sh) > $@",
+)
+
+probe_test(
+    name = "probe_test",
+    src = "probe.sh",
+)

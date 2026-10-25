@@ -16,11 +16,13 @@
 //! last), the same map the remote cache key's `Command.environment_variables`
 //! is built from (N41, docs/REMOTE_CACHE.md), so a remote entry describes
 //! exactly the environment the action ran with.
-//! TMPDIR is always a fresh absolute directory, replacing any TMPDIR of the
-//! action environment (PosixLocalEnvProvider.rewriteLocalEnv,
-//! exec/local/PosixLocalEnvProvider.java:41-59, always replaces it too); its
-//! spelling (and the working directory's) is intentionally not stable, so
-//! actions must not embed these paths in output.
+//! TMPDIR is the client's TMPDIR, or `/tmp` when it is unset or empty, under
+//! every strategy, replacing any TMPDIR of the action environment
+//! (PosixLocalEnvProvider.rewriteLocalEnv,
+//! exec/local/PosixLocalEnvProvider.java:41-59; [`local_tmpdir`]); like
+//! Bazel's, it is shared between actions and not keyed. The working
+//! directory's spelling is intentionally not stable, so actions must not
+//! embed it in output.
 //!
 //! Tree artifacts (declared directories, docs/ACTIONS_PARAMS.md) are directory
 //! outputs and inputs: their regular files and subdirectories are keyed,
@@ -178,7 +180,7 @@ pub struct Action {
     /// Literal process arguments, or shell positional parameters starting at `$1`.
     pub arguments: Vec<String>,
     /// The fixed part of the action environment (a TMPDIR entry is keyed
-    /// but replaced by the fresh temporary directory).
+    /// but replaced by the local TMPDIR, [`local_tmpdir`]).
     pub environment: BTreeMap<String, String>,
     /// Enable errexit and pipefail flags; ignored for writes/direct runs.
     /// Genrules get these from Bazel's genrule-setup.sh instead (N41).
@@ -248,7 +250,7 @@ pub fn remote_policy(action: &Action) -> (bool, bool) {
 /// override fixed ones (ActionEnvironment.resolve, ActionEnvironment.java:
 /// 113-122). A declared TMPDIR stays in this map (Bazel keys it in
 /// `Command.environment_variables`); the executor replaces it last with the
-/// fresh temporary directory (PosixLocalEnvProvider.rewriteLocalEnv). The
+/// local TMPDIR (PosixLocalEnvProvider.rewriteLocalEnv, [`local_tmpdir`]). The
 /// remote cache Command is built from this same map.
 pub fn resolved_environment(action: &Action) -> BTreeMap<String, std::ffi::OsString> {
     let mut environment: BTreeMap<String, std::ffi::OsString> = action
@@ -3037,6 +3039,9 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     for value in [FORMAT, std::env::consts::OS, std::env::consts::ARCH] {
         frame(&mut hash, value.as_bytes());
     }
+    // A constant: the executed TMPDIR (local_tmpdir) is not keyed, like
+    // Bazel's rewriteLocalEnv, which runs after the action key. The
+    // historical spelling is kept so existing cache entries stay valid.
     frame(&mut hash, b"TMPDIR=fresh-absolute-work-tmp");
     frame(&mut hash, action.id.as_bytes());
     match (&action.write, &action.program, &action.extra.transform) {
@@ -4218,6 +4223,23 @@ fn cache_valid(
     Some(listings)
 }
 
+/// The TMPDIR every local spawn runs with, standalone and sandboxed alike:
+/// the client's `TMPDIR`, or `/tmp` when it is unset or empty
+/// (PosixLocalEnvProvider.rewriteLocalEnv,
+/// exec/local/PosixLocalEnvProvider.java:41-59, which every local runner —
+/// StandaloneSpawnStrategy, LinuxSandboxedSpawnRunner:269-270,
+/// ProcessWrapperSandboxedSpawnRunner:76-77 — applies). The short `/tmp`
+/// fallback is deliberate (bazel#4376): tools bind Unix sockets below TMPDIR
+/// and `sun_path` holds ~108 bytes, which a per-action directory below the
+/// cache would exceed. The value is used as given (a relative one resolves
+/// from the action's working directory, as under Bazel); the client
+/// environment is this process's environment.
+pub(crate) fn local_tmpdir() -> PathBuf {
+    std::env::var_os("TMPDIR")
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from)
+}
+
 fn fresh_work(parent: &Path, key: &str) -> Result<WorkDir, String> {
     loop {
         let n = NEXT_WORK.fetch_add(1, Ordering::Relaxed);
@@ -5042,9 +5064,8 @@ pub fn execute_with_remote(
     remove_stale(&cached)?;
     let work = fresh_work(&work_parent, key)?;
     let execroot = work.0.join("execroot");
-    let tmp = work.0.join("tmp");
+    let tmp = local_tmpdir();
     ensure_directory(&execroot)?;
-    ensure_directory(&tmp)?;
     let process = action.write.is_none() && action.extra.transform.is_none();
     // The remote cache applies to cacheable process actions only
     // (RemoteSpawnCache.java:85-92).
@@ -5245,7 +5266,7 @@ pub fn execute_with_remote(
         command.current_dir(&execroot).env_clear();
         // Exactly resolved_environment (ActionEnvironment.resolve,
         // ActionEnvironment.java:113-122), the remote key's environment;
-        // then PosixLocalEnvProvider's TMPDIR, last.
+        // then PosixLocalEnvProvider's TMPDIR (local_tmpdir), last.
         command.envs(&environment);
         command
             .env("TMPDIR", &tmp)
@@ -6135,7 +6156,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_environment_is_exact_keyed_and_tmpdir_always_fresh() {
+    fn shell_environment_is_exact_keyed_and_tmpdir_is_the_local_one() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.environment = BTreeMap::from([
@@ -6147,8 +6168,11 @@ mod tests {
             ("EMPTY".into(), String::new()),
         ]);
         // PosixLocalEnvProvider.rewriteLocalEnv (:41-59): an action TMPDIR
-        // never reaches the process.
-        action.command = "test \"$PATH\" = /explicit/path && test \"$LANG\" = POSIX && test \"$LC_ALL\" = POSIX && [[ $TMPDIR = /* ]] && test \"$TMPDIR\" != /explicit/tmp && test -d \"$TMPDIR\" && test \"${EMPTY+x}\" = x && test -z \"$EMPTY\" && test -z \"${HOME+x}\" && printf '%s' \"$VALUE\" > out/result".into();
+        // never reaches the process; the client's TMPDIR (or /tmp) does.
+        action.command = format!(
+            "test \"$PATH\" = /explicit/path && test \"$LANG\" = POSIX && test \"$LC_ALL\" = POSIX && test \"$TMPDIR\" = '{}' && test -d \"$TMPDIR\" && test \"${{EMPTY+x}}\" = x && test -z \"$EMPTY\" && test -z \"${{HOME+x}}\" && printf '%s' \"$VALUE\" > out/result",
+            local_tmpdir().display()
+        );
         let first = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(
             fs::read(&first.outputs[0]).unwrap(),
@@ -6852,9 +6876,9 @@ mod tests {
                 "ln -s /nonexistent/tree-target $T/y",
                 "child y is a dangling symbolic link",
             ),
-            // The temporary directory is gone once the action ran.
+            // The action's work directory is gone once the action ran.
             (
-                "printf t > $TMPDIR/t && ln -s $TMPDIR/t $T/y",
+                "printf t > ../t && ln -s \"$(cd .. && pwd)/t\" $T/y",
                 "child y is a dangling symbolic link; its absolute target lies in the action's sandbox or temporary directory",
             ),
             (

@@ -91,9 +91,20 @@ and the exec configuration's `--host_action_env` are reflected
 * `TMPDIR` is always set and always replaces an action `TMPDIR` (fixed or
   inherited), like `PosixLocalEnvProvider.rewriteLocalEnv`
   (`exec/local/PosixLocalEnvProvider.java:41-59`, used by the local and
-  sandboxed runners). Divergence: Bazel uses the client's `TMPDIR` or `/tmp`;
-  natively it is a fresh absolute directory per execution (isolation), so
-  actions must not embed it in outputs.
+  sandboxed runners): the client's `TMPDIR`, or `/tmp` when it is unset or
+  empty, under every strategy (`crate::action::local_tmpdir`; tests use the
+  same rule). Until action-tmpdir it was natively a fresh directory below the
+  cache (`<cache>/work/<64-hex key>-<pid>-<n>/tmp`), which made Unix socket
+  paths below TMPDIR exceed `sun_path` (~108 bytes; tsx's
+  `listen EINVAL ... tsx-<uid>/<pid>.pipe`), the very problem bazel#4376 fixed
+  with the short `/tmp` fallback. Pinned against genuine by
+  `tests/fixtures/action_tmpdir` (genrule and test, standalone and sandboxed,
+  client TMPDIR unset or set: 8/8 EXACT, `tests/sandbox.rs`
+  `tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine`). Genuine's
+  linux-sandbox (unavailable on this host; genuine ran
+  processwrapper-sandbox) additionally mounts a private, empty `/tmp`
+  (`--incompatible_sandbox_hermetic_tmp`); the Landlock sandbox cannot mount,
+  so `/tmp` and TMPDIR stay the shared host directories (docs/SANDBOX.md).
 * Nothing else is passed: the former native `PATH=/usr/bin:/bin LANG=C
   LC_ALL=C` defaults are gone. Without a `PATH`, bash defines (but does not
   export) its built-in default, exactly as under Bazel.
@@ -152,8 +163,8 @@ invalid evidence for the default strategy because both strategies shared an
 output base and the sandboxed builds were action-cache hits; fixed in the
 script only). Observed:
 
-* Bazel's TMPDIR is the client's `TMPDIR` under both strategies (native: a
-  fresh directory; normalized, recorded per row).
+* Bazel's TMPDIR is the client's `TMPDIR` under both strategies (natively
+  the same since action-tmpdir; normalized in this capture, recorded per row).
 * An action `TMPDIR` (`env`, `--action_env=TMPDIR=...`) never reaches the
   process, yet `ctx.configuration.default_shell_env` lists it.
 * `default_shell_env` is the fixed part: `{}` under `--action_env==PATH` and

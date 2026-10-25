@@ -168,7 +168,11 @@ explicit /tmp mount exists — LinuxSandboxedSpawnRunner.useHermeticTmp:218-296
 with known-path remounts — so cross-action /tmp side channels exist here
 that Bazel's sandbox prevents; a workspace under ~/code that needs the host
 /tmp visible uses Bazel's own answer, `--sandbox_add_mount_pair`, which is
-not modelled); and **metadata operations stay allowed** — chmod, chown,
+not modelled). TMPDIR has genuine's value under every strategy — the
+client's `TMPDIR`, or `/tmp` (PosixLocalEnvProvider.rewriteLocalEnv;
+docs/ACTION_ENV.md, `tests/fixtures/action_tmpdir`) — and is the shared
+host directory too, not a per-action directory: a per-action directory below
+the cache would put Unix socket paths beyond `sun_path`; and **metadata operations stay allowed** — chmod, chown,
 utime and xattr (setattr-class operations) are outside Landlock's ABI-4
 access rights, so an action can, for example, chmod a readable file it
 cannot write. Writes, creates, removes, renames and truncations are denied.

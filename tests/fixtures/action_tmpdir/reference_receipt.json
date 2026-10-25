@@ -1,0 +1,115 @@
+{
+ "reference": "bazel 9.3.0",
+ "process_summaries": {
+  "standalone/unset": [
+   "INFO: 8 processes: 6 internal, 3 local."
+  ],
+  "standalone/client": [
+   "INFO: 8 processes: 6 internal, 3 local."
+  ],
+  "sandboxed/unset": [
+   "INFO: 8 processes: 6 internal, 3 processwrapper-sandbox."
+  ],
+  "sandboxed/client": [
+   "INFO: 8 processes: 6 internal, 3 processwrapper-sandbox."
+  ]
+ },
+ "rows": [
+  {
+   "kind": "genrule",
+   "strategy": "standalone",
+   "client_tmpdir": "unset",
+   "lines": [
+    "TMPDIR=/tmp",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "test",
+   "strategy": "standalone",
+   "client_tmpdir": "unset",
+   "lines": [
+    "TMPDIR=/tmp",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "genrule",
+   "strategy": "standalone",
+   "client_tmpdir": "client",
+   "lines": [
+    "TMPDIR=<client>",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "test",
+   "strategy": "standalone",
+   "client_tmpdir": "client",
+   "lines": [
+    "TMPDIR=<client>",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "genrule",
+   "strategy": "sandboxed",
+   "client_tmpdir": "unset",
+   "lines": [
+    "TMPDIR=/tmp",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "test",
+   "strategy": "sandboxed",
+   "client_tmpdir": "unset",
+   "lines": [
+    "TMPDIR=/tmp",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "genrule",
+   "strategy": "sandboxed",
+   "client_tmpdir": "client",
+   "lines": [
+    "TMPDIR=<client>",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  },
+  {
+   "kind": "test",
+   "strategy": "sandboxed",
+   "client_tmpdir": "client",
+   "lines": [
+    "TMPDIR=<client>",
+    "TMPDIR_dir=yes",
+    "host_tmp_visible=yes",
+    "cwd_parent_tmp=no",
+    "socket_bind=ok"
+   ]
+  }
+ ]
+}

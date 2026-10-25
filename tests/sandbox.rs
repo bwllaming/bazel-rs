@@ -43,9 +43,10 @@ const SUGGESTION: &str = "Use --sandbox_debug to see verbose messages from the s
 /// test would see the write succeed. Instead the first of the candidates
 /// below that lies outside the production writable roots — computed from
 /// this environment exactly like crate::sandbox::wrap: /tmp, /dev,
-/// /dev/shm, TMPDIR, TEST_TMPDIR (the action execroot and its fresh TMPDIR
-/// live under the engine cache dir inside the workspace's /tmp tempdir, so
-/// the /tmp root covers them) — and is writable becomes the base.
+/// /dev/shm, TMPDIR (the client's, which every spawn gets), TEST_TMPDIR (the
+/// action execroot lives under the engine cache dir inside the workspace's
+/// /tmp tempdir, so the /tmp root covers it) — and is writable becomes the
+/// base.
 fn outside_base() -> PathBuf {
     let mut writable = vec![
         PathBuf::from("/tmp"),
@@ -733,6 +734,107 @@ fn tests_run_under_the_sandbox() {
     );
     assert!(output.status.success(), "{}", Workspace::text(&output));
     assert!(marker.exists());
+}
+
+/// What a spawn observes about TMPDIR, pinned by a genuine capture
+/// (tests/fixtures/action_tmpdir: capture.py, reference_receipt.json): a
+/// genrule and a test, standalone and sandboxed, with the client TMPDIR unset
+/// or set. Every local spawn gets the client's TMPDIR, or `/tmp`
+/// (PosixLocalEnvProvider.rewriteLocalEnv), never a per-action directory
+/// below the cache, so a Unix socket below TMPDIR stays within `sun_path`
+/// (bazel#4376). Genuine's `sandboxed` ran as processwrapper-sandbox on this
+/// host (the receipt's process summaries); the Landlock sandbox keeps the
+/// same TMPDIR writable.
+#[test]
+fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/action_tmpdir");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    let rows = receipt["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 8);
+    let ws = Workspace::new();
+    for name in [
+        "MODULE.bazel",
+        "pkg/BUILD.bazel",
+        "pkg/defs.bzl",
+        "pkg/probe.sh",
+    ] {
+        ws.file(
+            name,
+            &fs::read_to_string(fixture.join("workspace").join(name)).unwrap(),
+        );
+    }
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = ws.path().join("pkg/probe.sh");
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let client = ws.path().join("client-tmp");
+    let home = ws.path().join("home");
+    fs::create_dir_all(&client).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let marker = Path::new("/tmp/action-tmpdir-host-marker");
+    fs::write(marker, "").unwrap();
+    let probe = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| {
+                [
+                    "TMPDIR=",
+                    "TMPDIR_dir=",
+                    "host_tmp_visible=",
+                    "cwd_parent_tmp=",
+                    "socket_bind=",
+                ]
+                .iter()
+                .any(|key| line.starts_with(key))
+            })
+            .map(|line| line.replace(&client.display().to_string(), "<client>"))
+            .collect()
+    };
+    let mut observed = Vec::new();
+    for strategy in ["standalone", "sandboxed"] {
+        for tmp in ["unset", "client"] {
+            let cache = format!("cache-{strategy}-{tmp}");
+            let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+            command
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", &home)
+                .args(["--ignore_all_rc_files", &format!("--cache-dir={cache}")])
+                .args([
+                    "test",
+                    &format!("--spawn_strategy={strategy}"),
+                    "--test_output=all",
+                    "//pkg:probe",
+                    "//pkg:probe_test",
+                ])
+                .current_dir(ws.path());
+            if tmp == "client" {
+                command.env("TMPDIR", &client);
+            }
+            let output = command.explicit_modules().output().unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "{strategy}/{tmp}: {text}");
+            for (kind, text) in [
+                ("genrule", find_output(ws.path(), &cache, "probe.txt")),
+                ("test", text),
+            ] {
+                observed.push(serde_json::json!({
+                    "kind": kind,
+                    "strategy": strategy,
+                    "client_tmpdir": tmp,
+                    "lines": probe(&text),
+                }));
+            }
+        }
+    }
+    let _ = fs::remove_file(marker);
+    assert_eq!(&observed, rows);
 }
 
 fn find_output(root: &Path, cache: &str, name: &str) -> String {
