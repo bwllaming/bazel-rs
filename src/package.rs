@@ -21,7 +21,7 @@ use starlark::values::tuple::TupleRef;
 use starlark::values::tuple::UnpackTuple;
 
 use crate::build_settings::BuildSetting;
-use crate::custom_rule::{AttrSpec, AttrValue, CustomInvocation, InvocationDeclaration};
+use crate::custom_rule::{AttrValue, CustomInvocation, InvocationDeclaration};
 use crate::label::{Label, PackageId};
 use crate::native_rules::NativeTarget;
 use crate::package_specification::{self, GroupDefinition};
@@ -314,7 +314,7 @@ struct PendingCustom {
     /// (`""` for the rule's `cfg`, else the attribute name, module slot).
     transition_slots: Vec<(String, String)>,
     attrs: BTreeMap<String, AttrValue>,
-    schema: BTreeMap<String, AttrSpec>,
+    schema: crate::custom_rule::SharedSchema,
     build_setting: Option<BuildSetting>,
     declaration: InvocationDeclaration,
 }
@@ -369,7 +369,7 @@ pub(crate) fn register_custom<'v>(
     subrules: Vec<Value<'v>>,
     transitions: Vec<(String, Value<'v>)>,
     attrs: BTreeMap<String, AttrValue>,
-    schema: BTreeMap<String, AttrSpec>,
+    schema: crate::custom_rule::SharedSchema,
     build_setting: Option<BuildSetting>,
     mut declaration: InvocationDeclaration,
 ) -> anyhow::Result<()> {

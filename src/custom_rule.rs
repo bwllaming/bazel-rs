@@ -20,6 +20,18 @@ use std::sync::OnceLock;
 use crate::build_settings::{BuildSetting, BuildSettingKind};
 use crate::providers::ProviderRequirement;
 
+/// A rule class's attribute schema, by attribute name.
+pub type Schema = BTreeMap<String, AttrSpec>;
+
+/// A rule class's schema shared by its definition and every instance
+/// (MEM2): Bazel's Rule points at its RuleClass's attribute list rather
+/// than copying it per target; one copy per target was the largest
+/// retained structure on ~/code (one per rule instance, again per
+/// configured target in the plan, and per generated repository).
+/// Immutable after the rule class is built; serializes as the map
+/// itself (serde `rc`), so provenance bytes are unchanged.
+pub type SharedSchema = std::sync::Arc<Schema>;
+
 #[derive(Clone, Debug, PartialEq, Eq, Allocative, serde::Serialize)]
 pub enum AttrKind {
     String,
@@ -558,7 +570,8 @@ pub struct CustomInvocation {
     /// attribute transition); crate::starlark_transitions.
     pub transitions: BTreeMap<String, OwnedFrozenValue>,
     pub attrs: BTreeMap<String, AttrValue>,
-    pub schema: BTreeMap<String, AttrSpec>,
+    /// The rule class's schema, shared with its definition (MEM2).
+    pub schema: SharedSchema,
     pub declaration: InvocationDeclaration,
 }
 
@@ -1285,7 +1298,7 @@ mod values {
         pub build_setting: Option<BuildSetting>,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
-        pub schema: BTreeMap<String, AttrSpec>,
+        pub schema: SharedSchema,
         /// Schema keys in rule-class attribute order.
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
@@ -1326,7 +1339,7 @@ mod values {
                 // with the same public name (`$action_listener` versus
                 // `:action_listener`) fails when the class is built.
                 let builtins = crate::native_rules::starlark_builtins(self.declaration.kind());
-                for (attribute, spec) in &self.schema {
+                for (attribute, spec) in self.schema.iter() {
                     if !attribute.starts_with('_') {
                         continue;
                     }
@@ -1628,7 +1641,7 @@ mod values {
                 .chain(configurable.keys())
                 .cloned()
                 .collect::<std::collections::BTreeSet<_>>();
-            for (key, spec) in &self.schema {
+            for (key, spec) in self.schema.iter() {
                 // A select()-valued attribute is resolved at analysis
                 // (crate::configured_attributes); its default is not a value.
                 // Computed defaults are evaluated after every other attribute
@@ -3063,7 +3076,7 @@ fn static_gaps(
 /// values (docs/CONFIGURATION.md). Never evaluated on unresolved selects.
 pub(crate) fn value_gaps(invocation: &CustomInvocation) -> Vec<String> {
     let mut features = Vec::new();
-    for (name, spec) in &invocation.schema {
+    for (name, spec) in invocation.schema.iter() {
         let present = invocation
             .attrs
             .get(name)
@@ -3136,7 +3149,7 @@ fn configurable_labels(
 #[cfg(test)]
 pub(crate) struct RuleDeclarationView {
     pub declaration: RuleDeclaration,
-    pub schema: BTreeMap<String, AttrSpec>,
+    pub schema: SharedSchema,
     pub has_initializer: bool,
 }
 
@@ -4353,7 +4366,7 @@ fn define_rule<'v>(
         transitions,
         transition_keys,
         computed,
-        schema,
+        schema: SharedSchema::new(schema),
         attr_order,
         build_setting,
         declaration,

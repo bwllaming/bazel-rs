@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::OnceLock;
 
-use crate::custom_rule::{AttrKind, AttrSpec, AttrValue, attribute_spec, attribute_spec_ref};
+use crate::custom_rule::{AttrKind, AttrValue, attribute_spec, attribute_spec_ref};
 use crate::extension_calls::RecordedValue;
 use crate::label::Label;
 use crate::loading::ExtensionContext;
@@ -25,7 +25,10 @@ use crate::repository_environment::DeclaredEnvironment;
 #[derive(Clone, Debug)]
 pub struct RuleDefinition {
     pub implementation: OwnedFrozenValue,
-    pub schema: BTreeMap<String, AttrSpec>,
+    /// Shared with the rule's definition value and every repository it
+    /// generates (MEM2: a module extension's thousands of repositories
+    /// each held a copy).
+    pub schema: crate::custom_rule::SharedSchema,
     /// Attribute names in declaration order (the `attrs` dict order;
     /// RepoRule.Builder.addAttribute, RepoRule.java:147-152).
     pub attribute_order: Vec<String>,
@@ -70,7 +73,7 @@ mod values {
         pub implementation: V,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
-        pub schema: BTreeMap<String, AttrSpec>,
+        pub schema: crate::custom_rule::SharedSchema,
         #[trace(unsafe_ignore)]
         #[freeze(identity)]
         pub attribute_order: Vec<String>,
@@ -304,7 +307,7 @@ pub fn globals(builder: &mut GlobalsBuilder) {
         }
         Ok(eval.heap().alloc(RepoDefinitionGen {
             implementation,
-            schema,
+            schema: crate::custom_rule::SharedSchema::new(schema),
             attribute_order,
             local,
             configure,
@@ -391,7 +394,7 @@ pub fn bind_attributes_where(
         }
         attrs.insert(name.clone(), parsed);
     }
-    for (name, spec) in &definition.schema {
+    for (name, spec) in definition.schema.iter() {
         if !attrs.contains_key(name) {
             if spec.mandatory {
                 return Err(format!("missing mandatory repository attribute {name:?}"));
