@@ -14,6 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 const MODULE: &str = r#"module(name = "rf")
 bazel_dep(name = "ext")
@@ -712,10 +713,8 @@ fn aspect_actions_stage_their_tools_runfiles() {
     // "Aspect attribute configurations"): the default host platform, which
     // the built-in module profile provides (genuine Bazel 9.3.0 builds the
     // same outputs, pa1fu-b6-capture.py).
-    let registry = format!(
-        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let registry = builtin_registry_flag();
+    seed_module_archives(&ws.cache(), &["platforms@1.0.0"]);
     let output = ws
         .command(
             &[

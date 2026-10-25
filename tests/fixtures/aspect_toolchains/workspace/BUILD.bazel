@@ -1,0 +1,13 @@
+load(":defs.bzl", "lib", "use")
+
+lib(name = "a")
+
+lib(
+    name = "b",
+    deps = [":a"],
+)
+
+use(
+    name = "u",
+    deps = [":b"],
+)

@@ -1617,6 +1617,9 @@ pub(crate) struct AspectApplication {
     /// The applied aspects' descriptions in application order
     /// (`ctx.aspect_ids`).
     pub aspect_ids: Vec<String>,
+    /// The aspect path of this application: its directly required aspects,
+    /// then itself (RuleContext's aspects, named in messages).
+    pub aspect_path: Vec<String>,
     /// The `target` parameter: the base configured target merged with the
     /// directly required aspects' providers (MergedConfiguredTarget.of,
     /// AspectFunction.java:341-346).
@@ -1633,7 +1636,19 @@ pub(crate) struct AspectApplication {
     /// (AspectContext.getMainAspectPrerequisitesCollection), keyed by
     /// [`attribute_dependency_key`].
     pub aspect_dependencies: BTreeMap<String, DependencyTarget>,
+    /// The aspect's own ToolchainCollection (crate::engine).
+    pub toolchains: AspectToolchains,
     pub repositories: Arc<RepositorySet>,
+}
+
+/// The aspect's own toolchain contexts at analysis (AspectFunction.java:
+/// 468-485, ConfiguredTargetFactory.createAspect): `ctx.toolchains`,
+/// `ctx.exec_groups` and the action factory's exec groups with their
+/// execution table.
+pub(crate) struct AspectToolchains {
+    pub toolchains: Arc<crate::toolchain_info::ToolchainContextData>,
+    pub exec_groups: Arc<crate::exec_groups::ExecGroupsData>,
+    pub action_exec_groups: crate::exec_groups::ActionExecGroups,
 }
 
 /// The analysis of one aspect application: runs the aspect's implementation
@@ -1677,7 +1692,10 @@ fn analyze_aspect_inner(
     let aspect = &application.aspect;
     let rule = &application.rule;
     // Declared aspect features whose application the native profile does not
-    // model fail explicitly (docs/ASPECTS.md).
+    // model fail explicitly (docs/ASPECTS.md). An aspect's `toolchains`,
+    // `exec_compatible_with`, `exec_groups` and `fragments` are analyzed
+    // (its own ToolchainCollection, crate::engine; `host_fragments` is
+    // ignored by Bazel 9.3, StarlarkRuleClassFunctions.aspect).
     let declaration = &aspect.declaration;
     let has_subrules = crate::rule_declarations::Aspect::from_value(aspect.value.value())
         .is_some_and(|value| !value.subrules.is_empty());
@@ -1686,11 +1704,6 @@ fn analyze_aspect_inner(
             .toolchains_aspects
             .as_ref()
             .is_some_and(|aspects| !aspects.is_empty())
-        || !declaration.toolchains.is_empty()
-        || !declaration.fragments.is_empty()
-        || !declaration.host_fragments.is_empty()
-        || !declaration.exec_compatible_with.is_empty()
-        || !declaration.exec_groups.is_empty()
         || has_subrules
     {
         let mut gaps = Vec::new();
@@ -1705,18 +1718,6 @@ fn analyze_aspect_inner(
             .is_some_and(|aspects| !aspects.is_empty())
         {
             gaps.push("toolchains_aspects".to_owned());
-        }
-        if !declaration.toolchains.is_empty() {
-            gaps.push("toolchains".to_owned());
-        }
-        if !declaration.fragments.is_empty() || !declaration.host_fragments.is_empty() {
-            gaps.push("fragments".to_owned());
-        }
-        if !declaration.exec_compatible_with.is_empty() {
-            gaps.push("exec_compatible_with".to_owned());
-        }
-        if !declaration.exec_groups.is_empty() {
-            gaps.push("exec_groups".to_owned());
         }
         if has_subrules {
             gaps.push("subrules".to_owned());
@@ -1743,6 +1744,16 @@ fn analyze_aspect_inner(
         &application.dependencies,
         target.output_root,
     )?;
+    // The aspect's RuleContext: its configuration fragment policy is the
+    // aspect's `fragments` (ConfiguredTargetFactory.createAspect:692), its
+    // rule class for messages `ASPECTS aspect on KIND`
+    // (RuleContext.Builder.getRuleClassNameForLogging, :1908-1917).
+    aspect_surface.declared_fragments = declaration.fragments.clone();
+    aspect_surface.rule_class = format!(
+        "{} aspect on {}",
+        application.aspect_path.join(","),
+        invocation.declaration.rule_class
+    );
     let aspect_surface = Arc::new(aspect_surface);
     let active = Arc::new(AtomicBool::new(true));
     let context = Context {
@@ -1762,12 +1773,7 @@ fn analyze_aspect_inner(
         repositories: application.repositories.clone(),
         scope: crate::analysis_runtime::ScopeState::new(rule.label.to_string(), BTreeSet::new()),
         subrule: crate::subrule::RuleEnvironment::new(None, false, invocation.cpp),
-        exec_groups: crate::exec_groups::ActionExecGroups {
-            groups: None,
-            use_auto_exec_groups: false,
-            subrule: None,
-            executions: Arc::from([]),
-        },
+        exec_groups: application.toolchains.action_exec_groups.clone(),
         runfiles: crate::runfiles::ContextRunfiles {
             default_executable: None,
             ..Default::default()
@@ -2096,8 +2102,8 @@ fn make_aspect_ctx<'v>(
         backing,
         context.scope.root(),
         invocation.target_platform.clone(),
-        None,
-        None,
+        Some(application.toolchains.toolchains.clone()),
+        Some(application.toolchains.exec_groups.clone()),
         surface,
     );
     crate::analysis_runtime::set_rule_ctx(&actions, ctx);

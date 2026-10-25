@@ -13,15 +13,16 @@ load. At application, the native profile supports: `implementation`
 (called as `f(target, ctx)`, `StarlarkAspectFactory.create`),
 `attr_aspects` (a fixed list), `attrs` (implicit `_`-attributes and
 parameter attributes), `required_providers`, `required_aspect_providers`,
-`provides`, `requires`, `apply_to_generating_rules` and `mandatory_providers`
-wording. Aspect-declared features whose application is not modelled fail
-explicitly when the aspect applies (never a silent no-op): a function
-`attr_aspects`/`toolchains_aspects` or a propagation predicate,
-non-empty `toolchains_aspects`, `toolchains`, `fragments`/`host_fragments`,
-`exec_compatible_with`, `exec_groups` and `subrules`:
+`provides`, `requires`, `apply_to_generating_rules`, `mandatory_providers`
+wording, `toolchains`, `exec_compatible_with`, `exec_groups`, `fragments`
+(and `host_fragments`, which Bazel 9.3 ignores) — see "Aspect toolchains,
+exec groups and fragments". Aspect-declared features whose application is
+not modelled fail explicitly when the aspect applies (never a silent
+no-op): a function `attr_aspects`/`toolchains_aspects` or a propagation
+predicate, non-empty `toolchains_aspects` and `subrules`:
 
 ```
-aspect //:defs.bzl%fragments_aspect declares fragments: not analyzed by the native profile
+aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed by the native profile
 ```
 
 ## Application and propagation
@@ -128,8 +129,9 @@ AspectDescriptor):
   the base rule class;
 - `ctx.aspect_ids`: the applied aspects' descriptions in application order;
 - `ctx.label`, `ctx.actions`, `ctx.var`, `ctx.expand_location`,
-  `ctx.fragments` (the base target's configuration), the shared
-  configuration surface;
+  `ctx.fragments` (the base target's configuration, the aspect's fragment
+  policy), the shared configuration surface; `ctx.toolchains` and
+  `ctx.exec_groups` of the aspect's own ToolchainCollection;
 - `ctx.outputs` fails with `'outputs' is not defined`, `ctx.super` with
   `Can't use 'super' call in an aspect.`, `ctx.rule`/`ctx.aspect_ids`
   in a rule context with Bazel's
@@ -151,12 +153,14 @@ never the base rule's attribute configuration:
 - `cfg = "exec"` / `config.exec()`: the exec transition
   (ExecutionTransitionFactory) for the execution platform of the ASPECT's
   own default exec group — its toolchain context
-  (`AspectFunction.getUnloadedToolchainContextsInputs`, `AspectFunction.java:811-838`),
-  the host platform natively (the only execution platform,
-  docs/TOOLCHAINS.md) — so a tool lands in `bazel-out/k8-opt-exec`; on an
+  (`AspectFunction.getUnloadedToolchainContextsInputs`, `AspectFunction.java:811-838`,
+  see "Aspect toolchains, exec groups and fragments"), the host platform
+  natively (the only execution platform, docs/TOOLCHAINS.md) — so a tool
+  lands in `bazel-out/k8-opt-exec`; on an
   exec-configured base target the exec transition of the exec
   configuration is itself;
-- `config.exec("g")` of an exec group the aspect does not declare:
+- `config.exec("g")`: the execution platform of the aspect's exec group
+  `g`; of an exec group the aspect does not declare:
   DependencyProducer.ExecGroupErrorEmitter at the base target, with the
   attribute's native name (`BUILD.bazel:12:4: Attr '$tool' declares a
   transition for non-existent exec group 'nope'`);
@@ -197,6 +201,58 @@ Paired capture tests/fixtures/aspect_configuration (reference_receipt.json,
 `/tmp/opencode/oracle-aspect-exec/ws` (genuine `bazel-out/k8-opt-exec/bin/tool`)
 now matches. Aspect actions running such tools changed their keys once (the
 tools moved to exec paths); ~/code plans no aspect-owned action.
+
+## Aspect toolchains, exec groups and fragments
+
+An aspect resolves its OWN ToolchainCollection in the base target's
+configuration (`AspectFunction.getUnloadedToolchainContextsInputs`,
+`AspectFunction.java:811-838`, with DependencyContextProducer and
+UnloadedToolchainContextsProducer; `Engine::aspect_toolchain_contexts`,
+memoized per (configuration, aspect), resolved in phase 1 before the
+aspect's attribute configurations), never the base rule's: the default exec
+group over the aspect's `exec_compatible_with` and — without automatic exec
+groups — its `toolchains` (`createDefaultToolchainContextKey`, no forced
+execution platform), then DeclaredExecGroup.process's groups: the aspect's
+`exec_groups`, and under automatic exec groups (an `_use_auto_exec_groups`
+attribute, else `--incompatible_auto_exec_groups`; `shouldUseAutoExecGroups`)
+one group per toolchain type. The resolved toolchain implementations are
+dependencies of the application, analyzed in the base configuration
+(DependencyKind.forExecGroup). A resolution failure is the application's
+error as is (the ToolchainException message, e.g. `No matching toolchains
+found for types:`; AspectFunction's AspectCreationException), not a target's
+`While resolving toolchains for target` error.
+
+At analysis (`Engine::plan_aspect_application`, `analysis::AspectToolchains`):
+each context is loaded (ResolvedToolchainContext.load) described `aspect A
+applied to KIND rule L` (`AspectFunction.java:468-485`), so `ctx.toolchains`
+is always a valid context of the aspect (repr `<toolchain_context.resolved_labels:
+//tc:t, //tc:optional_t>`, None for an unresolved optional type, `In aspect
+//:defs.bzl%plain_aspect applied to lib rule //:a, toolchain type //tc:t was
+requested but only types [] are configured` for an unrequested one; under
+automatic exec groups the automatic groups' types); `ctx.exec_groups` is the
+aspect's collection; `ctx.actions.run`/`run_shell` take `exec_group =` and
+`toolchain =` against it, and each action's execution platform and exec
+properties come from the aspect's execution table over NO `exec_properties`
+(an aspect's RuleContext takes none, `ConfiguredTargetFactory.createAspect:702`)
+— an aspect action's key now carries its execution platform like a rule's.
+`ctx.var` adds the TemplateVariableInfo of the aspect's resolved toolchains
+(RuleContext.fromToolchains). The aspect's `cfg = "exec"` attributes use the
+default group's execution platform, `config.exec("g")` the group's.
+
+`fragments` is the aspect's configuration fragment policy
+(`ConfiguredTargetFactory.createAspect:692`), and the aspect's RuleContext
+names itself `ASPECTS aspect on KIND` (`RuleContext.Builder.getRuleClassNameForLogging`,
+`:1908-1917`): `ctx.fragments.cpp` of an aspect without `fragments = ["cpp"]`
+fails `//:defs.bzl%nofrag_aspect aspect on lib has to declare 'cpp' as a
+required fragment in order to access it. ...` whatever the base rule
+declares; `host_fragments` is accepted and ignored (Bazel 9.3's aspect()
+never reads it).
+
+Paired capture tests/fixtures/aspect_toolchains (reference_receipt.json, 7/7
+MATCH; tests/aspects.rs `aspects_resolve_their_own_toolchains`,
+`aspect_fragments_are_the_aspects_own`). rules_rust's `rust_clippy_aspect`
+(`fragments = ["cpp"]`, the rust and optional C++ toolchain types, an exec
+`_process_wrapper`) needs all three.
 
 ## Top-level aspects and validation
 
@@ -242,9 +298,7 @@ identity unchanged, and depset snapshots taken from either agree.
 
 - function `attr_aspects`/`toolchains_aspects`, propagation predicates;
   non-empty `toolchains_aspects`;
-- aspect `toolchains`, `fragments`, `host_fragments`,
-  `exec_compatible_with`, `exec_groups`, `subrules` at application
-  (`ctx.toolchains` of an aspect fails like a rule without toolchains);
+- aspect `subrules` at application;
 - parameter values of `--aspects_parameters` are string/bool/int/string-list
   typed by the attribute (AspectParameters); other types are rejected at
   aspect() load (N33).

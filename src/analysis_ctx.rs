@@ -707,6 +707,8 @@ fn aspect_properties(builder: &mut MethodsBuilder) {
     fn executable<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         field(this, "executable", heap)
     }
+    /// StarlarkRuleContext.toolchains (:877-898): the aspect's own
+    /// toolchain context (an aspect always has one).
     #[starlark(attribute)]
     fn toolchains<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         let ctx = rule_ctx(this)?;
@@ -715,6 +717,17 @@ fn aspect_properties(builder: &mut MethodsBuilder) {
             heap,
             ctx.toolchains.clone(),
         ))
+    }
+    /// StarlarkRuleContext.execGroups (:906-910): the aspect's own
+    /// ToolchainCollection.
+    #[starlark(attribute)]
+    fn exec_groups<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        let ctx = rule_ctx(this)?;
+        ctx.scope.check_current()?;
+        match &ctx.exec_groups {
+            Some(data) => Ok(crate::exec_groups::alloc_collection(heap, data.clone())),
+            None => bail!("internal error: an aspect context without its toolchain collection"),
+        }
     }
     fn target_platform_has_constraint<'v>(
         this: Value<'v>,

@@ -1,0 +1,287 @@
+{
+ "schema": "parity-aspects-reference-receipt/v1",
+ "fixture": "aspect_toolchains",
+ "purpose": "Aspect toolchains (AspectFunction.getUnloadedToolchainContextsInputs, AspectFunction.java:811-838; :468-485): an aspect resolves its OWN ToolchainCollection in the base target's configuration - its toolchains (a mandatory and an optional type), exec_compatible_with, exec_groups and, with _use_auto_exec_groups, automatic exec groups - never the base rule's (lib has none); ctx.toolchains (repr, None for an unresolved optional type, the 'In aspect A applied to KIND rule L, toolchain type T was requested but only types [] are configured' error), ctx.exec_groups, actions with toolchain=/exec_group=, a missing mandatory toolchain ('No matching toolchains found for types:'); fragments is the aspect's configuration fragment policy ('A aspect on KIND has to declare ...'), host_fragments is ignored by Bazel 9.3.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of tests/fixtures/aspect_toolchains/workspace per case"
+ },
+ "native": {
+  "binary": "bazel-rs",
+  "sha256": "316f35e0051d2797103e544d41e972a4f6fda563a0a83c9bd43d1aadddb4ff4d",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/pasp-capture.py, pasp-receipt.py (not committed)",
+  "sha256": {
+   "pasp-capture.py": "08df4e72b4d1959c560f84c71f1a13b3812262e17e3fb434522577c51f8b1073",
+   "pasp-receipt.py": "357ee0d574b1231c566615d0a8aa64218927299733dbe230ac2326fc1a0e67a7"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "52d48a3cb41cb9093cd041b5abae54c1b32ce6de9f754fd081654865853a2ebc",
+  "MODULE.bazel": "b9002b4786f7de7d798a39692bc657e486471fc8db13c19b21862f9194247471",
+  "defs.bzl": "fdae2b967c9c6adbefb095668777277ba190d212bcad4e35f71ccbc0525e5f29",
+  "tc/BUILD.bazel": "25ce418606dd588ab3a6dd75ef2d3b36bd238f6b31e0aefa85eec8cfa76d422a"
+ },
+ "normalization": "<WS> = the case's workspace copy. prints: the print() lines carrying the case's marker, genuine's `DEBUG: <file>:<line>:<col>: ` prefix removed, sorted. outputs: every file below bazel-out whose name ends with one of the case's suffixes, by path below bazel-out (genuine: the bazel-out convenience symlink; native: the published action outputs), with its contents. errors: genuine's ERROR lines; native's stderr without the memory-limit notice.",
+ "comparison": "MATCH = equal exit code, prints and outputs, and for a failing case genuine's first error message (location removed) appears in a native error line.",
+ "counts": {
+  "MATCH": 7,
+  "DECLARED_DIVERGENCE": 0,
+  "DIFF": 0
+ },
+ "scratch_removed": true,
+ "cases": {
+  "top_level": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%tc_aspect",
+    "--output_groups=tc_out",
+    "//:b"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "EG a g=second has_g=True copts=[]",
+     "EG b g=second has_g=True copts=[]",
+     "TC a t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>",
+     "TC b t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.default": "default\n",
+     "k8-fastbuild/bin/a.group": "group\n",
+     "k8-fastbuild/bin/b.default": "default\n",
+     "k8-fastbuild/bin/b.group": "group\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "EG a g=second has_g=True copts=[]",
+     "EG b g=second has_g=True copts=[]",
+     "TC a t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>",
+     "TC b t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.default": "default\n",
+     "k8-fastbuild/bin/a.group": "group\n",
+     "k8-fastbuild/bin/b.default": "default\n",
+     "k8-fastbuild/bin/b.group": "group\n"
+    }
+   }
+  },
+  "attribute_aspects": {
+   "argv": [
+    "build",
+    "//:u"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "EG a g=second has_g=True copts=[]",
+     "EG b g=second has_g=True copts=[]",
+     "TC a t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>",
+     "TC b t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.default": "default\n",
+     "k8-fastbuild/bin/a.group": "group\n",
+     "k8-fastbuild/bin/b.default": "default\n",
+     "k8-fastbuild/bin/b.group": "group\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "EG a g=second has_g=True copts=[]",
+     "EG b g=second has_g=True copts=[]",
+     "TC a t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>",
+     "TC b t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.default": "default\n",
+     "k8-fastbuild/bin/a.group": "group\n",
+     "k8-fastbuild/bin/b.default": "default\n",
+     "k8-fastbuild/bin/b.group": "group\n"
+    }
+   }
+  },
+  "auto_exec_groups": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%auto_aspect",
+    "--output_groups=auto_out",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "AUTO a t=first group=first"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.auto": "auto\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "AUTO a t=first group=first"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/a.auto": "auto\n"
+    }
+   }
+  },
+  "undeclared_fragment": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%nofrag_aspect",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:3:4: in //:defs.bzl%nofrag_aspect aspect on lib rule //:a: ",
+     "ERROR: Analysis of aspects '[//:defs.bzl%nofrag_aspect] with parameters {} on //:a' failed; build aborted: Analysis of target '//:a' (config: a7a71fd) failed",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: in //:defs.bzl%nofrag_aspect aspect on lib rule //:a: Traceback (most recent call last):",
+     "  File <builtin>, in <module>",
+     "error: //:defs.bzl%nofrag_aspect aspect on lib has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = [\"cpp\"])",
+     "  --> //:defs.bzl:65:30",
+     "   |",
+     "65 |     print(\"NOFRAG {}\".format(ctx.fragments.cpp.copts))",
+     "   |                              ^^^^^^^^^^^^^^^^^",
+     "   |",
+     ""
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "//:defs.bzl%nofrag_aspect aspect on lib has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = [\"cpp\"])"
+  },
+  "host_fragments_ignored": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%hostfrag_aspect",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:3:4: in //:defs.bzl%hostfrag_aspect aspect on lib rule //:a: ",
+     "ERROR: Analysis of aspects '[//:defs.bzl%hostfrag_aspect] with parameters {} on //:a' failed; build aborted: Analysis of target '//:a' (config: a7a71fd) failed",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: in //:defs.bzl%hostfrag_aspect aspect on lib rule //:a: Traceback (most recent call last):",
+     "  File <builtin>, in <module>",
+     "error: //:defs.bzl%hostfrag_aspect aspect on lib has to declare 'java' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = [\"java\"])",
+     "  --> //:defs.bzl:71:32",
+     "   |",
+     "71 |     print(\"HOSTFRAG {}\".format(ctx.fragments.java))",
+     "   |                                ^^^^^^^^^^^^^^^^^^",
+     "   |",
+     ""
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "//:defs.bzl%hostfrag_aspect aspect on lib has to declare 'java' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = [\"java\"])"
+  },
+  "missing_toolchain": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%missing_aspect",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: Analysis of aspects '[//:defs.bzl%missing_aspect] with parameters {} on //:a' failed; build aborted: No matching toolchains found for types:",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: No matching toolchains found for types:",
+     "  //tc:missing_t",
+     "To debug, rerun with --toolchain_resolution_debug='//tc:missing_t'",
+     "For more information on platforms or toolchains see https://bazel.build/concepts/platforms-intro."
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "No matching toolchains found for types:"
+  },
+  "unrequested_type": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%plain_aspect",
+    "//:a"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [
+     "PLAIN <toolchain_context.resolved_labels: >"
+    ],
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:3:4: in //:defs.bzl%plain_aspect aspect on lib rule //:a: ",
+     "ERROR: Analysis of aspects '[//:defs.bzl%plain_aspect] with parameters {} on //:a' failed; build aborted: Analysis of target '//:a' (config: a7a71fd) failed",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [
+     "PLAIN <toolchain_context.resolved_labels: >"
+    ],
+    "errors": [
+     "bazel-rs: in //:defs.bzl%plain_aspect aspect on lib rule //:a: Traceback (most recent call last):",
+     "  File <builtin>, in <module>",
+     "error: In aspect //:defs.bzl%plain_aspect applied to lib rule //:a, toolchain type //tc:t was requested but only types [] are configured",
+     "  --> //:defs.bzl:83:13",
+     "   |",
+     "83 |     return [ctx.toolchains[\"//tc:t\"]]",
+     "   |             ^^^^^^^^^^^^^^^^^^^^^^^^",
+     "   |",
+     ""
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "In aspect //:defs.bzl%plain_aspect applied to lib rule //:a, toolchain type //tc:t was requested but only types [] are configured"
+  }
+ }
+}

@@ -13,6 +13,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 struct Workspace(tempfile::TempDir);
 
@@ -41,14 +42,71 @@ impl Workspace {
         ws
     }
 
+    /// tests/fixtures/aspect_toolchains: the genuine platforms 1.0.0 module
+    /// extracted into `platforms` (its MODULE.bazel's local_path_override),
+    /// and N30's builtin-closure stubs as `local_path_override`s, which keep
+    /// the built-in profile offline (no closure module registers a
+    /// toolchain of the fixture's types; tests/exec_groups.rs's approach).
+    fn toolchains_fixture() -> Self {
+        use std::io::Read as _;
+        let ws = Self::fixture("aspect_toolchains");
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let archive: serde_json::Value = serde_json::from_slice(
+            &fs::read(manifest.join("tests/fixtures/label_repo_name/platforms_archive.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let bytes = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .decode(archive["bytes_base64"].as_str().unwrap())
+                .unwrap()
+        };
+        let platforms = ws.path().join("platforms");
+        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes.as_slice()));
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = platforms.join(entry.path().unwrap());
+            if entry.header().entry_type().is_dir() {
+                fs::create_dir_all(&path).unwrap();
+                continue;
+            }
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        let mut module = fs::read_to_string(ws.path().join("MODULE.bazel")).unwrap();
+        for name in [
+            "apple_support",
+            "buildozer",
+            "protobuf",
+            "rules_cc",
+            "rules_java",
+            "rules_python",
+            "rules_shell",
+            "zlib",
+        ] {
+            module.push_str(&format!(
+                "local_path_override(module_name = '{name}', path = '{}')\n",
+                manifest
+                    .join("tests/fixtures/test_flags/stubs")
+                    .join(name)
+                    .display()
+            ));
+        }
+        fs::write(ws.path().join("MODULE.bazel"), module).unwrap();
+        ws
+    }
+
     /// `build` under the built-in module profile (the default host
     /// platform's exec configurations, rules_cc's toolchain types) with
     /// the fixture registry, as the paired captures run it.
     fn build_builtin(&self, flags: &[&str], targets: &[&str]) -> Output {
-        let registry = format!(
-            "--registry=file://{}/tests/fixtures/builtin_modules/registry",
-            env!("CARGO_MANIFEST_DIR")
-        );
+        // Offline: the platforms module (the default host platform) comes
+        // from the seeded repository download cache.
+        seed_module_archives(&self.path().join("cache"), &["platforms@1.0.0"]);
+        let registry = builtin_registry_flag();
         let mut all = vec!["--experimental-builtin-modules", registry.as_str()];
         all.extend_from_slice(flags);
         self.build_with(&all, targets)
@@ -410,12 +468,23 @@ fn instrumented_files_info_of_an_aspect_wins_over_the_base_target() {
 
 #[test]
 fn aspect_declaration_gaps_fail_explicitly() {
-    // N11: aspect-declared features whose application is not modelled fail
-    // loudly (never silently ignored).
+    // N11: an aspect's `fragments` are its configuration fragment policy
+    // (genuine: the application succeeds, //:a builds a.lib; the receipt's
+    // former native gap). Aspect-declared features whose application is not
+    // modelled still fail loudly (never silently ignored): non-empty
+    // `toolchains_aspects`.
     let ws = Workspace::new();
+    ok(&ws.build_with(&["--aspects=//:defs.bzl%fragments_aspect"], &["//:a"]));
+    assert_eq!(ws.output("a.lib"), "lib");
+    let ws = Workspace::new();
+    fs::write(
+        ws.path().join("gaps.bzl"),
+        "def _impl(target, ctx):\n    return []\n\ntoolchains_aspect = aspect(implementation = _impl, toolchains_aspects = ['//:t'])\n",
+    )
+    .unwrap();
     rejected(
-        &ws.build_with(&["--aspects=//:defs.bzl%fragments_aspect"], &["//:a"]),
-        "aspect //:defs.bzl%fragments_aspect declares fragments",
+        &ws.build_with(&["--aspects=//:gaps.bzl%toolchains_aspect"], &["//:a"]),
+        "aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed by the native profile",
     );
 }
 
@@ -607,4 +676,87 @@ fn aspect_context_lists_its_own_attributes() {
             "tool=bazel-out/k8-opt-exec/bin/tool.sh\ntool data\n"
         );
     }
+}
+
+#[test]
+fn aspects_resolve_their_own_toolchains() {
+    // An aspect resolves its OWN ToolchainCollection in the base target's
+    // configuration (AspectFunction.getUnloadedToolchainContextsInputs):
+    // its toolchains (an optional type without a toolchain is None), its
+    // exec_compatible_with and exec groups, never the base rule's (`lib`
+    // resolves none); ctx.toolchains, ctx.exec_groups and actions with
+    // `toolchain =`/`exec_group =` read it, also through attribute aspects
+    // and automatic exec groups. Genuine Bazel 9.3.0 strings
+    // (tests/fixtures/aspect_toolchains/reference_receipt.json, MATCH).
+    let line = |name: &str| {
+        [
+            format!("EG {name} g=second has_g=True copts=[]"),
+            format!(
+                "TC {name} t=first optional=None context=<toolchain_context.resolved_labels: //tc:t, //tc:optional_t>"
+            ),
+        ]
+    };
+    let mut expected = line("a").to_vec();
+    expected.extend(line("b"));
+    expected.sort();
+    for (flags, target) in [
+        (
+            vec!["--aspects=//:defs.bzl%tc_aspect", "--output_groups=tc_out"],
+            "//:b",
+        ),
+        (vec![], "//:u"),
+    ] {
+        let ws = Workspace::toolchains_fixture();
+        let text = ok(&ws.build_builtin(&flags, &[target]));
+        let mut found = prints(&text, "EG ");
+        found.extend(prints(&text, "TC "));
+        found.sort();
+        assert_eq!(found, expected, "{target}");
+        assert_eq!(
+            ws.outputs_ending(".default"),
+            ["k8-fastbuild/bin/a.default", "k8-fastbuild/bin/b.default"]
+        );
+        assert_eq!(ws.output("b.group"), "group\n");
+    }
+    let ws = Workspace::toolchains_fixture();
+    let text = ok(&ws.build_builtin(
+        &[
+            "--aspects=//:defs.bzl%auto_aspect",
+            "--output_groups=auto_out",
+        ],
+        &["//:a"],
+    ));
+    assert_eq!(prints(&text, "AUTO "), ["AUTO a t=first group=first"]);
+    assert_eq!(ws.output("a.auto"), "auto\n");
+    // A mandatory type without a toolchain fails the application with the
+    // ToolchainException itself; an unrequested type is
+    // StarlarkToolchainContext's error over the aspect's description.
+    let ws = Workspace::toolchains_fixture();
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%missing_aspect"], &["//:a"]),
+        "No matching toolchains found for types:\n  //tc:missing_t",
+    );
+    let ws = Workspace::toolchains_fixture();
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%plain_aspect"], &["//:a"]),
+        "In aspect //:defs.bzl%plain_aspect applied to lib rule //:a, toolchain type //tc:t was requested but only types [] are configured",
+    );
+}
+
+#[test]
+fn aspect_fragments_are_the_aspects_own() {
+    // The aspect's RuleContext takes the aspect's configuration fragment
+    // policy (ConfiguredTargetFactory.createAspect) and names itself
+    // `ASPECT aspect on KIND` (getRuleClassNameForLogging); Bazel 9.3
+    // ignores `host_fragments`.
+    let ws = Workspace::toolchains_fixture();
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%nofrag_aspect"], &["//:a"]),
+        "//:defs.bzl%nofrag_aspect aspect on lib has to declare 'cpp' as a required fragment in order to access it. Please update the 'fragments' argument of the rule definition (for example: fragments = [\"cpp\"])",
+    );
+    let ws = Workspace::toolchains_fixture();
+    rejected(
+        &ws.build_builtin(&["--aspects=//:defs.bzl%hostfrag_aspect"], &["//:a"]),
+        "//:defs.bzl%hostfrag_aspect aspect on lib has to declare 'java' as a required fragment in order to access it.",
+    );
 }

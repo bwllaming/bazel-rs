@@ -1,0 +1,34 @@
+load("//:defs.bzl", "my_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+toolchain_type(name = "t")
+
+toolchain_type(name = "t2")
+
+toolchain_type(name = "optional_t")
+
+toolchain_type(name = "missing_t")
+
+my_toolchain(
+    name = "t_impl",
+    tc_name = "first",
+)
+
+toolchain(
+    name = "t_tc",
+    toolchain = ":t_impl",
+    toolchain_type = ":t",
+)
+
+my_toolchain(
+    name = "t2_impl",
+    tc_name = "second",
+)
+
+toolchain(
+    name = "t2_tc",
+    exec_compatible_with = ["@platforms//os:linux"],
+    toolchain = ":t2_impl",
+    toolchain_type = ":t2",
+)

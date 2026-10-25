@@ -605,7 +605,9 @@ pub(crate) struct AspectDeclaration {
     pub toolchains: Vec<(String, bool)>,
     pub apply_to_generating_rules: bool,
     pub exec_compatible_with: Vec<String>,
-    pub exec_groups: Vec<String>,
+    /// `exec_groups = {...}` with each group's declaration, in the dict's
+    /// order (resolved per application, crate::engine).
+    pub exec_groups: Vec<DeclaredExecGroup>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1670,7 +1672,7 @@ fn construct_aspect<'v>(
         callbacks.push(args.propagation_predicate);
     }
     let exec_compatible_with = exec_compatible_with(eval, args.exec_compatible_with)?;
-    let exec_groups = exec_groups(args.exec_groups)?;
+    let exec_groups = declared_exec_groups(args.exec_groups)?;
     // The aspect's toolchain types, then its subrules' (StarlarkRuleClassFunctions.java:1488-1493).
     let mut toolchains = toolchains(eval, args.toolchains, eval.heap())?;
     for toolchain in crate::subrule::lifted_toolchains(&subrules, &mut budget)? {
@@ -2218,7 +2220,14 @@ mod tests {
         );
         assert_eq!(declaration.required_parameters, ["level"]);
         assert_eq!(declaration.requires, ["//pkg:defs.bzl%base"]);
-        assert_eq!(declaration.exec_groups, ["link"]);
+        assert_eq!(
+            declaration
+                .exec_groups
+                .iter()
+                .map(|group| group.name.as_str())
+                .collect::<Vec<_>>(),
+            ["link"]
+        );
         assert_eq!(declaration.exec_compatible_with, ["//platforms:linux"]);
         assert_eq!(declaration.required_providers.len(), 2);
         assert!(declaration.attrs.iter().any(|(name, spec)| name == "_late"
