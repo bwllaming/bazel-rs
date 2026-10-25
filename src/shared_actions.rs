@@ -449,6 +449,7 @@ impl Fingerprint {
         let ActionExtra {
             tree_outputs,
             symlink_outputs,
+            symlink_inputs,
             tree_inputs,
             source_directories,
             param_files,
@@ -491,6 +492,11 @@ impl Fingerprint {
         if !source_directories.is_empty() {
             self.tag(10);
             self.paths(source_directories.iter());
+        }
+        // Likewise unresolved symlink inputs (planned with the inputs).
+        if !symlink_inputs.is_empty() {
+            self.tag(11);
+            self.paths(symlink_inputs.iter());
         }
     }
 

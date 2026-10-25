@@ -1,0 +1,25 @@
+load(":defs.bzl", "execroot_link", "manifest_line", "not_a_symlink", "venv_binary", "venv_test", "venv_use")
+
+venv_binary(name = "venv_tool")
+
+venv_test(name = "venv_test")
+
+venv_use(
+    name = "use",
+    tool = ":venv_tool",
+)
+
+execroot_link(
+    name = "through",
+    target = "@pyrt//:lib/marker.txt",
+)
+
+not_a_symlink(
+    name = "not_a_symlink",
+    tags = ["manual"],
+)
+
+manifest_line(
+    name = "manifest",
+    tool = ":venv_tool",
+)

@@ -324,6 +324,8 @@ struct GroupOut<'a> {
     #[serde(with = "paths")]
     tree_inputs: &'a [PathBuf],
     #[serde(with = "paths")]
+    symlink_inputs: &'a [PathBuf],
+    #[serde(with = "paths")]
     constant_metadata: &'a [PathBuf],
     #[serde(with = "paths")]
     empty_files: &'a [PathBuf],
@@ -340,6 +342,7 @@ impl<'a> GroupOut<'a> {
             inputs,
             dependencies,
             tree_inputs,
+            symlink_inputs,
             constant_metadata,
             empty_files,
             sources,
@@ -350,6 +353,7 @@ impl<'a> GroupOut<'a> {
             inputs,
             dependencies,
             tree_inputs,
+            symlink_inputs,
             constant_metadata,
             empty_files,
             sources,
@@ -366,6 +370,8 @@ struct GroupIn {
     dependencies: Vec<Dependency>,
     #[serde(with = "paths")]
     tree_inputs: Vec<PathBuf>,
+    #[serde(with = "paths")]
+    symlink_inputs: Vec<PathBuf>,
     #[serde(with = "paths")]
     constant_metadata: Vec<PathBuf>,
     #[serde(with = "paths")]
@@ -384,6 +390,7 @@ impl GroupIn {
             inputs,
             dependencies,
             tree_inputs,
+            symlink_inputs,
             constant_metadata,
             empty_files,
             sources,
@@ -393,6 +400,7 @@ impl GroupIn {
             inputs,
             dependencies,
             tree_inputs,
+            symlink_inputs,
             constant_metadata,
             empty_files,
             sources,
@@ -1216,6 +1224,7 @@ mod tests {
                 symlink_outputs: BTreeSet::new(),
                 tree_inputs: BTreeSet::from([PathBuf::from("pkg/dir")]),
                 source_directories: BTreeSet::from([PathBuf::from("pkg/srcdir")]),
+                symlink_inputs: BTreeSet::from([PathBuf::from("pkg/b")]),
                 param_files: vec![("pkg/p.params".into(), vec![0, 255, b'\n'])],
                 inherited_environment: BTreeSet::from(["PATH".to_owned()]),
                 client_environment: BTreeMap::from([("PATH".to_owned(), OsString::from("/x"))]),
@@ -1781,6 +1790,7 @@ mod tests {
                 destination: below(b"_main/pkg/dir"),
             }],
             tree_inputs: vec![below(b"_main/pkg/dir")],
+            symlink_inputs: Vec::new(),
             constant_metadata: vec![below(b"_main/tools/\xffdata")],
             empty_files: vec![below(b"_main/tools/__init__.py")],
             sources: vec![

@@ -1789,6 +1789,7 @@ fn test_spec(
         executable_exec: utf8(&target.executable_exec)?,
         binary: target.executable_short_path.clone(),
         entries,
+        symlinks: target.symlinks.clone(),
         testlogs_package,
         args: target.settings.args.clone(),
         target_env: target.settings.environment.clone(),

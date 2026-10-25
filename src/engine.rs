@@ -651,6 +651,10 @@ pub struct RunTarget {
     /// The runfiles mapping with published paths (`None`: an empty file),
     /// when the target has runfiles support.
     pub entries: Option<Vec<(String, Option<PathBuf>)>>,
+    /// The runfiles paths of `entries` that are unresolved symlink
+    /// artifacts (their published path is the symlink itself, staged with
+    /// its link text like SymlinkTreeHelper.createRunfilesSymlinks).
+    pub symlinks: BTreeSet<String>,
     /// The output directory mnemonic of the target's configuration.
     pub mnemonic: String,
     /// The configuration's action environment (N42), TestPolicy step 2.
@@ -13143,6 +13147,11 @@ fn runfiles_input_group(
         .filter(|artifact| artifact.directory)
         .map(|artifact| artifact.exec.clone())
         .collect();
+    let symlink_inputs: Vec<PathBuf> = artifacts
+        .iter()
+        .filter(|artifact| artifact.file.is_symlink)
+        .map(|artifact| artifact.exec.clone())
+        .collect();
     let namespace = scheduler::group_namespace_valid(
         root,
         artifacts
@@ -13172,12 +13181,15 @@ fn runfiles_input_group(
     // A tree input is listed (a planted source or a generated input), as
     // validate_structure requires of the executed action (the predicate a
     // decoded group's flag is recomputed with, InputGroup::listed_valid).
-    let valid = namespace && scheduler::tree_inputs_listed(&inputs, &dependencies, &tree_inputs);
+    let valid = namespace
+        && scheduler::tree_inputs_listed(&inputs, &dependencies, &tree_inputs)
+        && scheduler::tree_inputs_listed(&inputs, &dependencies, &symlink_inputs);
     scheduler::InputGroup {
         root: root.to_path_buf(),
         inputs,
         dependencies,
         tree_inputs,
+        symlink_inputs,
         constant_metadata,
         empty_files,
         sources,
@@ -13817,6 +13829,13 @@ fn list_artifacts(action: &mut Action, inputs: &[Artifact]) {
     action.extra.tree_inputs = inputs
         .iter()
         .filter(|artifact| artifact.directory)
+        .map(|artifact| artifact.exec.clone())
+        .collect();
+    // Unresolved symlink artifacts are read and staged as symlinks
+    // (crate::action::ActionExtra::symlink_inputs).
+    action.extra.symlink_inputs = inputs
+        .iter()
+        .filter(|artifact| artifact.file.is_symlink)
         .map(|artifact| artifact.exec.clone())
         .collect();
 }

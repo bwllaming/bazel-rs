@@ -142,15 +142,14 @@ the literal target and the target type, no inputs) with Bazel's argument
 errors (`"is_executable" cannot be True when using "target_path"`, `"target_type"
 must be one of "file" or "directory"`, a `target_file` with a symlink output,
 the `string or NoneType` parameter types). Analysis (`--nobuild`) of their
-producers, consumers and runfiles is complete; *executing* an action that
-creates an unresolved symlink (this one, or a spawn whose output was declared
-with `declare_symlink`) is an explicit native gap — creating, caching and
-staging literal symlinks as inputs, runfiles and outputs are not modelled —
-so a build that needs one fails at it with `creating the unresolved symlink
-artifact 'PATH' -> 'TARGET' (ctx.actions.declare_symlink) is not implemented in
-the native profile`. Paired capture `tests/fixtures/unresolved_symlinks`
-(16 genuine 9.3.0 cases: 12 MATCH, 4 declared execution cases), replayed by
-`tests/unresolved_symlinks.rs`; motivation: aspect_rules_js's node_modules
+producers, consumers and runfiles is complete, and execution creates, caches
+and stages the literal symlinks like Bazel 9.3 (docs/UNRESOLVED_SYMLINKS.md:
+creation with `PathFragment.create(target)`, a spawn's declared symlink output,
+the link text as the artifact's value, staging in sandboxed and standalone
+spawns, runfiles trees, the runfiles manifest, `run` and tests). Paired capture
+`tests/fixtures/unresolved_symlinks` (26 genuine 9.3.0 cases, all MATCH, with a
+rules_python-like venv), replayed by `tests/unresolved_symlinks.rs`;
+motivation: aspect_rules_js's node_modules
 symlinks (npm/private/utils.bzl `_make_symlink`). The undocumented
 `use_exec_root_for_source` (rules_cc's virtual includes) is restricted to the
 internal Starlark API allowlist whenever it is passed; `True` links a source

@@ -23,7 +23,7 @@ use crate::scheduler::{self, Dependency, InputGroup, PlannedAction};
 use crate::test_command::TestRuleInfo;
 use crate::workspace_status::{ComputedWorkspaceStatus, WorkspaceStatusOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -443,6 +443,31 @@ pub fn execute(
     // reports 0 executed / 0 hits. Planned artifacts are still reported
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
+    // The run plans' runfiles that are unresolved symlink outputs
+    // (crate::action::ActionExtra::symlink_outputs), read from the nodes
+    // before they execute.
+    let symlink_outputs: HashSet<(String, usize)> = {
+        let producers: HashSet<&str> = run_plans
+            .iter()
+            .flat_map(|(_, plan)| plan.entries.iter().flatten())
+            .filter_map(|(_, produced)| Some(produced.as_ref()?.producer.as_ref()?.0.as_str()))
+            .collect();
+        nodes
+            .iter()
+            .filter(|node| {
+                !node.action.extra.symlink_outputs.is_empty()
+                    && producers.contains(node.action.id.as_str())
+            })
+            .flat_map(|node| {
+                node.action
+                    .outputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, output)| node.action.extra.symlink_outputs.contains(*output))
+                    .map(|(index, _)| (node.action.id.clone(), index))
+            })
+            .collect()
+    };
     let results = if execute {
         // The runfiles trees link as whole directories in the output tree.
         let runfiles_trees = nodes
@@ -526,6 +551,18 @@ pub fn execute(
                 .map(|(path, produced)| (path.clone(), produced.as_ref().map(published)))
                 .collect()
         });
+        let symlinks = plan
+            .entries
+            .iter()
+            .flatten()
+            .filter(|(_, produced)| {
+                produced
+                    .as_ref()
+                    .and_then(|produced| produced.producer.as_ref())
+                    .is_some_and(|producer| symlink_outputs.contains(producer))
+            })
+            .map(|(path, _)| path.clone())
+            .collect();
         let configuration = configurations
             .get(plan.configuration)
             .ok_or_else(|| format!("internal error: run plan of {label} has no configuration"))?;
@@ -537,6 +574,7 @@ pub fn execute(
                 executable_short_path: plan.executable_short_path,
                 runfiles,
                 entries,
+                symlinks,
                 mnemonic: configuration.mnemonic.clone(),
                 action_env: configuration.action_env.clone(),
                 test_env: configuration.test_env.clone(),
@@ -960,6 +998,7 @@ mod tests {
                 destination: PathBuf::from("bazel-out/tool.runfiles").join(destination),
             }],
             tree_inputs: Vec::new(),
+            symlink_inputs: Vec::new(),
             constant_metadata: Vec::new(),
             empty_files: Vec::new(),
             sources: Vec::new(),

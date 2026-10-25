@@ -3,14 +3,15 @@
 //! declares a symlink File (`is_symlink`), distinct from a file at the same
 //! path; ctx.actions.symlink(target_path = ...) registers an
 //! UnresolvedSymlinkAction with Bazel's argument errors; `--nobuild` analyzes
-//! producers, consumers and runfiles. Executing such an action is an explicit
-//! native gap (declared cases).
+//! producers, consumers and runfiles. Executed, the symlink has the literal
+//! (normalized) target; consumers, runfiles trees, the runfiles manifest,
+//! `run`, tests and a rules_python-like venv see it (docs/UNRESOLVED_SYMLINKS.md).
 //! Every case of tests/fixtures/unresolved_symlinks/reference_receipt.json —
 //! genuine Bazel 9.3.0 (`--batch --ignore_all_rc_files`, a removed scratch
 //! output user root) on the fixture workspace — runs natively here (with the
 //! artifact and view self-checks) and is compared with the genuine capture:
 //! success, the WARNING lines, Bazel's error message, the top-level outputs
-//! (mode and contents); a declared case fails with its recorded message.
+//! (mode and contents, or a symlink's text), `run` output and test summaries.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::collections::BTreeMap;
@@ -58,8 +59,28 @@ const GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "declared",
-        &["build_rel", "build_consumer", "build_spawned", "run_show"],
+        "execution",
+        &[
+            "build_rel",
+            "build_consumer",
+            "build_spawned",
+            "run_show",
+            "build_dangling",
+            "build_consumer_standalone",
+            "build_not_a_symlink",
+        ],
+    ),
+    (
+        "venv",
+        &[
+            "run_venv",
+            "build_venv_use",
+            "build_venv_use_standalone",
+            "test_venv",
+            "build_through",
+            "build_through_standalone",
+            "build_manifest",
+        ],
     ),
 ];
 
@@ -184,9 +205,10 @@ fn warnings(stderr: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The built top-level outputs (path below `bazel-out` -> [mode, contents])
-/// of the native `LABEL\tPATH` result lines; source files (which Bazel's
-/// result does not list) are skipped.
+/// The built top-level outputs (path below `bazel-out` -> [mode, contents],
+/// or ["symlink", text] for an unresolved symlink) of the native
+/// `LABEL\tPATH` result lines; source files (which Bazel's result does not
+/// list) are skipped.
 fn outputs(stdout: &str) -> BTreeMap<String, Value> {
     use std::os::unix::fs::PermissionsExt as _;
     stdout
@@ -194,6 +216,13 @@ fn outputs(stdout: &str) -> BTreeMap<String, Value> {
         .filter_map(|line| {
             let (_, path) = line.split_once('\t').unwrap();
             let (_, relative) = path.split_once("/outputs/")?;
+            if fs::symlink_metadata(path).unwrap().file_type().is_symlink() {
+                let text = fs::read_link(path).unwrap();
+                return Some((
+                    relative.to_owned(),
+                    serde_json::json!(["symlink", text.to_str().unwrap()]),
+                ));
+            }
             let mode = fs::metadata(path).unwrap().permissions().mode() & 0o777;
             Some((
                 relative.to_owned(),
@@ -246,6 +275,28 @@ fn check(name: &str, case: &Value, ws: &Workspace) {
         assert!(
             stderr.contains(message),
             "{name}: missing {message:?} in {stderr}"
+        );
+    }
+    // A test summary, run times normalized.
+    if argv[0] == "test" {
+        let timing = |text: &str| {
+            let mut normalized = String::new();
+            for line in text.lines() {
+                match line.rfind(" in ") {
+                    Some(at) if line.ends_with('s') => {
+                        normalized.push_str(&line[..at]);
+                        normalized.push_str(" in <T>s");
+                    }
+                    _ => normalized.push_str(line),
+                }
+                normalized.push('\n');
+            }
+            normalized
+        };
+        assert_eq!(
+            timing(&stdout),
+            timing(case["expected_stdout"].as_str().unwrap()),
+            "{name}: {stderr}"
         );
     }
     // The program `run` ran, the `query` result.
@@ -357,8 +408,17 @@ fn symlink_argument_errors_match() {
     check_group("errors");
 }
 
-/// Creating unresolved symlinks fails explicitly.
+/// Created symlinks, their consumers (sandboxed and standalone), `run`'s
+/// runfiles tree, and a spawn's output that is no symlink.
 #[test]
-fn executing_unresolved_symlink_actions_is_an_explicit_gap() {
-    check_group("declared");
+fn unresolved_symlinks_execute() {
+    check_group("execution");
+}
+
+/// A rules_python-like venv: a relative link into an external repository
+/// resolved in runfiles trees (`run`, a tool's spawn, a test) and named by
+/// the runfiles manifest.
+#[test]
+fn venv_links_resolve_in_runfiles() {
+    check_group("venv");
 }

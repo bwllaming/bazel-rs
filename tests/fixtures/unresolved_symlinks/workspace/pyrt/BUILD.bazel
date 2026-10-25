@@ -1,0 +1,15 @@
+# A fake interpreter installation, like rules_python's
+# python_3_12_x86_64-unknown-linux-gnu repository.
+exports_files([
+    "bin/python3",
+    "lib/marker.txt",
+])
+
+filegroup(
+    name = "runtime",
+    srcs = [
+        "bin/python3",
+        "lib/marker.txt",
+    ],
+    visibility = ["//visibility:public"],
+)

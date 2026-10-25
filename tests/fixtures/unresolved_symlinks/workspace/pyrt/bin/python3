@@ -1,0 +1,12 @@
+#!/bin/sh
+# Finds its installation like CPython (Modules/getpath.py): through the
+# resolved path of argv[0]; finds its venv through argv[0] itself.
+set -e
+real=$(readlink -f "$0")
+venv=$(basename "$(dirname "$(dirname "$0")")")
+cfg=$(cat "$(dirname "$0")/../pyvenv.cfg")
+home=$(cat "$(dirname "$real")/../lib/marker.txt")
+echo "venv: $venv"
+echo "cfg: $cfg"
+echo "home: $home"
+echo "args: $*"

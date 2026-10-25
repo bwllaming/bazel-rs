@@ -955,6 +955,7 @@ fields!(crate::scheduler::InputGroup {
     inputs,
     dependencies,
     tree_inputs,
+    symlink_inputs,
     constant_metadata,
     empty_files,
     sources
@@ -990,6 +991,8 @@ fields!(crate::action::ActionExtra {
     tree_outputs,
     tree_inputs,
     source_directories,
+    symlink_outputs,
+    symlink_inputs,
     param_files,
     inherited_environment,
     client_environment,

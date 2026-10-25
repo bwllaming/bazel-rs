@@ -23,7 +23,8 @@
 //! pinned Bazel 9.3 sources.
 
 use crate::action::{
-    ContentInput, ContentSource, read_content_input, read_content_source, stage_content_inputs,
+    ContentInput, ContentSource, read_content_input, read_content_source, read_symlink_input,
+    stage_content_inputs,
 };
 use crate::test_command::{
     EnvInputs, RunResult, TestCase, TestOptions, TestOutput, TestRuleInfo, TestStatus, TestSummary,
@@ -67,6 +68,9 @@ pub struct TestSpec {
     pub binary: String,
     /// The runfiles mapping with published paths (`None`: an empty file).
     pub entries: Vec<(String, Option<PathBuf>)>,
+    /// The runfiles paths of `entries` that are unresolved symlink
+    /// artifacts, staged as symlinks with their link text.
+    pub symlinks: std::collections::BTreeSet<String>,
     /// `bazel-out/<cfg>/testlogs/<pkg>`.
     pub testlogs_package: String,
     pub args: Vec<String>,
@@ -501,6 +505,9 @@ impl Runner<'_> {
         for (path, source) in &spec.entries {
             let destination = PathBuf::from(&paths.runfiles).join(path);
             match source {
+                Some(source) if spec.symlinks.contains(path) => {
+                    inputs.push((read_symlink_input(source)?, destination))
+                }
                 Some(source) => match read_content_source(self.cache, source)? {
                     ContentSource::File(input) => inputs.push((input, destination)),
                     ContentSource::Tree(files) if files.is_empty() => empty_trees.push(destination),
@@ -1311,6 +1318,7 @@ mod tests {
             executable_exec: String::new(),
             binary: String::new(),
             entries: Vec::new(),
+            symlinks: Default::default(),
             testlogs_package: String::new(),
             args: Vec::new(),
             target_env: Vec::new(),

@@ -1,7 +1,7 @@
 {
  "schema": "unresolved-symlinks-reference-receipt/v1",
  "fixture": "unresolved_symlinks",
- "purpose": "Unresolved symlink artifacts in analysis: ctx.actions.declare_symlink(filename, sibling = None) (StarlarkActionFactory.declareSymlink :194-225; --allow_unresolved_symlinks defaults to true) is a symlink artifact (File.is_symlink True, FileApi.java:99-106) distinct from a file declared at the same path; ctx.actions.symlink(output, target_path = ..., target_type = None|\"file\"|\"directory\") registers an UnresolvedSymlinkAction (analysis/actions/UnresolvedSymlinkAction.java: mnemonic UnresolvedSymlink, keyed by GUID, the literal target and the target type, no inputs) with StarlarkActionFactory.symlink's argument errors (:254-354); a spawn may create a declared symlink too. Motivation: after --enable_runfiles, `build --nobuild //src/ts/...` on ~/code stopped at `analysis of //src/ts:.aspect_rules_js/node_modules/@bw+messages-dlp@...: ... @@aspect_rules_js+//npm/private:utils.bzl:70, in _make_symlink  symlink = ctx.actions.declare_symlink(symlink_path)  error: actions.declare_symlink(...): unresolved symlink artifacts are not supported by the native profile` (aspect_rules_js 2.9.2's npm_package_store / npm_link_package_store node_modules symlinks).",
+ "purpose": "Unresolved symlink artifacts (ctx.actions.declare_symlink, StarlarkActionFactory.declareSymlink :194-225, --allow_unresolved_symlinks default true, CoreOptions.java:878-893) in analysis and execution: ctx.actions.symlink(output, target_path = ..., target_type = None|\"file\"|\"directory\") registers an UnresolvedSymlinkAction (analysis/starlark/UnresolvedSymlinkAction.java: mnemonic UnresolvedSymlink, keyed by GUID, the literal target and the target type, no inputs; execute creates the symlink with PathFragment.create(target)); a spawn may create a declared symlink too (ActionOutputMetadataStore.fileArtifactValueFromArtifact reads it with readlink; anything else is `declared output 'P' is not a symlink`, SkyframeActionExecutor.checkOutputs); the artifact's value is its link text (FileArtifactValue.UnresolvedSymlinkArtifactValue: SHA-256 of the text with the first byte inverted); consumers stage it as a symlink with that text (SandboxHelpers.processInputFiles; unsandboxed the execution root holds it), runfiles trees create it textually (SymlinkTreeHelper.createRunfilesSymlinks) and the runfiles manifest names the text (SourceManifestAction.writeFile :301-312). Motivation: ~/code `build //src/beyondwork.ai/tools/...` (rules_python venvs: `_build_tar.venv/bin/python3 -> ../../../../../../rules_python++python+python_3_12_x86_64-unknown-linux-gnu/bin/python3`) and the aspect_rules_js node_modules links of `build //src/ts/...` stopped at the native explicit gap `creating the unresolved symlink artifact ... is not implemented in the native profile`.",
  "reference": {
   "binary": "bazel-9.3.0-linux-x86_64",
   "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
@@ -11,39 +11,45 @@
  },
  "native": {
   "binary": "target/debug/bazel-rs",
-  "sha256": "8426ee49acae3e7aa231624054a9d3b2e85495cc160d668d0412a03c53ad0b11",
+  "sha256": "6c39c644fd4d4fd89281ff455b180f902bf6f46bc171158d4a69b0d3789acc4b",
   "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
  },
  "script": {
   "path": "/tmp/opencode/perf-research/pts-capture.py, pts-receipt.py (not committed)",
   "sha256": {
-   "pts-capture.py": "26c460383517b6decd3b77f78c9a5121281569bb71bfc34cf3181c4cae43ed30",
-   "pts-receipt.py": "bcaac780b388cf53b168b6c778c6cdb0b7ab9949cb286fd5a3b67a45ac0da38a"
+   "us-capture.py": "c5ecbe1bf98586ab3f07133c837c2a1abffbc5677b4500c068dfaf1078c96482",
+   "us-receipt.py": "80c622b30636362cad5cce403002284a1f8f8c7fd1797af58324383b78cf1d2a"
   }
  },
  "fixture_files_sha256": {
-  "MODULE.bazel": "5573d50cf390067d9cebc2ee6bb90b519493c650b612012bafc0c01a961bda33",
+  "MODULE.bazel": "276e635c668ab0a82ace883b45beded12a722b86e3d11a737dffa69643e2c892",
   "pkg/BUILD.bazel": "7832f112701b4b37f1b6cd4e15c917ba45f520e5252100e72422692bff90ba68",
   "pkg/data.txt": "6667b2d1aab6a00caa5aee5af8ad9f1465e567abf1c209d15727d57b3e8f6e5f",
-  "pkg/defs.bzl": "8353910b3dde3d1086adb89895d5a63709286e64376742d0ddf93a97f989e51d"
+  "pkg/defs.bzl": "8353910b3dde3d1086adb89895d5a63709286e64376742d0ddf93a97f989e51d",
+  "pyrt/BUILD.bazel": "7c72613497e79f70a9b71f4f4d7b995fa1f737439d3ec64c3b6d63509aa25f1f",
+  "pyrt/MODULE.bazel": "5a1cedea2ca1a24b86d07eaf910bc8c19086d08e4e747088433afddcc4c609a0",
+  "pyrt/bin/python3": "43236768487b7983c2c1a72d3b5e851b45b672ec4eff57f7ed226607736e8e78",
+  "pyrt/lib/marker.txt": "bbf8bedad09d4cd588bb95948c3af540613a5accd164109a3c04fc95f81dfe84",
+  "venv/BUILD.bazel": "40a8530c5dbb03a3d896af0b7f5b445f1b0f6847570caefcb335e7e7a520367a",
+  "venv/defs.bzl": "f2f9330bcbecd27bed13a389446e3780bc5d0af1b988efe79d653c3e7e96ee03"
  },
- "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents].",
+ "normalization": "<WS> = the case's workspace copy; <OB> = the genuine output base; <CACHE> = the native cache; elapsed times <T>. Outputs are the top-level outputs (genuine --show_result lines, bazel-bin = bazel-out/k8-fastbuild/bin; native LABEL<TAB>PATH lines below the action output root) as [mode, contents]; an unresolved symlink output as [\"symlink\", link text].",
  "comparison (tests/unresolved_symlinks.rs, live)": "MATCH: success equal; WARNING lines equal in order; a failing case's genuine message (or the recorded part of it) (the `Error in <callable>: ` / `Error: ` Starlark text, else the rule error following an empty `in KIND rule L: ` line, else the first ERROR message) is contained in native stderr; built top-level outputs (path below bazel-out -> [mode, contents]) equal; a `test` case's stdout (the test summary, ` in N.Ns` run times as ` in <T>s`) equal; a successful `run` case's stdout (the program's output) equal; a `query` case's stdout equal; the recorded outputs' existence after the command equal. DECLARED_DIVERGENCE: native fails with the recorded message.",
  "genuine_key_findings": [
   "A declared symlink File: is_symlink True, is_directory False, is_source False, basename/extension/dirname/short_path/root like a declared file (bazel-out/k8-fastbuild/bin), the owner the declaring target; nested paths (node_modules/.store/pkg@1/node_modules/pkg) and `sibling` (next to probe.base) work; a declared file has is_symlink False; equality and depset deduplication treat it as one value.",
   "`--nobuild` analyzes symlink producers, consumers (run_shell inputs) and a binary with symlinks in its runfiles without building them; `build` of the probe builds only its text file.",
   "Errors: `symlink() with \"target_file\" param requires that \"output\" be declared as a file or directory, not a symlink (...)`, `symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (...)`, `\"is_executable\" cannot be True when using \"target_path\"`, `\"target_type\" must be one of \"file\" or \"directory\"`, `Exactly one of \"target_file\" or \"target_path\" is required`, `in call to symlink(), parameter 'target_path' got value of type 'int', want 'string or NoneType'`; a declared symlink without an action, and a file and a symlink declared at one path (either order), are `The following files have no generating action:` (the second declaration is a different artifact, never `already been declared as something other than a symlink`).",
-  "Genuine execution (declared native gap): the output is a symlink with the literal target (relative `data.txt`, `../does/not/exist` dangling, `../../../../data.txt`); a consumer's run_shell `readlink` of its inputs prints those targets; a spawn's `ln -s` output builds; `run` of a binary lists the symlinks in its runfiles tree (./pkg/node_modules/.store/pkg@1/node_modules/pkg, ./pkg/rel, ./pkg/show)."
+  "Execution: the output is a symlink with the literal target (relative `data.txt`, `../does/not/exist` dangling at creation, `../../../../data.txt`, a spawn's `ln -s data.txt`); a consumer's run_shell `readlink` of its inputs prints those targets, sandboxed and with --spawn_strategy=standalone; a link resolving in the execution root (`../../../../external/pyrt+/lib/marker.txt`) reads its target there; `run` of a binary lists the symlinks of its runfiles tree (./pkg/node_modules/.store/pkg@1/node_modules/pkg, ./pkg/rel, ./pkg/show).",
+  "A rules_python-like venv (`_venv_tool.venv/bin/python3 -> ../../../../pyrt+/bin/python3` into an external repository, next to a declared pyvenv.cfg): `run`, a spawn using it as a tool (sandboxed and standalone) and a test find the venv through argv[0] and the installation through realpath(argv[0]); the runfiles manifest line is `_main/venv/_venv_tool.venv/bin/python3 ../../../../pyrt+/bin/python3` (the link text).",
+  "A spawn that leaves a regular file at a declared symlink's path fails: `declared output 'venv/not_a_symlink' is not a symlink`."
  ],
  "known_divergences": [
   "Native prints its own result format (`LABEL\\tPATH`, `bazel-rs: N actions executed ...`), no INFO lines.",
-  "Declared divergences build_rel, build_consumer, build_spawned and run_show: executing actions that create unresolved symlink artifacts is an explicit native gap (see the cases).",
   "dir(File) natively lacks `tree_relative_path` (pre-existing; genuine: [basename, dirname, extension, is_directory, is_source, is_symlink, owner, path, root, short_path, tree_relative_path]); `--[no]allow_unresolved_symlinks` is not a modelled option (its default true is the native behavior).",
   "Native is passed --experimental-builtin-modules in every case (as in the other paired fixtures)."
  ],
  "counts": {
-  "MATCH": 12,
-  "DECLARED_DIVERGENCE": 4
+  "MATCH": 26
  },
  "scratch_removed": true,
  "cases": {
@@ -54,7 +60,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.466,
+    "seconds": 9.623,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:probe (5 packages loaded, 12 targets configured).\nINFO: Found 1 target...\nTarget //pkg:probe up-to-date:\n  bazel-bin/pkg/probe.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
     "outputs": {
@@ -66,7 +72,7 @@
    },
    "native": {
     "exit": 0,
-    "seconds": 0.389,
+    "seconds": 0.652,
     "stdout": "//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": {
@@ -87,14 +93,14 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.291,
+    "seconds": 9.395,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 8 targets (5 packages loaded, 14 targets configured).\nINFO: Found 8 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
     "outputs": null
    },
    "native": {
     "exit": 0,
-    "seconds": 0.391,
+    "seconds": 0.643,
     "stdout": "//pkg:abs\tbazel-out/k8-fastbuild/bin/pkg/abs\n//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:dangling\tbazel-out/k8-fastbuild/bin/pkg/dangling\n//pkg:nested\tbazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg\n//pkg:probe\tbazel-out/k8-fastbuild/bin/pkg/probe.txt\n//pkg:rel\tbazel-out/k8-fastbuild/bin/pkg/rel\n//pkg:show\tbazel-out/k8-fastbuild/bin/pkg/show\n//pkg:spawned\tbazel-out/k8-fastbuild/bin/pkg/spawned\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -111,14 +117,14 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.468,
+    "seconds": 10.001,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 12 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n",
     "outputs": null
    },
    "native": {
     "exit": 0,
-    "seconds": 0.378,
+    "seconds": 0.636,
     "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n//pkg:show\tbazel-out/k8-fastbuild/bin/pkg/show\n",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 0 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
     "outputs": null
@@ -133,22 +139,30 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.642,
+    "seconds": 9.803,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:rel (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:rel up-to-date:\n  bazel-bin/pkg/rel\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 2 internal.\nINFO: Build completed successfully, 2 total actions\n",
-    "outputs": {}
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/rel": [
+      "symlink",
+      "data.txt"
+     ]
+    }
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.37,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:rel#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/rel' -> 'data.txt' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\n",
-    "outputs": null
+    "exit": 0,
+    "seconds": 0.616,
+    "stdout": "//pkg:rel\tbazel-out/k8-fastbuild/bin/pkg/rel\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/rel": [
+      "symlink",
+      "data.txt"
+     ]
+    }
    },
-   "declared_divergence": "unresolved symlink artifacts are modelled for analysis only: executing an action that creates one (UnresolvedSymlinkAction, or a spawn whose output was declared with declare_symlink) — creating, caching and staging the literal symlink as an input, runfile or output — is an explicit native gap; the build stops at the first such action (genuine creates the symlink with the literal target: rel -> data.txt)",
-   "native_message": "(ctx.actions.declare_symlink) is not implemented in the native profile",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "build_consumer": {
    "argv": [
@@ -157,7 +171,7 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.786,
+    "seconds": 9.174,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:consumer (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:consumer up-to-date:\n  bazel-bin/pkg/consumer.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 4 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 6 total actions\n",
     "outputs": {
@@ -168,16 +182,19 @@
     }
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.369,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:dangling#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/dangling' -> '../does/not/exist' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\naction '//pkg:nested#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg' -> '../../../../data.txt' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\naction '//pkg:rel#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/rel' -> 'data.txt' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\naction '//pkg:spawned#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/spawned' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\n",
-    "outputs": null
+    "exit": 0,
+    "seconds": 0.644,
+    "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.txt": [
+      "0o555",
+      "bazel-out/k8-fastbuild/bin/pkg/rel -> data.txt\nbazel-out/k8-fastbuild/bin/pkg/dangling -> ../does/not/exist\nbazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg -> ../../../../data.txt\nbazel-out/k8-fastbuild/bin/pkg/spawned -> data.txt\n"
+     ]
+    }
    },
-   "declared_divergence": "unresolved symlink artifacts are modelled for analysis only: executing an action that creates one (UnresolvedSymlinkAction, or a spawn whose output was declared with declare_symlink) — creating, caching and staging the literal symlink as an input, runfile or output — is an explicit native gap; the build stops at the first such action (genuine creates the symlink with the literal target: the consumer reads `bazel-out/k8-fastbuild/bin/pkg/rel -> data.txt` etc.)",
-   "native_message": "(ctx.actions.declare_symlink) is not implemented in the native profile",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "build_spawned": {
    "argv": [
@@ -186,22 +203,30 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 8.912,
+    "seconds": 9.216,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:spawned (5 packages loaded, 7 targets configured).\nINFO: Found 1 target...\nTarget //pkg:spawned up-to-date:\n  bazel-bin/pkg/spawned\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
-    "outputs": {}
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/spawned": [
+      "symlink",
+      "data.txt"
+     ]
+    }
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.361,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:spawned#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/spawned' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\n",
-    "outputs": null
+    "exit": 0,
+    "seconds": 0.621,
+    "stdout": "//pkg:spawned\tbazel-out/k8-fastbuild/bin/pkg/spawned\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 1 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/spawned": [
+      "symlink",
+      "data.txt"
+     ]
+    }
    },
-   "declared_divergence": "unresolved symlink artifacts are modelled for analysis only: executing an action that creates one (UnresolvedSymlinkAction, or a spawn whose output was declared with declare_symlink) — creating, caching and staging the literal symlink as an input, runfile or output — is an explicit native gap; the build stops at the first such action (genuine creates the symlink with the literal target: the spawn's `ln -s data.txt` output)",
-   "native_message": "(ctx.actions.declare_symlink) is not implemented in the native profile",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "run_show": {
    "argv": [
@@ -210,22 +235,21 @@
    ],
    "genuine": {
     "exit": 0,
-    "seconds": 9.266,
+    "seconds": 9.144,
     "stdout": "./pkg/node_modules/.store/pkg@1/node_modules/pkg\n./pkg/rel\n./pkg/show\n",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:show (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:show up-to-date:\n  bazel-bin/pkg/show\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 8 processes: 8 internal.\nINFO: Build completed successfully, 8 total actions\nINFO: Running command line: bazel-bin/pkg/show\n",
     "outputs": null
    },
    "native": {
-    "exit": 1,
-    "seconds": 0.379,
-    "stdout": "",
-    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//pkg:nested#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg' -> '../../../../data.txt' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\naction '//pkg:rel#0': creating the unresolved symlink artifact 'bazel-out/k8-fastbuild/bin/pkg/rel' -> 'data.txt' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)\n",
+    "exit": 0,
+    "seconds": 0.615,
+    "stdout": "./pkg/node_modules/.store/pkg@1/node_modules/pkg\n./pkg/rel\n./pkg/show\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//pkg:show\t<CACHE>/actions/2a52de48209e0f70df152ae08d08cb60fa7ab46980f69bbfb202eb233676dfef/outputs/bazel-out/k8-fastbuild/bin/pkg/show\nbazel-rs: 6 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/84682887b07b006d8ffcd326c8df476ead609540a6804552d91590d878f342be/outputs/bazel-out/k8-fastbuild/bin/pkg/show\n",
     "outputs": null
    },
-   "declared_divergence": "unresolved symlink artifacts are modelled for analysis only: executing an action that creates one (UnresolvedSymlinkAction, or a spawn whose output was declared with declare_symlink) — creating, caching and staging the literal symlink as an input, runfile or output — is an explicit native gap; the build stops at the first such action (genuine creates the symlink with the literal target: the runfiles tree holds the symlinks)",
-   "native_message": "(ctx.actions.declare_symlink) is not implemented in the native profile",
-   "verdict": "DECLARED_DIVERGENCE",
-   "exit_code_equal": false
+   "expected_stdout": "./pkg/node_modules/.store/pkg@1/node_modules/pkg\n./pkg/rel\n./pkg/show\n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
   },
   "err_file_then_symlink": {
    "argv": [
@@ -234,14 +258,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.207,
+    "seconds": 10.547,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_file_then_symlink: \n<WS>/pkg/defs.bzl:79:5: The following files have no generating action:\npkg/err_file_then_symlink.x\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_file_then_symlink' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_file_then_symlink' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.36,
+    "seconds": 0.633,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_file_then_symlink: The following files have no generating action:\npkg/err_file_then_symlink.x\n",
     "outputs": null
@@ -257,14 +281,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.895,
+    "seconds": 9.154,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_symlink_then_file: \n<WS>/pkg/defs.bzl:79:5: The following files have no generating action:\npkg/err_symlink_then_file.x\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_symlink_then_file' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_symlink_then_file' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.351,
+    "seconds": 0.627,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_symlink_then_file: The following files have no generating action:\npkg/err_symlink_then_file.x\n",
     "outputs": null
@@ -280,14 +304,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.087,
+    "seconds": 9.75,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_target_file_on_symlink: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 93, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = s, target_file = data)\nError in symlink: symlink() with \"target_file\" param requires that \"output\" be declared as a file or directory, not a symlink (did you mean to use declare_file() or declare_directory() instead of declare_symlink()?)\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_target_file_on_symlink' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_target_file_on_symlink' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.347,
+    "seconds": 0.614,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_target_file_on_symlink: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:93, in _errors_impl\n      ctx.actions.symlink(output = s, target_file = data)\nerror: symlink() with \"target_file\" param requires that \"output\" be declared as a file or directory, not a symlink (did you mean to use declare_file() or declare_directory() instead of declare_symlink()?)\n  --> //pkg:defs.bzl:93:9\n   |\n93 |         ctx.actions.symlink(output = s, target_file = data)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
     "outputs": null
@@ -303,14 +327,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.279,
+    "seconds": 9.731,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_target_path_on_file: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 96, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = f, target_path = \"data.txt\")\nError in symlink: symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_target_path_on_file' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_target_path_on_file' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.338,
+    "seconds": 0.609,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_target_path_on_file: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:96, in _errors_impl\n      ctx.actions.symlink(output = f, target_path = \"data.txt\")\nerror: symlink() with \"target_path\" param requires that \"output\" be declared as a symlink, not a file or directory (did you mean to use declare_symlink() instead of declare_file() or declare_directory()?)\n  --> //pkg:defs.bzl:96:9\n   |\n96 |         ctx.actions.symlink(output = f, target_path = \"data.txt\")\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
     "outputs": null
@@ -326,14 +350,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.543,
+    "seconds": 9.273,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_is_executable: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 99, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = s, target_path = \"data.txt\", is_executable = True)\nError in symlink: \"is_executable\" cannot be True when using \"target_path\"\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_is_executable' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_is_executable' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.355,
+    "seconds": 0.648,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_is_executable: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:99, in _errors_impl\n      ctx.actions.symlink(output = s, target_path = \"data.txt\", is_executable = True)\nerror: \"is_executable\" cannot be True when using \"target_path\"\n  --> //pkg:defs.bzl:99:9\n   |\n99 |         ctx.actions.symlink(output = s, target_path = \"data.txt\", is_executable = True)\n   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n",
     "outputs": null
@@ -349,14 +373,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 9.039,
+    "seconds": 9.027,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_bad_target_type: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 102, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = s, target_path = \"data.txt\", target_type = \"bogus\")\nError in symlink: \"target_type\" must be one of \"file\" or \"directory\"\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_bad_target_type' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_bad_target_type' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.377,
+    "seconds": 0.625,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_bad_target_type: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:102, in _errors_impl\n      ctx.actions.symlink(output = s, target_path = \"data.txt\", target_type = \"bogus\")\nerror: \"target_type\" must be one of \"file\" or \"directory\"\n   --> //pkg:defs.bzl:102:9\n    |\n102 |         ctx.actions.symlink(output = s, target_path = \"data.txt\", target_type = \"bogus\")\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -372,14 +396,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.836,
+    "seconds": 9.388,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_both_targets: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 105, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = s, target_file = data, target_path = \"data.txt\")\nError in symlink: Exactly one of \"target_file\" or \"target_path\" is required\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_both_targets' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_both_targets' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.351,
+    "seconds": 0.615,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_both_targets: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:105, in _errors_impl\n      ctx.actions.symlink(output = s, target_file = data, target_path = \"data.txt\")\nerror: Exactly one of \"target_file\" or \"target_path\" is required\n   --> //pkg:defs.bzl:105:9\n    |\n105 |         ctx.actions.symlink(output = s, target_file = data, target_path = \"data.txt\")\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
@@ -395,14 +419,14 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.829,
+    "seconds": 9.12,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_no_action: \n<WS>/pkg/defs.bzl:79:5: The following files have no generating action:\npkg/err_no_action.x\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_no_action' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_no_action' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.351,
+    "seconds": 0.615,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_no_action: The following files have no generating action:\npkg/err_no_action.x\n",
     "outputs": null
@@ -418,19 +442,324 @@
    ],
    "genuine": {
     "exit": 1,
-    "seconds": 8.748,
+    "seconds": 9.196,
     "stdout": "",
     "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nERROR: <WS>/pkg/BUILD.bazel:61:11: in errors rule //pkg:err_target_path_int: \nTraceback (most recent call last):\n\tFile \"<WS>/pkg/defs.bzl\", line 111, column 28, in _errors_impl\n\t\tctx.actions.symlink(output = s, target_path = 1)\nError in symlink: in call to symlink(), parameter 'target_path' got value of type 'int', want 'string or NoneType'\nERROR: <WS>/pkg/BUILD.bazel:61:11: Analysis of target '//pkg:err_target_path_int' (config: a7a71fd) failed\nERROR: Analysis of target '//pkg:err_target_path_int' failed; build aborted\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 1 process: 1 internal.\nERROR: Build did NOT complete successfully\n",
     "outputs": null
    },
    "native": {
     "exit": 1,
-    "seconds": 0.386,
+    "seconds": 0.631,
     "stdout": "",
     "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: analysis of //pkg:err_target_path_int: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //pkg:defs.bzl:111, in _errors_impl\n      ctx.actions.symlink(output = s, target_path = 1)\nerror: in call to symlink(), parameter 'target_path' got value of type 'int', want 'string or NoneType'\n   --> //pkg:defs.bzl:111:9\n    |\n111 |         ctx.actions.symlink(output = s, target_path = 1)\n    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n\n",
     "outputs": null
    },
    "expected_message": "in call to symlink(), parameter 'target_path' got value of type 'int', want 'string or NoneType'",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_dangling": {
+   "argv": [
+    "build",
+    "//pkg:dangling",
+    "//pkg:nested"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.126,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 8 targets configured).\nINFO: Found 2 targets...\nTarget //pkg:dangling up-to-date:\n  bazel-bin/pkg/dangling\nTarget //pkg:nested up-to-date:\n  bazel-bin/pkg/node_modules/.store/pkg@1/node_modules/pkg\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 3 internal.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dangling": [
+      "symlink",
+      "../does/not/exist"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg": [
+      "symlink",
+      "../../../../data.txt"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.631,
+    "stdout": "//pkg:dangling\tbazel-out/k8-fastbuild/bin/pkg/dangling\n//pkg:nested\tbazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/dangling": [
+      "symlink",
+      "../does/not/exist"
+     ],
+     "bazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg": [
+      "symlink",
+      "../../../../data.txt"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_consumer_standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//pkg:consumer"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.341,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:consumer (5 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //pkg:consumer up-to-date:\n  bazel-bin/pkg/consumer.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 6 processes: 4 internal, 2 local.\nINFO: Build completed successfully, 6 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.txt": [
+      "0o555",
+      "bazel-out/k8-fastbuild/bin/pkg/rel -> data.txt\nbazel-out/k8-fastbuild/bin/pkg/dangling -> ../does/not/exist\nbazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg -> ../../../../data.txt\nbazel-out/k8-fastbuild/bin/pkg/spawned -> data.txt\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.644,
+    "stdout": "//pkg:consumer\tbazel-out/k8-fastbuild/bin/pkg/consumer.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/pkg/consumer.txt": [
+      "0o555",
+      "bazel-out/k8-fastbuild/bin/pkg/rel -> data.txt\nbazel-out/k8-fastbuild/bin/pkg/dangling -> ../does/not/exist\nbazel-out/k8-fastbuild/bin/pkg/node_modules/.store/pkg@1/node_modules/pkg -> ../../../../data.txt\nbazel-out/k8-fastbuild/bin/pkg/spawned -> data.txt\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "run_venv": {
+   "argv": [
+    "run",
+    "//venv:venv_tool"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.351,
+    "stdout": "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: \n",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:venv_tool (6 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //venv:venv_tool up-to-date:\n  bazel-bin/venv/venv_tool\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 8 processes: 8 internal.\nINFO: Build completed successfully, 8 total actions\nINFO: Running command line: bazel-bin/venv/venv_tool\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.624,
+    "stdout": "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: \n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//venv:venv_tool\t<CACHE>/actions/653fe334bd12c33ac6afe516c66f1e7fd00633000158fe29232c1e5b067a8722/outputs/bazel-out/k8-fastbuild/bin/venv/venv_tool\nbazel-rs: 6 actions executed, 0 cache hits (experimental local execution; not sandboxed)\nbazel-rs: Running command line: <CACHE>/actions/06ff48fdb3634b1318c5ab3d5dc0f36e91cb2a02548c74e7daf73e5774035399/outputs/bazel-out/k8-fastbuild/bin/venv/venv_tool\n",
+    "outputs": null
+   },
+   "expected_stdout": "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: \n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_venv_use": {
+   "argv": [
+    "build",
+    "//venv:use"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.708,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:use (6 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //venv:use up-to-date:\n  bazel-bin/venv/use.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 9 processes: 8 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 9 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/use.txt": [
+      "0o555",
+      "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: tool\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 3.164,
+    "stdout": "//venv:use\tbazel-out/k8-fastbuild/bin/venv/use.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/use.txt": [
+      "0o555",
+      "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: tool\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_venv_use_standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//venv:use"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.374,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:use (6 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //venv:use up-to-date:\n  bazel-bin/venv/use.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 9 processes: 8 internal, 1 local.\nINFO: Build completed successfully, 9 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/use.txt": [
+      "0o555",
+      "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: tool\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 3.179,
+    "stdout": "//venv:use\tbazel-out/k8-fastbuild/bin/venv/use.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 5 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/use.txt": [
+      "0o555",
+      "venv: _venv_tool.venv\ncfg: home = venv-of-venv_tool\nhome: pyrt 1.0 lib\nargs: tool\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "test_venv": {
+   "argv": [
+    "test",
+    "//venv:venv_test"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 11.781,
+    "stdout": "//venv:venv_test                                                         PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:venv_test (81 packages loaded, 838 targets configured).\nINFO: Found 1 test target...\nTarget //venv:venv_test up-to-date:\n  bazel-bin/venv/venv_test\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 9 processes: 8 internal, 2 processwrapper-sandbox.\nINFO: Build completed successfully, 9 total actions\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 17.462,
+    "stdout": "//venv:venv_test                                                         PASSED in 0.0s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\n//venv:venv_test\t<CACHE>/actions/0456f17e1d8c56367732ae34bcdc503289ef45e4c94aee9c4735b94319ec9322/outputs/bazel-out/k8-fastbuild/bin/venv/venv_test\nbazel-rs: 6 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": null
+   },
+   "expected_stdout": "//venv:venv_test                                                         PASSED in <T>s\n\nExecuted 1 out of 1 test: 1 test passes.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_through": {
+   "argv": [
+    "build",
+    "//venv:through"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.45,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:through (6 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //venv:through up-to-date:\n  bazel-bin/venv/through.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/through.txt": [
+      "0o555",
+      "../../../../external/pyrt+/lib/marker.txt\npyrt 1.0 lib\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.638,
+    "stdout": "//venv:through\tbazel-out/k8-fastbuild/bin/venv/through.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/through.txt": [
+      "0o555",
+      "../../../../external/pyrt+/lib/marker.txt\npyrt 1.0 lib\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_through_standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//venv:through"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.109,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:through (6 packages loaded, 8 targets configured).\nINFO: Found 1 target...\nTarget //venv:through up-to-date:\n  bazel-bin/venv/through.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 3 processes: 2 internal, 1 local.\nINFO: Build completed successfully, 3 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/through.txt": [
+      "0o555",
+      "../../../../external/pyrt+/lib/marker.txt\npyrt 1.0 lib\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.65,
+    "stdout": "//venv:through\tbazel-out/k8-fastbuild/bin/venv/through.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 2 actions executed, 0 cache hits (experimental local execution; not sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/through.txt": [
+      "0o555",
+      "../../../../external/pyrt+/lib/marker.txt\npyrt 1.0 lib\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_manifest": {
+   "argv": [
+    "build",
+    "//venv:manifest"
+   ],
+   "genuine": {
+    "exit": 0,
+    "seconds": 9.152,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:manifest (6 packages loaded, 11 targets configured).\nINFO: Found 1 target...\nTarget //venv:manifest up-to-date:\n  bazel-bin/venv/manifest.txt\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 5 processes: 4 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 5 total actions\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/manifest.txt": [
+      "0o555",
+      "_main/venv/_venv_tool.venv/bin/python3 ../../../../pyrt+/bin/python3\n"
+     ]
+    }
+   },
+   "native": {
+    "exit": 0,
+    "seconds": 0.621,
+    "stdout": "//venv:manifest\tbazel-out/k8-fastbuild/bin/venv/manifest.txt\n",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: 7 actions executed, 0 cache hits (experimental local execution; sandboxed)\n",
+    "outputs": {
+     "bazel-out/k8-fastbuild/bin/venv/manifest.txt": [
+      "0o555",
+      "_main/venv/_venv_tool.venv/bin/python3 ../../../../pyrt+/bin/python3\n"
+     ]
+    }
+   },
+   "verdict": "MATCH",
+   "exit_code_equal": true
+  },
+  "build_not_a_symlink": {
+   "argv": [
+    "build",
+    "//venv:not_a_symlink"
+   ],
+   "genuine": {
+    "exit": 1,
+    "seconds": 9.253,
+    "stdout": "",
+    "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //venv:not_a_symlink (5 packages loaded, 7 targets configured).\nERROR: <WS>/venv/BUILD.bazel:17:14: declared output 'venv/not_a_symlink' is not a symlink\nERROR: <WS>/venv/BUILD.bazel:17:14: NotALink venv/not_a_symlink failed: not all outputs were created or valid\nTarget //venv:not_a_symlink failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nERROR: Build did NOT complete successfully\n",
+    "outputs": null
+   },
+   "native": {
+    "exit": 1,
+    "seconds": 0.622,
+    "stdout": "",
+    "stderr": "bazel-rs: memory limit defaulted to 65536 MB (64 GB flat cap for hosts with at least 128 GB of machine memory); set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions\nbazel-rs: action '//venv:not_a_symlink#0': action '//venv:not_a_symlink#0' has missing or invalid output 'bazel-out/k8-fastbuild/bin/venv/not_a_symlink': declared output 'venv/not_a_symlink' is not a symlink\n",
+    "outputs": null
+   },
+   "expected_message": "declared output 'venv/not_a_symlink' is not a symlink",
    "verdict": "MATCH",
    "exit_code_equal": true
   }

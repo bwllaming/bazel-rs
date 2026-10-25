@@ -268,10 +268,17 @@ pub struct ActionExtra {
     #[serde(with = "crate::snapshot::codec::path_set")]
     pub tree_outputs: BTreeSet<PathBuf>,
     /// Outputs (members of `Action::outputs`) that are unresolved symlink
-    /// artifacts (ctx.actions.declare_symlink): executing an action with one
-    /// is an explicit native gap ([`unresolved_symlink_gap`]).
+    /// artifacts (ctx.actions.declare_symlink): the action leaves a symlink
+    /// there whose literal link text is the artifact's value, like Bazel's
+    /// UnresolvedSymlinkArtifactValue (docs/UNRESOLVED_SYMLINKS.md).
     #[serde(with = "crate::snapshot::codec::path_set")]
     pub symlink_outputs: BTreeSet<PathBuf>,
+    /// Input destinations that are unresolved symlink artifacts: read with
+    /// readlink (never followed), keyed by their link text and staged as
+    /// symlinks with that text (SandboxHelpers.processInputFiles,
+    /// SymlinkTreeHelper.createRunfilesSymlinks).
+    #[serde(with = "crate::snapshot::codec::path_set")]
+    pub symlink_inputs: BTreeSet<PathBuf>,
     /// Input destinations that are tree artifacts (directories); every other
     /// input must be a regular file or a source directory.
     #[serde(with = "crate::snapshot::codec::path_set")]
@@ -344,20 +351,44 @@ impl SymlinkTargetType {
     }
 }
 
-/// The explicit execution gap of an action creating unresolved symlink
-/// artifacts (`outputs`, ctx.actions.declare_symlink): their creation,
-/// caching and staging are not modelled natively. `None` for any other
-/// action.
-pub fn unresolved_symlink_gap(action: &Action) -> Option<String> {
-    let output = action.extra.symlink_outputs.iter().next()?;
-    let target = match &action.extra.transform {
-        Some(Transform::UnresolvedSymlink { target, .. }) => format!(" -> '{target}'"),
-        _ => String::new(),
-    };
-    Some(format!(
-        "creating the unresolved symlink artifact '{}'{target} (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)",
-        output.display()
-    ))
+/// The link text UnresolvedSymlinkAction creates for `target`: Bazel's
+/// `PathFragment.create(target)` (UnresolvedSymlinkAction
+/// .getTargetPathFragment, analysis/starlark/UnresolvedSymlinkAction.java;
+/// vfs/UnixOsPathPolicy.normalize): repeated and trailing separators and
+/// `.` segments dropped, `x/..` pairs removed, leading `..` segments of a
+/// relative path kept and those of an absolute path dropped.
+pub fn unresolved_link_text(target: &str) -> String {
+    if target.is_empty() {
+        return String::new();
+    }
+    let absolute = target.starts_with('/');
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in target.split('/').filter(|segment| !segment.is_empty()) {
+        match segment {
+            "." => {}
+            ".." if segments.last().is_some_and(|last| *last != "..") => {
+                segments.pop();
+            }
+            ".." if absolute => {}
+            _ => segments.push(segment),
+        }
+    }
+    let joined = segments.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// The digest of an unresolved symlink artifact's value, Bazel's
+/// UnresolvedSymlinkArtifactValue (actions/FileArtifactValue.java:1145-1168):
+/// the SHA-256 of the link text (ISO-8859-1, i.e. its bytes) with the first
+/// byte inverted, so that it never equals a file holding that text.
+fn unresolved_symlink_digest(text: &[u8]) -> Sha256Digest {
+    let mut digest = digest(text);
+    digest.0[0] ^= 0xff;
+    digest
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -429,8 +460,7 @@ pub enum Transform {
     /// ctx.actions.symlink(target_path = ...)): the only output, an
     /// unresolved symlink artifact, is a symlink with the literal `target`;
     /// keyed by the target and its type (computeKey :92-99), no inputs.
-    /// Creating it — and staging such artifacts as inputs, runfiles and
-    /// outputs — is an explicit native gap ([`unresolved_symlink_gap`]).
+    /// The link text is [`unresolved_link_text`] of `target`.
     UnresolvedSymlink {
         target: String,
         target_type: SymlinkTargetType,
@@ -602,6 +632,9 @@ enum Staged {
     Tree(Arc<Tree>),
     /// Shared like a tree: a source directory is read once per process.
     SourceDirectory(Arc<SourceDirectory>),
+    /// An unresolved symlink artifact: its literal link text, never
+    /// followed (UnresolvedSymlinkArtifactValue.getUnresolvedSymlinkTarget).
+    Symlink(PathBuf),
 }
 
 /// How [`prepare`] reads an input.
@@ -610,6 +643,7 @@ enum InputKind {
     File,
     Tree,
     SourceDirectory,
+    Symlink,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2169,7 +2203,22 @@ fn memoized_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Option<
             .flatten()
             .map(Staged::File),
         InputKind::SourceDirectory => memoized_source_directory(path).map(Staged::SourceDirectory),
+        InputKind::Symlink => None,
     }
+}
+
+/// An unresolved symlink artifact at `path` (a published symlink output):
+/// its link text, read without following it
+/// (FileArtifactValue.createForUnresolvedSymlink).
+fn read_unresolved_symlink(path: &Path) -> Result<PathBuf, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?;
+    if !metadata.file_type().is_symlink() {
+        return Err(format!(
+            "unresolved symlink input '{}' is not a symlink",
+            path.display()
+        ));
+    }
+    fs::read_link(path).map_err(|e| io_error("cannot read link", path, e))
 }
 
 /// [`std::path::absolute`], without rebuilding a path that is already
@@ -2199,6 +2248,7 @@ fn read_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Result<Stag
         InputKind::SourceDirectory => {
             return Ok(Staged::SourceDirectory(source_directory(path, root)?));
         }
+        InputKind::Symlink => return Ok(Staged::Symlink(read_unresolved_symlink(path)?)),
         InputKind::Tree => {}
     }
     let (resolved, _) = resolve_published(path, root)?;
@@ -2636,6 +2686,28 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             ));
         }
     }
+    for link in &action.extra.symlink_outputs {
+        if !action.outputs.contains(link) || action.extra.tree_outputs.contains(link) {
+            return Err(format!(
+                "symlink output '{}' is not a non-tree action output",
+                link.display()
+            ));
+        }
+    }
+    if action.write.is_some() && !action.extra.symlink_outputs.is_empty() {
+        return Err("write action output cannot be a symlink artifact".into());
+    }
+    for link in &action.extra.symlink_inputs {
+        if !action.inputs.iter().any(|(_, name)| name == link)
+            || action.extra.tree_inputs.contains(link)
+            || action.extra.source_directories.contains(link)
+        {
+            return Err(format!(
+                "symlink input '{}' is not a file action input",
+                link.display()
+            ));
+        }
+    }
     if let Some(program) = &action.program {
         if program.is_empty() || program.as_bytes().contains(&0) {
             return Err("direct program must be nonempty and contain no NUL byte".into());
@@ -2830,6 +2902,12 @@ fn frame_staged(hash: &mut Sha256, staged: &Staged) {
                 frame(hash, target.as_os_str().as_bytes());
             }
         }
+        // UnresolvedSymlinkArtifactValue's digest is a function of the link
+        // text alone.
+        Staged::Symlink(text) => {
+            frame(hash, b"unresolved-symlink");
+            frame(hash, text.as_os_str().as_bytes());
+        }
     }
 }
 
@@ -2845,9 +2923,13 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         .as_ref()
         .filter(|transform| transform.reads_paths_only());
     // Whether an input is read by content: runfiles transforms read only
-    // their manifest and executable (the other inputs are keyed by path).
+    // their manifest and executable (the other inputs are keyed by path),
+    // and the link text of unresolved symlinks, which they reproduce
+    // (SourceManifestAction.writeFile, SymlinkTreeHelper
+    // .createRunfilesSymlinks).
     let read = |destination: &PathBuf| match paths_only {
         None => true,
+        Some(_) if action.extra.symlink_inputs.contains(destination) => true,
         Some(Transform::RunfilesTree {
             manifest,
             executable,
@@ -2864,6 +2946,8 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
                 InputKind::Tree
             } else if action.extra.source_directories.contains(destination) {
                 InputKind::SourceDirectory
+            } else if action.extra.symlink_inputs.contains(destination) {
+                InputKind::Symlink
             } else {
                 InputKind::File
             };
@@ -3177,6 +3261,18 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         frame(&mut hash, b"source-directories");
         frame_count(&mut hash, extra.source_directories.len());
         for name in &extra.source_directories {
+            frame(&mut hash, name.as_os_str().as_bytes());
+        }
+    }
+    // Likewise only actions reading or creating unresolved symlinks.
+    if !extra.symlink_inputs.is_empty() || !extra.symlink_outputs.is_empty() {
+        frame(&mut hash, b"unresolved-symlinks");
+        frame_count(&mut hash, extra.symlink_inputs.len());
+        for name in &extra.symlink_inputs {
+            frame(&mut hash, name.as_os_str().as_bytes());
+        }
+        frame_count(&mut hash, extra.symlink_outputs.len());
+        for name in &extra.symlink_outputs {
             frame(&mut hash, name.as_os_str().as_bytes());
         }
     }
@@ -3732,6 +3828,17 @@ fn stage_inputs(
                         .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
                 }
             }
+            // SandboxHelpers.processInputFiles: an unresolved symlink input
+            // is a symlink with its literal text (SandboxInputs.symlinks);
+            // unsandboxed, the execution root holds the artifact itself.
+            Staged::Symlink(text) => {
+                let path = execroot.join(name);
+                if let Some(parent) = path.parent() {
+                    ensure_directory(parent)?;
+                }
+                std::os::unix::fs::symlink(text, &path)
+                    .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
+            }
         }
     }
     Ok(staged)
@@ -4025,7 +4132,7 @@ fn cache_valid(
     directory: &Path,
     key: &str,
     outputs: &[PathBuf],
-    trees: &BTreeSet<PathBuf>,
+    (trees, links): (&BTreeSet<PathBuf>, &BTreeSet<PathBuf>),
     root: &Path,
 ) -> Option<BTreeMap<PathBuf, Vec<PathBuf>>> {
     let manifest_path = directory.join("manifest.json");
@@ -4047,6 +4154,22 @@ fn cache_valid(
                 return Ok(None);
             }
             let mut path = directory.join("outputs").join(name);
+            // An unresolved symlink output is still a symlink with the
+            // recorded link text, whose value the digest is.
+            if links.contains(name) {
+                let Some(target) = &entry.symlink else {
+                    return Ok(None);
+                };
+                let text = read_unresolved_symlink(&path)?;
+                let text = text.as_os_str().as_bytes();
+                if hex(text) != *target
+                    || !unresolved_symlink_digest(text).spelled(&entry.digest)
+                    || entry.tree.is_some()
+                {
+                    return Ok(None);
+                }
+                continue;
+            }
             if let Some(target) = &entry.symlink {
                 // A symlink output still names the recorded target, which
                 // still has the recorded contents and mode.
@@ -4222,20 +4345,38 @@ fn run_transform(
                 .to_owned(),
         ),
         Transform::Unsupported { message } => Err(message.clone()),
-        Transform::UnresolvedSymlink { .. } => Err(unresolved_symlink_gap(action)
-            .unwrap_or_else(|| "unresolved symlink action without a symlink output".to_owned())),
+        // UnresolvedSymlinkAction.execute: outputPath.createSymbolicLink(
+        // PathFragment.create(target), targetType).
+        Transform::UnresolvedSymlink {
+            target, progress, ..
+        } => std::os::unix::fs::symlink(unresolved_link_text(target), &output).map_err(|e| {
+            format!(
+                "{progress} failed: failed to create symbolic link '{}' with target '{target}' due to I/O error: {}",
+                action.outputs[0].display(),
+                io_error("cannot create symbolic link", &output, e)
+            )
+        }),
         Transform::RunfilesManifest { entries } => {
             let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();
             sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
             let mut text = Vec::new();
             for (path, destination) in sorted {
                 let target = match destination {
-                    Some(destination) => Some(origin(destination)?.to_str().ok_or_else(|| {
-                        format!(
-                            "runfiles target '{}' is not valid UTF-8",
-                            destination.display()
-                        )
-                    })?),
+                    // An unresolved symlink's line names its link text
+                    // (SourceManifestAction.writeFile :301-312).
+                    Some(destination) => Some(match inputs.get(destination) {
+                        Some(Staged::Symlink(link)) => link.as_path(),
+                        _ => origin(destination)?,
+                    })
+                    .map(|target| {
+                        target.to_str().ok_or_else(|| {
+                            format!(
+                                "runfiles target '{}' is not valid UTF-8",
+                                destination.display()
+                            )
+                        })
+                    })
+                    .transpose()?,
                     None => None,
                 };
                 crate::runfiles::manifest_line(path, target, &mut text);
@@ -4267,8 +4408,14 @@ fn run_transform(
                         ensure_directory(parent)?;
                     }
                     match destination {
+                        // Unresolved symlinks are created textually
+                        // (SymlinkTreeHelper.createRunfilesSymlinks).
                         Some(destination) => {
-                            std::os::unix::fs::symlink(origin(destination)?, &link)
+                            let target = match inputs.get(destination) {
+                                Some(Staged::Symlink(text)) => text.as_path(),
+                                _ => origin(destination)?,
+                            };
+                            std::os::unix::fs::symlink(target, &link)
                                 .map_err(|e| io_error("cannot create symbolic link", &link, e))?
                         }
                         None => {
@@ -4574,6 +4721,15 @@ pub fn read_content_input(cache_root: &Path, path: &Path) -> Result<ContentInput
     read_input(path, Some(&root), true).map(|input| ContentInput(Staged::File(input)))
 }
 
+/// An unresolved symlink artifact's published symlink as a content input:
+/// its link text, staged as a symlink with that text (a test's runfiles,
+/// SymlinkTreeHelper.createRunfilesSymlinks).
+pub fn read_symlink_input(path: &Path) -> Result<ContentInput, String> {
+    Ok(ContentInput(Staged::Symlink(read_unresolved_symlink(
+        path,
+    )?)))
+}
+
 /// A runfile's source read by content ([`read_content_source`]).
 pub enum ContentSource {
     File(ContentInput),
@@ -4714,6 +4870,12 @@ fn remote_action(
                     files.insert(path_string(&path.join(name))?, file_digest(input));
                 }
             }
+            Staged::Symlink(_) => {
+                return Err(format!(
+                    "unresolved symlink input {}: input root symlinks are not modelled",
+                    path.display()
+                ));
+            }
         }
     }
     for (path, content) in &action.extra.param_files {
@@ -4762,11 +4924,6 @@ pub fn execute_with_remote(
     action: &Action,
     remote: Option<&crate::remote_cache::RemoteCache>,
 ) -> Result<ActionResult, String> {
-    // Unresolved symlink outputs are never created, cached or staged
-    // natively: the action fails before any cache lookup.
-    if let Some(message) = unresolved_symlink_gap(action) {
-        return Err(message);
-    }
     let embedded;
     let action = if action.embedded_inputs.is_empty() {
         action
@@ -4834,7 +4991,13 @@ pub fn execute_with_remote(
                 .collect(),
         }
     };
-    if let Some(listings) = cache_valid(&cached, key, outputs, &action.extra.tree_outputs, &root) {
+    if let Some(listings) = cache_valid(
+        &cached,
+        key,
+        outputs,
+        (&action.extra.tree_outputs, &action.extra.symlink_outputs),
+        &root,
+    ) {
         return Ok(result(listings, true, false));
     }
     // This entry's trees and files are no longer what the memos hold: they
@@ -4869,7 +5032,17 @@ pub fn execute_with_remote(
             );
             Some(tree_reason.as_str())
         }
-        (None, None) => None,
+        (None, None) => match action.extra.symlink_outputs.first() {
+            Some(link) => {
+                tree_reason = format!(
+                    "{} (unresolved symlink output {}; output_symlinks are not modelled)",
+                    action.id,
+                    link.display()
+                );
+                Some(tree_reason.as_str())
+            }
+            None => None,
+        },
     };
     let remote = match (remote, unsupported) {
         (Some(_), Some(reason)) => {
@@ -5189,6 +5362,37 @@ pub fn execute_with_remote(
         let tree_output = action.extra.tree_outputs.contains(name);
         let mut publish = || -> Result<Output, String> {
             let hex_name = hex(name.as_os_str().as_bytes());
+            // An unresolved symlink output: the symlink itself, published
+            // as is; its value is its link text
+            // (ActionOutputMetadataStore.fileArtifactValueFromArtifact ->
+            // FileArtifactValue.createForUnresolvedSymlink), and anything
+            // else at its path fails like SkyframeActionExecutor
+            // .checkOutputs (NotASymlinkException).
+            if action.extra.symlink_outputs.contains(name) {
+                let metadata = fs::symlink_metadata(&source)
+                    .map_err(|e| io_error("cannot inspect", &source, e))?;
+                if !metadata.file_type().is_symlink() {
+                    return Err(format!(
+                        "declared output '{}' is not a symlink",
+                        pretty_output(name)
+                    ));
+                }
+                let link =
+                    fs::read_link(&source).map_err(|e| io_error("cannot read link", &source, e))?;
+                if let Some(parent) = target.parent() {
+                    ensure_directory(parent)?;
+                }
+                fs::rename(&source, &target).map_err(|e| io_error("cannot publish", &target, e))?;
+                let text = link.as_os_str().as_bytes();
+                return Ok(Output {
+                    name: hex_name,
+                    digest: unresolved_symlink_digest(text).hex(),
+                    mode: metadata.permissions().mode() & 0o7777,
+                    tree: None,
+                    symlink: Some(hex(text)),
+                    runfiles: None,
+                });
+            }
             if let Some(symlink_target) = symlink_target {
                 let metadata = fs::symlink_metadata(&source)
                     .map_err(|e| io_error("cannot inspect", &source, e))?;
@@ -5209,7 +5413,7 @@ pub fn execute_with_remote(
                         name,
                         sibling.map(|sibling| match &inputs[sibling] {
                             Staged::File(input) => (sibling, input),
-                            Staged::Tree(_) | Staged::SourceDirectory(_) => {
+                            Staged::Tree(_) | Staged::SourceDirectory(_) | Staged::Symlink(_) => {
                                 unreachable!("checked by run_transform")
                             }
                         }),
@@ -5236,7 +5440,9 @@ pub fn execute_with_remote(
                             runfiles: None,
                         }
                     }
-                    Staged::SourceDirectory(_) => unreachable!("checked by run_transform"),
+                    Staged::SourceDirectory(_) | Staged::Symlink(_) => {
+                        unreachable!("checked by run_transform")
+                    }
                 });
             }
             if tree_output {
@@ -7932,10 +8138,12 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
     }
 
     /// UnresolvedSymlinkAction: one symlink output, no inputs, keyed by the
-    /// literal target and its type; executing it (or any action with an
-    /// unresolved symlink output) is an explicit gap before any cache work.
+    /// literal target and its type; it creates the symlink with the
+    /// normalized link text, published as is and validated by its text;
+    /// consumers stage the literal symlink and key its text; a spawn's
+    /// declared symlink output must be a symlink.
     #[test]
-    fn unresolved_symlinks_are_planned_but_not_executed() {
+    fn unresolved_symlinks_are_created_published_and_staged() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.command.clear();
@@ -7962,27 +8170,113 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         });
         let mut other = action.clone();
         other.extra.transform = Some(Transform::UnresolvedSymlink {
-            target: "../y".into(),
+            target: "./a//b/../../../y/".into(),
             target_type: SymlinkTargetType::Unspecified,
             progress: "Creating symlink out/result".into(),
         });
         assert_ne!(unspecified, key(&directory));
         assert_ne!(unspecified, key(&other));
-        let error = execute(&fixture.cache(), &action).unwrap_err();
+        // Created dangling, published as the symlink itself.
+        let first = execute(&fixture.cache(), &action).unwrap();
+        assert!(!first.cache_hit);
+        assert_eq!(fs::read_link(&first.outputs[0]).unwrap(), Path::new("../x"));
+        let again = execute(&fixture.cache(), &action).unwrap();
+        assert!(again.cache_hit);
+        assert_eq!(again.outputs, first.outputs);
+        // A published link with another text is no longer the entry.
+        let published = &first.outputs[0];
+        fs::remove_file(published).unwrap();
+        symlink("../z", published).unwrap();
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        assert_eq!(fs::read_link(published).unwrap(), Path::new("../x"));
+        // PathFragment.create normalizes the text.
+        let normalized = execute(&fixture.cache(), &other).unwrap();
         assert_eq!(
-            error,
-            "creating the unresolved symlink artifact 'out/result' -> '../x' (ctx.actions.declare_symlink) is not implemented in the native profile (docs/ACTIONS_PARAMS.md)"
+            fs::read_link(&normalized.outputs[0]).unwrap(),
+            Path::new("../y")
         );
-        assert!(!fixture.cache().join("actions").exists());
-        // A spawn whose output is a declared symlink.
+        // A consumer stages the literal symlink and keys its text.
+        let mut consumer = fixture.action();
+        consumer.id = "consumer".into();
+        consumer.inputs = vec![(first.outputs[0].clone(), "pkg/link".into())];
+        consumer.command = "readlink pkg/link > out/result; test -L pkg/link".into();
+        consumer.extra.symlink_inputs = BTreeSet::from([PathBuf::from("pkg/link")]);
+        let read = execute(&fixture.cache(), &consumer).unwrap();
+        assert_eq!(fs::read(&read.outputs[0]).unwrap(), b"../x\n");
+        let mut retargeted = consumer.clone();
+        retargeted.inputs = vec![(normalized.outputs[0].clone(), "pkg/link".into())];
+        assert_ne!(key(&consumer), key(&retargeted));
+        let read = execute(&fixture.cache(), &retargeted).unwrap();
+        assert_eq!(fs::read(&read.outputs[0]).unwrap(), b"../y\n");
+        // A regular file is no unresolved symlink input.
+        let mut regular = consumer.clone();
+        regular.inputs = vec![(fixture.0.join("source"), "pkg/link".into())];
+        assert!(
+            execute(&fixture.cache(), &regular)
+                .unwrap_err()
+                .contains("is not a symlink")
+        );
+        // Runfiles transforms reproduce the link text.
+        let manifest = Action {
+            id: "manifest".into(),
+            inputs: vec![(first.outputs[0].clone(), "pkg/link".into())],
+            outputs: vec!["bin/b.runfiles_manifest".into()],
+            extra: ActionExtra {
+                transform: Some(Transform::RunfilesManifest {
+                    entries: vec![("_main/pkg/link".into(), Some("pkg/link".into()))],
+                }),
+                symlink_inputs: BTreeSet::from([PathBuf::from("pkg/link")]),
+                ..ActionExtra::default()
+            },
+            ..Action::default()
+        };
+        let written = execute(&fixture.cache(), &manifest).unwrap();
+        assert_eq!(
+            fs::read(&written.outputs[0]).unwrap(),
+            b"_main/pkg/link ../x\n"
+        );
+        // A spawn's declared symlink output: created by the process, or
+        // `declared output '...' is not a symlink`.
         let mut spawn = fixture.action();
+        spawn.id = "spawn".into();
+        spawn.command = "ln -s data.txt out/result".into();
         spawn.extra.symlink_outputs = spawn.outputs.iter().cloned().collect();
+        let linked = execute(&fixture.cache(), &spawn).unwrap();
+        assert_eq!(
+            fs::read_link(&linked.outputs[0]).unwrap(),
+            Path::new("data.txt")
+        );
+        spawn.command = "cat src/input > out/result".into();
         assert!(
             execute(&fixture.cache(), &spawn)
                 .unwrap_err()
-                .starts_with("creating the unresolved symlink artifact 'out/result' (")
+                .contains("declared output 'out/result' is not a symlink")
         );
     }
+
+    /// PathFragment.create's normalization and the digest of
+    /// UnresolvedSymlinkArtifactValue.
+    #[test]
+    fn unresolved_link_text_and_digest_follow_bazel() {
+        for (target, text) in [
+            ("data.txt", "data.txt"),
+            ("../../../../data.txt", "../../../../data.txt"),
+            ("a/./b//c/", "a/b/c"),
+            ("a/../b", "b"),
+            ("a/../..", ".."),
+            ("../a/../b", "../b"),
+            ("/../x/./y/..", "/x"),
+            ("/", "/"),
+            (".", ""),
+            ("", ""),
+        ] {
+            assert_eq!(unresolved_link_text(target), text, "{target}");
+        }
+        let mut expected: [u8; 32] = Sha256::digest(b"data.txt").into();
+        expected[0] ^= 0xff;
+        assert_eq!(unresolved_symlink_digest(b"data.txt").0, expected);
+    }
+
     fn ino(path: &Path) -> u64 {
         fs::metadata(path).unwrap().ino()
     }

@@ -190,6 +190,9 @@ pub struct InputGroup {
     pub dependencies: Vec<Dependency>,
     /// Destinations of tree artifacts (crate::action::ActionExtra::tree_inputs).
     pub tree_inputs: Vec<PathBuf>,
+    /// Destinations of unresolved symlink artifacts
+    /// (crate::action::ActionExtra::symlink_inputs).
+    pub symlink_inputs: Vec<PathBuf>,
     /// Destinations of constant-metadata inputs
     /// (crate::action::ActionExtra::constant_metadata).
     pub constant_metadata: Vec<PathBuf>,
@@ -230,6 +233,7 @@ impl InputGroup {
                 .chain(self.empty_files.iter().map(PathBuf::as_path))
                 .collect(),
         ) && tree_inputs_listed(&self.inputs, &self.dependencies, &self.tree_inputs)
+            && tree_inputs_listed(&self.inputs, &self.dependencies, &self.symlink_inputs)
     }
 }
 
@@ -381,6 +385,10 @@ fn list_groups(action: &mut Action, groups: &[Arc<InputGroup>]) {
             .extra
             .constant_metadata
             .extend(group.constant_metadata.iter().cloned());
+        action
+            .extra
+            .symlink_inputs
+            .extend(group.symlink_inputs.iter().cloned());
     }
     list_empty_files(action, groups);
 }
@@ -1363,6 +1371,7 @@ mod tests {
             inputs,
             dependencies,
             tree_inputs: Vec::new(),
+            symlink_inputs: Vec::new(),
             constant_metadata: Vec::new(),
             empty_files,
             valid,
@@ -1516,6 +1525,7 @@ mod tests {
             inputs: vec![(source.into(), "tool.runfiles/../escaped".into())],
             dependencies: Vec::new(),
             tree_inputs: Vec::new(),
+            symlink_inputs: Vec::new(),
             constant_metadata: Vec::new(),
             empty_files: Vec::new(),
             sources: vec![source.into()],

@@ -5,3 +5,7 @@ module(name = "unresolved_symlinks_fixture")
 # tests/fixtures/label_repo_name/platforms_archive.json before each run.
 bazel_dep(name = "platforms", version = "1.0.0")
 local_path_override(module_name = "platforms", path = "platforms")
+
+# A fake interpreter repository (`pyrt+`) the venv links point into.
+bazel_dep(name = "pyrt", version = "1.0")
+local_path_override(module_name = "pyrt", path = "pyrt")
