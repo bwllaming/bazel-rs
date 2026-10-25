@@ -59,8 +59,12 @@ Citations are to the pinned Bazel source
   (`skyframe/ActionOutputMetadataStore.java:245-281`), and so is the root
   (observed by the paired capture). Published trees,
   including empty subdirectories, are verified on cache reuse (file digests,
-  directory set and modes); symlinks or special files inside a tree fail
-  explicitly (Bazel resolves them).
+  directory set and modes). Symlinks inside a tree are followed like
+  Bazel's TreeArtifactValue.visitTree (the files they resolve to, at their
+  paths, with their targets' modes; dangling links, links to special files
+  and cycles fail with Bazel's texts) and materialized when the tree is
+  published (docs/TREE_SYMLINKS.md); a special file fails like Bazel's
+  `child X has an unsupported type`.
 * Tree inputs are staged as directories and keyed by their complete file
   listing, digests and executable bits, so a changed tree reruns consumers.
 * `Args.add_all`/`add_joined` with `expand_directories=True` (the default)
@@ -210,4 +214,7 @@ files, and rejection messages. The final run
 15 EXACT_MESSAGE, 3 EXPECTED_NATIVE_UNSUPPORTED (declare_symlink, a symlink
 inside a tree artifact, tools carrying runfiles) and 2 MISMATCH
 (`file_then_directory`: framing only; `write_directory`: the analysis-time
-rejection above).
+rejection above). The receipt is static evidence of its run: the row
+`error:tree_symlink_entry` (genuine builds it) is superseded by
+`tests/fixtures/tree_symlinks/reference_receipt.json`, whose cases build
+natively (docs/TREE_SYMLINKS.md).

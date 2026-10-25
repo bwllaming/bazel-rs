@@ -24,7 +24,10 @@
 //!
 //! Tree artifacts (declared directories, docs/ACTIONS_PARAMS.md) are directory
 //! outputs and inputs: their regular files and subdirectories are keyed,
-//! staged and published; symlinks inside a tree are rejected explicitly.
+//! staged and published. A symlink inside a tree output is followed to the
+//! file or directory it resolves to, like Bazel's TreeArtifactValue.visitTree
+//! (docs/TREE_SYMLINKS.md): the tree holds what it resolved to at its own
+//! path, and publication materializes it (a published tree has no symlinks).
 //!
 //! Staging and publication never copy file contents (docs/HARDLINK_STAGING.md).
 //! Every staged or published regular file is an inode of the cache's
@@ -453,6 +456,54 @@ impl Eq for Input {}
 struct Tree {
     files: BTreeMap<PathBuf, Input>,
     directories: BTreeSet<PathBuf>,
+    /// The entries that are symlinks, each followed to the file or
+    /// directory it resolves to (TreeArtifactValue.visitTree). A file at or
+    /// below one ([`through_link`]) has the canonical path of that file as
+    /// its `Input::path`; every other file is read at its own path. Empty
+    /// for a published tree: publication materializes the links
+    /// ([`publish_tree`]).
+    links: BTreeSet<PathBuf>,
+}
+
+/// Whether `name` (a tree entry) is one of `links` or lies below one: its
+/// path in the tree goes through a symlink.
+fn through_link(links: &BTreeSet<PathBuf>, name: &Path) -> bool {
+    !links.is_empty() && name.ancestors().any(|ancestor| links.contains(ancestor))
+}
+
+/// How [`read_tree`] treats the entries below a tree root.
+#[derive(Clone, Copy)]
+enum TreeRead<'a> {
+    /// A published tree: regular files and directories only, as publication
+    /// leaves them; a symlink there is damage.
+    Published,
+    /// Any other tree input (a source or repository directory): symlinks are
+    /// followed like an output's.
+    Input,
+    /// A tree output in its action's execution root once the action ran.
+    Output(OutputTree<'a>),
+}
+
+/// A tree output as ActionOutputMetadataStore.constructTreeArtifactValueFrom
+/// Filesystem (skyframe/ActionOutputMetadataStore.java:245-316) reads it:
+/// symlinks are followed (TreeArtifactValue.visitTree,
+/// skyframe/TreeArtifactValue.java:548-592), and every
+/// entry that no symlink led to is made OUTPUT_MODE before it is read
+/// (`chmod && !traversedSymlink`), so a link's target keeps its own mode.
+#[derive(Clone, Copy)]
+struct OutputTree<'a> {
+    /// Artifact.prettyPrint of the tree (its root-relative path), as in
+    /// Bazel's `error while validating output tree artifact` errors.
+    pretty: &'a str,
+    /// The action's working directory. Genuine collects a tree after its
+    /// spawn's sandbox and temporary directory are gone
+    /// (AbstractSandboxSpawnRunner.runSpawn deletes the sandbox before it
+    /// returns; LocalSpawnRunner its temporary directory), so a link with
+    /// an absolute target in there dangles, ...
+    work: &'a Path,
+    /// ... except into the execution root of an unsandboxed spawn, which is
+    /// genuine's own execution root (the spawn's working directory).
+    execroot: Option<&'a Path>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -502,6 +553,12 @@ struct RunfilesTreeManifest {
 struct TreeManifest {
     files: Vec<(String, String)>,
     directories: Vec<String>,
+    /// The published mode of every file that is not OUTPUT_MODE: a file a
+    /// symlink led to keeps its target's executable bits (published as its
+    /// `0444 | x` blob). Absent from manifests without such files, so those
+    /// are byte for byte what they were before tree symlinks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    modes: Vec<(String, u32)>,
 }
 
 struct WorkDir(PathBuf);
@@ -1629,35 +1686,184 @@ where
         .collect()
 }
 
-/// Walk a directory without following symlinks. Entries are visited in byte
-/// order; a symlink or special file below the root is an explicit error.
-/// `normalize` makes every file OUTPUT_MODE before it is read (completed
-/// tree outputs, ActionOutputMetadataStore.java:245-281); such files are
-/// outputs being published (see [`hash_file_from`]). The files are read
-/// after the walk ([`try_map_ordered`]); the first failure in walk order is
-/// reported, exactly as if each file were read when the walk reached it.
-fn read_tree(root: &Path, cache: Option<&Path>, normalize: bool) -> Result<Tree, String> {
-    read_tree_states(root, cache, normalize).map(|(tree, _)| tree)
+/// A regular file [`read_tree`] found; it is read after the walk.
+struct WalkedFile {
+    /// Its path relative to the tree root.
+    child: PathBuf,
+    /// Where it is read: its own path, or the canonical path of the file a
+    /// symlink led to.
+    path: PathBuf,
+    /// Its lstat, when nothing changed the file since (no chmod).
+    metadata: Option<fs::Metadata>,
+    owned: bool,
+    /// An output tree's own normalized file: an output being published,
+    /// hashed without being remembered by its path ([`hash_file_from`]).
+    publishing: bool,
 }
 
-/// [`read_tree`], with the state each file was read in when `normalize`d
-/// (the outputs being published: [`ensure_blob_hashed`]), by its name.
-fn read_tree_states(
-    root: &Path,
-    cache: Option<&Path>,
-    normalize: bool,
-) -> Result<(Tree, BTreeMap<PathBuf, FileKey>), String> {
+fn identity(metadata: &fs::Metadata) -> (u64, u64) {
+    (metadata.dev(), metadata.ino())
+}
+
+/// Whether a link at `child` (relative to a tree root) with the relative
+/// `target` names a path outside the tree, lexically.
+fn leaves_tree(child: &Path, target: &Path) -> bool {
+    if target.is_absolute() {
+        return false;
+    }
+    let mut depth = child
+        .parent()
+        .map_or(0, |parent| parent.components().count());
+    for component in target.components() {
+        match component {
+            Component::ParentDir if depth == 0 => return true,
+            Component::ParentDir => depth -= 1,
+            Component::Normal(_) => depth += 1,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Walk a tree, the names of each directory in byte order. `mode` decides
+/// about symlinks ([`TreeRead`]): a published tree has none (an explicit
+/// error); anywhere else a symlink is followed as TreeArtifactValue.visitTree
+/// (skyframe/TreeArtifactValue.java:548-592) follows it: a link to a file is
+/// that file at the link's path, a link to a directory is walked at the
+/// link's path; a dangling link (`child X is a dangling symbolic link`), a
+/// link to anything else and a special file (`child X has an unsupported
+/// type`) and a link that cannot be resolved (ELOOP) fail. A directory that
+/// a link leads back into one of the directories it lies in is reported as
+/// ELOOP at once (genuine recurses through the cycle until the kernel's
+/// limit of 40 links per lookup stops it). An output tree's entries that no
+/// link led to are made OUTPUT_MODE before they are read (completed tree
+/// outputs, ActionOutputMetadataStore.java:263-282); such files are outputs
+/// being published (see [`hash_file_from`]); a file a link led to is read
+/// where it lies, like any input. The files are read after the walk
+/// ([`try_map_ordered`]); the first failure in walk order is reported,
+/// exactly as if each file were read when the walk reached it.
+fn read_tree(root: &Path, cache: Option<&Path>, mode: TreeRead<'_>) -> Result<Tree, String> {
+    read_walked(walk_tree(root, cache, mode)?).map(|(tree, _)| tree)
+}
+
+/// A walked tree ([`walk_tree`]), whose files [`read_walked`] reads.
+struct WalkedTree {
+    directories: BTreeSet<PathBuf>,
+    links: BTreeSet<PathBuf>,
+    files: Vec<WalkedFile>,
+    /// The walk's failure, reported after the files found before it.
+    failure: Option<String>,
+}
+
+/// [`read_tree`]'s files, in walk order, then its walk failure; with the
+/// state each output being published was read in (its normalized files:
+/// [`ensure_blob_hashed`]), by its name.
+fn read_walked(walked: WalkedTree) -> Result<(Tree, BTreeMap<PathBuf, FileKey>), String> {
+    let inputs = try_map_ordered(&walked.files, |file| {
+        let metadata = match &file.metadata {
+            Some(metadata) => metadata.clone(),
+            None => fs::symlink_metadata(&file.path)
+                .map_err(|e| io_error("cannot inspect", &file.path, e))?,
+        };
+        read_regular_state(&file.path, metadata, file.owned, file.publishing)
+    });
+    let mut tree = Tree {
+        files: BTreeMap::new(),
+        directories: walked.directories,
+        links: walked.links,
+    };
+    let mut states = BTreeMap::new();
+    for (file, read) in walked.files.into_iter().zip(inputs) {
+        let (input, state) = read?;
+        if file.publishing {
+            states.insert(file.child.clone(), state);
+        }
+        tree.files.insert(file.child, input);
+    }
+    match walked.failure {
+        Some(failure) => Err(failure),
+        None => Ok((tree, states)),
+    }
+}
+
+/// [`read_tree`]'s walk: the directories, links and files to read (an
+/// output tree's entries are normalized here), or the root's failure.
+fn walk_tree(root: &Path, cache: Option<&Path>, mode: TreeRead<'_>) -> Result<WalkedTree, String> {
     #[cfg(test)]
     TREE_WALKS.with(|walks| walks.set(walks.get() + 1));
-    real_directory(root, cache)?;
+    let root_metadata = real_directory(root, cache)?;
     let owned = owned_by(cache, root);
+    let normalize = matches!(mode, TreeRead::Output(_));
+    // A validation failure names the tree like Bazel's
+    // reportOutputTreeArtifactErrors (SkyframeActionExecutor.java:1554-1567).
+    let invalid = |message: String| match mode {
+        TreeRead::Output(output) => format!(
+            "error while validating output tree artifact {}: {message}",
+            output.pretty
+        ),
+        _ => format!("tree '{}': {message}", root.display()),
+    };
+    let too_many_links = |path: &Path| {
+        invalid(format!(
+            "{} (Too many levels of symbolic links)",
+            path.display()
+        ))
+    };
+    // What the symlink at `path` (`child` below the root) resolves to.
+    let follow = |path: &Path, child: &Path| -> Result<fs::Metadata, String> {
+        let dangling = |hint: String| {
+            invalid(format!(
+                "child {} is a dangling symbolic link{hint}",
+                child.display()
+            ))
+        };
+        let target = match mode {
+            TreeRead::Output(_) => {
+                Some(fs::read_link(path).map_err(|e| io_error("cannot read link", path, e))?)
+            }
+            _ => None,
+        };
+        if let (TreeRead::Output(output), Some(target)) = (mode, &target)
+            && target.is_absolute()
+            && target.starts_with(output.work)
+            && !output
+                .execroot
+                .is_some_and(|execroot| target.starts_with(execroot))
+        {
+            return Err(dangling(
+                "; its absolute target lies in the action's sandbox or temporary directory, which are gone once the action has run"
+                    .to_owned(),
+            ));
+        }
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(metadata),
+            Err(e)
+                if e.kind() == io::ErrorKind::NotFound
+                    || e.raw_os_error() == Some(rustix::io::Errno::NOTDIR.raw_os_error()) =>
+            {
+                Err(dangling(match &target {
+                    Some(target) if leaves_tree(child, target) => format!(
+                        "; its target '{}' lies outside the tree, and a native execution root holds only the action's inputs and outputs",
+                        target.display()
+                    ),
+                    _ => String::new(),
+                }))
+            }
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) => {
+                Err(too_many_links(path))
+            }
+            Err(e) => Err(io_error("cannot inspect", path, e)),
+        }
+    };
     let mut directories = BTreeSet::new();
-    // Regular files in walk order with their lstat, unless normalized (the
-    // chmod changes it, so the read inspects the file again).
-    let mut files: Vec<(PathBuf, PathBuf, Option<fs::Metadata>)> = Vec::new();
+    let mut links = BTreeSet::new();
+    let mut files: Vec<WalkedFile> = Vec::new();
     let mut walk = || -> Result<(), String> {
-        let mut pending = vec![PathBuf::new()];
-        while let Some(relative) = pending.pop() {
+        // Directories to list: the relative path, whether a link led there,
+        // and the identities of the directories it lies in (itself
+        // included).
+        let mut pending = vec![(PathBuf::new(), false, vec![identity(&root_metadata)])];
+        while let Some((relative, linked, ancestors)) = pending.pop() {
             let directory = root.join(&relative);
             let mut entries = fs::read_dir(&directory)
                 .map_err(|e| io_error("cannot list directory", &directory, e))?
@@ -1670,51 +1876,67 @@ fn read_tree_states(
                 let path = root.join(&child);
                 let metadata = fs::symlink_metadata(&path)
                     .map_err(|e| io_error("cannot inspect", &path, e))?;
-                if metadata.file_type().is_symlink() {
+                let (metadata, linked) = if !metadata.file_type().is_symlink() {
+                    (metadata, linked)
+                } else if matches!(mode, TreeRead::Published) {
                     return Err(format!(
-                        "tree artifact entry '{}' is a symlink; symlinks inside tree artifacts are not supported by the native profile",
+                        "published tree artifact entry '{}' is a symlink",
                         path.display()
                     ));
-                } else if metadata.is_dir() {
+                } else {
+                    let resolved = follow(&path, &child)?;
+                    links.insert(child.clone());
+                    (resolved, true)
+                };
+                if metadata.is_dir() {
+                    let directory = identity(&metadata);
+                    if ancestors.contains(&directory) {
+                        return Err(too_many_links(&path));
+                    }
+                    let mut inner = ancestors.clone();
+                    inner.push(directory);
                     directories.insert(child.clone());
-                    pending.push(child);
+                    pending.push((child, linked, inner));
+                } else if metadata.is_file() && linked {
+                    // Read where the links lead, never chmod'ed: it can lie
+                    // outside the tree (`chmod && !traversedSymlink`).
+                    let target = fs::canonicalize(&path)
+                        .map_err(|e| io_error("cannot resolve", &path, e))?;
+                    files.push(WalkedFile {
+                        child,
+                        owned: owned_by(cache, &target),
+                        path: target,
+                        metadata: None,
+                        publishing: false,
+                    });
                 } else if metadata.is_file() {
                     if normalize {
                         set_mode(&path, OUTPUT_MODE)?;
                     }
-                    files.push((child, path, (!normalize).then_some(metadata)));
+                    files.push(WalkedFile {
+                        child,
+                        path,
+                        metadata: (!normalize).then_some(metadata),
+                        owned,
+                        publishing: normalize,
+                    });
                 } else {
-                    return Err(format!(
-                        "tree artifact entry '{}' is not a regular file or directory",
-                        path.display()
-                    ));
+                    return Err(invalid(format!(
+                        "child {} has an unsupported type",
+                        child.display()
+                    )));
                 }
             }
         }
         Ok(())
     };
-    let walked = walk();
-    let inputs = try_map_ordered(&files, |(_, path, metadata)| {
-        let metadata = match metadata {
-            Some(metadata) => metadata.clone(),
-            None => fs::symlink_metadata(path).map_err(|e| io_error("cannot inspect", path, e))?,
-        };
-        read_regular_state(path, metadata, owned, normalize)
-    });
-    let mut tree = Tree {
-        files: BTreeMap::new(),
+    let failure = walk().err();
+    Ok(WalkedTree {
         directories,
-    };
-    let mut states = BTreeMap::new();
-    for ((child, _, _), read) in files.into_iter().zip(inputs) {
-        let (input, state) = read?;
-        if normalize {
-            states.insert(child.clone(), state);
-        }
-        tree.files.insert(child, input);
-    }
-    walked?;
-    Ok((tree, states))
+        links,
+        files,
+        failure,
+    })
 }
 
 /// Published tree artifacts by path ([`published_output`]), read once per
@@ -1808,7 +2030,9 @@ fn published_output_by_components(root: &Path, path: &Path) -> bool {
 }
 
 /// `tree`, read below another directory (the execution root it was
-/// published from), with its files' paths below `root`.
+/// published from), as it was published at `root`: its files' paths below
+/// `root`, with their published (blob) modes and no links
+/// ([`publish_tree`]).
 fn relocated(tree: Tree, root: &Path) -> Tree {
     Tree {
         files: tree
@@ -1816,10 +2040,19 @@ fn relocated(tree: Tree, root: &Path) -> Tree {
             .into_iter()
             .map(|(name, input)| {
                 let path = root.join(&name);
-                (name, Input { path, ..input })
+                let mode = blob_mode(&input);
+                (
+                    name,
+                    Input {
+                        path,
+                        mode,
+                        ..input
+                    },
+                )
             })
             .collect(),
         directories: tree.directories,
+        links: BTreeSet::new(),
     }
 }
 
@@ -1859,21 +2092,45 @@ fn absolute_input(source: &Path) -> io::Result<PathBuf> {
 }
 
 /// A tree input that resolves to a published tree takes its value from the
-/// tree memo (read and remembered on a miss); any other tree is read.
+/// tree memo (read and remembered on a miss); any other tree is read, its
+/// symlinks followed ([`TreeRead::Input`]).
 fn read_staged(path: &Path, tree: bool, root: Option<&Path>) -> Result<Staged, String> {
     if !tree {
         return Ok(Staged::File(read_input(path, root, true)?));
     }
     let (resolved, _) = resolve_published(path, root)?;
     if !published_output(root, &resolved) {
-        return Ok(Staged::Tree(Arc::new(read_tree(&resolved, root, false)?)));
+        return Ok(Staged::Tree(Arc::new(read_tree(
+            &resolved,
+            root,
+            TreeRead::Input,
+        )?)));
     }
     if let Some(tree) = memoized_tree(&resolved) {
         return Ok(Staged::Tree(tree));
     }
-    let tree = Arc::new(read_tree(&resolved, root, false)?);
+    let tree = Arc::new(read_tree(&resolved, root, TreeRead::Published)?);
     remember_tree(resolved, Arc::clone(&tree));
     Ok(Staged::Tree(tree))
+}
+
+/// Artifact.prettyPrint (actions/Artifact.java:669-673) of the output at
+/// `exec_path`: its root-relative path, below `bazel-out/<cfg>/<dir>`.
+fn pretty_output(exec_path: &Path) -> String {
+    let mut components = exec_path.components();
+    let below_root = matches!(
+        (components.next(), components.next(), components.next()),
+        (
+            Some(Component::Normal(out)),
+            Some(Component::Normal(_)),
+            Some(Component::Normal(_)),
+        ) if out == "bazel-out"
+    );
+    if below_root && !components.as_path().as_os_str().is_empty() {
+        components.as_path().display().to_string()
+    } else {
+        exec_path.display().to_string()
+    }
 }
 
 /// Byte-ordered relative paths of a tree's regular files.
@@ -3180,17 +3437,38 @@ fn publish_file(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
     Ok(input)
 }
 
-/// Publish an execution-root tree output as `target` by renaming it, then
-/// replace each file by its store blob's inode and make directories
-/// read-only deepest first, the root TREE_ROOT_MODE.
-fn publish_tree(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result<Tree, String> {
-    let (tree, states) = read_tree_states(source, Some(root), true)?;
+/// Publish an execution-root tree output, read by [`read_tree`]
+/// ([`TreeRead::Output`]) while its execution root was intact, as `target`
+/// by renaming it, then replace each file by its store blob's inode and make
+/// directories read-only deepest first, the root TREE_ROOT_MODE. A symlink
+/// in the tree is replaced by what it resolved to ([`materialize_links`]):
+/// genuine keeps the links in its one output tree, where a relative link
+/// resolves as it did in the execution root, but a native output lives in
+/// its action's own cache entry, where it would not (docs/TREE_SYMLINKS.md).
+fn publish_tree(
+    cas: &Path,
+    root: &Path,
+    source: &Path,
+    target: &Path,
+    read: ReadTree,
+) -> Result<Tree, String> {
+    let ReadTree {
+        tree,
+        linked,
+        states,
+    } = read;
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
     fs::rename(source, target).map_err(|e| io_error("cannot publish tree", target, e))?;
     count_link(true);
+    if !tree.links.is_empty() {
+        materialize_links(target, &tree, &linked)?;
+    }
     for (name, input) in &tree.files {
+        if through_link(&tree.links, name) {
+            continue;
+        }
         let path = target.join(name);
         let input = Input {
             path: path.clone(),
@@ -3222,6 +3500,84 @@ fn publish_tree(cas: &Path, root: &Path, source: &Path, target: &Path) -> Result
     Ok(tree)
 }
 
+/// A tree output read before anything of its action is published
+/// ([`TreeRead::Output`]), with the store blobs of the files its links led
+/// to (name, blob, blob mode: the target's executable bits, as genuine shows
+/// the target's mode through the link), ensured while every link still
+/// resolves (a link can lead into another output, which publication moves),
+/// and the state each of its own (normalized) files was read in
+/// ([`read_walked`], for [`ensure_blob_hashed`]).
+struct ReadTree {
+    tree: Tree,
+    linked: Vec<(PathBuf, PathBuf, u32)>,
+    states: BTreeMap<PathBuf, FileKey>,
+}
+
+fn read_output_tree(
+    cas: &Path,
+    root: &Path,
+    tree: Tree,
+    states: BTreeMap<PathBuf, FileKey>,
+) -> Result<ReadTree, String> {
+    let mut linked = Vec::new();
+    for (name, input) in &tree.files {
+        if through_link(&tree.links, name) {
+            linked.push((
+                name.clone(),
+                ensure_blob(cas, input, root)?,
+                blob_mode(input),
+            ));
+        }
+    }
+    Ok(ReadTree {
+        tree,
+        linked,
+        states,
+    })
+}
+
+/// Replace the symlinks of a tree just published at `target` by what they
+/// resolved to: a file by its blob ([`ReadTree::linked`]), a directory by a
+/// real directory holding what was found below the link. Directories no
+/// link leads to are made writable first (an action can leave one
+/// read-only; [`publish_tree`] makes every directory OUTPUT_MODE
+/// afterwards); nothing is changed through a link.
+fn materialize_links(
+    target: &Path,
+    tree: &Tree,
+    linked: &[(PathBuf, PathBuf, u32)],
+) -> Result<(), String> {
+    set_mode(target, 0o755)?;
+    for directory in &tree.directories {
+        if !through_link(&tree.links, directory) {
+            set_mode(&target.join(directory), 0o755)?;
+        }
+    }
+    for link in &tree.links {
+        // Only the outermost links: one below a linked directory is gone
+        // with it.
+        if link
+            .parent()
+            .is_some_and(|parent| through_link(&tree.links, parent))
+        {
+            continue;
+        }
+        let path = target.join(link);
+        fs::remove_file(&path).map_err(|e| io_error("cannot replace symlink", &path, e))?;
+    }
+    // Component order: a directory before the directories below it.
+    for directory in &tree.directories {
+        if through_link(&tree.links, directory) {
+            let path = target.join(directory);
+            fs::create_dir(&path).map_err(|e| io_error("cannot create directory", &path, e))?;
+        }
+    }
+    for (name, blob, mode) in linked {
+        link_or_copy(blob, &target.join(name), *mode)?;
+    }
+    Ok(())
+}
+
 fn tree_manifest(tree: &Tree) -> TreeManifest {
     TreeManifest {
         files: tree
@@ -3234,18 +3590,34 @@ fn tree_manifest(tree: &Tree) -> TreeManifest {
             .iter()
             .map(|name| hex(name.as_os_str().as_bytes()))
             .collect(),
+        modes: tree
+            .files
+            .iter()
+            .filter(|(_, input)| blob_mode(input) != OUTPUT_MODE)
+            .map(|(name, input)| (hex(name.as_os_str().as_bytes()), blob_mode(input)))
+            .collect(),
     }
 }
 
 /// A published tree (or a symlink output's target tree) with completed-tree
-/// permissions and the manifest's contents.
+/// permissions and the manifest's contents: every file exactly its blob's
+/// mode (OUTPUT_MODE, or the manifest's mode of a file a link led to),
+/// every directory OUTPUT_MODE.
 fn tree_valid(path: &Path, expected: &TreeManifest, root: &Path) -> Result<Option<Tree>, String> {
     if real_directory(path, Some(root))?.permissions().mode() & 0o7777 != TREE_ROOT_MODE {
         return Ok(None);
     }
-    let tree = read_tree(path, Some(root), false)?;
+    let mode = if published_output(Some(root), path) {
+        TreeRead::Published
+    } else {
+        TreeRead::Input
+    };
+    let tree = read_tree(path, Some(root), mode)?;
     if tree_manifest(&tree) != *expected
-        || tree.files.values().any(|input| input.mode != OUTPUT_MODE)
+        || tree
+            .files
+            .values()
+            .any(|input| input.mode != blob_mode(input))
     {
         return Ok(None);
     }
@@ -4328,6 +4700,50 @@ pub fn execute_with_remote(
         key: key.clone(),
         outputs: Vec::new(),
     };
+    // Tree outputs are read (and the blobs of their linked files ensured)
+    // before anything is published, while every path their symlinks can
+    // name is in place: the inputs, and the other outputs, which publication
+    // moves. Every output is normalized first (a regular one here, a tree's
+    // entries by their walk), so that a link to another output of the action
+    // shows its final mode, as it does once Bazel collected the outputs.
+    let mut tree_reads: BTreeMap<&PathBuf, Result<ReadTree, String>> = BTreeMap::new();
+    if symlink_target.is_none() && !action.extra.tree_outputs.is_empty() {
+        for name in outputs
+            .iter()
+            .filter(|name| !action.extra.tree_outputs.contains(*name))
+        {
+            // publish_file checks and normalizes it again.
+            let path = execroot.join(name);
+            if regular_file(&path, None).is_ok() {
+                let _ = set_mode(&path, OUTPUT_MODE);
+            }
+        }
+        let persistent_execroot = (!sandboxed).then_some(execroot.as_path());
+        let walks: Vec<(&PathBuf, Result<WalkedTree, String>)> = outputs
+            .iter()
+            .filter(|name| action.extra.tree_outputs.contains(*name))
+            .map(|name| {
+                let pretty = pretty_output(name);
+                let output = OutputTree {
+                    pretty: &pretty,
+                    work: &work.0,
+                    execroot: persistent_execroot,
+                };
+                (
+                    name,
+                    walk_tree(&execroot.join(name), Some(&root), TreeRead::Output(output)),
+                )
+            })
+            .collect();
+        let reads: Vec<_> = walks
+            .into_iter()
+            .map(|(name, walked)| (name, walked.and_then(read_walked)))
+            .collect();
+        for (name, read) in reads {
+            let read = read.and_then(|(tree, states)| read_output_tree(&cas, &root, tree, states));
+            tree_reads.insert(name, read);
+        }
+    }
     let mut listings = BTreeMap::new();
     // Published tree outputs, for the tree memo once the entry is in place.
     let mut published_trees = Vec::new();
@@ -4387,7 +4803,10 @@ pub fn execute_with_remote(
                 });
             }
             if tree_output {
-                let tree = publish_tree(&cas, &root, &source, &target)?;
+                let read = tree_reads
+                    .remove(name)
+                    .expect("every tree output was read")?;
+                let tree = publish_tree(&cas, &root, &source, &target, read)?;
                 listings.insert(name.clone(), tree_listing(&tree));
                 let output = Output {
                     name: hex_name,
@@ -5711,26 +6130,310 @@ mod tests {
         drop(fixture);
     }
 
+    /// Links that do not resolve to a regular file or directory fail the
+    /// action with Bazel's validation errors
+    /// (TreeArtifactValue.visitTree, reportOutputTreeArtifactErrors), the
+    /// cycles at once; nothing is published.
     #[test]
-    fn tree_outputs_reject_symlinks_and_missing_directories() {
+    fn tree_outputs_reject_invalid_links_and_missing_directories() {
         let fixture = Fixture::new();
         let mut action = fixture.action();
         action.inputs.clear();
-        action.outputs = vec!["out/tree".into()];
-        action.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree")]);
-        action.command = "printf x > out/tree/real && ln -s real out/tree/link".into();
-        assert!(
-            execute(&fixture.cache(), &action)
-                .unwrap_err()
-                .contains("symlinks inside tree artifacts are not supported by the native profile")
-        );
-        action.command = "rmdir out/tree && printf x > out/tree".into();
+        action.outputs = vec!["bazel-out/k8-fastbuild/bin/pkg/tree".into()];
+        action.extra.tree_outputs = BTreeSet::from([action.outputs[0].clone()]);
+        let invalid = "error while validating output tree artifact pkg/tree: ";
+        for (command, expected) in [
+            ("ln -s missing $T/y", "child y is a dangling symbolic link"),
+            (
+                "mkdir $T/sub && ln -s ../../gone $T/sub/y",
+                "child sub/y is a dangling symbolic link; its target '../../gone' lies outside the tree",
+            ),
+            (
+                "ln -s /nonexistent/tree-target $T/y",
+                "child y is a dangling symbolic link",
+            ),
+            // The temporary directory is gone once the action ran.
+            (
+                "printf t > $TMPDIR/t && ln -s $TMPDIR/t $T/y",
+                "child y is a dangling symbolic link; its absolute target lies in the action's sandbox or temporary directory",
+            ),
+            (
+                "ln -s /dev/null $T/null",
+                "child null has an unsupported type",
+            ),
+            ("mkfifo $T/fifo", "child fifo has an unsupported type"),
+            (
+                "ln -s b $T/a && ln -s a $T/b",
+                "/a (Too many levels of symbolic links)",
+            ),
+            (
+                "printf r > $T/r && ln -s . $T/self",
+                "/self (Too many levels of symbolic links)",
+            ),
+            (
+                "mkdir $T/sub && ln -s .. $T/sub/up",
+                "/sub/up (Too many levels of symbolic links)",
+            ),
+            (
+                "mkdir $T/sub && ln -s ../.. $T/sub/out",
+                "/sub/out/tree (Too many levels of symbolic links)",
+            ),
+        ] {
+            action.command = format!("T=bazel-out/k8-fastbuild/bin/pkg/tree; {command}");
+            let error = execute(&fixture.cache(), &action).unwrap_err();
+            // ELOOP names the link's absolute path, like genuine's.
+            let found = if expected.starts_with('/') {
+                error.contains(&format!("{invalid}/")) && error.contains(expected)
+            } else {
+                error.contains(&format!("{invalid}{expected}"))
+            };
+            assert!(found, "{command}: {error}");
+            fixture.assert_unpublished();
+        }
+        action.command = "rmdir bazel-out/k8-fastbuild/bin/pkg/tree && printf x > bazel-out/k8-fastbuild/bin/pkg/tree".into();
         assert!(
             execute(&fixture.cache(), &action)
                 .unwrap_err()
                 .contains("expected directory")
         );
         fixture.assert_unpublished();
+    }
+
+    fn entries(tree: &Path) -> Vec<(String, char, u32)> {
+        let mut found = Vec::new();
+        let mut pending = vec![PathBuf::new()];
+        while let Some(relative) = pending.pop() {
+            for entry in fs::read_dir(tree.join(&relative)).unwrap() {
+                let child = relative.join(entry.unwrap().file_name());
+                let metadata = fs::symlink_metadata(tree.join(&child)).unwrap();
+                let kind = if metadata.file_type().is_symlink() {
+                    'l'
+                } else if metadata.is_dir() {
+                    pending.push(child.clone());
+                    'd'
+                } else {
+                    'f'
+                };
+                found.push((child.display().to_string(), kind, mode(&tree.join(&child))));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// The rules_oci shapes and every link that resolves: the tree's files
+    /// are what the links resolve to at the links' paths (with the target's
+    /// executable bits, never chmod'ed), its directories include linked
+    /// ones; the published tree holds them as store inodes and real
+    /// directories (no links), is valid on reuse and is rebuilt when damaged;
+    /// a consumer stages exactly that.
+    #[test]
+    fn tree_outputs_follow_symlinks_and_publish_what_they_resolve_to() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("data.txt");
+        fs::write(&source, b"data\n").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+        let tool = fixture.0.join("tool.sh");
+        write_executable_script(&tool, "#!/bin/sh\necho tool\n", 0o755);
+        let host = fixture.0.join("host.txt");
+        fs::write(&host, b"host\n").unwrap();
+        fs::set_permissions(&host, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut producer = fixture.action();
+        producer.inputs = vec![
+            (source.clone(), "pkg/data.txt".into()),
+            (tool.clone(), "pkg/tool.sh".into()),
+        ];
+        let tree_path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/image");
+        producer.outputs = vec![tree_path.clone()];
+        producer.extra.tree_outputs = BTreeSet::from([tree_path.clone()]);
+        producer.command = format!(
+            "set -e; T={}; mkdir -p $T/blobs/sha256 $T/real/deeper $T/empty
+ln -s \"$(realpath --relative-to=$T/blobs/sha256 pkg/data.txt --no-symlinks)\" $T/blobs/sha256/layer
+ln -s ../../../../../pkg/tool.sh $T/tool
+printf a > $T/a.txt; chmod 644 $T/a.txt; ln -s a.txt $T/alias.txt; ln -s alias.txt $T/chain.txt
+printf f > $T/real/f; printf g > $T/real/deeper/g; ln -s f $T/real/f2; ln -s real $T/alias
+ln -s empty $T/empty_alias; ln -s '{}' $T/host",
+            tree_path.display(),
+            host.display()
+        );
+        let first = execute(&fixture.cache(), &producer).unwrap();
+        let tree = &first.outputs[0];
+        let names = [
+            "a.txt",
+            "alias.txt",
+            "alias/deeper/g",
+            "alias/f",
+            "alias/f2",
+            "blobs/sha256/layer",
+            "chain.txt",
+            "host",
+            "real/deeper/g",
+            "real/f",
+            "real/f2",
+            "tool",
+        ];
+        assert_eq!(first.trees[&0], names.map(PathBuf::from));
+        // Published: no links, directories real, files their blobs with
+        // the resolved file's executable bits.
+        let directory = |name: &str| (name.to_owned(), 'd', OUTPUT_MODE);
+        let file = |name: &str, mode: u32| (name.to_owned(), 'f', mode);
+        assert_eq!(
+            entries(tree),
+            [
+                file("a.txt", OUTPUT_MODE),
+                directory("alias"),
+                file("alias.txt", OUTPUT_MODE),
+                directory("alias/deeper"),
+                file("alias/deeper/g", OUTPUT_MODE),
+                file("alias/f", OUTPUT_MODE),
+                file("alias/f2", OUTPUT_MODE),
+                directory("blobs"),
+                directory("blobs/sha256"),
+                file("blobs/sha256/layer", 0o444),
+                file("chain.txt", OUTPUT_MODE),
+                directory("empty"),
+                directory("empty_alias"),
+                file("host", 0o444),
+                directory("real"),
+                directory("real/deeper"),
+                file("real/deeper/g", OUTPUT_MODE),
+                file("real/f", OUTPUT_MODE),
+                file("real/f2", OUTPUT_MODE),
+                file("tool", OUTPUT_MODE),
+            ]
+        );
+        for (name, content) in [
+            ("blobs/sha256/layer", &b"data\n"[..]),
+            ("tool", b"#!/bin/sh\necho tool\n"),
+            ("chain.txt", b"a"),
+            ("alias/f2", b"f"),
+            ("host", b"host\n"),
+        ] {
+            assert_eq!(fs::read(tree.join(name)).unwrap(), content, "{name}");
+        }
+        assert_eq!(
+            ino(&tree.join("blobs/sha256/layer")),
+            ino(&blob(&fixture, b"data\n", 0o444))
+        );
+        assert_eq!(ino(&tree.join("alias/f")), ino(&tree.join("real/f")));
+        // Neither the link targets outside the tree nor its sources changed.
+        assert_eq!(mode(&host), 0o600);
+        assert_eq!(mode(&source), 0o644);
+        // The manifest records the modes that are not OUTPUT_MODE.
+        let manifest: Manifest = serde_json::from_slice(
+            &fs::read(tree.ancestors().nth(6).unwrap().join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let recorded = &manifest.outputs[0].tree.as_ref().unwrap().modes;
+        assert_eq!(
+            recorded,
+            &[(hex(b"blobs/sha256/layer"), 0o444), (hex(b"host"), 0o444)]
+        );
+        // The memo holds what a fresh read of the published tree finds.
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let fresh = read_tree(tree, Some(&root), TreeRead::Published).unwrap();
+        assert!(*memoized_tree(tree).unwrap() == fresh);
+        assert!(fresh.links.is_empty());
+        let hit = execute(&fixture.cache(), &producer).unwrap();
+        assert!(hit.cache_hit);
+        assert_eq!(hit.trees, first.trees);
+        // A consumer stages the tree: the linked files at their paths.
+        let mut consumer = fixture.action();
+        consumer.id = "consumer".into();
+        consumer.inputs = vec![(tree.clone(), "in/image".into())];
+        consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/image")]);
+        consumer.command = "cd in/image; for f in blobs/sha256/layer tool alias/deeper/g host; do \
+             if [ -x $f ]; then x=x; else x=-; fi; echo \"$f $x $(cat $f)\"; done > ../../out/result; \
+             test -d empty_alias && test ! -L alias"
+            .into();
+        let consumed = execute(&fixture.cache(), &consumer).unwrap();
+        assert_eq!(
+            fs::read_to_string(&consumed.outputs[0]).unwrap(),
+            "blobs/sha256/layer - data\ntool x #!/bin/sh\necho tool\nalias/deeper/g x g\nhost - host\n"
+        );
+        // Damage is found on reuse: a changed mode, a link again.
+        set_mode(&tree.join("blobs/sha256"), 0o755).unwrap();
+        set_mode(&tree.join("blobs/sha256/layer"), 0o555).unwrap();
+        assert!(!execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(mode(&tree.join("blobs/sha256/layer")), 0o444);
+        set_mode(tree, 0o755).unwrap();
+        fs::remove_file(tree.join("a.txt")).unwrap();
+        symlink("real/f", tree.join("a.txt")).unwrap();
+        set_mode(tree, TREE_ROOT_MODE).unwrap();
+        assert!(!execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(entries(tree)[0], file("a.txt", OUTPUT_MODE));
+        assert!(execute(&fixture.cache(), &consumer).unwrap().cache_hit);
+    }
+
+    /// A link to another output of the same action (a file, or a file of
+    /// another tree output) shows that output as published (OUTPUT_MODE),
+    /// whatever the order of the outputs.
+    #[test]
+    fn tree_links_to_other_outputs_see_their_final_mode() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        action.inputs.clear();
+        action.outputs = vec!["out/a".into(), "out/b".into(), "out/z.txt".into()];
+        action.extra.tree_outputs =
+            BTreeSet::from([PathBuf::from("out/a"), PathBuf::from("out/b")]);
+        // out/b also links into out/a, which is published first.
+        action.command = "printf z > out/z.txt; chmod 644 out/z.txt; printf b > out/b/own; chmod 600 out/b/own; \
+             printf a > out/a/own; ln -s ../z.txt out/a/z; ln -s ../b/own out/a/b; ln -s ../a/z out/b/z; \
+             ln -s ../a/own out/b/a"
+            .into();
+        let result = execute(&fixture.cache(), &action).unwrap();
+        for (tree, name, content) in [
+            (0, "z", "z"),
+            (0, "b", "b"),
+            (1, "z", "z"),
+            (1, "own", "b"),
+            (1, "a", "a"),
+        ] {
+            let path = result.outputs[tree].join(name);
+            assert_eq!(fs::read_to_string(&path).unwrap(), content);
+            assert_eq!(mode(&path), OUTPUT_MODE, "{}", path.display());
+        }
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+    }
+
+    /// A tree input that is no published output (here a directory of the
+    /// fixture) is read with its links followed; a published tree has none.
+    #[test]
+    fn tree_inputs_follow_links_and_published_trees_reject_them() {
+        let fixture = Fixture::new();
+        let tree = fixture.0.join("dir");
+        fs::create_dir_all(tree.join("sub")).unwrap();
+        fs::write(tree.join("sub/x"), b"x").unwrap();
+        symlink("sub", tree.join("link")).unwrap();
+        let read = read_tree(&tree, None, TreeRead::Input).unwrap();
+        assert_eq!(
+            read.files.keys().collect::<Vec<_>>(),
+            [Path::new("link/x"), Path::new("sub/x")]
+        );
+        assert_eq!(read.files[Path::new("link/x")].path, tree.join("sub/x"));
+        assert_eq!(read.links, BTreeSet::from([PathBuf::from("link")]));
+        let Err(error) = read_tree(&tree, None, TreeRead::Published) else {
+            panic!("a link in a published tree");
+        };
+        assert_eq!(
+            error,
+            format!(
+                "published tree artifact entry '{}' is a symlink",
+                tree.join("link").display()
+            )
+        );
+        symlink("gone", tree.join("sub/y")).unwrap();
+        let Err(error) = read_tree(&tree, None, TreeRead::Input) else {
+            panic!("a dangling link");
+        };
+        // The walk reaches `sub` before the link to it.
+        assert_eq!(
+            error,
+            format!(
+                "tree '{}': child sub/y is a dangling symbolic link",
+                tree.display()
+            )
+        );
     }
 
     fn tree_walks() -> u64 {
@@ -5766,7 +6469,7 @@ mod tests {
         let root = fs::canonicalize(fixture.cache()).unwrap();
         // The publication seeds the memo with exactly what a consumer reads.
         let seeded = memoized_tree(&tree).expect("published tree is memoized");
-        let fresh = read_tree(&tree, Some(&root), false).unwrap();
+        let fresh = read_tree(&tree, Some(&root), TreeRead::Published).unwrap();
         assert!(*seeded == fresh);
         assert_eq!(tree_paths(&seeded), tree_paths(&fresh));
         let consumer = |id: &str| {
@@ -5815,7 +6518,7 @@ mod tests {
         fs::remove_file(&marker).unwrap();
         assert!(!execute(&fixture.cache(), &producer).unwrap().cache_hit);
         let republished = memoized_tree(&tree).expect("republished tree is memoized");
-        assert!(*republished == read_tree(&tree, Some(&root), false).unwrap());
+        assert!(*republished == read_tree(&tree, Some(&root), TreeRead::Published).unwrap());
         assert!(
             execute(&fixture.cache(), &consumer("first"))
                 .unwrap()
@@ -5947,7 +6650,7 @@ mod tests {
             fs::write(tree.join(format!("f{i:03}")), format!("{i}")).unwrap();
         }
         fs::write(tree.join("sub/x"), b"x").unwrap();
-        let read = read_tree(&tree, None, false).unwrap();
+        let read = read_tree(&tree, None, TreeRead::Input).unwrap();
         assert_eq!(read.files.len(), 301);
         assert_eq!(read.directories, BTreeSet::from([PathBuf::from("sub")]));
         for (name, input) in &read.files {
@@ -5982,7 +6685,8 @@ mod tests {
         symlink("x", tree.join("sub/link")).unwrap();
         if !unsafe_is_root() {
             fs::set_permissions(tree.join("f150"), fs::Permissions::from_mode(0o000)).unwrap();
-            let Err(error) = read_tree(&tree, None, false) else {
+            // A link is a walk failure of a published tree.
+            let Err(error) = read_tree(&tree, None, TreeRead::Published) else {
                 panic!("unreadable file");
             };
             assert!(
@@ -5991,15 +6695,22 @@ mod tests {
             );
             fs::set_permissions(tree.join("f150"), fs::Permissions::from_mode(0o644)).unwrap();
         }
-        let Err(error) = read_tree(&tree, None, false) else {
+        let Err(error) = read_tree(&tree, None, TreeRead::Published) else {
             panic!("symlink in tree");
         };
         assert!(
             error.starts_with(&format!(
-                "tree artifact entry '{}' is a symlink",
+                "published tree artifact entry '{}' is a symlink",
                 tree.join("sub/link").display()
             )),
             "{error}"
+        );
+        // Anywhere else the link is followed.
+        let followed = read_tree(&tree, None, TreeRead::Input).unwrap();
+        assert_eq!(followed.files.len(), 302);
+        assert_eq!(
+            followed.files[Path::new("sub/link")].path,
+            tree.join("sub/x")
         );
     }
 
