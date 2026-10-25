@@ -464,6 +464,7 @@ pub(crate) fn merged_dependency(
     // A fresh Target value for the merged configured target: its providers
     // are the merged set, never the base target's identity (which carries
     // the base providers only).
+    let runfiles: std::sync::Arc<crate::runfiles::TargetRunfiles> = Default::default();
     let identity = std::sync::Arc::new(crate::analysis::dependency_target_data(
         &base.label,
         &base.label,
@@ -474,7 +475,7 @@ pub(crate) fn merged_dependency(
         base.is_filegroup,
         &providers,
         &provider_keys,
-        &crate::runfiles::TargetRunfiles::default(),
+        &runfiles,
     ));
     Ok(DependencyTarget::new(crate::analysis::DependencyView {
         label: base.label.clone(),
@@ -485,7 +486,7 @@ pub(crate) fn merged_dependency(
         is_filegroup: base.is_filegroup,
         providers,
         provider_keys,
-        runfiles: Default::default(),
+        runfiles,
         rule_class: base.rule_class.clone(),
         identity,
     }))

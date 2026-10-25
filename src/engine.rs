@@ -10988,11 +10988,12 @@ impl Engine {
         for line in printed {
             eprintln!("{line}");
         }
-        let analyzed = analyzed?;
+        let mut analyzed = analyzed?;
         restricted_to_error(rule)?;
         self.check_transition_allowlist(rule, &key, configured)?;
-        custom_providers.insert(key.clone(), analyzed.providers.clone());
-        provider_keys.insert(key.clone(), analyzed.provider_keys.clone());
+        // Moved, not copied: the analysis result is consumed here (MEM2).
+        custom_providers.insert(key.clone(), std::mem::take(&mut analyzed.providers));
+        provider_keys.insert(key.clone(), std::mem::take(&mut analyzed.provider_keys));
         for file in &analyzed.declared {
             let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
             let short_name = Path::new(&file.path)
@@ -11044,11 +11045,12 @@ impl Engine {
                     .is_ok_and(|name| rule.outs.iter().any(|out| Path::new(out) == name))
             },
         )?;
-        runfiles_info.insert(key.clone(), Arc::new(analyzed.runfiles.clone()));
+        let runfiles = Arc::new(std::mem::take(&mut analyzed.runfiles));
+        runfiles_info.insert(key.clone(), runfiles.clone());
         if let Some(nodes_of_target) = self.plan_runfiles_support(
             &key,
             rule,
-            &analyzed.runfiles,
+            &runfiles,
             &transitive,
             &action_owner,
             &main_ignored,
@@ -15307,7 +15309,7 @@ mod tests {
     fn view_with(
         providers: BTreeMap<String, starlark::values::OwnedFrozenValue>,
     ) -> (ConfiguredTargetKey, DependencyTarget) {
-        let runfiles = crate::runfiles::TargetRunfiles::default();
+        let runfiles = Arc::new(crate::runfiles::TargetRunfiles::default());
         let identity = Arc::new(analysis::dependency_target_data(
             "//pkg:dep",
             "//pkg:dep",
@@ -15333,7 +15335,7 @@ mod tests {
             is_filegroup: false,
             providers,
             provider_keys: Vec::new(),
-            runfiles: Arc::new(runfiles),
+            runfiles,
             rule_class: Some("dep".into()),
             identity,
         });

@@ -228,9 +228,11 @@ mod owned {
         /// in return order (RuleConfiguredTarget.debugPrint).
         pub provider_keys: Vec<String>,
         /// RunfilesProvider and FilesToRunProvider of the configured target
-        /// (`target[DefaultInfo]`, docs/RUNFILES.md).
+        /// (`target[DefaultInfo]`, docs/RUNFILES.md), shared with the
+        /// engine's planned runfiles of the target and its dependency views
+        /// (MEM2: a deep copy per Target duplicated every files-to-run list).
         #[allocative(skip)]
-        pub runfiles: crate::runfiles::TargetRunfiles,
+        pub runfiles: std::sync::Arc<crate::runfiles::TargetRunfiles>,
         /// FileProvider.getFilesToBuild: one nested set per target.
         pub files_depset: Depset,
     }
@@ -2069,7 +2071,7 @@ pub(crate) fn alloc_target_of_kind<'v>(
             providers,
             kind,
             provider_keys,
-            runfiles,
+            Arc::new(runfiles),
         )),
     )
 }
@@ -2083,7 +2085,7 @@ pub(crate) fn target_of_kind(
     providers: BTreeMap<String, OwnedFrozenValue>,
     kind: TargetKind,
     provider_keys: Vec<String>,
-    runfiles: crate::runfiles::TargetRunfiles,
+    runfiles: Arc<crate::runfiles::TargetRunfiles>,
 ) -> Target {
     Target {
         label: LabelValue::parse(label).expect("Target label must be an absolute valid label"),

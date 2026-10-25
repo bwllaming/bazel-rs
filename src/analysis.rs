@@ -147,7 +147,7 @@ pub(crate) fn dependency_target_data(
     is_filegroup: bool,
     providers: &BTreeMap<String, OwnedFrozenValue>,
     provider_keys: &[String],
-    runfiles: &crate::runfiles::TargetRunfiles,
+    runfiles: &Arc<crate::runfiles::TargetRunfiles>,
 ) -> Target {
     use crate::starlark_types::TargetKind;
     let mut provider_keys = provider_keys.to_vec();
@@ -182,7 +182,7 @@ pub(crate) fn dependency_target_data(
         providers.clone(),
         kind,
         provider_keys,
-        runfiles.clone(),
+        Arc::clone(runfiles),
     )
 }
 
@@ -2774,6 +2774,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
         let deps = BTreeMap::from([("//:producer".into(), {
             // A direct analysis caller mints the identity (tests only;
             // the engine shares one per ConfiguredTargetKey, N55).
+            let runfiles = Arc::new(producer.runfiles);
             let identity = std::sync::Arc::new(dependency_target_data(
                 "//:producer",
                 "//:producer",
@@ -2784,7 +2785,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 false,
                 &producer.providers,
                 &producer.provider_keys,
-                &producer.runfiles,
+                &runfiles,
             ));
             DependencyTarget::new(DependencyView {
                 label: "//:producer".into(),
@@ -2795,7 +2796,7 @@ strict = rule(implementation=consumer_impl, attrs={"dep": attr.label(providers=[
                 providers: producer.providers,
                 provider_keys: producer.provider_keys,
                 is_filegroup: false,
-                runfiles: Arc::new(producer.runfiles),
+                runfiles,
                 rule_class: Some("producer".into()),
                 identity,
             })
