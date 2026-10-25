@@ -11222,14 +11222,12 @@ impl Engine {
             scheduler::groups_apart(&action, &groups) && action::validate_structure(&action).is_ok()
         };
         if shared_groups {
-            commit.source_inputs.insert(
-                action.id.clone(),
-                SourceInputs {
-                    own: source_paths(&own),
-                    groups: groups.clone(),
-                },
-            );
+            let sources = source_paths(&own);
+            let id = action.id.clone();
             let mut planned = plan_action(action, own, main_ignored, commit.client_environment)?;
+            commit
+                .source_inputs
+                .insert(id, SourceInputs::planned(sources, &planned, groups.clone()));
             planned.groups = groups;
             planned.deferred = deferred;
             commit.nodes.push(planned);
@@ -11254,9 +11252,8 @@ impl Engine {
                 }
             }
         }
-        commit
-            .source_inputs
-            .insert(action.id.clone(), source_paths(&inputs).into());
+        let sources = source_paths(&inputs);
+        let id = action.id.clone();
         let empties: Vec<(PathBuf, Vec<u8>)> = action
             .extra
             .param_files
@@ -11270,6 +11267,9 @@ impl Engine {
             .cloned()
             .collect();
         let mut planned = plan_action(action, inputs, main_ignored, commit.client_environment)?;
+        commit
+            .source_inputs
+            .insert(id, SourceInputs::planned(sources, &planned, Vec::new()));
         // A deferred command line recomputes the parameter files;
         // the runfiles empty files are kept.
         planned.deferred = match (deferred, empties.is_empty()) {
@@ -12957,7 +12957,11 @@ impl Engine {
                 }
             }
         }
-        let source_paths_of = |node: &PlannedAction| -> Vec<&PathBuf> {
+        fn sources_of<'a>(
+            node: &'a PlannedAction,
+            source_inputs: &'a BTreeMap<String, SourceInputs>,
+            flagged_groups: &HashSet<*const scheduler::InputGroup>,
+        ) -> Vec<&'a PathBuf> {
             match source_inputs.get(&node.action.id) {
                 None => Vec::new(),
                 Some(sources)
@@ -12966,11 +12970,12 @@ impl Engine {
                         .iter()
                         .any(|group| flagged_groups.contains(&Arc::as_ptr(group))) =>
                 {
-                    sources.listed()
+                    sources.listed(node)
                 }
-                Some(sources) => sources.own.iter().collect(),
+                Some(sources) => sources.own(node),
             }
-        };
+        }
+        let source_paths_of = |node| sources_of(node, &source_inputs, &flagged_groups);
         // An input's failure: `missing input file 'L'` (SOURCE_INPUT_MISSING)
         // or the traversal error (SOURCE_INPUT_IO_EXCEPTION).
         enum InputFailure {
@@ -13772,7 +13777,12 @@ fn report_input_groups(nodes: &[PlannedAction], listed_tree_actions: usize) {
 /// the group holds instead of a copy.
 #[derive(Default)]
 struct SourceInputs {
-    own: Vec<PathBuf>,
+    /// [`source_paths`] of the action's own inputs, kept only when they are
+    /// not the planned action's own listed sources (MEM2,
+    /// [`SourceInputs::planned`]): every action kept a second copy of its
+    /// source paths (~137 MB on ~/code's `bworker/wcb/...`) although they
+    /// almost always are exactly its planned source inputs.
+    own: Option<Vec<PathBuf>>,
     groups: Vec<Arc<scheduler::InputGroup>>,
 }
 
@@ -13783,24 +13793,48 @@ struct ExpandedTree {
     group: Arc<scheduler::InputGroup>,
 }
 
-impl From<Vec<PathBuf>> for SourceInputs {
-    fn from(own: Vec<PathBuf>) -> Self {
-        SourceInputs {
-            own,
-            groups: Vec::new(),
+impl SourceInputs {
+    /// The source inputs of `planned`, planned from `inputs` whose
+    /// [`source_paths`] are `own`, with its shared `groups`. `own` is
+    /// dropped when it equals what [`SourceInputs::own`] derives from the
+    /// planned action (compared here, so the derivation is exact by
+    /// construction: an unplanted source or an execution-path duplicate
+    /// with another real path keeps the list).
+    fn planned(
+        own: Vec<PathBuf>,
+        planned: &PlannedAction,
+        groups: Vec<Arc<scheduler::InputGroup>>,
+    ) -> Self {
+        let derived = planned_source_paths(planned);
+        let own = (!own.iter().map(PathBuf::as_path).eq(derived)).then_some(own);
+        SourceInputs { own, groups }
+    }
+
+    /// [`source_paths`] of the action's own inputs.
+    fn own<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a PathBuf> {
+        match &self.own {
+            Some(own) => own.iter().collect(),
+            None => {
+                let mut seen: HashSet<&Path> = HashSet::new();
+                planned
+                    .action
+                    .inputs
+                    .iter()
+                    .map(|(real, _)| real)
+                    .filter(|real| seen.insert(real.as_path()))
+                    .collect()
+            }
         }
     }
-}
 
-impl SourceInputs {
     /// Every source path of the action's listed inputs, deduplicated in
     /// order: [`source_paths`] over the own inputs followed by the groups'.
-    fn listed(&self) -> Vec<&PathBuf> {
-        let mut paths: Vec<&PathBuf> = self.own.iter().collect();
+    fn listed<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a PathBuf> {
+        let mut paths = self.own(planned);
         if self.groups.is_empty() {
             return paths;
         }
-        let mut seen: HashSet<&Path> = self.own.iter().map(PathBuf::as_path).collect();
+        let mut seen: HashSet<&Path> = paths.iter().map(|path| path.as_path()).collect();
         for group in &self.groups {
             for path in &group.sources {
                 if seen.insert(path) {
@@ -13810,6 +13844,19 @@ impl SourceInputs {
         }
         paths
     }
+}
+
+/// The real paths of a planned action's own source inputs, deduplicated
+/// in order: what [`source_paths`] gives for its inputs whenever every
+/// source is planted and no two sources share an execution path.
+fn planned_source_paths(planned: &PlannedAction) -> impl Iterator<Item = &Path> {
+    let mut seen: HashSet<&Path> = HashSet::new();
+    planned
+        .action
+        .inputs
+        .iter()
+        .map(|(real, _)| real.as_path())
+        .filter(move |real| seen.insert(real))
 }
 
 /// The artifacts of a tool's runfiles tree staged at their tree paths
@@ -14139,9 +14186,10 @@ impl Engine {
                 main_ignored,
                 &no_client_environment,
             )?;
-            planning
-                .source_inputs
-                .insert(id.clone(), source_paths(&inputs).into());
+            planning.source_inputs.insert(
+                id.clone(),
+                SourceInputs::planned(source_paths(&inputs), &planned, Vec::new()),
+            );
             planning.nodes.push(planned);
             Some(planning.output(key, &id, &input_manifest)?)
         } else {
@@ -14172,9 +14220,10 @@ impl Engine {
                     main_ignored,
                     &no_client_environment,
                 )?;
-                planning
-                    .source_inputs
-                    .insert(tree_id.clone(), source_paths(&tree_inputs).into());
+                planning.source_inputs.insert(
+                    tree_id.clone(),
+                    SourceInputs::planned(source_paths(&tree_inputs), &planned, Vec::new()),
+                );
                 planning.nodes.push(planned);
                 Some(planning.output(key, &tree_id, &tree_file)?)
             }
@@ -16325,6 +16374,68 @@ m = macro(implementation=emit)
             source_paths(&inputs),
             ["b", "a", "c"].map(PathBuf::from).to_vec()
         );
+    }
+
+    /// MEM2: a planned action's source paths are derived from its planned
+    /// inputs exactly when that reproduces [`source_paths`] of the inputs it
+    /// was planned from; otherwise (an unplanted source) the list is kept.
+    #[test]
+    fn source_inputs_are_derived_from_the_planned_action_only_when_equal() {
+        let artifact = |real: &str, exec: &str, producer: Option<usize>| {
+            Artifact::new(
+                real.into(),
+                exec.into(),
+                producer.map(|index| ("//app:gen".to_owned(), index)),
+                "//app:x".into(),
+                false,
+                false,
+            )
+        };
+        let plan = |inputs: Vec<Artifact>, ignored: &IgnoredSubdirectories| {
+            let sources = source_paths(&inputs);
+            let action = Action {
+                id: "//app:x#0".into(),
+                outputs: vec!["bazel-out/bin/app/out".into()],
+                ..Action::default()
+            };
+            let planned =
+                plan_action(action, inputs, ignored, &std::cell::OnceCell::new()).unwrap();
+            (
+                SourceInputs::planned(sources.clone(), &planned, Vec::new()),
+                planned,
+                sources,
+            )
+        };
+        // Planted sources, one staged twice (same real path at another
+        // execution path), and a generated input: derived.
+        let (derived, planned, sources) = plan(
+            vec![
+                artifact("/ws/app/b", "app/b", None),
+                artifact("/ws/app/a", "app/a", None),
+                artifact("bazel-out/bin/app/gen", "bazel-out/bin/app/gen", Some(0)),
+                artifact("/ws/app/b", "app/tree/b", None),
+            ],
+            &IgnoredSubdirectories::default(),
+        );
+        assert!(derived.own.is_none());
+        assert_eq!(derived.own(&planned), sources.iter().collect::<Vec<_>>());
+        assert_eq!(
+            sources,
+            ["/ws/app/b", "/ws/app/a"].map(PathBuf::from).to_vec()
+        );
+        // A main-repository source below an ignored directory is not
+        // planted (not in the action's inputs) but still checked: kept.
+        let ignored = IgnoredSubdirectories::new(vec!["ignored".into()], Vec::new());
+        let (kept, planned, sources) = plan(
+            vec![
+                artifact("/ws/app/a", "app/a", None),
+                artifact("/ws/ignored/c", "ignored/c", None),
+            ],
+            &ignored,
+        );
+        assert_eq!(planned.action.inputs.len(), 1);
+        assert_eq!(kept.own.as_ref(), Some(&sources));
+        assert_eq!(kept.own(&planned), sources.iter().collect::<Vec<_>>());
     }
 
     #[test]

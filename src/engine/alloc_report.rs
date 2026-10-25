@@ -168,6 +168,7 @@ pub(super) fn report_if_enabled(
         state.target_identities.len(),
         census.postorder.len(),
     );
+    report_nodes(state);
     let covered = if rss_kb > 0 {
         total as f64 * 100.0 / (rss_kb as f64 * 1024.0)
     } else {
@@ -177,6 +178,84 @@ pub(super) fn report_if_enabled(
         "PERF-ALLOC-SUMMARY total={total} rss={rss_kb}kB hwm={hwm_kb}kB covered={covered:.1}% rss_anon={anon_kb}kB rss_file={file_kb}kB threads={threads} elapsed={:.3}s",
         started.elapsed().as_secs_f64()
     );
+}
+
+/// `PERF-ALLOC-NODES`: the planned actions by mnemonic, largest first —
+/// count, owned heap bytes (inline sizes excluded; shared input groups
+/// not counted) and their split over the action's parts, plus the bytes
+/// of the nodes' `source_inputs` entries.
+fn report_nodes(state: &ActionPlanning) {
+    #[derive(Default)]
+    struct Row {
+        count: u64,
+        parts: [u64; 9],
+    }
+    const PARTS: [&str; 9] = [
+        "inputs",
+        "dependencies",
+        "outputs",
+        "arguments",
+        "environment",
+        "extra",
+        "strings",
+        "execution_info",
+        "source_inputs",
+    ];
+    let mut rows: BTreeMap<&str, Row> = BTreeMap::new();
+    let mut builder = FlameGraphBuilder::default();
+    {
+        let mut root = builder.root_visitor();
+        let mut node = root.enter_unique(Key::new("nodes"), 0);
+        let mut walker = Walker {
+            visitor: &mut node,
+            group: Key::new("nodes"),
+            double: 0,
+            overhead: 0,
+            part: None,
+        };
+        for planned in &state.nodes {
+            let action = &planned.action;
+            let row = rows.entry(action.extra.mnemonic.as_str()).or_default();
+            row.count += 1;
+            let sizes = [
+                action.inputs.heap(&mut walker) as u64,
+                planned.dependencies.heap(&mut walker) as u64,
+                action.outputs.heap(&mut walker) as u64,
+                action.arguments.heap(&mut walker) as u64,
+                action.environment.heap(&mut walker) as u64,
+                action.extra.heap(&mut walker) as u64,
+                (action.id.heap(&mut walker)
+                    + action.command.heap(&mut walker)
+                    + action.program.heap(&mut walker)
+                    + action.write.heap(&mut walker)) as u64,
+                action.execution_info.heap(&mut walker) as u64,
+                state
+                    .source_inputs
+                    .get(&action.id)
+                    .map_or(0, |sources| sources.own.heap(&mut walker) as u64),
+            ];
+            for (total, size) in row.parts.iter_mut().zip(sizes) {
+                *total += size;
+            }
+        }
+        node.exit();
+        root.exit();
+    }
+    let mut rows: Vec<(&str, Row)> = rows.into_iter().collect();
+    rows.sort_by_key(|(name, row)| (std::cmp::Reverse(row.parts.iter().sum::<u64>()), *name));
+    for (mnemonic, row) in rows.iter().take(12) {
+        let total: u64 = row.parts.iter().sum();
+        let parts = PARTS
+            .iter()
+            .zip(row.parts)
+            .map(|(name, bytes)| format!("{name}={bytes}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "PERF-ALLOC-NODES {total} mnemonic={mnemonic} count={} {parts}",
+            row.count
+        );
+    }
 }
 
 /// One named root of the measurement, in attribution order.
