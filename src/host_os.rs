@@ -94,7 +94,7 @@ impl HostSnapshot {
     }
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub(crate) struct HostFactors<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     os: Option<&'a str>,
@@ -102,9 +102,20 @@ pub(crate) struct HostFactors<'a> {
     arch: Option<&'a str>,
 }
 
-impl HostFactors<'_> {
+impl<'a> HostFactors<'a> {
     pub(crate) fn is_empty(&self) -> bool {
         self.os.is_none() && self.arch.is_none()
+    }
+
+    /// The `(os, arch)` factors, for rebuilding equal factors later
+    /// ([`HostFactors::from_parts`]; crate::repository's provenance recipe).
+    pub(crate) fn parts(&self) -> (Option<&'a str>, Option<&'a str>) {
+        (self.os, self.arch)
+    }
+
+    /// Factors equal to the ones [`HostFactors::parts`] returned.
+    pub(crate) fn from_parts(os: Option<&'a str>, arch: Option<&'a str>) -> Self {
+        Self { os, arch }
     }
 
     /// ModuleExtensionEvalFactors.toString (`general`, `os:linux,arch:amd64`).

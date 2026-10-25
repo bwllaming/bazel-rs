@@ -423,7 +423,16 @@ struct PreparedOrdinary {
     loaded: loading::LoadedDefinition,
     generated_mapping: BTreeMap<String, String>,
     repositories: BTreeMap<String, OrdinaryRepository>,
-    provenance: Vec<u8>,
+    /// The group's provenance bytes ([`PreparedOrdinary::provenance`]):
+    /// set at preparation when `recipe` is `None`, else on first use.
+    provenance: OnceLock<Vec<u8>>,
+    /// What regenerates `provenance` besides the fields above, when the
+    /// bytes are not retained (MEM2): with a lockfile they depend on
+    /// nothing the extension's evaluation observed, and only a repository
+    /// that executes reads them again, so a warm run drops them right
+    /// after hashing (~134 MB of JSON on ~/code: every generated
+    /// repository's spec, schema included, of go_deps and pip).
+    recipe: Option<ProvenanceRecipe>,
     /// Per-canonical-name spec digest cache (review R1), with what the
     /// digest's computation observed for the analysis snapshot (W6R: the
     /// declared environment; replayed at every hit).
@@ -436,7 +445,116 @@ struct PreparedOrdinary {
     provenance_digest: [u8; 32],
 }
 
+/// An ordinary group's provenance parts that its [`PreparedOrdinary`]
+/// does not keep otherwise (lockfile case only: no evaluation-derived
+/// module tags, inputs or watched environment are part of the bytes).
+#[derive(Debug)]
+struct ProvenanceRecipe {
+    public_label: String,
+    symbol: String,
+    prefix: String,
+    tag_classes: BTreeMap<String, BTreeMap<String, crate::custom_rule::AttrSpec>>,
+    source_guards: Vec<serde_json::Value>,
+    root_has_non_dev_dependency: bool,
+    imports: Vec<serde_json::Value>,
+    host_os: Option<String>,
+    host_arch: Option<String>,
+    environ: crate::repository_environment::DeclaredEnvironment,
+}
+
+/// The provenance of an ordinary extension group: hashed into every
+/// generated repository's spec key and identity. Field order is the
+/// serialized key order.
+#[derive(serde::Serialize)]
+struct OrdinaryProvenance<'a> {
+    profile: &'static str,
+    public_label: String,
+    symbol: &'a str,
+    prefix: &'a str,
+    sources: &'a BTreeMap<String, loading::SourceProvenance>,
+    tag_classes: &'a BTreeMap<String, BTreeMap<String, crate::custom_rule::AttrSpec>>,
+    modules: &'a [crate::extension_ctx::BoundModule],
+    source_guards: &'a [serde_json::Value],
+    root_has_non_dev_dependency: bool,
+    generated_mapping: &'a BTreeMap<String, String>,
+    repositories: &'a BTreeMap<String, OrdinaryRepository>,
+    imports: &'a [serde_json::Value],
+    #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
+    host_factors: crate::host_os::HostFactors<'a>,
+    /// Recorded module_ctx inputs (watched files and directories,
+    /// non-hermetic host facilities); omitted when there are none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extension_inputs: Option<ExtensionInputs<'a>>,
+    /// module_extension(environ=...) declarations and the digest of
+    /// declared/module_ctx.getenv observations; omitted when empty
+    /// so existing extension identities are unchanged.
+    #[serde(skip_serializing_if = "crate::repository_environment::DeclaredEnvironment::is_empty")]
+    environ: &'a crate::repository_environment::DeclaredEnvironment,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watched_env: Option<&'a crate::repository_environment::WatchedEnvironment>,
+}
+
+#[derive(serde::Serialize)]
+struct ExtensionInputs<'a> {
+    version: u8,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    files: &'a [crate::repository_ctx::FileInput],
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    host_facilities: &'a BTreeSet<&'static str>,
+}
+
 impl PreparedOrdinary {
+    /// The group's provenance bytes: retained ones, or regenerated once
+    /// from the recipe and checked against the digest taken at
+    /// preparation (so a regeneration can never silently change a key).
+    fn provenance(&self) -> Result<&[u8], String> {
+        if let Some(bytes) = self.provenance.get() {
+            return Ok(bytes);
+        }
+        let recipe = self.recipe.as_ref().ok_or_else(|| {
+            "internal error: an ordinary extension provenance neither retained nor regenerable"
+                .to_owned()
+        })?;
+        let mut bytes = bounded_provenance(
+            &OrdinaryProvenance {
+                profile: "ordinary-file-template-v1",
+                public_label: recipe.public_label.clone(),
+                symbol: &recipe.symbol,
+                prefix: &recipe.prefix,
+                sources: &self.loaded.sources,
+                tag_classes: &recipe.tag_classes,
+                modules: &[],
+                source_guards: &recipe.source_guards,
+                root_has_non_dev_dependency: recipe.root_has_non_dev_dependency,
+                generated_mapping: &self.generated_mapping,
+                repositories: &self.repositories,
+                imports: &recipe.imports,
+                host_factors: crate::host_os::HostFactors::from_parts(
+                    recipe.host_os.as_deref(),
+                    recipe.host_arch.as_deref(),
+                ),
+                extension_inputs: None,
+                environ: &recipe.environ,
+                watched_env: None,
+            },
+            usize::MAX,
+        )?;
+        let digest: [u8; 32] = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(&bytes).into()
+        };
+        if digest != self.provenance_digest {
+            return Err(format!(
+                "internal error: the regenerated provenance of module extension {}%{} differs from the prepared one",
+                recipe.public_label, recipe.symbol
+            ));
+        }
+        // Kept from now on: a cold run executes many of the group's
+        // repositories (the sink grows by doubling, so drop the slack).
+        bytes.shrink_to_fit();
+        Ok(self.provenance.get_or_init(|| bytes))
+    }
+
     /// Length-framed provenance bytes for one repository of this group:
     /// canonical name + the group's shared provenance bytes. Built ON
     /// DEMAND and returned unretained (perf follow-up 2): caching a copy
@@ -445,13 +563,14 @@ impl PreparedOrdinary {
     /// hold ~64 GB), and each canonical name executes at most once per
     /// process, so a cache could never be hit twice. The caller
     /// (materialize_lazy) runs this only on the execute path.
-    fn framed_provenance(&self, canonical_name: &str) -> Vec<u8> {
-        let mut framed = Vec::with_capacity(16 + canonical_name.len() + self.provenance.len());
+    fn framed_provenance(&self, canonical_name: &str) -> Result<Vec<u8>, String> {
+        let provenance = self.provenance()?;
+        let mut framed = Vec::with_capacity(16 + canonical_name.len() + provenance.len());
         framed.extend_from_slice(&(canonical_name.len() as u64).to_le_bytes());
         framed.extend_from_slice(canonical_name.as_bytes());
-        framed.extend_from_slice(&(self.provenance.len() as u64).to_le_bytes());
-        framed.extend_from_slice(&self.provenance);
-        framed
+        framed.extend_from_slice(&(provenance.len() as u64).to_le_bytes());
+        framed.extend_from_slice(provenance);
+        Ok(framed)
     }
 
     /// Spec digest for one repository, cached per canonical name.
@@ -2501,42 +2620,6 @@ impl RepositorySet {
                     }));
                 }
             }
-            #[derive(serde::Serialize)]
-            struct Provenance<'a> {
-                profile: &'static str,
-                public_label: String,
-                symbol: &'a str,
-                prefix: &'a str,
-                sources: &'a BTreeMap<String, loading::SourceProvenance>,
-                tag_classes: &'a BTreeMap<String, BTreeMap<String, crate::custom_rule::AttrSpec>>,
-                modules: &'a [crate::extension_ctx::BoundModule],
-                source_guards: &'a [serde_json::Value],
-                root_has_non_dev_dependency: bool,
-                generated_mapping: &'a BTreeMap<String, String>,
-                repositories: &'a BTreeMap<String, OrdinaryRepository>,
-                imports: &'a [serde_json::Value],
-                #[serde(skip_serializing_if = "crate::host_os::HostFactors::is_empty")]
-                host_factors: crate::host_os::HostFactors<'a>,
-                /// Recorded module_ctx inputs (watched files and directories,
-                /// non-hermetic host facilities); omitted when there are none.
-                #[serde(skip_serializing_if = "Option::is_none")]
-                extension_inputs: Option<ExtensionInputs<'a>>,
-                /// module_extension(environ=...) declarations and the digest of
-                /// declared/module_ctx.getenv observations; omitted when empty
-                /// so existing extension identities are unchanged.
-                #[serde(skip_serializing_if = "crate::repository_environment::DeclaredEnvironment::is_empty")]
-                environ: &'a crate::repository_environment::DeclaredEnvironment,
-                #[serde(skip_serializing_if = "Option::is_none")]
-                watched_env: Option<&'a crate::repository_environment::WatchedEnvironment>,
-            }
-            #[derive(serde::Serialize)]
-            struct ExtensionInputs<'a> {
-                version: u8,
-                #[serde(skip_serializing_if = "<[_]>::is_empty")]
-                files: &'a [crate::repository_ctx::FileInput],
-                #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-                host_facilities: &'a BTreeSet<&'static str>,
-            }
             // With a lockfile, an extension result may be evaluated or taken
             // from MODULE.bazel.lock; generated repositories then depend only
             // on what the result determines (specs, mapping, sources), so both
@@ -2546,7 +2629,7 @@ impl RepositorySet {
             let evaluated = execution.as_ref().filter(|_| lock.is_none());
             let inputs = evaluated.map_or(&no_inputs, |execution| &execution.inputs);
             let modules = evaluated.map_or(&[][..], |execution| &execution.modules[..]);
-            let provenance = bounded_provenance(&Provenance {
+            let provenance = bounded_provenance(&OrdinaryProvenance {
                 profile: "ordinary-file-template-v1",
                 public_label: group.label.to_string(),
                 symbol: &group.symbol, prefix: &group.prefix,
@@ -2569,11 +2652,36 @@ impl RepositorySet {
                 use sha2::Digest as _;
                 sha2::Sha256::digest(&provenance).into()
             };
+            // Only an executing repository reads the bytes again (MEM2):
+            // with a lockfile they are regenerated on demand from the
+            // recipe (checked against the digest); without one they may
+            // hold the evaluation's observations, so they are kept.
+            let (provenance, recipe) = if lock.is_some() {
+                let (host_os, host_arch) = host_factors.parts();
+                let recipe = ProvenanceRecipe {
+                    public_label: group.label.to_string(),
+                    symbol: group.symbol.clone(),
+                    prefix: group.prefix.clone(),
+                    tag_classes: definition.tag_classes.clone(),
+                    source_guards,
+                    root_has_non_dev_dependency: group.root_has_non_dev_dependency,
+                    imports,
+                    host_os: host_os.map(str::to_owned),
+                    host_arch: host_arch.map(str::to_owned),
+                    environ: definition.environ.clone(),
+                };
+                (OnceLock::new(), Some(recipe))
+            } else {
+                let mut provenance = provenance;
+                provenance.shrink_to_fit(); // the sink grows by doubling
+                (OnceLock::from(provenance), None)
+            };
             Ok(PreparedOrdinary {
                 loaded,
                 generated_mapping,
                 repositories,
                 provenance,
+                recipe,
                 spec_keys: std::sync::Mutex::new(BTreeMap::new()),
                 provenance_digest,
             })
@@ -2673,7 +2781,7 @@ impl RepositorySet {
                         eprintln!(
                             "PROVENANCE-ORDINARY {} {}",
                             repository.canonical_name,
-                            String::from_utf8_lossy(&prepared.provenance)
+                            String::from_utf8_lossy(prepared.provenance()?)
                         );
                     }
                     // The spec digest is cached on the prepared group
@@ -2701,7 +2809,7 @@ impl RepositorySet {
                     // Local rules never reuse across invocations here either
                     // (shouldUseCachedRepoContents; see the direct path).
                     let local = repository.definition.local;
-                    let provenance = move || Ok(prepared.framed_provenance(&canonical_name));
+                    let provenance = move || prepared.framed_provenance(&canonical_name);
                     // A local execution's observations for its replay record.
                     let observed = std::cell::RefCell::new(None);
                     let observed_by = &observed;
@@ -4008,7 +4116,8 @@ mod tests {
         );
         let repos = RepositorySet::new(f.0.clone());
         let (prepared, enabled) = repos.ordinary_repository("+extension+enabled").unwrap();
-        let provenance: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+        let provenance: serde_json::Value =
+            serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
         for (name, local) in [("implicit", false), ("explicit", false), ("enabled", true)] {
             let repository = &prepared.repositories[name];
             assert_eq!(repository.definition.local, local);
@@ -4138,16 +4247,18 @@ mod tests {
             let canonical = original.parse("@repo//:value", "", "").unwrap().repository;
             let disabled = original.clone().with_repository_downloads_enabled(false);
             if ordinary {
-                let before = &original
+                let before = original
                     .ordinary_repository(&canonical)
                     .unwrap()
                     .0
-                    .provenance;
-                let after = &disabled
+                    .provenance()
+                    .unwrap();
+                let after = disabled
                     .ordinary_repository(&canonical)
                     .unwrap()
                     .0
-                    .provenance;
+                    .provenance()
+                    .unwrap();
                 assert_eq!(before, after);
             }
             let root = original.root(&canonical).unwrap();
@@ -4164,7 +4275,8 @@ mod tests {
             let repos = RepositorySet::new(f.0.clone()).with_repository_downloads_enabled(enabled);
             let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
             let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
-            let value: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
             let keys: Vec<_> = value
                 .as_object()
                 .unwrap()
@@ -4189,9 +4301,11 @@ mod tests {
                 ]
             );
             assert_eq!(value["profile"], "ordinary-file-template-v1");
-            assert!(!String::from_utf8_lossy(&prepared.provenance).contains("extension_io"));
+            assert!(
+                !String::from_utf8_lossy(prepared.provenance().unwrap()).contains("extension_io")
+            );
             let root = repos.root(&canonical).unwrap().to_owned();
-            let snapshot = (prepared.provenance.clone(), root);
+            let snapshot = (prepared.provenance().unwrap().to_vec(), root);
             if let Some(baseline) = &baseline {
                 assert_eq!(&snapshot, baseline);
             } else {
@@ -4227,7 +4341,8 @@ mod tests {
             repos.root(&other).unwrap();
             assert_eq!(server.count(), (index + 1) * 2);
             let prepared = &repos.ordinary_repository(&canonical).unwrap().0;
-            let value: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+            let value: serde_json::Value =
+                serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
             // Bazel records no input for a download or a read of the working
             // directory (StarlarkBaseExternalContext.java:1656-1676); the
             // non-hermetic facility is noted without URLs or content.
@@ -4295,7 +4410,7 @@ mod tests {
         let original = RepositorySet::new(f.0.clone()).with_environment_reader(reader.clone());
         let canonical = original.parse("@repo//:value", "", "").unwrap().repository;
         let (prepared, _) = original.ordinary_repository(&canonical).unwrap();
-        let bytes = prepared.provenance.clone();
+        let bytes = prepared.provenance().unwrap().to_vec();
         let configured = original.clone().with_source_cache("another-cache".into());
         let replacement_reader = original.clone().with_environment_reader(reader.clone());
         for owner in [original.clone(), configured, replacement_reader] {
@@ -4323,7 +4438,8 @@ mod tests {
                 .ordinary_repository(&canonical)
                 .unwrap()
                 .0
-                .provenance,
+                .provenance()
+                .unwrap(),
             bytes
         );
         assert_eq!(reader.calls.load(Ordering::SeqCst), 0);
@@ -4345,7 +4461,7 @@ mod tests {
                     let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
                     let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
                     assert!(!f.0.join("bazel-rs-out").exists());
-                    prepared.provenance.clone()
+                    prepared.provenance().unwrap().to_vec()
                 };
                 let base = run("getter", "arch-a", "os-a");
                 assert_eq!(base != run("getter", "arch-a", "os-b"), os);
@@ -4419,11 +4535,11 @@ mod tests {
                     let canonical = repos.parse("@repo//:value", "", "").unwrap().repository;
                     let (prepared, repository) = repos.ordinary_repository(&canonical).unwrap();
                     let json: serde_json::Value =
-                        serde_json::from_slice(&prepared.provenance).unwrap();
+                        serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
                     assert!(json.get("host_factors").is_none());
                     assert!(!repository.attributes.contains_key("host_factors"));
                     assert!(!f.0.join("bazel-rs-out").exists());
-                    prepared.provenance.clone()
+                    prepared.provenance().unwrap().to_vec()
                 };
             let base = run("getter-a", "arch-a");
             assert_eq!(base != run("getter-b", "arch-a"), select);
@@ -5293,7 +5409,9 @@ mod tests {
             repos.mapping(&canonical).unwrap();
             if ordinary {
                 let (prepared, _) = repos.ordinary_repository(&canonical).unwrap();
-                assert!(String::from_utf8_lossy(&prepared.provenance).contains("environ"));
+                assert!(
+                    String::from_utf8_lossy(prepared.provenance().unwrap()).contains("environ")
+                );
             } else {
                 let runtime = repos.direct_runtime().unwrap();
                 repos
@@ -5399,7 +5517,8 @@ mod tests {
             serde_json::json!(["SYNTHETIC"])
         );
         assert_eq!(serde_json::to_string(&with_environ).unwrap(), before);
-        let provenance: serde_json::Value = serde_json::from_slice(&prepared.provenance).unwrap();
+        let provenance: serde_json::Value =
+            serde_json::from_slice(prepared.provenance().unwrap()).unwrap();
         assert_eq!(provenance["profile"], "ordinary-file-template-v1");
     }
 
