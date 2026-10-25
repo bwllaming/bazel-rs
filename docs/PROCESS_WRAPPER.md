@@ -99,10 +99,14 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   slash is searched in glibc's default `/bin:/usr/bin` (execvp in the
   supervisor, which is what genuine's process-wrapper and the sandbox worker
   already did), no longer in bazel-rs's own `PATH` (posix_spawnp in the client).
-* A standalone spawn costs one extra exec of the bazel-rs binary (~1 ms CPU per
-  spawn on this host: 400 trivial genrules, cold, `--jobs=16`, 0.18 s -> 0.22 s
-  wall); sandboxed spawns already paid it (the worker forks the action instead
-  of exec'ing it).
+* A standalone spawn costs one extra exec of the bazel-rs binary (~3 ms of
+  latency, ~1 ms CPU per spawn on this host: 400 trivial genrules, cold,
+  `--jobs=16`, 0.18 s -> 0.22 s wall); sandboxed spawns already paid it (the
+  worker forks the action instead of exec'ing it: 0.23 s -> 0.21 s). A
+  repository `execute` costs ~4-6 ms more (300 × `/bin/true`: 5.8 -> 9.5 ms
+  each); a cold `//src/beyondwork.ai/tools/oauth2token:all` fetch runs 94
+  executes, the B2 trees 465, so well under 1 % of those cold runs (their wall
+  times vary far more with the network); warm runs execute none.
 
 ## Tests
 
