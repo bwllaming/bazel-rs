@@ -946,6 +946,33 @@ fn reuse_through(
     Ok(Reuse::Found(destination))
 }
 
+/// The publication and slot class of repository `canonical` whose root is
+/// `root`: what this process materialized
+/// (crate::repository_slots::noted), else — a root it did not materialize,
+/// as a replay's pinned one — what the manifest of the direct tree `root`
+/// records. `None` for a root that is no direct publication (registry,
+/// Git and local roots are never self-referencing).
+pub fn slot_class(
+    store: &Path,
+    canonical: &str,
+    root: &Path,
+) -> Option<(String, crate::repository_slots::SlotClass)> {
+    if let Some(noted) =
+        crate::repository_slots::noted(&crate::repository_slots::slot_path(store, canonical))
+    {
+        return Some(noted);
+    }
+    let tree =
+        store_tree_of(store, root).filter(|tree| tree.kind == "direct" && tree.root == root)?;
+    let manifest = parse_manifest(&read_stable(&tree.manifest).ok()?)?;
+    if manifest.identity != tree.id {
+        return None;
+    }
+    let class = manifest.slot_class();
+    crate::repository_slots::note(store, canonical, &tree.id, class);
+    Some((tree.id, class))
+}
+
 /// After a reuse: an ordinary repository's slot is bound to its tree (best
 /// effort: a failure leaves the slot as it was, which only relative paths of
 /// other rules' executions can observe); a self-referencing one's mutable

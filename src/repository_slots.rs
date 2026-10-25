@@ -639,6 +639,77 @@ pub fn noted(slot: &Path) -> Option<(String, SlotClass)> {
         .cloned()
 }
 
+/// Whether `canonical`'s slot is a complete mutable directory: a real
+/// directory with its marker.
+pub fn complete(store: &Path, canonical: &str) -> bool {
+    fs::symlink_metadata(slot_path(store, canonical)).is_ok_and(|metadata| metadata.is_dir())
+        && marker(store, canonical).is_some()
+}
+
+/// Make `canonical`'s mutable slot again from its published `tree`
+/// (publication `identity`), under the writer protocol — unless another
+/// writer completed it meanwhile: a self-referencing repository reused
+/// while its slot is missing, a link, or an interrupted writer's leftover
+/// (no marker). The slot gets fresh copies of the tree's entries, then the
+/// marker. What else was in the slot is gone, as after a re-execution.
+pub fn restore_mutable(
+    store: &Path,
+    canonical: &str,
+    identity: &str,
+    tree: &Path,
+) -> Result<(), String> {
+    let writer = SlotWriter::acquire(store, canonical)?;
+    if complete(store, canonical) {
+        return Ok(());
+    }
+    writer.unmark()?;
+    let slot = writer.fresh()?;
+    let scratch = SlotScratch::new(&writer);
+    for entry in fs::read_dir(tree).map_err(|e| format!("cannot read {}: {e}", tree.display()))? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        copy_tree(&entry.path(), &slot.join(entry.file_name()))?;
+    }
+    fs::set_permissions(
+        &slot,
+        fs::metadata(tree).map_err(|e| e.to_string())?.permissions(),
+    )
+    .map_err(|e| e.to_string())?;
+    writer.mark(identity)?;
+    scratch.keep();
+    Ok(())
+}
+
+/// The slot names (canonical names) that occur as `<store>/external/<name>`
+/// in `texts` (an `execute`'s arguments, environment values and working
+/// directory): a command may name a mutable slot it did not reach through
+/// a label. `#long-` names are never matched (a label reaches those).
+pub fn named_slots<'a>(
+    store: &Path,
+    texts: impl IntoIterator<Item = &'a [u8]>,
+) -> BTreeSet<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut needle = store.join(SLOTS).as_os_str().as_bytes().to_vec();
+    needle.push(b'/');
+    let finder = memchr::memmem::Finder::new(&needle);
+    let mut names = BTreeSet::new();
+    for text in texts {
+        for at in finder.find_iter(text) {
+            let rest = &text[at + needle.len()..];
+            let length = rest
+                .iter()
+                .take_while(|byte| name_byte(**byte) && **byte != b'#')
+                .count();
+            if length > 0
+                && let Ok(name) = std::str::from_utf8(&rest[..length])
+                && checked_name(name).is_ok()
+            {
+                names.insert(name.to_owned());
+            }
+        }
+    }
+    names
+}
+
 /// Copy the tree `from` to the new directory `to` as fresh files (single
 /// links, the source modes, link targets verbatim; never following links):
 /// the published copy of a self-referencing repository, whose slot stays
@@ -1009,6 +1080,63 @@ mod tests {
                 .starts_with('.')
         }));
         assert!(bind(&store, "../escape", &one).is_err());
+    }
+
+    /// Slots an `execute` names in its arguments, environment or working
+    /// directory: real names only, never scratch, `..` or another store.
+    #[test]
+    fn named_slots_are_found_in_arguments_and_environment() {
+        let store = Path::new("/c/repositories");
+        let texts: [&[u8]; 4] = [
+            b"GOPATH=/c/repositories/external/gocache:/c/repositories/external/other/bin",
+            b"/c/repositories/external/.bind-1-2 /c/repositories/external/../x",
+            b"/d/repositories/external/elsewhere",
+            b"/c/repositories/external/#long-0123",
+        ];
+        assert_eq!(
+            named_slots(store, texts).into_iter().collect::<Vec<_>>(),
+            ["gocache", "other"]
+        );
+    }
+
+    /// A self-referencing repository's slot that is missing, a link or an
+    /// interrupted writer's is made again from its tree, under the writer
+    /// lock; a complete one is left alone.
+    #[test]
+    fn incomplete_mutable_slots_are_restored_from_their_trees() {
+        let temp = temp();
+        let store = temp.path().to_path_buf();
+        fs::create_dir_all(store.join("direct/locks")).unwrap();
+        let tree = store.join("direct/trees").join("a".repeat(64));
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("go.env"), b"GOPATH=x\n").unwrap();
+        let identity = "a".repeat(64);
+        let slot = slot_path(&store, "gocache");
+        for disturb in [
+            |slot: &Path| {
+                let _ = crate::repository_ctx::remove_tree(slot);
+            },
+            |slot: &Path| {
+                let _ = crate::repository_ctx::remove_tree(slot);
+                std::os::unix::fs::symlink("../direct/trees/x", slot).unwrap();
+            },
+            |slot: &Path| {
+                let _ = crate::repository_ctx::remove_tree(slot);
+                fs::create_dir_all(slot.join("pkg")).unwrap();
+            },
+        ] {
+            disturb(&slot);
+            let _ = remove_marker(&store, "gocache");
+            assert!(!complete(&store, "gocache"));
+            restore_mutable(&store, "gocache", &identity, &tree).unwrap();
+            assert!(complete(&store, "gocache"));
+            assert_eq!(fs::read(slot.join("go.env")).unwrap(), b"GOPATH=x\n");
+            assert!(!slot.join("pkg").exists());
+        }
+        // Complete: what consumers wrote stays.
+        fs::create_dir_all(slot.join("pkg/mod")).unwrap();
+        restore_mutable(&store, "gocache", &identity, &tree).unwrap();
+        assert!(slot.join("pkg/mod").is_dir());
     }
 
     #[test]

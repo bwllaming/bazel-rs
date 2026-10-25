@@ -127,6 +127,10 @@ pub(crate) struct State {
     /// A module extension's lock on its working directory, held from its
     /// creation until it is deleted (Bazel: the output base lock).
     lock: Option<fs::File>,
+    /// The repositories a label of this execution resolved into
+    /// ([`Context::label_path`]): the self-referencing ones among them are
+    /// held as a reader around each `execute` (crate::repository_slots).
+    resolved: BTreeSet<String>,
 }
 
 /// Which StarlarkBaseExternalContext this is.
@@ -1636,6 +1640,12 @@ impl Context {
             .root(repository)
             .map_err(anyhow::Error::msg)?
             .to_path_buf();
+        if !repository.is_empty() {
+            self.state
+                .borrow_mut()
+                .resolved
+                .insert(repository.to_owned());
+        }
         if self
             .repositories
             .ignored_subdirectories(repository)
@@ -1659,6 +1669,93 @@ impl Context {
             format!("{package}/{name}")
         };
         Ok((root.join(relative), label))
+    }
+
+    /// The readers' hold (crate::repository_slots::SlotReaders) of the
+    /// mutable repository directories `request` may write into: every
+    /// self-referencing repository a label of this execution resolved into
+    /// (its published files name its directory, as gazelle's
+    /// `go_repository_cache` names GOPATH in `go.env`), and every real
+    /// directory among the slots its arguments, environment or working
+    /// directory name. Never this execution's own (its writer holds it) nor
+    /// one this thread holds as a writer. A resolved one whose slot is not
+    /// complete (missing, a link, an interrupted writer's) is made again
+    /// from its tree first. Nothing is held between two `execute`s: a
+    /// consumer holding a directory for its whole execution would deadlock
+    /// with another process re-executing that repository while it demands a
+    /// repository this one is executing (go_repository reads `go.env`, then
+    /// demands go_repository_tools, which reads `go.env` too).
+    fn mutable_slot_readers(
+        &self,
+        request: &crate::repository_process::Request<'_>,
+    ) -> anyhow::Result<crate::repository_slots::SlotReaders> {
+        use crate::repository_slots::{SlotClass, SlotReaders, slot_path};
+        let Ok(store) = self.repositories.source_cache_path() else {
+            return Ok(SlotReaders::default());
+        };
+        let store = store.to_path_buf();
+        // canonical name -> (identity, tree) of a resolved self-referencing
+        // repository; None for a directory only named.
+        let mut wanted: BTreeMap<String, Option<(String, PathBuf)>> = BTreeMap::new();
+        let resolved: Vec<String> = self.state.borrow().resolved.iter().cloned().collect();
+        for name in resolved {
+            let Ok(root) = self.repositories.root(&name) else {
+                continue;
+            };
+            if let Some((identity, SlotClass::SelfReferencing)) =
+                crate::repository_store::slot_class(&store, &name, root)
+            {
+                wanted.insert(name, Some((identity, root.to_path_buf())));
+            }
+        }
+        let texts = request
+            .argv
+            .iter()
+            .map(Vec::as_slice)
+            .chain(
+                request
+                    .environment
+                    .iter()
+                    .map(|(_, value)| value.as_slice()),
+            )
+            .chain(std::iter::once(
+                request.working_directory.as_os_str().as_bytes(),
+            ));
+        for name in crate::repository_slots::named_slots(&store, texts) {
+            if !wanted.contains_key(&name)
+                && fs::symlink_metadata(slot_path(&store, &name)).is_ok_and(|m| m.is_dir())
+            {
+                wanted.insert(name, None);
+            }
+        }
+        wanted.retain(|name, _| {
+            !(self.kind == Kind::Repository && *name == self.canonical)
+                && !crate::repository_slots::writing(&slot_path(&store, name))
+        });
+        if wanted.is_empty() {
+            return Ok(SlotReaders::default());
+        }
+        let names: Vec<String> = wanted.keys().cloned().collect();
+        for _ in 0..16 {
+            let readers = SlotReaders::acquire(&store, &names).map_err(anyhow::Error::msg)?;
+            let incomplete = wanted.iter().find_map(|(name, published)| {
+                published
+                    .as_ref()
+                    .filter(|_| !crate::repository_slots::complete(&store, name))
+                    .map(|published| (name, published))
+            });
+            let Some((name, (identity, tree))) = incomplete else {
+                return Ok(readers);
+            };
+            drop(readers);
+            crate::repository_slots::restore_mutable(&store, name, identity, tree)
+                .map_err(anyhow::Error::msg)?;
+        }
+        bail!(
+            "the repository directories of {} keep changing while {} waits to execute",
+            names.join(", "),
+            self.identifying()
+        )
     }
 
     /// Label file read (read/template/patch with a Label argument):
@@ -3361,7 +3458,13 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             working_directory: &directory,
             timeout: Duration::from_secs(timeout as u64),
         };
-        match crate::repository_process::run(&request).map_err(anyhow::Error::msg)? {
+        // Only a subprocess can write into another repository's directory
+        // (Starlark writes only below its own, [`Context::output`]): the
+        // mutable ones it may write into are held as a reader while it runs.
+        let readers = context.mutable_slot_readers(&request)?;
+        let outcome = crate::repository_process::run(&request).map_err(anyhow::Error::msg);
+        drop(readers);
+        match outcome? {
             crate::repository_process::Outcome::Interrupted => bail!(
                 "repository execute() subprocess was terminated by SIGTERM; Bazel treats this as an interrupt"
             ),

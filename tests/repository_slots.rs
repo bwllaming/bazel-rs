@@ -227,3 +227,309 @@ fn gazelle_srcdir_resolves_from_the_execution_root_like_bazel() {
         assert_eq!(linked_tree(&f.store(), "+cgo_like+cgo"), tree);
     }
 }
+
+/// gazelle's `go_repository_cache` in miniature: `go.env` names the
+/// repository's own directory as GOPATH (self-referencing: its slot stays a
+/// real, mutable directory). `tools` (go_repository_tools) reads `go.env`
+/// and runs a tool in GOPATH; each `consumer` (go_repository) reads `go.env`,
+/// demands `tools`, and writes a module into GOPATH, waits a second and
+/// checks it is still there — what `go mod download` and `fetch_repo`'s
+/// checksum need. Every subprocess logs its interval.
+const GO_BZL: &str = r#"
+def _log(rctx, what):
+    return "echo " + what + " $(date +%s.%N) >> " + rctx.attr.log + "/" + rctx.name
+
+def _gopath(rctx):
+    for line in rctx.read(Label("@gocache//:go.env")).splitlines():
+        if line.startswith("GOPATH="):
+            return line[len("GOPATH="):]
+    fail("no GOPATH")
+
+def _cache(rctx):
+    rctx.file("go.env", "GOPATH=%s\nVERSION=%s\n" % (rctx.path("."), rctx.attr.version))
+    rctx.file("BUILD.bazel", "exports_files(['go.env'])\n")
+    result = rctx.execute(["sh", "-c", "%s; sleep %s; %s" % (
+        _log(rctx, "cache-start-" + rctx.attr.version),
+        rctx.attr.delay,
+        _log(rctx, "cache-end-" + rctx.attr.version),
+    )])
+    if result.return_code:
+        fail(result.stderr)
+
+gocache = repository_rule(_cache, attrs = {
+    "version": attr.string(), "delay": attr.string(default = "0"), "log": attr.string(),
+})
+
+def _tools(rctx):
+    gopath = _gopath(rctx)
+    result = rctx.execute(["sh", "-c", "%s; mkdir -p \"$GOPATH/bin\" && echo tool > \"$GOPATH/bin/tool\"; %s" % (
+        _log(rctx, "start"), _log(rctx, "end"),
+    )], environment = {"GOPATH": gopath})
+    if result.return_code:
+        fail(result.stderr)
+    rctx.file("BUILD.bazel", "exports_files(['tool'])\n")
+    rctx.file("tool", "tool\n")
+
+tools = repository_rule(_tools, attrs = {"log": attr.string()})
+
+def _consumer(rctx):
+    gopath = _gopath(rctx)
+    rctx.path(Label("@tools//:tool"))
+    result = rctx.execute(["sh", "-c", """
+set -e
+%s
+d="$GOPATH/pkg/mod/$NAME-$ROUND"
+mkdir -p "$d"
+echo "$NAME $ROUND" > "$d/file"
+sleep 1
+test "$(cat "$d/file")" = "$NAME $ROUND"
+%s
+""" % (_log(rctx, "start"), _log(rctx, "end"))], environment = {
+        "GOPATH": gopath, "NAME": rctx.name, "ROUND": rctx.attr.round,
+    })
+    if result.return_code:
+        fail("the module in GOPATH changed: " + result.stderr)
+    rctx.file("BUILD.bazel", "exports_files(['ok'])\n")
+    rctx.file("ok", rctx.attr.round + "\n")
+
+consumer = repository_rule(_consumer, attrs = {"log": attr.string(), "round": attr.string()})
+"#;
+
+/// One workspace of the GOPATH scenario, sharing `cache` with the other.
+struct GoWorkspace {
+    root: PathBuf,
+    cache: PathBuf,
+    log: PathBuf,
+}
+
+impl GoWorkspace {
+    fn new(base: &Path, name: &str, cache: &Path) -> Self {
+        let root = base.join(name);
+        let log = base.join(format!("{name}-log"));
+        for directory in [&root, &log, &base.join("home"), &base.join("tmp")] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        fs::write(root.join("go.bzl"), GO_BZL).unwrap();
+        fs::write(
+            root.join("BUILD.bazel"),
+            "filegroup(name = 'all', srcs = ['@c1//:ok', '@c2//:ok', '@c3//:ok', '@c4//:ok'])\n",
+        )
+        .unwrap();
+        Self {
+            root,
+            cache: cache.to_path_buf(),
+            log,
+        }
+    }
+
+    /// Write MODULE.bazel for gocache `version` (sleeping `delay` seconds
+    /// in its execution) and consumers of `round`.
+    fn module(&self, version: &str, delay: &str, round: &str) {
+        let log = self.log.display();
+        let mut module = format!(
+            "module(name = 'main')\n\
+             gocache = use_repo_rule('//:go.bzl', 'gocache')\n\
+             gocache(name = 'gocache', version = '{version}', delay = '{delay}', log = '{log}')\n\
+             tools = use_repo_rule('//:go.bzl', 'tools')\n\
+             tools(name = 'tools', log = '{log}')\n\
+             consumer = use_repo_rule('//:go.bzl', 'consumer')\n"
+        );
+        for name in ["c1", "c2", "c3", "c4"] {
+            module.push_str(&format!(
+                "consumer(name = '{name}', log = '{log}', round = '{round}')\n"
+            ));
+        }
+        fs::write(self.root.join("MODULE.bazel"), module).unwrap();
+    }
+
+    fn spawn(&self) -> std::process::Child {
+        let base = self.root.parent().unwrap();
+        Command::new("timeout")
+            .args([
+                "300s",
+                env!("CARGO_BIN_EXE_bazel-rs"),
+                "--ignore_all_rc_files",
+            ])
+            .arg(format!("--cache-dir={}", self.cache.display()))
+            .args(["build", "//:all"])
+            .current_dir(&self.root)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", base.join("home"))
+            .env("TMPDIR", base.join("tmp"))
+            .explicit_modules()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Wait until the log of `repository` has a line starting with `what`.
+    fn wait_for(&self, repository: &str, what: &str) {
+        let started = std::time::Instant::now();
+        while !fs::read_to_string(self.log.join(repository))
+            .is_ok_and(|log| log.lines().any(|line| line.starts_with(what)))
+        {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(120),
+                "{repository} never logged {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Every logged interval: (repository, label, start, end). Lines are
+    /// `start T`/`end T` or `cache-start-V T`/`cache-end-V T`.
+    fn intervals(&self) -> Vec<(String, String, f64, f64)> {
+        let mut intervals = Vec::new();
+        for entry in fs::read_dir(&self.log).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            let mut open: Option<(String, f64)> = None;
+            for line in fs::read_to_string(entry.path()).unwrap().lines() {
+                let (what, time) = line.split_once(' ').unwrap();
+                let time: f64 = time.parse().unwrap();
+                if what.contains("start") {
+                    assert!(open.is_none(), "{name}: {what} inside another interval");
+                    open = Some((what.replace("start", ""), time));
+                } else {
+                    let (label, start) = open.take().expect("an end after its start");
+                    assert_eq!(label, what.replace("end", ""), "{name}");
+                    intervals.push((name.clone(), label, start, time));
+                }
+            }
+        }
+        intervals
+    }
+}
+
+fn finished(child: std::process::Child) -> Output {
+    let output = child.wait_with_output().unwrap();
+    assert_ne!(
+        output.status.code(),
+        Some(124),
+        "a bazel-rs process timed out"
+    );
+    output
+}
+
+/// No gocache execution overlaps a subprocess that may write into its
+/// directory: the logged intervals of both workspaces never interleave.
+fn assert_exclusive(workspaces: &[&GoWorkspace]) {
+    let intervals: Vec<_> = workspaces.iter().flat_map(|w| w.intervals()).collect();
+    let caches: Vec<_> = intervals
+        .iter()
+        .filter(|i| i.0 == "+gocache+gocache")
+        .collect();
+    let writers: Vec<_> = intervals
+        .iter()
+        .filter(|i| i.0 != "+gocache+gocache")
+        .collect();
+    assert!(!caches.is_empty() && !writers.is_empty(), "{intervals:?}");
+    for cache in &caches {
+        for writer in &writers {
+            assert!(
+                cache.3 <= writer.2 || writer.3 <= cache.2,
+                "{cache:?} overlaps {writer:?}"
+            );
+        }
+    }
+}
+
+/// What every published tree of the store says: no module cache (`pkg/`)
+/// was ever published, and each tree verifies against its manifest.
+fn assert_trees_clean(store: &Path) {
+    for entry in fs::read_dir(store.join("direct/trees")).unwrap() {
+        let path = entry.unwrap().path();
+        assert!(!path.join("pkg").exists(), "{} holds pkg/", path.display());
+        let tree = bazel_rs::repository_store::published_tree(store, &path)
+            .unwrap_or_else(|| panic!("{} is no publication", path.display()));
+        bazel_rs::repository_store::verify_published_tree(&tree).unwrap();
+    }
+}
+
+/// Two processes on one cache, the GOPATH hazard of go_repository_cache in
+/// both directions: while one workspace's consumers write into GOPATH, the
+/// other re-executes the cache (another version); then the re-execution runs
+/// first (slowly) and the consumers wait. The re-execution never starts
+/// while a consumer's subprocess runs and no consumer starts during it, so
+/// every consumer's module survives (no checksum mismatch); the re-executed
+/// tree holds only what the rule wrote; the chain consumer -> cache,
+/// consumer -> tools -> cache completes in both processes.
+#[test]
+fn a_re_execution_of_a_self_referencing_repository_waits_for_its_writers() {
+    let base = tempfile::Builder::new()
+        .prefix("repository-slots-gopath-")
+        .tempdir_in("/tmp/opencode")
+        .unwrap();
+    let cache = base.path().join("cache");
+    let a = GoWorkspace::new(base.path(), "a", &cache);
+    let b = GoWorkspace::new(base.path(), "b", &cache);
+    // A's consumers are writing into GOPATH when B re-executes the cache.
+    a.module("1", "0", "a1");
+    b.module("2", "0", "b1");
+    let first = a.spawn();
+    a.wait_for("+consumer+c1", "start");
+    let second = b.spawn();
+    for output in [finished(first), finished(second)] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_exclusive(&[&a, &b]);
+    // The re-executed cache published only what its rule wrote.
+    let store = cache.join("repositories");
+    let gopath = store.join("external/+gocache+gocache");
+    assert!(fs::symlink_metadata(&gopath).unwrap().is_dir());
+    assert_trees_clean(&store);
+    for version in ["1", "2"] {
+        let trees: Vec<_> = fs::read_dir(store.join("direct/trees"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|tree| {
+                fs::read_to_string(tree.join("go.env"))
+                    .is_ok_and(|env| env.contains(&format!("VERSION={version}")))
+            })
+            .collect();
+        assert_eq!(trees.len(), 1, "version {version}");
+        let mut names: Vec<_> = fs::read_dir(&trees[0])
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["BUILD.bazel", "REPO.bazel", "go.env"]);
+    }
+    // Reverse: B re-executes the cache (version 3, slowly) while A's
+    // consumers (round 2: they run again, the cache is reused) wait.
+    b.module("3", "2", "b2");
+    a.module("1", "0", "a2");
+    let first = b.spawn();
+    b.wait_for("+gocache+gocache", "cache-start-3");
+    let second = a.spawn();
+    for output in [finished(first), finished(second)] {
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert_exclusive(&[&a, &b]);
+    assert_trees_clean(&store);
+    // Every module of A's second round is in GOPATH, written after the
+    // re-execution emptied it (the first round's are gone with it).
+    for name in [
+        "+consumer+c1",
+        "+consumer+c2",
+        "+consumer+c3",
+        "+consumer+c4",
+    ] {
+        let module = gopath.join("pkg/mod");
+        assert_eq!(
+            fs::read_to_string(module.join(format!("{name}-a2/file"))).unwrap(),
+            format!("{name} a2\n")
+        );
+        assert!(!module.join(format!("{name}-a1")).exists());
+    }
+}
