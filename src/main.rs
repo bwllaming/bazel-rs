@@ -16,6 +16,7 @@ Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
   bazel-rs [STARTUP...] [--cache-dir=PATH] run [BUILD OPTIONS...] [RUN OPTIONS...] TARGET [-- ARGS...]
   bazel-rs [STARTUP...] [--cache-dir=PATH] test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET...
+  bazel-rs [STARTUP...] [--cache-dir=PATH] info [BUILD OPTIONS...] [--show_make_env] [KEY...]
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities
 
@@ -28,6 +29,8 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   same_pkg_direct_rdeps, executables, union/+, intersect/^, except/-) with
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
+Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped to the
+  native layout; built outputs are linked below <cache>/execroot/_main (docs/INFO.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMORY_MB
   caps bazel-rs's own RSS (watchdog only, exit 33 = Bazel's OOM; no RLIMIT_AS, so
@@ -133,7 +136,7 @@ fn run() -> Result<(), String> {
             println!("{}", include_str!("../docs/capabilities.json"));
             return Ok(());
         }
-        "query" | "build" | "mod" | "run" | "test" => {}
+        "query" | "build" | "mod" | "run" | "test" | "info" => {}
         _ => {
             return Err(format!(
                 "unsupported command or startup option {command:?}; run --help for the native subset"
@@ -143,6 +146,9 @@ fn run() -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
     let options = evaluate_rc(&line, &command, &cwd, &root, &path_to_binary)?;
+    if command == "info" {
+        return info_command(&line, &options, &cwd, root);
+    }
     // --jobs default: available CPUs, max 32 (the "N26" bound — the
     // action worker pool never exceeds 32 however many CPUs the host
     // has; explicit --jobs=N is kept exactly). Memory-wise the action
@@ -872,6 +878,160 @@ fn run() -> Result<(), String> {
             snapshot,
         },
     )
+}
+
+/// `bazel-rs info [KEY...]` (crate::info, docs/INFO.md). InfoCommand
+/// inherits the build options (`inheritsOptionsFrom = BuildCommand`, rc
+/// `build` lines included) and never loads, analyzes or fetches: no
+/// module resolution, no lockfile, no snapshot, no memory watchdog.
+fn info_command(
+    line: &bazelrc::CommandLine,
+    options: &bazelrc::Expanded,
+    cwd: &Path,
+    root: PathBuf,
+) -> Result<(), String> {
+    fn parse(
+        native: &mut NativeOptions,
+        info: &mut bazel_rs::info::Options,
+        unit: &bazelrc::Unit,
+    ) -> Result<(), String> {
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        match info.parse(arg, next)? {
+            Some(used) => {
+                if let (Some(value), false) = (next, used) {
+                    return Err(format!(
+                        "internal error: {arg} took the separate value {value:?} but its native parser did not consume it"
+                    ));
+                }
+                Ok(())
+            }
+            None => native.parse("build", unit),
+        }
+    }
+    // Errors in Bazel's parse order, values in priority order (like the
+    // other commands).
+    for (step, position) in &options.steps {
+        let result = match step {
+            bazelrc::Step::Fail(error) => Err(error.clone()),
+            bazelrc::Step::Unit(unit) => parse(
+                &mut NativeOptions::new("build"),
+                &mut bazel_rs::info::Options::default(),
+                unit,
+            ),
+        };
+        if let Err(error) = result {
+            return Err(early_exit(options, &error, *position));
+        }
+    }
+    let mut native = NativeOptions::new("build");
+    let mut info = bazel_rs::info::Options::default();
+    for unit in &options.priority {
+        parse(&mut native, &mut info, unit)?;
+    }
+    announce(options);
+    for warning in native.configuration.warnings() {
+        warn(warning);
+    }
+    // Label-typed options convert without the main repository mapping (no
+    // module resolution): no info value depends on a label's repository.
+    let labels = |text: &str| {
+        bazel_rs::configuration::parse_canonical_option_label(text)
+            .or_else(|error| bazel_rs::label::deferred_label(text, "", "").ok_or(error))
+    };
+    let top = native.configuration.configuration(&labels)?;
+    let mnemonic = bazel_rs::config_registry::mnemonic(&top, &top)?;
+    let configuration = &top.native;
+    let target_cpu = (configuration.platforms.as_slice()
+        == [bazel_rs::configuration::default_host_platform()])
+    .then(|| bazel_rs::info::host_platform_cpu().to_owned());
+    // CommandEnvironment (:350-383): the inherited --action_env and
+    // --test_env names with their client values.
+    let client = |entries: &[bazel_rs::action_env::EnvVar]| {
+        let mut names = std::collections::BTreeSet::new();
+        for entry in entries {
+            match entry {
+                bazel_rs::action_env::EnvVar::Inherit(name) => {
+                    names.insert(name.clone());
+                }
+                bazel_rs::action_env::EnvVar::Set(name, _)
+                | bazel_rs::action_env::EnvVar::Unset(name) => {
+                    names.remove(name);
+                }
+            }
+        }
+        names
+            .into_iter()
+            .filter_map(|name| std::env::var(&name).ok().map(|value| (name, value)))
+            .collect::<Vec<_>>()
+    };
+    let mut test_inherited = Vec::new();
+    for entry in &configuration.test_env {
+        if let bazel_rs::action_env::EnvVar::Inherit(name) = entry {
+            test_inherited.push(bazel_rs::action_env::EnvVar::Inherit(name.clone()));
+        }
+    }
+    let resolver = &native.resolver;
+    let starlark_semantics = [
+        (
+            "experimental_google_legacy_api",
+            resolver.java_semantics.google_legacy_api,
+        ),
+        (
+            "incompatible_disable_non_executable_java_binary",
+            resolver.java_semantics.disable_non_executable_java_binary,
+        ),
+        (
+            "incompatible_disable_starlark_host_transitions",
+            resolver.disable_starlark_host_transitions,
+        ),
+        (
+            "incompatible_java_info_merge_runtime_module_flags",
+            resolver.java_semantics.java_info_merge_runtime_module_flags,
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, value)| *value)
+    .map(|(name, value)| format!("{name}={value}"))
+    .collect();
+    // The ceiling a build would install (main's policy), not installed.
+    let explicit_mb = match native.memory_limit_mb {
+        Some(mb) => Some(bazel_rs::memory_limit::validate_cap_mb(mb)?),
+        None => std::env::var("BAZEL_RS_MAX_MEMORY_MB")
+            .ok()
+            .and_then(|value| bazel_rs::memory_limit::parse_cap_mb(&value)),
+    };
+    let memory_limit_mb = bazel_rs::memory_limit::effective_cap(explicit_mb).map(|(mb, _)| mb);
+    let cache = line
+        .cache_dir
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("bazel-rs-out"));
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
+    let context = bazel_rs::info::Context {
+        workspace: root,
+        cache,
+        mnemonic,
+        compilation_mode: configuration.compilation_mode.to_owned(),
+        target_cpu,
+        defines: configuration.define.clone(),
+        client_action_env: client(&configuration.action_env),
+        client_test_env: client(&test_inherited),
+        starlark_semantics,
+        memory_limit_mb,
+    };
+    let keys: Vec<String> = options.residue.iter().map(|arg| arg.text.clone()).collect();
+    let outcome = bazel_rs::info::run(&context, &info, &keys, &mut std::io::stdout().lock())?;
+    if let Some(message) = outcome.unknown {
+        // ExitCode.COMMAND_LINE_ERROR, InfoCommand.Code.KEY_NOT_RECOGNIZED.
+        eprintln!("ERROR: {message}");
+        std::process::exit(2);
+    }
+    Ok(())
 }
 
 /// What the end of `build` reads besides the planned request.

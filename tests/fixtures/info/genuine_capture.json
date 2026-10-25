@@ -1,0 +1,143 @@
+{
+  "about": "Genuine Bazel 9.3.0 `info` captures (tests/fixtures/info/capture.py, docs/INFO.md): --batch --ignore_all_rc_files --output_user_root=<OUTPUT_USER_ROOT>, env -i PATH=/usr/bin:/bin HOME=<private>, workspace = MODULE.bazel module(name='scratch') + pkg/BUILD genrule. Paths are normalized; stderr keeps only ERROR lines.",
+  "genuine_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "cases": {
+    "all": {
+      "args": [],
+      "exit": 0,
+      "stdout": "bazel-bin: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin\nbazel-genfiles: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin\nbazel-testlogs: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs\ncharacter-encoding: file.encoding = ISO-8859-1, defaultCharset = ISO-8859-1, sun.jnu.encoding = UTF-8\ncommand_log: <OUTPUT_BASE>/command.log\ncommitted-heap-size: 83MB\nexecution_root: <OUTPUT_BASE>/execroot/_main\ngc-count: 11\ngc-time: 58ms\ninstall_base: <OUTPUT_USER_ROOT>/install/bf018ed227128835327c556cff5c0ff0\njava-home: <OUTPUT_USER_ROOT>/install/bf018ed227128835327c556cff5c0ff0/embedded_tools/jdk\njava-runtime: OpenJDK Runtime Environment (build 25.0.2+10-LTS) by Azul Systems, Inc.\njava-vm: OpenJDK 64-Bit Server VM (build 25.0.2+10-LTS, mixed mode) by Azul Systems, Inc.\nlocal_resources: RAM=257366MB, CPU=64.0\nmax-heap-size: 24159MB\noutput_base: <OUTPUT_BASE>\noutput_path: <OUTPUT_BASE>/execroot/_main/bazel-out\npackage_path: %workspace%\nrelease: release 9.3.0\nrepository_cache: <OUTPUT_USER_ROOT>/cache/repos/v1\nserver_log: <OUTPUT_BASE>/java.log.code.coder.log.java.20261025-194955.742400\nserver_pid: 742400\nused-heap-size: 37MB\nworkspace: <WORKSPACE>\n",
+      "stderr": []
+    },
+    "single": {
+      "args": [
+        "bazel-bin"
+      ],
+      "exit": 0,
+      "stdout": "<OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin\n",
+      "stderr": []
+    },
+    "single_opt": {
+      "args": [
+        "bazel-bin",
+        "-c",
+        "opt"
+      ],
+      "exit": 0,
+      "stdout": "<OUTPUT_BASE>/execroot/_main/bazel-out/k8-opt/bin\n",
+      "stderr": []
+    },
+    "multi_dbg": {
+      "args": [
+        "--compilation_mode=dbg",
+        "bazel-bin",
+        "bazel-testlogs"
+      ],
+      "exit": 0,
+      "stdout": "bazel-bin: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-dbg/bin\nbazel-testlogs: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-dbg/testlogs\n",
+      "stderr": []
+    },
+    "cpu": {
+      "args": [
+        "--cpu=foo",
+        "bazel-bin"
+      ],
+      "exit": 0,
+      "stdout": "<OUTPUT_BASE>/execroot/_main/bazel-out/foo-fastbuild/bin\n",
+      "stderr": []
+    },
+    "repeated": {
+      "args": [
+        "workspace",
+        "workspace"
+      ],
+      "exit": 0,
+      "stdout": "workspace: <WORKSPACE>\nworkspace: <WORKSPACE>\n",
+      "stderr": []
+    },
+    "unknown": {
+      "args": [
+        "workspace",
+        "bazel-binn",
+        "foo",
+        "foo"
+      ],
+      "exit": 2,
+      "stdout": "workspace: <WORKSPACE>\n",
+      "stderr": [
+        "ERROR: unknown key(s): 'bazel-binn' (did you mean 'bazel-bin'?), 'foo'"
+      ]
+    },
+    "make_env_unknown": {
+      "args": [
+        "COMPILATION_MODE"
+      ],
+      "exit": 2,
+      "stdout": "",
+      "stderr": [
+        "ERROR: unknown key(s): 'COMPILATION_MODE'"
+      ]
+    },
+    "show_make_env": {
+      "args": [
+        "--show_make_env"
+      ],
+      "exit": 0,
+      "stdout": "BINDIR: bazel-out/k8-fastbuild/bin\nCOMPILATION_MODE: fastbuild\nGENDIR: bazel-out/k8-fastbuild/bin\nTARGET_CPU: x86_64\nbazel-bin: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin\nbazel-genfiles: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin\nbazel-testlogs: <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/testlogs\ncharacter-encoding: file.encoding = ISO-8859-1, defaultCharset = ISO-8859-1, sun.jnu.encoding = UTF-8\ncommand_log: <OUTPUT_BASE>/command.log\ncommitted-heap-size: 83MB\nexecution_root: <OUTPUT_BASE>/execroot/_main\ngc-count: 10\ngc-time: 66ms\ninstall_base: <OUTPUT_USER_ROOT>/install/bf018ed227128835327c556cff5c0ff0\njava-home: <OUTPUT_USER_ROOT>/install/bf018ed227128835327c556cff5c0ff0/embedded_tools/jdk\njava-runtime: OpenJDK Runtime Environment (build 25.0.2+10-LTS) by Azul Systems, Inc.\njava-vm: OpenJDK 64-Bit Server VM (build 25.0.2+10-LTS, mixed mode) by Azul Systems, Inc.\nlocal_resources: RAM=257366MB, CPU=64.0\nmax-heap-size: 24159MB\noutput_base: <OUTPUT_BASE>\noutput_path: <OUTPUT_BASE>/execroot/_main/bazel-out\npackage_path: %workspace%\nrelease: release 9.3.0\nrepository_cache: <OUTPUT_USER_ROOT>/cache/repos/v1\nserver_log: <OUTPUT_BASE>/java.log.code.coder.log.java.20261025-195016.761689\nserver_pid: 761689\nused-heap-size: 19MB\nworkspace: <WORKSPACE>\n",
+      "stderr": []
+    },
+    "show_make_env_keys": {
+      "args": [
+        "--show_make_env",
+        "--define",
+        "FOO=bar",
+        "--define=ABC=1",
+        "-c",
+        "opt",
+        "COMPILATION_MODE",
+        "FOO",
+        "ABC",
+        "TARGET_CPU",
+        "BINDIR",
+        "GENDIR"
+      ],
+      "exit": 0,
+      "stdout": "COMPILATION_MODE: opt\nFOO: bar\nABC: 1\nTARGET_CPU: x86_64\nBINDIR: bazel-out/k8-opt/bin\nGENDIR: bazel-out/k8-opt/bin\n",
+      "stderr": []
+    },
+    "hidden": {
+      "args": [
+        "install_md5",
+        "starlark-semantics",
+        "default-package-path",
+        "defaults-package",
+        "client-env",
+        "worker_metrics",
+        "peak-heap-size"
+      ],
+      "exit": 0,
+      "stdout": "install_md5: bf018ed227128835327c556cff5c0ff0\nstarlark-semantics: StarlarkSemantics{internal_bazel_only_utf_8_byte_strings=true}\ndefault-package-path: %workspace%\ndefaults-package: \nclient-env: \nworker_metrics: No persistent workers active.\npeak-heap-size: unknown\n",
+      "stderr": []
+    },
+    "starlark_semantics": {
+      "args": [
+        "starlark-semantics",
+        "--experimental_google_legacy_api",
+        "--incompatible_disable_starlark_host_transitions"
+      ],
+      "exit": 0,
+      "stdout": "StarlarkSemantics{experimental_google_legacy_api=true, incompatible_disable_starlark_host_transitions=true, internal_bazel_only_utf_8_byte_strings=true}\n",
+      "stderr": []
+    },
+    "client_env": {
+      "args": [
+        "client-env",
+        "--action_env=PATH",
+        "--action_env=FOO=bar",
+        "--test_env=HOME"
+      ],
+      "exit": 0,
+      "stdout": "build --action_env=PATH=/usr/bin:/bin\nbuild --test_env=HOME=<HOME>\n\n",
+      "stderr": []
+    }
+  }
+}

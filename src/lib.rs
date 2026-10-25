@@ -56,6 +56,7 @@ mod guarded_globals;
 mod host_os;
 pub mod ignored;
 mod implicit_outputs;
+pub mod info;
 mod instrumented_files;
 mod json;
 pub mod label;

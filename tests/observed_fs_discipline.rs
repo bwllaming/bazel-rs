@@ -57,6 +57,8 @@ const ALLOWED_MODULES: &[&str] = &[
     "observed_fs",
     // The execution root's output tree, written after execution.
     "output_tree",
+    // `info` reads no planning input (it never plans).
+    "info",
 ];
 const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/"];
 
