@@ -1,7 +1,113 @@
 # Rust Bazel implementation plan
 
 Target: Bazel 9.3 compatibility, with measured startup and build performance.
-This repository starts empty. Full parity is not yet implemented or claimed.
+Full parity is not claimed; the status and the open work are listed first, the
+history of increments follows under "History".
+
+## Status (2026-10-26, master 9f1df5a)
+
+Measured on `~/code` with private caches (see `artifacts/RELEASES.log` for each release):
+
+- `build --nobuild //src/...` succeeds: 148 s and 6.8 GB with the snapshot off,
+  8.0 GB on the run that saves the snapshot, 2 s / 5.1 GB on a snapshot hit.
+- `build -k //src/...` builds 1,813 of 1,816 top-level targets (59,762 actions).
+  The 3 failures are `//src/python:docstar`, which writes into its own checked-in
+  inputs, and its two dependents (fixed in ~/code PR #12924; bazel-rs stays strict).
+- Tests, run tree by tree: 396 of 397 passed in SURVEY2; the failure
+  (`valuehunterlivedata_test`) and `website3:image_structure_test` are fixed since.
+- Warm no-op builds: `//src/ts/...` 1.5 s, bworker 1.4 s, oauth2token 0.3 s.
+- Peak memory: every tree is under ~8 GB; the default cap is min(16 GB, 50% RAM).
+
+Done since the last increment recorded under "History", one line each:
+
+- [x] Analysis snapshot on by default, incl. map_each plans, size-aware store,
+      compressed plans (docs/ANALYSIS_SNAPSHOT.md).
+- [x] Parallel loading/analysis prefetch and parallel repository fetching
+      (docs/PARALLEL_ANALYSIS.md).
+- [x] Built-in modules (`@bazel_tools`) by default; lockfile byte-identical to 9.3
+      (docs/BUILTIN_MODULES.md, docs/REGISTRY_LOCKFILE.md).
+- [x] Stable `<cache>/repositories/external/<name>` repository slots with locks
+      (docs/REPOSITORY_SLOTS.md); git worktrees share the main checkout's cache
+      (docs/WORKTREES.md); `info` and `bazel-bin` (docs/INFO.md).
+- [x] Process wrapper for every spawn, sandbox, client TMPDIR, test overlap with
+      the build, `--keep_going` (docs/PROCESS_WRAPPER.md, SANDBOX.md, TEST_COMMAND.md,
+      KEEP_GOING.md); test/binary `args` expansion.
+- [x] Aspects: attribute configuration, ctx.executable, toolchains/exec groups/
+      fragments, `requires=` (docs/ASPECTS.md); `--extra_execution_platforms`.
+- [x] Symlinks: unresolved symlinks, tree-artifact symlinks, source directories,
+      external files staged as links, distinct inodes for distinct artifacts.
+- [x] Memory: MEM2/MEM3/MEM4 and TS analysis (docs/MEMORY.md); cache-hit path
+      (directory stamps, O(changed) output tree).
+
+## Remaining work
+
+### In progress
+
+- [ ] Interactive progress display, TTY only (branch `progress-ui`).
+- [ ] Startup option `--quiet` (branch `startup-quiet`).
+- [ ] `print()` is a no-op in registry MODULE.bazel files, which removes the
+      gazelle/rules_go "highly experimental" warnings (branch `module-print-noop`).
+
+### Commands that are rejected today
+
+- [ ] `clean` (incl. `--expunge`/`--async`) and `shutdown` (a no-op without a
+      server, but scripts call it).
+- [ ] `cquery` and `aquery` (the milestone 2 gate in docs/ROADMAP.md).
+- [ ] `fetch`, `sync`, `vendor`.
+- [ ] `coverage` (docs/COVERAGE.md).
+- [ ] `mod` beyond `graph --output=json`: text graph, `deps`, `explain`,
+      `show_repo`, `show_extension`, `tidy`; `mod graph` with built-in modules.
+- [ ] `help <command>`, `canonicalize-flags`, `dump`, `print_action` (low priority).
+
+### Running ~/code the way its users do
+
+- [ ] Validate with the checkout's own `.bazelrc` (all measurements so far used
+      `--ignore_all_rc_files`), incl. `--config=linux_amd64` / `linux_arm64`.
+- [ ] gRPC remote cache and remote execution: `--config=buildbarn` uses
+      `grpc://` and fails explicitly today (only the HTTP cache is implemented).
+- [ ] Build Event Protocol (`--build_event_json_file`, `--build_event_binary_file`,
+      `--bes_backend`), `--profile` traces, `--execution_log_*_file`.
+- [ ] Persistent workers (`--strategy=...=worker`, `supports-workers`), if any
+      rule set in ~/code needs them for speed.
+- [ ] Warm `run` latency of internal tools: no-op `bazel-rs run //tool` end to end.
+- [ ] `.bazeliskrc` pins 9.1.1, which rewrites the lockfile as v26 and makes
+      bazel-rs (v28) miss its snapshot after each genuine run (user's decision).
+- [ ] One `test //src/...` invocation (so far tree by tree).
+
+### Disk usage
+
+- [ ] Garbage collection of the cache: `cas/`, `actions/`, repository trees and
+      slots, distinct-inode copies, state dirs of deleted worktrees, stale
+      `.tmp-*` staging. It only grows today (~/code/bazel-rs-out is 30 GB). Model
+      Bazel 9.3's `--experimental_disk_cache_gc_max_size/_max_age/_idle_delay`.
+
+### Performance
+
+- [ ] Cold: ~80 s of sequential module-extension evaluation and interpreter
+      download in `//src/python:bworker_env`.
+- [ ] Snapshot miss: ~3.5 s stat-checking reused repository trees on bworker_env;
+      use directory stamps as the action cache now does.
+- [ ] Re-measure `//src/beyondwork.ai/...` (57 s / 8.7 GB warm `--nobuild` before MEM4).
+
+### Known parity gaps (documented, not blocking ~/code)
+
+- [ ] Aspects: parameters from rule attributes; the same aspect from `--aspects`
+      and an attribute; `ctx.rule.attr` of required aspects; function
+      `attr_aspects`, `toolchains_aspects`, subrules on aspects.
+- [ ] One toolchain needed on two execution platforms in one configuration;
+      `register_execution_platforms` from non-root modules.
+- [ ] Console text: `INFO: Analyzed …` / `INFO: Found …` lines, `DEBUG:` prefix on
+      transition prints, exclusive-test order, `-k` error ordering.
+- [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
+- [ ] Children inherit an ignored SIGINT (fix needs a few lines of `unsafe`;
+      awaiting approval; patch in /tmp/opencode/fixdigest/).
+- [ ] Five network-dependent tests: serve their archives from a checksum-verified
+      local cache.
+- [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces); Linux x86_64 only.
+
+## History
+
+The checklist below is the original increment record, kept for reference.
 
 - [x] Verify the upstream release and inventory `~/code` requirements (read-only).
 - [x] Install a pinned, project-local Rust toolchain with explicit direnv setup.
@@ -13,9 +119,6 @@ This repository starts empty. Full parity is not yet implemented or claimed.
 
 Constraints: preserve existing changes in `~/code`; no implicit upstream fallback;
 never report a successful build for unsupported semantics; no unmeasured speed claims.
-
-This checklist covers the initial foundation only. Full Bazel 9.3 parity and the
-main application's build/test suite remain unimplemented; see docs/ROADMAP.md.
 
 ## Loading and scheduling milestone (verified native subset)
 
@@ -457,10 +560,10 @@ module closure before further SDK/analysis compatibility can be established.
 - [x] Record watchable-input probes in manifests (names and digests only;
       environment values are never persisted), revalidated on warm calls.
 
-- [ ] Complete Bzlmod/repository compatibility beyond local selection/loading:
+- [x] (Superseded by "Status" above.) Complete Bzlmod/repository compatibility beyond local selection/loading:
       complete downloader/archive/Git semantics, full patch semantics, lockfiles, built-in closure,
       module extensions and repository rules using pinned fixtures.
-- [ ] Configurations, toolchains and providers sufficient for actual repository
+- [x] (Superseded by "Status" above.) Configurations, toolchains and providers sufficient for actual repository
       Go/Python/Node rule analysis, followed by safe executable/test targets.
 
 Captured differential artifacts record 39 custom-rule and 24 loading checks;
