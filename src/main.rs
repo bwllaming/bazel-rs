@@ -250,6 +250,7 @@ fn run() -> Result<(), String> {
     let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
     let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
     let mut spawn_options = bazel_rs::sandbox::SpawnOptions::default();
+    let mut worker_options = bazel_rs::worker::WorkerOptions::default();
     let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
     let mut workspace_status = bazel_rs::workspace_status::WorkspaceStatusOptions::default();
     let mut no_build = false;
@@ -344,6 +345,7 @@ fn run() -> Result<(), String> {
         credential_options = native.credentials;
         remote_options = native.remote;
         spawn_options = native.spawn;
+        worker_options = native.worker;
         runfiles_options = native.runfiles;
         workspace_status = native.workspace_status;
         no_build = native.no_build;
@@ -527,6 +529,8 @@ fn run() -> Result<(), String> {
         exit(2);
     }
     bazel_rs::sandbox::install(spawn_options);
+    // Persistent workers (crate::worker): stopped when the command ends.
+    bazel_rs::worker::install(worker_options);
     // Option parser warnings (deprecated options) once the native options
     // parsed (runtime/BlazeOptionHandler.java:536-539), after the rc notes.
     for warning in configuration_options.warnings() {
@@ -1522,7 +1526,14 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         }
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        exit(1);
+        // An environmental failure of a strategy (a sandbox setup failure,
+        // a worker spawn's IOException) is exit code 36 under --keep_going
+        // too.
+        exit(if bazel_rs::sandbox::setup_failure_occurred() {
+            36
+        } else {
+            1
+        });
     }
     snapshot.finish();
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
@@ -2276,6 +2287,7 @@ fn run_tail(
     // The target runs in this process's place: the last uses are recorded,
     // the collection waits for a later command.
     bazel_rs::cache_gc::finish(false);
+    bazel_rs::worker::shutdown();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", argv[0]))
 }
@@ -2996,6 +3008,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     // The target runs in this process's place: the last uses are recorded,
     // the collection waits for a later command.
     bazel_rs::cache_gc::finish(false);
+    bazel_rs::worker::shutdown();
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", options.shell))
 }
@@ -3191,6 +3204,8 @@ struct NativeOptions {
     test: bazel_rs::test_command::TestOptions,
     /// The spawn strategy and sandbox options (N59, crate::sandbox).
     spawn: bazel_rs::sandbox::SpawnOptions,
+    /// The persistent worker options (crate::worker).
+    worker: bazel_rs::worker::WorkerOptions,
     /// --workspace_status_command/--embed_label (WorkspaceStatusAction
     /// .Options; N63, crate::workspace_status).
     workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions,
@@ -3234,6 +3249,7 @@ impl NativeOptions {
             run: bazel_rs::run_command::RunOptions::default(),
             test: bazel_rs::test_command::TestOptions::default(),
             spawn: bazel_rs::sandbox::SpawnOptions::default(),
+            worker: bazel_rs::worker::WorkerOptions::default(),
             workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions::default(),
             no_build: false,
             ui: bazel_rs::progress::UiOptions::default(),
@@ -3528,6 +3544,10 @@ impl NativeOptions {
             self.parse_strategy(value)?;
             false
         } else if builds(command)
+            && let Some(consumed) = self.parse_worker_option(arg, next)?
+        {
+            consumed
+        } else if builds(command)
             && let Some(value) = bazel_rs::configuration::boolean_option(arg, "sandbox_debug")
         {
             // SandboxOptions.java:87-97.
@@ -3716,6 +3736,100 @@ impl NativeOptions {
         self.spawn.strategy.retain(|(other, _)| other != name);
         self.spawn.strategy.push((name.to_owned(), list));
         Ok(())
+    }
+
+    /// The persistent worker options (WorkerOptions.java; crate::worker):
+    /// `Some(consumed next)` when `arg` is one of them.
+    fn parse_worker_option(
+        &mut self,
+        arg: &str,
+        next: Option<&str>,
+    ) -> Result<Option<bool>, String> {
+        const BOOLEANS: &[&str] = &[
+            "worker_quit_after_build",
+            "worker_verbose",
+            "worker_sandboxing",
+            "worker_multiplex",
+            "experimental_worker_multiplex",
+            "experimental_worker_multiplex_sandboxing",
+            "experimental_worker_strict_flagfiles",
+        ];
+        for name in BOOLEANS {
+            if let Some(value) = bazel_rs::configuration::boolean_option(arg, name) {
+                let value = value?;
+                let worker = &mut self.worker;
+                match *name {
+                    "worker_quit_after_build" => worker.quit_after_build = value,
+                    "worker_verbose" => worker.verbose = value,
+                    "worker_sandboxing" => worker.sandboxing = value,
+                    "worker_multiplex" | "experimental_worker_multiplex" => {
+                        worker.multiplex = value
+                    }
+                    "experimental_worker_multiplex_sandboxing" => {
+                        worker.multiplex_sandboxing = value
+                    }
+                    _ => worker.strict_flagfiles = value,
+                }
+                return Ok(Some(false));
+            }
+        }
+        const VALUED: &[&str] = &[
+            "worker_max_instances",
+            "worker_max_multiplex_instances",
+            "experimental_worker_max_multiplex_instances",
+            "worker_extra_flag",
+            "experimental_worker_allowlist",
+        ];
+        let Some(dashless) = arg.strip_prefix("--") else {
+            return Ok(None);
+        };
+        let (name, value, consumed) = match dashless.split_once('=') {
+            Some((name, value)) if VALUED.contains(&name) => (name, value, false),
+            None if VALUED.contains(&dashless) => (
+                dashless,
+                next.ok_or_else(|| format!("--{dashless} requires a value"))?,
+                true,
+            ),
+            _ => return Ok(None),
+        };
+        let worker = &mut self.worker;
+        match name {
+            "worker_max_instances" => {
+                if let Some(entry) = bazel_rs::worker::parse_max_instances(name, value)? {
+                    worker.max_instances.push(entry);
+                }
+            }
+            "worker_max_multiplex_instances" | "experimental_worker_max_multiplex_instances" => {
+                if let Some(entry) =
+                    bazel_rs::worker::parse_max_instances("worker_max_multiplex_instances", value)?
+                {
+                    worker.max_multiplex_instances.push(entry);
+                }
+            }
+            "worker_extra_flag" => {
+                // AssignmentConverter: `name=value`.
+                let Some((mnemonic, flag)) = value.split_once('=') else {
+                    return Err(format!(
+                        "While parsing option --worker_extra_flag={value}: Variable definitions \
+                         must be in the form of a 'name=value' assignment"
+                    ));
+                };
+                worker
+                    .extra_flags
+                    .push((mnemonic.to_owned(), flag.to_owned()));
+            }
+            _ => {
+                // CommaSeparatedOptionListConverter; the last flag wins.
+                worker.allowlist = Some(
+                    value
+                        .split(',')
+                        .filter(|entry| !entry.is_empty())
+                        .map(str::to_owned)
+                        .collect(),
+                );
+            }
+        }
+        Ok(Some(consumed))
     }
 
     /// One `--sandbox_{writable,block,tmpfs}_path` value (SandboxOptions;
@@ -4593,6 +4707,8 @@ fn main() {
     // is in the display's pipe by then).
     let _progress = ProgressGuard;
     let result = run();
+    // Persistent workers live for this command only (no server).
+    bazel_rs::worker::shutdown();
     // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended
     // before planning completed is a mismatch (reported and logged; the
     // full analysis's result stands, or exit 70 under
@@ -4633,6 +4749,7 @@ fn main() {
 /// Exit with `code`, ending the progress display first (its summary, and
 /// whatever is still in its pipe).
 fn exit(code: i32) -> ! {
+    bazel_rs::worker::shutdown();
     bazel_rs::progress::finish(code);
     finish_cache();
     std::process::exit(code)

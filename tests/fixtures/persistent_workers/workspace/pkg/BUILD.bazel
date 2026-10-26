@@ -1,0 +1,166 @@
+load(":defs.bzl", "tree", "work")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["worker.py"])
+
+JSON = {"supports-workers": "1", "requires-worker-protocol": "json"}
+
+PROTO = {"supports-workers": "1"}
+
+# Three actions of one worker key (JSON protocol).
+[work(
+    name = "json_" + n,
+    src = n + ".txt",
+    requirements = JSON,
+) for n in ["a", "b", "c"]]
+
+# Three actions of one worker key (default proto protocol).
+[work(
+    name = "proto_" + n,
+    src = n + ".txt",
+    mnemonic = "FixtureProto",
+    requirements = PROTO,
+) for n in ["a", "b", "c"]]
+
+# A different startup flag: a second worker key of the same mnemonic.
+work(
+    name = "json_other_startup",
+    src = "a.txt",
+    requirements = JSON,
+    startup = "b",
+)
+
+# Tree-less input set with a data file: the WorkRequest inputs list.
+work(
+    name = "json_data",
+    src = "a.txt",
+    data = ["b.txt"],
+    requirements = JSON,
+)
+
+work(
+    name = "json_noisy",
+    src = "a.txt",
+    mode = "noisy",
+    requirements = JSON,
+)
+
+work(
+    name = "json_fail",
+    src = "a.txt",
+    mode = "fail",
+    requirements = JSON,
+)
+
+work(
+    name = "json_crash",
+    src = "a.txt",
+    mode = "crash",
+    requirements = JSON,
+)
+
+work(
+    name = "json_garbage",
+    src = "a.txt",
+    mode = "garbage",
+    requirements = JSON,
+)
+
+work(
+    name = "proto_fail",
+    src = "a.txt",
+    mnemonic = "FixtureProto",
+    mode = "fail",
+    requirements = PROTO,
+)
+
+# supports-workers without a flagfile: the worker strategy cannot run it.
+work(
+    name = "json_noflagfile",
+    src = "a.txt",
+    flagfile = False,
+    requirements = JSON,
+)
+
+# supports-workers with a value other than "1": not a worker spawn.
+work(
+    name = "not_one",
+    src = "a.txt",
+    requirements = {"supports-workers": "true"},
+)
+
+# No worker support at all.
+work(
+    name = "plain",
+    src = "a.txt",
+)
+
+work(
+    name = "bad_protocol",
+    src = "a.txt",
+    requirements = {
+        "supports-workers": "1",
+        "requires-worker-protocol": "xml",
+    },
+)
+
+# Multiplex-capable spawns.
+[work(
+    name = "multiplex_" + n,
+    src = n + ".txt",
+    mnemonic = "FixtureMultiplex",
+    requirements = {
+        "supports-multiplex-workers": "1",
+        "requires-worker-protocol": "json",
+    },
+) for n in ["a", "b"]]
+
+# worker-key-mnemonic: two mnemonics sharing one worker key mnemonic.
+work(
+    name = "keyed_one",
+    src = "a.txt",
+    mnemonic = "KeyedOne",
+    requirements = {
+        "supports-workers": "1",
+        "requires-worker-protocol": "json",
+        "worker-key-mnemonic": "SharedKey",
+    },
+)
+
+work(
+    name = "keyed_two",
+    src = "b.txt",
+    mnemonic = "KeyedTwo",
+    requirements = {
+        "supports-workers": "1",
+        "requires-worker-protocol": "json",
+        "worker-key-mnemonic": "SharedKey",
+    },
+)
+
+# JSON string escaping of WorkRequest arguments (both protocols).
+work(
+    name = "json_escape",
+    src = "a.txt",
+    extra = "k=<v>&'q' é \"dq\" \\ tab\t   /",
+    requirements = JSON,
+)
+
+work(
+    name = "proto_escape",
+    src = "a.txt",
+    extra = "k=<v>&'q' é \"dq\" \\ tab\t   /",
+    mnemonic = "FixtureProto",
+    requirements = PROTO,
+)
+
+# A tree artifact input: the WorkRequest lists its files.
+tree(name = "tree")
+
+work(
+    name = "json_tree",
+    src = "a.txt",
+    data = [":tree"],
+    requirements = JSON,
+)

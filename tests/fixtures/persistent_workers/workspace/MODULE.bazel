@@ -1,0 +1,6 @@
+module(name = "persistent_workers")
+
+# The genuine platforms 1.0.0 module, extracted into `platforms` from
+# tests/fixtures/label_repo_name/platforms_archive.json before each run.
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")

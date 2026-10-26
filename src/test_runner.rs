@@ -1119,7 +1119,7 @@ impl Runner<'_> {
             unit.spec.info.tags.iter().cloned().collect();
         info.extend(unit.spec.execution_info().into_keys());
         Ok((
-            crate::sandbox::resolve("TestRunner", &info)?,
+            crate::sandbox::resolve("TestRunner", &info, false)?,
             crate::sandbox::denies_network(&info),
         ))
     }

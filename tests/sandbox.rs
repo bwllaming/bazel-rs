@@ -582,10 +582,12 @@ fn processwrapper_sandbox_is_a_non_isolating_sandbox() {
 }
 
 #[test]
-fn worker_is_registered_but_never_usable() {
-    // BazelStrategyModule.java:75 registers "worker" in the default list;
-    // persistent workers are not modelled, so resolution skips it. Alone it
-    // is no usable strategy at all (SpawnStrategyResolver.java:77-96).
+fn worker_skips_spawns_without_worker_support() {
+    // BazelStrategyModule.java:75 registers "worker" first in the default
+    // list; it executes only spawns that support persistent workers
+    // (WorkerSpawnRunner.canExec; tests/persistent_workers.rs), so a genrule
+    // skips it. Alone it is no usable strategy for a genrule at all
+    // (SpawnStrategyResolver.java:77-96; the list prints as a Java list).
     let ws = Workspace::new();
     let marker = ws.outside();
     ws.build_fixture(marker);
@@ -601,7 +603,7 @@ fn worker_is_registered_but_never_usable() {
     assert!(!output.status.success());
     assert!(
         Workspace::text(&output).contains(
-            "Genrule spawn cannot be executed with any of the available strategies: worker."
+            "Genrule spawn cannot be executed with any of the available strategies: [worker]."
         ),
         "{}",
         Workspace::text(&output)

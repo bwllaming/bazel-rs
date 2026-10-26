@@ -146,6 +146,7 @@ mod toolchain_info;
 pub mod toolchains;
 pub mod ui;
 pub mod visibility;
+pub mod worker;
 pub mod workspace;
 pub mod workspace_status;
 pub mod worktree;

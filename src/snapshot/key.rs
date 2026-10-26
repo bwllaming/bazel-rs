@@ -59,7 +59,8 @@ pub const FORMAT: u32 = 3;
 ///   `script_path`, `run_env`, `run`, `run_in_cwd`, `omit_run_args`.
 ///   `run_under` stays: a label prefix is rejected before planning.
 /// * spawn strategies and the sandbox (crate::sandbox::SpawnOptions, read
-///   by action execution and the test runner only).
+///   by action execution and the test runner only), and the persistent
+///   worker options (crate::worker::WorkerOptions, read by action execution).
 /// * the remote cache (crate::remote_cache, read by action execution) and
 ///   credential helpers (read by downloads — network, which a saved run
 ///   never used — and the remote cache).
@@ -106,6 +107,18 @@ pub const EXCLUDED: &[&str] = &[
     "sandbox_writable_path",
     "sandbox_block_path",
     "sandbox_tmpfs_path",
+    "worker_max_instances",
+    "worker_max_multiplex_instances",
+    "experimental_worker_max_multiplex_instances",
+    "worker_quit_after_build",
+    "worker_verbose",
+    "worker_extra_flag",
+    "worker_sandboxing",
+    "worker_multiplex",
+    "experimental_worker_multiplex",
+    "experimental_worker_multiplex_sandboxing",
+    "experimental_worker_strict_flagfiles",
+    "experimental_worker_allowlist",
     "remote_cache",
     "remote_executor",
     "remote_header",
@@ -318,6 +331,8 @@ mod tests {
             "--norun",
             "--script_path=s",
             "--spawn_strategy=standalone",
+            "--worker_max_instances=2",
+            "--noworker_multiplex",
             "--remote_cache=",
             "--credential_helper=x",
             "--native-action-dump=/tmp/d",

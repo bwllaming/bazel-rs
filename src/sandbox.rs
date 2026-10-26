@@ -66,8 +66,8 @@ pub const WORKER_ARG: &str = "__sandbox-worker";
 /// "processwrapper-sandbox" (SandboxModule.java:290-299 — a sandbox that
 /// isolates nothing; the strategy genuine Bazel resolves to on hosts where
 /// namespaces are unavailable, like this one) and "worker"
-/// (BazelStrategyModule.java:75 — registered, never usable here: persistent
-/// workers are not modelled, so resolution skips it).
+/// (BazelStrategyModule.java:75; WorkerSpawnRunner, crate::worker: usable for
+/// spawns that support persistent workers).
 const IDENTIFIER_STANDALONE: &str = "standalone";
 const IDENTIFIER_SANDBOXED: &str = "sandboxed";
 
@@ -97,9 +97,9 @@ pub enum Strategy {
     /// counts as sandboxed (SandboxModule.java:285-299). Escape hatch
     /// matching genuine Bazel on hosts without namespaces.
     ProcessWrapper,
-    /// `worker`: registered but never usable (no persistent workers);
-    /// resolution always skips it, like SpawnStrategyRegistry filtering on
-    /// canExec.
+    /// `worker`: persistent workers (crate::worker); usable only for spawns
+    /// that support them (WorkerSpawnRunner.canExec), skipped otherwise like
+    /// SpawnStrategyRegistry filtering on canExec.
     Worker,
 }
 
@@ -118,15 +118,6 @@ impl Strategy {
     /// (the build summary's "sandboxed" note).
     fn is_sandbox(self) -> bool {
         matches!(self, Strategy::Sandboxed | Strategy::ProcessWrapper)
-    }
-
-    /// Whether the strategy can execute a sandboxable spawn
-    /// (AbstractSpawnStrategy.canExec).
-    fn usable(self) -> bool {
-        match self {
-            Strategy::Standalone | Strategy::Sandboxed | Strategy::ProcessWrapper => true,
-            Strategy::Worker => false,
-        }
     }
 }
 
@@ -258,9 +249,8 @@ pub fn supported() -> bool {
 /// list beats `--spawn_strategy`, its last entry for the mnemonic winning
 /// (BazelStrategyModule.java:84-89 puts into the multimap);
 /// `--strategy_regexp` is not modelled). An empty request selects the
-/// engine's platform default: `sandboxed`, then `standalone`
-/// (BazelStrategyModule.java:67-80: [worker,] sandboxed, local; `worker` is
-/// never usable here so only `sandboxed` and `standalone` execute).
+/// engine's platform default: `worker`, `sandboxed`, then `standalone`
+/// (BazelStrategyModule.java:67-80: [remote,] worker, sandboxed, local).
 fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
     let options = options();
     let requested: &[String] = if let Some((_, list)) = options
@@ -276,7 +266,7 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
         &options.spawn_strategy
     };
     let identifiers: Vec<&str> = if requested.is_empty() {
-        vec![IDENTIFIER_SANDBOXED, IDENTIFIER_STANDALONE]
+        vec!["worker", IDENTIFIER_SANDBOXED, IDENTIFIER_STANDALONE]
     } else {
         requested
             .iter()
@@ -304,30 +294,33 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
 /// can execute it (SpawnStrategyResolver.resolveOne plus
 /// AbstractSpawnStrategy.canExec / Spawns.mayBeSandboxed, Spawns.java:63-67:
 /// actions tagged `no-sandbox`, `nosandbox` or `local` cannot run sandboxed
-/// and fall through to the next strategy of the list; `worker` is registered
-/// but never usable here). `execution_info` merges the rule tags
+/// and fall through to the next strategy of the list; `worker` executes only
+/// spawns that support persistent workers, `worker` here being
+/// crate::worker::can_exec's verdict). `execution_info` merges the rule tags
 /// (Action.execution_info) with the spawn's execution_requirements map
 /// (ActionExtra.execution_info), like remote_policy's merge
 /// (crate::action::remote_policy). Fails with Bazel's message when no
 /// requested strategy can execute the spawn (SpawnStrategyResolver.java:
-/// 77-96).
-pub fn resolve(mnemonic: &str, execution_info: &BTreeSet<String>) -> Result<Strategy, String> {
+/// 77-96; the strategy list prints as a Java list).
+pub fn resolve(
+    mnemonic: &str,
+    execution_info: &BTreeSet<String>,
+    worker: bool,
+) -> Result<Strategy, String> {
     let list = strategies(mnemonic)?;
     let sandboxable = !execution_info.contains("no-sandbox")
         && !execution_info.contains("nosandbox")
         && !execution_info.contains("local");
     for strategy in &list {
-        if !strategy.usable() {
-            continue;
-        }
         match strategy {
             Strategy::Standalone | Strategy::ProcessWrapper => return Ok(*strategy),
             Strategy::Sandboxed if sandboxable && supported() => return Ok(*strategy),
+            Strategy::Worker if worker => return Ok(*strategy),
             Strategy::Sandboxed | Strategy::Worker => continue,
         }
     }
     Err(format!(
-        "{mnemonic} spawn cannot be executed with any of the available strategies: {}. Your \
+        "{mnemonic} spawn cannot be executed with any of the available strategies: [{}]. Your \
          --spawn_strategy, --genrule_strategy, --strategy and/or \
          --allowed_strategies_by_exec_platform flags are probably too strict. Visit \
          https://github.com/bazelbuild/bazel/issues/7480 for advice.",
@@ -398,6 +391,10 @@ struct WorkerConfig {
     /// spawns exec the setup script with the test binary as argv[0],
     /// StandaloneTestStrategy's test wrapper).
     arg0: Option<String>,
+    /// Exec the command in place of the sandbox worker instead of
+    /// supervising it: a sandboxed persistent worker (crate::worker), whose
+    /// stdin and stdout are the worker protocol's streams.
+    exec: bool,
 }
 
 impl WorkerConfig {
@@ -426,6 +423,9 @@ impl WorkerConfig {
         if let Some(arg0) = &self.arg0 {
             argv.push("--arg0".into());
             argv.push(arg0.clone());
+        }
+        if self.exec {
+            argv.push("--exec".into());
         }
         argv.push("--".into());
         argv.extend(arguments.iter().cloned());
@@ -524,8 +524,40 @@ pub fn wrap(
             .then(|| debug_root.join("sandbox-debug.log")),
         setup_error: debug_root.join("sandbox-setup-error"),
         arg0: arg0.map(str::to_owned),
+        exec: false,
     }
     .argv(arguments)
+}
+
+/// [`wrap`] for a sandboxed persistent worker (`--worker_sandboxing`,
+/// SandboxedWorker): the same writable set around the worker's working
+/// directory, the network allowed (genuine's sandboxed workers isolate the
+/// filesystem only), and the worker process exec'ed in place of the sandbox
+/// worker so that its stdin and stdout stay the protocol's streams. A setup
+/// failure is reported on stderr (the worker log) with exit code 126, before
+/// any response.
+pub fn wrap_worker(
+    execroot: &Path,
+    tmp: &Path,
+    environment: &BTreeMap<String, std::ffi::OsString>,
+    arguments: &[String],
+    debug_root: &Path,
+) -> Vec<String> {
+    let mut argv = wrap(
+        execroot,
+        tmp,
+        environment,
+        false,
+        arguments,
+        debug_root,
+        None,
+    );
+    let separator = argv
+        .iter()
+        .position(|argument| argument == "--")
+        .expect("wrap ends its options with --");
+    argv.insert(separator, "--exec".into());
+    argv
 }
 
 /// The worker entry point (main dispatches `__sandbox-worker` here): apply the
@@ -564,6 +596,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
         debug_path: None,
         setup_error: PathBuf::new(),
         arg0: None,
+        exec: false,
     };
     let mut arguments: &[String] = &[];
     let mut index = 0;
@@ -578,6 +611,7 @@ fn worker(args: &[String]) -> Result<i32, String> {
                 config.blocked.push(path(&args.get(index))?);
             }
             "--deny-network" => config.deny_network = true,
+            "--exec" => config.exec = true,
             "--debug" => {
                 index += 1;
                 config.debug_path = Some(path(&args.get(index))?);
@@ -632,6 +666,13 @@ fn worker(args: &[String]) -> Result<i32, String> {
     if let Some(arg0) = &config.arg0 {
         use std::os::unix::process::CommandExt;
         command.arg0(arg0);
+    }
+    if config.exec {
+        // A persistent worker: the worker process replaces this one under
+        // the ruleset (Landlock domains survive exec), keeping its stdin and
+        // stdout, and the executor's worker pool manages its lifetime.
+        let error = crate::spawn_lock::exec(&mut command);
+        return Err(format!("cannot execute '{}': {error}", arguments[0]));
     }
     crate::process_wrapper::run_supervised(&mut command)
         .map_err(|error| format!("cannot execute '{}': {error}", arguments[0]))
@@ -868,6 +909,7 @@ mod tests {
             debug_path: Some(PathBuf::from("/d")),
             setup_error: PathBuf::from("/e"),
             arg0: None,
+            exec: false,
         };
         let argv = config.argv(&strings(&["/bin/true", "x"]));
         assert_eq!(
@@ -896,6 +938,7 @@ mod tests {
             debug_path: None,
             setup_error: PathBuf::new(),
             arg0: None,
+            exec: false,
         };
         let mut arguments: &[String] = &[];
         let mut index = 1;

@@ -20,8 +20,9 @@ run sandboxed like any action (test actions stay local-only, the N23g note).
   `processwrapper-sandbox` (SandboxModule.java:285-299: a sandbox strategy
   that isolates nothing — the strategy genuine Bazel resolves to on hosts
   without usable namespaces, like this one; an explicit escape hatch here)
-  and `worker` (BazelStrategyModule.java:75: registered but never usable —
-  persistent workers are not modelled — so resolution always skips it).
+  and `worker` (BazelStrategyModule.java:75; persistent workers,
+  docs/PERSISTENT_WORKERS.md: usable only for spawns that support workers,
+  skipped for every other spawn).
   Unknown identifiers are rejected once at startup with Bazel's
   STRATEGY_NOT_FOUND text and exit code 2 (SpawnStrategyRegistry.toStrategy:
   717-727): the request name is "explicit default strategies" for
@@ -51,8 +52,11 @@ run sandboxed like any action (test actions stay local-only, the N23g note).
   `sandboxed` the same way. When no requested strategy can execute the spawn
   the build fails with Bazel's message (`SpawnStrategyResolver.java:77-96`).
 - The platform default list is Bazel's own — [worker,] sandboxed, local
-  (`BazelStrategyModule.java:67-80`): `worker` never executes here, so the
-  default that runs is `sandboxed`, then `standalone`.
+  (`BazelStrategyModule.java:67-80`): `worker` executes the spawns whose
+  execution requirements carry `supports-workers=1` or
+  `supports-multiplex-workers=1` (docs/PERSISTENT_WORKERS.md); every other
+  spawn runs `sandboxed`, then `standalone`. A strategy-list error prints the
+  list like Java's `List.toString` (`[worker]`).
 - **Failure semantics (no escalation-on-failure):** an action that fails
   under the sandboxed strategy fails the build; Bazel 9.3 does not retry it
   with the next strategy. The strategy list is a *preference order over

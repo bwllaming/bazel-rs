@@ -261,7 +261,8 @@ negative cases; accepted attributes may never become silent no-ops.
 - Linux sandboxing beyond N59's Landlock filesystem-write sandbox
   (docs/SANDBOX.md): namespace-based isolation and declared tool identity;
   reproducible action environments.
-- Remote Execution API/CAS/AC, disk-cache policy, persistent workers, resource
+- Remote Execution API/CAS/AC, disk-cache policy, persistent workers across
+  commands (per-command workers: docs/PERSISTENT_WORKERS.md), resource
   scheduling, path/symlink semantics and crash recovery.
 - Correct action keys across tool, config, environment and input changes.
 - Content-addressed store maintenance (N36 follow-up): done — the cache's

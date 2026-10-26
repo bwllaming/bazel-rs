@@ -3765,6 +3765,94 @@ fn write_executable_file(path: &Path, bytes: &[u8], executable: u32) -> Result<(
 
 /// Remove a directory tree, first making read-only (0555) tree directories
 /// writable again. Symlinks are never followed.
+/// Removes a directory tree whose directories may be read-only.
+pub(crate) fn remove_tree(path: &Path) -> io::Result<()> {
+    remove_directory(path)
+}
+
+/// Removes everything inside `path`, keeping the directory itself (a
+/// persistent worker's working directory, its process's cwd).
+fn clear_directory(path: &Path) -> Result<(), String> {
+    let entries = fs::read_dir(path).map_err(|e| io_error("cannot read directory", path, e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| io_error("cannot read directory", path, e))?;
+        let child = entry.path();
+        let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_directory(&child)
+        } else {
+            fs::remove_file(&child)
+        };
+        removed.map_err(|e| io_error("cannot remove", &child, e))?;
+    }
+    Ok(())
+}
+
+/// A persistent worker's WorkRequest inputs (WorkerSpawnRunner
+/// .createWorkRequest over InputMetadataProvider.expandArtifacts): every
+/// input file with its SHA-256 as lowercase hex, tree artifacts expanded to
+/// their files, runfiles trees left out, a source directory listed without
+/// a digest; then the parameter files. Sorted by execution path (genuine
+/// lists the spawn's inputs in nested-set order: inputs, tools, parameter
+/// files).
+fn worker_request_inputs(
+    inputs: &BTreeMap<PathBuf, Staged>,
+    param_files: &[(PathBuf, Vec<u8>)],
+) -> Vec<(String, String)> {
+    let runfiles = |name: &Path| {
+        name.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .ends_with(".runfiles")
+        })
+    };
+    let path = |name: &Path| name.to_string_lossy().into_owned();
+    let mut listed = Vec::new();
+    for (name, input) in inputs {
+        if runfiles(name) {
+            continue;
+        }
+        match input {
+            Staged::File(input) => listed.push((path(name), input.digest.hex())),
+            Staged::Tree(tree) => {
+                for (file, input) in &tree.files {
+                    listed.push((path(&name.join(file)), input.digest.hex()));
+                }
+            }
+            Staged::SourceDirectory(_) => listed.push((path(name), String::new())),
+            Staged::Symlink(text) => listed.push((
+                path(name),
+                unresolved_symlink_digest(text.as_os_str().as_bytes()).hex(),
+            )),
+        }
+    }
+    for (name, content) in param_files {
+        listed.push((path(name), digest(content).hex()));
+    }
+    listed
+}
+
+/// Whether `path` (an execution path) is a declared input of the spawn: a
+/// staged input, a file of a tree input, or a parameter file
+/// (WorkerSpawnRunner.expandArgument reads only those).
+fn declared_input(
+    inputs: &BTreeMap<PathBuf, Staged>,
+    param_files: &[(PathBuf, Vec<u8>)],
+    path: &Path,
+) -> bool {
+    if inputs.contains_key(path) || param_files.iter().any(|(name, _)| name == path) {
+        return true;
+    }
+    path.ancestors()
+        .skip(1)
+        .any(|ancestor| match inputs.get(ancestor) {
+            Some(Staged::Tree(tree)) => path
+                .strip_prefix(ancestor)
+                .is_ok_and(|file| tree.files.contains_key(file)),
+            _ => false,
+        })
+}
+
 fn remove_directory(path: &Path) -> io::Result<()> {
     let mut pending = vec![path.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -6006,6 +6094,61 @@ pub fn execute_with_remote(
             Err(error) => crate::remote_cache::warn(&error),
         }
     }
+    // The spawn strategy (N59): the highest-priority strategy that can
+    // execute this spawn (SpawnStrategyResolver.resolveOne), resolved per
+    // action from its mnemonic before anything is staged — a worker spawn
+    // (crate::worker) stages into its worker's working directory. The
+    // strategy never changes the action key: a cache entry produced
+    // sandboxed, by a worker or standalone satisfies any request, like
+    // Bazel's action cache. The execution info merges the rule tags with
+    // the spawn's execution_requirements map, exactly like remote_policy
+    // (crate::action::remote_policy).
+    let mut spawn_strategy = None;
+    let mut worker: Option<(crate::worker::Lease, Vec<String>)> = None;
+    if process && remote_hit.is_none() {
+        let execution_info = {
+            let mut merged = action.execution_info.clone();
+            merged.extend(action.extra.execution_info.keys().cloned());
+            merged
+        };
+        let can_worker = crate::worker::can_exec(
+            &action.extra.mnemonic,
+            &action.extra.execution_info,
+            action.executable_file,
+        );
+        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
+            .map_err(|error| format!("action '{}': {error}", action.id))?;
+        if strategy == crate::sandbox::Strategy::Worker {
+            // WorkerParser.compute: the worker key's environment is the
+            // spawn's with the local TMPDIR (PosixLocalEnvProvider).
+            let mut environment = resolved_environment(action);
+            environment.insert("TMPDIR".into(), tmp.clone().into_os_string());
+            let config = crate::worker::parse(
+                &action.extra.mnemonic,
+                &arguments(action),
+                environment,
+                &action.extra.execution_info,
+            )
+            .map_err(|error| {
+                if error.environmental {
+                    // Genuine's IOException class: exit code 36.
+                    crate::sandbox::note_setup_failure();
+                }
+                format!("action '{}' failed: {}", action.id, error.message)
+            })?;
+            let lease = crate::worker::acquire(work_parent, config.key)
+                .map_err(|error| format!("action '{}' failed: {error}", action.id))?;
+            // The previous request's inputs and outputs go; the worker
+            // process keeps its working directory (its cwd).
+            clear_directory(lease.execroot())?;
+            worker = Some((lease, config.flag_files));
+        }
+        spawn_strategy = Some((strategy, execution_info));
+    }
+    let execroot = match &worker {
+        Some((lease, _)) => lease.execroot().to_path_buf(),
+        None => execroot,
+    };
     // Only a process reads its inputs through the execution root; native
     // writes and transforms read the verified input files directly, and a
     // remote hit runs nothing.
@@ -6032,6 +6175,8 @@ pub fn execute_with_remote(
     // Whether the executed spawn ran under the sandbox strategy (N59); a
     // native write, transform or remote hit runs no process at all.
     let mut sandboxed = false;
+    // Whether the spawn ran in a sandboxed worker (`--worker_sandboxing`).
+    let worker_sandboxed = worker.as_ref().is_some_and(|(lease, _)| lease.sandboxed());
     if let Some(write) = &action.write {
         write_executable_file(
             &execroot.join(&outputs[0]),
@@ -6062,24 +6207,39 @@ pub fn execute_with_remote(
             &String::from_utf8_lossy(&hit.stdout),
             &String::from_utf8_lossy(&hit.stderr),
         );
+    } else if let Some((lease, flag_files)) = worker.as_mut() {
+        // A persistent worker (crate::worker, WorkerSpawnRunner.exec): the
+        // flag files expanded into a WorkRequest, the response's output is
+        // the spawn's stderr (`response.getOutputBytes().writeTo(outErr
+        // .getErrorStream())`), its exit code the spawn's.
+        crate::progress::spawn_started(crate::progress::Strategy::Worker);
+        let request_inputs = worker_request_inputs(inputs, &action.extra.param_files);
+        let read = |path: &str| -> Option<io::Result<Vec<u8>>> {
+            declared_input(inputs, &action.extra.param_files, Path::new(path))
+                .then(|| fs::read(execroot.join(path)))
+        };
+        let response = lease.execute(flag_files, &read, request_inputs);
+        crate::sandbox::count(crate::sandbox::Strategy::Worker);
+        let response =
+            response.map_err(|error| format!("action '{}' failed: {error}", action.id))?;
+        check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
+        if response.exit_code != 0 {
+            return Err(format!(
+                "action '{}' failed (exit status: {}):\nstdout:\n\nstderr:\n{}",
+                action.id, response.exit_code, response.output
+            ));
+        }
+        replay_logs(&action.id, "", &response.output);
+        if remote_spec.is_some() {
+            logs = (Vec::new(), response.output.into_bytes());
+        }
     } else {
         let mut stdout = create_log(&work.0.join("stdout.log"))?;
         let mut stderr = create_log(&work.0.join("stderr.log"))?;
         let argv = arguments(action);
-        // The spawn strategy (N59): the highest-priority strategy that can
-        // execute this spawn (SpawnStrategyResolver.resolveOne), resolved per
-        // action from its mnemonic. The strategy never changes the action key:
-        // a cache entry produced sandboxed satisfies a standalone request and
-        // vice versa, like Bazel's action cache. The execution info merges
-        // the rule tags with the spawn's execution_requirements map, exactly
-        // like remote_policy (crate::action::remote_policy).
-        let execution_info = {
-            let mut merged = action.execution_info.clone();
-            merged.extend(action.extra.execution_info.keys().cloned());
-            merged
-        };
-        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &execution_info)
-            .map_err(|error| format!("action '{}': {error}", action.id))?;
+        let (strategy, execution_info) = spawn_strategy
+            .take()
+            .expect("a process spawn resolved its strategy");
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
         crate::progress::spawn_started(match strategy {
             crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
@@ -6252,7 +6412,7 @@ pub fn execute_with_remote(
                 let _ = set_mode(&path, OUTPUT_MODE);
             }
         }
-        let persistent_execroot = (!sandboxed).then_some(execroot.as_path());
+        let persistent_execroot = (!sandboxed && !worker_sandboxed).then_some(execroot.as_path());
         let walks: Vec<(&PathBuf, Result<WalkedTree, String>)> = outputs
             .iter()
             .filter(|name| action.extra.tree_outputs.contains(*name))

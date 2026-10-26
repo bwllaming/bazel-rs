@@ -1,0 +1,1929 @@
+{
+ "schema": "persistent-workers-reference-receipt/v1",
+ "fixture": "persistent_workers",
+ "purpose": "Bazel 9.3's worker spawn strategy (WorkerSpawnRunner, WorkerParser, WorkerPoolImpl, SingleplexWorker, JSON/proto WorkerProtocol): the default strategy list [worker, sandboxed, local], supports-workers / supports-multiplex-workers ('1' only), requires-worker-protocol (json, proto, invalid), worker-key-mnemonic, --worker_max_instances, --worker_max_multiplex_instances, --noworker_multiplex, --worker_sandboxing, --worker_extra_flag, --experimental_worker_strict_flagfiles, --experimental_worker_allowlist, --worker_verbose, --spawn_strategy/--strategy interplay, the worker argv (flag files removed, --persistent_worker appended, argv[0] absolute), its environment, each WorkRequest (arguments from the expanded @flagfile, the inputs list with hex-text digests, request ids, verbosity, Gson HTML-safe JSON escaping), tree-artifact inputs expanded, and the failure messages (non-zero exit code, crash without response, unparseable response, missing flagfile, invalid protocol). The fixture worker (pkg/worker.py) appends its process starts and requests to <trace>/trace.jsonl; pids are replaced by ordinals.",
+ "capture_script": "/tmp/opencode/perf-research/pw-capture.py (genuine side)",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "build --noshow_progress --color=no --curses=no --keep_going <case flags> --define=trace=<scratch>/trace-<case> -- <targets>",
+  "environment": "PATH=/usr/bin:/bin HOME/TMPDIR private LANG=LC_ALL=C.UTF-8",
+  "scratch_removed": true
+ },
+ "fixture_files_sha256": {
+  "MODULE.bazel": "b1c9ef17c0c2dc0653ae31747affebb046fe70f599b3d25bdbc1873297e97a65",
+  "pkg/BUILD.bazel": "649ddf41690d55eb20500661880d99c60ccab0f0d7c95b17b78ccdae0f3a2f11",
+  "pkg/a.txt": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+  "pkg/b.txt": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+  "pkg/c.txt": "999d1d048ee9123272dd9b718680551c83e867935b47c2650e6906dc22674e47",
+  "pkg/defs.bzl": "7d1c96027caf396134e8b553f0e5ed7099d902e678b881c92074e34029c4fc2e",
+  "pkg/worker.py": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe"
+ },
+ "cases": {
+  "json_one_instance": {
+   "argv": [
+    "build",
+    "--worker_max_instances=1",
+    "//pkg:json_a",
+    "//pkg:json_b",
+    "//pkg:json_c"
+   ],
+   "exit": 0,
+   "seconds": 9.427,
+   "stdout": "",
+   "stderr": "Extracting Bazel installation...\nOpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 13 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 8.484s, Critical Path: 0.08s\nINFO: 4 processes: 1 internal, 3 worker.\nINFO: Build completed successfully, 4 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "json_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ],
+    "json_c.out": [
+     "0o555",
+     "CHARLIE\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params": true,
+      "pkg/c.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/c.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_c.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "999d1d048ee9123272dd9b718680551c83e867935b47c2650e6906dc22674e47",
+        "path": "pkg/c.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "a51864899b544c9127dabbb6ffb722aeec3016bd1eba5ea8a9ef96b6f815e5e2",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/c.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_c.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/c.txt\",\"digest\":\"OTk5ZDFkMDQ4ZWU5MTIzMjcyZGQ5YjcxODY4MDU1MWM4M2U4Njc5MzViNDdjMjY1MGU2OTA2ZGMyMjY3NGU0Nw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params\",\"digest\":\"YTUxODY0ODk5YjU0NGM5MTI3ZGFiYmI2ZmZiNzIyYWVlYzMwMTZiZDFlYmE1ZWE4YTllZjk2YjZmODE1ZTVlMg==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_b.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "67fa37f7828d2807b2a77f9f9091a904fed72658b7027c37807416283728fc5a",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/b.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_b.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params\",\"digest\":\"NjdmYTM3Zjc4MjhkMjgwN2IyYTc3ZjlmOTA5MWE5MDRmZWQ3MjY1OGI3MDI3YzM3ODA3NDE2MjgzNzI4ZmM1YQ==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 3,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "proto_one_instance": {
+   "argv": [
+    "build",
+    "--worker_max_instances=1",
+    "//pkg:proto_a",
+    "//pkg:proto_b",
+    "//pkg:proto_c"
+   ],
+   "exit": 0,
+   "seconds": 8.822,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 13 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 7.842s, Critical Path: 0.08s\nINFO: 4 processes: 1 internal, 3 worker.\nINFO: Build completed successfully, 4 total actions\n",
+   "outputs": {
+    "proto_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "proto_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ],
+    "proto_c.out": [
+     "0o555",
+     "CHARLIE\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/proto_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "proto",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/proto_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "6d2d24ff0ae6386dc98d7107d352d3387fed8bed470cff9969e4d8917c472916",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/proto_a.out-0.params"
+       }
+      ],
+      "requestId": 0,
+      "wire": "0a042d2d696e0a09706b672f612e7478740a052d2d6f75740a2a62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f612e6f75740a062d2d6d6f64650a057570706572124d0a09706b672f612e74787412406236613938643963653961326439313439323838666133646634326433373763336534323733376166646364616637313465333363306131303062353130363012510a0d706b672f776f726b65722e707912403438636536373133303163663665326166363932663164636633333737356431303436323139623966663265623535343837303630633136343166386335666512770a3362617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f612e6f75742d302e706172616d73124036643264323466663061653633383664633938643731303764333532643333383766656438626564343730636666393936396534643839313763343732393136"
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/proto_c.out-0.params": true,
+      "pkg/c.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "proto",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/c.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/proto_c.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "999d1d048ee9123272dd9b718680551c83e867935b47c2650e6906dc22674e47",
+        "path": "pkg/c.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "83312ade0991e72f5c847ead7da485c7998f46582b4fde595bbdb539b93b3476",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/proto_c.out-0.params"
+       }
+      ],
+      "requestId": 0,
+      "wire": "0a042d2d696e0a09706b672f632e7478740a052d2d6f75740a2a62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f632e6f75740a062d2d6d6f64650a057570706572124d0a09706b672f632e74787412403939396431643034386565393132333237326464396237313836383035353163383365383637393335623437633236353065363930366463323236373465343712510a0d706b672f776f726b65722e707912403438636536373133303163663665326166363932663164636633333737356431303436323139623966663265623535343837303630633136343166386335666512770a3362617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f632e6f75742d302e706172616d73124038333331326164653039393165373266356338343765616437646134383563373939386634363538326234666465353935626264623533396239336233343736"
+     }
+    },
+    {
+     "event": "request",
+     "handled": 3,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/proto_b.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "proto",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/proto_b.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "bdced64cb4e3ebb9744cbf6e35d5d88189cd4c931922561a404ae680b93c4e23",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/proto_b.out-0.params"
+       }
+      ],
+      "requestId": 0,
+      "wire": "0a042d2d696e0a09706b672f622e7478740a052d2d6f75740a2a62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f622e6f75740a062d2d6d6f64650a057570706572124d0a09706b672f622e74787412403564613866323364656366333937623133663466353562366662386136313933363233386266653038656439643930313133323937346631626563636334356312510a0d706b672f776f726b65722e707912403438636536373133303163663665326166363932663164636633333737356431303436323139623966663265623535343837303630633136343166386335666512770a3362617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f622e6f75742d302e706172616d73124062646365643634636234653365626239373434636266366533356435643838313839636434633933313932323536316134303461653638306239336334653233"
+     }
+    }
+   ]
+  },
+  "two_keys": {
+   "argv": [
+    "build",
+    "--worker_max_instances=1",
+    "//pkg:json_a",
+    "//pkg:json_other_startup"
+   ],
+   "exit": 0,
+   "seconds": 8.836,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: 7.908s, Critical Path: 0.07s\nINFO: 3 processes: 1 internal, 2 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "json_other_startup.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=b",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 2,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 2,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_other_startup.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_other_startup.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "5f49cc636bd549615e164141f1032c9f897b8037a7df3d2fe258e51fc8653b42",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_other_startup.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_other_startup.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_other_startup.out-0.params\",\"digest\":\"NWY0OWNjNjM2YmQ1NDk2MTVlMTY0MTQxZjEwMzJjOWY4OTdiODAzN2E3ZGYzZDJmZTI1OGU1MWZjODY1M2I0Mg==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "data_inputs": {
+   "argv": [
+    "build",
+    "//pkg:json_data"
+   ],
+   "exit": 0,
+   "seconds": 8.596,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_data (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_data up-to-date:\n  bazel-bin/pkg/json_data.out\nINFO: Elapsed time: 7.603s, Critical Path: 0.05s\nINFO: 2 processes: 1 internal, 1 worker.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_data.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_data.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_data.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "3a6d7779fb74ae4bfe03730d0abda1892a6cabda97bb98b174e1c1db66c9e750",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_data.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_data.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_data.out-0.params\",\"digest\":\"M2E2ZDc3NzlmYjc0YWU0YmZlMDM3MzBkMGFiZGExODkyYTZjYWJkYTk3YmI5OGIxNzRlMWMxZGI2NmM5ZTc1MA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "noisy": {
+   "argv": [
+    "build",
+    "//pkg:json_noisy"
+   ],
+   "exit": 0,
+   "seconds": 8.242,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_noisy (5 packages loaded, 9 targets configured).\nINFO: From Working //pkg:json_noisy:\nnoisy worker says hello\nINFO: Found 1 target...\nTarget //pkg:json_noisy up-to-date:\n  bazel-bin/pkg/json_noisy.out\nINFO: Elapsed time: 7.438s, Critical Path: 0.05s\nINFO: 2 processes: 1 internal, 1 worker.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_noisy.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_noisy.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_noisy.out",
+       "--mode",
+       "noisy"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "6061bf1b5b9d88dd9b101c75173e8beafbb429de51f88cc9b1041db16705d0f8",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_noisy.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_noisy.out\",\"--mode\",\"noisy\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_noisy.out-0.params\",\"digest\":\"NjA2MWJmMWI1YjlkODhkZDliMTAxYzc1MTczZThiZWFmYmI0MjlkZTUxZjg4Y2M5YjEwNDFkYjE2NzA1ZDBmOA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "fail": {
+   "argv": [
+    "build",
+    "//pkg:json_fail"
+   ],
+   "exit": 1,
+   "seconds": 8.125,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_fail (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:49:5: Working //pkg:json_fail failed: (Exit 1): worker.py failed: error executing FixtureWork command (from work rule target //pkg:json_fail) pkg/worker.py '--startup_flag=a' @bazel-out/k8-fastbuild/bin/pkg/json_fail.out-0.params\nboom: work failed\nINFO: Found 1 target...\nTarget //pkg:json_fail failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.380s, Critical Path: 0.06s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_fail.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_fail.out",
+       "--mode",
+       "fail"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "217dba5a9d54149a5f8c557e6add09868a7f37b951534e6e75b05c4af68cc6db",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_fail.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_fail.out\",\"--mode\",\"fail\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_fail.out-0.params\",\"digest\":\"MjE3ZGJhNWE5ZDU0MTQ5YTVmOGM1NTdlNmFkZDA5ODY4YTdmMzdiOTUxNTM0ZTZlNzViMDVjNGFmNjhjYzZkYg==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "crash": {
+   "argv": [
+    "build",
+    "//pkg:json_crash"
+   ],
+   "exit": 1,
+   "seconds": 8.025,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_crash (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:56:5: Working //pkg:json_crash failed: Worker process did not return a WorkResponse:\n\n---8<---8<--- Start of log, file at <ROOT>/our/0e8c064c69d6dc5c8594bff4150b6b36/bazel-workers/worker-1-FixtureWork.log ---8<---8<---\nworker crashing\n---8<---8<--- End of log ---8<---8<---\nINFO: Found 1 target...\nTarget //pkg:json_crash failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.247s, Critical Path: 0.06s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_crash.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_crash.out",
+       "--mode",
+       "crash"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "f19469d174b45c6267f11eeb23f7923a4c71f3463b7543b84c90ee705937ae2f",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_crash.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_crash.out\",\"--mode\",\"crash\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_crash.out-0.params\",\"digest\":\"ZjE5NDY5ZDE3NGI0NWM2MjY3ZjExZWViMjNmNzkyM2E0YzcxZjM0NjNiNzU0M2I4NGM5MGVlNzA1OTM3YWUyZg==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "garbage": {
+   "argv": [
+    "build",
+    "//pkg:json_garbage"
+   ],
+   "exit": 1,
+   "seconds": 8.456,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_garbage (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:63:5: Working //pkg:json_garbage failed: Worker process returned an unparseable WorkResponse!\n\nDid you try to print something to stdout? Workers aren't allowed to do this, as it breaks the protocol between Bazel and the worker process.\n\n---8<---8<--- Start of response ---8<---8<---\nthis is not a response\n---8<---8<--- End of response ---8<---8<---\n\n---8<---8<--- Exception details ---8<---8<---\njava.io.IOException: Worker process for FixtureWork died while waiting for response\n\tat com.google.devtools.build.lib.worker.SingleplexWorker.getResponse(SingleplexWorker.java:194)\n\tat com.google.devtools.build.lib.worker.WorkerSpawnRunner.executeRequest(WorkerSpawnRunner.java:576)\n\tat com.google.devtools.build.lib.worker.WorkerSpawnRunner.execInWorker(WorkerSpawnRunner.java:422)\n\tat com.google.devtools.build.lib.worker.WorkerSpawnRunner.exec(WorkerSpawnRunner.java:212)\n\tat com.google.devtools.build.lib.exec.AbstractSpawnStrategy.exec(AbstractSpawnStrategy.java:148)\n\tat com.google.devtools.build.lib.exec.AbstractSpawnStrategy.exec(AbstractSpawnStrategy.java:108)\n\tat com.google.devtools.build.lib.exec.SpawnStrategyResolver.exec(SpawnStrategyResolver.java:46)\n\tat com.google.devtools.build.lib.analysis.actions.SpawnAction.execute(SpawnAction.java:286)\n\tat com.google.devtools.build.lib.skyframe.SkyframeActionExecutor$ActionRunner.executeAction(SkyframeActionExecutor.java:1235)\n\tat com.google.devtools.build.lib.skyframe.SkyframeActionExecutor$ActionRunner.run(SkyframeActionExecutor.java:1138)\n\tat com.google.devtools.build.lib.skyframe.ActionExecutionState.runStateMachine(ActionExecutionState.java:166)\n\tat com.google.devtools.build.lib.skyframe.ActionExecutionState.getResultOrDependOnFuture(ActionExecutionState.java:95)\n\tat com.google.devtools.build.lib.skyframe.SkyframeActionExecutor.executeAction(SkyframeActionExecutor.java:656)\n\tat com.google.devtools.build.lib.skyframe.ActionExecutionFunction.checkCacheAndExecuteIfNeeded(ActionExecutionFunction.java:780)\n\tat com.google.devtools.build.lib.skyframe.ActionExecutionFunction.computeInternal(ActionExecutionFunction.java:345)\n\tat com.google.devtools.build.lib.skyframe.ActionExecutionFunction.compute(ActionExecutionFunction.java:202)\n\tat com.google.devtools.build.skyframe.AbstractParallelEvaluator$Evaluate.run(AbstractParallelEvaluator.java:471)\n\tat com.google.devtools.build.lib.concurrent.AbstractQueueVisitor$WrappedRunnable.run(AbstractQueueVisitor.java:435)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$RunnableExecuteAction.compute(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask$InterruptibleTask.exec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinTask.doExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool$WorkQueue.topLevelExec(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinPool.runWorker(Unknown Source)\n\tat java.base/java.util.concurrent.ForkJoinWorkerThread.run(Unknown Source)\n---8<---8<--- End of exception details ---8<---8<---\n\n---8<---8<--- Start of log, file at <ROOT>/our/bac20996e12555e0b33dce8f68eee3d2/bazel-workers/worker-1-FixtureWork.log ---8<---8<---\n(empty)\n---8<---8<--- End of log ---8<---8<---\nINFO: Found 1 target...\nTarget //pkg:json_garbage failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.599s, Critical Path: 0.06s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_garbage.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_garbage.out",
+       "--mode",
+       "garbage"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "9f8efdf31b561e3cb42a0b0d1bb69d0aac82bc3c625d53ea5e43e20bb6171090",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_garbage.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_garbage.out\",\"--mode\",\"garbage\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_garbage.out-0.params\",\"digest\":\"OWY4ZWZkZjMxYjU2MWUzY2I0MmEwYjBkMWJiNjlkMGFhYzgyYmMzYzYyNWQ1M2VhNWU0M2UyMGJiNjE3MTA5MA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "proto_fail": {
+   "argv": [
+    "build",
+    "//pkg:proto_fail"
+   ],
+   "exit": 1,
+   "seconds": 8.402,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:proto_fail (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:70:5: Working //pkg:proto_fail failed: (Exit 1): worker.py failed: error executing FixtureProto command (from work rule target //pkg:proto_fail) pkg/worker.py '--startup_flag=a' @bazel-out/k8-fastbuild/bin/pkg/proto_fail.out-0.params\nboom: work failed\nINFO: Found 1 target...\nTarget //pkg:proto_fail failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.501s, Critical Path: 0.06s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/proto_fail.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "proto",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/proto_fail.out",
+       "--mode",
+       "fail"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "af1435a5935e98b053586811f066b889bf0d1a4767b1220292698cc0faae043e",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/proto_fail.out-0.params"
+       }
+      ],
+      "requestId": 0,
+      "wire": "0a042d2d696e0a09706b672f612e7478740a052d2d6f75740a2d62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f6661696c2e6f75740a062d2d6d6f64650a046661696c124d0a09706b672f612e74787412406236613938643963653961326439313439323838666133646634326433373763336534323733376166646364616637313465333363306131303062353130363012510a0d706b672f776f726b65722e7079124034386365363731333031636636653261663639326631646366333337373564313034363231396239666632656235353438373036306331363431663863356665127a0a3662617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f6661696c2e6f75742d302e706172616d73124061663134333561353933356539386230353335383638313166303636623838396266306431613437363762313232303239323639386363306661616530343365"
+     }
+    }
+   ]
+  },
+  "noflagfile": {
+   "argv": [
+    "build",
+    "//pkg:json_noflagfile"
+   ],
+   "exit": 1,
+   "seconds": 8.482,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_noflagfile (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:79:5: Working //pkg:json_noflagfile failed: Worker strategy cannot execute this FixtureWork action, because the command-line arguments do not contain exactly one @flagfile or --flagfile=\n[pkg/worker.py, --startup_flag=a, --in, pkg/a.txt, --out, bazel-out/k8-fastbuild/bin/pkg/json_noflagfile.out, --mode, upper]\nINFO: Found 1 target...\nTarget //pkg:json_noflagfile failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.579s, Critical Path: 0.02s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": []
+  },
+  "not_one": {
+   "argv": [
+    "build",
+    "//pkg:not_one"
+   ],
+   "exit": 0,
+   "seconds": 8.465,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:not_one (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:not_one up-to-date:\n  bazel-bin/pkg/not_one.out\nINFO: Elapsed time: 7.646s, Critical Path: 0.07s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "not_one.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": []
+  },
+  "bad_protocol": {
+   "argv": [
+    "build",
+    "//pkg:bad_protocol"
+   ],
+   "exit": 36,
+   "seconds": 8.216,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:bad_protocol (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:99:5: Working //pkg:bad_protocol failed: Exec failed due to IOException: requires-worker-protocol must be set to a valid worker protocol format: json or proto\nINFO: Found 1 target...\nTarget //pkg:bad_protocol failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.395s, Critical Path: 0.02s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": []
+  },
+  "multiplex": {
+   "argv": [
+    "build",
+    "--worker_max_multiplex_instances=1",
+    "//pkg:multiplex_a",
+    "//pkg:multiplex_b"
+   ],
+   "exit": 0,
+   "seconds": 8.47,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 11 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: 7.603s, Critical Path: 0.06s\nINFO: 3 processes: 1 internal, 2 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "multiplex_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "multiplex_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "0ba85c7f8b791076d90d8e228f55b26ad2017d40df7a4da969f408c9614813cc",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params\",\"digest\":\"MGJhODVjN2Y4Yjc5MTA3NmQ5MGQ4ZTIyOGY1NWIyNmFkMjAxN2Q0MGRmN2E0ZGE5NjlmNDA4Yzk2MTQ4MTNjYw==\"}],\"requestId\":1}",
+      "requestId": 1
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "6bff69af4217b44f139df123dc0f037aefd67d4c228d666758c84effcf9f5129",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/b.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params\",\"digest\":\"NmJmZjY5YWY0MjE3YjQ0ZjEzOWRmMTIzZGMwZjAzN2FlZmQ2N2Q0YzIyOGQ2NjY3NThjODRlZmZjZjlmNTEyOQ==\"}],\"requestId\":2}",
+      "requestId": 2
+     }
+    }
+   ]
+  },
+  "no_multiplex": {
+   "argv": [
+    "build",
+    "--noworker_multiplex",
+    "--worker_max_instances=1",
+    "//pkg:multiplex_a",
+    "//pkg:multiplex_b"
+   ],
+   "exit": 0,
+   "seconds": 8.458,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 11 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: 7.568s, Critical Path: 0.06s\nINFO: 3 processes: 1 internal, 2 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "multiplex_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "multiplex_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "6bff69af4217b44f139df123dc0f037aefd67d4c228d666758c84effcf9f5129",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/b.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/multiplex_b.out-0.params\",\"digest\":\"NmJmZjY5YWY0MjE3YjQ0ZjEzOWRmMTIzZGMwZjAzN2FlZmQ2N2Q0YzIyOGQ2NjY3NThjODRlZmZjZjlmNTEyOQ==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "0ba85c7f8b791076d90d8e228f55b26ad2017d40df7a4da969f408c9614813cc",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/multiplex_a.out-0.params\",\"digest\":\"MGJhODVjN2Y4Yjc5MTA3NmQ5MGQ4ZTIyOGY1NWIyNmFkMjAxN2Q0MGRmN2E0ZGE5NjlmNDA4Yzk2MTQ4MTNjYw==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "keyed": {
+   "argv": [
+    "build",
+    "--worker_max_instances=1",
+    "//pkg:keyed_one",
+    "//pkg:keyed_two"
+   ],
+   "exit": 0,
+   "seconds": 8.467,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 11 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: 7.516s, Critical Path: 0.06s\nINFO: 3 processes: 1 internal, 2 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "keyed_one.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "keyed_two.out": [
+     "0o555",
+     "BRAVO\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/keyed_two.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/keyed_two.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "5d18fa60804ec47a086e70621530796ff67e9686b0e92467d255e67c29b3fd50",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/keyed_two.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/b.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/keyed_two.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/keyed_two.out-0.params\",\"digest\":\"NWQxOGZhNjA4MDRlYzQ3YTA4NmU3MDYyMTUzMDc5NmZmNjdlOTY4NmIwZTkyNDY3ZDI1NWU2N2MyOWIzZmQ1MA==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/keyed_one.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/keyed_one.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "46520b8ada46c55de259dcb0cbd1ec13b6d9844ebee09f656a4bf996bd39e533",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/keyed_one.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/keyed_one.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/keyed_one.out-0.params\",\"digest\":\"NDY1MjBiOGFkYTQ2YzU1ZGUyNTlkY2IwY2JkMWVjMTNiNmQ5ODQ0ZWJlZTA5ZjY1NmE0YmY5OTZiZDM5ZTUzMw==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "standalone": {
+   "argv": [
+    "build",
+    "--spawn_strategy=standalone",
+    "//pkg:json_a",
+    "//pkg:json_b",
+    "//pkg:json_c"
+   ],
+   "exit": 0,
+   "seconds": 8.335,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 13 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 7.476s, Critical Path: 0.05s\nINFO: 4 processes: 1 internal, 3 local.\nINFO: Build completed successfully, 4 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "json_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ],
+    "json_c.out": [
+     "0o555",
+     "CHARLIE\n"
+    ]
+   },
+   "trace": []
+  },
+  "sandboxed_strategy": {
+   "argv": [
+    "build",
+    "--spawn_strategy=sandboxed",
+    "//pkg:json_a"
+   ],
+   "exit": 0,
+   "seconds": 8.545,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_a (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_a up-to-date:\n  bazel-bin/pkg/json_a.out\nINFO: Elapsed time: 7.498s, Critical Path: 0.06s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": []
+  },
+  "force_worker_plain": {
+   "argv": [
+    "build",
+    "--strategy=FixtureWork=worker",
+    "//pkg:plain"
+   ],
+   "exit": 1,
+   "seconds": 8.482,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:plain (5 packages loaded, 9 targets configured).\nERROR: <WS>/pkg/BUILD.bazel:94:5: Working //pkg:plain failed: FixtureWork spawn cannot be executed with any of the available strategies: [worker]. Your --spawn_strategy, --genrule_strategy, --strategy and/or --allowed_strategies_by_exec_platform flags are probably too strict. Visit https://github.com/bazelbuild/bazel/issues/7480 for advice.\nINFO: Found 1 target...\nTarget //pkg:plain failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nINFO: Elapsed time: 7.490s, Critical Path: 0.03s\nINFO: 2 processes: 2 internal.\nERROR: Build did NOT complete successfully\n",
+   "outputs": {},
+   "trace": []
+  },
+  "worker_sandboxing": {
+   "argv": [
+    "build",
+    "--worker_sandboxing",
+    "--worker_max_instances=1",
+    "//pkg:json_a",
+    "//pkg:json_b",
+    "//pkg:json_c"
+   ],
+   "exit": 0,
+   "seconds": 8.201,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 3 targets (5 packages loaded, 13 targets configured).\nINFO: Found 3 targets...\nINFO: Elapsed time: 7.399s, Critical Path: 0.07s\nINFO: 4 processes: 1 internal, 3 worker.\nINFO: Build completed successfully, 4 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "json_b.out": [
+     "0o555",
+     "BRAVO\n"
+    ],
+    "json_c.out": [
+     "0o555",
+     "CHARLIE\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params": true,
+      "pkg/b.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/b.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_b.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "5da8f23decf397b13f4f55b6fb8a61936238bfe08ed9d901132974f1beccc45c",
+        "path": "pkg/b.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "67fa37f7828d2807b2a77f9f9091a904fed72658b7027c37807416283728fc5a",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/b.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_b.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/b.txt\",\"digest\":\"NWRhOGYyM2RlY2YzOTdiMTNmNGY1NWI2ZmI4YTYxOTM2MjM4YmZlMDhlZDlkOTAxMTMyOTc0ZjFiZWNjYzQ1Yw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_b.out-0.params\",\"digest\":\"NjdmYTM3Zjc4MjhkMjgwN2IyYTc3ZjlmOTA5MWE5MDRmZWQ3MjY1OGI3MDI3YzM3ODA3NDE2MjgzNzI4ZmM1YQ==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 2,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "event": "request",
+     "handled": 3,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params": true,
+      "pkg/c.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/c.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_c.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "999d1d048ee9123272dd9b718680551c83e867935b47c2650e6906dc22674e47",
+        "path": "pkg/c.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "a51864899b544c9127dabbb6ffb722aeec3016bd1eba5ea8a9ef96b6f815e5e2",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/c.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_c.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/c.txt\",\"digest\":\"OTk5ZDFkMDQ4ZWU5MTIzMjcyZGQ5YjcxODY4MDU1MWM4M2U4Njc5MzViNDdjMjY1MGU2OTA2ZGMyMjY3NGU0Nw==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_c.out-0.params\",\"digest\":\"YTUxODY0ODk5YjU0NGM5MTI3ZGFiYmI2ZmZiNzIyYWVlYzMwMTZiZDFlYmE1ZWE4YTllZjk2YjZmODE1ZTVlMg==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "extra_flag": {
+   "argv": [
+    "build",
+    "--worker_extra_flag=FixtureWork=--extra",
+    "//pkg:json_a"
+   ],
+   "exit": 0,
+   "seconds": 8.409,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_a (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_a up-to-date:\n  bazel-bin/pkg/json_a.out\nINFO: Elapsed time: 7.524s, Critical Path: 0.07s\nINFO: 2 processes: 1 internal, 1 worker.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker",
+      "--extra"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "strict_flagfiles": {
+   "argv": [
+    "build",
+    "--experimental_worker_strict_flagfiles",
+    "//pkg:json_a"
+   ],
+   "exit": 0,
+   "seconds": 8.757,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_a (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_a up-to-date:\n  bazel-bin/pkg/json_a.out\nINFO: Elapsed time: 7.860s, Critical Path: 0.07s\nINFO: 2 processes: 1 internal, 1 worker.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  },
+  "allowlist_excludes": {
+   "argv": [
+    "build",
+    "--experimental_worker_allowlist=Other",
+    "//pkg:json_a"
+   ],
+   "exit": 0,
+   "seconds": 8.241,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_a (5 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_a up-to-date:\n  bazel-bin/pkg/json_a.out\nINFO: Elapsed time: 7.424s, Critical Path: 0.05s\nINFO: 2 processes: 1 internal, 1 processwrapper-sandbox.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": []
+  },
+  "verbose": {
+   "argv": [
+    "build",
+    "--worker_verbose",
+    "//pkg:json_a"
+   ],
+   "exit": 0,
+   "seconds": 8.524,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_a (5 packages loaded, 9 targets configured).\nINFO: Created new non-sandboxed singleplex FixtureWork worker (id 1, key hash -793537182), logging to <ROOT>/our/e60fc375915d97351a7012103b22b7e2/bazel-workers/worker-1-FixtureWork.log\nINFO: Found 1 target...\nTarget //pkg:json_a up-to-date:\n  bazel-bin/pkg/json_a.out\nINFO: Elapsed time: 7.688s, Critical Path: 0.07s\nINFO: 2 processes: 1 internal, 1 worker.\nINFO: Build completed successfully, 2 total actions\n",
+   "outputs": {
+    "json_a.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_a.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "4c4c3ac2447e2668d887f6beb6b1bf0657eada219972cf6c5b725c3919dc9074",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_a.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_a.out-0.params\",\"digest\":\"NGM0YzNhYzI0NDdlMjY2OGQ4ODdmNmJlYjZiMWJmMDY1N2VhZGEyMTk5NzJjZjZjNWI3MjVjMzkxOWRjOTA3NA==\"}],\"verbosity\":10}",
+      "requestId": 0,
+      "verbosity": 10
+     }
+    }
+   ]
+  },
+  "escape": {
+   "argv": [
+    "build",
+    "--worker_max_instances=1",
+    "//pkg:json_escape",
+    "//pkg:proto_escape"
+   ],
+   "exit": 0,
+   "seconds": 8.623,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed 2 targets (5 packages loaded, 10 targets configured).\nINFO: Found 2 targets...\nINFO: Elapsed time: 7.737s, Critical Path: 0.07s\nINFO: 3 processes: 1 internal, 2 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "json_escape.out": [
+     "0o555",
+     "ALPHA\n"
+    ],
+    "proto_escape.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_escape.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_escape.out",
+       "--mode",
+       "upper",
+       "--extra",
+       "k=<v>&'q' é \"dq\" \\ tab\t   /"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "005bc1c832f9e5c954c2643922c1bde70c02babc2b574250766c04ace57a82e3",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_escape.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_escape.out\",\"--mode\",\"upper\",\"--extra\",\"k\\u003d\\u003cv\\u003e\\u0026\\u0027q\\u0027 é \\\"dq\\\" \\\\ tab\\t \\u2028 /\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_escape.out-0.params\",\"digest\":\"MDA1YmMxYzgzMmY5ZTVjOTU0YzI2NDM5MjJjMWJkZTcwYzAyYmFiYzJiNTc0MjUwNzY2YzA0YWNlNTdhODJlMw==\"}]}",
+      "requestId": 0
+     }
+    },
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 2,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/proto_escape.out-0.params": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 2,
+     "protocol": "proto",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/proto_escape.out",
+       "--mode",
+       "upper",
+       "--extra",
+       "k=<v>&'q' é \"dq\" \\ tab\t   /"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "0cbc1566e9f5f1102e0a643832e3d4030601b2d3ae7ec4438c690e45f1d51a62",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/proto_escape.out-0.params"
+       }
+      ],
+      "requestId": 0,
+      "wire": "0a042d2d696e0a09706b672f612e7478740a052d2d6f75740a2f62617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f6573636170652e6f75740a062d2d6d6f64650a0575707065720a072d2d65787472610a1e6b3d3c763e2627712720c3a92022647122205c207461620920e280a8202f124d0a09706b672f612e74787412406236613938643963653961326439313439323838666133646634326433373763336534323733376166646364616637313465333363306131303062353130363012510a0d706b672f776f726b65722e7079124034386365363731333031636636653261663639326631646366333337373564313034363231396239666632656235353438373036306331363431663863356665127c0a3862617a656c2d6f75742f6b382d666173746275696c642f62696e2f706b672f70726f746f5f6573636170652e6f75742d302e706172616d73124030636263313536366539663566313130326530613634333833326533643430333036303162326433616537656334343338633639306534356631643531613632"
+     }
+    }
+   ]
+  },
+  "tree_input": {
+   "argv": [
+    "build",
+    "//pkg:json_tree"
+   ],
+   "exit": 0,
+   "seconds": 8.463,
+   "stdout": "",
+   "stderr": "OpenJDK 64-Bit Server VM warning: Options -Xverify:none and -noverify were deprecated in JDK 13 and will likely be removed in a future release.\nINFO: Analyzed target //pkg:json_tree (5 packages loaded, 10 targets configured).\nINFO: Found 1 target...\nTarget //pkg:json_tree up-to-date:\n  bazel-bin/pkg/json_tree.out\nINFO: Elapsed time: 7.606s, Critical Path: 0.07s\nINFO: 3 processes: 1 internal, 1 processwrapper-sandbox, 1 worker.\nINFO: Build completed successfully, 3 total actions\n",
+   "outputs": {
+    "json_tree.out": [
+     "0o555",
+     "ALPHA\n"
+    ]
+   },
+   "trace": [
+    {
+     "args": [
+      "--startup_flag=a",
+      "--persistent_worker"
+     ],
+     "argv0_absolute": true,
+     "argv0_tail": "pkg/worker.py",
+     "env": [
+      "LC_CTYPE",
+      "TMPDIR",
+      "TRACE"
+     ],
+     "event": "start",
+     "pid": 1,
+     "tmpdir": "<TMP>"
+    },
+    {
+     "event": "request",
+     "handled": 1,
+     "inputs_visible": {
+      "bazel-out/k8-fastbuild/bin/pkg/json_tree.out-0.params": true,
+      "bazel-out/k8-fastbuild/bin/pkg/tree/one.txt": true,
+      "bazel-out/k8-fastbuild/bin/pkg/tree/sub/two.txt": true,
+      "pkg/a.txt": true,
+      "pkg/worker.py": true
+     },
+     "pid": 1,
+     "protocol": "json",
+     "request": {
+      "arguments": [
+       "--in",
+       "pkg/a.txt",
+       "--out",
+       "bazel-out/k8-fastbuild/bin/pkg/json_tree.out",
+       "--mode",
+       "upper"
+      ],
+      "inputs": [
+       {
+        "digest": "b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+        "path": "pkg/a.txt"
+       },
+       {
+        "digest": "2c8b08da5ce60398e1f19af0e5dccc744df274b826abe585eaba68c525434806",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/tree/one.txt"
+       },
+       {
+        "digest": "27dd8ed44a83ff94d557f9fd0412ed5a8cbca69ea04922d88c01184a07300a5a",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/tree/sub/two.txt"
+       },
+       {
+        "digest": "48ce671301cf6e2af692f1dcf33775d1046219b9ff2eb55487060c1641f8c5fe",
+        "path": "pkg/worker.py"
+       },
+       {
+        "digest": "168d12ea8839ba0caf0293a626667eda20ad10e9368d27433dc20f22bebabc4e",
+        "path": "bazel-out/k8-fastbuild/bin/pkg/json_tree.out-0.params"
+       }
+      ],
+      "line": "{\"arguments\":[\"--in\",\"pkg/a.txt\",\"--out\",\"bazel-out/k8-fastbuild/bin/pkg/json_tree.out\",\"--mode\",\"upper\"],\"inputs\":[{\"path\":\"pkg/a.txt\",\"digest\":\"YjZhOThkOWNlOWEyZDkxNDkyODhmYTNkZjQyZDM3N2MzZTQyNzM3YWZkY2RhZjcxNGUzM2MwYTEwMGI1MTA2MA==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/tree/one.txt\",\"digest\":\"MmM4YjA4ZGE1Y2U2MDM5OGUxZjE5YWYwZTVkY2NjNzQ0ZGYyNzRiODI2YWJlNTg1ZWFiYTY4YzUyNTQzNDgwNg==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/tree/sub/two.txt\",\"digest\":\"MjdkZDhlZDQ0YTgzZmY5NGQ1NTdmOWZkMDQxMmVkNWE4Y2JjYTY5ZWEwNDkyMmQ4OGMwMTE4NGEwNzMwMGE1YQ==\"},{\"path\":\"pkg/worker.py\",\"digest\":\"NDhjZTY3MTMwMWNmNmUyYWY2OTJmMWRjZjMzNzc1ZDEwNDYyMTliOWZmMmViNTU0ODcwNjBjMTY0MWY4YzVmZQ==\"},{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/json_tree.out-0.params\",\"digest\":\"MTY4ZDEyZWE4ODM5YmEwY2FmMDI5M2E2MjY2NjdlZGEyMGFkMTBlOTM2OGQyNzQzM2RjMjBmMjJiZWJhYmM0ZQ==\"}]}",
+      "requestId": 0
+     }
+    }
+   ]
+  }
+ }
+}
