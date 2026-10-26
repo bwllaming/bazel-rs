@@ -365,7 +365,7 @@ fn starlark_toolchains_attribute_feeds_ctx_var_and_expansion() {
 }
 
 #[test]
-fn query_lists_toolchains_edges_and_cquery_stays_unsupported() {
+fn query_and_cquery_list_toolchain_edges() {
     let f = Fixture::new();
     for (expression, expected) in [
         (
@@ -390,11 +390,12 @@ fn query_lists_toolchains_edges_and_cquery_stays_unsupported() {
         assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
     }
     let output = f.run("cquery", &["deps(//gt:aws_script, 1)"]);
-    assert!(!output.status.success());
+    assert!(output.status.success(), "{}", stderr(&output));
+    let configured = String::from_utf8_lossy(&output.stdout);
+    assert!(configured.contains("//gt:aws_script ("), "{configured}");
     assert!(
-        stderr(&output).contains("unsupported command"),
-        "{}",
-        stderr(&output)
+        configured.contains("//aws:resolved_toolchain ("),
+        "{configured}"
     );
 }
 

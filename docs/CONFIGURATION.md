@@ -1296,8 +1296,10 @@ remaining mismatches are documented divergences:
 EXACT_MESSAGE rows still lacking secondary Bazel errors: further rule errors
 of the same package (Bazel reports every rule error of a package; native stops
 at the first), and the column of `label_flag(build_setting_default = None)`
-errors (`2:11` versus `2:1`). `cquery` and int values outside 64 bits are
-EXPECTED_NATIVE_UNSUPPORTED.
+errors (`2:11` versus `2:1`). That historical capture classified `cquery` and int
+values outside 64 bits as EXPECTED_NATIVE_UNSUPPORTED. Configured `cquery` and
+the binary-state-backed `config --output=json --dump_all` now exist; see
+[CQUERY.md](CQUERY.md) for their supported surface and native checksum divergence.
 
 ## N16c paired capture
 
@@ -1380,4 +1382,5 @@ documented divergences:
   `--copt` on the command line; `select()` on `copt`),
   `--flag_alias`,
   `--debug_select_always_succeed`, `--incompatible_disable_select_on`,
-  platform mappings, every other build option, `cquery`/`config` commands.
+   platform mappings and every other build option. The configured-query subset
+   and configuration dump are documented separately in [CQUERY.md](CQUERY.md).

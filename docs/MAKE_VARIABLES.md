@@ -46,7 +46,8 @@ toolchain types, tool inputs and command expansion), `src/custom_rule.rs`
   types. Starlark rules never derive toolchain types from the attribute.
 * `query` lists the edges (`deps(//gt:aws_script, 1)` includes
   `@aspect_rules_aws//aws:resolved_toolchain`; `deps()` of a genrule with a
-  `toolchain_type` entry includes the type). `cquery` is not a native command.
+  `toolchain_type` entry includes the type). Configured `cquery` is now supported
+  separately; see [CQUERY.md](CQUERY.md).
 
 ## Make variables
 
@@ -165,7 +166,8 @@ StarlarkRuleConfiguredTargetUtil.buildRule reports them, `:97-115`).
 
 ## Not implemented / divergences
 
-* `cquery` is not a native command (the capture row is an explicit gap).
+* The historical capture's `cquery` gap is now covered by configured analysis
+  (docs/CQUERY.md); `query_and_cquery_list_toolchain_edges` checks both commands.
 * A Starlark traceback keeps the native format (the duplicate-`targets`
   message is Bazel's text).
 * `heuristic_label_expansion = True`, `cmd_bash`, Windows commands and
