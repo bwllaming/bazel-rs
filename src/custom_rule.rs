@@ -119,7 +119,9 @@ pub struct AttrDeclaration {
     pub cfg: crate::rule_declarations::Cfg,
     #[serde(skip_serializing_if = "is_false")]
     pub executable: bool,
-    /// Exported aspect identities (`<extension>%<name>`).
+    /// The attribute's AspectsList as exported aspect identities
+    /// (`<extension>%<name>`): each listed aspect preceded by its required
+    /// aspects, each once (crate::rule_declarations::aspects_list).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub aspects: Vec<String>,
     /// The aspects' query-visible definitions, required aspects first
