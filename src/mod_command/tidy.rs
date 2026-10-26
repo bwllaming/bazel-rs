@@ -19,6 +19,7 @@ fn proxy_name(location: &str) -> String {
     let (Ok(column), Ok(line)) = (column.parse::<usize>(), line.parse::<usize>()) else {
         return String::new();
     };
+    // snapshot-unrecorded: `mod tidy` never records an analysis snapshot.
     let Ok(text) = std::fs::read_to_string(file) else {
         return String::new();
     };
