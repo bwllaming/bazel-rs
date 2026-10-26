@@ -274,6 +274,50 @@ fn snapshot_verification_source_presence_and_configuration_changes() {
 }
 
 #[test]
+fn graph_snapshot_replay_honors_quiet_without_storing_console_markers_in_output() {
+    let ws = Workspace::new();
+    let definitions = fs::read_to_string(ws.path().join("defs.bzl")).unwrap();
+    ws.write(
+        "defs.bzl",
+        &format!("{definitions}\nprint('cquery-note-sentinel')\n"),
+    );
+    let query = |quiet| {
+        let mut command = ws.command(true);
+        if quiet {
+            command.arg("--quiet");
+        }
+        command
+            .args([
+                "cquery",
+                "--experimental-builtin-modules=false",
+                "--lockfile_mode=off",
+                "--platforms=//:platform",
+                "--host_platform=//:platform",
+                "//:selected",
+            ])
+            .output()
+            .unwrap()
+    };
+    let cold_quiet = query(true);
+    assert!(cold_quiet.status.success(), "{cold_quiet:?}");
+    let cold_stderr = String::from_utf8_lossy(&cold_quiet.stderr);
+    assert!(cold_stderr.contains("snapshot: saved"), "{cold_stderr}");
+    assert!(!cold_stderr.contains("cquery-note-sentinel"));
+    for quiet in [false, true] {
+        let warm = query(quiet);
+        assert!(warm.status.success(), "{warm:?}");
+        assert_eq!(cold_quiet.stdout, warm.stdout);
+        let stderr = String::from_utf8_lossy(&warm.stderr);
+        assert!(stderr.contains("snapshot: hit"), "{stderr}");
+        assert_eq!(
+            stderr.matches("cquery-note-sentinel").count(),
+            usize::from(!quiet)
+        );
+        assert!(!stderr.contains("\u{1b}_bazel-rs:"), "{stderr}");
+    }
+}
+
+#[test]
 fn repository_environment_is_revalidated_on_graph_hits() {
     let ws = Workspace::new();
     ws.write("MODULE.bazel", "module(name='cquery_fixture')\nr=use_repo_rule('//:repo.bzl','repo')\nr(name='external')\n");

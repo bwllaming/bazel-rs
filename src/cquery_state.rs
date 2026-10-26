@@ -128,7 +128,7 @@ fn read(
     use std::io::Write;
     std::io::stderr()
         .lock()
-        .write_all(&events)
+        .write_all(&crate::ui::filtered(&events))
         .map_err(|e| e.to_string())?;
     reader.touch();
     Ok(graph)
