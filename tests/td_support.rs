@@ -120,6 +120,14 @@ fn explicit_output_bases_isolate_state_but_share_action_content() {
         ws.ok(&[&a_flag], &["info", "repository_cache"]),
         ws.ok(&[&b_flag], &["info", "repository_cache"])
     );
+    ws.ok(&[&a_flag], &["clean", "--expunge"]);
+    assert!(
+        !a.exists(),
+        "clean must remove the explicitly selected base"
+    );
+    assert_eq!(fs::read_to_string(b_bin.join("out.txt")).unwrap(), "two\n");
+    assert!(ws.cache.join("actions").is_dir());
+    assert!(!Path::new(original.trim()).exists());
 }
 
 #[test]
