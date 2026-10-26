@@ -968,6 +968,8 @@ fn lost_files(old: &BTreeSet<String>, read: &BTreeSet<String>) -> Vec<String> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StartupState {
     pub ignore_all_rc_files: bool,
+    /// `--[no]quiet` (crate::ui; the last value wins, rc files included).
+    pub quiet: bool,
 }
 
 /// StartupOptions::ProcessArgs (startup_options.cc:419-445) over the rc
@@ -1056,7 +1058,7 @@ fn process_startup_flags(
                 "unsupported startup option {arg:?} from rc file {file}:{line}; startup options are never silently ignored"
             ),
             None => format!(
-                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files and --bazelrc"
+                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet and --bazelrc"
             ),
         };
         if check_valid_nullary(arg)? {
@@ -1067,6 +1069,7 @@ fn process_startup_flags(
             }
             match key {
                 "ignore_all_rc_files" => state.ignore_all_rc_files = enabled,
+                "quiet" => state.quiet = enabled,
                 "home_rc" | "system_rc" | "workspace_rc" => {
                     if enabled {
                         explicit.insert(key.to_owned());
@@ -2131,6 +2134,37 @@ mod tests {
             "home_rc",
             true
         ));
+    }
+
+    #[test]
+    fn quiet_is_a_startup_option_of_rc_files_and_the_command_line() {
+        let rc = RcFile {
+            canonical_source_paths: vec!["/w/.bazelrc".into()],
+            options: vec![RcOption {
+                command: "startup".into(),
+                option: "--quiet".into(),
+                source: "/w/.bazelrc".into(),
+                line: 1,
+            }],
+        };
+        let state = |startup: &[&str]| {
+            let line = CommandLine {
+                startup_args: startup.iter().map(|arg| arg.to_string()).collect(),
+                ..CommandLine::default()
+            };
+            let (mut warnings, mut provenance) = (Vec::new(), Vec::new());
+            process_startup_options(
+                std::slice::from_ref(&rc),
+                &line,
+                &mut warnings,
+                &mut provenance,
+            )
+            .unwrap()
+            .quiet
+        };
+        assert!(state(&[]));
+        assert!(!state(&["--noquiet"]));
+        assert!(state(&["--noquiet", "--quiet"]));
     }
 
     #[test]

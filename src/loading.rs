@@ -667,7 +667,7 @@ pub fn load_modules_with_functions_in(
     let result = load_build_file_modules(repositories, package, ast, globals, false, &prints);
     for event in prints.take() {
         if let LoadPrintEvent::Build(line) | LoadPrintEvent::Module { line, .. } = event {
-            eprintln!("{line}");
+            crate::ui::note(&line);
         }
     }
     result
@@ -1097,7 +1097,7 @@ struct ModulePrints {
 impl starlark::PrintHandler for ModulePrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
         if self.echo {
-            eprintln!("{text}");
+            crate::ui::note(text);
         }
         self.lines.borrow_mut().push(text.to_owned());
         Ok(())
@@ -1539,7 +1539,7 @@ impl<'a> Loader<'a> {
                     // A fresh definition load prints the module's lines
                     // when it evaluates it, here.
                     for line in &cached.prints {
-                        eprintln!("{line}");
+                        crate::ui::note(line);
                     }
                     self.repo_mappings
                         .extend(cached.eval_mappings.iter().cloned());

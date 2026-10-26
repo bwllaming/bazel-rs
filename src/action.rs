@@ -5783,7 +5783,9 @@ fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, St
 
 fn replay_logs(id: &str, stdout: &str, stderr: &str) {
     if !stdout.is_empty() || !stderr.is_empty() {
-        eprintln!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
+        // Bazel's `INFO: From …` event, the output bound to it: dropped
+        // with it under --quiet (crate::ui).
+        crate::note!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
     }
 }
 

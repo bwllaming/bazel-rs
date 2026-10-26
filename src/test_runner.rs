@@ -984,8 +984,9 @@ impl Runner<'_> {
                     ))
                 };
                 if let Some(message) = message {
+                    // A FAIL event: dropped under --quiet (crate::ui).
                     let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
-                    eprintln!("{message}");
+                    crate::ui::note(&message);
                 }
             }
             if last {
@@ -1037,7 +1038,9 @@ impl Runner<'_> {
             });
         };
         drop(lock);
-        if !printed.is_empty() && outcome.is_some() {
+        // `INFO: From Testing`, the test log bound to the event: both are
+        // dropped under --quiet (crate::ui).
+        if !printed.is_empty() && outcome.is_some() && !crate::ui::quiet() {
             let _guard = printer.lock().unwrap_or_else(|e| e.into_inner());
             eprintln!("INFO: From Testing {test_name}:");
             let mut stdout = std::io::stdout().lock();
@@ -1053,7 +1056,9 @@ impl Runner<'_> {
         if let Err(error) =
             crate::output_tree::link_directory(self.cache, Path::new(base), &entry.join(base))
         {
-            eprintln!("bazel-rs: warning: the output tree below execroot/ is incomplete: {error}");
+            crate::note!(
+                "bazel-rs: warning: the output tree below execroot/ is incomplete: {error}"
+            );
         }
     }
 

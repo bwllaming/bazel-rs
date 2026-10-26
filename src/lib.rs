@@ -137,6 +137,7 @@ pub mod test_command;
 pub mod test_runner;
 mod toolchain_info;
 pub mod toolchains;
+pub mod ui;
 pub mod visibility;
 pub mod workspace;
 pub mod workspace_status;

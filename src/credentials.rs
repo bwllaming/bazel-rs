@@ -839,7 +839,7 @@ pub fn download_credentials(url: &str) -> Option<Vec<(String, String)>> {
     match credentials.headers(url) {
         Ok(headers) => headers,
         Err(error) => {
-            eprintln!("WARNING: Error retrieving auth headers, continuing without: {error}");
+            crate::note!("WARNING: Error retrieving auth headers, continuing without: {error}");
             Some(Vec::new())
         }
     }

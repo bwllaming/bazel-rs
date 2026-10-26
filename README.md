@@ -176,6 +176,9 @@ Implemented:
   fail to load, targets that fail to analyze and failing actions skip only what
   depends on them; everything else is built and tested, with Bazel's summary
   lines and exit codes (docs/KEEP_GOING.md).
+- The `--quiet` startup option (`bazel-rs --quiet build …`, `startup --quiet`
+  in rc files): only errors and the command's own output reach the console,
+  like Bazel 9.3's server mode (docs/STARTUP_QUIET.md).
 - `query`: Bazel 9.3's query language (every default function, set algebra,
   `let`, label/label_kind/build/package/location/minrank/maxrank/graph output,
   `--keep_going`, `--[no]implicit_deps`, `--[no]tool_deps`; docs/QUERY.md).

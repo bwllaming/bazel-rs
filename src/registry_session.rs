@@ -676,7 +676,7 @@ impl RegistrySession {
                 Ok(()) => {
                     let resolved = self.resolved_extensions.load(Ordering::Acquire);
                     if resolved > 0 {
-                        eprintln!(
+                        crate::note!(
                             "bazel-rs: resolved {resolved} module extension(s) for MODULE.bazel.lock"
                         );
                     }

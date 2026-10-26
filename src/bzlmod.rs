@@ -571,6 +571,7 @@ pub(crate) fn evaluate_source_with_builtins(
     };
     Module::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
+        eval.set_print_handler(&crate::ui::NotePrints);
         eval.extra = Some(&collector);
         eval.set_print_handler(&collector);
         eval.set_max_callstack_size(128)

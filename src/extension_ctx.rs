@@ -1277,6 +1277,7 @@ pub fn execute(
             // Bazel bounds neither the heap nor the number of steps of a
             // module extension; only the call depth is bounded here.
             eval.set_max_callstack_size(128)?;
+            eval.set_print_handler(&crate::ui::NotePrints);
             eval.extra = Some(&context);
             let evaluated = {
                 let _model = starlark::values::string::enter_latin1_char_model(true);

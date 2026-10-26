@@ -1881,12 +1881,8 @@ impl RepositorySet {
     fn commit_speculation(&self, outcome: crate::repository_speculation::Outcome) -> PathBuf {
         crate::observed_fs::replay_some(outcome.obtained.observations.as_ref());
         self.note_committed_roots(&outcome.obtained.keys);
-        if !outcome.output.is_empty() {
-            use std::io::Write as _;
-            let mut stderr = std::io::stderr().lock();
-            let _ = stderr.write_all(&outcome.output);
-            let _ = stderr.flush();
-        }
+        // Its notes are marked (crate::ui).
+        crate::ui::emit(&outcome.output);
         outcome.root
     }
 
@@ -3044,7 +3040,7 @@ impl RepositorySet {
             // fail the evaluation; the fixup warning precedes the import check.
             if let (Some(metadata), Some(root_usage)) = (&metadata, &group.root_usage) {
                 match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order) {
-                    Ok(Some(fixup)) => eprintln!("{}", fixup.warning()),
+                    Ok(Some(fixup)) => crate::ui::note(&fixup.warning()),
                     Ok(None) => {}
                     Err(message) => return Err(format!(
                         "{message}\nerror evaluating module extension {} in {}",
@@ -3956,7 +3952,7 @@ impl RepositorySet {
             })
             .collect();
         if !invisible.is_empty() {
-            eprintln!(
+            crate::note!(
                 "WARNING: The module extension {} produced an invalid lockfile entry because it referenced {}. Please report this issue to its maintainers.",
                 lock.display_id,
                 invisible.join(", ")

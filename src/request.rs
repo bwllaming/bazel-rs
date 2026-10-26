@@ -818,7 +818,9 @@ pub fn execute_with_tests(
         // (crate::output_tree, docs/INFO.md); never fails the build.
         let published = crate::output_tree::publish(options.cache, &results, &runfiles_trees);
         if let Some(error) = published.error {
-            eprintln!("bazel-rs: warning: the output tree below execroot/ is incomplete: {error}");
+            crate::note!(
+                "bazel-rs: warning: the output tree below execroot/ is incomplete: {error}"
+            );
         }
         results
     } else {

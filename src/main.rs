@@ -21,6 +21,7 @@ Usage:
   bazel-rs version | --version | capabilities
 
 Startup: --[no]system_rc --[no]workspace_rc --[no]home_rc --[no]ignore_all_rc_files
+  --[no]quiet (only errors and command output; docs/STARTUP_QUIET.md)
   --bazelrc=FILE; rc files are evaluated like Bazel 9.3 (--config, common/always,
   --announce_rc; docs/BAZELRC.md); unmodelled rc options fail naming file:line.
 Patterns: //..., //package/..., //package:all, //package:*, //package:target, :target
@@ -315,7 +316,7 @@ fn run() -> Result<(), String> {
             match bazel_rs::memory_limit::parse_cap_mb(&value) {
                 Some(mb) => bazel_rs::memory_limit::validate_cap_mb(mb).map(Some),
                 None => {
-                    eprintln!(
+                    bazel_rs::note!(
                         "bazel-rs: warning: ignoring invalid BAZEL_RS_MAX_MEMORY_MB={value:?} (want a positive integer number of MB)"
                     );
                     Ok(None)
@@ -335,7 +336,7 @@ fn run() -> Result<(), String> {
             let description = bazel_rs::memory_limit::default_cap()
                 .map(|(_, text)| text)
                 .unwrap_or_else(|| format!("{cap_mb} MB"));
-            eprintln!(
+            bazel_rs::note!(
                 "bazel-rs: memory limit defaulted to {description}; set BAZEL_RS_MAX_MEMORY_MB (recommended) or pass --memory-limit=<MB> to change it; the cap bounds bazel-rs itself, not child actions"
             );
         }
@@ -372,7 +373,7 @@ fn run() -> Result<(), String> {
     };
     bazel_rs::worktree::install(&root);
     if !explicit_cache && let Some(note) = layout.legacy_cache_note(&cache) {
-        eprintln!("{note}");
+        bazel_rs::note!("{note}");
     }
     // The persistent file-digest memo of this cache (crate::digest_memo),
     // saved by `digest_memo::finish` when the command ends.
@@ -425,7 +426,7 @@ fn run() -> Result<(), String> {
     }
     // TestCommand.exec (runtime/commands/TestCommand.java:98-107).
     if command == "test" && test_options.output == bazel_rs::test_command::TestOutput::Streamed {
-        eprintln!(
+        bazel_rs::note!(
             "WARNING: Streamed test output requested. All tests will be run without sharding, one at a time"
         );
     }
@@ -440,7 +441,7 @@ fn run() -> Result<(), String> {
         let output =
             bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
         print!("{output}");
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: bounded module graph profile; graph commands do not execute module extensions"
         );
         return Ok(());
@@ -797,7 +798,13 @@ fn run() -> Result<(), String> {
         }
         let outcome = outcome?;
         for event in &outcome.events {
-            eprintln!("{event}");
+            // The query's ERROR events stay under --quiet; its WARNING and
+            // INFO events are informational (crate::ui).
+            if event.starts_with("ERROR: ") {
+                eprintln!("{event}");
+            } else {
+                bazel_rs::note!("{event}");
+            }
         }
         if let Some(fatal) = outcome.fatal {
             return Err(fatal);
@@ -1198,7 +1205,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         }
     }
     if remote_enabled {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -1206,7 +1213,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
             execution_note()
         );
     } else {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -1324,8 +1331,9 @@ fn planned_hit(
     {
         use std::io::Write as _;
         let mut stderr = std::io::stderr().lock();
+        // Filtered like the full analysis's forwarded bytes (crate::ui).
         let _ = stderr
-            .write_all(&hit.window_stderr)
+            .write_all(&bazel_rs::ui::filtered(&hit.window_stderr))
             .and_then(|()| stderr.flush());
     }
     let mut request = hit.request;
@@ -1412,7 +1420,7 @@ fn report_keep_going(result: &bazel_rs::request::KeepGoingResult, execute: bool)
     }
     let succeeded = result.succeeded();
     if 0 < succeeded && succeeded < result.plan.top_level {
-        eprintln!(
+        bazel_rs::note!(
             "INFO: {} succeeded for only {succeeded} of {} top-level targets",
             if execute { "Build" } else { "Analysis" },
             result.plan.top_level
@@ -1765,7 +1773,7 @@ fn run_tail(
         }
     }
     if remote_enabled {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -1773,7 +1781,7 @@ fn run_tail(
             execution_note()
         );
     } else {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -1886,7 +1894,7 @@ fn run_tail(
     // The progress display ends before the target takes the terminal.
     bazel_rs::progress::finish(0);
     let prefix = if options.run { "Running" } else { "Runnable" };
-    eprintln!(
+    bazel_rs::note!(
         "bazel-rs: {prefix} command line: {}",
         line.pretty(options.omit_run_args)
     );
@@ -2170,7 +2178,7 @@ fn test_tail(
         }
     }
     if remote_enabled {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -2178,7 +2186,7 @@ fn test_tail(
             execution_note()
         );
     } else {
-        eprintln!(
+        bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits (experimental local execution; {})",
             summary.executed,
             summary.cache_hits,
@@ -2307,10 +2315,10 @@ fn report_target_pattern_phase(phase: &bazel_rs::engine::TargetPatternPhase) {
         eprintln!("ERROR: {error}");
     }
     if phase.all_excluded {
-        eprintln!("WARNING: All specified test targets were excluded by filters");
+        warn("All specified test targets were excluded by filters");
     }
     if phase.pattern_error {
-        eprintln!("WARNING: Target pattern parsing failed.");
+        warn("Target pattern parsing failed.");
     }
     for skipped in &phase.skipped {
         eprintln!("ERROR: {}", located(skipped));
@@ -2609,7 +2617,7 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     // The progress display ends before the target takes the terminal.
     bazel_rs::progress::finish(0);
     let prefix = if options.run { "Running" } else { "Runnable" };
-    eprintln!("bazel-rs: {prefix} command line: {pretty}");
+    bazel_rs::note!("bazel-rs: {prefix} command line: {pretty}");
     if !options.run {
         return Ok(());
     }
@@ -3622,6 +3630,9 @@ fn evaluate_rc(
         terminal_columns: terminal_columns(),
         emacs: is_emacs_terminal(),
     };
+    // --quiet (crate::ui): the command line's value until the rc files'
+    // `startup` lines are processed too.
+    bazel_rs::ui::set_quiet(bazelrc::search_nullary(&line.startup_args, "quiet", false));
     let mut warnings = Vec::new();
     let rc_files = if bazelrc::search_nullary(&line.startup_args, "ignore_all_rc_files", false) {
         Vec::new()
@@ -3634,13 +3645,14 @@ fn evaluate_rc(
         read?
     };
     let mut provenance = Vec::new();
-    if let Err(error) =
-        bazelrc::process_startup_options(&rc_files, line, &mut warnings, &mut provenance)
-    {
-        for note in provenance {
-            eprintln!("INFO: {note}");
+    match bazelrc::process_startup_options(&rc_files, line, &mut warnings, &mut provenance) {
+        Ok(state) => bazel_rs::ui::set_quiet(state.quiet),
+        Err(error) => {
+            for note in provenance {
+                bazel_rs::note!("INFO: {note}");
+            }
+            return Err(error);
         }
-        return Err(error);
     }
     for warning in warnings {
         warn(&warning);
@@ -3661,7 +3673,7 @@ fn evaluate_rc(
 /// runtime/BlazeCommandDispatcher.java:923-948).
 fn early_exit(options: &bazelrc::Expanded, error: &str, position: bazelrc::Position) -> String {
     for note in options.early_exit_notes(error, position) {
-        eprintln!("INFO: {note}");
+        bazel_rs::note!("INFO: {note}");
     }
     for warning in &options.warnings[..position.warnings.min(options.warnings.len())] {
         warn(warning);
@@ -3677,7 +3689,7 @@ fn announce(options: &bazelrc::Expanded) {
     }
     if options.announce {
         for note in options.all_notes() {
-            eprintln!("INFO: {note}");
+            bazel_rs::note!("INFO: {note}");
         }
     }
 }
@@ -3727,8 +3739,9 @@ fn located(message: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// A WARNING event (informational: dropped under `--quiet`, crate::ui).
 fn warn(warning: &str) {
-    eprintln!("WARNING: {}", located(warning));
+    bazel_rs::note!("WARNING: {}", located(warning));
 }
 
 fn main() {

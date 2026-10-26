@@ -317,7 +317,7 @@ impl Verify {
             if let Some(window) = self.window.as_ref().filter(|window| !window.forwarded) {
                 let mut stderr = std::io::stderr().lock();
                 let _ = stderr
-                    .write_all(&window.bytes)
+                    .write_all(&crate::ui::filtered(&window.bytes))
                     .and_then(|()| stderr.flush());
             }
             return Concluded::Disagreed;
@@ -384,7 +384,7 @@ impl Drop for Verify {
             if let Some(window) = self.window.as_ref().filter(|window| !window.forwarded) {
                 let mut stderr = std::io::stderr().lock();
                 let _ = stderr
-                    .write_all(&window.bytes)
+                    .write_all(&crate::ui::filtered(&window.bytes))
                     .and_then(|()| stderr.flush());
             }
         }

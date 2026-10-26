@@ -1519,14 +1519,14 @@ impl Context {
     /// captured replay, and into the execution's output record when one is
     /// kept ([`Self::collects_output`]).
     fn print_line(&self, text: &str) {
-        if self.live && !crate::repository_speculation::defer_stderr(format!("{text}\n").as_bytes())
-        {
-            eprintln!("{text}");
+        // DEBUG events: marked notes wherever they are kept (crate::ui).
+        if self.live && !crate::repository_speculation::defer_stderr(&crate::ui::marked(text)) {
+            crate::ui::note(text);
         }
         if self.collects_output() {
-            let mut output = self.output.borrow_mut();
-            output.extend_from_slice(text.as_bytes());
-            output.push(b'\n');
+            self.output
+                .borrow_mut()
+                .extend_from_slice(&crate::ui::marked(text));
         }
     }
 
@@ -2221,8 +2221,8 @@ impl Context {
                     "WARNING: Download from {url} failed: class {} {}",
                     failure.class, failure.message
                 );
-                if !crate::repository_speculation::defer_stderr(format!("{warning}\n").as_bytes()) {
-                    eprintln!("{warning}");
+                if !crate::repository_speculation::defer_stderr(&crate::ui::marked(&warning)) {
+                    crate::ui::note(&warning);
                 }
                 last = Some(failure.clone());
             },
@@ -5133,9 +5133,12 @@ mod tests {
             .unwrap()
             .output
         };
+        // The print is a marked note (crate::ui), the echo is not.
+        let mut printed = crate::ui::marked("printed");
+        printed.extend_from_slice(b"echoed\n");
         assert_eq!(run(&fixture.repositories, true), b"");
-        assert_eq!(run(&capturing, true), b"printed\nechoed\n");
-        assert_eq!(run(&fixture.repositories, false), b"printed\nechoed\n");
+        assert_eq!(run(&capturing, true), printed);
+        assert_eq!(run(&fixture.repositories, false), printed);
     }
 
     #[test]

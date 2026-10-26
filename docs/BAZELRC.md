@@ -18,7 +18,8 @@ are relative to `src/main/cpp/`, server paths to
   The native-only `--cache-dir=PATH` and the native `--version` command are
   still accepted.
 * **Modelled startup options**: `--[no]system_rc`, `--[no]workspace_rc`,
-  `--[no]home_rc`, `--[no]ignore_all_rc_files` and `--bazelrc`. Any other valid
+  `--[no]home_rc`, `--[no]ignore_all_rc_files`, `--[no]quiet`
+  ([`STARTUP_QUIET.md`](STARTUP_QUIET.md)) and `--bazelrc`. Any other valid
   startup option fails explicitly, also when it comes from a `startup` or
   `startup:linux` rc line (the error names the rc file:line).
 * **rc file order** (`option_processor.cc:374-490`): `/etc/bazel.bazelrc`,

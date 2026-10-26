@@ -2100,7 +2100,7 @@ pub fn evaluate_in(
         if let crate::loading::LoadPrintEvent::Build(line)
         | crate::loading::LoadPrintEvent::Module { line, .. } = event
         {
-            eprintln!("{line}");
+            crate::ui::note(line);
         }
     }
     unit.result
@@ -2670,7 +2670,7 @@ fn evaluate_source(
         if let crate::loading::LoadPrintEvent::Build(line)
         | crate::loading::LoadPrintEvent::Module { line, .. } = event
         {
-            eprintln!("{line}");
+            crate::ui::note(&line);
         }
     }
     evaluated.map(|package| {

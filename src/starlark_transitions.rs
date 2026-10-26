@@ -616,7 +616,7 @@ pub(crate) fn apply(
         // reported as they happen, StarlarkTransitionCache.java:128-185).
         Err(failure) => {
             for line in &printed {
-                eprintln!("{line}");
+                crate::ui::note(line);
             }
             Err(failure)
         }

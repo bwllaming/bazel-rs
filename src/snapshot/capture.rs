@@ -98,6 +98,23 @@ struct DrainState {
     /// waited for its newline or the end of the pipe, and was lost when the
     /// process ended first).
     detached: bool,
+    /// What is forwarded passes through it (crate::ui: the marks of the
+    /// notes are stripped, under `--quiet` the notes too); the kept bytes
+    /// keep them.
+    filter: Option<crate::ui::Filter>,
+}
+
+impl DrainState {
+    /// `bytes` as the console shows them (the filter's state carries over
+    /// from the bytes forwarded before).
+    fn console(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let filter = self
+            .filter
+            .get_or_insert_with(|| crate::ui::Filter::new(crate::ui::quiet()));
+        let mut out = Vec::with_capacity(bytes.len());
+        filter.feed(bytes, &mut out);
+        out
+    }
 }
 
 #[derive(Default)]
@@ -119,6 +136,9 @@ struct Active {
 }
 
 static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
+/// Whether file descriptor 2 is redirected into a capture's pipe (read
+/// without the lock by crate::ui's writers of notes).
+static REDIRECTED: AtomicBool = AtomicBool::new(false);
 /// A [`Mode::Tee`] capture ended early: a panic while it was active, or the
 /// memory watchdog's exit.
 static BROKEN: AtomicBool = AtomicBool::new(false);
@@ -179,6 +199,7 @@ pub fn start(mode: Mode) -> io::Result<Capture> {
     // On failure the writer drops here: the reader sees the end of the pipe.
     rustix::stdio::dup2_stderr(&writer).map_err(io::Error::from)?;
     drop(writer);
+    REDIRECTED.store(true, Ordering::SeqCst);
     crate::snapshot::diag::set_original(Some(original.clone()));
     install_panic_hook();
     *slot = Some(Active {
@@ -281,10 +302,15 @@ fn forward_pending(drained: &Drained, original: &File, all: bool, line_limit: us
                 .rposition(|byte| *byte == b'\n')
                 .map_or(0, |at| at + 1)
         };
-        if end == 0 {
+        let bytes = state.pending.drain(..end).collect::<Vec<u8>>();
+        let mut bytes = state.console(&bytes);
+        if all && let Some(filter) = state.filter.as_mut() {
+            filter.finish(&mut bytes);
+        }
+        if bytes.is_empty() {
             return;
         }
-        state.pending.drain(..end).collect::<Vec<u8>>()
+        bytes
     };
     let mut original = original;
     let _ = original.write_all(&bytes).and_then(|()| original.flush());
@@ -312,7 +338,8 @@ fn flush_pending(drained: &Drained, original: &File, early: bool) {
         if order.is_none() {
             return;
         }
-        std::mem::take(&mut state.pending)
+        let bytes = std::mem::take(&mut state.pending);
+        state.console(&bytes)
     };
     if !bytes.is_empty() {
         let mut original = original;
@@ -343,7 +370,8 @@ fn forward_kept(drained: &Drained, original: &File, early: bool) {
             return;
         }
         state.forwarding = true;
-        state.bytes.clone()
+        let kept = state.bytes.clone();
+        state.console(&kept)
     };
     let mut original = original;
     let _ = original.write_all(&kept).and_then(|()| original.flush());
@@ -379,6 +407,7 @@ impl Drop for Capture {
 /// watchdog's exit).
 fn finish(bound: Duration, early: bool) -> Option<Captured> {
     let active = active().take()?;
+    REDIRECTED.store(false, Ordering::SeqCst);
     let _ = rustix::stdio::dup2_stderr(&*active.original);
     crate::snapshot::diag::set_original(None);
     Some(collect(
@@ -431,6 +460,12 @@ fn collect(
         forwarded: mode == Mode::Tee || state.forwarding,
         ended_early: early,
     }
+}
+
+/// Whether a capture holds file descriptor 2 now (crate::ui writes notes
+/// marked into it).
+pub fn is_active() -> bool {
+    REDIRECTED.load(Ordering::Relaxed)
 }
 
 /// The mode of the active capture, if any.

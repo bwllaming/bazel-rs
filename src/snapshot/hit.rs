@@ -993,12 +993,12 @@ fn heal(
         &mismatch.message,
     );
     match (rule, named) {
-        ("store-path", Some(path)) => eprintln!(
+        ("store-path", Some(path)) => crate::note!(
             "bazel-rs: removed the analysis snapshot of this build: its failure involves {path} in the repository store, whose tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
             mismatch.root.display(),
             mismatch.entry_text()
         ),
-        _ => eprintln!(
+        _ => crate::note!(
             "bazel-rs: removed the analysis snapshot of this build: it failed, and the repository tree {} no longer matches what the analysis recorded ({}); the next build re-analyzes and repairs it",
             mismatch.root.display(),
             mismatch.entry_text()

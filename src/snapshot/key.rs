@@ -174,7 +174,7 @@ struct Parts<'a> {
     cwd: &'a [u8],
     relative_directory: &'a str,
     current_package: &'a str,
-    startup: &'a [String],
+    startup: Vec<&'a str>,
     options: Vec<(&'a str, Option<&'a str>)>,
     targets: &'a [String],
     allow_yanked: Option<&'a str>,
@@ -208,7 +208,14 @@ pub fn compute(inputs: &Inputs<'_>, binary: [u8; 32]) -> Key {
         cwd: inputs.cwd.as_os_str().as_bytes(),
         relative_directory: inputs.relative_directory,
         current_package: inputs.current_package,
-        startup: inputs.startup,
+        // `--[no]quiet` is console-only (crate::ui), like Bazel's: it never
+        // restarts the server, and a snapshot replays filtered.
+        startup: inputs
+            .startup
+            .iter()
+            .map(String::as_str)
+            .filter(|arg| !matches!(*arg, "--quiet" | "--noquiet"))
+            .collect(),
         options: inputs
             .options
             .iter()
@@ -260,6 +267,10 @@ mod tests {
     }
 
     fn key_of(options: &[Unit], targets: &[&str]) -> Key {
+        key_with_startup(&[], options, targets)
+    }
+
+    fn key_with_startup(startup: &[String], options: &[Unit], targets: &[&str]) -> Key {
         let targets: Vec<String> = targets.iter().map(|t| (*t).to_owned()).collect();
         compute(
             &Inputs {
@@ -269,7 +280,7 @@ mod tests {
                 cwd: Path::new("/ws"),
                 relative_directory: "",
                 current_package: "",
-                startup: &[],
+                startup,
                 options,
                 targets: &targets,
                 allow_yanked: None,
@@ -277,6 +288,20 @@ mod tests {
             },
             [1; 32],
         )
+    }
+
+    #[test]
+    fn quiet_is_left_out_and_other_startup_options_count() {
+        let startup =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|a| a.to_string()).collect() };
+        let base = key_of(&[], &["//..."]);
+        for args in [&["--quiet"][..], &["--noquiet"], &["--quiet", "--noquiet"]] {
+            assert_eq!(key_with_startup(&startup(args), &[], &["//..."]), base);
+        }
+        assert_ne!(
+            key_with_startup(&startup(&["--nohome_rc"]), &[], &["//..."]),
+            base
+        );
     }
 
     #[test]

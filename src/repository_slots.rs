@@ -348,7 +348,7 @@ impl Drop for SlotScratch<'_> {
             && fs::symlink_metadata(slot).is_ok_and(|metadata| metadata.is_dir())
             && let Err(error) = crate::repository_ctx::remove_tree(slot)
         {
-            eprintln!(
+            crate::note!(
                 "bazel-rs: warning: cannot remove {} ({error}); left for the next execution",
                 slot.display()
             );

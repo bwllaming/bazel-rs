@@ -1220,7 +1220,7 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         // Nothing to do once renamed into place (NotFound is success).
         if let Err(error) = crate::repository_ctx::remove_tree(&self.0) {
-            eprintln!(
+            crate::note!(
                 "bazel-rs: warning: cannot remove {} ({error}); left for a later cleanup",
                 self.0.display()
             );

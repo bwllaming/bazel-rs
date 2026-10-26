@@ -291,7 +291,7 @@ pub fn report_peak(cap_mb: Option<u64>) {
         return;
     }
     if let Some(peak) = peak_rss_bytes() {
-        eprintln!(
+        crate::note!(
             "bazel-rs: peak RSS (VmHWM) {} MB (memory limit {} MB)",
             peak / (1024 * 1024),
             cap_mb.unwrap_or(0)
@@ -331,7 +331,7 @@ fn start_watchdog(cap_mb: u64) {
                     crate::progress::abandon();
                     std::process::exit(LIMIT_EXIT_CODE);
                 }
-                if !warned && rss > warn_at {
+                if !warned && rss > warn_at && !crate::ui::quiet() {
                     warned = true;
                     crate::snapshot::diag::line_fmt(format_args!(
                         "bazel-rs: warning: memory usage {} MB exceeds 75% of the {cap_mb} MB limit",

@@ -1646,7 +1646,7 @@ pub fn analyze_in(
     };
     let (result, printed) = analyze_buffered(rule, dependencies, repositories, &target);
     for line in printed {
-        eprintln!("{line}");
+        crate::ui::note(&line);
     }
     result
 }

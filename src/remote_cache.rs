@@ -339,7 +339,7 @@ pub fn setup(
     {
         // createCredentials: `new URI(remoteCache)`, the original string.
         match credentials.headers(&options.cache) {
-            Ok(Some(headers)) if !headers.is_empty() => eprintln!(
+            Ok(Some(headers)) if !headers.is_empty() => crate::note!(
                 "WARNING: Credentials are transmitted in plaintext to {}. Please consider using an HTTPS endpoint.",
                 options.cache
             ),
@@ -388,7 +388,7 @@ pub fn setup(
     // to a shared cache only on explicit opt-in. Reads stay Bazel-like.
     let upload_local_results = options.upload_local_results && upload_opt_in();
     if options.upload_local_results && !upload_local_results {
-        eprintln!(
+        crate::note!(
             "WARNING: native remote cache uploads are disabled by default (a safety divergence from Bazel's --remote_upload_local_results); set {UPLOAD_OPT_IN}=1 to upload local results"
         );
     }
@@ -855,7 +855,7 @@ pub fn warn(error: &CacheError) {
         .get_or_insert_with(HashSet::new)
         .insert(message.clone())
     {
-        eprintln!("WARNING: {message}");
+        crate::note!("WARNING: {message}");
     }
 }
 

@@ -1,0 +1,526 @@
+{
+ "schema": "startup-quiet-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of the --quiet startup option (docs/STARTUP_QUIET.md): each scenario of tests/startup_quiet.rs with and without --quiet (print() in .bzl, analysis and repository rule code, a deprecation warning, a successful action writing to stdout/stderr, a failing action, an analysis failure, --keep_going, a passing and a failing test with and without --test_output=errors, run, query, a repository rule download + execute(quiet = False), info). Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "SERVER mode (--batch ignores --quiet for events: the client sends it with the request only) --ignore_all_rc_files [--quiet] --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m --max_idle_secs=60, shutdown after each run",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS> (not info)",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022; a local HTTP server for the download"
+ },
+ "native": {
+  "binary": "/tmp/opencode/bazel-startup-quiet-target/debug/bazel-rs",
+  "sha256": "d1601894b7c8d87c55378a2ed5df85dbc8f5b11122b6aa020b6218d655c83e7e",
+  "flags": "--ignore_all_rc_files [--quiet] --cache-dir=<private> --experimental-builtin-modules=false (not info); BAZEL_RS_MAX_MEMORY_MB unset"
+ },
+ "script": "/tmp/opencode/perf-research/quiet-capture.py",
+ "script_sha256": "d1e05624365a36a09b4caea34565545a038d80c20df4ebef077f397f6394cca6",
+ "fixture_sha256": "443467850bf7638d43411255a86a551f2a4cdc5d102ba643d3db8255e27ea8cc",
+ "distdir_seeded_count": 19,
+ "categories": "per run, the kinds of console output it shows: debug (DEBUG lines; native: the raw print lines), info (INFO lines; native also `bazel-rs: Running command line`), warning, fail_line, error (native also its `bazel-rs: action|analysis of` failure lines), native_note (other `bazel-rs:` lines, native-only), target_result (`Target //x up-to-date:`; native `LABEL<TAB>PATH`), test_summary, test_log (`Test output for`), successful_action_output, failed_action_output, run_binary_output, repository_execute_echo, query_output, info_output.",
+ "comparison": "EXACT = equal exit codes (loud = quiet = genuine); of the categories both loud runs show, the quiet runs show the same ones (each kept or dropped by both), and the native quiet run shows no native_note and nothing its loud run does not. Categories only one side shows whatever the verbosity are pre-existing format differences, not compared: target_result (genuine --show_result=1 prints no `Target` lines for 2+ targets, native always prints `LABEL<TAB>PATH`; genuine prints `Target //:broken failed to build`). The native test pins the native quiet stdout/stderr bytes.",
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 10
+ },
+ "rows": [
+  {
+   "scenario": "build_ok",
+   "argv": [
+    "build",
+    "//:noisy",
+    "//:uses_old"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     0,
+     0
+    ],
+    "native": [
+     0,
+     0
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "info",
+    "successful_action_output"
+   ],
+   "reference_quiet": [],
+   "native_loud": [
+    "debug",
+    "native_note",
+    "successful_action_output",
+    "target_result"
+   ],
+   "native_quiet": [
+    "target_result"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info",
+    "successful_action_output"
+   ],
+   "native_dropped": [
+    "debug",
+    "successful_action_output"
+   ],
+   "reference_quiet_stdout": "",
+   "reference_quiet_stderr": "",
+   "native_quiet_stdout": "//:noisy\t<BASE>/cache/actions/0d795551a9700dcd9cbc68633eb970e2cf382700983f34e6fea5b98ffc535e82/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<BASE>/cache/actions/a122c5266304866b89e6b45cf2629061acb0ce394491cf6a23a502c788ef1d01/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
+   "native_quiet_stderr": ""
+  },
+  {
+   "scenario": "build_action_failure",
+   "argv": [
+    "build",
+    "//:broken"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     1,
+     1
+    ],
+    "native": [
+     1,
+     1
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "error",
+    "failed_action_output",
+    "info",
+    "target_result"
+   ],
+   "reference_quiet": [
+    "error",
+    "failed_action_output",
+    "target_result"
+   ],
+   "native_loud": [
+    "debug",
+    "error",
+    "failed_action_output",
+    "native_note"
+   ],
+   "native_quiet": [
+    "error",
+    "failed_action_output"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info"
+   ],
+   "native_dropped": [
+    "debug"
+   ],
+   "reference_quiet_stdout": "broken-stdout\n",
+   "reference_quiet_stderr": "ERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nTarget //:broken failed to build\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
+   "native_quiet_stdout": "",
+   "native_quiet_stderr": "bazel-rs: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\n"
+  },
+  {
+   "scenario": "build_analysis_failure",
+   "argv": [
+    "build",
+    "//:bad"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     1,
+     1
+    ],
+    "native": [
+     1,
+     1
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "error",
+    "info"
+   ],
+   "reference_quiet": [
+    "error"
+   ],
+   "native_loud": [
+    "debug",
+    "error",
+    "native_note"
+   ],
+   "native_quiet": [
+    "error"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info"
+   ],
+   "native_dropped": [
+    "debug"
+   ],
+   "reference_quiet_stdout": "",
+   "reference_quiet_stderr": "ERROR: <WS>/BUILD.bazel:11:11: in fails_rule rule //:bad: \nTraceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 15, column 9, in _fails\n\t\tfail(\"intentional analysis failure\")\nError in fail: intentional analysis failure\nERROR: <WS>/BUILD.bazel:11:11: Analysis of target '//:bad' (config: a7a71fd) failed\nERROR: Analysis of target '//:bad' failed; build aborted\nERROR: Build did NOT complete successfully\n",
+   "native_quiet_stdout": "",
+   "native_quiet_stderr": "bazel-rs: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\n"
+  },
+  {
+   "scenario": "build_keep_going",
+   "argv": [
+    "build",
+    "-k",
+    "//:noisy",
+    "//:broken",
+    "//:bad",
+    "//:uses_old"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     1,
+     1
+    ],
+    "native": [
+     1,
+     1
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "error",
+    "failed_action_output",
+    "info",
+    "successful_action_output",
+    "warning"
+   ],
+   "reference_quiet": [
+    "error",
+    "failed_action_output"
+   ],
+   "native_loud": [
+    "debug",
+    "error",
+    "failed_action_output",
+    "info",
+    "native_note",
+    "successful_action_output",
+    "target_result",
+    "warning"
+   ],
+   "native_quiet": [
+    "error",
+    "failed_action_output",
+    "target_result"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info",
+    "successful_action_output",
+    "warning"
+   ],
+   "native_dropped": [
+    "debug",
+    "info",
+    "successful_action_output",
+    "warning"
+   ],
+   "reference_quiet_stdout": "broken-stdout\n",
+   "reference_quiet_stderr": "ERROR: <WS>/BUILD.bazel:11:11: in fails_rule rule //:bad: \nTraceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 15, column 9, in _fails\n\t\tfail(\"intentional analysis failure\")\nError in fail: intentional analysis failure\nERROR: <WS>/BUILD.bazel:11:11: Analysis of target '//:bad' (config: a7a71fd) failed\nERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
+   "native_quiet_stdout": "//:noisy\t<BASE>/cache/actions/0d795551a9700dcd9cbc68633eb970e2cf382700983f34e6fea5b98ffc535e82/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<BASE>/cache/actions/a122c5266304866b89e6b45cf2629061acb0ce394491cf6a23a502c788ef1d01/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
+   "native_quiet_stderr": "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nERROR: Build did NOT complete successfully\n"
+  },
+  {
+   "scenario": "test",
+   "argv": [
+    "test",
+    "//:passes_test",
+    "//:fails_test"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     3,
+     3
+    ],
+    "native": [
+     3,
+     3
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "fail_line",
+    "info",
+    "test_summary"
+   ],
+   "reference_quiet": [
+    "test_summary"
+   ],
+   "native_loud": [
+    "debug",
+    "fail_line",
+    "native_note",
+    "target_result",
+    "test_summary"
+   ],
+   "native_quiet": [
+    "target_result",
+    "test_summary"
+   ],
+   "reference_dropped": [
+    "debug",
+    "fail_line",
+    "info"
+   ],
+   "native_dropped": [
+    "debug",
+    "fail_line"
+   ],
+   "reference_quiet_stdout": "//:passes_test                                                           PASSED in 0.0s\n//:fails_test                                                            FAILED in 0.0s\n  <BASE>/ob/execroot/_main/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "reference_quiet_stderr": "",
+   "native_quiet_stdout": "//:passes_test                                                           PASSED in 0.0s\n//:fails_test                                                            FAILED in 0.0s\n  <BASE>/cache/tests/6f08fc7e850584c4cb7714b349ed85f0d4e8da9982a5cb7458c3ab738daa899c/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "native_quiet_stderr": "//:fails_test\t<BASE>/cache/actions/0570c25a6d615714cd0b0192a5f33d2d4b4657833c0104ac76a4a4420abe88d2/outputs/bazel-out/k8-fastbuild/bin/fails_test.sh\n//:passes_test\t<BASE>/cache/actions/47e992ffe92d1eda790889a6ba3761edd21c5710fedef4aa9318a282c6260899/outputs/bazel-out/k8-fastbuild/bin/passes_test.sh\n"
+  },
+  {
+   "scenario": "test_output_errors",
+   "argv": [
+    "test",
+    "--test_output=errors",
+    "//:passes_test",
+    "//:fails_test"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     3,
+     3
+    ],
+    "native": [
+     3,
+     3
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "fail_line",
+    "info",
+    "test_log",
+    "test_summary"
+   ],
+   "reference_quiet": [
+    "test_summary"
+   ],
+   "native_loud": [
+    "debug",
+    "fail_line",
+    "info",
+    "native_note",
+    "target_result",
+    "test_log",
+    "test_summary"
+   ],
+   "native_quiet": [
+    "target_result",
+    "test_summary"
+   ],
+   "reference_dropped": [
+    "debug",
+    "fail_line",
+    "info",
+    "test_log"
+   ],
+   "native_dropped": [
+    "debug",
+    "fail_line",
+    "info",
+    "test_log"
+   ],
+   "reference_quiet_stdout": "//:passes_test                                                           PASSED in 0.0s\n//:fails_test                                                            FAILED in 0.0s\n  <BASE>/ob/execroot/_main/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "reference_quiet_stderr": "",
+   "native_quiet_stdout": "//:passes_test                                                           PASSED in 0.0s\n//:fails_test                                                            FAILED in 0.0s\n  <BASE>/cache/tests/6f08fc7e850584c4cb7714b349ed85f0d4e8da9982a5cb7458c3ab738daa899c/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+   "native_quiet_stderr": "//:fails_test\t<BASE>/cache/actions/0570c25a6d615714cd0b0192a5f33d2d4b4657833c0104ac76a4a4420abe88d2/outputs/bazel-out/k8-fastbuild/bin/fails_test.sh\n//:passes_test\t<BASE>/cache/actions/47e992ffe92d1eda790889a6ba3761edd21c5710fedef4aa9318a282c6260899/outputs/bazel-out/k8-fastbuild/bin/passes_test.sh\n"
+  },
+  {
+   "scenario": "run",
+   "argv": [
+    "run",
+    "//:bin"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     0,
+     0
+    ],
+    "native": [
+     0,
+     0
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "info",
+    "run_binary_output",
+    "target_result"
+   ],
+   "reference_quiet": [
+    "run_binary_output",
+    "target_result"
+   ],
+   "native_loud": [
+    "debug",
+    "info",
+    "native_note",
+    "run_binary_output",
+    "target_result"
+   ],
+   "native_quiet": [
+    "run_binary_output",
+    "target_result"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info"
+   ],
+   "native_dropped": [
+    "debug",
+    "info"
+   ],
+   "reference_quiet_stdout": "bin-stdout\n",
+   "reference_quiet_stderr": "Target //:bin up-to-date:\n  bazel-bin/bin.sh\nbin-stderr\n",
+   "native_quiet_stdout": "bin-stdout\n",
+   "native_quiet_stderr": "//:bin\t<BASE>/cache/actions/1a8f8a2bf3954f4759535de191c6d4a69d8ca033cb0061564e97015b5de82c42/outputs/bazel-out/k8-fastbuild/bin/bin.sh\nbin-stderr\n"
+  },
+  {
+   "scenario": "query",
+   "argv": [
+    "query",
+    "//:all"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     0,
+     0
+    ],
+    "native": [
+     0,
+     0
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "query_output"
+   ],
+   "reference_quiet": [
+    "query_output"
+   ],
+   "native_loud": [
+    "debug",
+    "native_note",
+    "query_output"
+   ],
+   "native_quiet": [
+    "query_output"
+   ],
+   "reference_dropped": [
+    "debug"
+   ],
+   "native_dropped": [
+    "debug"
+   ],
+   "reference_quiet_stdout": "//:bad\n//:bin\n//:broken\n//:fails_test\n//:fetched_copy\n//:noisy\n//:old\n//:passes_test\n//:uses_old\n",
+   "reference_quiet_stderr": "",
+   "native_quiet_stdout": "//:bad\n//:bin\n//:broken\n//:fails_test\n//:fetched_copy\n//:noisy\n//:old\n//:passes_test\n//:uses_old\n",
+   "native_quiet_stderr": ""
+  },
+  {
+   "scenario": "fetch",
+   "argv": [
+    "build",
+    "//:fetched_copy"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     0,
+     0
+    ],
+    "native": [
+     0,
+     0
+    ]
+   },
+   "reference_loud": [
+    "debug",
+    "info",
+    "repository_execute_echo",
+    "target_result"
+   ],
+   "reference_quiet": [
+    "repository_execute_echo",
+    "target_result"
+   ],
+   "native_loud": [
+    "debug",
+    "native_note",
+    "repository_execute_echo",
+    "target_result"
+   ],
+   "native_quiet": [
+    "repository_execute_echo",
+    "target_result"
+   ],
+   "reference_dropped": [
+    "debug",
+    "info"
+   ],
+   "native_dropped": [
+    "debug"
+   ],
+   "reference_quiet_stdout": "",
+   "reference_quiet_stderr": "repo-execute-stderr\nrepo-execute-stdout\nTarget //:fetched_copy up-to-date:\n  bazel-bin/fetched_copy.txt\n",
+   "native_quiet_stdout": "//:fetched_copy\t<BASE>/cache/actions/02f68f956e0271c2946905ea6f7debb6af29eb7c66c2c27fe8519d40bde3f1e6/outputs/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
+   "native_quiet_stderr": "repo-execute-stdout\nrepo-execute-stderr\n"
+  },
+  {
+   "scenario": "info",
+   "argv": [
+    "info",
+    "workspace"
+   ],
+   "verdict": "EXACT",
+   "exit": {
+    "reference": [
+     0,
+     0
+    ],
+    "native": [
+     0,
+     0
+    ]
+   },
+   "reference_loud": [
+    "info_output"
+   ],
+   "reference_quiet": [
+    "info_output"
+   ],
+   "native_loud": [
+    "info_output"
+   ],
+   "native_quiet": [
+    "info_output"
+   ],
+   "reference_dropped": [],
+   "native_dropped": [],
+   "reference_quiet_stdout": "<WS>\n",
+   "reference_quiet_stderr": "",
+   "native_quiet_stdout": "<WS>\n",
+   "native_quiet_stderr": ""
+  }
+ ]
+}

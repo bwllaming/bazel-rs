@@ -2773,7 +2773,7 @@ impl Engine {
             match event {
                 LoadPrintEvent::Build(line) => {
                     block = None;
-                    eprintln!("{line}");
+                    crate::ui::note(&line);
                 }
                 LoadPrintEvent::Module { label, line } => {
                     let emit = match &block {
@@ -2781,7 +2781,7 @@ impl Engine {
                         _ => self.emitted_bzl_prints.insert(label.clone()),
                     };
                     if emit {
-                        eprintln!("{line}");
+                        crate::ui::note(&line);
                     }
                     block = Some((label, emit));
                 }
@@ -2789,7 +2789,7 @@ impl Engine {
                     block = None;
                     if self.emitted_bzl_prints.insert(label.clone()) {
                         for line in self.repositories.build_bzl_cache().prints(&label) {
-                            eprintln!("{line}");
+                            crate::ui::note(&line);
                         }
                     }
                 }
@@ -5314,7 +5314,7 @@ impl Engine {
         // delegate's re-application (RuleTransitionApplier).
         if let Some((id, printed)) = self.transition_cache.get(&cache_key) {
             for line in printed {
-                eprintln!("{line}");
+                crate::ui::note(line);
             }
             return Ok(*id);
         }
@@ -5332,7 +5332,7 @@ impl Engine {
             },
         )?;
         for line in &applied.printed {
-            eprintln!("{line}");
+            crate::ui::note(line);
         }
         let target_scoped = self.target_scoped_flags(from).map_err(failure)?;
         let id = self
@@ -10582,7 +10582,7 @@ impl Engine {
         };
         let (analyzed, printed) = analysis::analyze_aspect_buffered(&application, &outputs);
         for line in printed {
-            eprintln!("{line}");
+            crate::ui::note(&line);
         }
         let analyzed = analyzed?;
         // Register the application's declared outputs and actions under the
@@ -11613,7 +11613,7 @@ impl Engine {
         };
         let ComputeOutcome { analyzed, printed } = outcome;
         for line in printed {
-            eprintln!("{line}");
+            crate::ui::note(&line);
         }
         let mut analyzed = analyzed?;
         restricted_to_error(rule)?;
