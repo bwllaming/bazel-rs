@@ -2115,12 +2115,15 @@ pub(crate) fn target_location_entry(value: Value<'_>) -> Option<(String, Vec<Fil
         TargetKind::Alias(alias, _) => alias.clone(),
         _ => target.label.canonical_form(),
     };
+    // The stored FilesToRun's executable, read in place (a FilesToRun
+    // created from the files alone has none).
     let executable = target
         .runfiles
-        .files_to_run(&target.files)
-        .executable()
-        .cloned()
-        .filter(|_| target.files.len() != 1);
+        .files_to_run
+        .as_ref()
+        .and_then(|files_to_run| files_to_run.executable())
+        .filter(|_| target.files.len() != 1)
+        .cloned();
     Some((
         label,
         match executable {
