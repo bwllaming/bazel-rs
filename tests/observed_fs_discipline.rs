@@ -66,6 +66,9 @@ const ALLOWED_MODULES: &[&str] = &[
     "dir_stamps",
     // `info` reads no planning input (it never plans).
     "info",
+    // The output base lock (taken before the recording window) and
+    // `clean` (never plans).
+    "output_base",
     // Bootstrap before the recording window: the git layout of the
     // workspace decides the cache root, which is part of the snapshot key
     // (docs/WORKTREES.md).

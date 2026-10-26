@@ -4007,8 +4007,14 @@ static OUTPUT_BASE_LOCK: std::sync::OnceLock<bazel_rs::output_base::Lock> =
 
 /// Hold the output base lock of `root`'s state directory in `cache`
 /// shared for the rest of the process. Best effort: a state directory
-/// that cannot hold a lock file (a read-only cache) runs unlocked.
+/// that cannot hold a lock file (a read-only cache) runs unlocked, and so
+/// does a command on a cache that does not exist yet — it must create
+/// nothing when it fails before writing (a `clean` meanwhile finds nothing
+/// to delete).
 fn hold_output_base_lock(cache: &Path, root: &Path, command: &str) {
+    if !cache.is_dir() {
+        return;
+    }
     let state = bazel_rs::worktree::state_directory_for(cache, root);
     if let Ok(lock) = bazel_rs::output_base::acquire(
         &state,
