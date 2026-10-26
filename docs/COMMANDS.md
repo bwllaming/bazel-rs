@@ -116,8 +116,11 @@ after a native `clean` (or `--expunge`) relinks its outputs from cache hits:
 `bazel-rs: 0 actions executed, N cache hits`, where genuine reports `N
 processes` (the receipt's `build_after_clean`). Repositories are likewise
 kept by `--expunge` (genuine re-extracts them from its repository cache
-without downloading, also 0 downloads in the receipt). To drop the shared
-store, delete the cache directory (with no command running).
+without downloading, also 0 downloads in the receipt). The shared store is
+garbage-collected instead — by last use, a size budget and deleted worktrees,
+at the end of commands or now with the native `bazel-rs gc`
+(docs/CACHE_GC.md); to drop all of it, delete the cache directory (with no
+command running).
 
 The `bazel-*` convenience links: bazel-rs never creates them, so `clean`
 leaves any it finds alone (they belong to genuine Bazel's output base).
