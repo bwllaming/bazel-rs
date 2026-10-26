@@ -131,6 +131,10 @@ impl Workspace {
     }
 
     fn run(&self, arguments: &[&str]) -> Output {
+        self.run_startup(&[], arguments)
+    }
+
+    fn run_startup(&self, startup: &[&str], arguments: &[&str]) -> Output {
         let registry = format!(
             "--registry=file://{}/tests/fixtures/builtin_modules/registry",
             manifest().display()
@@ -139,6 +143,7 @@ impl Workspace {
         command
             .args(["--kill-after=5s", "600s", env!("CARGO_BIN_EXE_bazel-rs")])
             .arg("--ignore_all_rc_files")
+            .args(startup)
             .arg(format!("--cache-dir={}", self.cache.display()))
             .args(arguments);
         // Repository-using commands resolve the built-in modules from the
@@ -233,8 +238,14 @@ fn shutdown_clean_and_fetch_match_genuine_bazel() {
             .iter()
             .map(|arg| arg.as_str().unwrap())
             .collect();
+        let startup: Vec<&str> = case["startup"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
         let before = server.downloads.load(Ordering::SeqCst);
-        let output = workspace.run(&args);
+        let output = workspace.run_startup(&startup, &args);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let mut native = kept(&stderr, &state);
         let mut genuine: Vec<String> = case["stderr"]
@@ -245,7 +256,7 @@ fn shutdown_clean_and_fetch_match_genuine_bazel() {
             .collect();
         match name {
             // Declared: the product name in the hint.
-            "sync" => {
+            "sync" | "quiet_sync" => {
                 for line in &mut genuine {
                     *line = line.replace("'bazel help'", "'bazel-rs help'");
                 }
@@ -286,7 +297,7 @@ fn shutdown_clean_and_fetch_match_genuine_bazel() {
             &mut failures,
         );
         // Declared: native `build` reports its outputs on stdout.
-        if !name.starts_with("build") {
+        if !name.contains("build") {
             check(
                 "stdout",
                 case["stdout"].as_str().unwrap().to_owned(),
@@ -303,12 +314,39 @@ fn shutdown_clean_and_fetch_match_genuine_bazel() {
             output_exists.to_string(),
             &mut failures,
         );
-        check(
-            "downloads",
-            case["downloads"].to_string(),
-            (server.downloads.load(Ordering::SeqCst) - before).to_string(),
-            &mut failures,
-        );
+        // Under --quiet nothing but the kept lines reaches stderr (genuine's
+        // `quiet_build` prints its `Target ... up-to-date:` result lines on
+        // stderr, native its result lines on stdout).
+        if name.starts_with("quiet_") && name != "quiet_build" {
+            let full: Vec<String> = case["stderr_full"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|line| {
+                    line.as_str()
+                        .unwrap()
+                        .replace("'bazel help'", "'bazel-rs help'")
+                })
+                .collect();
+            let native_full: Vec<&str> = stderr.lines().collect();
+            check(
+                "stderr_full",
+                format!("{full:?}"),
+                format!("{native_full:?}"),
+                &mut failures,
+            );
+        }
+        // The quiet_ cases ran in genuine server mode against a fresh
+        // output user root (its own repository cache); natively they share
+        // the cache of the cases before them.
+        if !name.starts_with("quiet_") {
+            check(
+                "downloads",
+                case["downloads"].to_string(),
+                (server.downloads.load(Ordering::SeqCst) - before).to_string(),
+                &mut failures,
+            );
+        }
         // Declared: genuine `clean` also drops the action cache (in its
         // output base), so the next build runs the genrule again; the
         // native action cache is shared by the cache's worktrees and

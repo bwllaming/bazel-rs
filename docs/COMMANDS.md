@@ -197,6 +197,19 @@ progress display like `build` on a terminal (docs/PROGRESS.md); the other
 options `--curses`/`--color` and ignores them). Every exit path of these
 commands ends the display first.
 
+## `--quiet`
+
+Under the startup option `--quiet` (docs/STARTUP_QUIET.md) these commands
+print only their errors, like genuine 9.3 in server mode (the receipt's
+`quiet_*` cases): the INFO events — `Starting clean ...`, `Output tree /
+Output base moved to ... for deletion`, `All requested repos fetched
+successfully.`, `All external dependencies ... fetched successfully.` — are
+dropped (`ui::note`), as is the output base lock's waiting message (a client
+message of level USER, which Bazel's client logs only above ERROR under
+`--quiet`). Kept: every `ERROR: ...` line, `Command 'X' not found. ...`,
+and exit codes. (Under `--batch` genuine does not pass `--quiet` to its
+server; the receipt's quiet cases therefore ran in server mode.)
+
 ## `help`
 
 `help` prints the native usage index; `help COMMAND` prints the command's

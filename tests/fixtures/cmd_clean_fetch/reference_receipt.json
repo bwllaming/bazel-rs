@@ -1,5 +1,5 @@
 {
- "about": "Genuine Bazel 9.3.0 shutdown/clean/fetch captures (tests/fixtures/cmd_clean_fetch/capture.py, docs/COMMANDS.md): --batch --ignore_all_rc_files --output_user_root=<private>, env -i PATH=/usr/bin:/bin HOME=<private>; the cases run in order against one output base. `stderr` keeps the lines matching KEPT, `stderr_full` everything but the JVM warning; <OUTPUT_BASE> is the output base (native: the workspace's state directory); `output_exists` = <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/g.txt after the case; `downloads` = HTTP requests for the archive.",
+ "about": "Genuine Bazel 9.3.0 shutdown/clean/fetch captures (tests/fixtures/cmd_clean_fetch/capture.py, docs/COMMANDS.md): --batch --ignore_all_rc_files --output_user_root=<private>, env -i PATH=/usr/bin:/bin HOME=<private>; the cases run in order against one output base; the quiet_ cases (startup --quiet) run in server mode against a second output user root, after the others. `stderr` keeps the lines matching KEPT, `stderr_full` everything but the JVM warning; <OUTPUT_BASE> is the output base (native: the workspace's state directory); `output_exists` = <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/g.txt after the case; `downloads` = HTTP requests for the archive.",
  "genuine_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
  "kept_stderr": "^(ERROR: |INFO: All |INFO: Starting clean|INFO: Output |Command ')",
  "module": "module(name = \"scratch\")\nhttp_archive = use_repo_rule(\"@bazel_tools//tools/build_defs/repo:http.bzl\", \"http_archive\")\nhttp_archive(name = \"remote\", urls = [\"http://127.0.0.1:{PORT}/remote.tar.gz\"], sha256 = \"6322c0df89f30a6feb0ff9aae3fe3bc709fc3be945cea1be7fc3e5858126ec58\", strip_prefix = \"remote-1\")\n",
@@ -8,6 +8,7 @@
  "cases": [
   {
    "name": "shutdown",
+   "startup": [],
    "args": [
     "shutdown"
    ],
@@ -26,6 +27,7 @@
   },
   {
    "name": "shutdown_iff",
+   "startup": [],
    "args": [
     "shutdown",
     "--iff_heap_size_greater_than=10"
@@ -44,6 +46,7 @@
   },
   {
    "name": "shutdown_residue",
+   "startup": [],
    "args": [
     "shutdown",
     "x"
@@ -65,6 +68,7 @@
   },
   {
    "name": "shutdown_unknown_option",
+   "startup": [],
    "args": [
     "shutdown",
     "--foo"
@@ -86,6 +90,7 @@
   },
   {
    "name": "sync",
+   "startup": [],
    "args": [
     "sync"
    ],
@@ -102,6 +107,7 @@
   },
   {
    "name": "fetch_targets",
+   "startup": [],
    "args": [
     "fetch",
     "//pkg:g"
@@ -124,7 +130,7 @@
     "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
     "INFO: Analyzed target //pkg:g (7 packages loaded, 9 targets configured).",
     "INFO: Found 1 target...",
-    "INFO: Elapsed time: 7.885s, Critical Path: 0.00s",
+    "INFO: Elapsed time: 7.839s, Critical Path: 0.00s",
     "INFO: 0 processes.",
     "INFO: Build completed successfully, 0 total actions",
     "INFO: All external dependencies for the requested targets fetched successfully."
@@ -134,6 +140,7 @@
   },
   {
    "name": "fetch_repo",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@remote"
@@ -152,6 +159,7 @@
   },
   {
    "name": "fetch_repo_canonical",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@@+http_archive+remote"
@@ -170,6 +178,7 @@
   },
   {
    "name": "fetch_repo_two",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@remote",
@@ -189,6 +198,7 @@
   },
   {
    "name": "fetch_repo_not_visible",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@nope"
@@ -207,6 +217,7 @@
   },
   {
    "name": "fetch_repo_invalid",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=remote"
@@ -225,6 +236,7 @@
   },
   {
    "name": "fetch_repo_undefined",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@@nope+"
@@ -243,6 +255,7 @@
   },
   {
    "name": "fetch_repo_failures",
+   "startup": [],
    "args": [
     "fetch",
     "--repo=@nope",
@@ -262,6 +275,7 @@
   },
   {
    "name": "fetch_force",
+   "startup": [],
    "args": [
     "fetch",
     "--force",
@@ -281,6 +295,7 @@
   },
   {
    "name": "fetch_conflict",
+   "startup": [],
    "args": [
     "fetch",
     "--all",
@@ -300,6 +315,7 @@
   },
   {
    "name": "fetch_nofetch",
+   "startup": [],
    "args": [
     "fetch",
     "--nofetch"
@@ -318,6 +334,7 @@
   },
   {
    "name": "fetch_configure",
+   "startup": [],
    "args": [
     "fetch",
     "--configure"
@@ -331,7 +348,6 @@
     "Computing main repo mapping: ",
     "Computing main repo mapping: ",
     "Computing main repo mapping: ",
-    "Computing main repo mapping: ",
     "INFO: All external dependencies fetched successfully."
    ],
    "output_exists": false,
@@ -339,6 +355,7 @@
   },
   {
    "name": "fetch_missing_package",
+   "startup": [],
    "args": [
     "fetch",
     "//nope:x"
@@ -360,7 +377,7 @@
     " - nope",
     "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
     " - nope",
-    "INFO: Elapsed time: 0.788s",
+    "INFO: Elapsed time: 0.712s",
     "INFO: 0 processes.",
     "ERROR: Build did NOT complete successfully",
     "ERROR: Fetching some target dependencies failed with errors: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
@@ -371,6 +388,7 @@
   },
   {
    "name": "build",
+   "startup": [],
    "args": [
     "build",
     "//pkg:g"
@@ -389,7 +407,7 @@
     "INFO: Found 1 target...",
     "Target //pkg:g up-to-date:",
     "  bazel-bin/pkg/g.txt",
-    "INFO: Elapsed time: 1.521s, Critical Path: 0.03s",
+    "INFO: Elapsed time: 1.488s, Critical Path: 0.03s",
     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
     "INFO: Build completed successfully, 2 total actions"
    ],
@@ -398,6 +416,7 @@
   },
   {
    "name": "clean",
+   "startup": [],
    "args": [
     "clean"
    ],
@@ -414,6 +433,7 @@
   },
   {
    "name": "clean_residue",
+   "startup": [],
    "args": [
     "clean",
     "x"
@@ -431,6 +451,7 @@
   },
   {
    "name": "clean_async",
+   "startup": [],
    "args": [
     "clean",
     "--async"
@@ -450,6 +471,7 @@
   },
   {
    "name": "build_after_clean",
+   "startup": [],
    "args": [
     "build",
     "//pkg:g"
@@ -468,7 +490,7 @@
     "INFO: Found 1 target...",
     "Target //pkg:g up-to-date:",
     "  bazel-bin/pkg/g.txt",
-    "INFO: Elapsed time: 1.585s, Critical Path: 0.03s",
+    "INFO: Elapsed time: 1.607s, Critical Path: 0.02s",
     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
     "INFO: Build completed successfully, 2 total actions"
    ],
@@ -477,6 +499,7 @@
   },
   {
    "name": "clean_expunge",
+   "startup": [],
    "args": [
     "clean",
     "--expunge"
@@ -494,6 +517,7 @@
   },
   {
    "name": "clean_expunge_async",
+   "startup": [],
    "args": [
     "clean",
     "--expunge_async"
@@ -513,6 +537,7 @@
   },
   {
    "name": "build_after_expunge",
+   "startup": [],
    "args": [
     "build",
     "//pkg:g"
@@ -531,7 +556,7 @@
     "INFO: Found 1 target...",
     "Target //pkg:g up-to-date:",
     "  bazel-bin/pkg/g.txt",
-    "INFO: Elapsed time: 1.473s, Critical Path: 0.03s",
+    "INFO: Elapsed time: 1.530s, Critical Path: 0.02s",
     "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
     "INFO: Build completed successfully, 2 total actions"
    ],
@@ -540,6 +565,7 @@
   },
   {
    "name": "clean_expunge_and_async",
+   "startup": [],
    "args": [
     "clean",
     "--expunge",
@@ -555,6 +581,183 @@
     "INFO: Starting clean.",
     "INFO: Output base moved to <OUTPUT_BASE>_tmp_<PID>_<UUID> for deletion"
    ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_fetch_targets",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "fetch",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [],
+   "output_exists": false,
+   "downloads": 1
+  },
+  {
+   "name": "quiet_fetch_repo",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "fetch",
+    "--repo=@remote"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_fetch_repo_not_visible",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "fetch",
+    "--repo=@nope"
+   ],
+   "exit": 8,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository"
+   ],
+   "stderr_full": [
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_sync",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "sync"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "Command 'sync' not found. Try 'bazel help'."
+   ],
+   "stderr_full": [
+    "Command 'sync' not found. Try 'bazel help'."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_shutdown_residue",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "shutdown",
+    "x"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "stderr_full": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_build",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "build",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "Target //pkg:g up-to-date:",
+    "  bazel-bin/pkg/g.txt"
+   ],
+   "output_exists": true,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_clean",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "clean"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_clean_residue",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "clean",
+    "x"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "stderr_full": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_clean_async",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "clean",
+    "--async"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "quiet_clean_expunge_async",
+   "startup": [
+    "--quiet"
+   ],
+   "args": [
+    "clean",
+    "--expunge_async"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [],
    "output_exists": false,
    "downloads": 0
   }

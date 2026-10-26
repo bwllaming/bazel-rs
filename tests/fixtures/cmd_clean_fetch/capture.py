@@ -55,6 +55,21 @@ CASES = [
     ("clean_expunge_and_async", ["clean", "--expunge", "--async"]),
 ]
 
+# `--quiet` (docs/STARTUP_QUIET.md) in SERVER mode (under --batch the client does not pass it to
+# the server), with a fresh output user root, after CASES; the server is shut down at the end.
+QUIET_CASES = [
+    ("quiet_fetch_targets", ["fetch", "//pkg:g"]),
+    ("quiet_fetch_repo", ["fetch", "--repo=@remote"]),
+    ("quiet_fetch_repo_not_visible", ["fetch", "--repo=@nope"]),
+    ("quiet_sync", ["sync"]),
+    ("quiet_shutdown_residue", ["shutdown", "x"]),
+    ("quiet_build", ["build", "//pkg:g"]),
+    ("quiet_clean", ["clean"]),
+    ("quiet_clean_residue", ["clean", "x"]),
+    ("quiet_clean_async", ["clean", "--async"]),
+    ("quiet_clean_expunge_async", ["clean", "--expunge_async"]),
+]
+
 # The stderr lines the receipt pins (progress, timing and Bazel's own build summary are not).
 KEPT = re.compile(r"^(ERROR: |INFO: All |INFO: Starting clean|INFO: Output |Command ')")
 OUTPUT = "execroot/_main/bazel-out/k8-fastbuild/bin/pkg/g.txt"
@@ -127,17 +142,20 @@ def main():
         f.write(module.replace("{PORT}", str(port)))
     with open(WS + "/pkg/BUILD", "w") as f:
         f.write(build)
-    output_base = OUR + "/" + hashlib.md5(WS.encode()).hexdigest()
     cases = []
-    for name, args in CASES:
+    runs = [(name, ["--batch"], OUR, args) for name, args in CASES]
+    runs += [(name, ["--quiet"], OUR + "-server", args) for name, args in QUIET_CASES]
+    for name, startup, root, args in runs:
+        output_base = root + "/" + hashlib.md5(WS.encode()).hexdigest()
         before = len(requests)
         p = subprocess.run(
-            ["env", "-i", "PATH=/usr/bin:/bin", "HOME=" + HOME, GENUINE, "--batch", "--ignore_all_rc_files",
-             "--output_user_root=" + OUR] + args,
+            ["env", "-i", "PATH=/usr/bin:/bin", "HOME=" + HOME, GENUINE] + startup + ["--ignore_all_rc_files",
+             "--output_user_root=" + root] + args,
             cwd=WS, capture_output=True, text=True)
         stderr = [normalize(line, output_base) for line in p.stderr.splitlines()]
         cases.append({
             "name": name,
+            "startup": [arg for arg in startup if arg != "--batch"],
             "args": args,
             "exit": p.returncode,
             "stdout": normalize(p.stdout, output_base),
@@ -146,11 +164,15 @@ def main():
             "output_exists": os.path.exists(os.path.join(output_base, OUTPUT)),
             "downloads": len(requests) - before,
         })
+    # No server left behind (clean --expunge_async already stopped it).
+    subprocess.run(["env", "-i", "PATH=/usr/bin:/bin", "HOME=" + HOME, GENUINE, "--ignore_all_rc_files",
+                    "--output_user_root=" + OUR + "-server", "shutdown"], cwd=WS, capture_output=True)
     server.shutdown()
     receipt = {
         "about": "Genuine Bazel 9.3.0 shutdown/clean/fetch captures (tests/fixtures/cmd_clean_fetch/capture.py, "
                  "docs/COMMANDS.md): --batch --ignore_all_rc_files --output_user_root=<private>, env -i "
-                 "PATH=/usr/bin:/bin HOME=<private>; the cases run in order against one output base. `stderr` "
+                 "PATH=/usr/bin:/bin HOME=<private>; the cases run in order against one output base; the quiet_ "
+                 "cases (startup --quiet) run in server mode against a second output user root, after the others. `stderr` "
                  "keeps the lines matching KEPT, `stderr_full` everything but the JVM warning; <OUTPUT_BASE> is "
                  "the output base (native: the workspace's state directory); `output_exists` = "
                  "<OUTPUT_BASE>/" + OUTPUT + " after the case; `downloads` = HTTP requests for the archive.",

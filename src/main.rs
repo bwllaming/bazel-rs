@@ -1341,7 +1341,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         // Genuine prints the build's summary first (the progress display's,
         // when it is on), then the fetch result.
         bazel_rs::progress::finish(0);
-        eprintln!(
+        bazel_rs::note!(
             "INFO: All external dependencies for the requested targets fetched successfully."
         );
     }
@@ -3985,7 +3985,7 @@ fn fetch_repositories(
         }
         lockfile_gate.open();
         write_lockfile();
-        eprintln!("INFO: All requested repos fetched successfully.");
+        bazel_rs::note!("INFO: All requested repos fetched successfully.");
         return Ok(());
     }
     let names = match repositories.all_repository_names(fetch.configure) {
@@ -3999,7 +3999,7 @@ fn fetch_repositories(
     }
     lockfile_gate.open();
     write_lockfile();
-    eprintln!("INFO: All external dependencies fetched successfully.");
+    bazel_rs::note!("INFO: All external dependencies fetched successfully.");
     Ok(())
 }
 
@@ -4024,7 +4024,7 @@ fn hold_output_base_lock(cache: &Path, root: &Path, command: &str) {
         bazel_rs::output_base::LockMode::Shared,
         command,
         true,
-        &mut |line| eprintln!("{line}"),
+        &mut |line| bazel_rs::ui::note(line),
     ) {
         let _ = OUTPUT_BASE_LOCK.set(lock);
     }
@@ -4108,7 +4108,7 @@ fn clean_command(
         fail_with(2, &format!("Unrecognized arguments: {}", residue.join(" ")));
     }
     // canUseAsync.
-    eprintln!(
+    bazel_rs::note!(
         "INFO: {}",
         if clean.asynchronous {
             "Starting clean."
@@ -4125,7 +4125,7 @@ fn clean_command(
         bazel_rs::output_base::LockMode::Exclusive,
         "clean",
         true,
-        &mut |line| eprintln!("{line}"),
+        &mut |line| bazel_rs::ui::note(line),
     ) {
         Ok(lock) => lock,
         Err(bazel_rs::output_base::LockError::Io(error)) => fail_with(36, &error),
@@ -4134,7 +4134,8 @@ fn clean_command(
             "Exiting because the output base lock is held and --noblock_for_lock was given.",
         ),
     };
-    let result = bazel_rs::output_base::clean(&state, clean, &mut |line| eprintln!("INFO: {line}"));
+    let result =
+        bazel_rs::output_base::clean(&state, clean, &mut |line| bazel_rs::note!("INFO: {line}"));
     drop(lock);
     if let Err(error) = result {
         fail_with(error.exit_code, &error.message);
