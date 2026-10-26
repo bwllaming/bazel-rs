@@ -257,7 +257,7 @@ fn run() -> Result<(), String> {
     let raw_registries;
     let credential_options;
     let remote_options;
-    let spawn_options;
+    let mut spawn_options;
     let worker_options;
     let runfiles_options;
     let workspace_status;
