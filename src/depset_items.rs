@@ -791,10 +791,7 @@ mod tests {
         let item = super::StructItem::new(
             None,
             vec![
-                (
-                    "l".to_owned(),
-                    super::Item::List(vec![super::Item::Int(1)]),
-                ),
+                ("l".to_owned(), super::Item::List(vec![super::Item::Int(1)])),
                 ("s".to_owned(), super::Item::String("x".to_owned())),
             ],
             None,
