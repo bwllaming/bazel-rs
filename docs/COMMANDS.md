@@ -189,6 +189,14 @@ explicitly, naming the command, exit 1. Bazel commands that the native
 profile lacks (`cquery`, `aquery`, ...) keep `unsupported command or startup
 option`.
 
+## The progress display
+
+`fetch TARGET...` runs as a `build --nobuild` and so shows the interactive
+progress display like `build` on a terminal (docs/PROGRESS.md); the other
+`fetch` forms, `clean` and `shutdown` show none (`shutdown` validates the UI
+options `--curses`/`--color` and ignores them). Every exit path of these
+commands ends the display first.
+
 ## `help`
 
 `help` prints the native usage index; `help COMMAND` prints the command's

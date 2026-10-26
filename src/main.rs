@@ -166,7 +166,7 @@ fn run() -> Result<(), String> {
         // (`sync` was removed with WORKSPACE support) — exit 2.
         _ if !command.starts_with('-') && !bazelrc::is_bazel_command(&command) => {
             eprintln!("Command '{command}' not found. Try 'bazel-rs help'.");
-            std::process::exit(2);
+            exit(2);
         }
         _ => {
             return Err(format!(
@@ -4272,7 +4272,7 @@ fn help_command(rest: &[String]) -> Result<(), String> {
             message.push_str(&format!("  {name:<10}  {summary}\n"));
         }
         eprint!("{message}");
-        std::process::exit(2);
+        exit(2);
     };
     println!("Usage: bazel-rs {name} <options> ...\n\n{summary}\n\nNative profile: {notes}");
     Ok(())
