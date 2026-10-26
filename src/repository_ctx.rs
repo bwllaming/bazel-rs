@@ -2368,6 +2368,9 @@ impl Context {
         if digest != expected.bytes || (!canonical_id.is_empty() && !marker.exists()) {
             return Ok(None);
         }
+        // DownloadCache.get touches the entry it serves (java:214): its
+        // last use (docs/CACHE_GC.md).
+        crate::cache_gc::note_used_path(&blob);
         // DownloadManager.java:266-276: a failing copy is ignored ("We'll
         // just download again"), e.g. when the output is a directory.
         let copied = (|| -> std::io::Result<()> {

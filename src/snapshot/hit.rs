@@ -402,6 +402,14 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         trees: Trees::of(&inputs),
         log: attempt.log,
     };
+    // The hit uses every tree the snapshot names, and the trees of the local
+    // rules it replayed: their last use (docs/CACHE_GC.md).
+    for tree in &inputs.recording.repositories {
+        crate::cache_gc::note_tree_used(&tree.root);
+    }
+    for record in &inputs.replay {
+        crate::cache_gc::note_tree_used(&record.root);
+    }
     let evidence = if attempt.verify {
         // Verify mode: nothing is written back before the full analysis
         // agreed (a mismatch is never saved).

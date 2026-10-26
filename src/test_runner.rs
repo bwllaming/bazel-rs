@@ -878,6 +878,8 @@ impl Runner<'_> {
                 .chain(&status.failed_logs)
                 .all(|log| entry.join(log).is_file())
         {
+            // The result's last use (docs/CACHE_GC.md).
+            crate::cache_gc::note_used_path(&status_path);
             if !indexed {
                 // This workspace's last key is now this one (best effort: a
                 // failed write only costs the same lookup next time).

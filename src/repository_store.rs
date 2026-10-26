@@ -1717,6 +1717,9 @@ where
     if let Some(start) = call_start {
         timing::record_root(stage_key, start.elapsed().as_secs_f64(), "executed");
     }
+    // The tree's last use (an existing equal tree is not published again;
+    // docs/CACHE_GC.md).
+    crate::cache_gc::note_tree_used(&destination);
     // This call ran the repository rule even when the tree it produced
     // already existed under the same content identity.
     Ok((destination, Publication::Executed))

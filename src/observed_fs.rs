@@ -2009,6 +2009,8 @@ impl Drop for TaintedSection {
 /// fingerprint refresh) succeeded; once per root and window (it replaces a
 /// [`crossed_tree`] record of the same root).
 pub fn repository_tree(kind: &'static str, name: &str, root: &Path, manifest: Option<&Path>) {
+    // The tree's last use (docs/CACHE_GC.md).
+    crate::cache_gc::note_tree_used(root);
     if let Some(recorder) = active() {
         recorder.claim_tree(Claim::Owner, kind, name, root, manifest);
     }
@@ -2021,6 +2023,7 @@ pub fn repository_tree(kind: &'static str, name: &str, root: &Path, manifest: Op
 /// [`Recording::crossed`] (a link into a tree no repository of the run has
 /// as its root, e.g. an older publication).
 pub fn crossed_tree(kind: &'static str, id: &str, root: &Path, manifest: &Path) {
+    crate::cache_gc::note_tree_used(root);
     if let Some(recorder) = active() {
         recorder.claim_tree(Claim::Crossing, kind, id, root, Some(manifest));
     }
@@ -2030,6 +2033,7 @@ pub fn crossed_tree(kind: &'static str, id: &str, root: &Path, manifest: &Path) 
 /// replayed, never a REPO — a link that crossed into it earlier in the run
 /// loses its record, so the recording is the same in either order.
 pub fn local_tree(root: &Path) {
+    crate::cache_gc::note_tree_used(root);
     if let Some(recorder) = active() {
         recorder.claim_tree(Claim::Local, "direct", "", root, None);
     }

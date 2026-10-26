@@ -4951,6 +4951,9 @@ fn read_manifest(path: &Path, root: &Path) -> Result<Vec<u8>, String> {
     if !metadata.is_file() {
         return Err(format!("expected regular file: '{}'", path.display()));
     }
+    // The entry's last use, for the cache's garbage collection (at most
+    // once per day per entry; docs/CACHE_GC.md).
+    crate::cache_gc::note_used(path, &metadata);
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0) + 1);
     file.read_to_end(&mut bytes)
         .map_err(|e| io_error("cannot read manifest", path, e))?;

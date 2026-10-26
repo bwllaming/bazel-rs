@@ -19,6 +19,10 @@ pub struct RcOptions {
     /// `--experimental_isolated_extension_usages`
     /// (packages/semantics/BuildLanguageOptions.java:278-286).
     pub isolated_extension_usages: bool,
+    /// The garbage collection options of the native cache
+    /// (`--experimental_disk_cache_gc_*`, `--repo_contents_cache_gc_*`;
+    /// crate::cache_gc, docs/CACHE_GC.md).
+    pub gc: crate::cache_gc::GcOptions,
 }
 
 /// Remote execution options (remote/options/RemoteOptions.java:91, :601).
@@ -60,6 +64,25 @@ fn value_option<'a>(
     None
 }
 
+/// One of the garbage collection options (crate::cache_gc::OPTION_NAMES),
+/// which every command takes (genuine: the remote and repository modules'
+/// common options): `Ok(Some(used_next))` when `arg` is one.
+pub fn gc_option(
+    gc: &mut crate::cache_gc::GcOptions,
+    arg: &str,
+    next: Option<&str>,
+) -> Result<Option<bool>, String> {
+    for name in crate::cache_gc::OPTION_NAMES {
+        if let Some(parsed) = value_option(arg, next, name) {
+            let (form, value, used) = parsed?;
+            gc.set(name, value)
+                .map_err(|error| format!("While parsing option {form}: {error}"))?;
+            return Ok(Some(used));
+        }
+    }
+    Ok(None)
+}
+
 /// A boolean option under its name or old name.
 fn boolean(arg: &str, names: &[&str]) -> Option<Result<bool, String>> {
     names
@@ -81,6 +104,9 @@ impl RcOptions {
         // `run` and `test` inherit build's options (N23f, N23g).
         let build = matches!(command, "build" | "run" | "test");
         let unrecognized = || invalid_argument(arg, format!("Unrecognized option: {arg}"));
+        if let Some(used) = gc_option(&mut self.gc, arg, next)? {
+            return Ok(Some(used));
+        }
         if let Some(parsed) = value_option(arg, next, "repo_env") {
             let (form, value, used) = parsed?;
             // The only invalid inputs ("" and "=") carry no value.

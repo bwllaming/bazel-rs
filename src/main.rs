@@ -20,9 +20,17 @@ Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] fetch [BUILD OPTIONS...] [TARGET... | --repo=@NAME... | --all | --configure] [--force]
   bazel-rs [STARTUP...] [--cache-dir=PATH] clean [--expunge] [--async | --expunge_async]
   bazel-rs [STARTUP...] shutdown [--iff_heap_size_greater_than=N]
+  bazel-rs [STARTUP...] [--cache-dir=PATH] gc [--dry_run] [GC OPTIONS...]
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
   bazel-rs version | --version | capabilities | help [COMMAND]
 
+Cache garbage collection (docs/CACHE_GC.md): every command ends with a bounded collection when
+  the last one is --experimental_disk_cache_gc_idle_delay (default 1h) old and no other bazel-rs
+  process uses the cache: entries unused for --experimental_disk_cache_gc_max_age (default 60d),
+  repository trees unused for --repo_contents_cache_gc_max_age (default 14d), least recently used
+  entries over --experimental_disk_cache_gc_max_size (default 10% of free disk, 10-64 GiB; 0: off),
+  abandoned temporaries and deleted worktrees' state. `gc` collects now and reports;
+  BAZEL_RS_CACHE_GC=off disables the automatic collection.
 Startup: --[no]system_rc --[no]workspace_rc --[no]home_rc --[no]ignore_all_rc_files
   --[no]quiet (only errors and command output; docs/STARTUP_QUIET.md)
   --bazelrc=FILE --output_base=PATH; rc files are evaluated like Bazel 9.3 (--config, common/always,
@@ -155,7 +163,7 @@ fn run() -> Result<(), String> {
         }
         "help" => return help_command(&rest),
         "shutdown" => return shutdown_command(&line, &path_to_binary),
-        "query" | "build" | "mod" | "run" | "test" | "info" | "clean" | "fetch" => {}
+        "query" | "build" | "mod" | "run" | "test" | "info" | "clean" | "fetch" | "gc" => {}
         "vendor" => {
             return Err(
                 "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
@@ -176,7 +184,14 @@ fn run() -> Result<(), String> {
     }
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
-    let options = evaluate_rc(&line, &command, &cwd, &root, &path_to_binary)?;
+    // `gc` applies the policy a `build` of this workspace would: its rc
+    // options are build's.
+    let rc_command = if command == "gc" {
+        "build"
+    } else {
+        command.as_str()
+    };
+    let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)?;
     let dump_repo_mapping = command == "mod"
         && options
             .residue
@@ -184,6 +199,9 @@ fn run() -> Result<(), String> {
             .is_some_and(|arg| arg.text == "dump_repo_mapping");
     if command == "info" {
         return info_command(&line, &options, &cwd, root);
+    }
+    if command == "gc" {
+        return gc_command(&line, &options, &cwd, &root);
     }
     if command == "clean" {
         return clean_command(&line, &options, &cwd, root);
@@ -465,6 +483,13 @@ fn run() -> Result<(), String> {
     // The persistent file-digest memo of this cache (crate::digest_memo),
     // saved by `digest_memo::finish` when the command ends.
     bazel_rs::digest_memo::install(&cache);
+    // Garbage collection (crate::cache_gc, docs/CACHE_GC.md): the command
+    // holds the cache's lock shared until it exits (a collection takes it
+    // exclusively), records which worktree uses the cache, and collects at
+    // its end under its options.
+    bazel_rs::cache_gc::install(&cache);
+    bazel_rs::cache_gc::record_workspace(&cache, &root);
+    bazel_rs::cache_gc::set_options(&rc_options.gc);
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
     let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(
         rc_options.attempt_to_print_relative_paths,
@@ -1040,6 +1065,94 @@ fn run() -> Result<(), String> {
 /// inherits the build options (`inheritsOptionsFrom = BuildCommand`, rc
 /// `build` lines included) and never loads, analyzes or fetches: no
 /// module resolution, no lockfile, no snapshot, no memory watchdog.
+/// `bazel-rs gc [--dry_run] [GC OPTIONS]` (native-only; docs/CACHE_GC.md):
+/// collect the cache's garbage now, waiting for the other bazel-rs
+/// processes that use it, and report what was freed. The policy is the one
+/// a `build` here would apply at its end: the garbage collection options of
+/// the rc files' `build` (and `common`) lines and of the command line; the
+/// rc files' other options are not this command's.
+fn gc_command(
+    line: &bazelrc::CommandLine,
+    options: &bazelrc::Expanded,
+    cwd: &Path,
+    root: &Path,
+) -> Result<(), String> {
+    // Errors in Bazel's parse order; the values below in priority order.
+    let mut validated = bazel_rs::cache_gc::GcOptions::default();
+    let mut dry_run = false;
+    for (step, _) in &options.steps {
+        let unit = match step {
+            bazelrc::Step::Fail(error) => return Err(error.clone()),
+            bazelrc::Step::Unit(unit) => unit,
+        };
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        if !unit.option.from_rc() && matches!(arg, "--dry_run" | "--dry-run") {
+            dry_run = true;
+            continue;
+        }
+        match bazel_rs::rc_options::gc_option(&mut validated, arg, next)? {
+            Some(_) => {}
+            None if unit.option.from_rc() => {}
+            None => {
+                return Err(format!(
+                    "unsupported option {arg:?} for gc (it takes --dry_run and the garbage collection options --experimental_disk_cache_gc_max_size, --experimental_disk_cache_gc_max_age and --repo_contents_cache_gc_max_age)"
+                ));
+            }
+        }
+    }
+    // The values in priority order (an rc line before the command line).
+    let mut ordered = bazel_rs::cache_gc::GcOptions::default();
+    for unit in &options.priority {
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        let _ = bazel_rs::rc_options::gc_option(&mut ordered, arg, next);
+    }
+    if let Some(argument) = options.residue.first() {
+        return Err(format!("gc takes no arguments; got {:?}", argument.text));
+    }
+    let cache = match line.cache_dir.clone().map(PathBuf::from) {
+        Some(cache) => cache,
+        None => bazel_rs::worktree::detect(root).default_cache(),
+    };
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
+    if !cache.is_dir() {
+        println!("No cache at {}: nothing to collect", cache.display());
+        return Ok(());
+    }
+    let report = bazel_rs::cache_gc::collect_now(&cache, &ordered, dry_run);
+    println!("Garbage collection of {}:", cache.display());
+    for (category, counts) in &report.categories {
+        println!(
+            "  {category:<12} {} of {} entries, {} of {}",
+            counts.deleted,
+            counts.entries,
+            bazel_rs::cache_gc::display_bytes(counts.deleted_bytes),
+            bazel_rs::cache_gc::display_bytes(counts.bytes),
+        );
+    }
+    if let Some(budget) = report.budget {
+        println!(
+            "  size budget  {}",
+            bazel_rs::cache_gc::display_bytes(budget)
+        );
+    }
+    println!("{}", capitalized(&report.summary()));
+    Ok(())
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 fn info_command(
     line: &bazelrc::CommandLine,
     options: &bazelrc::Expanded,
@@ -2021,6 +2134,9 @@ fn run_tail(
     process.current_dir(&line.working_directory);
     write_lockfile();
     bazel_rs::digest_memo::finish();
+    // The target runs in this process's place: the last uses are recorded,
+    // the collection waits for a later command.
+    bazel_rs::cache_gc::finish(false);
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", argv[0]))
 }
@@ -2738,6 +2854,9 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     process.current_dir(&execroot);
     write_lockfile();
     bazel_rs::digest_memo::finish();
+    // The target runs in this process's place: the last uses are recorded,
+    // the collection waits for a later command.
+    bazel_rs::cache_gc::finish(false);
     let error = bazel_rs::spawn_lock::exec(&mut process);
     Err(format!("cannot execute {}: {error}", options.shell))
 }
@@ -4354,13 +4473,22 @@ fn main() {
         exit(code);
     }
     bazel_rs::progress::finish(0);
+    finish_cache();
 }
 
 /// Exit with `code`, ending the progress display first (its summary, and
 /// whatever is still in its pipe).
 fn exit(code: i32) -> ! {
     bazel_rs::progress::finish(code);
+    finish_cache();
     std::process::exit(code)
+}
+
+/// The end of the command for the cache: record the last uses of its
+/// entries and, when it is due and no other process uses the cache, collect
+/// its garbage (docs/CACHE_GC.md).
+fn finish_cache() {
+    bazel_rs::cache_gc::finish(true);
 }
 
 /// Ends the progress display when a panic unwinds out of `main`.

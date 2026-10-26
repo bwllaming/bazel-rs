@@ -487,6 +487,9 @@ fn cached_download(
         && metadata.is_file()
         && integrity.verify_file(&path).is_ok()
     {
+        // The download's last use (DownloadCache.get touches it;
+        // docs/CACHE_GC.md).
+        crate::cache_gc::note_used_path(&path);
         return Ok(path);
     }
     if !downloads_enabled {
