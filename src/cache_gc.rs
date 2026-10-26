@@ -730,6 +730,13 @@ pub fn finish(collect: bool) {
     if report.deleted_entries > 0 {
         crate::note!("bazel-rs: cache garbage collection: {}", report.summary());
     }
+    if std::env::var_os("BAZEL_RS_CACHE_GC_TIMING").is_some() {
+        crate::note!(
+            "bazel-rs: cache garbage collection: {} ({})",
+            report.summary(),
+            report.phase_summary()
+        );
+    }
 }
 
 /// `bazel-rs gc`: collect `cache` now under `options`, waiting for the

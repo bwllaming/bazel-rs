@@ -32,10 +32,10 @@ pub const STALE_TEMPORARY: Duration = Duration::from_secs(24 * 60 * 60);
 /// Automatic collections start sizing new entries for at most this long
 /// (an entry started is sized whole; what is left is sized by the next
 /// collection, and the size budget waits until all are).
-const AUTOMATIC_SIZING: Duration = Duration::from_millis(1500);
+const AUTOMATIC_SIZING: Duration = Duration::from_secs(1);
 /// Automatic collections empty the trash for at most this long (half of it
 /// before removing, all of it after).
-const AUTOMATIC_TRASH: Duration = Duration::from_secs(2);
+const AUTOMATIC_TRASH: Duration = Duration::from_secs(1);
 /// `O_NOATIME`: the collector's reads never make an entry look used.
 const NOATIME: i32 = 0o1_000_000;
 
@@ -80,9 +80,21 @@ pub struct Report {
     pub trash_emptied: bool,
     pub dry_run: bool,
     pub elapsed: Duration,
+    /// Wall time by phase (`gc` prints it; automatic collections under
+    /// `BAZEL_RS_CACHE_GC_TIMING=1`).
+    pub phases: Vec<(&'static str, Duration)>,
 }
 
 impl Report {
+    /// The phase times: `scan 0.91 s, decide 0.01 s, ...`.
+    pub fn phase_summary(&self) -> String {
+        self.phases
+            .iter()
+            .map(|(name, time)| format!("{name} {:.2} s", time.as_secs_f64()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// One line, like DiskCacheGarbageCollector.CollectionStats.displayString.
     pub fn summary(&self) -> String {
         format!(
@@ -321,21 +333,41 @@ fn list(directory: &Path) -> Vec<(String, Option<fs::FileType>)> {
 /// The bytes `path` occupies (never following links): every file's blocks
 /// shared by its links, so that the sizes of all the cache's entries add up
 /// to what the cache occupies.
-fn disk_size(path: &Path) -> u64 {
-    let mut total = 0u64;
+/// Entries are inspected relative to their directory's descriptor (one
+/// component per lookup: absolute-path lookups serialize on overlay file
+/// systems, crate::dir_stamps). None when `deadline` passed first.
+fn disk_size(path: &Path, deadline: Option<Instant>) -> Option<u64> {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return Some(0);
+    };
+    let mut total = share(&metadata);
+    if !metadata.is_dir() {
+        return Some(total);
+    }
     let mut pending = vec![path.to_path_buf()];
-    while let Some(path) = pending.pop() {
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
+    let mut seen = 0u32;
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
             continue;
         };
-        total += share(&metadata);
-        if metadata.is_dir()
-            && let Ok(entries) = fs::read_dir(&path)
-        {
-            pending.extend(entries.flatten().map(|entry| entry.path()));
+        for entry in entries.flatten() {
+            seen = seen.wrapping_add(1);
+            if seen.is_multiple_of(1024)
+                && deadline.is_some_and(|deadline| Instant::now() > deadline)
+            {
+                return None;
+            }
+            // DirEntry::metadata: fstatat on the directory, no follow.
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            total += share(&metadata);
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            }
         }
     }
-    total
+    Some(total)
 }
 
 /// Read `path` without changing its access time.
@@ -619,12 +651,14 @@ fn scan(context: &Context<'_>) -> Scan {
         } else if deadline.is_some_and(|deadline| Instant::now() > deadline) {
             (None, Vec::new())
         } else {
-            let mut size = disk_size(directory);
-            if matches!(kind, Kind::Tree(TreeKind::Registry | TreeKind::Builtin)) {
-                // The manifest beside the tree is part of it.
-                size += share(&anchor_metadata);
-            }
-            let size = Some(size);
+            let size = disk_size(directory, deadline).map(|size| {
+                if matches!(kind, Kind::Tree(TreeKind::Registry | TreeKind::Builtin)) {
+                    // The manifest beside the tree is part of it.
+                    size + share(&anchor_metadata)
+                } else {
+                    size
+                }
+            });
             let refs = if *kind == Kind::Tree(TreeKind::Direct) && size.is_some() {
                 manifest_refs(&anchor.path)
             } else {
@@ -858,7 +892,7 @@ fn scan(context: &Context<'_>) -> Scan {
                                 {
                                     None
                                 }
-                                None => Some(disk_size(&path)),
+                                None => disk_size(&path, deadline),
                             }?;
                             index.push(IndexRecord {
                                 code: CODE_SLOT,
@@ -1040,7 +1074,14 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
         dry_run,
         ..Report::default()
     };
+    let mut phase = Instant::now();
+    let mut lap = |report: &mut Report, name: &'static str| {
+        report.phases.push((name, phase.elapsed()));
+        phase = Instant::now();
+    };
+    report.phases.push(("trash and index", started.elapsed()));
     let scan = scan(&context);
+    lap(&mut report, "scan and sizing");
     let Scan {
         mut items,
         sweeps,
@@ -1168,12 +1209,13 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
             }
         }
     }
+    lap(&mut report, "decide");
     // Remove.
     let mut removed_names: HashSet<(Kind, String)> = HashSet::new();
     let busy = AtomicU64::new(0);
     let trash = Trash::new(&gc);
     for sweep in &sweeps {
-        let bytes = disk_size(&sweep.path);
+        let bytes = disk_size(&sweep.path, None).unwrap_or(0);
         report.count(sweep.category, bytes);
         if dry_run || remove_sweep(&context, sweep, &trash) {
             report.deleted(sweep.category, bytes);
@@ -1214,6 +1256,7 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
             .collect();
         Index::write(&gc.join(INDEX), &kept);
     }
+    lap(&mut report, "remove");
     // The cache is consistent: the lock goes, then the trash.
     drop(lock);
     if !dry_run {
@@ -1238,6 +1281,7 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
             report.deleted("cas", bytes);
         }
         super::write_stamp(cache, !sized || !emptied);
+        lap(&mut report, "trash after");
     }
     report.elapsed = started.elapsed();
     report

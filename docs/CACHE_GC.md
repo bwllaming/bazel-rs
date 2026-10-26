@@ -62,7 +62,7 @@ a repository cache at once, shared by every worktree of a repository
   time. The idle delay is `--experimental_disk_cache_gc_idle_delay` or
   `--repo_contents_cache_gc_idle_delay` (the smaller when both are given),
   **default 1 hour** (genuine: 5 minutes of server idleness; a command-end
-  collection costs ~0.9 s on a 26 GB cache, so not after every command).
+  collection costs 0.5–1 s on a 26 GB cache, so not after every command).
   `BAZEL_RS_CACHE_GC=off` disables automatic collection.
 * **`bazel-rs gc [--dry_run]`** (native-only command) collects now, waits
   for the processes using the cache (note printed), has no time bounds and
@@ -223,8 +223,11 @@ counted). Sizes of entries are computed once and kept in `gc/index`
 postcard list of (kind, name, anchor inode and mtime, size, refs); also
 the identities pointers name), valid while the entry's anchor keeps its
 inode and mtime. An automatic collection sizes new entries for at most
-1.5 s (an entry it starts is sized whole); the size budget waits until all
-are sized; the stamp records `pending`, and the next command continues.
+1 s (walks relative to their directories' descriptors); the size budget
+waits until all are sized; the stamp records `pending`, and the next
+command continues. It empties the trash for at most 1 s before and 1 s
+after removing. `gc` prints the time of each phase; automatic collections
+do under `BAZEL_RS_CACHE_GC_TIMING=1`.
 
 ### Costs (measured, release build, shared 64-core host)
 
@@ -236,8 +239,9 @@ trees), 23.4 GiB by the collector's accounting.
 
 | | time |
 |---|---|
-| first collection (sizes every entry; explicit) | 5.3 s |
-| a collection with nothing to do (index warm) | 0.88–0.89 s |
+| first collection (sizes every entry; `gc`) | 5.3–6.9 s |
+| a collection with nothing to do (index warm; `gc`) | 0.53–0.89 s (scan 0.53–0.56 s) |
+| the first automatic collections on that cache, no index (warm no-op `build oauth2token/...` with a snapshot hit, ~0.3 s alone) | +1.5 s, +1.5 s, +1.0 s (sizing done), then +0 until the idle delay passes |
 | warm no-op `build oauth2token/...` (692 hits), automatic collection not due, vs `BAZEL_RS_CACHE_GC=off` | 0.289 vs 0.273 s (min of 4) |
 | warm no-op `build //src/ts/...` (24,861 hits), same | 1.612 vs 1.624 s (min of 3) |
 | the same TS no-op when every manifest's atime is 3 days old (24,848 touches) | 1.609 s |

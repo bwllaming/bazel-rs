@@ -1142,6 +1142,7 @@ fn gc_command(
         );
     }
     println!("{}", capitalized(&report.summary()));
+    println!("  ({})", report.phase_summary());
     Ok(())
 }
 
