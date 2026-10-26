@@ -187,7 +187,13 @@ the `rules_jvm_external` maven repositories of the built-in module closure
 with `'bazel-rs help'` (any name that is no Bazel command). `vendor`
 (`--vendor_dir`: copies fetched repositories into a directory later builds
 read instead of the repository store) is not implemented: it fails
-explicitly, naming the command, exit 1. Bazel commands that the native
+explicitly, naming the command, exit 1. A vendor directory is only useful if
+builds read it back (`build --vendor_dir`: RepositoryFetchFunction checks each
+vendored repository's `@NAME.marker` file against the repository's recorded
+inputs, VENDOR.bazel `ignore()`/`pin()`, vendored registry files under
+`_registries/`); the native store has neither genuine's marker files nor that
+read path, so a native `vendor` could produce a directory neither genuine nor
+native builds use. Bazel commands that the native
 profile lacks (`cquery`, `aquery`, ...) keep `unsupported command or startup
 option`.
 
@@ -214,7 +220,25 @@ server; the receipt's quiet cases therefore ran in server mode.)
 
 ## `help`
 
-`help` prints the native usage index; `help COMMAND` prints the command's
-usage line, Bazel's one-line summary and the native profile's notes; an
-unknown topic lists the commands (exit 2). Minimal by design: no option
-listings, no byte parity with genuine `help`.
+`help` (src/help.rs) prints genuine 9.3's index, `help COMMAND` the
+command's help text and its options by documentation category in
+OptionsUsage's form (`--[no]name [-a] (type; default: "x")`), plus
+`help startup_options`, `help target-syntax` and `help info-keys`; `--short`
+lists option names only; an unknown topic is `'X' is not a known command`
+(exit 2). The texts and option tables are generated from genuine 9.3.0
+(`scripts/extract_help_topics.py` from tests/fixtures/help,
+`scripts/extract_option_metadata.py` from `help flags-as-proto`);
+tests/help_canonicalize.rs compares every topic line for line. Differences:
+the release header names bazel-rs, `--long` prints no option descriptions,
+and `help native` prints the native profile's own notes (the old index).
+
+## `canonicalize-flags`
+
+`canonicalize-flags [--for_command=CMD] -- FLAGS...` (src/canonicalize.rs)
+prints the canonical form of FLAGS for CMD (default `build`) like
+CanonicalizeCommand: one `--name=value` per effective instance in the order
+applied (a single-valued option once, at its last occurrence), booleans
+`1`/`0`, old names and abbreviations resolved, expansion options replaced by
+their expansion; `Unrecognized option: ...`, `Unrecognized arguments: ...`
+and an unknown `--for_command` fail with exit 2. Starlark options and
+`--invocation_policy` are explicit errors. Captured: tests/fixtures/canonicalize.

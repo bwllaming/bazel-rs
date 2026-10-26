@@ -69,11 +69,13 @@ Done since the last increment recorded under "History", one line each:
 - [ ] `aquery`. The supported `cquery` subset is listed in docs/CQUERY.md;
       Starlark formatting/default TD compatibility filtering, full transition
       output and several query functions remain explicit errors.
-- [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly, still open).
+- [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly: no vendor-directory read path or genuine marker files, docs/COMMANDS.md).
 - [ ] `coverage` (docs/COVERAGE.md).
 - [x] `mod`: every subcommand and option on the built-in profile
       (docs/MOD_COMMAND.md); `show_repo` proto outputs remain explicit errors.
-- [ ] `help <command>`, `canonicalize-flags`, `dump`, `print_action` (low priority).
+- [x] `help <command>`/`startup_options`/`target-syntax`/`info-keys`, `canonicalize-flags`
+      (docs/COMMANDS.md).
+- [ ] `dump`, `print_action` (low priority).
 
 ### Running ~/code the way its users do
 

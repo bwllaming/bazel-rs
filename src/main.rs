@@ -24,7 +24,8 @@ Usage:
   bazel-rs [STARTUP...] shutdown [--iff_heap_size_greater_than=N]
   bazel-rs [STARTUP...] [--cache-dir=PATH] gc [--dry_run] [GC OPTIONS...]
   bazel-rs [STARTUP...] [--cache-dir=PATH] mod SUBCOMMAND [MOD OPTIONS...] [ARG...]
-  bazel-rs version | --version | capabilities | help [COMMAND]
+  bazel-rs [STARTUP...] canonicalize-flags [--for_command=COMMAND] -- FLAG...
+  bazel-rs version | --version | capabilities | help [COMMAND|startup_options|target-syntax|info-keys|native]
 
 Cache garbage collection (docs/CACHE_GC.md): every command ends with a bounded collection when
   the last one is --experimental_disk_cache_gc_idle_delay (default 1h) old and no other bazel-rs
@@ -152,10 +153,14 @@ fn run() -> Result<(), String> {
     let command = line.command.clone().unwrap_or_else(|| "help".into());
     let rest = line.command_args.clone();
     match command.as_str() {
-        "help" | "--help" | "-h" if rest.is_empty() => {
-            print!("{HELP}");
-            return Ok(());
-        }
+        // HelpCommand (crate::help); the native notes are `help native`.
+        "help" | "--help" | "-h" => match bazel_rs::help::render(&rest, HELP) {
+            Ok(text) => {
+                print!("{text}");
+                return Ok(());
+            }
+            Err(error) => fail_with(2, &error),
+        },
         "version" | "--version" if rest.is_empty() => {
             println!(
                 "bazel-rs {} (experimental; compatibility target Bazel {})",
@@ -168,8 +173,16 @@ fn run() -> Result<(), String> {
             println!("{}", include_str!("../docs/capabilities.json"));
             return Ok(());
         }
-        "help" => return help_command(&rest),
         "shutdown" => return shutdown_command(&line, &path_to_binary),
+        // CanonicalizeCommand (crate::canonicalize); rc options do not
+        // reach the flags to canonicalize.
+        "canonicalize-flags" => match bazel_rs::canonicalize::run(&rest) {
+            Ok(text) => {
+                print!("{text}");
+                return Ok(());
+            }
+            Err(error) => fail_with(2, &error),
+        },
         "query" | "cquery" | "config" | "build" | "mod" | "run" | "test" | "info" | "clean"
         | "fetch" | "gc" => {}
         "vendor" => {
@@ -4647,88 +4660,6 @@ fn shutdown_command(line: &bazelrc::CommandLine, path_to_binary: &str) -> Result
             .collect();
         fail_with(2, &format!("Unrecognized arguments: {}", residue.join(" ")));
     }
-    Ok(())
-}
-
-/// The commands `help` lists: name, summary (HelpCommand's short
-/// descriptions), native notes.
-const COMMAND_HELP: &[(&str, &str, &str)] = &[
-    (
-        "build",
-        "Builds the specified targets.",
-        "Local execution with the shared action cache; docs/INFO.md for the output tree.",
-    ),
-    (
-        "clean",
-        "Removes output files and optionally stops the server.",
-        "Deletes this workspace's output tree and state (snapshots, test index, execroot) below <cache>/worktrees/<name>-<hash>/, keeping the hidden lockfile; --expunge deletes that directory; the shared repositories, action cache and test results stay; --async and --expunge_async move first, then delete in the foreground (docs/COMMANDS.md).",
-    ),
-    (
-        "fetch",
-        "Fetches external repositories that are prerequisites to the targets.",
-        "fetch TARGET... (build --nobuild), --repo=@apparent|@@canonical (repeatable), --all (the default), --configure, --force (docs/COMMANDS.md).",
-    ),
-    (
-        "help",
-        "Prints help for commands, or the index.",
-        "help [COMMAND].",
-    ),
-    (
-        "info",
-        "Displays runtime info about the bazel server.",
-        "Bazel 9.3 items mapped to the native layout (docs/INFO.md).",
-    ),
-    (
-        "mod",
-        "Queries the Bzlmod external dependency graph",
-        "graph, deps, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy (docs/MOD_COMMAND.md).",
-    ),
-    (
-        "query",
-        "Executes a dependency graph query.",
-        "The Bazel 9.3 query language (docs/QUERY.md).",
-    ),
-    (
-        "run",
-        "Runs the specified target.",
-        "One executable or test target (docs/RUNFILES_TREES.md).",
-    ),
-    (
-        "shutdown",
-        "Stops the bazel server.",
-        "bazel-rs has no server: accepts --iff_heap_size_greater_than and does nothing.",
-    ),
-    (
-        "test",
-        "Builds and runs the specified test targets.",
-        "Local TestRunnerAction semantics (docs/TEST_COMMAND.md).",
-    ),
-    (
-        "vendor",
-        "Fetches external repositories into a folder specified by the flag --vendor_dir.",
-        "Not implemented natively (fails explicitly).",
-    ),
-    (
-        "version",
-        "Prints version information for bazel.",
-        "The bazel-rs version and its compatibility target.",
-    ),
-];
-
-/// `bazel-rs help [COMMAND]` (minimal: no option listings).
-fn help_command(rest: &[String]) -> Result<(), String> {
-    let [topic] = rest else {
-        return Err("help takes at most one command name".to_owned());
-    };
-    let Some((name, summary, notes)) = COMMAND_HELP.iter().find(|(name, ..)| name == topic) else {
-        let mut message = format!("'{topic}' is not a known command. Available commands:\n");
-        for (name, summary, _) in COMMAND_HELP {
-            message.push_str(&format!("  {name:<10}  {summary}\n"));
-        }
-        eprint!("{message}");
-        exit(2);
-    };
-    println!("Usage: bazel-rs {name} <options> ...\n\n{summary}\n\nNative profile: {notes}");
     Ok(())
 }
 

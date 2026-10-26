@@ -1,0 +1,154 @@
+{
+ "bazel": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+ "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "cases": [
+  {
+   "name": "none",
+   "args": [],
+   "exit_code": 0,
+   "stdout": "",
+   "errors": []
+  },
+  {
+   "name": "basic",
+   "args": [
+    "--",
+    "--jobs",
+    "3",
+    "-c",
+    "opt",
+    "--keep_going",
+    "--nokeep_going",
+    "--copt=-O2",
+    "--copt",
+    "-g",
+    "--define=a=b"
+   ],
+   "exit_code": 0,
+   "stdout": "--jobs=3\n--compilation_mode=opt\n--keep_going=0\n--copt=-O2\n--copt=-g\n--define=a=b\n",
+   "errors": []
+  },
+  {
+   "name": "last_wins_order",
+   "args": [
+    "--",
+    "--compilation_mode=dbg",
+    "--jobs=2",
+    "-c",
+    "opt"
+   ],
+   "exit_code": 0,
+   "stdout": "--jobs=2\n--compilation_mode=opt\n",
+   "errors": []
+  },
+  {
+   "name": "booleans",
+   "args": [
+    "--",
+    "--stamp=yes",
+    "--nobuild_runfile_links",
+    "--keep_going=false",
+    "--experimental_google_legacy_api"
+   ],
+   "exit_code": 0,
+   "stdout": "--stamp=1\n--build_runfile_links=0\n--keep_going=0\n--experimental_google_legacy_api=1\n",
+   "errors": []
+  },
+  {
+   "name": "tristate",
+   "args": [
+    "--",
+    "--enable_runfiles",
+    "--noenable_runfiles",
+    "--enable_runfiles=auto"
+   ],
+   "exit_code": 0,
+   "stdout": "--enable_runfiles=auto\n",
+   "errors": []
+  },
+  {
+   "name": "expansion",
+   "args": [
+    "--",
+    "--experimental_spawn_scheduler",
+    "--jobs=4"
+   ],
+   "exit_code": 0,
+   "stdout": "--internal_spawn_scheduler=1\n--spawn_strategy=dynamic\n--jobs=4\n",
+   "errors": []
+  },
+  {
+   "name": "old_name",
+   "args": [
+    "--",
+    "--experimental_action_cache_store_output_metadata"
+   ],
+   "exit_code": 0,
+   "stdout": "--action_cache_store_output_metadata=1\n",
+   "errors": []
+  },
+  {
+   "name": "for_query",
+   "args": [
+    "--for_command=query",
+    "--",
+    "--output=graph",
+    "--keep_going",
+    "--noimplicit_deps"
+   ],
+   "exit_code": 0,
+   "stdout": "--output=graph\n--keep_going=1\n--implicit_deps=0\n",
+   "errors": []
+  },
+  {
+   "name": "unknown_option",
+   "args": [
+    "--",
+    "--bogus_option"
+   ],
+   "exit_code": 2,
+   "stdout": "",
+   "errors": [
+    "ERROR: Unrecognized option: --bogus_option"
+   ]
+  },
+  {
+   "name": "residue",
+   "args": [
+    "--",
+    "//some:target"
+   ],
+   "exit_code": 2,
+   "stdout": "",
+   "errors": [
+    "ERROR: Unrecognized arguments: //some:target"
+   ]
+  },
+  {
+   "name": "bad_command",
+   "args": [
+    "--for_command=nope",
+    "--",
+    "--jobs=2"
+   ],
+   "exit_code": 2,
+   "stdout": "",
+   "errors": [
+    "ERROR: Not a valid command: 'nope' (should be one of mobile-install, fetch, mod, vendor, build, canonicalize-flags, clean, coverage, dump, help, info, print_action, query, run, shutdown, test, version, aquery, cquery, config, license)"
+   ]
+  },
+  {
+   "name": "not_for_command",
+   "args": [
+    "--for_command=query",
+    "--",
+    "--copt=x"
+   ],
+   "exit_code": 2,
+   "stdout": "",
+   "errors": [
+    "ERROR: Unrecognized option: --copt=x"
+   ]
+  }
+ ]
+}

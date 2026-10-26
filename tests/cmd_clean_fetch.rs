@@ -538,10 +538,10 @@ fn vendor_fails_explicitly_and_help_lists_commands() {
     );
     let output = workspace.run(&["help", "fetch"]);
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).starts_with("Usage: bazel-rs fetch "));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\nUsage: bazel fetch "));
     let output = workspace.run(&["help"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     for command in ["fetch", "clean", "shutdown"] {
-        assert!(stdout.contains(&format!("] {command} ")), "{stdout}");
+        assert!(stdout.contains(&format!("\n  {command} ")), "{stdout}");
     }
 }
