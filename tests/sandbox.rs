@@ -756,6 +756,12 @@ fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
     let rows = receipt["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 8);
     let ws = Workspace::new();
+    // Several worktrees run this fixture concurrently. A fixed host marker
+    // lets another test delete it halfway through our eight observations.
+    let marker = tempfile::Builder::new()
+        .prefix("action-tmpdir-host-marker-")
+        .tempfile_in("/tmp/opencode")
+        .unwrap();
     for name in [
         "MODULE.bazel",
         "pkg/BUILD.bazel",
@@ -764,7 +770,12 @@ fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
     ] {
         ws.file(
             name,
-            &fs::read_to_string(fixture.join("workspace").join(name)).unwrap(),
+            &fs::read_to_string(fixture.join("workspace").join(name))
+                .unwrap()
+                .replace(
+                    "/tmp/action-tmpdir-host-marker",
+                    marker.path().to_str().unwrap(),
+                ),
         );
     }
     {
@@ -776,8 +787,6 @@ fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
     let home = ws.path().join("home");
     fs::create_dir_all(&client).unwrap();
     fs::create_dir_all(&home).unwrap();
-    let marker = Path::new("/tmp/action-tmpdir-host-marker");
-    fs::write(marker, "").unwrap();
     let probe = |text: &str| -> Vec<String> {
         text.lines()
             .filter(|line| {
@@ -835,7 +844,6 @@ fn tmpdir_is_the_client_tmpdir_or_slash_tmp_like_genuine() {
             }
         }
     }
-    let _ = fs::remove_file(marker);
     assert_eq!(&observed, rows);
 }
 
