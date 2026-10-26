@@ -1,0 +1,75 @@
+{
+ "reference": "bazel 9.3.0",
+ "process_summaries": {
+  "standalone": [
+   "INFO: 30 processes: 19 internal, 12 local."
+  ],
+  "sandboxed": [
+   "INFO: 30 processes: 19 internal, 12 processwrapper-sandbox."
+  ]
+ },
+ "rows": [
+  {
+   "strategy": "standalone",
+   "lines": [
+    "test_runfile_src1.txt=src1.txt symlink",
+    "test_runfile_src2.txt=src2.txt symlink",
+    "test_runfile_a.out=a.out symlink",
+    "test_runfile_b.out=b.out symlink",
+    "test_runfile_c.out=c.out symlink",
+    "test_runfile_dir/sub/f.txt=dir/sub/f.txt file",
+    "test_runfile_link.txt=src1.txt symlink",
+    "input_src1.txt=src1.txt symlink",
+    "input_src2.txt=src2.txt symlink",
+    "input_bazel-out/k8-fastbuild/bin/a.out=bazel-out/k8-fastbuild/bin/a.out file",
+    "input_bazel-out/k8-fastbuild/bin/b.out=bazel-out/k8-fastbuild/bin/b.out file",
+    "input_bazel-out/k8-fastbuild/bin/c.out=bazel-out/k8-fastbuild/bin/c.out file",
+    "input_bazel-out/k8-fastbuild/bin/dir/sub/f.txt=bazel-out/k8-fastbuild/bin/dir/sub/f.txt file",
+    "input_bazel-out/k8-fastbuild/bin/link.txt=src1.txt symlink",
+    "tool_runfile_src1.txt=src1.txt symlink",
+    "tool_runfile_src2.txt=src2.txt symlink",
+    "tool_runfile_a.out=a.out symlink",
+    "tool_runfile_b.out=b.out symlink",
+    "tool_runfile_c.out=c.out symlink",
+    "tool_runfile_dir/sub/f.txt=dir/sub/f.txt file",
+    "tool_runfile_link.txt=src1.txt symlink",
+    "output_tree_a.out=a.out",
+    "output_tree_b.out=b.out",
+    "output_tree_c.out=c.out",
+    "output_tree_dir/sub/f.txt=dir/sub/f.txt",
+    "output_tree_link.txt=link.txt"
+   ]
+  },
+  {
+   "strategy": "sandboxed",
+   "lines": [
+    "test_runfile_src1.txt=src1.txt symlink",
+    "test_runfile_src2.txt=src2.txt symlink",
+    "test_runfile_a.out=a.out symlink",
+    "test_runfile_b.out=b.out symlink",
+    "test_runfile_c.out=c.out symlink",
+    "test_runfile_dir/sub/f.txt=dir/sub/f.txt symlink",
+    "test_runfile_link.txt=src1.txt symlink",
+    "input_src1.txt=src1.txt symlink",
+    "input_src2.txt=src2.txt symlink",
+    "input_bazel-out/k8-fastbuild/bin/a.out=bazel-out/k8-fastbuild/bin/a.out symlink",
+    "input_bazel-out/k8-fastbuild/bin/b.out=bazel-out/k8-fastbuild/bin/b.out symlink",
+    "input_bazel-out/k8-fastbuild/bin/c.out=bazel-out/k8-fastbuild/bin/c.out symlink",
+    "input_bazel-out/k8-fastbuild/bin/dir/sub/f.txt=bazel-out/k8-fastbuild/bin/dir/sub/f.txt symlink",
+    "input_bazel-out/k8-fastbuild/bin/link.txt=src1.txt symlink",
+    "tool_runfile_src1.txt=src1.txt symlink",
+    "tool_runfile_src2.txt=src2.txt symlink",
+    "tool_runfile_a.out=a.out symlink",
+    "tool_runfile_b.out=b.out symlink",
+    "tool_runfile_c.out=c.out symlink",
+    "tool_runfile_dir/sub/f.txt=dir/sub/f.txt symlink",
+    "tool_runfile_link.txt=src1.txt symlink",
+    "output_tree_a.out=a.out",
+    "output_tree_b.out=b.out",
+    "output_tree_c.out=c.out",
+    "output_tree_dir/sub/f.txt=dir/sub/f.txt",
+    "output_tree_link.txt=link.txt"
+   ]
+  }
+ ]
+}

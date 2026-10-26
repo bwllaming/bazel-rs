@@ -1,0 +1,64 @@
+load(":defs.bzl", "alias", "inputs", "probe_test", "runner", "tree")
+
+# Two sources, two generated files, a copy of a source, a tree file and an
+# actions.symlink alias of a source: all hold the bytes "same\n".
+genrule(
+    name = "gen_a",
+    outs = ["a.out"],
+    cmd = "echo same > $@",
+)
+
+genrule(
+    name = "gen_b",
+    outs = ["b.out"],
+    cmd = "echo same > $@",
+)
+
+genrule(
+    name = "copy",
+    srcs = ["src1.txt"],
+    outs = ["c.out"],
+    cmd = "cp $< $@",
+)
+
+tree(name = "dir")
+
+alias(
+    name = "link",
+    src = "src1.txt",
+)
+
+FILES = [
+    "src1.txt",
+    "src2.txt",
+    ":gen_a",
+    ":gen_b",
+    ":copy",
+    ":dir",
+    ":link",
+]
+
+# An action's inputs.
+inputs(
+    name = "input_probe",
+    data = FILES,
+)
+
+# A tool's runfiles in an action.
+runner(
+    name = "runner",
+    data = FILES,
+)
+
+genrule(
+    name = "tool_probe",
+    outs = ["tool_probe.txt"],
+    cmd = "$(execpath :runner) > $@",
+    tools = [":runner"],
+)
+
+# A test's runfiles.
+probe_test(
+    name = "probe_test",
+    data = FILES,
+)

@@ -3532,8 +3532,7 @@ fn ensure_blob_hashed(
     // Workers of one process that need the same new blob create it once
     // (the others wait, then find it valid) instead of copying in parallel.
     static STRIPES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
-    let stripe = usize::from(input.digest.0[0]) % STRIPES.len();
-    let _creating = STRIPES[stripe].lock().unwrap_or_else(|e| e.into_inner());
+    let _creating = creating(&STRIPES, input);
     if blob_valid(&blob, input)? {
         return Ok(blob);
     }
@@ -3560,22 +3559,68 @@ fn ensure_blob_hashed(
         }
         metadata
     } else {
-        copy_verified(&input.path, &candidate, input.digest)?;
-        if input.executable != 0 {
-            // The verified copy hashes while it writes, too slow for the
-            // exclusive spawn lock; re-create the executable blob as an inode
-            // no child can hold open for writing (a kernel copy).
-            crate::spawn_lock::seal(&candidate)
-                .map_err(|e| io_error("cannot seal", &candidate, e))?;
-        }
-        set_mode(&candidate, blob_mode(input))?;
-        fs::symlink_metadata(&candidate).map_err(|e| io_error("cannot inspect", &candidate, e))?
+        copy_candidate(&input.path, &candidate, input)?
     };
     let stored = store_candidate(&candidate, &blob, || blob_valid(&blob, input));
     if stored? {
         remember_created(&blob, &state, input.digest);
     }
     Ok(blob)
+}
+
+/// The lock of `stripes` for `input`'s content, held while creating one of
+/// its store files.
+fn creating<'a>(stripes: &'a [Mutex<()>; 64], input: &Input) -> std::sync::MutexGuard<'a, ()> {
+    let stripe = usize::from(input.digest.0[0]) % stripes.len();
+    stripes[stripe].lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Copy `source` to the new store candidate `candidate` for `input`
+/// (verified: the copy must hold the keyed digest), with the blob's mode.
+/// Returns the candidate's lstat.
+fn copy_candidate(source: &Path, candidate: &Path, input: &Input) -> Result<fs::Metadata, String> {
+    copy_verified(source, candidate, input.digest)?;
+    if input.executable != 0 {
+        // The verified copy hashes while it writes, too slow for the
+        // exclusive spawn lock; re-create the executable blob as an inode
+        // no child can hold open for writing (a kernel copy).
+        crate::spawn_lock::seal(candidate).map_err(|e| io_error("cannot seal", candidate, e))?;
+    }
+    set_mode(candidate, blob_mode(input))?;
+    fs::symlink_metadata(candidate).map_err(|e| io_error("cannot inspect", candidate, e))
+}
+
+/// The `ordinal`th distinct copy (from 1) of `input`'s blob,
+/// `cas/<digest>-<mode>.<ordinal>`: the blob's bytes and mode in an inode
+/// of its own, for the `ordinal`th further distinct artifact with that
+/// content in one execution root ([`DistinctInodes`]).
+fn copy_path(cas: &Path, input: &Input, ordinal: usize) -> PathBuf {
+    cas.join(format!("{}-{:o}.{ordinal}", input.digest, blob_mode(input)))
+}
+
+/// [`copy_path`] of `input`, created on first use by a verified copy of its
+/// blob ([`ensure_blob`]) and from then on kept like a blob: valid while it
+/// is a read-only regular file with the blob's mode, size and digest
+/// ([`blob_valid`]), known by its path to this process once created or
+/// validated, removed when damaged ([`check_staged`]).
+fn ensure_copy(cas: &Path, input: &Input, root: &Path, ordinal: usize) -> Result<PathBuf, String> {
+    let copy = copy_path(cas, input, ordinal);
+    if blob_valid(&copy, input)? {
+        return Ok(copy);
+    }
+    let blob = ensure_blob(cas, input, root)?;
+    // Not ensure_blob's stripes: it holds them while creating the blob.
+    static STRIPES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
+    let _creating = creating(&STRIPES, input);
+    if blob_valid(&copy, input)? {
+        return Ok(copy);
+    }
+    let candidate = temporary(cas, &input.digest.hex());
+    let state = copy_candidate(&blob, &candidate, input)?;
+    if store_candidate(&candidate, &copy, || blob_valid(&copy, input))? {
+        remember_created(&copy, &state, input.digest);
+    }
+    Ok(copy)
 }
 
 /// Move the store candidate `candidate` into place as `blob` (a hardlink;
@@ -3647,7 +3692,17 @@ fn link_ensured_blob(
     target: &Path,
     mode: u32,
 ) -> Result<PathBuf, String> {
-    let blob = ensure_blob(cas, input, root)?;
+    link_ensured(|| ensure_blob(cas, input, root), target, mode)
+}
+
+/// [`link_ensured_blob`] of the store file `ensure` returns (a blob, or a
+/// distinct copy of one, [`ensure_copy`]).
+fn link_ensured(
+    ensure: impl Fn() -> Result<PathBuf, String>,
+    target: &Path,
+    mode: u32,
+) -> Result<PathBuf, String> {
+    let blob = ensure()?;
     #[cfg(test)]
     if REMOVE_BLOB_BEFORE_LINK.with(|hook| hook.replace(false)) {
         let _ = fs::remove_file(&blob);
@@ -3655,7 +3710,7 @@ fn link_ensured_blob(
     match link_or_copy_detail(&blob, target, mode) {
         Ok(()) => Ok(blob),
         Err(LinkFailure::BlobMissing(_)) => {
-            let blob = ensure_blob(cas, input, root)?;
+            let blob = ensure()?;
             link_or_copy(&blob, target, mode)?;
             Ok(blob)
         }
@@ -3726,19 +3781,77 @@ struct StagedFile {
     tree_link: Option<Sha256Digest>,
 }
 
-fn stage_file(
+/// The distinct artifacts staged from each store blob into one execution
+/// root (an action's, or a test's runfiles), in staging order. Identical
+/// contents share one blob, but distinct artifacts are distinct files in
+/// Bazel: its sandboxes link every input to its own execroot file or
+/// source, its runfiles trees link to those, and its outputs are separate
+/// files. One inode for two of them made `tar`, `bsdtar`/mtree, `cp -a`
+/// and `rsync -H` record a hard link between them (rules_js's
+/// `js_image_layer` stored a copied `package.json` as a hard link to the
+/// identical file of a Next.js standalone tree, and a consumer extracting
+/// only the former lost it). The first artifact of a content is staged
+/// from the blob, the `n`th further one from the blob's `n`th distinct
+/// copy ([`ensure_copy`]); one artifact keeps one inode at all its paths
+/// (its execution path, runfiles, `actions.symlink` aliases, which resolve
+/// to the artifact they name). Keyed by the blob's content and mode, and by
+/// the artifact's resolved path, borrowed from the staged inputs.
+#[derive(Default)]
+struct DistinctInodes<'a>(HashMap<(Sha256Digest, u32), Artifacts<'a>>);
+
+/// The distinct artifacts of one blob: the first, then the further ones by
+/// their ordinal (from 1).
+struct Artifacts<'a> {
+    first: &'a Path,
+    further: HashMap<&'a Path, usize>,
+}
+
+impl<'a> DistinctInodes<'a> {
+    /// The ordinal of `input`'s artifact (its resolved path) among the
+    /// distinct artifacts staged from its blob so far: 0 for the first.
+    fn ordinal(&mut self, input: &'a Input) -> usize {
+        let artifact = input.path.as_path();
+        match self.0.entry((input.digest, blob_mode(input))) {
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(Artifacts {
+                    first: artifact,
+                    further: HashMap::new(),
+                });
+                0
+            }
+            hash_map::Entry::Occupied(entry) => {
+                let artifacts = entry.into_mut();
+                if artifacts.first == artifact {
+                    return 0;
+                }
+                let next = artifacts.further.len() + 1;
+                *artifacts.further.entry(artifact).or_insert(next)
+            }
+        }
+    }
+}
+
+fn stage_file<'a>(
     cas: &Path,
     root: &Path,
-    input: &Input,
+    input: &'a Input,
     execroot: &Path,
     destination: &Path,
     staged: &mut Vec<StagedFile>,
+    distinct: &mut DistinctInodes<'a>,
 ) -> Result<(), String> {
     let target = execroot.join(destination);
     if let Some(parent) = target.parent() {
         ensure_directory(parent)?;
     }
-    let blob = link_ensured_blob(cas, root, input, &target, blob_mode(input))?;
+    let blob = match distinct.ordinal(input) {
+        0 => link_ensured_blob(cas, root, input, &target, blob_mode(input))?,
+        ordinal => link_ensured(
+            || ensure_copy(cas, input, root, ordinal),
+            &target,
+            blob_mode(input),
+        )?,
+    };
     let metadata =
         fs::symlink_metadata(&target).map_err(|e| io_error("cannot inspect", &target, e))?;
     staged.push(StagedFile {
@@ -3840,27 +3953,29 @@ pub fn report_staging() {
 /// Stage one input file at `destination`: a file of a published repository
 /// tree as a link to it ([`stage_tree_link`]), any other file as its store
 /// blob's hardlink ([`stage_file`]).
-fn stage_input_file(
+fn stage_input_file<'a>(
     cas: &Path,
     root: &Path,
-    input: &Input,
+    input: &'a Input,
     execroot: &Path,
     destination: &Path,
     staged: &mut Vec<StagedFile>,
+    distinct: &mut DistinctInodes<'a>,
 ) -> Result<(), String> {
     if repository_tree_file(root, &input.path) {
         STAGING[2].fetch_add(1, Ordering::Relaxed);
         stage_tree_link(input, execroot, destination, staged)
     } else {
         STAGING[3].fetch_add(1, Ordering::Relaxed);
-        stage_file(cas, root, input, execroot, destination, staged)
+        stage_file(cas, root, input, execroot, destination, staged, distinct)
     }
 }
 
 /// Stage every input: files of published repository trees as links to
 /// them ([`stage_tree_link`]), as Bazel's runfiles trees and symlinked
 /// sandboxes present `external/<repo>` files; every other file as a store
-/// hardlink; tree directories as real (writable) directories holding their
+/// hardlink, one inode per distinct artifact ([`DistinctInodes`]); tree
+/// directories as real (writable) directories holding their
 /// files staged so. A source directory is staged like a tree, its dangling
 /// symlinks as symlinks with their link text (docs/SOURCE_DIRECTORIES.md).
 fn stage_inputs(
@@ -3886,9 +4001,12 @@ fn stage_inputs_untimed(
     execroot: &Path,
 ) -> Result<Vec<StagedFile>, String> {
     let mut staged = Vec::new();
+    let mut distinct = DistinctInodes::default();
     for (name, input) in inputs {
         match input {
-            Staged::File(input) => stage_input_file(cas, root, input, execroot, name, &mut staged)?,
+            Staged::File(input) => {
+                stage_input_file(cas, root, input, execroot, name, &mut staged, &mut distinct)?
+            }
             Staged::Tree(tree) => {
                 ensure_directory(&execroot.join(name))?;
                 for directory in &tree.directories {
@@ -3896,7 +4014,15 @@ fn stage_inputs_untimed(
                 }
                 for (file, input) in &tree.files {
                     let destination = name.join(file);
-                    stage_input_file(cas, root, input, execroot, &destination, &mut staged)?;
+                    stage_input_file(
+                        cas,
+                        root,
+                        input,
+                        execroot,
+                        &destination,
+                        &mut staged,
+                        &mut distinct,
+                    )?;
                 }
             }
             Staged::SourceDirectory(directory) => {
@@ -3906,7 +4032,15 @@ fn stage_inputs_untimed(
                 }
                 for (file, input) in &directory.files {
                     let destination = name.join(file);
-                    stage_input_file(cas, root, input, execroot, &destination, &mut staged)?;
+                    stage_input_file(
+                        cas,
+                        root,
+                        input,
+                        execroot,
+                        &destination,
+                        &mut staged,
+                        &mut distinct,
+                    )?;
                 }
                 for (link, target) in &directory.dangling {
                     let path = execroot.join(name).join(link);
@@ -8598,6 +8732,58 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         assert_eq!(fs::read(&a.outputs[0]).unwrap(), b"same");
         assert_eq!(fs::read(blob(&fixture, b"same", 0o555)).unwrap(), b"same");
         assert!(!execute(&fixture.cache(), &second).unwrap().cache_hit);
+    }
+
+    /// Distinct artifacts with one content are distinct inodes inside an
+    /// action (Bazel links each input to its own file); one artifact at
+    /// several paths is one inode. The further artifacts are staged from
+    /// persistent distinct copies of the blob, reused by later actions and
+    /// replaced when damaged, like blobs.
+    #[test]
+    fn distinct_artifacts_with_one_content_are_staged_as_distinct_inodes() {
+        let fixture = Fixture::new();
+        let mut action = fixture.action();
+        let first = action.inputs[0].0.clone();
+        let second = fixture.0.join("second");
+        let third = fixture.0.join("third");
+        fs::write(&second, b"hello\n").unwrap();
+        fs::write(&third, b"hello\n").unwrap();
+        action.inputs = vec![
+            (first.clone(), "a".into()),
+            (first, "again/a".into()),
+            (second, "b".into()),
+            (third, "c".into()),
+        ];
+        action.command = "stat -L -c %i a again/a b c > out/result".into();
+        let result = execute(&fixture.cache(), &action).unwrap();
+        let text = fs::read_to_string(&result.outputs[0]).unwrap();
+        let inodes: Vec<&str> = text.lines().collect();
+        let store = blob(&fixture, b"hello\n", 0o444);
+        let copy = |n: usize| PathBuf::from(format!("{}.{n}", store.display()));
+        assert_eq!(
+            inodes,
+            [ino(&store), ino(&store), ino(&copy(1)), ino(&copy(2))].map(|inode| inode.to_string())
+        );
+        assert_eq!(mode(&copy(2)), 0o444);
+        // Another action reuses the copies.
+        let (one, two) = (ino(&copy(1)), ino(&copy(2)));
+        action.id = "again".into();
+        action.command.push_str("; true");
+        execute(&fixture.cache(), &action).unwrap();
+        assert_eq!((ino(&copy(1)), ino(&copy(2))), (one, two));
+        // A damaged copy is replaced.
+        fs::set_permissions(copy(1), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(copy(1), b"evil!!").unwrap();
+        fs::set_permissions(copy(1), fs::Permissions::from_mode(0o444)).unwrap();
+        action.id = "third".into();
+        action.command.push_str("; cat b >> out/result");
+        let result = execute(&fixture.cache(), &action).unwrap();
+        assert!(
+            fs::read_to_string(&result.outputs[0])
+                .unwrap()
+                .ends_with("\nhello\n")
+        );
+        assert_eq!(fs::read(copy(1)).unwrap(), b"hello\n");
     }
 
     #[test]

@@ -35,8 +35,10 @@ chooses hardlinks because:
 * they keep native's snapshot guarantee: the action sees exactly the keyed
   bytes even if a source changes during the build (a symlink to the source
   tree would expose the live file);
-* the store's one inode per content gives one identity for a file reachable
-  at several input paths (`stat -L` equality, as Bazel's symlinks give);
+* the store's inodes give one identity for a file reachable at several
+  input paths (`stat -L` equality, as Bazel's symlinks give), and distinct
+  artifacts with one content distinct identities ("Distinct artifacts,
+  distinct inodes" below);
 * no input byte is copied after the first time its content is seen.
 
 Bytes from outside the cache (sources, external repositories) are copied into
@@ -217,11 +219,12 @@ never trusted, so every cache executes its actions once more; the keys stay
   so do metadata changes of a staged input (`touch`, `chmod`), which Bazel's
   hermetic sandbox also reports, while its symlinking sandboxes pass them on
   to the source file.
-* Identical contents share an inode: two different source files with equal
-  bytes and executable bits are one identity inside the action (Bazel: two
-  inodes). For `#pragma once` this merges only byte-identical headers.
-* Published outputs share inodes with the store and with each other; editing
-  one in place (after `chmod u+w`) edits all and is detected (digest
+* Distinct artifacts with identical contents are distinct inodes inside an
+  action, as in Bazel ("Distinct artifacts, distinct inodes"); the further
+  ones cost a persistent copy each.
+* Published outputs share inodes with the store and with each other (so do
+  their links in the output tree, `bazel-bin`; Bazel: separate files, see
+  "Distinct artifacts, distinct inodes"); editing one in place (after `chmod u+w`) edits all and is detected (digest
   mismatch) on next use. A process that forges size, mtime and mode after an
   in-place write is not detected (execution is sandboxed by default since
   N59, but the Landlock sandbox leaves metadata operations unrestricted and
@@ -257,6 +260,74 @@ never trusted, so every cache executes its actions once more; the keys stay
   files persist only with their ctime, because a
   command verifies only the trees it materializes (docs/DIGEST_MEMO.md,
   "Trust").
+
+## Distinct artifacts, distinct inodes
+
+The store keeps one blob per content and mode, and staging used to hardlink
+every input file to its blob: two distinct artifacts with identical bytes
+(two sources, two generated files, a copy of a source, a tree artifact's
+file) were one inode inside the action. Bazel shows them as distinct files —
+its sandboxes link every input to its own execroot file or source, its
+runfiles trees link to those, and its outputs are separate files — so tools
+that detect hard links by inode (`tar`, `bsdtar` with an mtree spec, `cp
+-a`, `rsync -H`) recorded links between files that are unrelated in Bazel.
+On ~/code, rules_js's `js_image_layer` stored
+`.../main.runfiles/_main/src/website3/package.json` (a copy to bin of the
+source) as a tar hard link to the identical
+`.../main/standalone/src/website3/package.json` of the Next.js standalone
+tree; `//src/website3:image_structure_test` extracts a subset of the layer
+that holds the former but not the link's target and failed with
+`package.json missing`.
+
+Now staging gives every distinct artifact of one execution root (an
+action's, a test's runfiles, crate::test_runner) its own inode
+(`DistinctInodes` in `stage_inputs`): the first artifact of a content and
+mode is staged from the blob `cas/<digest>-<mode>` as before, the `n`th
+further distinct artifact from the blob's `n`th distinct copy
+`cas/<digest>-<mode>.<n>` (`ensure_copy`: a verified copy of the blob,
+created on first use, then kept, validated, remembered and, when damaged,
+removed exactly like a blob). An artifact is identified by its resolved
+path (the workspace source, the published output; `actions.symlink` aliases
+resolve to the artifact they name), so one artifact keeps one inode at all
+its paths — its execution path, runfiles, aliases — as `stat -L` shows it
+through Bazel's symlinks. Files of repository trees are links to their own
+tree files already ("Repository files" below). The key, the manifests and
+the published outputs are unchanged; only which store inode a staged path
+links to changes.
+
+The genuine capture `tests/fixtures/distinct_inodes` (capture.py,
+reference_receipt.json; test
+`distinct_artifacts_with_one_content_are_distinct_inodes`, unit test
+`distinct_artifacts_with_one_content_are_staged_as_distinct_inodes`) pins the
+inode partition of two sources, two genrule outputs, a copy of a source, a
+tree file (all `same\n`) and an `actions.symlink` alias of a source, as an
+action's inputs, a tool's runfiles and a test's runfiles, standalone and
+sandboxed: genuine and native both show six distinct inodes and the alias on
+its source's. (Native shows regular files where genuine shows symlinks, the
+difference declared since N36.)
+
+**Disk and time** (~/code, private caches, same binary but this change,
+repositories fetched first; the machine was shared, timings indicative):
+
+| | cold `build //src/beyondwork.ai/tools/oauth2token/...` (692 actions) | then cold `test //src/website3/...` (13,172 actions) |
+|---|---|---|
+| before | 34.8-47.8 s, `actions/`+`cas/` 545 MB | 350-351 s, 8.09 GB, image_structure_test FAILED (9/10) |
+| distinct copies (this change) | 33.6-44.5 s, 545 MB | 359 s (paired with 351 s), 10/10, 9.64 GB (+1.55 GB: 25,864 copies, 1.39 GB of them a first copy of ~17,500 contents) |
+| also separate published outputs (rejected) | 38.2 s, 787 MB (+44%) | 361 s, 10/10, 14.24 GB (+6.15 GB) |
+
+The copies are what one execution root needs at most: on ~/code mostly the
+Next.js standalone tree's copies of `node_modules` files (prebuilt native
+binaries of ~100 MB among them) beside the package store in the image layer
+and test runfiles; the oauth2token build needs none. Publishing every output
+as a file of its own (renamed into place instead of linked to an existing
+blob), which would also give the output tree Bazel's separate files, was
+measured and rejected: it stores every duplicate output again (rules_go
+builds the standard library in the exec and target configurations with
+identical results: +242 MB on oauth2token; +4.5 GB more on website3) and
+fixes nothing a process of the build sees. So published outputs with one
+content still share their blob's inode, also in `bazel-bin` (declared
+difference; the capture's `output_tree_*` lines). Without reflinks on ext4,
+there is no cheaper way to give hardlink-staged artifacts distinct inodes.
 
 ## Repository files: links into their tree
 
