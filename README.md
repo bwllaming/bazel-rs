@@ -71,6 +71,16 @@ like Bazel's `bazel-bin` (docs/INFO.md; no convenience symlinks are created in
 the workspace). Default cache: `<workspace>/bazel-rs-out`; override with the
 startup option `--cache-dir=/absolute/path`.
 
+**Progress on a terminal.** When stdout and stderr are a terminal,
+`build`, `test` and `run` keep a Bazel-style status area at the bottom of the
+screen (`Loading: N packages loaded`, `Analyzing: N targets (P packages
+loaded, T targets configured)`, `[done / total] <running actions>; Ns
+<strategy>`, in-flight fetches and downloads) and end with `INFO: Elapsed
+time` and `INFO: Build completed successfully, N total actions`. Piped or
+redirected output, `CI`, `--curses=no`, `--noshow_progress`, the startup
+option `--quiet` or `BAZEL_RS_PROGRESS=0` turn it off, and the output is then
+byte for byte the plain one; it never slows a build (docs/PROGRESS.md).
+
 **Git worktrees share one cache.** In a linked git worktree (`git worktree
 add`) the default cache is the main checkout's `bazel-rs-out` (found by
 reading `.git`, no git process), so a new worktree's first build reuses the

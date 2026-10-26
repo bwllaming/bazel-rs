@@ -699,6 +699,15 @@ impl UiOptions {
     }
 }
 
+/// The startup option `--quiet` ([`set_quiet`]).
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Record the startup option `--quiet` (the client's rc evaluation): the
+/// display never runs under it.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+}
+
 /// The environment the display decision reads ([`decide`]).
 #[derive(Clone, Debug, Default)]
 pub struct TerminalEnvironment {
@@ -711,6 +720,9 @@ pub struct TerminalEnvironment {
     pub no_color: bool,
     /// `BAZEL_RS_PROGRESS=0` (or `off`/`false`/`no`).
     pub disabled: bool,
+    /// The startup option `--quiet` (UiVerbosity.QUIET): no progress bar
+    /// (UiEventHandler.addProgressBar returns early).
+    pub quiet: bool,
     /// The width when the terminal reports none (the client's
     /// `--terminal_columns`: `$COLUMNS`, else 80).
     pub columns: usize,
@@ -733,6 +745,7 @@ impl TerminalEnvironment {
             ci: set("CI").is_some_and(|value| !off(&value)),
             no_color: set("NO_COLOR").is_some(),
             disabled: set("BAZEL_RS_PROGRESS").is_some_and(|value| off(&value)),
+            quiet: QUIET.load(Ordering::Relaxed),
             columns,
         }
     }
@@ -751,8 +764,9 @@ pub struct Config {
 
 /// Whether the display runs for `command` under `options` in `environment`
 /// (UiOptions.useCursesEnum / useColor): `--curses=yes` forces it, `auto`
-/// needs a standard terminal and no `CI`; `--noshow_progress` and
-/// `BAZEL_RS_PROGRESS=0` turn it off. Only `build`, `test` and `run`.
+/// needs a standard terminal and no `CI`; `--noshow_progress`, the startup
+/// option `--quiet` and `BAZEL_RS_PROGRESS=0` turn it off (even with
+/// `--curses=yes`). Only `build`, `test` and `run`.
 pub fn decide(
     command: &str,
     options: &UiOptions,
@@ -761,6 +775,7 @@ pub fn decide(
     if !matches!(command, "build" | "test" | "run")
         || !options.show_progress
         || environment.disabled
+        || environment.quiet
     {
         return None;
     }
@@ -871,6 +886,16 @@ mod tests {
             ..terminal.clone()
         };
         assert!(decide("run", &options, &off).is_none());
+        let quiet = TerminalEnvironment {
+            quiet: true,
+            ..terminal.clone()
+        };
+        assert!(decide("build", &options, &quiet).is_none());
+        let forced_quiet = UiOptions {
+            curses: Tristate::Yes,
+            ..UiOptions::default()
+        };
+        assert!(decide("build", &forced_quiet, &quiet).is_none());
         let forced = UiOptions {
             curses: Tristate::Yes,
             ..UiOptions::default()
