@@ -550,6 +550,8 @@ pub(crate) fn param_file_bytes(arguments: &[String], file_type: ParamFileType) -
         }
         output.push(b'\n');
     }
+    // Kept with the planned action for the rest of the build (MEM4).
+    output.shrink_to_fit();
     output
 }
 

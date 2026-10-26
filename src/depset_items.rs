@@ -587,7 +587,7 @@ pub(crate) fn snapshot(
     Ok(if let Some(file) = File::from_value(value) {
         Item::File(file.clone())
     } else if let Some(entry) = SymlinkEntry::from_value(value) {
-        Item::Symlink(entry.clone())
+        Item::Symlink(Box::new(entry.clone()))
     } else if let Some(text) = value.unpack_str() {
         Item::String(text.to_owned())
     } else if let Some(label) = crate::starlark_types::label_item(value) {

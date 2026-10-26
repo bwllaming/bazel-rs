@@ -1744,7 +1744,7 @@ pub(crate) fn ctx_runfiles(
                 }
             }
             for (path, file) in entries {
-                let item = Item::Symlink(symlink_entry(normalize_path(&path), file));
+                let item = Item::Symlink(Box::new(symlink_entry(normalize_path(&path), file)));
                 if root {
                     builder.root_symlinks.push(item);
                 } else {
@@ -2011,16 +2011,20 @@ mod tests {
         builder
             .add_artifact(main.clone())
             .add_artifact(external.clone());
-        builder
-            .symlinks
-            .push(Item::Symlink(symlink_entry("dir".into(), main.clone())));
-        builder.symlinks.push(Item::Symlink(symlink_entry(
+        builder.symlinks.push(Item::Symlink(Box::new(symlink_entry(
+            "dir".into(),
+            main.clone(),
+        ))));
+        builder.symlinks.push(Item::Symlink(Box::new(symlink_entry(
             "dir/x".into(),
             external.clone(),
-        )));
+        ))));
         builder
             .root_symlinks
-            .push(Item::Symlink(symlink_entry("ext+/r".into(), main.clone())));
+            .push(Item::Symlink(Box::new(symlink_entry(
+                "ext+/r".into(),
+                main.clone(),
+            ))));
         let runfiles = builder.build().unwrap();
         let mapping_file = file("pkg/b.repo_mapping", "//pkg:b");
         let mut conflicts = Vec::new();
@@ -2177,12 +2181,21 @@ mod tests {
         let mut linked = RunfilesBuilder::default();
         linked.merge(&outer);
         linked.symlinks = vec![
-            Item::Symlink(symlink_entry("x/one".to_owned(), file("pkg/d", "//pkg:d"))),
-            Item::Symlink(symlink_entry("x/two".to_owned(), a.clone())),
+            Item::Symlink(Box::new(symlink_entry(
+                "x/one".to_owned(),
+                file("pkg/d", "//pkg:d"),
+            ))),
+            Item::Symlink(Box::new(symlink_entry("x/two".to_owned(), a.clone()))),
         ];
         linked.root_symlinks = vec![
-            Item::Symlink(symlink_entry("root/e".to_owned(), file("pkg/e", "//pkg:e"))),
-            Item::Symlink(symlink_entry("root/d".to_owned(), file("pkg/d", "//pkg:d"))),
+            Item::Symlink(Box::new(symlink_entry(
+                "root/e".to_owned(),
+                file("pkg/e", "//pkg:e"),
+            ))),
+            Item::Symlink(Box::new(symlink_entry(
+                "root/d".to_owned(),
+                file("pkg/d", "//pkg:d"),
+            ))),
         ];
         let linked = linked.build().unwrap();
         assert_eq!(set_names(&linked), names(linked.all_artifacts()));
@@ -2192,7 +2205,10 @@ mod tests {
         );
         // Symlinks only.
         let only = RunfilesBuilder {
-            root_symlinks: vec![Item::Symlink(symlink_entry("r".to_owned(), c.clone()))],
+            root_symlinks: vec![Item::Symlink(Box::new(symlink_entry(
+                "r".to_owned(),
+                c.clone(),
+            )))],
             ..RunfilesBuilder::default()
         }
         .build()

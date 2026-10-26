@@ -123,11 +123,14 @@ mod owned {
     pub(crate) enum Item {
         File(File),
         String(String),
-        Label(LabelValue),
+        /// Boxed, like the symlink entry: an Item is one depset element or
+        /// struct field, and the two largest variants would size every one
+        /// of them (72 bytes instead of 32, MEM4).
+        Label(Box<LabelValue>),
         Int(i32),
         Bool(bool),
         Tuple(Vec<Item>),
-        Symlink(SymlinkEntry),
+        Symlink(Box<SymlinkEntry>),
         /// N49: `None` (NoneType.isImmutable).
         None,
         /// N49: an immutable `struct()` or provider instance, snapshotted
@@ -947,9 +950,9 @@ impl Item {
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
         match self {
             Self::File(file) => alloc_file(heap, file.clone()),
-            Self::Symlink(entry) => heap.alloc(entry.clone()),
+            Self::Symlink(entry) => heap.alloc(SymlinkEntry::clone(entry)),
             Self::String(s) => heap.alloc(s.as_str()),
-            Self::Label(label) => heap.alloc(label.clone()),
+            Self::Label(label) => heap.alloc(LabelValue::clone(label)),
             Self::Int(integer) => heap.alloc(*integer),
             Self::Bool(boolean) => heap.alloc(*boolean),
             Self::Tuple(items) => heap.alloc(starlark::values::tuple::AllocTuple(
@@ -1143,11 +1146,11 @@ impl starlark::pagable::StarlarkDeserialize for Item {
         Ok(match ItemType::starlark_deserialize(ctx)? {
             ItemType::File => Self::File(File::starlark_deserialize(ctx)?),
             ItemType::String => Self::String(String::starlark_deserialize(ctx)?),
-            ItemType::Label => Self::Label(LabelValue::starlark_deserialize(ctx)?),
+            ItemType::Label => Self::Label(Box::new(LabelValue::starlark_deserialize(ctx)?)),
             ItemType::Int => Self::Int(i32::starlark_deserialize(ctx)?),
             ItemType::Bool => Self::Bool(bool::starlark_deserialize(ctx)?),
             ItemType::Tuple => Self::Tuple(Vec::starlark_deserialize(ctx)?),
-            ItemType::Symlink => Self::Symlink(SymlinkEntry::starlark_deserialize(ctx)?),
+            ItemType::Symlink => Self::Symlink(Box::new(SymlinkEntry::starlark_deserialize(ctx)?)),
             ItemType::NoneType => Self::None,
             ItemType::List => Self::List(Vec::starlark_deserialize(ctx)?),
             ItemType::Dict => {
@@ -2335,7 +2338,7 @@ use starlark::values::none::NoneType;
 
 /// A label value as a depset item (crate::depset_items).
 pub(crate) fn label_item(value: Value<'_>) -> Option<Item> {
-    LabelValue::from_value(value).map(|label| Item::Label(label.clone()))
+    LabelValue::from_value(value).map(|label| Item::Label(Box::new(label.clone())))
 }
 
 /// The analysis globals with Starlark's `struct` (crate::depset_items tests).
