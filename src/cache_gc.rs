@@ -288,7 +288,7 @@ fn shared(cache: &Path, file: File) -> Option<File> {
             Err(_) => return None,
         }
     }
-    eprintln!(
+    crate::note!(
         "bazel-rs: waiting for the garbage collection of {} to finish",
         cache.display()
     );
@@ -685,7 +685,7 @@ pub fn finish(collect: bool) {
         Some(lock),
     );
     if report.deleted_entries > 0 {
-        eprintln!("bazel-rs: cache garbage collection: {}", report.summary());
+        crate::note!("bazel-rs: cache garbage collection: {}", report.summary());
     }
 }
 
@@ -701,7 +701,7 @@ pub fn collect_now(cache: &Path, options: &GcOptions, dry_run: bool) -> collect:
     };
     if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
         if would_block(&error) {
-            eprintln!(
+            crate::note!(
                 "bazel-rs: waiting for the other bazel-rs processes using {} to finish",
                 cache.display()
             );
