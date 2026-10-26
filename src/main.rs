@@ -13,6 +13,8 @@ const HELP: &str = "bazel-rs — experimental native build engine (NOT full Baze
 
 Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] query [QUERY-OPTION...] EXPRESSION
+  bazel-rs [STARTUP...] [--cache-dir=PATH] cquery [BUILD/QUERY OPTIONS...] EXPRESSION
+  bazel-rs [STARTUP...] [--cache-dir=PATH] config --output=json --dump_all
   bazel-rs [STARTUP...] [--cache-dir=PATH] build [--jobs=N] [CONFIG...] TARGET...
   bazel-rs [STARTUP...] [--cache-dir=PATH] run [BUILD OPTIONS...] [RUN OPTIONS...] TARGET [-- ARGS...]
   bazel-rs [STARTUP...] [--cache-dir=PATH] test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET...
@@ -41,6 +43,11 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
   same_pkg_direct_rdeps, executables, union/+, intersect/^, except/-) with
   --output=label|label_kind|build|package|location|minrank|maxrank|graph,
   --order_output, --[no]implicit_deps, --[no]tool_deps, --[no]keep_going (docs/QUERY.md).
+Cquery: configured/provider analysis without actions or workspace status; label,
+  label_kind, proto, streamed_proto; --transitions=lite, --output_file, --universe_scope,
+  deps/rdeps/kind/filter/attr/labels/some/set/let/config and set algebra. Config dumps
+  the last successful cquery's actual native configurations. Starlark output is not
+  implemented; target-determinator needs -filter-incompatible-targets=false (docs/CQUERY.md).
 Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped to the
   native layout; built outputs are linked below <state>/execroot/_main, <state> the
   workspace's state directory (the output base, see Cache below; docs/INFO.md).
@@ -1860,12 +1867,13 @@ fn config_command(
 ) -> Result<(), String> {
     let mut json = false;
     let mut dump = false;
+    let mut common = NativeOptions::new("config");
     for unit in &options.priority {
         match unit.option.text.as_str() {
             "--output=json" => json = true,
             "--output" if unit.value.as_ref().is_some_and(|v| v.text == "json") => json = true,
             "--dump_all" | "--dump_all=true" => dump = true,
-            other => return Err(format!("config option {other:?} is not implemented")),
+            _ => common.parse("config", unit)?,
         }
     }
     if !json || !dump || !options.residue.is_empty() {
@@ -3204,7 +3212,10 @@ impl NativeOptions {
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
-                allow_remote: matches!(command, "build" | "query" | "cquery" | "run" | "test" | "mod"),
+                allow_remote: matches!(
+                    command,
+                    "build" | "query" | "cquery" | "run" | "test" | "mod"
+                ),
                 // Bazel 9.3 always injects @bazel_tools and its MODULE
                 // closure (ModuleFileFunction, BazelRepositoryModule); the
                 // native explicit-module profile is an opt-out
@@ -3281,6 +3292,11 @@ impl NativeOptions {
             bazel_rs::module_cli::repository_disable_download_argument(arg)?
         {
             self.downloads = !disabled;
+            false
+        } else if arg == "--incompatible_autoload_externally=" {
+            // This engine never autoloads native symbols from external rules.
+            // The explicit empty Bazel setting requests precisely that model;
+            // nonempty autoload requests remain unsupported, not ignored.
             false
         } else if let Some(value) = bazel_rs::configuration::boolean_option(
             arg,

@@ -66,7 +66,11 @@ bad = rule(implementation = _bad)
         cmd
     }
     fn query(&self, args: &[&str]) -> Output {
-        self.command(true)
+        self.query_command(args).output().unwrap()
+    }
+    fn query_command(&self, args: &[&str]) -> Command {
+        let mut command = self.command(true);
+        command
             .arg("cquery")
             .args([
                 "--experimental-builtin-modules=false",
@@ -79,9 +83,8 @@ bad = rule(implementation = _bad)
                 "--workspace_status_command=touch {}",
                 self.path().join("STATUS-RAN").display()
             ))
-            .args(args)
-            .output()
-            .unwrap()
+            .args(args);
+        command
     }
     fn ok(&self, args: &[&str]) -> Output {
         let out = self.query(args);
@@ -229,4 +232,128 @@ fn cquery_inherits_build_and_test_rc_configuration() {
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("filegroup rule //:selected"), "{text}");
     assert!(!text.contains("//:other"));
+    ws.write(
+        ".bazelrc",
+        "common --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress\n",
+    );
+    let output = ws
+        .command(false)
+        .args(["config", "--output=json", "--dump_all"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn snapshot_verification_source_presence_and_configuration_changes() {
+    let ws = Workspace::new();
+    ws.ok(&["deps(//:consumer)"]);
+    let verified = ws
+        .query_command(&["deps(//:consumer)"])
+        .env("BAZEL_RS_SNAPSHOT", "verify")
+        .output()
+        .unwrap();
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    fs::remove_file(ws.path().join("input")).unwrap();
+    let removed = ws.ok(&["deps(//:consumer)"]);
+    assert!(String::from_utf8_lossy(&removed.stderr).contains("snapshot: miss"));
+    ws.write("input", "restored\n");
+    let restored = ws.ok(&["deps(//:consumer)"]);
+    assert!(String::from_utf8_lossy(&restored.stderr).contains("snapshot: miss"));
+    let changed = ws.ok(&["--define=choice=no", "deps(//:consumer)"]);
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("snapshot: miss"));
+    assert!(labels(&changed).contains(&"//:other".to_owned()));
+}
+
+#[test]
+fn repository_environment_is_revalidated_on_graph_hits() {
+    let ws = Workspace::new();
+    ws.write("MODULE.bazel", "module(name='cquery_fixture')\nr=use_repo_rule('//:repo.bzl','repo')\nr(name='external')\n");
+    ws.write(
+        "repo.bzl",
+        r#"
+def _impl(ctx):
+    ctx.file("BUILD.bazel", "filegroup(name = \"" + ctx.os.environ.get("CQ_NAME", "one") + "\")")
+repo = repository_rule(implementation = _impl, environ = ["CQ_NAME"])
+"#,
+    );
+    let query = |value: &str| {
+        ws.query_command(&["@external//:all"])
+            .env("CQ_NAME", value)
+            .output()
+            .unwrap()
+    };
+    let first = query("one");
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let warm = query("one");
+    assert!(
+        warm.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warm.stderr)
+    );
+    assert_eq!(labels(&first), labels(&warm));
+    let changed = query("two");
+    assert!(
+        changed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&changed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&changed.stderr).contains("snapshot: miss"));
+    assert!(labels(&changed).iter().any(|label| label.ends_with(":two")));
+}
+
+#[test]
+fn rule_transition_delegates_keep_real_configuration_and_null_package_groups() {
+    let ws = Workspace::new();
+    let mut defs = fs::read_to_string(ws.path().join("defs.bzl")).unwrap();
+    defs.push_str(r#"
+def _transition(settings, attr):
+    return {"//command_line_option:compilation_mode": "dbg"}
+change = transition(implementation = _transition, inputs = [], outputs = ["//command_line_option:compilation_mode"])
+transitioned = rule(implementation = _impl, cfg = change, attrs = {"_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist:function_transition_allowlist")})
+"#);
+    ws.write("defs.bzl", &defs);
+    fs::create_dir_all(
+        ws.path()
+            .join("tools/allowlists/function_transition_allowlist"),
+    )
+    .unwrap();
+    ws.write(
+        "tools/allowlists/function_transition_allowlist/BUILD.bazel",
+        "package_group(name='function_transition_allowlist', packages=['public'])\n",
+    );
+    ws.write(
+        "BUILD.bazel",
+        &(BUILD.replace(
+            "\"custom\", \"bad\"",
+            "\"custom\", \"bad\", \"transitioned\"",
+        ) + "\ntransitioned(name='transitioned')\n"),
+    );
+    let output = ws.ok(&["deps(//:transitioned)"]);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(
+            "//tools/allowlists/function_transition_allowlist:function_transition_allowlist (null)"
+        ),
+        "{text}"
+    );
+    assert_eq!(
+        labels(&output)
+            .iter()
+            .filter(|label| *label == "//:transitioned")
+            .count(),
+        1
+    );
 }

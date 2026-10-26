@@ -4001,18 +4001,20 @@ impl Engine {
             let src = edge.label;
             let late_bound = late_bound_rule || analysis_dependent.contains(&src);
             let dependency = self.resolve_rule_src(&rule, &src)?;
-            self.capture_cquery_edge(
-                &key,
-                dependency.clone(),
-                dep_config,
-                if forwards(&rule) {
-                    if late_bound_rule { ":alias" } else { "actual" }
-                } else {
-                    &edge.attribute
-                },
-                matches!(edge.cfg, EdgeCfg::Exec(_)),
-                false,
-            );
+            if self.cquery_capture.is_some() {
+                self.capture_cquery_edge(
+                    &key,
+                    dependency.clone(),
+                    dep_config,
+                    if forwards(&rule) {
+                        if late_bound_rule { ":alias" } else { "actual" }
+                    } else {
+                        &edge.attribute
+                    },
+                    matches!(edge.cfg, EdgeCfg::Exec(_)),
+                    false,
+                );
+            }
             // The allowlist Bazel adds to rules with a Starlark transition
             // lives in @bazel_tools, which the explicit-module profile
             // (--experimental-builtin-modules=false) does not provide.
@@ -4533,14 +4535,16 @@ impl Engine {
                                 crate::rule_declarations::canonical_form(&base_label)
                             )
                         })?;
-                    self.capture_cquery_edge(
-                        &base_key,
-                        dependency.clone(),
-                        attribute_config,
-                        name,
-                        attribute_config != config,
-                        true,
-                    );
+                    if self.cquery_capture.is_some() {
+                        self.capture_cquery_edge(
+                            &base_key,
+                            dependency.clone(),
+                            attribute_config,
+                            name,
+                            attribute_config != config,
+                            true,
+                        );
+                    }
                     let dep_rule = match self.target(&dependency)? {
                         Target::Rule(dep_rule) => dep_rule,
                         Target::Output(generating, _) => generating,
@@ -4780,6 +4784,16 @@ impl Engine {
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(base_rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
+                if self.cquery_capture.is_some() {
+                    self.capture_cquery_edge(
+                        &ConfiguredTargetKey::new(base_rule.label.clone(), config),
+                        implementation,
+                        config,
+                        "$aspect_toolchains",
+                        true,
+                        true,
+                    );
+                }
             }
         }
         let toolchains = Arc::new(toolchains);
@@ -8470,6 +8484,16 @@ impl Engine {
         for text in &labels {
             let label = self.resolve_rule_src(rule, text)?;
             self.analyze(&label, config, active, configured, plan)?;
+            if self.cquery_capture.is_some() {
+                self.capture_cquery_edge(
+                    &ConfiguredTargetKey::new(rule.label.clone(), config),
+                    label.clone(),
+                    config,
+                    "target_compatible_with",
+                    false,
+                    false,
+                );
+            }
             let node = configured
                 .get(&ConfiguredTargetKey::new(label.clone(), config))
                 .cloned()
@@ -12363,9 +12387,11 @@ impl Engine {
                     )
                 })?;
             restricted_to_error(rule)?;
-            let producer = OutputProducer::native(&key.label.to_string());
-            for output in &outputs {
-                register_output(producers, output, &producer)?;
+            if self.cquery_capture.is_none() {
+                let producer = OutputProducer::native(&key.label.to_string());
+                for output in &outputs {
+                    register_output(producers, output, &producer)?;
+                }
             }
             // GenRuleBase.java:141-147, 170-175, 212-216: bash sources the
             // `$genrule_setup` script (set -euo pipefail), which is an input;
@@ -12385,56 +12411,58 @@ impl Engine {
                     ),
                 ));
             }
-            let mut execution_info = rule_execution_info(rule);
-            if native_bool(rule, "local") {
-                execution_info.insert("local".to_owned());
+            if self.cquery_capture.is_none() {
+                let mut execution_info = rule_execution_info(rule);
+                if native_bool(rule, "local") {
+                    execution_info.insert("local".to_owned());
+                }
+                let action = Action {
+                    id: action_owner.clone(),
+                    command: format!(
+                        "source {}; {command}",
+                        crate::builtin_tools::GENRULE_SETUP_EXEC_PATH
+                    ),
+                    outputs: outputs.clone(),
+                    extra: action::ActionExtra {
+                        inherited_environment: action_env.inherited.clone(),
+                        // GenRuleAction.MNEMONIC (GenRuleAction.java:35).
+                        mnemonic: "Genrule".into(),
+                        ..Default::default()
+                    },
+                    environment: action_env.fixed.clone(),
+                    execution_info,
+                    remote_unsupported: self.remote_platform_gate(rule, config, None),
+                    embedded_inputs: vec![(
+                        crate::builtin_tools::GENRULE_SETUP_EXEC_PATH.into(),
+                        crate::builtin_tools::GENRULE_SETUP,
+                    )],
+                    ..Action::default()
+                };
+                let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
+                // The tools' runfiles trees are shared input groups, as a
+                // Starlark action's tools' (GenRuleAction's spawn expands the
+                // runfiles tree artifacts CommandHelper resolved).
+                let mut commit = ActionCommit {
+                    artifact_index,
+                    workspace_status,
+                    nodes,
+                    producers,
+                    source_inputs,
+                    client_environment,
+                    status_client_environment,
+                    input_groups,
+                    listed_tree_actions,
+                };
+                self.commit_action(
+                    action,
+                    action_inputs,
+                    &tool_trees,
+                    None,
+                    &key.label.to_string(),
+                    &main_ignored,
+                    &mut commit,
+                )?;
             }
-            let action = Action {
-                id: action_owner.clone(),
-                command: format!(
-                    "source {}; {command}",
-                    crate::builtin_tools::GENRULE_SETUP_EXEC_PATH
-                ),
-                outputs: outputs.clone(),
-                extra: action::ActionExtra {
-                    inherited_environment: action_env.inherited.clone(),
-                    // GenRuleAction.MNEMONIC (GenRuleAction.java:35).
-                    mnemonic: "Genrule".into(),
-                    ..Default::default()
-                },
-                environment: action_env.fixed.clone(),
-                execution_info,
-                remote_unsupported: self.remote_platform_gate(rule, config, None),
-                embedded_inputs: vec![(
-                    crate::builtin_tools::GENRULE_SETUP_EXEC_PATH.into(),
-                    crate::builtin_tools::GENRULE_SETUP,
-                )],
-                ..Action::default()
-            };
-            let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
-            // The tools' runfiles trees are shared input groups, as a
-            // Starlark action's tools' (GenRuleAction's spawn expands the
-            // runfiles tree artifacts CommandHelper resolved).
-            let mut commit = ActionCommit {
-                artifact_index,
-                workspace_status,
-                nodes,
-                producers,
-                source_inputs,
-                client_environment,
-                status_client_environment,
-                input_groups,
-                listed_tree_actions,
-            };
-            self.commit_action(
-                action,
-                action_inputs,
-                &tool_trees,
-                None,
-                &key.label.to_string(),
-                &main_ignored,
-                &mut commit,
-            )?;
             let artifacts = outputs
                 .into_iter()
                 .enumerate()

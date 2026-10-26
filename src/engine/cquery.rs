@@ -362,15 +362,20 @@ impl Graph {
                             let value = match function {
                                 Function::Kind => node.kind(),
                                 Function::Filter => node.label().to_owned(),
-                                _ => match &node.target {
-                                    wire::Target::Rule(rule) => rule
-                                        .attributes
-                                        .iter()
-                                        .find(|a| a.name == word(0))
-                                        .map(|a| format!("{:?}", a.value))
-                                        .unwrap_or_default(),
-                                    _ => String::new(),
-                                },
+                                _ => {
+                                    let wire::Target::Rule(rule) = &node.target else {
+                                        continue;
+                                    };
+                                    let Some(attribute) =
+                                        rule.attributes.iter().find(|a| a.name == word(0))
+                                    else {
+                                        continue;
+                                    };
+                                    let Some(text) = attribute_text(&attribute.value)? else {
+                                        continue;
+                                    };
+                                    text
+                                }
                             };
                             if regex
                                 .is_match(&value)
@@ -598,6 +603,9 @@ impl Engine {
             expanded.insert(pattern.clone(), labels);
         }
         self.cquery_capture = Some(Capture::default());
+        // Engine instances may issue more than one configured request. These
+        // semantic platform memos otherwise bypass the new graph's capture.
+        self.platforms.clear();
         let execute = self.execute_build;
         self.execute_build = false;
         let analyzed = self.plan_build(&roots);
@@ -654,13 +662,65 @@ impl Engine {
         for (id, configuration) in self.configurations.iter() {
             let index = configurations.len() as u32;
             config_ids.insert(id, index);
-            let options = crate::config_registry::native_option_strings(&configuration.native)
-                .into_iter()
-                .map(|(name, value)| wire::ConfigurationOption {
+            let mut options: Vec<_> =
+                crate::config_registry::native_option_strings(&configuration.native)
+                    .into_iter()
+                    .map(|(name, value)| wire::ConfigurationOption {
+                        name: Some(name.to_owned()),
+                        value: Some(value.strip_prefix('=').unwrap_or(&value).to_owned()),
+                    })
+                    .collect();
+            for (name, value) in [
+                ("no_config", configuration.native.no_config.to_string()),
+                (
+                    "incompatible_strict_action_env",
+                    configuration.native.strict_action_env.to_string(),
+                ),
+                (
+                    "action_env",
+                    format!(
+                        "[{}]",
+                        configuration
+                            .native
+                            .action_env
+                            .iter()
+                            .map(crate::action_env::EnvVar::reverse)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ),
+                (
+                    "host_action_env",
+                    format!(
+                        "[{}]",
+                        configuration
+                            .native
+                            .host_action_env
+                            .iter()
+                            .map(crate::action_env::EnvVar::reverse)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ),
+                (
+                    "test_env",
+                    format!(
+                        "[{}]",
+                        configuration
+                            .native
+                            .test_env
+                            .iter()
+                            .map(crate::action_env::EnvVar::reverse)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ),
+            ] {
+                options.push(wire::ConfigurationOption {
                     name: Some(name.to_owned()),
-                    value: Some(value.strip_prefix('=').unwrap_or(&value).to_owned()),
-                })
-                .collect();
+                    value: Some(value),
+                });
+            }
             let mut fragment_options = vec![wire::FragmentOptions {
                 name: "bazel_rs.configuration.NativeOptions".to_owned(),
                 options,
@@ -922,6 +982,49 @@ fn implementation_hash(
     let hash = format!("{:x}", hash.finalize());
     memo.insert(label.clone(), hash.clone());
     Ok(hash)
+}
+
+fn attribute_text(value: &wire::AttributeValue) -> Result<Option<String>, String> {
+    use wire::AttributeValue as V;
+    let list = |values: &[String]| format!("[{}]", values.join(", "));
+    Ok(Some(match value {
+        V::Integer(value) => value.to_string(),
+        V::Boolean(value) => if *value { "1" } else { "0" }.into(),
+        V::Tristate(value) => match value {
+            wire::Tristate::No => "0",
+            wire::Tristate::Yes => "1",
+            wire::Tristate::Auto => "-1",
+        }
+        .into(),
+        V::String(value) | V::Label(value) | V::Output(value) => value.clone(),
+        V::StringList(values)
+        | V::LabelList(values)
+        | V::OutputList(values)
+        | V::DistributionSet(values) => list(values),
+        V::IntegerList(values) => list(&values.iter().map(ToString::to_string).collect::<Vec<_>>()),
+        V::StringDict(entries) | V::LabelDictUnary(entries) | V::LabelKeyedStringDict(entries) => {
+            format!(
+                "{{{}}}",
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+        V::LabelListDict(entries) | V::StringListDict(entries) => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(|(k, v)| format!("{k}={}", list(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        V::Unset(_) => return Ok(None),
+        V::License(_) => {
+            return Err("attr() on license values is not implemented for cquery".into());
+        }
+    }))
 }
 
 fn configured_attribute(
