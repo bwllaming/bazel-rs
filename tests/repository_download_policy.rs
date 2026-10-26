@@ -440,9 +440,14 @@ fn split_boolean_value_is_not_consumed_as_an_option_value() {
             assert_eq!(output.stdout, b"//:false\n");
         }
     }
-    rejected(
-        &fixture.run("mod", &[DISABLED, "false"], "cache"),
-        "argument: false",
+    // The separate `false` is residue: `mod graph false` (ModCommand).
+    let output = fixture.run("mod", &[DISABLED, "false"], "cache");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ERROR: the 'graph' command doesn't take extra arguments"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(fixture.server.counts.lock().unwrap().is_empty());
 }
@@ -505,21 +510,24 @@ fn remote_metadata_admission_follows_lockfile_mode_not_download_policy() {
             args.extend(["graph".into(), "--output=json".into()]);
         } else {
             args.push("//:version".into());
-            // Registry metadata is unaffected by the download policy; error
-            // mode refuses unhashed registry files before any request
-            // (IndexRegistry.java:171-179).
-            args.push("--lockfile_mode=error".into());
         }
+        // Registry metadata is unaffected by the download policy; error
+        // mode refuses unhashed registry files before any request
+        // (IndexRegistry.java:171-179).
+        args.push("--lockfile_mode=error".into());
         args.extend([
             DISABLED.into(),
             format!("--registry={}", fixture.server.url()),
         ]);
-        let expected = if command == "mod" {
-            "--lockfile_mode=off"
-        } else {
-            "Missing checksum for registry file http://"
-        };
-        rejected(&fixture.invoke(&args, "cache"), expected);
+        let output = fixture.invoke(&args, "cache");
+        assert_ne!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("Missing checksum for registry file http://"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
     assert!(fixture.server.counts.lock().unwrap().is_empty());
 }

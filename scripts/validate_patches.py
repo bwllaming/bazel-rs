@@ -173,7 +173,7 @@ class PatchReference(Reference):
 def native_command(executable, cache, registry, command, target=None):
     argv = [str(executable), "--ignore_all_rc_files", "--cache-dir=" + str(cache), command]
     if command == "mod":
-        argv += ["graph"] + PROFILE
+        argv += ["graph"] + PROFILE + ["--experimental-builtin-modules=false"]
     argv += ["--lockfile_mode=off", "--registry=" + registry.as_uri()]
     return argv + ([target] if target else [])
 

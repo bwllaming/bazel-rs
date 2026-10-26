@@ -1,0 +1,967 @@
+{
+ "bazel": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+ "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "cases": [
+  {
+   "args": [
+    "graph"
+   ],
+   "elapsed_seconds": 12.532,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--charset=ascii"
+   ],
+   "elapsed_seconds": 8.597,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ascii",
+   "stdout": "<root> (mc_root@0.1)\n|___mc_a@1.0 \n|   |___mc_b@2.0 (*) \n|   |___mc_cyc_x@1.0 \n|       |___mc_cyc_y@1.0 \n|           |___mc_cyc_x@1.0 (cycle) \n|           |___mc_leaf@1.1 (*) \n|___mc_b@2.0 \n|   |___mc_leaf@1.1 \n|___mc_dev@1.0 \n|___mc_local@_ \n|   |___mc_leaf@1.1 (*) \n|___mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--output=json"
+   ],
+   "elapsed_seconds": 9.082,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_json",
+   "stdout": "{\n  \"key\": \"<root>\",\n  \"name\": \"mc_root\",\n  \"version\": \"0.1\",\n  \"apparentName\": \"mc_root\",\n  \"dependencies\": [\n    {\n      \"key\": \"mc_a@1.0\",\n      \"name\": \"mc_a\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_a\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_b@2.0\",\n          \"name\": \"mc_b\",\n          \"version\": \"2.0\",\n          \"apparentName\": \"mc_b\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_cyc_x@1.0\",\n          \"name\": \"mc_cyc_x\",\n          \"version\": \"1.0\",\n          \"apparentName\": \"mc_cyc_x\",\n          \"dependencies\": [\n            {\n              \"key\": \"mc_cyc_y@1.0\",\n              \"name\": \"mc_cyc_y\",\n              \"version\": \"1.0\",\n              \"apparentName\": \"mc_cyc_y\",\n              \"dependencies\": [\n                {\n                  \"key\": \"mc_leaf@1.1\",\n                  \"name\": \"mc_leaf\",\n                  \"version\": \"1.1\",\n                  \"apparentName\": \"mc_leaf\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"mc_cyc_x@1.0\",\n                  \"name\": \"mc_cyc_x\",\n                  \"version\": \"1.0\",\n                  \"apparentName\": \"mc_cyc_x\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_b@2.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"bee\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_dev@1.0\",\n      \"name\": \"mc_dev\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_dev\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_local@_\",\n      \"name\": \"mc_local\",\n      \"version\": \"3.0\",\n      \"apparentName\": \"mc_local\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_svo@2.0\",\n      \"name\": \"mc_svo\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"mc_svo\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    }\n  ],\n  \"indirectDependencies\": [],\n  \"cycles\": [],\n  \"root\": true\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--output=graph"
+   ],
+   "elapsed_seconds": 8.669,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_dot",
+   "stdout": "digraph mygraph {\n  node [ shape=box ]\n  edge [ fontsize=8 ]\n  \"<root>\" [ label=\"<root> (mc_root@0.1)\" ]\n  \"<root>\" -> \"mc_a@1.0\" [  ]\n  \"<root>\" -> \"mc_b@2.0\" [  ]\n  \"<root>\" -> \"mc_dev@1.0\" [  ]\n  \"<root>\" -> \"mc_local@_\" [  ]\n  \"<root>\" -> \"mc_svo@2.0\" [  ]\n  \"mc_a@1.0\" -> \"mc_b@2.0\" [  ]\n  \"mc_a@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_b@2.0\" -> \"mc_leaf@1.1\" [  ]\n  \"mc_local@_\" -> \"mc_leaf@1.1\" [  ]\n  \"mc_cyc_x@1.0\" -> \"mc_cyc_y@1.0\" [  ]\n  \"mc_cyc_y@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_cyc_y@1.0\" -> \"mc_leaf@1.1\" [  ]\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_builtin"
+   ],
+   "elapsed_seconds": 8.7,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_builtin",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500bazel_tools@_ \n\u2502   \u251c\u2500\u2500\u2500apple_support@2.5.2 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500bazel_skylib@1.8.2 \n\u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502       \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502       \u2514\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u251c\u2500\u2500\u2500buildozer@8.5.1 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500rules_shell@0.6.1 (*) \n\u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2514\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u251c\u2500\u2500\u2500protobuf@33.4 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500apple_support@2.5.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_java@9.1.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_shell@0.6.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500zlib@1.3.1.bcr.5 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500abseil-cpp@20250814.1 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500googletest@1.17.0 \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500abseil-cpp@20250814.1 (cycle) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502       \u2514\u2500\u2500\u2500re2@2024-07-02.bcr.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500jsoncpp@1.9.6 \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500re2@2024-07-02.bcr.1 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500abseil-cpp@20250814.1 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500apple_support@2.5.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500pybind11_bazel@2.12.0 \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502       \u2514\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_apple@4.1.0 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500apple_support@2.5.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_shell@0.6.1 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500rules_swift@3.1.2 \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500protobuf@33.4 (cycle) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500apple_support@2.5.2 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500rules_shell@0.6.1 (*) \n\u2502   \u2502   \u2502       \u251c\u2500\u2500\u2500nlohmann_json@3.6.1 \n\u2502   \u2502   \u2502       \u2502   \u2514\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502       \u2514\u2500\u2500\u2500swift_argument_parser@1.3.1.2 \n\u2502   \u2502   \u2502           \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502           \u251c\u2500\u2500\u2500rules_swift@3.1.2 (cycle) \n\u2502   \u2502   \u2502           \u2514\u2500\u2500\u2500apple_support@2.5.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_jvm_external@6.7 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_java@9.1.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_kotlin@1.9.6 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_shell@0.6.1 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500rules_android@0.1.1 \n\u2502   \u2502   \u2502       \u2514\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_kotlin@1.9.6 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_java@9.1.0 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_proto@7.1.0 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_pkg@1.0.1 \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2502   \u251c\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u2502   \u2502   \u2514\u2500\u2500\u2500rules_python@1.7.0 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500rules_proto@7.1.0 \n\u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502       \u251c\u2500\u2500\u2500protobuf@33.4 (cycle) \n\u2502   \u2502       \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502       \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502       \u2514\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500protobuf@33.4 (*) \n\u2502   \u251c\u2500\u2500\u2500rules_java@9.1.0 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500abseil-cpp@20250814.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500protobuf@33.4 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500zlib@1.3.1.bcr.5 (*) \n\u2502   \u251c\u2500\u2500\u2500rules_license@1.0.0 \n\u2502   \u2502   \u2514\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u251c\u2500\u2500\u2500rules_python@1.7.0 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500protobuf@33.4 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500stardoc@0.7.2 \n\u2502   \u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502       \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502       \u251c\u2500\u2500\u2500protobuf@33.4 (*) \n\u2502   \u2502       \u251c\u2500\u2500\u2500rules_java@9.1.0 (*) \n\u2502   \u2502       \u251c\u2500\u2500\u2500rules_jvm_external@6.7 (*) \n\u2502   \u2502       \u2514\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u2502   \u251c\u2500\u2500\u2500rules_shell@0.6.1 \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_features@1.42.1 (*) \n\u2502   \u2502   \u251c\u2500\u2500\u2500bazel_skylib@1.8.2 (*) \n\u2502   \u2502   \u2514\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502   \u2514\u2500\u2500\u2500zlib@1.3.1.bcr.5 \n\u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (cycle) \n\u2502       \u251c\u2500\u2500\u2500platforms@1.0.0 (*) \n\u2502       \u251c\u2500\u2500\u2500rules_cc@0.2.17 (*) \n\u2502       \u2514\u2500\u2500\u2500rules_license@1.0.0 (*) \n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (*) \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u251c\u2500\u2500\u2500bazel_tools@_ (*) \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u251c\u2500\u2500\u2500bazel_tools@_ (*) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (*) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u2502       \u2514\u2500\u2500\u2500bazel_tools@_ (*) \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u2502   \u2514\u2500\u2500\u2500bazel_tools@_ (*) \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u251c\u2500\u2500\u2500bazel_tools@_ (*) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n    \u2514\u2500\u2500\u2500bazel_tools@_ (*) \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_builtin",
+    "--output=json"
+   ],
+   "elapsed_seconds": 8.426,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_builtin_json",
+   "stdout": "{\n  \"key\": \"<root>\",\n  \"name\": \"mc_root\",\n  \"version\": \"0.1\",\n  \"apparentName\": \"mc_root\",\n  \"dependencies\": [\n    {\n      \"key\": \"bazel_tools@_\",\n      \"name\": \"bazel_tools\",\n      \"version\": \"\",\n      \"apparentName\": \"bazel_tools\",\n      \"dependencies\": [\n        {\n          \"key\": \"apple_support@2.5.2\",\n          \"name\": \"apple_support\",\n          \"version\": \"2.5.2\",\n          \"apparentName\": \"apple_support\",\n          \"dependencies\": [\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_cc@0.2.17\",\n              \"name\": \"rules_cc\",\n              \"version\": \"0.2.17\",\n              \"apparentName\": \"rules_cc\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"dependencies\": [\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_license@1.0.0\",\n                  \"name\": \"rules_license\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"rules_license\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"buildozer@8.5.1\",\n          \"name\": \"buildozer\",\n          \"version\": \"8.5.1\",\n          \"apparentName\": \"buildozer\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_shell@0.6.1\",\n              \"name\": \"rules_shell\",\n              \"version\": \"0.6.1\",\n              \"apparentName\": \"rules_shell\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"platforms@1.0.0\",\n          \"name\": \"platforms\",\n          \"version\": \"1.0.0\",\n          \"apparentName\": \"platforms\",\n          \"dependencies\": [\n            {\n              \"key\": \"rules_license@1.0.0\",\n              \"name\": \"rules_license\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"rules_license\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"protobuf@33.4\",\n          \"name\": \"protobuf\",\n          \"version\": \"33.4\",\n          \"apparentName\": \"com_google_protobuf\",\n          \"dependencies\": [\n            {\n              \"key\": \"apple_support@2.5.2\",\n              \"name\": \"apple_support\",\n              \"version\": \"2.5.2\",\n              \"apparentName\": \"build_bazel_apple_support\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"proto_bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_cc@0.2.17\",\n              \"name\": \"rules_cc\",\n              \"version\": \"0.2.17\",\n              \"apparentName\": \"rules_cc\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_java@9.1.0\",\n              \"name\": \"rules_java\",\n              \"version\": \"9.1.0\",\n              \"apparentName\": \"rules_java\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_license@1.0.0\",\n              \"name\": \"rules_license\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"rules_license\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_python@1.7.0\",\n              \"name\": \"rules_python\",\n              \"version\": \"1.7.0\",\n              \"apparentName\": \"rules_python\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_shell@0.6.1\",\n              \"name\": \"rules_shell\",\n              \"version\": \"0.6.1\",\n              \"apparentName\": \"rules_shell\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"zlib@1.3.1.bcr.5\",\n              \"name\": \"zlib\",\n              \"version\": \"1.3.1.bcr.5\",\n              \"apparentName\": \"zlib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"abseil-cpp@20250814.1\",\n              \"name\": \"abseil-cpp\",\n              \"version\": \"20250814.1\",\n              \"apparentName\": \"abseil-cpp\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_cc@0.2.17\",\n                  \"name\": \"rules_cc\",\n                  \"version\": \"0.2.17\",\n                  \"apparentName\": \"rules_cc\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"googletest@1.17.0\",\n                  \"name\": \"googletest\",\n                  \"version\": \"1.17.0\",\n                  \"apparentName\": \"googletest\",\n                  \"dependencies\": [\n                    {\n                      \"key\": \"platforms@1.0.0\",\n                      \"name\": \"platforms\",\n                      \"version\": \"1.0.0\",\n                      \"apparentName\": \"platforms\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"re2@2024-07-02.bcr.1\",\n                      \"name\": \"re2\",\n                      \"version\": \"2024-07-02.bcr.1\",\n                      \"apparentName\": \"re2\",\n                      \"unexpanded\": true\n                    }\n                  ],\n                  \"indirectDependencies\": [],\n                  \"cycles\": [\n                    {\n                      \"key\": \"abseil-cpp@20250814.1\",\n                      \"name\": \"abseil-cpp\",\n                      \"version\": \"20250814.1\",\n                      \"apparentName\": \"abseil-cpp\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"bazel_tools@_\",\n                      \"name\": \"bazel_tools\",\n                      \"version\": \"\",\n                      \"apparentName\": \"bazel_tools\",\n                      \"unexpanded\": true\n                    }\n                  ]\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"jsoncpp@1.9.6\",\n              \"name\": \"jsoncpp\",\n              \"version\": \"1.9.6\",\n              \"apparentName\": \"jsoncpp\",\n              \"dependencies\": [],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"re2@2024-07-02.bcr.1\",\n              \"name\": \"re2\",\n              \"version\": \"2024-07-02.bcr.1\",\n              \"apparentName\": \"re2\",\n              \"dependencies\": [\n                {\n                  \"key\": \"abseil-cpp@20250814.1\",\n                  \"name\": \"abseil-cpp\",\n                  \"version\": \"20250814.1\",\n                  \"apparentName\": \"abseil-cpp\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"apple_support@2.5.2\",\n                  \"name\": \"apple_support\",\n                  \"version\": \"2.5.2\",\n                  \"apparentName\": \"apple_support\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_cc@0.2.17\",\n                  \"name\": \"rules_cc\",\n                  \"version\": \"0.2.17\",\n                  \"apparentName\": \"rules_cc\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_python@1.7.0\",\n                  \"name\": \"rules_python\",\n                  \"version\": \"1.7.0\",\n                  \"apparentName\": \"rules_python\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"pybind11_bazel@2.12.0\",\n                  \"name\": \"pybind11_bazel\",\n                  \"version\": \"2.12.0\",\n                  \"apparentName\": \"pybind11_bazel\",\n                  \"dependencies\": [\n                    {\n                      \"key\": \"bazel_skylib@1.8.2\",\n                      \"name\": \"bazel_skylib\",\n                      \"version\": \"1.8.2\",\n                      \"apparentName\": \"bazel_skylib\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"platforms@1.0.0\",\n                      \"name\": \"platforms\",\n                      \"version\": \"1.0.0\",\n                      \"apparentName\": \"platforms\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"rules_cc@0.2.17\",\n                      \"name\": \"rules_cc\",\n                      \"version\": \"0.2.17\",\n                      \"apparentName\": \"rules_cc\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"rules_python@1.7.0\",\n                      \"name\": \"rules_python\",\n                      \"version\": \"1.7.0\",\n                      \"apparentName\": \"rules_python\",\n                      \"unexpanded\": true\n                    }\n                  ],\n                  \"indirectDependencies\": [],\n                  \"cycles\": [\n                    {\n                      \"key\": \"bazel_tools@_\",\n                      \"name\": \"bazel_tools\",\n                      \"version\": \"\",\n                      \"apparentName\": \"bazel_tools\",\n                      \"unexpanded\": true\n                    }\n                  ]\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"rules_apple@4.1.0\",\n              \"name\": \"rules_apple\",\n              \"version\": \"4.1.0\",\n              \"apparentName\": \"build_bazel_rules_apple\",\n              \"dependencies\": [\n                {\n                  \"key\": \"apple_support@2.5.2\",\n                  \"name\": \"apple_support\",\n                  \"version\": \"2.5.2\",\n                  \"apparentName\": \"build_bazel_apple_support\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"bazel_features@1.42.1\",\n                  \"name\": \"bazel_features\",\n                  \"version\": \"1.42.1\",\n                  \"apparentName\": \"bazel_features\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_cc@0.2.17\",\n                  \"name\": \"rules_cc\",\n                  \"version\": \"0.2.17\",\n                  \"apparentName\": \"rules_cc\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_python@1.7.0\",\n                  \"name\": \"rules_python\",\n                  \"version\": \"1.7.0\",\n                  \"apparentName\": \"rules_python\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_shell@0.6.1\",\n                  \"name\": \"rules_shell\",\n                  \"version\": \"0.6.1\",\n                  \"apparentName\": \"rules_shell\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_swift@3.1.2\",\n                  \"name\": \"rules_swift\",\n                  \"version\": \"3.1.2\",\n                  \"apparentName\": \"build_bazel_rules_swift\",\n                  \"dependencies\": [\n                    {\n                      \"key\": \"apple_support@2.5.2\",\n                      \"name\": \"apple_support\",\n                      \"version\": \"2.5.2\",\n                      \"apparentName\": \"build_bazel_apple_support\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"bazel_features@1.42.1\",\n                      \"name\": \"bazel_features\",\n                      \"version\": \"1.42.1\",\n                      \"apparentName\": \"bazel_features\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"bazel_skylib@1.8.2\",\n                      \"name\": \"bazel_skylib\",\n                      \"version\": \"1.8.2\",\n                      \"apparentName\": \"bazel_skylib\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"platforms@1.0.0\",\n                      \"name\": \"platforms\",\n                      \"version\": \"1.0.0\",\n                      \"apparentName\": \"platforms\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"rules_cc@0.2.17\",\n                      \"name\": \"rules_cc\",\n                      \"version\": \"0.2.17\",\n                      \"apparentName\": \"rules_cc\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"rules_shell@0.6.1\",\n                      \"name\": \"rules_shell\",\n                      \"version\": \"0.6.1\",\n                      \"apparentName\": \"rules_shell\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"nlohmann_json@3.6.1\",\n                      \"name\": \"nlohmann_json\",\n                      \"version\": \"3.6.1\",\n                      \"apparentName\": \"com_github_nlohmann_json\",\n                      \"dependencies\": [],\n                      \"indirectDependencies\": [],\n                      \"cycles\": [\n                        {\n                          \"key\": \"bazel_tools@_\",\n                          \"name\": \"bazel_tools\",\n                          \"version\": \"\",\n                          \"apparentName\": \"bazel_tools\",\n                          \"unexpanded\": true\n                        }\n                      ]\n                    },\n                    {\n                      \"key\": \"swift_argument_parser@1.3.1.2\",\n                      \"name\": \"swift_argument_parser\",\n                      \"version\": \"1.3.1.2\",\n                      \"apparentName\": \"com_github_apple_swift_argument_parser\",\n                      \"dependencies\": [\n                        {\n                          \"key\": \"apple_support@2.5.2\",\n                          \"name\": \"apple_support\",\n                          \"version\": \"2.5.2\",\n                          \"apparentName\": \"build_bazel_apple_support\",\n                          \"unexpanded\": true\n                        }\n                      ],\n                      \"indirectDependencies\": [],\n                      \"cycles\": [\n                        {\n                          \"key\": \"bazel_tools@_\",\n                          \"name\": \"bazel_tools\",\n                          \"version\": \"\",\n                          \"apparentName\": \"bazel_tools\",\n                          \"unexpanded\": true\n                        },\n                        {\n                          \"key\": \"rules_swift@3.1.2\",\n                          \"name\": \"rules_swift\",\n                          \"version\": \"3.1.2\",\n                          \"apparentName\": \"rules_swift\",\n                          \"unexpanded\": true\n                        }\n                      ]\n                    }\n                  ],\n                  \"indirectDependencies\": [],\n                  \"cycles\": [\n                    {\n                      \"key\": \"bazel_tools@_\",\n                      \"name\": \"bazel_tools\",\n                      \"version\": \"\",\n                      \"apparentName\": \"bazel_tools\",\n                      \"unexpanded\": true\n                    },\n                    {\n                      \"key\": \"protobuf@33.4\",\n                      \"name\": \"protobuf\",\n                      \"version\": \"33.4\",\n                      \"apparentName\": \"com_google_protobuf\",\n                      \"unexpanded\": true\n                    }\n                  ]\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"rules_jvm_external@6.7\",\n              \"name\": \"rules_jvm_external\",\n              \"version\": \"6.7\",\n              \"apparentName\": \"rules_jvm_external\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_features@1.42.1\",\n                  \"name\": \"bazel_features\",\n                  \"version\": \"1.42.1\",\n                  \"apparentName\": \"bazel_features\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_java@9.1.0\",\n                  \"name\": \"rules_java\",\n                  \"version\": \"9.1.0\",\n                  \"apparentName\": \"rules_java\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_kotlin@1.9.6\",\n                  \"name\": \"rules_kotlin\",\n                  \"version\": \"1.9.6\",\n                  \"apparentName\": \"rules_kotlin\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_license@1.0.0\",\n                  \"name\": \"rules_license\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"rules_license\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_shell@0.6.1\",\n                  \"name\": \"rules_shell\",\n                  \"version\": \"0.6.1\",\n                  \"apparentName\": \"rules_shell\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_android@0.1.1\",\n                  \"name\": \"rules_android\",\n                  \"version\": \"0.1.1\",\n                  \"apparentName\": \"rules_android\",\n                  \"dependencies\": [],\n                  \"indirectDependencies\": [],\n                  \"cycles\": [\n                    {\n                      \"key\": \"bazel_tools@_\",\n                      \"name\": \"bazel_tools\",\n                      \"version\": \"\",\n                      \"apparentName\": \"bazel_tools\",\n                      \"unexpanded\": true\n                    }\n                  ]\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"rules_kotlin@1.9.6\",\n              \"name\": \"rules_kotlin\",\n              \"version\": \"1.9.6\",\n              \"apparentName\": \"rules_kotlin\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"platforms@1.0.0\",\n                  \"name\": \"platforms\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"platforms\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_cc@0.2.17\",\n                  \"name\": \"rules_cc\",\n                  \"version\": \"0.2.17\",\n                  \"apparentName\": \"rules_cc\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_java@9.1.0\",\n                  \"name\": \"rules_java\",\n                  \"version\": \"9.1.0\",\n                  \"apparentName\": \"rules_java\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_proto@7.1.0\",\n                  \"name\": \"rules_proto\",\n                  \"version\": \"7.1.0\",\n                  \"apparentName\": \"rules_proto\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_python@1.7.0\",\n                  \"name\": \"rules_python\",\n                  \"version\": \"1.7.0\",\n                  \"apparentName\": \"rules_python\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"rules_pkg@1.0.1\",\n              \"name\": \"rules_pkg\",\n              \"version\": \"1.0.1\",\n              \"apparentName\": \"rules_pkg\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_license@1.0.0\",\n                  \"name\": \"rules_license\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"rules_license\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_python@1.7.0\",\n                  \"name\": \"rules_python\",\n                  \"version\": \"1.7.0\",\n                  \"apparentName\": \"rules_python\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            },\n            {\n              \"key\": \"rules_proto@7.1.0\",\n              \"name\": \"rules_proto\",\n              \"version\": \"7.1.0\",\n              \"apparentName\": \"rules_proto\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_cc@0.2.17\",\n                  \"name\": \"rules_cc\",\n                  \"version\": \"0.2.17\",\n                  \"apparentName\": \"rules_cc\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_license@1.0.0\",\n                  \"name\": \"rules_license\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"rules_license\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"protobuf@33.4\",\n                  \"name\": \"protobuf\",\n                  \"version\": \"33.4\",\n                  \"apparentName\": \"com_google_protobuf\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"rules_cc@0.2.17\",\n          \"name\": \"rules_cc\",\n          \"version\": \"0.2.17\",\n          \"apparentName\": \"rules_cc\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"protobuf@33.4\",\n              \"name\": \"protobuf\",\n              \"version\": \"33.4\",\n              \"apparentName\": \"com_google_protobuf\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"rules_java@9.1.0\",\n          \"name\": \"rules_java\",\n          \"version\": \"9.1.0\",\n          \"apparentName\": \"rules_java\",\n          \"dependencies\": [\n            {\n              \"key\": \"abseil-cpp@20250814.1\",\n              \"name\": \"abseil-cpp\",\n              \"version\": \"20250814.1\",\n              \"apparentName\": \"com_google_absl\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"protobuf@33.4\",\n              \"name\": \"protobuf\",\n              \"version\": \"33.4\",\n              \"apparentName\": \"com_google_protobuf\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_cc@0.2.17\",\n              \"name\": \"rules_cc\",\n              \"version\": \"0.2.17\",\n              \"apparentName\": \"rules_cc\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_license@1.0.0\",\n              \"name\": \"rules_license\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"rules_license\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"zlib@1.3.1.bcr.5\",\n              \"name\": \"zlib\",\n              \"version\": \"1.3.1.bcr.5\",\n              \"apparentName\": \"zlib\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"rules_license@1.0.0\",\n          \"name\": \"rules_license\",\n          \"version\": \"1.0.0\",\n          \"apparentName\": \"rules_license\",\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"rules_python@1.7.0\",\n          \"name\": \"rules_python\",\n          \"version\": \"1.7.0\",\n          \"apparentName\": \"rules_python\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"protobuf@33.4\",\n              \"name\": \"protobuf\",\n              \"version\": \"33.4\",\n              \"apparentName\": \"com_google_protobuf\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_cc@0.2.17\",\n              \"name\": \"rules_cc\",\n              \"version\": \"0.2.17\",\n              \"apparentName\": \"rules_cc\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"stardoc@0.7.2\",\n              \"name\": \"stardoc\",\n              \"version\": \"0.7.2\",\n              \"apparentName\": \"io_bazel_stardoc\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_skylib@1.8.2\",\n                  \"name\": \"bazel_skylib\",\n                  \"version\": \"1.8.2\",\n                  \"apparentName\": \"bazel_skylib\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"protobuf@33.4\",\n                  \"name\": \"protobuf\",\n                  \"version\": \"33.4\",\n                  \"apparentName\": \"com_google_protobuf\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_java@9.1.0\",\n                  \"name\": \"rules_java\",\n                  \"version\": \"9.1.0\",\n                  \"apparentName\": \"rules_java\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_jvm_external@6.7\",\n                  \"name\": \"rules_jvm_external\",\n                  \"version\": \"6.7\",\n                  \"apparentName\": \"rules_jvm_external\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"rules_license@1.0.0\",\n                  \"name\": \"rules_license\",\n                  \"version\": \"1.0.0\",\n                  \"apparentName\": \"rules_license\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"rules_shell@0.6.1\",\n          \"name\": \"rules_shell\",\n          \"version\": \"0.6.1\",\n          \"apparentName\": \"rules_shell\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_features@1.42.1\",\n              \"name\": \"bazel_features\",\n              \"version\": \"1.42.1\",\n              \"apparentName\": \"bazel_features\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"bazel_skylib@1.8.2\",\n              \"name\": \"bazel_skylib\",\n              \"version\": \"1.8.2\",\n              \"apparentName\": \"bazel_skylib\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        },\n        {\n          \"key\": \"zlib@1.3.1.bcr.5\",\n          \"name\": \"zlib\",\n          \"version\": \"1.3.1.bcr.5\",\n          \"apparentName\": \"zlib\",\n          \"dependencies\": [\n            {\n              \"key\": \"platforms@1.0.0\",\n              \"name\": \"platforms\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"platforms\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_cc@0.2.17\",\n              \"name\": \"rules_cc\",\n              \"version\": \"0.2.17\",\n              \"apparentName\": \"rules_cc\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"rules_license@1.0.0\",\n              \"name\": \"rules_license\",\n              \"version\": \"1.0.0\",\n              \"apparentName\": \"rules_license\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ]\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_a@1.0\",\n      \"name\": \"mc_a\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_a\",\n      \"dependencies\": [\n        {\n          \"key\": \"bazel_tools@_\",\n          \"name\": \"bazel_tools\",\n          \"version\": \"\",\n          \"apparentName\": \"bazel_tools\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_b@2.0\",\n          \"name\": \"mc_b\",\n          \"version\": \"2.0\",\n          \"apparentName\": \"mc_b\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_cyc_x@1.0\",\n          \"name\": \"mc_cyc_x\",\n          \"version\": \"1.0\",\n          \"apparentName\": \"mc_cyc_x\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            },\n            {\n              \"key\": \"mc_cyc_y@1.0\",\n              \"name\": \"mc_cyc_y\",\n              \"version\": \"1.0\",\n              \"apparentName\": \"mc_cyc_y\",\n              \"dependencies\": [\n                {\n                  \"key\": \"bazel_tools@_\",\n                  \"name\": \"bazel_tools\",\n                  \"version\": \"\",\n                  \"apparentName\": \"bazel_tools\",\n                  \"unexpanded\": true\n                },\n                {\n                  \"key\": \"mc_leaf@1.1\",\n                  \"name\": \"mc_leaf\",\n                  \"version\": \"1.1\",\n                  \"apparentName\": \"mc_leaf\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"mc_cyc_x@1.0\",\n                  \"name\": \"mc_cyc_x\",\n                  \"version\": \"1.0\",\n                  \"apparentName\": \"mc_cyc_x\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_b@2.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"bee\",\n      \"dependencies\": [\n        {\n          \"key\": \"bazel_tools@_\",\n          \"name\": \"bazel_tools\",\n          \"version\": \"\",\n          \"apparentName\": \"bazel_tools\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"dependencies\": [\n            {\n              \"key\": \"bazel_tools@_\",\n              \"name\": \"bazel_tools\",\n              \"version\": \"\",\n              \"apparentName\": \"bazel_tools\",\n              \"unexpanded\": true\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_dev@1.0\",\n      \"name\": \"mc_dev\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_dev\",\n      \"dependencies\": [\n        {\n          \"key\": \"bazel_tools@_\",\n          \"name\": \"bazel_tools\",\n          \"version\": \"\",\n          \"apparentName\": \"bazel_tools\",\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_local@_\",\n      \"name\": \"mc_local\",\n      \"version\": \"3.0\",\n      \"apparentName\": \"mc_local\",\n      \"dependencies\": [\n        {\n          \"key\": \"bazel_tools@_\",\n          \"name\": \"bazel_tools\",\n          \"version\": \"\",\n          \"apparentName\": \"bazel_tools\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_svo@2.0\",\n      \"name\": \"mc_svo\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"mc_svo\",\n      \"dependencies\": [\n        {\n          \"key\": \"bazel_tools@_\",\n          \"name\": \"bazel_tools\",\n          \"version\": \"\",\n          \"apparentName\": \"bazel_tools\",\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    }\n  ],\n  \"indirectDependencies\": [],\n  \"cycles\": [],\n  \"root\": true\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_unused"
+   ],
+   "elapsed_seconds": 8.58,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_unused",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@1.0 (unused) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (unused) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@1.0 (unused) \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (*) (unused) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_svo@1.0 (unused) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--verbose"
+   ],
+   "elapsed_seconds": 8.548,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_verbose",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 (was 1.0, cause mc_a@1.0)\n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (was 1.0, cause mc_cyc_y@1.0)\n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ (was 1.0, cause non_registry_override)\n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) (was 1.0, cause mc_cyc_y@1.0)\n\u2514\u2500\u2500\u2500mc_svo@2.0 (was 1.0, cause single_version_override)\n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_unused",
+    "--verbose"
+   ],
+   "elapsed_seconds": 9.059,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_unused_verbose",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@1.0 (to 2.0, cause mc_a@1.0)\n\u251c\u2500\u2500\u2500mc_b@2.0 (was 1.0, cause mc_a@1.0)\n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (to 1.1, cause mc_cyc_y@1.0)\n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (was 1.0, cause mc_cyc_y@1.0)\n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@1.0 (to 3.0, cause non_registry_override)\n\u251c\u2500\u2500\u2500mc_local@_ (was 1.0, cause non_registry_override)\n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (*) (to 1.1, cause mc_cyc_y@1.0)\n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) (was 1.0, cause mc_cyc_y@1.0)\n\u251c\u2500\u2500\u2500mc_svo@1.0 (to 2.0, cause single_version_override)\n\u2514\u2500\u2500\u2500mc_svo@2.0 (was 1.0, cause single_version_override)\n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_unused",
+    "--verbose",
+    "--output=json"
+   ],
+   "elapsed_seconds": 8.366,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_unused_verbose_json",
+   "stdout": "{\n  \"key\": \"<root>\",\n  \"name\": \"mc_root\",\n  \"version\": \"0.1\",\n  \"apparentName\": \"mc_root\",\n  \"dependencies\": [\n    {\n      \"key\": \"mc_a@1.0\",\n      \"name\": \"mc_a\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_a\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_b@2.0\",\n          \"name\": \"mc_b\",\n          \"version\": \"2.0\",\n          \"apparentName\": \"mc_b\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_cyc_x@1.0\",\n          \"name\": \"mc_cyc_x\",\n          \"version\": \"1.0\",\n          \"apparentName\": \"mc_cyc_x\",\n          \"dependencies\": [\n            {\n              \"key\": \"mc_cyc_y@1.0\",\n              \"name\": \"mc_cyc_y\",\n              \"version\": \"1.0\",\n              \"apparentName\": \"mc_cyc_y\",\n              \"dependencies\": [\n                {\n                  \"key\": \"mc_leaf@1.1\",\n                  \"name\": \"mc_leaf\",\n                  \"version\": \"1.1\",\n                  \"apparentName\": \"mc_leaf\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"mc_cyc_x@1.0\",\n                  \"name\": \"mc_cyc_x\",\n                  \"version\": \"1.0\",\n                  \"apparentName\": \"mc_cyc_x\",\n                  \"unexpanded\": true\n                }\n              ]\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_b@1.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"1.0\",\n      \"unused\": true,\n      \"resolvedVersion\": \"2.0\",\n      \"resolutionReason\": \"2.0\",\n      \"resolvedRequestedBy\": [\n        \"mc_a@1.0\"\n      ],\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_b@2.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"bee\",\n      \"originalVersion\": \"1.0\",\n      \"resolutionReason\": \"1.0\",\n      \"resolvedRequestedBy\": [\n        \"mc_a@1.0\"\n      ],\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.0\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.0\",\n          \"unused\": true,\n          \"resolvedVersion\": \"1.1\",\n          \"resolutionReason\": \"1.1\",\n          \"resolvedRequestedBy\": [\n            \"mc_cyc_y@1.0\"\n          ],\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        },\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"originalVersion\": \"1.0\",\n          \"resolutionReason\": \"1.0\",\n          \"resolvedRequestedBy\": [\n            \"mc_cyc_y@1.0\"\n          ],\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_dev@1.0\",\n      \"name\": \"mc_dev\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_dev\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_local@1.0\",\n      \"name\": \"mc_local\",\n      \"version\": \"1.0\",\n      \"unused\": true,\n      \"resolvedVersion\": \"3.0\",\n      \"resolutionReason\": \"3.0\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_local@_\",\n      \"name\": \"mc_local\",\n      \"version\": \"3.0\",\n      \"apparentName\": \"mc_local\",\n      \"originalVersion\": \"1.0\",\n      \"resolutionReason\": \"1.0\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.0\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.0\",\n          \"unused\": true,\n          \"resolvedVersion\": \"1.1\",\n          \"resolutionReason\": \"1.1\",\n          \"resolvedRequestedBy\": [\n            \"mc_cyc_y@1.0\"\n          ],\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"originalVersion\": \"1.0\",\n          \"resolutionReason\": \"1.0\",\n          \"resolvedRequestedBy\": [\n            \"mc_cyc_y@1.0\"\n          ],\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_svo@1.0\",\n      \"name\": \"mc_svo\",\n      \"version\": \"1.0\",\n      \"unused\": true,\n      \"resolvedVersion\": \"2.0\",\n      \"resolutionReason\": \"2.0\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    },\n    {\n      \"key\": \"mc_svo@2.0\",\n      \"name\": \"mc_svo\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"mc_svo\",\n      \"originalVersion\": \"1.0\",\n      \"resolutionReason\": \"1.0\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    }\n  ],\n  \"indirectDependencies\": [],\n  \"cycles\": [],\n  \"root\": true\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--include_unused",
+    "--verbose",
+    "--output=graph"
+   ],
+   "elapsed_seconds": 8.39,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_unused_verbose_dot",
+   "stdout": "digraph mygraph {\n  node [ shape=box ]\n  edge [ fontsize=8 ]\n  \"<root>\" [ label=\"<root> (mc_root@0.1)\" ]\n  \"<root>\" -> \"mc_a@1.0\" [  ]\n  \"<root>\" -> \"mc_b@1.0\" [ label=MVS ]\n  \"<root>\" -> \"mc_b@2.0\" [ label=MVS ]\n  \"<root>\" -> \"mc_dev@1.0\" [  ]\n  \"<root>\" -> \"mc_local@1.0\" [ label=NRO ]\n  \"<root>\" -> \"mc_local@_\" [ label=NRO ]\n  \"<root>\" -> \"mc_svo@1.0\" [ label=SVO ]\n  \"<root>\" -> \"mc_svo@2.0\" [ label=SVO ]\n  \"mc_a@1.0\" -> \"mc_b@2.0\" [  ]\n  \"mc_a@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_b@1.0\" [ shape=box style=dotted ]\n  \"mc_b@2.0\" -> \"mc_leaf@1.0\" [ label=MVS ]\n  \"mc_b@2.0\" -> \"mc_leaf@1.1\" [ label=MVS ]\n  \"mc_local@1.0\" [ shape=box style=dotted ]\n  \"mc_local@_\" -> \"mc_leaf@1.0\" [ label=MVS ]\n  \"mc_local@_\" -> \"mc_leaf@1.1\" [ label=MVS ]\n  \"mc_svo@1.0\" [ shape=box style=dotted ]\n  \"mc_cyc_x@1.0\" -> \"mc_cyc_y@1.0\" [  ]\n  \"mc_leaf@1.0\" [ shape=box style=dotted ]\n  \"mc_cyc_y@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_cyc_y@1.0\" -> \"mc_leaf@1.1\" [  ]\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--depth=2"
+   ],
+   "elapsed_seconds": 8.858,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_depth",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--nocycles"
+   ],
+   "elapsed_seconds": 8.734,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_nocycles",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--from=mc_cyc_x"
+   ],
+   "elapsed_seconds": 8.685,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_from",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u254c\u254c\u254cmc_cyc_x@1.0 \n    \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n        \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n        \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--from=mc_cyc_y,mc_local"
+   ],
+   "elapsed_seconds": 8.549,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_from_two",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u254c\u254c\u254cmc_cyc_y@1.0 \n    \u251c\u2500\u2500\u2500mc_cyc_x@1.0 \n    \u2502   \u2514\u2500\u2500\u2500mc_cyc_y@1.0 (cycle) \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--ignore_dev_dependency"
+   ],
+   "elapsed_seconds": 1.918,
+   "events": [
+    "ERROR: in module dependency chain <root> -> mc_local@1.0: module mc_local@1.0 not found in registries:"
+   ],
+   "exit_code": 37,
+   "name": "graph_ignore_dev",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_info=usages"
+   ],
+   "elapsed_seconds": 8.521,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_usages",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500$@@//:MODULE.bazel%//:defs.bzl r \n\u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_info=repos"
+   ],
+   "elapsed_seconds": 8.941,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_repos",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500$@@//:MODULE.bazel%//:defs.bzl r \n\u2502   \u2514\u2500\u2500\u2500direct\n\u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u251c\u2500\u2500\u2500x_repo\n\u2502   \u2514\u2500\u2500\u2500y_repo\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u2502   \u2514\u2500\u2500\u2500x_repo\n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_info=all"
+   ],
+   "elapsed_seconds": 8.787,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_all",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500$@@//:MODULE.bazel%//:defs.bzl r \n\u2502   \u2514\u2500\u2500\u2500direct\n\u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u251c\u2500\u2500\u2500x_repo\n\u2502   \u251c\u2500\u2500\u2500y_repo\n\u2502   \u2514\u254c\u254c\u254cunused_repo\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext ... \n\u2502   \u2502   \u2514\u2500\u2500\u2500x_repo\n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_info=all",
+    "--output=json"
+   ],
+   "elapsed_seconds": 8.673,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_all_json",
+   "stdout": "{\n  \"key\": \"<root>\",\n  \"name\": \"mc_root\",\n  \"version\": \"0.1\",\n  \"apparentName\": \"mc_root\",\n  \"dependencies\": [\n    {\n      \"key\": \"mc_a@1.0\",\n      \"name\": \"mc_a\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_a\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_b@2.0\",\n          \"name\": \"mc_b\",\n          \"version\": \"2.0\",\n          \"apparentName\": \"mc_b\",\n          \"unexpanded\": true\n        },\n        {\n          \"key\": \"mc_cyc_x@1.0\",\n          \"name\": \"mc_cyc_x\",\n          \"version\": \"1.0\",\n          \"apparentName\": \"mc_cyc_x\",\n          \"dependencies\": [\n            {\n              \"key\": \"mc_cyc_y@1.0\",\n              \"name\": \"mc_cyc_y\",\n              \"version\": \"1.0\",\n              \"apparentName\": \"mc_cyc_y\",\n              \"dependencies\": [\n                {\n                  \"key\": \"mc_leaf@1.1\",\n                  \"name\": \"mc_leaf\",\n                  \"version\": \"1.1\",\n                  \"apparentName\": \"mc_leaf\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"indirectDependencies\": [],\n              \"cycles\": [\n                {\n                  \"key\": \"mc_cyc_x@1.0\",\n                  \"name\": \"mc_cyc_x\",\n                  \"version\": \"1.0\",\n                  \"apparentName\": \"mc_cyc_x\",\n                  \"unexpanded\": true\n                }\n              ],\n              \"extensionUsages\": []\n            }\n          ],\n          \"indirectDependencies\": [],\n          \"cycles\": [],\n          \"extensionUsages\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": [],\n      \"extensionUsages\": [\n        {\n          \"key\": \"@@mc_a+//:ext.bzl%ext\",\n          \"unexpanded\": false,\n          \"used_repos\": [\n            \"x_repo\"\n          ],\n          \"unused_repos\": [\n            \"unused_repo\"\n          ]\n        }\n      ]\n    },\n    {\n      \"key\": \"mc_b@2.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"bee\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": [],\n          \"extensionUsages\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": [],\n      \"extensionUsages\": []\n    },\n    {\n      \"key\": \"mc_dev@1.0\",\n      \"name\": \"mc_dev\",\n      \"version\": \"1.0\",\n      \"apparentName\": \"mc_dev\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": [],\n      \"extensionUsages\": []\n    },\n    {\n      \"key\": \"mc_local@_\",\n      \"name\": \"mc_local\",\n      \"version\": \"3.0\",\n      \"apparentName\": \"mc_local\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"unexpanded\": true\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": [],\n      \"extensionUsages\": []\n    },\n    {\n      \"key\": \"mc_svo@2.0\",\n      \"name\": \"mc_svo\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"mc_svo\",\n      \"dependencies\": [],\n      \"indirectDependencies\": [],\n      \"cycles\": [],\n      \"extensionUsages\": []\n    }\n  ],\n  \"indirectDependencies\": [],\n  \"cycles\": [],\n  \"extensionUsages\": [\n    {\n      \"key\": \"@@//:MODULE.bazel%//:defs.bzl r\",\n      \"unexpanded\": false,\n      \"used_repos\": [\n        \"direct\"\n      ],\n      \"unused_repos\": []\n    },\n    {\n      \"key\": \"@@mc_a+//:ext.bzl%ext\",\n      \"unexpanded\": true,\n      \"used_repos\": [\n        \"x_repo\",\n        \"y_repo\"\n      ]\n    }\n  ],\n  \"root\": true\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_info=all",
+    "--output=graph"
+   ],
+   "elapsed_seconds": 8.157,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_all_dot",
+   "stdout": "digraph mygraph {\n  node [ shape=box ]\n  edge [ fontsize=8 ]\n  \"<root>\" [ label=\"<root> (mc_root@0.1)\" ]\n  subgraph \"cluster_@@//:MODULE.bazel%//:defs.bzl r\" {\n    label=\"@@//:MODULE.bazel%//:defs.bzl r\"\n    \"@@//:MODULE.bazel%//:defs.bzl r%direct\" [ label=\"direct\" ]\n  }\n  \"<root>\" -> \"@@//:MODULE.bazel%//:defs.bzl r%direct\"\n  subgraph \"cluster_@@mc_a+//:ext.bzl%ext\" {\n    label=\"@@mc_a+//:ext.bzl%ext\"\n    \"@@mc_a+//:ext.bzl%ext%x_repo\" [ label=\"x_repo\" ]\n    \"@@mc_a+//:ext.bzl%ext%y_repo\" [ label=\"y_repo\" ]\n    \"@@mc_a+//:ext.bzl%ext%unused_repo\" [ label=\"unused_repo\" style=dotted ]\n  }\n  \"<root>\" -> \"@@mc_a+//:ext.bzl%ext%x_repo\"\n  \"<root>\" -> \"@@mc_a+//:ext.bzl%ext%y_repo\"\n  \"<root>\" -> \"mc_a@1.0\" [  ]\n  \"<root>\" -> \"mc_b@2.0\" [  ]\n  \"<root>\" -> \"mc_dev@1.0\" [  ]\n  \"<root>\" -> \"mc_local@_\" [  ]\n  \"<root>\" -> \"mc_svo@2.0\" [  ]\n  \"mc_a@1.0\" -> \"@@mc_a+//:ext.bzl%ext%x_repo\"\n  \"mc_a@1.0\" -> \"mc_b@2.0\" [  ]\n  \"mc_a@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_b@2.0\" -> \"mc_leaf@1.1\" [  ]\n  \"mc_local@_\" -> \"mc_leaf@1.1\" [  ]\n  \"mc_cyc_x@1.0\" -> \"mc_cyc_y@1.0\" [  ]\n  \"mc_cyc_y@1.0\" -> \"mc_cyc_x@1.0\" [  ]\n  \"mc_cyc_y@1.0\" -> \"mc_leaf@1.1\" [  ]\n}\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_filter=@mc_a//:ext.bzl%ext"
+   ],
+   "elapsed_seconds": 8.775,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_filter",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_a@1.0 # \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_filter=@mc_a//:ext.bzl%ext",
+    "--extension_info=all"
+   ],
+   "elapsed_seconds": 8.474,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_filter_all",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u251c\u2500\u2500\u2500x_repo\n\u2502   \u251c\u2500\u2500\u2500y_repo\n\u2502   \u2514\u254c\u254c\u254cunused_repo\n\u2514\u2500\u2500\u2500mc_a@1.0 # \n    \u2514\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext ... \n        \u2514\u2500\u2500\u2500x_repo\n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--extension_filter=",
+    "--extension_info=repos"
+   ],
+   "elapsed_seconds": 8.654,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "graph_ext_filter_empty",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500$@@//:MODULE.bazel%//:defs.bzl r \n\u2502   \u2514\u2500\u2500\u2500direct\n\u251c\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n\u2502   \u251c\u2500\u2500\u2500x_repo\n\u2502   \u2514\u2500\u2500\u2500y_repo\n\u2514\u2500\u2500\u2500mc_a@1.0 # \n    \u2514\u2500\u2500\u2500$@@mc_a+//:ext.bzl%ext \n        \u2514\u2500\u2500\u2500x_repo\n\n"
+  },
+  {
+   "args": [
+    "deps",
+    "mc_b"
+   ],
+   "elapsed_seconds": 8.579,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "deps",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_b@2.0 \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\n"
+  },
+  {
+   "args": [
+    "deps",
+    "<root>"
+   ],
+   "elapsed_seconds": 8.437,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "deps_root",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "deps",
+    "mc_a",
+    "--depth=1"
+   ],
+   "elapsed_seconds": 8.518,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "deps_depth",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_a@1.0 \n\n"
+  },
+  {
+   "args": [
+    "deps",
+    "@bee"
+   ],
+   "elapsed_seconds": 8.654,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "deps_apparent",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_b@2.0 \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\n"
+  },
+  {
+   "args": [
+    "deps",
+    "@@mc_local+"
+   ],
+   "elapsed_seconds": 8.484,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "deps_canonical",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_local@_ \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\n"
+  },
+  {
+   "args": [
+    "all_paths",
+    "mc_leaf"
+   ],
+   "elapsed_seconds": 8.651,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "all_paths",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\u2514\u2500\u2500\u2500mc_local@_ \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\n"
+  },
+  {
+   "args": [
+    "all_paths",
+    "mc_cyc_x",
+    "--from=mc_a"
+   ],
+   "elapsed_seconds": 8.486,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "all_paths_from",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_a@1.0 \n    \u2514\u2500\u2500\u2500mc_cyc_x@1.0 # \n        \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n            \u2514\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\n"
+  },
+  {
+   "args": [
+    "path",
+    "mc_leaf"
+   ],
+   "elapsed_seconds": 8.375,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "path",
+   "stdout": "<root> (mc_root@0.1)\n\u2514\u2500\u2500\u2500mc_b@2.0 \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\n"
+  },
+  {
+   "args": [
+    "path",
+    "mc_leaf",
+    "--output=json"
+   ],
+   "elapsed_seconds": 8.671,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "path_json",
+   "stdout": "{\n  \"key\": \"<root>\",\n  \"name\": \"mc_root\",\n  \"version\": \"0.1\",\n  \"apparentName\": \"mc_root\",\n  \"dependencies\": [\n    {\n      \"key\": \"mc_b@2.0\",\n      \"name\": \"mc_b\",\n      \"version\": \"2.0\",\n      \"apparentName\": \"bee\",\n      \"dependencies\": [\n        {\n          \"key\": \"mc_leaf@1.1\",\n          \"name\": \"mc_leaf\",\n          \"version\": \"1.1\",\n          \"apparentName\": \"mc_leaf\",\n          \"dependencies\": [],\n          \"indirectDependencies\": [],\n          \"cycles\": []\n        }\n      ],\n      \"indirectDependencies\": [],\n      \"cycles\": []\n    }\n  ],\n  \"indirectDependencies\": [],\n  \"cycles\": [],\n  \"root\": true\n}\n"
+  },
+  {
+   "args": [
+    "path",
+    "mc_a",
+    "--from=mc_b"
+   ],
+   "elapsed_seconds": 8.677,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "path_none",
+   "stdout": "No path found to the specified target modules.\n"
+  },
+  {
+   "args": [
+    "path"
+   ],
+   "elapsed_seconds": 8.481,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "path_no_targets",
+   "stdout": "No target modules specified.\n"
+  },
+  {
+   "args": [
+    "explain",
+    "mc_leaf"
+   ],
+   "elapsed_seconds": 10.869,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "explain",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u2514\u254c\u254c\u254cmc_cyc_y@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\u2514\u2500\u2500\u2500mc_local@_ \n    \u2514\u2500\u2500\u2500mc_leaf@1.1 # \n\n"
+  },
+  {
+   "args": [
+    "explain",
+    "mc_b",
+    "--include_unused"
+   ],
+   "elapsed_seconds": 9.907,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "explain_unused",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u2514\u2500\u2500\u2500mc_b@2.0 # \n\u251c\u2500\u2500\u2500mc_b@1.0 # (unused) \n\u2514\u2500\u2500\u2500mc_b@2.0 # \n\n"
+  },
+  {
+   "args": [
+    "explain",
+    "mc_svo",
+    "--include_unused",
+    "--verbose"
+   ],
+   "elapsed_seconds": 8.947,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "explain_verbose",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_svo@1.0 # (to 2.0, cause single_version_override)\n\u2514\u2500\u2500\u2500mc_svo@2.0 # (was 1.0, cause single_version_override)\n\n"
+  },
+  {
+   "args": [
+    "explain",
+    "mc_leaf@1.0"
+   ],
+   "elapsed_seconds": 9.003,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In module argument mc_leaf@1.0: Module version mc_leaf@1.0 is unused as a result of module resolution. Use the --include_unused flag to include it. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "explain_unused_version",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "explain",
+    "mc_leaf@1.0",
+    "--include_unused"
+   ],
+   "elapsed_seconds": 9.073,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "explain_unused_version_ok",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.0 # (unused) \n\u2514\u2500\u2500\u2500mc_local@_ \n    \u2514\u2500\u2500\u2500mc_leaf@1.0 # (unused) \n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@mc_a"
+   ],
+   "elapsed_seconds": 8.586,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_apparent",
+   "stdout": "## @mc_a:\nload(\"@@bazel_tools//tools/build_defs/repo:local.bzl\", \"local_repository\")\nlocal_repository(\n  name = \"mc_a+\",\n  path = \"${FIXTURE}/sources/mc_a-1.0\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "mc_b"
+   ],
+   "elapsed_seconds": 8.594,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_module",
+   "stdout": "## mc_b@2.0:\nload(\"@@bazel_tools//tools/build_defs/repo:local.bzl\", \"local_repository\")\nlocal_repository(\n  name = \"mc_b+\",\n  path = \"${FIXTURE}/sources/mc_b-2.0\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@@mc_local+"
+   ],
+   "elapsed_seconds": 8.506,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_canonical",
+   "stdout": "## @@mc_local+:\nload(\"@@bazel_tools//tools/build_defs/repo:local.bzl\", \"local_repository\")\nlocal_repository(\n  name = \"mc_local+\",\n  path = \"../sources/mc_local\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@my_y"
+   ],
+   "elapsed_seconds": 8.717,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_extension",
+   "stdout": "## @my_y:\nload(\"@@mc_a+//:ext.bzl\", \"value_repo\")\nvalue_repo(\n  name = \"mc_a++ext+y_repo\",\n  _original_name = \"y_repo\",\n  value = \"from_root\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@direct"
+   ],
+   "elapsed_seconds": 8.683,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_direct",
+   "stdout": "## @direct:\nload(\"@@//:defs.bzl\", \"r\")\nr(\n  name = \"+r+direct\",\n  _original_name = \"direct\",\n  value = \"v\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@bazel_tools"
+   ],
+   "elapsed_seconds": 8.917,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_builtin",
+   "stdout": "## @bazel_tools:\nBuiltin or overridden repo located at: /tmp/opencode/mod-command-capture/our/install/bf018ed227128835327c556cff5c0ff0/embedded_tools\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "--base_module=mc_a",
+    "@x_repo"
+   ],
+   "elapsed_seconds": 8.369,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_base_module",
+   "stdout": "## @x_repo:\nload(\"@@mc_a+//:ext.bzl\", \"value_repo\")\nvalue_repo(\n  name = \"mc_a++ext+x_repo\",\n  _original_name = \"x_repo\",\n  value = \"from_a\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_repo",
+    "@nope"
+   ],
+   "elapsed_seconds": 8.414,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In repo argument @nope: No repo visible as nope from @main repository (Note that unused modules cannot be used here). Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "show_repo_missing",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "show_repo",
+    "@@nope+"
+   ],
+   "elapsed_seconds": 8.56,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In repo argument @@nope+: no such repo. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "show_repo_canonical_missing",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "show_repo",
+    "--output=streamed_jsonproto",
+    "@mc_a"
+   ],
+   "elapsed_seconds": 8.788,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_repo_jsonproto",
+   "stdout": "{\"canonicalName\":\"mc_a+\",\"repoRuleName\":\"local_repository\",\"repoRuleBzlLabel\":\"@@bazel_tools//tools/build_defs/repo:local.bzl\",\"apparentName\":\"@mc_a\",\"attribute\":[{\"name\":\"path\",\"type\":\"STRING\",\"stringValue\":\"${FIXTURE}/sources/mc_a-1.0\",\"explicitlySpecified\":true,\"nodep\":false}]}\n"
+  },
+  {
+   "args": [
+    "show_extension",
+    "@mc_a//:ext.bzl%ext"
+   ],
+   "elapsed_seconds": 8.543,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_extension",
+   "stdout": "## @@mc_a+//:ext.bzl%ext:\n\nFetched repositories:\n  - x_repo (imported by <root>, mc_a@1.0)\n  - y_repo (imported by <root>)\n  - unused_repo\n\n## Usage in <root> from ${FIXTURE}/ws/MODULE.bazel:10\next.tag(name=\"y_repo\", value=\"from_root\")\nuse_repo(\n  ext,\n  my_y=\"y_repo\",\n  x=\"x_repo\",\n)\n\n## Usage in mc_a@1.0 from file://${FIXTURE}/registry/modules/mc_a/1.0/MODULE.bazel:4\next.tag(name=\"x_repo\", numbers=[1, 2], value=\"from_a\")\nuse_repo(\n  ext,\n  \"x_repo\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_extension",
+    "@mc_a//:ext.bzl%ext",
+    "--extension_usages=<root>"
+   ],
+   "elapsed_seconds": 8.36,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_extension_usages",
+   "stdout": "## @@mc_a+//:ext.bzl%ext:\n\nFetched repositories:\n  - x_repo (imported by <root>, mc_a@1.0)\n  - y_repo (imported by <root>)\n  - unused_repo\n\n## Usage in <root> from ${FIXTURE}/ws/MODULE.bazel:10\next.tag(name=\"y_repo\", value=\"from_root\")\nuse_repo(\n  ext,\n  my_y=\"y_repo\",\n  x=\"x_repo\",\n)\n\n"
+  },
+  {
+   "args": [
+    "show_extension",
+    "<root>//:MODULE.bazel%//:defs.bzl r"
+   ],
+   "elapsed_seconds": 8.626,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "show_extension_innate",
+   "stdout": "## @@//:MODULE.bazel%//:defs.bzl r:\n\nFetched repositories:\n  - direct (imported by <root>)\n\n## Usage in <root> from ${FIXTURE}/ws/MODULE.bazel:15\nr = use_repo_rule(\"//:defs.bzl\", \"r\")\nr(name=\"direct\", value=\"v\")\n\n"
+  },
+  {
+   "args": [
+    "show_extension",
+    "@mc_a//:ext.bzl%nope"
+   ],
+   "elapsed_seconds": 8.441,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: No extension @@mc_a+//:ext.bzl%nope exists in the dependency graph. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "show_extension_missing",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "dump_repo_mapping",
+    ""
+   ],
+   "elapsed_seconds": 7.893,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "dump_root",
+   "stdout": "{\"my_y\":\"mc_a++ext+y_repo\",\"x\":\"mc_a++ext+x_repo\",\"direct\":\"+r+direct\",\"\":\"\",\"mc_root\":\"\",\"mc_a\":\"mc_a+\",\"bee\":\"mc_b+\",\"mc_dev\":\"mc_dev+\",\"mc_local\":\"mc_local+\",\"mc_svo\":\"mc_svo+\",\"bazel_tools\":\"bazel_tools\"}\n"
+  },
+  {
+   "args": [
+    "dump_repo_mapping",
+    "mc_a+",
+    "mc_local+"
+   ],
+   "elapsed_seconds": 8.204,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "dump_two",
+   "stdout": "{\"x_repo\":\"mc_a++ext+x_repo\",\"mc_a\":\"mc_a+\",\"mc_b\":\"mc_b+\",\"mc_cyc_x\":\"mc_cyc_x+\",\"bazel_tools\":\"bazel_tools\"}\n{\"mc_local\":\"mc_local+\",\"mc_leaf\":\"mc_leaf+\",\"bazel_tools\":\"bazel_tools\"}\n"
+  },
+  {
+   "args": [
+    "dump_repo_mapping"
+   ],
+   "elapsed_seconds": 1.282,
+   "events": [
+    "ERROR: No repository name(s) specified. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "dump_none",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "dump_repo_mapping",
+    "nope+"
+   ],
+   "elapsed_seconds": 8.056,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: Repositories not found: nope+. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "dump_missing",
+   "stdout": ""
+  },
+  {
+   "args": [],
+   "elapsed_seconds": 1.058,
+   "events": [
+    "ERROR: No subcommand specified, choose one of : (deps, graph, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy)."
+   ],
+   "exit_code": 37,
+   "name": "no_subcommand",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "frobnicate"
+   ],
+   "elapsed_seconds": 1.099,
+   "events": [
+    "ERROR: Invalid subcommand, choose one from : (deps, graph, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy)."
+   ],
+   "exit_code": 37,
+   "name": "bad_subcommand",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "graph",
+    "x"
+   ],
+   "elapsed_seconds": 8.671,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: the 'graph' command doesn't take extra arguments. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "graph_extra",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "graph",
+    "--output=streamed_proto"
+   ],
+   "elapsed_seconds": 1.185,
+   "events": [
+    "ERROR: Invalid --output 'streamed_proto' for the 'graph' subcommand. Only 'text', 'json', and 'graph' are supported. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "graph_bad_output",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "show_extension",
+    "--output=json",
+    "@mc_a//:ext.bzl%ext"
+   ],
+   "elapsed_seconds": 1.154,
+   "events": [
+    "ERROR: Invalid --output 'json' for the 'show_extension' subcommand. Only 'text' is supported. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "show_extension_json",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "deps",
+    "nope"
+   ],
+   "elapsed_seconds": 9.805,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In module argument nope: Module nope does not exist in the dependency graph. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "deps_missing",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "deps",
+    "mc_b@9.9"
+   ],
+   "elapsed_seconds": 9.844,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In module argument mc_b@9.9: Module version mc_b@9.9 does not exist, available versions: [mc_b@2.0]. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "deps_bad_version",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "deps",
+    "@nope"
+   ],
+   "elapsed_seconds": 9.007,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: In module argument @nope: No module with the apparent repo name @nope exists in the dependency graph. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "deps_bad_apparent",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "graph",
+    "--all_repos"
+   ],
+   "elapsed_seconds": 1.307,
+   "events": [
+    "ERROR: the 'graph' command doesn't take the --all_repos option. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "graph_all_repos",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "show_repo",
+    "--all_repos",
+    "@mc_a"
+   ],
+   "elapsed_seconds": 1.281,
+   "events": [
+    "ERROR: the 'show_repo' command requires exactly one of --all_repos, --all_visible_repos, or a list of repo arguments. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "show_repo_two_modes",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "tidy",
+    "x"
+   ],
+   "elapsed_seconds": 10.179,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
+    "ERROR: the 'tidy' command doesn't take extra arguments. Type 'bazel help mod' for syntax and help."
+   ],
+   "exit_code": 2,
+   "name": "tidy_extra",
+   "stdout": ""
+  },
+  {
+   "args": [
+    "graph",
+    "--base_module=mc_leaf",
+    "--include_unused"
+   ],
+   "elapsed_seconds": 8.402,
+   "events": [
+    "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
+   ],
+   "exit_code": 0,
+   "name": "base_module_multi",
+   "stdout": "<root> (mc_root@0.1)\n\u251c\u2500\u2500\u2500mc_a@1.0 \n\u2502   \u251c\u2500\u2500\u2500mc_b@2.0 (*) \n\u2502   \u2514\u2500\u2500\u2500mc_cyc_x@1.0 \n\u2502       \u2514\u2500\u2500\u2500mc_cyc_y@1.0 \n\u2502           \u251c\u2500\u2500\u2500mc_cyc_x@1.0 (cycle) \n\u2502           \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_b@1.0 (unused) \n\u251c\u2500\u2500\u2500mc_b@2.0 \n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (unused) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 \n\u251c\u2500\u2500\u2500mc_dev@1.0 \n\u251c\u2500\u2500\u2500mc_local@1.0 (unused) \n\u251c\u2500\u2500\u2500mc_local@_ \n\u2502   \u251c\u2500\u2500\u2500mc_leaf@1.0 (*) (unused) \n\u2502   \u2514\u2500\u2500\u2500mc_leaf@1.1 (*) \n\u251c\u2500\u2500\u2500mc_svo@1.0 (unused) \n\u2514\u2500\u2500\u2500mc_svo@2.0 \n\n"
+  },
+  {
+   "args": [
+    "graph",
+    "--charset=latin1"
+   ],
+   "elapsed_seconds": 1.074,
+   "events": [
+    "ERROR: While parsing option --charset=latin1: Not a valid output charset: 'latin1' (should be utf8 or ascii)"
+   ],
+   "exit_code": 2,
+   "name": "bad_charset",
+   "stdout": ""
+  }
+ ],
+ "command_prefix": [
+  "mod",
+  "--registry=file://${FIXTURE}/registry",
+  "--registry=https://bcr.bazel.build",
+  "--lockfile_mode=off",
+  "--color=no",
+  "--curses=no",
+  "--noshow_progress"
+ ],
+ "note": "events: ERROR/WARNING/`INFO: Repo` stderr lines; ${FIXTURE} is the copied fixture"
+}

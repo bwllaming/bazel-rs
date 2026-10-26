@@ -23,7 +23,7 @@ Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] clean [--expunge] [--async | --expunge_async]
   bazel-rs [STARTUP...] shutdown [--iff_heap_size_greater_than=N]
   bazel-rs [STARTUP...] [--cache-dir=PATH] gc [--dry_run] [GC OPTIONS...]
-  bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
+  bazel-rs [STARTUP...] [--cache-dir=PATH] mod SUBCOMMAND [MOD OPTIONS...] [ARG...]
   bazel-rs version | --version | capabilities | help [COMMAND]
 
 Cache garbage collection (docs/CACHE_GC.md): every command ends with a bounded collection when
@@ -100,7 +100,8 @@ Repository options: --registry=URL (file/http/https, repeatable; default https:/
 Built-in modules: like Bazel 9.3, @bazel_tools and its MODULE closure are always injected
   (query/build/run/test). Native-only --experimental-builtin-modules=false selects the explicit-module
   profile (no @bazel_tools); --experimental-builtin-modules[=true] is the default (a no-op).
-  mod graph presents the explicit-module graph (built-ins are not presented).
+  mod: graph, deps, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping,
+  tidy with Bazel 9.3's options (docs/MOD_COMMAND.md).
 Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE.bazel.lock
   (registryFileHashes, selectedYankedVersions; moduleExtensions/facts entries computed,
   reused and written with Bazel's digests since N52; docs/REGISTRY_LOCKFILE.md).
@@ -108,7 +109,6 @@ Lockfile: --lockfile_mode=update (default)|refresh|error|off reads/writes MODULE
   Native-only --native-lockfile=workspace|readonly|/abs/path: readonly never writes a lockfile
   (the hidden one included); a path is a private lockfile read instead of (seeded from) the
   workspace one and written instead.
-  mod graph still requires --lockfile_mode=off for remote registries, including the default.
   Fast warm probes of real workspaces: --native-lockfile=/private/MODULE.bazel.lock.
 External sources: local_path_override, registry local_path entries and verified archives.
 Native rules: filegroup(name, srcs), genrule(name, srcs, outs, cmd)
@@ -200,11 +200,6 @@ fn run() -> Result<(), String> {
         command.as_str()
     };
     let options = evaluate_rc(&line, rc_command, &cwd, &root, &path_to_binary)?;
-    let dump_repo_mapping = command == "mod"
-        && options
-            .residue
-            .first()
-            .is_some_and(|arg| arg.text == "dump_repo_mapping");
     if command == "config" {
         return config_command(&line, &options, &cwd, &root);
     }
@@ -235,42 +230,39 @@ fn run() -> Result<(), String> {
         .map(usize::from)
         .unwrap_or(1)
         .min(32);
-    let mut loading_phase_threads: Option<usize> = None;
-    let mut memory_limit_flag_mb: Option<u64> = None;
-    let mut resolver_options = bazel_rs::module_graph::ResolverOptions::default();
-    let mut repository_downloads_enabled = true;
-    let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
-    let mut query_options = bazel_rs::engine::query::QueryOptions::default();
-    let mut cquery_options = bazel_rs::engine::cquery::Options::default();
-    let mut lockfile_mode = bazel_rs::lockfile::LockfileMode::default();
-    let mut lockfile_target = bazel_rs::registry_session::LockfileTarget::Workspace;
-    let mut action_dump: Option<PathBuf> = None;
-    let mut allowed_yanked_flags = Vec::new();
-    let mut raw_registries = Vec::new();
-    let mut credential_options = bazel_rs::credentials::CredentialOptions::default();
-    let mut remote_options = bazel_rs::remote_cache::RemoteOptions::default();
-    let mut spawn_options = bazel_rs::sandbox::SpawnOptions::default();
-    let mut worker_options = bazel_rs::worker::WorkerOptions::default();
-    let mut runfiles_options = bazel_rs::runfiles_tree::RunfilesOptions::default();
-    let mut workspace_status = bazel_rs::workspace_status::WorkspaceStatusOptions::default();
-    let mut no_build = false;
-    let mut output_selection = bazel_rs::output_group_info::OutputSelection::default();
-    let mut aspects = Vec::new();
-    let mut aspects_parameters = Vec::new();
-    let mut show_result = 1usize;
-    let mut run_options = bazel_rs::run_command::RunOptions::default();
-    let mut test_options = bazel_rs::test_command::TestOptions::default();
+    let loading_phase_threads: Option<usize>;
+    let memory_limit_flag_mb: Option<u64>;
+    let mut resolver_options;
+    let repository_downloads_enabled;
+    let configuration_options;
+    let query_options;
+    let cquery_options;
+    let lockfile_mode;
+    let lockfile_target;
+    let action_dump: Option<PathBuf>;
+    let allowed_yanked_flags;
+    let raw_registries;
+    let credential_options;
+    let remote_options;
+    let spawn_options;
+    let worker_options;
+    let runfiles_options;
+    let workspace_status;
+    let mut no_build;
+    let output_selection;
+    let aspects;
+    let aspects_parameters;
+    let show_result;
+    let run_options;
+    let test_options;
     let mut deferred = None;
-    let mut ui_options = bazel_rs::progress::UiOptions::default();
-    let mut bep_options = bazel_rs::bep::Options::default();
-    let mut profile_options = bazel_rs::profile::Options::default();
-    let mut exec_log_options = bazel_rs::exec_log::Options::default();
+    let ui_options;
+    let bep_options;
+    let profile_options;
+    let exec_log_options;
+    let mod_options;
     let rc_options;
-    let rest = if command == "mod" && !dump_repo_mapping {
-        let (rest, rc) = mod_arguments(&options, &mut credential_options, &mut remote_options)?;
-        rc_options = rc;
-        rest
-    } else {
+    let rest: Vec<String> = {
         // Errors in Bazel's parse order (rc options, the command line, then
         // each --config expansion), values in priority order (an expansion
         // takes the place of its --config).
@@ -362,8 +354,13 @@ fn run() -> Result<(), String> {
         show_result = native.show_result;
         run_options = native.run;
         test_options = native.test;
+        mod_options = native.module;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
+    // ModOptions' converters fail the command before it runs (exit 2).
+    if let Some(error) = mod_options.error() {
+        fail_with(2, error);
+    }
     // FetchCommand.validateOptions, then the request: target patterns are
     // a `build --nobuild` (TargetFetcher), anything else fetches
     // repositories once the repository set exists (below).
@@ -514,10 +511,7 @@ fn run() -> Result<(), String> {
     }
     // The output base lock, shared (docs/COMMANDS.md): a running `clean`
     // of this workspace is waited for, and `clean` waits for this command.
-    // `mod graph` uses the shared repository store only.
-    if command != "mod" {
-        hold_output_base_lock(&cache, &root, &command);
-    }
+    hold_output_base_lock(&cache, &root, &command);
     // The persistent file-digest memo of this cache (crate::digest_memo),
     // saved by `digest_memo::finish` when the command ends.
     bazel_rs::digest_memo::install(&cache);
@@ -596,15 +590,6 @@ fn run() -> Result<(), String> {
     // The command's arguments, for the Starlark options' `Did you mean` hint
     // (runtime/BlazeOptionHandler.java:428-440).
     let command_args = line.command_args.clone();
-    if command == "mod" && !dump_repo_mapping {
-        let output =
-            bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
-        print!("{output}");
-        bazel_rs::note!(
-            "bazel-rs: bounded module graph profile; graph commands do not execute module extensions"
-        );
-        return Ok(());
-    }
     // Bazel reads a workspace-root `platform_mappings` file by default
     // (PlatformOptions.java:172-187); platform mappings are not modelled.
     if analyzes(&command) && root.join("platform_mappings").exists() {
@@ -862,6 +847,7 @@ fn run() -> Result<(), String> {
     resolver_options.registry_session = session.clone();
     snapshot.set_registry_session(session.clone());
     let _lockfile_writer = LockfileWriter::new(session);
+    let ignore_dev_dependencies = resolver_options.ignore_dev_dependencies;
     let repositories = Arc::new(
         bazel_rs::repository::RepositorySet::with_options(root.clone(), resolver_options)
             .with_repository_downloads_enabled(repository_downloads_enabled)
@@ -902,10 +888,32 @@ fn run() -> Result<(), String> {
     if fetch_mode == Some(FetchMode::Repositories) {
         return fetch_repositories(&repositories, &fetch, &lockfile_gate);
     }
-    if dump_repo_mapping {
-        let output = bazel_rs::module_cli::dump_repo_mapping(&repositories, &rest[1..])?;
-        lockfile_gate.open();
-        print!("{output}");
+    if command == "mod" {
+        // ModCommand (crate::mod_command): stdout is the result, a failure
+        // its ERROR event and exit code. The lockfile records a successful
+        // module resolution also when the subcommand itself fails
+        // (BazelLockFileModule.afterCommand).
+        let mut stdout = Vec::new();
+        let result = bazel_rs::mod_command::run(
+            &repositories,
+            &mod_options,
+            &rest,
+            ignore_dev_dependencies,
+            &mut stdout,
+        );
+        if repositories.resolve_graph().is_ok() {
+            lockfile_gate.open();
+        }
+        {
+            use std::io::Write as _;
+            let mut out = std::io::stdout().lock();
+            out.write_all(&stdout).map_err(|error| error.to_string())?;
+            out.flush().map_err(|error| error.to_string())?;
+        }
+        if let Err(failure) = result {
+            drop(_lockfile_writer);
+            fail_with(failure.code.exit_code(), &failure.message);
+        }
         return Ok(());
     }
     // --embed_label is validated by its converter before anything runs
@@ -3290,6 +3298,8 @@ struct NativeOptions {
     profile: bazel_rs::profile::Options,
     /// The spawn execution log (crate::exec_log).
     exec_log: bazel_rs::exec_log::Options,
+    /// ModCommand's ModOptions (crate::mod_command).
+    module: bazel_rs::mod_command::ModOptions,
 }
 
 impl NativeOptions {
@@ -3330,6 +3340,7 @@ impl NativeOptions {
             bep: bazel_rs::bep::Options::default(),
             profile: bazel_rs::profile::Options::default(),
             exec_log: bazel_rs::exec_log::Options::default(),
+            module: bazel_rs::mod_command::ModOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -3373,6 +3384,11 @@ impl NativeOptions {
         // analysis dispatch above decides whether anything executes.
         let command = if command == "cquery" { "test" } else { command };
         let used_next = if let Some(used) = query {
+            used
+        } else if let Some(used) = (command == "mod")
+            .then(|| self.module.parse(arg, next))
+            .flatten()
+        {
             used
         } else if let Some(used) = self.rc.parse(
             if command == "cquery" { "test" } else { command },
@@ -4083,88 +4099,6 @@ fn unmodelled_option(arg: &bazelrc::Arg) -> String {
     })
 }
 
-/// The `mod` arguments: the residue's subcommand, the options in priority
-/// order and the remaining residue, for crate::module_cli. Options from rc
-/// files that the native `mod graph` profile does not model fail here with
-/// their rc file:line.
-fn mod_arguments(
-    options: &bazelrc::Expanded,
-    credentials: &mut bazel_rs::credentials::CredentialOptions,
-    remote: &mut bazel_rs::remote_cache::RemoteOptions,
-) -> Result<(Vec<String>, bazel_rs::rc_options::RcOptions), String> {
-    // The credential helper and remote options of every command (AuthAndTLSOptions,
-    // RemoteOptions; N41) are consumed here: errors in parse order, values in
-    // priority order.
-    let ours = |unit: &bazelrc::Unit,
-                credentials: &mut bazel_rs::credentials::CredentialOptions,
-                remote: &mut bazel_rs::remote_cache::RemoteOptions|
-     -> Option<Result<bool, String>> {
-        let arg = unit.option.text.as_str();
-        let next = unit.value.as_ref().map(|value| value.text.as_str());
-        credentials
-            .parse(arg, next)
-            .or_else(|| remote.parse(arg, next))
-    };
-    let rc_option = |rc: &mut bazel_rs::rc_options::RcOptions, unit: &bazelrc::Unit| {
-        rc.parse(
-            "mod",
-            &unit.option.text,
-            unit.value.as_ref().map(|value| value.text.as_str()),
-            &unit.option.origin_suffix(),
-        )
-    };
-    for (step, position) in &options.steps {
-        let error = match step {
-            bazelrc::Step::Fail(error) => error.clone(),
-            bazelrc::Step::Unit(unit)
-                if let Some(name) = bazelrc::native_only_option(&unit.option.text)
-                    && unit.option.from_rc() =>
-            {
-                bazelrc::native_only_error(name, &unit.option.origin_suffix())
-            }
-            // The N40 options (crate::rc_options), then the N41 credential
-            // helper and remote options, from rc files and the command line
-            // alike.
-            bazelrc::Step::Unit(unit) => match rc_option(&mut Default::default(), unit) {
-                Err(error) => error,
-                Ok(Some(_)) => continue,
-                Ok(None) => match ours(unit, &mut Default::default(), &mut Default::default()) {
-                    Some(Ok(_)) => continue,
-                    Some(Err(error)) => error,
-                    None if unit.option.from_rc()
-                        && !bazel_rs::module_cli::models_graph_option(&unit.option.text) =>
-                    {
-                        unmodelled_option(&unit.option)
-                    }
-                    None => continue,
-                },
-            },
-        };
-        return Err(early_exit(options, &error, *position));
-    }
-    let mut rc = bazel_rs::rc_options::RcOptions::default();
-    let mut residue = options.residue.iter().map(|arg| arg.text.clone());
-    let mut args = residue.next().into_iter().collect::<Vec<_>>();
-    for unit in &options.priority {
-        if rc_option(&mut rc, unit)?.is_some() {
-            continue;
-        }
-        if let Some(result) = ours(unit, credentials, remote) {
-            result?;
-            continue;
-        }
-        args.push(unit.option.text.clone());
-        args.extend(unit.value.iter().map(|value| value.text.clone()));
-    }
-    // MODULE.bazel evaluation semantics for crate::module_cli.
-    args.push(format!(
-        "--experimental_isolated_extension_usages={}",
-        rc.isolated_extension_usages
-    ));
-    args.extend(residue);
-    Ok((args, rc))
-}
-
 /// Credential helpers and the remote cache (CredentialModule,
 /// BazelRepositoryModule.beforeCommand and RemoteModule.setup; N41,
 /// docs/REMOTE_CACHE.md): helper paths resolve eagerly for every command; an
@@ -4747,7 +4681,7 @@ const COMMAND_HELP: &[(&str, &str, &str)] = &[
     (
         "mod",
         "Queries the Bzlmod external dependency graph",
-        "mod graph --output=json only.",
+        "graph, deps, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy (docs/MOD_COMMAND.md).",
     ),
     (
         "query",

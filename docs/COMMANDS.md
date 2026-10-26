@@ -64,8 +64,7 @@ replaced while a process waited (`clean --expunge`) is opened again
 (StillExists). A command on a cache directory that does not exist yet takes
 no lock: a command that fails early must create nothing (and a `clean`
 meanwhile finds nothing to delete). `info` takes no lock (it creates
-nothing), nor does
-`mod graph` (shared store only). `--noblock_for_lock` is a startup option the
+nothing). `--noblock_for_lock` is a startup option the
 native client does not model, so commands always wait. Another worktree's
 commands never take this workspace's lock: `clean` never touches their
 state.

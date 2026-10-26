@@ -1,0 +1,3 @@
+module(name = "mc_cyc_y", version = "1.0")
+bazel_dep(name = "mc_cyc_x", version = "1.0")
+bazel_dep(name = "mc_leaf", version = "1.1")

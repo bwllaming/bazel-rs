@@ -1,0 +1,6 @@
+module(name = "mc_a", version = "1.0")
+bazel_dep(name = "mc_b", version = "2.0")
+bazel_dep(name = "mc_cyc_x", version = "1.0")
+ext = use_extension("//:ext.bzl", "ext")
+ext.tag(name = "x_repo", value = "from_a", numbers = [1, 2])
+use_repo(ext, "x_repo")

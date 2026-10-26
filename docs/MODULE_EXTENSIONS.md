@@ -170,9 +170,8 @@ repository_ctx ([EXTENSION_CTX_SURFACE.md](EXTENSION_CTX_SURFACE.md)), plus
 `use_repo` fixup warnings; no `bazel mod tidy`). Facts persist in
 MODULE.bazel.lock, and lockfile entries are written and reused like Bazel's
 ([REGISTRY_LOCKFILE.md](REGISTRY_LOCKFILE.md), N52). Isolation remains
-unsupported. No placeholder platform or SDK repository is substituted. `mod graph` presents the explicit-module profile (its
-default, while query/build/run/test default to the built-in modules) and does
-not execute active extensions.
+unsupported. No placeholder platform or SDK repository is substituted. `mod` evaluates an extension only when its output shows the extension's
+repositories (docs/MOD_COMMAND.md).
 Genuine built-in module closure is the default
 [built-in profile](BUILTIN_MODULES.md); complete
 language/rule/toolchain support remain unfinished. Successful whole-application query/build/test and performance

@@ -1104,11 +1104,7 @@ fn alloc_attrs<'v>(
             AttrValue::LabelKeyedStringDict(entries) => {
                 crate::attribute_values::alloc_label_keyed_string_dict(heap, entries)?
             }
-            AttrValue::Ints(_) => {
-                anyhow::bail!(
-                    "attribute {name:?} kind is not supported for module extension tags by the native profile"
-                )
-            }
+            AttrValue::Ints(values) => heap.alloc(values.clone()),
             AttrValue::StringKeyedLabelDict(entries) => {
                 crate::attribute_values::alloc_string_keyed_label_dict(heap, entries)?
             }

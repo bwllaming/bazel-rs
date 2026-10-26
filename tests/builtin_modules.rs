@@ -333,92 +333,39 @@ fn missing_registry_metadata_is_an_error_not_a_reduced_builtin_graph() {
 }
 
 #[test]
-fn graph_command_accepts_profile_but_does_not_erase_genuine_extensions() {
-    let root = workspace("module(name='main')\n");
-    let output = Command::new("timeout")
-        .args([
-            "600s",
-            env!("CARGO_BIN_EXE_bazel-rs"),
-            "--ignore_all_rc_files",
-            "--cache-dir=cache",
+fn graph_command_presents_the_genuine_builtin_closure() {
+    // `mod graph` uses the built-in modules by default like Bazel 9.3; with
+    // --include_builtin its JSON is the genuine capture of each case
+    // (cases/*/graph.json), byte for byte. Nothing is materialized: the
+    // graph needs no extension's repositories.
+    let expected: Value =
+        serde_json::from_slice(&fs::read(fixtures().join("expectations.json")).unwrap()).unwrap();
+    for case in expected["cases"].as_array().unwrap() {
+        let root = workspace(case["root_module"].as_str().unwrap());
+        let output = run(
+            root.path(),
             "mod",
-            "graph",
-            "--output=json",
-            "--experimental-builtin-modules",
-        ])
-        .arg(format!(
-            "--registry=file://{}",
-            fixtures().join("registry").display()
-        ))
-        .current_dir(root.path())
-        .output()
-        .unwrap();
-    rejected(&output, "native mod graph cannot execute");
-    assert!(!root.path().join("cache").exists());
-}
-
-#[test]
-fn metadata_override_cannot_bypass_unsupported_builtin_graph_presentation() {
-    let root = workspace(
-        "module(name='main')\nlocal_path_override(module_name='bazel_tools',path='metadata')\n",
-    );
-    fs::create_dir(root.path().join("metadata")).unwrap();
-    fs::write(
-        root.path().join("metadata/MODULE.bazel"),
-        "module(name='bazel_tools',version='8.7')\n",
-    )
-    .unwrap();
-    let output = Command::new("timeout")
-        .args([
-            "600s",
-            env!("CARGO_BIN_EXE_bazel-rs"),
-            "--ignore_all_rc_files",
-            "--cache-dir=cache",
-            "mod",
-            "graph",
-            "--output=json",
-            "--experimental-builtin-modules",
-            "--noinclude_builtin",
-            // Explicit offline registry: never the default https://bcr.bazel.build/.
-            "--registry=file:///nonexistent-offline-registry",
-        ])
-        .current_dir(root.path())
-        .output()
-        .unwrap();
-    rejected(&output, "builtin module graph presentation is unsupported");
-    assert!(!root.path().join("cache").exists());
-}
-
-#[test]
-fn graph_command_presents_the_explicit_module_graph_by_default() {
-    // Native `mod graph` presents the explicit-module graph by default (the
-    // built-in profile's presentation is not implemented); query and build
-    // default to the built-in modules.
-    let root = workspace("module(name='main')\n");
-    let graph = |extra: &[&str]| {
-        Command::new("timeout")
-            .args([
-                "600s",
-                env!("CARGO_BIN_EXE_bazel-rs"),
-                "--ignore_all_rc_files",
-                "--cache-dir=cache",
-                "mod",
-                "graph",
-                "--output=json",
-                // Explicit offline registry: never the default https://bcr.bazel.build/.
-                "--registry=file:///nonexistent-offline-registry",
-            ])
-            .args(extra)
-            .current_dir(root.path())
-            .output()
-            .unwrap()
-    };
-    let default = graph(&[]);
-    success(&default);
-    let json: Value = serde_json::from_slice(&default.stdout).unwrap();
-    assert_eq!(json["key"], "<root>", "{json}");
-    assert_eq!(json["dependencies"], Value::Array(Vec::new()), "{json}");
-    let explicit = graph(&["--experimental-builtin-modules=false"]);
-    success(&explicit);
-    assert_eq!(explicit.stdout, default.stdout);
+            &["graph", "--output=json", "--include_builtin"],
+        );
+        success(&output);
+        let genuine = fs::read(fixtures().join(case["reference_graph"].as_str().unwrap())).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&genuine),
+            "{}",
+            case["name"]
+        );
+        // Without --include_builtin the built-in subtree is hidden.
+        let hidden = run(root.path(), "mod", &["graph", "--output=json"]);
+        success(&hidden);
+        let json: Value = serde_json::from_slice(&hidden.stdout).unwrap();
+        assert!(
+            json["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|dependency| dependency["key"] != "bazel_tools@_"),
+            "{json}"
+        );
+    }
 }

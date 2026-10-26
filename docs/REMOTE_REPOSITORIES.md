@@ -2,8 +2,8 @@
 
 This remains a native, incomplete Bazel 9.3 implementation, not full parity.
 `query`/`build` support every `--lockfile_mode` (default `update`, which reads
-and writes `MODULE.bazel.lock`; see `docs/REGISTRY_LOCKFILE.md`); `mod graph`
-still requires an explicit `--lockfile_mode=off` for remote registries. Without
+and writes `MODULE.bazel.lock`; see `docs/REGISTRY_LOCKFILE.md`); so does `mod`
+(docs/MOD_COMMAND.md). Without
 `--registry`, the registry list is Bazel 9.3's default `https://bcr.bazel.build/`
 (`BazelRepositoryModule.java:133`); any explicit `--registry` replaces it.
 Example:

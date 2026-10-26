@@ -116,6 +116,86 @@ pub struct ResolvedGraph {
     /// The root is separate and has canonical repo name "".
     pub modules: BTreeMap<String, ResolvedModule>,
     pub root_mapping: BTreeMap<String, String>,
+    /// BazelModuleInspectorFunction's input (bzlmod/BazelModuleInspectorFunction.java):
+    /// every discovered module of the un-pruned graph, in discovery (BFS)
+    /// order, with its original and resolved dependency edges. Only `mod`
+    /// reads it.
+    pub inspection: Vec<InspectedModule>,
+}
+
+/// A module of the un-pruned dependency graph (Selection.Result.unprunedDepGraph).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InspectedModule {
+    /// The module key: name (`""` for the root) and normalized version
+    /// (`""` for the root and non-registry overrides).
+    pub key: (String, String),
+    /// InterimModule.getName/getVersion/getRepoName.
+    pub name: String,
+    pub version: String,
+    pub repo_name: String,
+    /// In the resolved (pruned) graph.
+    pub used: bool,
+    /// Dependency edges by apparent repository name, in declaration order
+    /// (InterimModule.getDeps; nodep edges excluded).
+    pub dependencies: Vec<InspectedDependency>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InspectedDependency {
+    pub repo_name: String,
+    /// The key as declared (InterimModule.getOriginalDeps).
+    pub original: (String, String),
+    /// The key after overrides and selection.
+    pub resolved: (String, String),
+    pub reason: ResolutionReason,
+}
+
+/// AugmentedModule.ResolutionReason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolutionReason {
+    Original,
+    MinimalVersionSelection,
+    SingleVersionOverride,
+    MultipleVersionOverride,
+    NonRegistryOverride,
+}
+
+impl ResolutionReason {
+    /// `Ascii.toLowerCase(reason.toString())`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Original => "original",
+            Self::MinimalVersionSelection => "minimal_version_selection",
+            Self::SingleVersionOverride => "single_version_override",
+            Self::MultipleVersionOverride => "multiple_version_override",
+            Self::NonRegistryOverride => "non_registry_override",
+        }
+    }
+
+    /// ResolutionReason.getLabel.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Original => "",
+            Self::MinimalVersionSelection => "MVS",
+            Self::SingleVersionOverride => "SVO",
+            Self::MultipleVersionOverride => "MVO",
+            Self::NonRegistryOverride => "NRO",
+        }
+    }
+}
+
+/// Bazel's Version ordering of two module versions (the empty version is the
+/// highest); unparsable spellings compare as strings.
+pub fn compare_versions(a: &str, b: &str) -> Ordering {
+    match (Version::parse(a), Version::parse(b)) {
+        (Ok(a), Ok(b)) => a.cmp(&b),
+        _ => a.cmp(b),
+    }
+}
+
+/// Whether `version` is a valid module version (Version.parse).
+pub fn parse_version(version: &str) -> Result<String, String> {
+    Version::parse(version).map(|version| version.normalized)
 }
 
 impl ResolvedGraph {
@@ -465,10 +545,12 @@ pub(crate) fn resolve_from_root_snapshot(
         &canonical_names,
         options.builtin_profile,
     )?;
+    let inspection = inspection(root, &nodes, &selected, &reachable, overrides)?;
     let graph = ResolvedGraph {
         root: root.clone(),
         modules,
         root_mapping,
+        inspection,
     };
     check_selected_registry_modules(&graph, options)?;
     Ok(graph)
@@ -1201,6 +1283,107 @@ fn select_versions(
         replacements,
         forbidden,
     })
+}
+
+/// BazelModuleInspectorFunction.computeAugmentedGraph's inputs: the
+/// un-pruned graph in Discovery's BFS order (Discovery.java:113-137), each
+/// edge with its declared key, its resolved key and the reason.
+fn inspection(
+    root: &ModuleFile,
+    nodes: &BTreeMap<Key, Node>,
+    selected: &Selection,
+    reachable: &BTreeSet<Key>,
+    overrides: &BTreeMap<String, ModuleOverride>,
+) -> Result<Vec<InspectedModule>, String> {
+    let key_pair = |key: &Key| match key {
+        Key::Root => (String::new(), String::new()),
+        Key::Module { name, version } => (name.clone(), version.normalized.clone()),
+    };
+    let root_name = root.module.as_ref().map_or("", |info| info.name.as_str());
+    let mut order = Vec::new();
+    let mut seen = BTreeSet::from([Key::Root]);
+    let mut queue = VecDeque::from([Key::Root]);
+    while let Some(key) = queue.pop_front() {
+        let Some(node) = nodes.get(&key) else {
+            continue;
+        };
+        order.push(key.clone());
+        for target in node
+            .ordered_dependencies
+            .iter()
+            .map(|(_, target)| target)
+            .chain(&node.nodep_dependencies)
+        {
+            if seen.insert(target.clone()) {
+                queue.push_back(target.clone());
+            }
+        }
+    }
+    order.extend(nodes.keys().filter(|key| !seen.contains(*key)).cloned());
+    let mut modules = Vec::new();
+    for key in order {
+        let node = &nodes[&key];
+        let (name, version, repo_name) = match &node.module.module {
+            Some(info) => (
+                info.name.clone(),
+                Version::parse(&info.version)
+                    .map(|version| version.normalized)
+                    .unwrap_or_else(|_| info.version.clone()),
+                info.effective_repo_name().to_owned(),
+            ),
+            None => (String::new(), String::new(), String::new()),
+        };
+        let mut dependencies = Vec::new();
+        for (alias, target) in &node.ordered_dependencies {
+            // Apparent names are unique among a module's bazel_deps.
+            let declared = node
+                .module
+                .effective_dependencies()
+                .find(|dep| dep.effective_repo_name() == Some(alias));
+            let original = match declared {
+                Some(dep) if !root_name.is_empty() && dep.name == root_name => {
+                    (String::new(), String::new())
+                }
+                Some(dep) => (
+                    dep.name.clone(),
+                    Version::parse(&dep.version)
+                        .map(|version| version.normalized)
+                        .unwrap_or_default(),
+                ),
+                None => key_pair(target),
+            };
+            let resolved = key_pair(selected_key(target, selected)?);
+            let reason = if resolved.1 == original.1 {
+                ResolutionReason::Original
+            } else {
+                match overrides.get(&resolved.0) {
+                    Some(ModuleOverride::SingleVersion { .. }) => {
+                        ResolutionReason::SingleVersionOverride
+                    }
+                    Some(ModuleOverride::MultipleVersion { .. }) => {
+                        ResolutionReason::MultipleVersionOverride
+                    }
+                    Some(_) => ResolutionReason::NonRegistryOverride,
+                    None => ResolutionReason::MinimalVersionSelection,
+                }
+            };
+            dependencies.push(InspectedDependency {
+                repo_name: alias.clone(),
+                original,
+                resolved,
+                reason,
+            });
+        }
+        modules.push(InspectedModule {
+            used: reachable.contains(&key),
+            key: key_pair(&key),
+            name,
+            version,
+            repo_name,
+            dependencies,
+        });
+    }
+    Ok(modules)
 }
 
 fn selected_key<'a>(key: &Key, selected: &'a Selection) -> Result<&'a Key, String> {
@@ -2318,6 +2501,7 @@ mod tests {
                 ("b".into(), "b+".into()),
                 ("aa".into(), "a+".into()),
             ]),
+            inspection: Vec::new(),
         };
         assert_eq!(
             graph

@@ -25,15 +25,9 @@ through the selected registries (the default https://bcr.bazel.build/ without
 `--registry`). Missing registry metadata is an error, not a reason to switch
 profiles or omit genuine dependencies.
 
-**`mod graph`.** Native `mod graph` presents the explicit-module graph by
-default (as if `--experimental-builtin-modules=false`): built-in graph
-presentation (`--include_builtin`, built-in versions selected by MVS) is not
-implemented, and an explicit `--experimental-builtin-modules[=true]` there is
-rejected (`builtin module graph presentation is unsupported; ...`) rather than
-silently presenting a graph without built-ins. The command still rejects
-active extensions. Version selection of a root whose dependencies overlap the
-built-in closure (e.g. `platforms`) can therefore differ from genuine `bazel
-mod graph` (which selects with the built-in closure).
+**`mod`.** `mod` uses the built-in modules by default like every other
+command (docs/MOD_COMMAND.md): `--include_builtin` presents the `@bazel_tools`
+subtree, which is hidden otherwise, exactly like genuine `bazel mod graph`.
 
 Integration tests whose fixtures predate the default (offline file registries
 without the built-in closure, explicit-profile error texts) select the
@@ -159,8 +153,7 @@ or successful whole-application builds/tests. Genuine loaded definitions still
 fail explicitly when they use unsupported APIs. No extension imports or
 transitive loads are suppressed to make an application appear to work.
 
-Genuine built-ins are now the default of query/build/run/test; built-in graph
-presentation (`mod graph`) remains unimplemented (above). Startup or
+Genuine built-ins are the default of every command, `mod` included. Startup or
 performance improvements are not inferred from this functionality.
 
 ## Observed application boundary

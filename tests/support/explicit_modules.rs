@@ -14,7 +14,7 @@
 //
 // `command.explicit_modules()`, chained after the last argument (right before
 // `.output()`, `.status()` or `.spawn()`), appends the switch to a bazel-rs
-// command line whose command is `query`, `build`, `run` or `test`, unless
+// command line whose command is `query`, `build`, `run`, `test` or `mod`, unless
 // the arguments already select a profile. Native options may follow the
 // positional arguments; a residue after `--` (run arguments) cannot take it,
 // so harnesses that run with one insert the switch right after the command
@@ -33,7 +33,7 @@ fn selects_module_profile(arg: &str) -> bool {
 /// Whether `arg` is a command that takes the switch.
 #[allow(dead_code)]
 fn takes_module_profile(arg: &str) -> bool {
-    matches!(arg, "query" | "build" | "run" | "test")
+    matches!(arg, "query" | "build" | "run" | "test" | "mod")
 }
 
 /// `args` with [`EXPLICIT_MODULES`] right after the command word (see above).

@@ -143,6 +143,53 @@ impl Drop for UnitRoots {
     }
 }
 
+/// RepoDefinitionValue (bazel/repository/RepoDefinitionValue.java): a
+/// definition, or a repository overridden by a directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepoDefinitionValue {
+    Found(RepositoryDefinition),
+    Override(String),
+}
+
+/// PathFragment.create(path).toString(): `.` and `..` segments and repeated
+/// separators normalized away.
+fn normalize_path_fragment(path: &str) -> String {
+    let absolute = path.starts_with('/');
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." if segments.last().is_some_and(|last| *last != "..") => {
+                segments.pop();
+            }
+            ".." if absolute => {}
+            segment => segments.push(segment),
+        }
+    }
+    let joined = segments.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else if joined.is_empty() {
+        String::new()
+    } else {
+        joined
+    }
+}
+
+/// A repository rule invocation (RepoDefinition, bazel/repository/RepoDefinition.java)
+/// as `mod show_repo` prints it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryDefinition {
+    /// The defining `.bzl` file's unambiguous canonical label.
+    pub rule_bzl: String,
+    pub rule_name: String,
+    /// The canonical repository name.
+    pub name: String,
+    pub original_name: Option<String>,
+    /// The explicitly specified, type-checked attributes in call order.
+    pub attributes: Vec<(String, AttrValue)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct RepositorySet {
     state: Arc<RepositoryState>,
@@ -673,6 +720,10 @@ type SpecKeyEntry = (String, Option<Arc<crate::observed_fs::Captured>>);
 struct OrdinaryRepository {
     definition: repository_rule::RuleDefinition,
     attributes: BTreeMap<String, AttrValue>,
+    /// The explicitly specified attributes in call order (RepoRule.instantiate
+    /// keeps only those, bazel/repository/RepoRule.java:110-117), for `mod
+    /// show_repo`'s RepoDefinition.
+    explicit: Vec<String>,
     original_name: String,
     canonical_name: String,
     root: DemandSlot<PathBuf>,
@@ -1607,6 +1658,459 @@ impl RepositorySet {
         Ok(names)
     }
 
+    /// `mod` (ModCommand, BazelModuleInspectorFunction.computExtensionRepos):
+    /// the internal names of the repositories the ordinary module extension
+    /// `label%symbol` generates (SingleExtensionValue.generatedRepoSpecs, in
+    /// name order), evaluating it or reusing its lockfile entry; `None` when
+    /// no module uses it.
+    pub fn extension_repository_names(
+        &self,
+        label: &Label,
+        symbol: &str,
+    ) -> Result<Option<Vec<String>>, String> {
+        let runtime = self.direct_runtime()?;
+        let Some((id, _)) = runtime
+            .catalog
+            .ordinary_groups
+            .iter()
+            .find(|(_, group)| group.label == *label && group.symbol == symbol)
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.prepare_ordinary_group(id)?
+                .repositories
+                .keys()
+                .cloned()
+                .collect(),
+        ))
+    }
+
+    /// `mod show_repo` (RepoDefinitionFunction steps 4 and the innate
+    /// extensions): the definition of a repository a module extension or a
+    /// `use_repo_rule` declaration generates; `None` for any other name.
+    pub fn generated_repository_definition(
+        &self,
+        canonical: &str,
+    ) -> Result<Option<RepositoryDefinition>, String> {
+        let rule = |identity: &str| -> Result<(String, String), String> {
+            let id = crate::lockfile_extensions::repo_rule_id(identity)?;
+            let (label, name) = id
+                .rsplit_once('%')
+                .ok_or_else(|| format!("invalid repository rule identity {identity:?}"))?;
+            Ok((label.to_owned(), name.to_owned()))
+        };
+        let runtime = self.direct_runtime()?;
+        if let Some(entry) = runtime.catalog.repositories.get(canonical) {
+            let group = &runtime.catalog.groups[&entry.group_id];
+            let declaration = &group.declarations[entry.declaration_index];
+            let prepared = self.prepare_direct_group(&entry.group_id)?;
+            let (rule_bzl, rule_name) = rule(&prepared.definition.identity)?;
+            let values = &prepared.attributes[entry.declaration_index];
+            // The declaration's keyword arguments in call order.
+            let order =
+                self.direct_attribute_order(&group.owner, &group.raw_identity, &declaration.name);
+            let attributes = order
+                .iter()
+                .filter(|name| {
+                    !crate::lockfile_extensions::LEGACY_BUILTIN_ATTRIBUTES.contains(&name.as_str())
+                        && !declaration
+                            .attributes
+                            .get(name.as_str())
+                            .is_none_or(serde_json::Value::is_null)
+                })
+                .filter_map(|name| values.get(name).map(|value| (name.clone(), value.clone())))
+                .collect();
+            return Ok(Some(RepositoryDefinition {
+                rule_bzl,
+                rule_name,
+                name: canonical.to_owned(),
+                original_name: Some(declaration.name.clone()),
+                attributes,
+            }));
+        }
+        let Some((prefix, internal)) = canonical.rsplit_once('+') else {
+            return Ok(None);
+        };
+        let Some(id) = runtime.catalog.ordinary_routes.get(prefix) else {
+            return Ok(None);
+        };
+        let prepared = self.prepare_ordinary_group(id)?;
+        let Some(repository) = prepared.repositories.get(internal) else {
+            return Ok(None);
+        };
+        let (rule_bzl, rule_name) = rule(&repository.definition.identity)?;
+        Ok(Some(RepositoryDefinition {
+            rule_bzl,
+            rule_name,
+            name: canonical.to_owned(),
+            original_name: Some(repository.original_name.clone()),
+            attributes: repository
+                .explicit
+                .iter()
+                .filter_map(|name| {
+                    repository
+                        .attributes
+                        .get(name)
+                        .map(|value| (name.clone(), value.clone()))
+                })
+                .collect(),
+        }))
+    }
+
+    /// `mod show_repo` (RepoDefinitionFunction steps 0-3): the definition of
+    /// the repository of the selected module `canonical` — `@bazel_tools` is
+    /// the embedded built-in (a RepoOverride at its directory), a
+    /// non-registry override its RepoSpec, a registry module the RepoSpec
+    /// IndexRegistry.getRepoSpec builds from its source.json. `None` for any
+    /// other name.
+    pub fn module_repository_definition(
+        &self,
+        canonical: &str,
+    ) -> Result<Option<RepoDefinitionValue>, String> {
+        use crate::custom_rule::AttrValue as V;
+        let graph = self.resolve_graph()?;
+        let Some(module) = graph.modules.get(canonical) else {
+            return Ok(None);
+        };
+        let found = |rule_bzl: &str, rule_name: &str, attributes: Vec<(&str, V)>| {
+            Ok(Some(RepoDefinitionValue::Found(RepositoryDefinition {
+                rule_bzl: rule_bzl.to_owned(),
+                rule_name: rule_name.to_owned(),
+                name: canonical.to_owned(),
+                original_name: None,
+                attributes: attributes
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), value))
+                    .collect(),
+            })))
+        };
+        const LOCAL: &str = "@@bazel_tools//tools/build_defs/repo:local.bzl";
+        const GIT: &str = "@@bazel_tools//tools/build_defs/repo:git.bzl";
+        const HTTP: &str = "@@bazel_tools//tools/build_defs/repo:http.bzl";
+        let overrides = if self.state.options.ignore_dev_dependencies {
+            None
+        } else {
+            graph.root.overrides.get(&module.name)
+        };
+        match (&module.source, overrides) {
+            (ModuleSource::Embedded(_), _) => {
+                let root = self.root(canonical)?;
+                Ok(Some(RepoDefinitionValue::Override(
+                    root.display().to_string(),
+                )))
+            }
+            (_, Some(crate::bzlmod::ModuleOverride::LocalPath { path })) => found(
+                LOCAL,
+                "local_repository",
+                vec![("path", V::String(path.clone()))],
+            ),
+            (
+                _,
+                Some(crate::bzlmod::ModuleOverride::Git {
+                    remote,
+                    commit,
+                    tag,
+                    branch,
+                    init_submodules,
+                    strip_prefix,
+                    ..
+                }),
+            ) => {
+                let mut attributes = vec![("remote", V::String(remote.clone()))];
+                for (name, value) in [
+                    ("commit", commit),
+                    ("tag", tag),
+                    ("branch", branch),
+                    ("strip_prefix", strip_prefix),
+                ] {
+                    if !value.is_empty() {
+                        attributes.push((name, V::String(value.clone())));
+                    }
+                }
+                if *init_submodules {
+                    attributes.push(("init_submodules", V::Bool(true)));
+                }
+                found(GIT, "git_repository", attributes)
+            }
+            (
+                ModuleSource::Registry {
+                    registry,
+                    name,
+                    version,
+                    module_file,
+                    ..
+                },
+                _,
+            ) => {
+                let access = &self.state.options.registry_session;
+                let relative = format!("modules/{name}/{version}/source.json");
+                let source = access.read_object(registry, &relative)?.ok_or_else(|| {
+                    format!(
+                        "Module {name}@{version}'s source.json not found in registry {}",
+                        access.registry_display(registry)
+                    )
+                })?;
+                let text = |key: &str| {
+                    source
+                        .get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                };
+                let string_map = |key: &str| -> Vec<(String, String)> {
+                    source
+                        .get(key)
+                        .and_then(serde_json::Value::as_object)
+                        .map(|map| {
+                            map.iter()
+                                .map(|(k, v)| {
+                                    (k.clone(), v.as_str().unwrap_or_default().to_owned())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let base = access.registry_display(registry);
+                let construct = |segments: &[&str]| {
+                    let mut url = base.clone();
+                    for segment in segments {
+                        if !url.ends_with('/') && !segment.starts_with('/') {
+                            url.push('/');
+                        }
+                        url.push_str(segment);
+                    }
+                    url
+                };
+                let registry_config = access.read_object(registry, "bazel_registry.json")?;
+                match text("type").as_deref().unwrap_or("archive") {
+                    "local_path" => {
+                        let path = text("path").unwrap_or_default();
+                        let path = if path.starts_with('/') {
+                            path
+                        } else {
+                            let module_base = registry_config
+                                .as_ref()
+                                .and_then(|config| config.get("module_base_path"))
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned();
+                            let joined = format!("{module_base}/{path}");
+                            if module_base.starts_with('/') {
+                                joined
+                            } else {
+                                match registry.local_path() {
+                                    Some(local) => format!("{}/{joined}", local.display()),
+                                    None => {
+                                        return Err(format!(
+                                            "Provided non local registry for module {name}@{version}"
+                                        ));
+                                    }
+                                }
+                            }
+                        };
+                        found(
+                            LOCAL,
+                            "local_repository",
+                            vec![("path", V::String(normalize_path_fragment(&path)))],
+                        )
+                    }
+                    kind @ ("archive" | "git_repository") => {
+                        let module_file_url =
+                            construct(&["modules", name, version, "MODULE.bazel"]);
+                        let module_file_integrity = {
+                            use base64::Engine as _;
+                            use sha2::Digest as _;
+                            format!(
+                                "sha256-{}",
+                                base64::engine::general_purpose::STANDARD
+                                    .encode(sha2::Sha256::digest(module_file))
+                            )
+                        };
+                        let patches: Vec<(String, String)> = string_map("patches")
+                            .into_iter()
+                            .map(|(file, integrity)| {
+                                (
+                                    construct(&["modules", name, version, "patches", &file]),
+                                    integrity,
+                                )
+                            })
+                            .collect();
+                        let patch_strip = source
+                            .get("patch_strip")
+                            .and_then(serde_json::Value::as_i64)
+                            .unwrap_or(0) as i32;
+                        if kind == "git_repository" {
+                            let mut attributes = Vec::new();
+                            for key in ["remote", "commit", "shallow_since", "tag"] {
+                                if let Some(value) = text(key).filter(|value| !value.is_empty()) {
+                                    attributes.push((key, V::String(value)));
+                                }
+                            }
+                            let submodules = source
+                                .get("init_submodules")
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false);
+                            attributes.push(("init_submodules", V::Bool(submodules)));
+                            attributes.push(("recursive_init_submodules", V::Bool(submodules)));
+                            attributes.push((
+                                "verbose",
+                                V::Bool(
+                                    source
+                                        .get("verbose")
+                                        .and_then(serde_json::Value::as_bool)
+                                        .unwrap_or(false),
+                                ),
+                            ));
+                            if let Some(value) =
+                                text("strip_prefix").filter(|value| !value.is_empty())
+                            {
+                                attributes.push(("strip_prefix", V::String(value)));
+                            }
+                            attributes.push((
+                                "remote_module_file_urls",
+                                V::Strings(vec![module_file_url]),
+                            ));
+                            attributes.push((
+                                "remote_module_file_integrity",
+                                V::String(module_file_integrity),
+                            ));
+                            attributes.push(("remote_patches", V::StringDict(patches)));
+                            attributes.push(("remote_patch_strip", V::Int(patch_strip)));
+                            return found(GIT, "git_repository", attributes);
+                        }
+                        let url = text("url").ok_or_else(|| {
+                            format!("Missing source URL for module {name}@{version}")
+                        })?;
+                        let integrity = text("integrity").ok_or_else(|| {
+                            format!("Missing integrity for module {name}@{version}")
+                        })?;
+                        let mut urls = Vec::new();
+                        let mirrors = registry_config
+                            .as_ref()
+                            .and_then(|config| config.get("mirrors"))
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let (authority, path_and_query) = url
+                            .split_once("://")
+                            .map(|(_, rest)| {
+                                rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p))
+                            })
+                            .unwrap_or(("", ""));
+                        for mirror in mirrors.iter().filter_map(serde_json::Value::as_str) {
+                            let mut mirrored = mirror.to_owned();
+                            for segment in [authority, &format!("/{path_and_query}")] {
+                                if !mirrored.ends_with('/') && !segment.starts_with('/') {
+                                    mirrored.push('/');
+                                }
+                                mirrored.push_str(segment);
+                            }
+                            urls.push(mirrored);
+                        }
+                        urls.push(url.clone());
+                        if let Some(mirror_urls) = source
+                            .get("mirror_urls")
+                            .and_then(serde_json::Value::as_array)
+                        {
+                            urls.extend(
+                                mirror_urls
+                                    .iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_owned),
+                            );
+                        }
+                        let overlay = string_map("overlay");
+                        let mut attributes = vec![
+                            ("urls", V::Strings(urls)),
+                            ("integrity", V::String(integrity)),
+                            (
+                                "strip_prefix",
+                                V::String(text("strip_prefix").unwrap_or_default()),
+                            ),
+                            ("remote_patches", V::StringDict(patches)),
+                            (
+                                "remote_file_urls",
+                                V::StringListDict(
+                                    overlay
+                                        .iter()
+                                        .map(|(file, _)| {
+                                            (
+                                                file.clone(),
+                                                vec![construct(&[
+                                                    "modules", name, version, "overlay", file,
+                                                ])],
+                                            )
+                                        })
+                                        .collect(),
+                                ),
+                            ),
+                            ("remote_file_integrity", V::StringDict(overlay)),
+                            ("remote_module_file_urls", V::Strings(vec![module_file_url])),
+                            (
+                                "remote_module_file_integrity",
+                                V::String(module_file_integrity),
+                            ),
+                            ("remote_patch_strip", V::Int(patch_strip)),
+                        ];
+                        if let Some(archive_type) =
+                            text("archive_type").filter(|value| !value.is_empty())
+                        {
+                            attributes.push(("type", V::String(archive_type)));
+                        }
+                        found(HTTP, "http_archive", attributes)
+                    }
+                    other => Err(format!(
+                        "Invalid source type \"{other}\" for module {name}@{version}"
+                    )),
+                }
+            }
+            (ModuleSource::LocalPath(path), _) => found(
+                LOCAL,
+                "local_repository",
+                vec![("path", V::String(path.display().to_string()))],
+            ),
+            (ModuleSource::Git { spec, .. }, _) => found(
+                GIT,
+                "git_repository",
+                vec![
+                    ("remote", V::String(spec.remote.clone())),
+                    ("commit", V::String(spec.commit.clone())),
+                ],
+            ),
+        }
+    }
+
+    /// The keyword argument order of the `use_repo_rule` declaration `name`
+    /// of `owner`'s innate extension `raw_identity`.
+    fn direct_attribute_order(&self, owner: &str, raw_identity: &str, name: &str) -> Vec<String> {
+        let Ok(graph) = self.resolve_graph() else {
+            return Vec::new();
+        };
+        let module = if owner.is_empty() {
+            &graph.root
+        } else {
+            match graph.modules.get(owner) {
+                Some(module) => &module.module,
+                None => return Vec::new(),
+            }
+        };
+        module
+            .extension_usages
+            .iter()
+            .filter(|usage| {
+                usage.identity.is_repo_rule() && usage.identity.extension_name == raw_identity
+            })
+            .flat_map(|usage| &usage.tags)
+            .find(|tag| {
+                tag.attributes
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(name)
+            })
+            .map(|tag| tag.attribute_order.clone())
+            .unwrap_or_default()
+    }
+
     /// How many module extensions this invocation resolved — evaluated or
     /// reused from an up-to-date MODULE.bazel.lock entry (prepared ordinary
     /// groups with a ready result either way). BazelLockFileModule.
@@ -1636,10 +2140,23 @@ impl RepositorySet {
     /// name (cmdline/RepositoryMapping.java:142-150). The native mapping
     /// itself is name-ordered; names missing here fall back to it.
     pub fn main_mapping_order(&self) -> Vec<String> {
+        self.mapping_order("")
+    }
+
+    /// [`Self::main_mapping_order`] of the module repository `canonical`
+    /// (only the root module sees itself as `""`).
+    pub fn mapping_order(&self, canonical: &str) -> Vec<String> {
         let Ok(graph) = self.resolve_graph() else {
             return Vec::new();
         };
-        let root = &graph.root;
+        let root = if canonical.is_empty() {
+            &graph.root
+        } else {
+            match graph.modules.get(canonical) {
+                Some(module) => &module.module,
+                None => return Vec::new(),
+            }
+        };
         let mut names = Vec::new();
         // ModuleExtensionUsages of one extension merge in first-use order.
         let mut usages: Vec<&crate::bzlmod::ExtensionUsage> = Vec::new();
@@ -1657,7 +2174,9 @@ impl RepositorySet {
                 names.extend(usage.imports.iter().map(|import| import.local_name.clone()));
             }
         }
-        names.push(String::new());
+        if canonical.is_empty() {
+            names.push(String::new());
+        }
         if let Some(module) = &root.module {
             names.push(module.effective_repo_name().to_owned());
         }
@@ -3116,9 +3635,11 @@ impl RepositorySet {
                     },
                     &format!("in the extension '{}%{}'", group.label.canonical_starlark(), group.symbol),
                 ).map_err(|error| format!("repository @@{canonical_name}: {error}"))?;
+                let explicit = explicit_attributes.get(&recorded.name).cloned().unwrap_or_default();
                 repositories.insert(recorded.name.clone(), OrdinaryRepository {
                     definition: recorded.definition,
                     attributes,
+                    explicit,
                     original_name: recorded.name,
                     canonical_name,
                     root: DemandSlot::new(),
@@ -4741,6 +5262,7 @@ mod tests {
         let mut configured = OrdinaryRepository {
             definition: enabled.definition.clone(),
             attributes: enabled.attributes.clone(),
+            explicit: enabled.explicit.clone(),
             original_name: enabled.original_name.clone(),
             canonical_name: enabled.canonical_name.clone(),
             root: DemandSlot::new(),
@@ -4755,6 +5277,7 @@ mod tests {
         let mut toggled = OrdinaryRepository {
             definition: enabled.definition.clone(),
             attributes: enabled.attributes.clone(),
+            explicit: enabled.explicit.clone(),
             original_name: enabled.original_name.clone(),
             canonical_name: enabled.canonical_name.clone(),
             root: DemandSlot::new(),
@@ -6129,6 +6652,7 @@ mod tests {
         let mut changed = OrdinaryRepository {
             definition: repository.definition.clone(),
             attributes: repository.attributes.clone(),
+            explicit: repository.explicit.clone(),
             canonical_name: repository.canonical_name.clone(),
             original_name: repository.original_name.clone(),
             root: DemandSlot::new(),

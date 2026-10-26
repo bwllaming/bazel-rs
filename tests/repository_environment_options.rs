@@ -63,34 +63,6 @@ fn override_forms_never_echo_values() {
 }
 
 #[test]
-fn module_library_entry_redacts_before_graph_or_argument_errors() {
-    let workspace = tempfile::Builder::new()
-        .prefix("repo-env-module-options-")
-        .tempdir_in("/tmp/opencode")
-        .unwrap();
-    for args in [
-        vec![format!("--repo_env=A={SECRET}")],
-        vec!["graph".into(), format!("--repo_env=A={SECRET}")],
-        vec!["unknown".into(), "--repo_env".into(), SECRET.into()],
-        vec![
-            "graph".into(),
-            "--output".into(),
-            format!("--repo_env=A={SECRET}"),
-        ],
-    ] {
-        let error = bazel_rs::module_cli::run(workspace.path(), &args).unwrap_err();
-        assert_eq!(error, ERROR);
-        assert!(!error.contains(SECRET));
-    }
-    assert!(
-        std::fs::read_dir(workspace.path())
-            .unwrap()
-            .next()
-            .is_none()
-    );
-}
-
-#[test]
 fn override_rejection_matches_only_the_exact_option() {
     for arg in [
         "--repo_environment",

@@ -126,8 +126,10 @@ def require_rejection(record, diagnostic):
 
 
 def native_command(executable, registry, flags=()):
+    # The explicit-module profile: the fixture registry has no built-in closure
+    # (genuine's --noinclude_builtin hides it).
     return [str(executable), "--ignore_all_rc_files", "mod", "graph"] + PROFILE + [
-        "--registry=" + registry.as_uri()] + list(flags)
+        "--experimental-builtin-modules=false", "--registry=" + registry.as_uri()] + list(flags)
 
 
 def reference_graph(reference, name, registry, flags=()):

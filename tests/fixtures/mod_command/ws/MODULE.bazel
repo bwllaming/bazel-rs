@@ -1,0 +1,15 @@
+module(name = "mc_root", version = "0.1")
+bazel_dep(name = "mc_a", version = "1.0")
+bazel_dep(name = "mc_b", version = "1.0", repo_name = "bee")
+bazel_dep(name = "mc_dev", version = "1.0", dev_dependency = True)
+bazel_dep(name = "mc_local", version = "1.0")
+local_path_override(module_name = "mc_local", path = "../sources/mc_local")
+bazel_dep(name = "mc_svo", version = "1.0")
+single_version_override(module_name = "mc_svo", version = "2.0")
+
+ext = use_extension("@mc_a//:ext.bzl", "ext")
+ext.tag(name = "y_repo", value = "from_root")
+use_repo(ext, my_y = "y_repo", x = "x_repo")
+
+r = use_repo_rule("//:defs.bzl", "r")
+r(name = "direct", value = "v")

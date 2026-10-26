@@ -423,11 +423,19 @@ fn parse_attribute(
             .collect::<Result<Vec<_>, _>>()
     };
     Ok(match kind {
-        AttrKind::IntList => {
-            return Err(format!(
-                "attribute kind {kind:?} is not supported for module extension tags by the native profile"
-            ));
-        }
+        AttrKind::IntList => AttrValue::Ints(
+            value
+                .as_array()
+                .ok_or_else(|| "expected a list of ints".to_owned())?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .and_then(|value| i32::try_from(value).ok())
+                        .ok_or_else(|| "expected a list of ints".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         AttrKind::String => AttrValue::String(string()?.to_owned()),
         AttrKind::StringList => AttrValue::Strings(strings()?),
         AttrKind::StringDict | AttrKind::StringListDict

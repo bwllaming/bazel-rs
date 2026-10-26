@@ -1202,6 +1202,16 @@ fn record_repo_rule<'v>(
     let collector = context(eval)?;
     args.no_positional_args(eval.heap())
         .map_err(|e| anyhow!("{e}"))?;
+    // RepoRuleProxy.call: the extra keyword arguments in call order, then
+    // `name` (kwargs.putEntry), without `dev_dependency`.
+    let mut attribute_order: Vec<String> = args
+        .names_map()
+        .map_err(|e| anyhow!("{e}"))?
+        .keys()
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| name != "name" && name != "dev_dependency")
+        .collect();
+    attribute_order.push("name".to_owned());
     let mut kwargs = Kwargs::new(args)?;
     let name_value = kwargs.required("name")?;
     let name = string(name_value, "name")?;
@@ -1254,7 +1264,7 @@ fn record_repo_rule<'v>(
         name: "repo".to_owned(),
         ordinal,
         attributes: BTreeMap::new(),
-        attribute_order: Vec::new(),
+        attribute_order,
         declaration,
         dev_dependency,
     });

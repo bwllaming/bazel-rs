@@ -71,8 +71,8 @@ Done since the last increment recorded under "History", one line each:
       output and several query functions remain explicit errors.
 - [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly, still open).
 - [ ] `coverage` (docs/COVERAGE.md).
-- [ ] `mod` beyond `graph --output=json`: text graph, `deps`, `explain`,
-      `show_repo`, `show_extension`, `tidy`; `mod graph` with built-in modules.
+- [x] `mod`: every subcommand and option on the built-in profile
+      (docs/MOD_COMMAND.md); `show_repo` proto outputs remain explicit errors.
 - [ ] `help <command>`, `canonicalize-flags`, `dump`, `print_action` (low priority).
 
 ### Running ~/code the way its users do

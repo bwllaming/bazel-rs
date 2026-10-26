@@ -4,9 +4,8 @@ Native `query` and `build` read and write the workspace `MODULE.bazel.lock` the
 way Bazel 9.3 does for the parts that registry resolution determines, keep
 hashed registry files in the repository cache, and fetch registry files in
 parallel. The pinned source is `/tmp/opencode/bazel-9.3-reference`; paths below
-are relative to `src/main/java/com/google/devtools/build/lib/bazel/`. `mod graph`
-keeps its previous profile and still requires `--lockfile_mode=off` for remote
-registries.
+are relative to `src/main/java/com/google/devtools/build/lib/bazel/`. `mod`
+uses every lockfile mode like the other commands (docs/MOD_COMMAND.md).
 
 ## Lockfile format and reading
 
@@ -337,8 +336,6 @@ invisible repository prints Bazel's
   explicit `--registry` replaces the default, and the builtin-module fixture
   registry is passed explicitly as before. The library `ResolverOptions` default
   stays empty.
-- `mod graph` keeps its off-only lockfile profile, so even the default registry
-  needs an explicit `--lockfile_mode=off`.
 - There is no offline mode. `--repository_disable_download` gates archive,
   overlay and patch acquisition only. Registry metadata is still fetched, as in
   Bazel, where `DownloadManager.disableDownload` (`DownloadManager.java:331`) does

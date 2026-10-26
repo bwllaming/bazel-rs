@@ -801,6 +801,7 @@ mod tests {
             root_mapping: mapping(&root, ""),
             root,
             modules: BTreeMap::new(),
+            inspection: Vec::new(),
         }
     }
 
@@ -1153,6 +1154,7 @@ r(name="kept")
             root: evaluated,
             root_mapping: graph.root_mapping.clone(),
             modules: BTreeMap::new(),
+            inspection: Vec::new(),
         };
         assert_eq!(filtered, build(&filtered_graph, true).unwrap());
 

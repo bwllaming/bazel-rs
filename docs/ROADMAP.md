@@ -232,8 +232,7 @@ registries for `query`, `build` and `mod graph`. Registry `source.json`
 `local_path` support accesses existing source trees. Explicit HTTP(S) registries
 work in every lockfile mode for query/build (N37, `docs/REGISTRY_LOCKFILE.md`:
 MODULE.bazel.lock registry hashes, repository-cache reuse, parallel fetching,
-Bazel's default `https://bcr.bazel.build/` registry; `mod graph` still requires an
-explicit `--lockfile_mode=off`); supported archive sources
+Bazel's default `https://bcr.bazel.build/` registry; `mod` too); supported archive sources
 use verified download blobs and staged tree publication. The historical local
 loading/source-root differential does not cover downloaded archives;
 `scripts/validate_remote.py` is their separate validation surface. Neither profile

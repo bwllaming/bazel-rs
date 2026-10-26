@@ -1,0 +1,2 @@
+module(name = "mc_b", version = "2.0")
+bazel_dep(name = "mc_leaf", version = "1.0")

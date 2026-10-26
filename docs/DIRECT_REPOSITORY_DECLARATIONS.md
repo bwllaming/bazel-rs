@@ -37,8 +37,9 @@ belong to later execution, not this recording phase.
 A demanded direct repository now triggers real definition loading, whole-usage
 attribute validation and its callback. Unsupported operations still fail rather
 than creating fabricated source directories. Unrelated selected-module aliases
-do not trigger definition loading or extension namespace allocation. Native
-`mod graph` continues to reject active innate usages under its bounded profile.
+do not trigger definition loading or extension namespace allocation. `mod`
+lists innate usages like genuine (`show_extension`, `--extension_info`;
+docs/MOD_COMMAND.md).
 
 Full compatibility still requires genuine built-in repository sources, complete
 repository contexts and byte-string semantics, complete extension APIs,

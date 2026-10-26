@@ -428,13 +428,17 @@ fn git_unknown_full_commit_reports_real_git_error_without_fallback() {
 }
 
 #[test]
-fn cli_extension_usage_is_rejected_even_when_hidden_and_without_imports() {
+fn cli_graph_evaluates_extensions_only_for_shown_repositories() {
+    // docs/MOD_COMMAND.md: the graph never needs the extension's
+    // repositories with --extension_info=hidden; show_extension does.
     let fixture =
         Fixture::new("module(name='root')\next = use_extension('//:missing.bzl', 'ext')\n");
-    let output = fixture.run(&["--extension_info=hidden"]);
-    assert!(!output.status.success());
+    let graph = fixture.graph(&["--extension_info=hidden"]);
+    assert_eq!(graph["dependencies"], json!([]));
+    let output = fixture.command(&["mod", "show_extension", "<root>//:missing.bzl%ext"]);
+    assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot execute module extensions"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ERROR: "));
 }
 
 #[test]
@@ -451,38 +455,31 @@ fn cli_dev_filter_applies_to_dependencies_and_extension_declarations() {
 }
 
 #[test]
-fn cli_selected_module_extension_is_not_silently_skipped() {
+fn cli_selected_module_extension_usages_are_listed() {
     let fixture = Fixture::new("module(name='root')\nbazel_dep(name='a', version='1.0')\n");
     fixture.module("a", "1.0", "ext = use_extension('//:missing.bzl', 'ext')\n");
-    let output = fixture.run(&[]);
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot execute module extensions"));
+    let output = fixture.command(&["mod", "graph", "--extension_info=usages"]);
+    succeeded(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "<root> (root@_)\n└───a@1.0 \n\n"
+    );
 }
 
 #[test]
 fn cli_rejects_unsupported_profiles_and_missing_registry_dependencies() {
     let fixture = Fixture::new("module(name='root')\n");
-    for flags in [
-        &["--output=text"][..],
-        &["--lockfile_mode=update"],
-        &["--include_builtin"],
-        &["--verbose"],
-        &["--extension_info=all"],
-        &["unexpected"],
-        &["--registry=https://example.invalid"],
-    ] {
+    for flags in [&["unexpected"][..], &["--output=streamed_proto"]] {
         let output = fixture.run(flags);
-        assert!(!output.status.success(), "{flags:?}");
+        assert_eq!(output.status.code(), Some(2), "{flags:?}");
         assert!(output.stdout.is_empty(), "{flags:?}");
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_bazel-rs"))
-        .args(["--ignore_all_rc_files", "mod", "graph"])
-        .current_dir(&fixture.0)
-        .explicit_modules()
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("text formatter"));
+    let output = fixture.command(&["mod", "graph"]);
+    succeeded(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "<root> (root@_)\n\n"
+    );
     fixture.write(
         "MODULE.bazel",
         "module(name='root')\nbazel_dep(name='missing', version='1.0')\n",
@@ -717,11 +714,9 @@ fn http_dependency_free_commands_use_lockfile_modes_without_fetching() {
     fixture.write("MODULE.bazel.lock", "unchanged sentinel\n");
     let server = HttpRegistry::new();
     let registry = format!("--registry={}", server.url);
-    // mod graph keeps its lockfile-off-only profile.
+    // mod graph uses every lockfile mode like any other command.
     let mut args = vec!["mod", "graph", "--output=json", &registry];
-    let rejected = fixture.command(&args);
-    assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("--lockfile_mode=off is required"));
+    succeeded(&fixture.command(&args));
     args.extend(["--lockfile_mode", "off"]);
     succeeded(&fixture.command(&args));
     // query/build support every lockfile mode. The sentinel has no
@@ -763,7 +758,7 @@ fn http_dependency_free_commands_use_lockfile_modes_without_fetching() {
 }
 
 #[test]
-fn http_registry_override_requires_off_and_retains_selected_registry() {
+fn http_registry_override_retains_selected_registry() {
     let fixture = Fixture::new("");
     let server = HttpRegistry::new();
     server.set(
@@ -772,10 +767,6 @@ fn http_registry_override_requires_off_and_retains_selected_registry() {
         "module(name='a',version='1')\n",
     );
     fixture.write("MODULE.bazel", &format!("bazel_dep(name='a',version='1')\nsingle_version_override(module_name='a',registry={:?})\n", server.url));
-    let failed = fixture.run(&[]);
-    assert!(!failed.status.success());
-    assert!(String::from_utf8_lossy(&failed.stderr).contains("--lockfile_mode=off is required"));
-    assert!(server.requests().is_empty());
     let graph = fixture.graph(&["--lockfile_mode=off"]);
     assert_eq!(graph["dependencies"][0]["key"], "a@1");
 }

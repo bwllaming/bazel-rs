@@ -198,10 +198,11 @@ Implemented:
 - `query`: Bazel 9.3's query language (every default function, set algebra,
   `let`, label/label_kind/build/package/location/minrank/maxrank/graph output,
   `--keep_going`, `--[no]implicit_deps`, `--[no]tool_deps`; docs/QUERY.md).
-- Scoped `mod graph --output=json` for explicit modules, with optional
-  `--registry=file:///absolute/path` filesystem registries: local metadata/MVS,
-  nodep and multiple-version selection. The captured module report passes 11
-  exact reference JSON cases plus five native-only capability probes.
+- `mod` with every Bazel 9.3 subcommand (graph, deps, all_paths, path,
+  explain, show_repo, show_extension, dump_repo_mapping, tidy) and display
+  option, on the built-in profile and every lockfile mode
+  ([docs/MOD_COMMAND.md](docs/MOD_COMMAND.md)); `--registry=file:///absolute/path`
+  filesystem registries: local metadata/MVS, nodep and multiple-version selection.
   `query` and `build` also accept filesystem `--registry` options. Local override
   roots and registry `source.json` type `local_path` roots are loadable and have
   scoped differential coverage. Neither mechanism downloads repositories.
@@ -293,8 +294,7 @@ the registry is Bazel's default `https://bcr.bazel.build/`. Fast warm probes of 
 real workspace use `--lockfile_mode=update --native-lockfile=/private/MODULE.bazel.lock`
 with a private `--cache-dir`: the checkout is never written, and hashed registry
 files come from the cache. Native writes version-28 lockfiles without the
-module-extension entries Bazel would regenerate. `mod graph` still requires an
-explicit `--lockfile_mode=off`.
+module-extension entries Bazel would regenerate.
 [Build-setting defaults](docs/BUILD_SETTINGS.md) execute genuine implementations
 and propagate native template-variable providers to explicit consumers; command-line
 setting values (`--//pkg:flag=value`), `flag_values` matching and `label_flag`/`label_setting`
@@ -378,9 +378,7 @@ across lexical contexts while retaining explicit invalid-label timing limits.
 [Genuine built-in modules](docs/BUILTIN_MODULES.md) are injected by default,
 like Bazel 9.3, using complete verified Linux x86-64 resources; the native-only
 `--experimental-builtin-modules=false` selects the explicit-module profile
-(no `@bazel_tools` contents), and native `mod graph` presents that profile.
-Active extension usages fail in `mod graph` even when
-hidden from output. Load caching is per package evaluation,
+(no `@bazel_tools` contents). Load caching is per package evaluation,
 not a persistent incremental graph.
 Action logs spool to temporary files and bounded tails are replayed to stderr.
 

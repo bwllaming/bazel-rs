@@ -128,14 +128,9 @@ bazel-rs --ignore_all_rc_files mod graph --output=json
 bazel-rs --ignore_all_rc_files mod graph --output=json --registry=file:///absolute/path
 ```
 
-Without `--registry` the default is Bazel's `https://bcr.bazel.build/`, which
-`mod graph` accepts only with an explicit `--lockfile_mode=off`; pass a
-`file://` registry (even an empty one) to stay offline. This is
-selected-module JSON only, with hidden extension information, not full `mod`
-parity. Implicit built-in modules, extension execution, unused-module/verbose
-views and text output are unsupported. Active extension usages fail even with
-`--extension_info=hidden`. Repository downloading/materialization, repository
-rules and external BUILD/`.bzl` loading remain unsupported.
+Without `--registry` the default is Bazel's `https://bcr.bazel.build/`; pass a
+`file://` registry (even an empty one) to stay offline. (Historical: `mod` is
+now the full command, docs/MOD_COMMAND.md.)
 
 **Module differential validation and full-graph review remain separate work in
 progress.** The custom-rule/None-default increment does not establish their
