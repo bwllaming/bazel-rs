@@ -5416,9 +5416,25 @@ impl Engine {
             crate::ui::note(line);
         }
         let target_scoped = self.target_scoped_flags(from).map_err(failure)?;
+        // The evaluator now retains each named/list branch. Configured-edge
+        // plumbing follows separately; never silently pick one split result.
+        if applied.configurations.len() != 1 || !applied.configurations[0].0.is_empty() {
+            return Err(failure(format!(
+                "a Starlark transition that returns {} configurations (a split transition) is not implemented in the native profile (N18d)",
+                applied.configurations.len()
+            )));
+        }
         let id = self
             .configurations
-            .intern_derived(applied.configuration, &target_scoped)
+            .intern_derived(
+                applied
+                    .configurations
+                    .into_iter()
+                    .next()
+                    .expect("one configuration")
+                    .1,
+                &target_scoped,
+            )
             .map_err(failure)?;
         self.transition_cache
             .insert(cache_key, (id, applied.printed));

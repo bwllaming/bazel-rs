@@ -233,7 +233,9 @@ const ERRORS_ENCOUNTERED: &str = "Errors encountered while applying Starlark tra
 /// The result of a successful application.
 #[derive(Debug)]
 pub(crate) struct Applied {
-    pub configuration: Configuration,
+    /// Ordered transition keys and fully validated configurations. The empty
+    /// key is ConfigurationTransition.PATCH_TRANSITION_KEY (patch/no-op).
+    pub configurations: Vec<(String, Configuration)>,
     /// print() output of the implementation, in order.
     pub printed: Vec<String>,
 }
@@ -564,7 +566,7 @@ fn unambiguous(label: &Label) -> String {
 enum Outcome {
     NoOp,
     Patch(Vec<(String, Raw)>),
-    Split(usize),
+    Split(Vec<(String, Vec<(String, Raw)>)>),
 }
 
 // ---------------------------------------------------------------------------
@@ -608,8 +610,8 @@ pub(crate) fn apply(
         .and_then(|outcome| finish(def, application, outcome, &location));
     let printed = prints.0.into_inner();
     match result {
-        Ok(configuration) => Ok(Applied {
-            configuration,
+        Ok(configurations) => Ok(Applied {
+            configurations,
             printed,
         }),
         // The application's print() events precede its error (they are
@@ -629,26 +631,31 @@ fn finish(
     application: &Application<'_>,
     outcome: Outcome,
     location: &str,
-) -> Result<Configuration, Failure> {
-    let changes = match outcome {
-        Outcome::NoOp => Vec::new(),
-        Outcome::Patch(changes) => changes,
-        // StarlarkRuleTransitionProvider.FunctionPatchTransition.patch
-        // (analysis/starlark/StarlarkRuleTransitionProvider.java:247-262).
-        Outcome::Split(_) if application.kind == Kind::Rule => {
+) -> Result<Vec<(String, Configuration)>, Failure> {
+    let branches = match outcome {
+        Outcome::NoOp => vec![(String::new(), Vec::new())],
+        Outcome::Patch(changes) => vec![(String::new(), changes)],
+        Outcome::Split(branches) => branches,
+    };
+    let mut configurations = branches
+        .into_iter()
+        .map(|(key, changes)| {
+            apply_changes(def, application, changes, location).map(|config| (key, config))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // FunctionPatchTransition.patch unwraps exactly one result, independently
+    // of whether its implementation returned a patch, named or list form.
+    if application.kind == Kind::Rule {
+        if configurations.len() != 1 {
             return Err(Failure::event(
                 location,
                 "Rule transition only allowed to return a single transitioned configuration."
                     .to_owned(),
             ));
         }
-        Outcome::Split(count) => {
-            return Err(Failure::message(format!(
-                "a Starlark transition that returns {count} configurations (a split transition) is not implemented in the native profile (N18d)"
-            )));
-        }
-    };
-    apply_changes(def, application, changes, location)
+        configurations[0].0.clear();
+    }
+    Ok(configurations)
 }
 
 /// The `transition()` location as Bazel prints it: the `.bzl` file's path.
@@ -953,19 +960,20 @@ fn evaluate(
                 key.unpack_str().is_some() && DictRef::from_value(value).is_some()
             });
             if split {
-                let mut count = 0;
-                for (_, value) in dict.iter() {
-                    canonical_dict(def, value, application.repositories, heap).map_err(invalid)?;
-                    count += 1;
-                }
-                return single_of_split(
-                    def,
-                    application,
-                    dict.iter().map(|(_, v)| v).collect(),
-                    count,
-                    heap,
-                )
-                .map_err(invalid);
+                return dict
+                    .iter()
+                    .map(|(key, value)| {
+                        canonical_dict(def, value, application.repositories, heap)
+                            .map(|changes| {
+                                (
+                                    key.unpack_str().expect("split key checked").to_owned(),
+                                    changes,
+                                )
+                            })
+                            .map_err(invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(Outcome::Split);
             }
             return canonical_dict(def, result, application.repositories, heap)
                 .map(Outcome::Patch)
@@ -987,11 +995,16 @@ fn evaluate(
                     )));
                 }
             }
-            for item in &items {
-                canonical_dict(def, *item, application.repositories, heap).map_err(invalid)?;
-            }
-            let count = items.len();
-            return single_of_split(def, application, items, count, heap).map_err(invalid);
+            return items
+                .into_iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    canonical_dict(def, item, application.repositories, heap)
+                        .map(|changes| (index.to_string(), changes))
+                        .map_err(invalid)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(Outcome::Split);
         }
         Err(Failure::event(
             &impl_location,
@@ -1001,23 +1014,6 @@ fn evaluate(
             ),
         ))
     })
-}
-
-/// A rule transition may return one configuration in the split forms
-/// (StarlarkRuleTransitionProvider.FunctionPatchTransition.patch takes the
-/// only element, :247-262); an attribute transition's split result is a
-/// split (N18d), even with one element (`ctx.split_attr` keys).
-fn single_of_split<'v>(
-    def: &TransitionDef,
-    application: &Application<'_>,
-    items: Vec<Value<'v>>,
-    count: usize,
-    heap: Heap<'v>,
-) -> Result<Outcome, String> {
-    if application.kind == Kind::Rule && count == 1 {
-        return canonical_dict(def, items[0], application.repositories, heap).map(Outcome::Patch);
-    }
-    Ok(Outcome::Split(count))
 }
 
 /// `Dict.cast(entry, String.class, Object.class, "dictionary of options")`
