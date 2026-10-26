@@ -214,14 +214,18 @@ class BuildTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / ".direnv" / "rustup").mkdir(parents=True)
-            base = {"PATH": "/bin", "RUSTFLAGS": "-Cdebuginfo=2", "CARGO_TARGET_DIR": "/elsewhere", "RUSTUP_TOOLCHAIN": "nightly", "CARGO_HOME": "/ch"}
+            base = {"PATH": "/bin", "RUSTFLAGS": "-Cdebuginfo=2", "CARGO_TARGET_DIR": "/elsewhere", "RUSTUP_TOOLCHAIN": "nightly", "CARGO_HOME": "/ch", "HOME": "/h"}
             env = release.build_env(base, repo, Path("/w/src"), Path("/w/target"), 42)
         self.assertEqual(env["RUSTUP_HOME"], str(repo / ".direnv" / "rustup"))
         self.assertEqual(env["CARGO_HOME"], "/ch")
         self.assertEqual(env["CARGO_TARGET_DIR"], "/w/target")
         self.assertEqual(env["SOURCE_DATE_EPOCH"], "42")
         self.assertNotIn("RUSTUP_TOOLCHAIN", env)
-        self.assertEqual(env["RUSTFLAGS"], "--remap-path-prefix=/w/src=/bazel-rs --remap-path-prefix=/ch=/cargo")
+        self.assertEqual(
+            env["RUSTFLAGS"],
+            "--remap-path-prefix=/w/src=/bazel-rs --remap-path-prefix=/ch=/cargo "
+            f"--remap-path-prefix={repo / '.direnv' / 'rustup'}=/rustup",
+        )
 
     def test_glibc_and_elf(self):
         text = "0 DF *UND* GLIBC_2.2.5 memcpy\n0 DF *UND* GLIBC_2.39 x\n0 DF *UND* GLIBC_2.34 y\nGLIBC_PRIVATE\n"

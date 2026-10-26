@@ -29,9 +29,10 @@ scripts/release.py                         # tag v<version>, push the tag, creat
    from that commit's `rust-toolchain.toml`; `RUSTUP_HOME`/`CARGO_HOME` are
    honoured and default to the checkout's `.direnv/{rustup,cargo}` like
    `.envrc`. `RUSTFLAGS`, `RUSTUP_TOOLCHAIN`, `RUSTC*` wrappers and target-dir
-   variables of the caller are dropped; `RUSTFLAGS` only remaps the worktree and
-   `CARGO_HOME` paths (`/bazel-rs`, `/cargo`), and `SOURCE_DATE_EPOCH` is the
-   commit time.
+   variables of the caller are dropped; `RUSTFLAGS` only remaps the worktree,
+   `CARGO_HOME` and `RUSTUP_HOME` paths (`/bazel-rs`, `/cargo`, `/rustup`), so
+   the binary does not depend on where it was built, and `SOURCE_DATE_EPOCH` is
+   the commit time.
 3. **Package** `bazel-rs-<version>-x86_64-unknown-linux-gnu.tar.gz` with
    `bazel-rs-<version>-x86_64-unknown-linux-gnu/{bazel-rs, LICENSE, NOTICE,
    README.md, THIRD_PARTY_LICENSES.md}`. The tarball is deterministic: entries

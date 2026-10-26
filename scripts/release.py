@@ -341,17 +341,22 @@ def build_env(base: dict, repo_dir: Path, src_dir: Path, target_dir: Path, epoch
 
     RUSTUP_HOME/CARGO_HOME are honoured; when unset, the checkout's
     .direnv/{rustup,cargo} are used as .envrc does. Paths of the temporary
-    worktree and of CARGO_HOME are remapped so the binary does not embed them.
+    worktree, CARGO_HOME and RUSTUP_HOME are remapped so the binary does not
+    embed them (the build does not depend on where it ran).
     """
     env = {k: v for k, v in base.items() if k not in SCRUBBED_ENV}
     for var, sub in (("RUSTUP_HOME", "rustup"), ("CARGO_HOME", "cargo")):
         if not env.get(var) and (repo_dir / ".direnv" / sub).is_dir():
             env[var] = str(repo_dir / ".direnv" / sub)
-    cargo_home = env.get("CARGO_HOME") or str(Path(env.get("HOME", "~")).expanduser() / ".cargo")
+    home = Path(env.get("HOME", "~")).expanduser()
+    cargo_home = env.get("CARGO_HOME") or str(home / ".cargo")
+    rustup_home = env.get("RUSTUP_HOME") or str(home / ".rustup")
     env["CARGO_TARGET_DIR"] = str(target_dir)
     env["SOURCE_DATE_EPOCH"] = str(epoch)
-    env["RUSTFLAGS"] = (
-        f"--remap-path-prefix={src_dir}=/bazel-rs --remap-path-prefix={cargo_home}=/cargo"
+    # With rust-src installed, std's panic locations name the local sysroot.
+    env["RUSTFLAGS"] = " ".join(
+        f"--remap-path-prefix={path}={alias}"
+        for path, alias in ((src_dir, "/bazel-rs"), (cargo_home, "/cargo"), (rustup_home, "/rustup"))
     )
     return env
 
@@ -887,6 +892,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path, help="empty directory for the worktree, target and dist (default: a new temp dir)")
     parser.add_argument("--keep-build", action="store_true", help="keep the temporary worktree's CARGO_TARGET_DIR")
     args = parser.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)
     run: Run = run_command
     repo_dir = Path(git_out(run, ROOT, "rev-parse", "--show-toplevel"))
     if args.replace_changelog and not args.notes:
