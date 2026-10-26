@@ -1255,7 +1255,15 @@ impl Env<'_> {
             Err(message) => return Ok(Err(message)),
         };
         debug_assert!(!parsed.negative, "query words never start with '-'");
+        // --keep_going: a wildcard keeps the packages that load; each one
+        // that does not is an error event (docs/KEEP_GOING.md).
+        if self.options.keep_going {
+            self.engine.pattern_load_errors = Some(Vec::new());
+        }
         let expanded = self.engine.expand_pattern(&parsed, false, false);
+        for error in self.engine.pattern_load_errors.take().unwrap_or_default() {
+            self.error_event(error);
+        }
         match expanded {
             Ok(labels) => {
                 let mut targets = Vec::new();

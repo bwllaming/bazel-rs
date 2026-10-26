@@ -147,10 +147,38 @@ pub enum RequestCommand {
     },
 }
 
+/// What a `--keep_going` analysis decided (docs/KEEP_GOING.md): the
+/// root-cause errors, the requested targets it skipped, and per analyzed
+/// requested target the actions its completion needs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeepGoingPlan {
+    /// The number of top-level targets (analyzed or not).
+    pub top_level: usize,
+    /// The root-cause analysis errors, in report order (each once).
+    pub errors: Vec<String>,
+    /// The requested targets whose analysis failed, in label order, with
+    /// whether a dependency (not the target itself) failed: SkyframeError-
+    /// Processor's `errors encountered while analyzing target 'L', it will
+    /// not be built.` and its `Analysis failed` cause.
+    pub failed: Vec<(Label, bool)>,
+    /// Each analyzed requested target with the ids of the actions producing
+    /// its top-level artifacts (requested, hidden and aspect artifacts).
+    pub targets: Vec<(Label, Vec<String>)>,
+    /// The input failures planning found (`missing input file`, source
+    /// directory traversal errors), reported after execution; the actions
+    /// they fail (and those above them) are not planned.
+    pub input_errors: Vec<String>,
+    /// The analyzed requested targets whose own top-level artifacts are
+    /// missing inputs.
+    pub unbuilt: Vec<Label>,
+}
+
 /// Everything execution and reporting need after planning (PLAN-L2 §1d).
 #[derive(Debug)]
 pub struct PlannedRequest {
     pub command: RequestCommand,
+    /// `--keep_going`: what the analysis skipped (`None` without it).
+    pub keep_going: Option<KeepGoingPlan>,
     /// False under `--nobuild`: no execution phase.
     pub execute: bool,
     /// The actions to execute, in plan order (the reachable ones). The
@@ -449,6 +477,42 @@ pub struct Executed {
     pub targets: BTreeMap<Label, RunTarget>,
     pub command: RequestCommand,
     pub execute: bool,
+    /// `--keep_going`: what failed (`None` without it).
+    pub keep_going: Option<KeepGoingResult>,
+}
+
+/// The failures of a `--keep_going` request (docs/KEEP_GOING.md).
+#[derive(Debug, Default)]
+pub struct KeepGoingResult {
+    /// The analysis's decisions.
+    pub plan: KeepGoingPlan,
+    /// The failed actions' errors, by action id.
+    pub actions: Vec<(String, String)>,
+    /// The analyzed requested targets whose top-level artifacts did not
+    /// all build, in label order.
+    pub unbuilt: Vec<Label>,
+}
+
+impl KeepGoingResult {
+    /// Whether the build failed (an analysis or execution failure).
+    pub fn failed(&self) -> bool {
+        !self.plan.failed.is_empty()
+            || !self.plan.input_errors.is_empty()
+            || !self.actions.is_empty()
+            || !self.unbuilt.is_empty()
+    }
+
+    /// The top-level targets that analyzed and built.
+    pub fn succeeded(&self) -> usize {
+        self.plan
+            .top_level
+            .saturating_sub(self.plan.failed.len() + self.unbuilt.len())
+    }
+
+    /// Whether requested `label` was analyzed and built.
+    pub fn built(&self, label: &Label) -> bool {
+        !self.unbuilt.contains(label) && !self.plan.failed.iter().any(|(failed, _)| failed == label)
+    }
 }
 
 /// Finalize, dump, execute and summarize one planned request (the shared
@@ -599,7 +663,8 @@ fn execute_tests(
     configurations: &[ConfigurationSummary],
     symlink_outputs: &HashSet<(String, usize)>,
     session: &crate::test_runner::Session<'_>,
-) -> Result<BTreeMap<String, crate::action::ActionResult>, String> {
+    keep_going: bool,
+) -> Result<scheduler::KeepGoingOutcome, String> {
     let plans: BTreeMap<&Label, &PlannedRun> = run_plans
         .iter()
         .map(|(label, plan)| (label, plan))
@@ -639,27 +704,46 @@ fn execute_tests(
             )
         });
     };
-    let results = scheduler::execute_graph_with_leaves(
-        options.cache,
-        nodes,
-        options.jobs,
-        Some(&scheduler::Leaves {
-            dependencies,
-            cap: session.leaf_cap(),
-            run: &run,
-        }),
-    )?;
-    session.run_exclusive(|test| {
-        let (label, plan) = plan_of(test)?;
-        run_target(
-            label,
-            plan,
-            configurations,
-            symlink_outputs,
-            &|produced: &Produced| executed_path(&results, true, produced),
-        )
-    });
-    Ok(results)
+    let leaves = scheduler::Leaves {
+        dependencies,
+        cap: session.leaf_cap(),
+        run: &run,
+    };
+    let outcome = if keep_going {
+        scheduler::execute_graph_keep_going(options.cache, nodes, options.jobs, Some(&leaves))?
+    } else {
+        scheduler::KeepGoingOutcome {
+            results: scheduler::execute_graph_with_leaves(
+                options.cache,
+                nodes,
+                options.jobs,
+                Some(&leaves),
+            )?,
+            errors: BTreeMap::new(),
+        }
+    };
+    let results = &outcome.results;
+    // --keep_going: an exclusive test runs once its inputs are built.
+    session.run_exclusive_built(
+        |test| {
+            plan_of(test).is_ok_and(|(_, plan)| {
+                plan.test_dependencies()
+                    .iter()
+                    .all(|id| results.contains_key(id))
+            })
+        },
+        |test| {
+            let (label, plan) = plan_of(test)?;
+            run_target(
+                label,
+                plan,
+                configurations,
+                symlink_outputs,
+                &|produced: &Produced| executed_path(results, true, produced),
+            )
+        },
+    );
+    Ok(outcome)
 }
 
 /// [`execute`], with the test actions of `bazel test` run inside its
@@ -680,6 +764,7 @@ pub fn execute_with_tests(
     dump_action_graph(&request.nodes);
     let PlannedRequest {
         command,
+        keep_going,
         execute,
         nodes,
         requested,
@@ -696,6 +781,7 @@ pub fn execute_with_tests(
     // at their exec paths, as BuildResultPrinter reports artifactsToBuild
     // under --nobuild (no status nodes are planned under --nobuild).
     let symlink_outputs = symlink_outputs(&nodes, &run_plans);
+    let mut action_errors: Vec<(String, String)> = Vec::new();
     let results = if execute {
         // The runfiles trees link as whole directories in the output tree.
         let runfiles_trees = nodes
@@ -708,7 +794,7 @@ pub fn execute_with_tests(
             })
             .map(|node| node.action.id.clone())
             .collect();
-        let results = match tests {
+        let scheduler::KeepGoingOutcome { results, errors } = match tests {
             Some(session) => execute_tests(
                 options,
                 nodes,
@@ -716,9 +802,17 @@ pub fn execute_with_tests(
                 &configurations,
                 &symlink_outputs,
                 session,
+                keep_going.is_some(),
             )?,
-            None => scheduler::execute_graph(options.cache, nodes, options.jobs)?,
+            None if keep_going.is_some() => {
+                scheduler::execute_graph_keep_going(options.cache, nodes, options.jobs, None)?
+            }
+            None => scheduler::KeepGoingOutcome {
+                results: scheduler::execute_graph(options.cache, nodes, options.jobs)?,
+                errors: BTreeMap::new(),
+            },
         };
+        action_errors = errors.into_iter().collect();
         // `$(bazel-rs info bazel-bin)/...` names the built files
         // (crate::output_tree, docs/INFO.md); never fails the build.
         let published = crate::output_tree::publish(options.cache, &results, &runfiles_trees);
@@ -752,13 +846,37 @@ pub fn execute_with_tests(
             summary.executed += 1;
         }
     }
+    // --keep_going: the analyzed requested targets whose top-level
+    // artifacts did not all build report nothing.
+    let keep_going = keep_going.map(|plan| {
+        let unbuilt = if execute {
+            plan.targets
+                .iter()
+                .filter(|(label, ids)| {
+                    plan.unbuilt.contains(label) || ids.iter().any(|id| !results.contains_key(id))
+                })
+                .map(|(label, _)| label.clone())
+                .collect()
+        } else {
+            plan.unbuilt.clone()
+        };
+        KeepGoingResult {
+            plan,
+            actions: action_errors,
+            unbuilt,
+        }
+    });
+    let reported = |label: &Label| keep_going.as_ref().is_none_or(|result| result.built(label));
     let published = |produced: &Produced| executed_path(&results, execute, produced);
     for (label, produced) in &requested {
-        summary.outputs.push((label.clone(), published(produced)));
+        if reported(label) {
+            summary.outputs.push((label.clone(), published(produced)));
+        }
     }
     summary.non_empty_targets = non_empty_targets;
     summary.aspects = aspect_reports
         .iter()
+        .filter(|(_, label, _)| reported(label))
         .map(|(aspect, label, artifacts)| {
             (
                 aspect.clone(),
@@ -769,6 +887,17 @@ pub fn execute_with_tests(
         .collect();
     let mut targets = BTreeMap::new();
     for (label, plan) in &run_plans {
+        // --keep_going: a run plan whose artifacts did not all build has no
+        // run target.
+        if execute
+            && keep_going.is_some()
+            && !plan
+                .test_dependencies()
+                .iter()
+                .all(|id| results.contains_key(id))
+        {
+            continue;
+        }
         let target = run_target(label, plan, &configurations, &symlink_outputs, &published)?;
         targets.insert(label.clone(), target);
     }
@@ -777,6 +906,7 @@ pub fn execute_with_tests(
         targets,
         command,
         execute,
+        keep_going,
     })
 }
 
@@ -984,6 +1114,7 @@ mod tests {
         };
         PlannedRequest {
             command: RequestCommand::Build,
+            keep_going: None,
             execute: true,
             nodes: vec![
                 node("//:first", None, &[]),

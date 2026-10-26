@@ -423,10 +423,10 @@ const TIMEOUTS: [(&str, TestTimeout); 4] = [
 ];
 
 impl TestOptions {
-    /// `--[no]keep_going`/`-k` (runtime/KeepGoingOption.java) of the `test`
-    /// command: only its effect on test actions is modelled (the native
-    /// build itself stops at the first failing action), so `build` and
-    /// `run` do not accept it.
+    /// `--[no]keep_going`/`-k` (runtime/KeepGoingOption.java) of `build`,
+    /// `test` and `run` (docs/KEEP_GOING.md): loading, analysis and
+    /// execution failures skip what depends on them; everything else is
+    /// built (and tested).
     pub fn parse_keep_going(&mut self, arg: &str) -> Result<bool, String> {
         if arg == "-k" {
             self.keep_going = true;

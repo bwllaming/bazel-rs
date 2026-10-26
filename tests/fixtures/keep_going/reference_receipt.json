@@ -1,0 +1,419 @@
+{
+ "schema": "keep-going-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of --keep_going (docs/KEEP_GOING.md): a loading error, an analysis error, an action failure and a test failure in one invocation of build/test, with and without -k; skipped patterns; analysis-only and missing-input failures; failures; run -k; query -k. Fixture: tests/keep_going.rs. Evidence only; not an input of any test.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS> --show_result=100 (not query)",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "/tmp/opencode/bazel-keep-going-target/debug/bazel-rs",
+  "sha256": "a48365ac96720dd3795b1a896c37d97bab367e11f713885de3bb88baff48f160",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --experimental-builtin-modules=false --show_result=100 (not query)"
+ },
+ "script": "/tmp/opencode/perf-research/keep-going-capture.py",
+ "script_sha256": "530271f448054f3297abafcdff772a25d2cc53f6ca2771878add4cd211a323e8",
+ "fixture_sha256": "1a1e9c3534b8a9f58a6a05d77f2be41c0df8bdd0dde827ba59e4f2ef731f7c56",
+ "distdir_seeded_count": 19,
+ "comparison": "exit code; key stderr lines (sorted: Bazel prints the analysis warnings in its error map hash order; warnings with their `Analysis failed` continuation joined by \" / \", FAIL: cut after the label, Skipping lines first line only, workspace path <WS>); test summary lines (sorted, timings T, (cached) dropped); requested targets reported built. Rows without -k: exit code and built targets only.",
+ "scratch_removed": true,
+ "counts": {
+  "EXACT": 13
+ },
+ "rows": [
+  {
+   "scenario": "build_keep_going",
+   "argv": [
+    "build",
+    "-k",
+    "//..."
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.96,
+   "native_seconds": 1.31,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "INFO: Build succeeded for only 5 of 13 top-level targets",
+    "WARNING: Target pattern parsing failed.",
+    "WARNING: errors encountered while analyzing target '//anaerr:bad', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//anaerr:uses_bad', it will not be built. / Analysis failed",
+    "WARNING: errors encountered while analyzing target '//tests:bad_dep_test', it will not be built. / Analysis failed"
+   ],
+   "summary": [],
+   "built": [
+    "//acterr:independent",
+    "//anaerr:good",
+    "//mi:ok",
+    "//tests:fails_test",
+    "//tests:passes_test"
+   ]
+  },
+  {
+   "scenario": "build_no_keep_going",
+   "argv": [
+    "build",
+    "//..."
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 2.78,
+   "native_seconds": 0.31,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Skipping '//...': Error evaluating '//...': error loading package 'loaderr': Package 'loaderr' contains errors",
+    "WARNING: Target pattern parsing failed."
+   ],
+   "summary": [],
+   "built": [],
+   "native_format_note": "--nokeep_going: native keeps its `bazel-rs: <error>` failure format; genuine key lines [\"ERROR: Build did NOT complete successfully\", \"ERROR: Skipping '//...': Error evaluating '//...': error loading package 'loaderr': Package 'loaderr' contains errors\", \"WARNING: Target pattern parsing failed.\"]"
+  },
+  {
+   "scenario": "build_keep_going_no_loading_error",
+   "argv": [
+    "build",
+    "--keep_going",
+    "//acterr:all",
+    "//anaerr:all",
+    "//tests:all"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 4.22,
+   "native_seconds": 1.31,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "INFO: Build succeeded for only 4 of 10 top-level targets",
+    "WARNING: errors encountered while analyzing target '//anaerr:bad', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//anaerr:uses_bad', it will not be built. / Analysis failed",
+    "WARNING: errors encountered while analyzing target '//tests:bad_dep_test', it will not be built. / Analysis failed"
+   ],
+   "summary": [],
+   "built": [
+    "//acterr:independent",
+    "//anaerr:good",
+    "//tests:fails_test",
+    "//tests:passes_test"
+   ]
+  },
+  {
+   "scenario": "build_no_keep_going_no_loading_error",
+   "argv": [
+    "build",
+    "//acterr:all",
+    "//anaerr:all",
+    "//tests:all"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.23,
+   "native_seconds": 0.26,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "summary": [],
+   "built": [],
+   "native_format_note": "--nokeep_going: native keeps its `bazel-rs: <error>` failure format; genuine key lines [\"ERROR: Build did NOT complete successfully\"]"
+  },
+  {
+   "scenario": "test_keep_going",
+   "argv": [
+    "test",
+    "-k",
+    "//..."
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 4.38,
+   "native_seconds": 3.8,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "FAIL: //tests:fails_test",
+    "INFO: Build succeeded for only 5 of 13 top-level targets",
+    "WARNING: Target pattern parsing failed.",
+    "WARNING: errors encountered while analyzing target '//anaerr:bad', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//anaerr:uses_bad', it will not be built. / Analysis failed",
+    "WARNING: errors encountered while analyzing target '//tests:bad_dep_test', it will not be built. / Analysis failed"
+   ],
+   "summary": [
+    "//mi:missing_test FAILED TO BUILD",
+    "//tests:fails_test FAILED in T",
+    "//tests:needs_broken_test FAILED TO BUILD",
+    "//tests:passes_test PASSED in T",
+    "Executed 2 out of 4 tests: 1 test passes, 2 fail to build, and 1 fails locally."
+   ],
+   "built": [
+    "//acterr:independent",
+    "//anaerr:good",
+    "//mi:ok",
+    "//tests:fails_test",
+    "//tests:passes_test"
+   ]
+  },
+  {
+   "scenario": "test_no_keep_going",
+   "argv": [
+    "test",
+    "//..."
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 2.2,
+   "native_seconds": 0.28,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully"
+   ],
+   "summary": [],
+   "built": [],
+   "native_format_note": "--nokeep_going: native keeps its `bazel-rs: <error>` failure format; genuine key lines [\"ERROR: Build did NOT complete successfully\"]"
+  },
+  {
+   "scenario": "test_keep_going_no_loading_error",
+   "argv": [
+    "test",
+    "-k",
+    "//acterr:all",
+    "//tests:all"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.83,
+   "native_seconds": 3.78,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "FAIL: //tests:fails_test",
+    "INFO: Build succeeded for only 3 of 7 top-level targets",
+    "WARNING: errors encountered while analyzing target '//tests:bad_dep_test', it will not be built. / Analysis failed"
+   ],
+   "summary": [
+    "//tests:fails_test FAILED in T",
+    "//tests:needs_broken_test FAILED TO BUILD",
+    "//tests:passes_test PASSED in T",
+    "Executed 2 out of 3 tests: 1 test passes, 1 fails to build, and 1 fails locally."
+   ],
+   "built": [
+    "//acterr:independent",
+    "//tests:fails_test",
+    "//tests:passes_test"
+   ]
+  },
+  {
+   "scenario": "build_keep_going_skipped_patterns",
+   "argv": [
+    "build",
+    "-k",
+    "//nope:foo",
+    "//acterr:nonexist",
+    "//acterr:independent"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.84,
+   "native_seconds": 1.31,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Skipping '//acterr:nonexist': no such target '//acterr:nonexist': target 'nonexist' not declared in package 'acterr' defined by <WS>/acterr/BUILD",
+    "ERROR: Skipping '//nope:foo': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    "ERROR: command succeeded, but there were errors parsing the target pattern",
+    "WARNING: Target pattern parsing failed."
+   ],
+   "summary": [],
+   "built": [
+    "//acterr:independent"
+   ]
+  },
+  {
+   "scenario": "build_keep_going_analysis_only",
+   "argv": [
+    "build",
+    "-k",
+    "//anaerr:all"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 2.96,
+   "native_seconds": 0.31,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: command succeeded, but not all targets were analyzed",
+    "INFO: Build succeeded for only 1 of 3 top-level targets",
+    "WARNING: errors encountered while analyzing target '//anaerr:bad', it will not be built.",
+    "WARNING: errors encountered while analyzing target '//anaerr:uses_bad', it will not be built. / Analysis failed"
+   ],
+   "summary": [],
+   "built": [
+    "//anaerr:good"
+   ]
+  },
+  {
+   "scenario": "run_keep_going_analysis",
+   "argv": [
+    "run",
+    "-k",
+    "//anaerr:uses_bad"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.0,
+   "native_seconds": 0.27,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Build failed. Not running target",
+    "ERROR: command succeeded, but not all targets were analyzed",
+    "WARNING: Cannot run target //anaerr:uses_bad: Not executable. Will continue anyway",
+    "WARNING: errors encountered while analyzing target '//anaerr:uses_bad', it will not be built. / Analysis failed"
+   ],
+   "summary": [],
+   "built": []
+  },
+  {
+   "scenario": "run_keep_going_action",
+   "argv": [
+    "run",
+    "-k",
+    "//acterr:after_broken"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.21,
+   "native_seconds": 0.29,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Build failed. Not running target",
+    "WARNING: Cannot run target //acterr:after_broken: Not executable. Will continue anyway"
+   ],
+   "summary": [],
+   "built": []
+  },
+  {
+   "scenario": "query_keep_going",
+   "argv": [
+    "query",
+    "-k",
+    "//..."
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 3,
+   "native_exit": 3,
+   "reference_seconds": 2.54,
+   "native_seconds": 0.06,
+   "stderr_key": [
+    "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
+   ],
+   "summary": [],
+   "built": []
+  },
+  {
+   "scenario": "test_keep_going_missing_inputs",
+   "argv": [
+    "test",
+    "-k",
+    "//mi:all",
+    "//tests:passes_test"
+   ],
+   "verdict": "EXACT",
+   "compared": [
+    "exit",
+    "stderr_key",
+    "summary",
+    "built"
+   ],
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 3.1,
+   "native_seconds": 2.89,
+   "stderr_key": [
+    "ERROR: Build did NOT complete successfully",
+    "INFO: Build succeeded for only 2 of 4 top-level targets"
+   ],
+   "summary": [
+    "//mi:missing_test FAILED TO BUILD",
+    "//tests:passes_test PASSED in T",
+    "Executed 1 out of 2 tests: 1 test passes and 1 fails to build."
+   ],
+   "built": [
+    "//mi:ok",
+    "//tests:passes_test"
+   ]
+  }
+ ]
+}

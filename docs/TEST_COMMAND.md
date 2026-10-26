@@ -19,8 +19,7 @@ trees and `run` are N23f (docs/RUNFILES_TREES.md).
 `build` options and rc groups (`always`, `common`, `build`, `test`;
 TestCommand `inheritsOptionsFrom`). The test options of TestConfiguration and
 ExecutionOptions are also accepted by `build`/`run` (they are build options in
-Bazel); `--keep_going`/`-k` only by `test` (only its effect on test actions is
-modelled). Supported, with Bazel's converter errors (`While parsing option
+Bazel); `--keep_going`/`-k` like `build` and `run` (docs/KEEP_GOING.md). Supported, with Bazel's converter errors (`While parsing option
 --test_output=bogus: Not a valid test output: 'bogus' (should be summary,
 errors, all or streamed)`, TestTimeoutConverter, TestAttemptsConverter,
 EnumFilterConverter, TriStateConverter):
@@ -44,8 +43,7 @@ per-label `regex@N` forms of `--flaky_test_attempts`/`--runs_per_test`,
 convenience symlinks), other `--test_strategy` values, `--run_under` with a
 test under `run`, a `select()` in `shard_count` of a test to run (`test`, `run`
 of a test; a build, the `--build_tests_only` filters and a test_suite's
-runfiles do not read the shard count), `--keep_going` with a build
-failure (the native build stops at the first failing action). (A `select()`
+runfiles do not read the shard count). (A `select()`
 in test_suite `tests` is a loading error: the attribute is not configurable.)
 
 ## Selecting tests
@@ -324,7 +322,7 @@ actions (local-only, see above); `--test_strategy` values beyond
 `standalone`/`local`/`exclusive` and worker test strategies (test actions
 themselves run through the spawn strategy selection and are sandboxed by
 default, docs/SANDBOX.md; runfiles other than external repository files
-are hardlinks where Bazel's sandbox shows symlinks); `--keep_going` with build failures; Bazel's
+are hardlinks where Bazel's sandbox shows symlinks); Bazel's
 convenience symlinks (`bazel-testlogs`) and relative log paths; the
 test.cache_status proto (native `status.json`); `test.err` splitting beyond
 appending; BEP/test result events; Windows (`tw.exe`, `xml.exe`).

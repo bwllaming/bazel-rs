@@ -651,6 +651,40 @@ pub fn execute_graph_with_leaves(
     )
 }
 
+/// The outcome of a `--keep_going` execution ([`execute_graph_keep_going`]):
+/// the results of the actions that ran and succeeded, and the error of each
+/// action that failed, by id. An action whose input failed never runs and
+/// has neither.
+#[derive(Debug, Default)]
+pub struct KeepGoingOutcome {
+    pub results: BTreeMap<String, ActionResult>,
+    pub errors: BTreeMap<String, String>,
+}
+
+/// [`execute_graph_with_leaves`] under `--keep_going` (docs/KEEP_GOING.md;
+/// Bazel's evaluation with keepGoing, AbstractQueueVisitor without
+/// failFast): a failed action stops only what depends on it — its
+/// consumers and the leaves reading it never start — and every other
+/// action and leaf runs. `Err` only for a graph that does not validate or
+/// an infrastructure failure (a worker that cannot be spawned, a panic).
+pub fn execute_graph_keep_going(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+    leaves: Option<&Leaves<'_>>,
+) -> Result<KeepGoingOutcome, String> {
+    execute_outcome(
+        cache,
+        nodes,
+        jobs,
+        &|cache: &Path, action: &Action| {
+            action::execute(cache, &crate::bazel_bytes::platform_action(action))
+        },
+        leaves,
+        true,
+    )
+}
+
 /// The results a leaf reads: each dependency's id and result, in the order
 /// of [`Leaves::dependencies`] (duplicates removed).
 pub type LeafInputs = [(String, Arc<ActionResult>)];
@@ -734,7 +768,13 @@ fn run_leaf(
 /// Run one job on a worker: its generated inputs (each producer's published
 /// output, in dependency order) and tree listings, then the deferred
 /// completion and the action itself.
-fn run_job<F>(job: Job, cache: &Path, failed: &AtomicBool, execute: &F) -> Completion
+fn run_job<F>(
+    job: Job,
+    cache: &Path,
+    failed: &AtomicBool,
+    keep_going: bool,
+    execute: &F,
+) -> Completion
 where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
@@ -783,7 +823,7 @@ where
         Ok(result)
     }))
     .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
-    if result.is_err() {
+    if result.is_err() && !keep_going {
         // Publish cancellation before sending, so another ready node cannot
         // slip through behind a queued failure.
         failed.store(true, Ordering::Release);
@@ -831,7 +871,7 @@ impl LeafState {
     /// The leaves' dependencies deduplicated and checked against the graph
     /// before any action runs (a leaf of an unknown action is an internal
     /// error of the caller).
-    fn new(leaves: Option<&Leaves<'_>>, graph: &Graph) -> Result<Self, String> {
+    fn new(leaves: Option<&Leaves<'_>>, graph: &Graph, keep_going: bool) -> Result<Self, String> {
         let mut state = LeafState {
             dependencies: Vec::new(),
             remaining: Vec::new(),
@@ -848,8 +888,15 @@ impl LeafState {
         }
         for (leaf, dependencies) in leaves.dependencies.iter().enumerate() {
             let mut unique: Vec<String> = Vec::new();
+            // --keep_going: an action planning dropped (its inputs failed,
+            // crate::engine) blocks the leaf for good.
+            let mut blocked = false;
             for id in dependencies {
                 if !graph.index.contains_key(id) {
+                    if keep_going {
+                        blocked = true;
+                        continue;
+                    }
                     return Err(format!(
                         "internal error: test action {leaf} depends on unknown action '{id}'"
                     ));
@@ -861,10 +908,10 @@ impl LeafState {
             for id in &unique {
                 state.consumers.entry(id.clone()).or_default().push(leaf);
             }
-            if unique.is_empty() {
+            if unique.is_empty() && !blocked {
                 state.ready.insert(leaf);
             }
-            state.remaining.push(unique.len());
+            state.remaining.push(unique.len() + usize::from(blocked));
             state.dependencies.push(unique);
         }
         Ok(state)
@@ -903,8 +950,38 @@ fn execute_with_leaves<F>(
 where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
+    let KeepGoingOutcome { results, errors } =
+        execute_outcome(cache, nodes, jobs, execute, leaves, false)?;
+    if errors.is_empty() {
+        Ok(results)
+    } else {
+        Err(errors
+            .into_iter()
+            .map(|(id, error)| format!("action '{id}': {error}"))
+            .collect::<Vec<_>>()
+            .join("\n"))
+    }
+}
+
+/// The scheduler: [`execute_with_leaves`], and under `keep_going` a failed
+/// action does not stop the graph ([`execute_graph_keep_going`]). Errors of
+/// infrastructure (spawning a worker, a panic) always stop it and fail the
+/// call under `keep_going`.
+fn execute_outcome<F>(
+    cache: &Path,
+    nodes: Vec<PlannedAction>,
+    jobs: usize,
+    execute: &F,
+    leaves: Option<&Leaves<'_>>,
+    keep_going: bool,
+) -> Result<KeepGoingOutcome, String>
+where
+    F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
+{
     let mut graph = validate(nodes, jobs)?;
-    let mut lane = LeafState::new(leaves, &graph)?;
+    // Infrastructure failures (worker spawn, panics) of a keep-going run.
+    let mut fatal: Vec<String> = Vec::new();
+    let mut lane = LeafState::new(leaves, &graph, keep_going)?;
     let failed = AtomicBool::new(false);
     let mut results: BTreeMap<String, Arc<ActionResult>> = BTreeMap::new();
     let mut errors = BTreeMap::new();
@@ -943,7 +1020,7 @@ where
                             };
                             let finished = match work {
                                 Work::Action(job) => {
-                                    Done::Action(run_job(*job, cache, failed, execute))
+                                    Done::Action(run_job(*job, cache, failed, keep_going, execute))
                                 }
                                 Work::Leaf(leaf, inputs) => {
                                     let leaves = leaves.expect("leaf work has leaves");
@@ -968,6 +1045,9 @@ where
                                 (Some(id), _) => id.clone(),
                                 (None, leaf) => format!("test action {}", leaf.unwrap_or(0)),
                             };
+                            if keep_going {
+                                fatal.push(format!("{key}: cannot spawn worker: {error}"));
+                            }
                             errors.insert(key, format!("cannot spawn worker: {error}"));
                             continue;
                         }
@@ -1029,6 +1109,10 @@ where
                             lane.completed(&id);
                         }
                         Some(Err(error)) => {
+                            if keep_going && error.starts_with("worker panicked: ") {
+                                fatal.push(format!("action '{id}': {error}"));
+                                failed.store(true, Ordering::Release);
+                            }
                             errors.insert(id, error);
                         }
                         None => {}
@@ -1037,6 +1121,9 @@ where
                 Done::Leaf(leaf, panicked) => {
                     lane.running -= 1;
                     if let Some(error) = panicked {
+                        if keep_going {
+                            fatal.push(format!("test action {leaf}: {error}"));
+                        }
                         errors.insert(format!("test action {leaf}"), error);
                     }
                 }
@@ -1045,21 +1132,19 @@ where
         // Idle workers see the closed channel and exit; the scope joins them.
         job_sender.take();
     });
-    if errors.is_empty() {
-        Ok(results
+    if !fatal.is_empty() {
+        return Err(fatal.join("\n"));
+    }
+    Ok(KeepGoingOutcome {
+        results: results
             .into_iter()
             .map(|(id, result)| {
                 let result = Arc::into_inner(result).expect("workers are joined");
                 (id, result)
             })
-            .collect())
-    } else {
-        Err(errors
-            .into_iter()
-            .map(|(id, error)| format!("action '{id}': {error}"))
-            .collect::<Vec<_>>()
-            .join("\n"))
-    }
+            .collect(),
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -1478,6 +1563,33 @@ mod tests {
         queued.action.command = dependent.action.command.clone();
         let error = execute_graph(&fixture.cache(), vec![dependent, queued, bad], 1).unwrap_err();
         assert!(error.contains("a-fail") && error.contains("intentional-failure"));
+        assert!(!marker.exists());
+    }
+
+    /// --keep_going: the failed action's consumer never starts, every
+    /// independent action (also one queued behind the failure) runs.
+    #[test]
+    fn keep_going_runs_everything_not_depending_on_a_failure() {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("dependent-ran");
+        let mut bad = node("a-fail");
+        bad.action.command = "echo intentional-failure >&2; exit 7".into();
+        let mut dependent = node("dependent");
+        dependent.dependencies = vec![dependency("a-fail", 0, "input")];
+        dependent.action.command = format!("touch '{}'; cat input > out", marker.display());
+        let mut after = node("m-after-dependent");
+        after.dependencies = vec![dependency("dependent", 0, "input")];
+        let queued = node("z-queued");
+        let outcome = execute_graph_keep_going(
+            &fixture.cache(),
+            vec![dependent, after, queued, bad],
+            1,
+            None,
+        )
+        .unwrap();
+        assert_eq!(outcome.results.keys().collect::<Vec<_>>(), ["z-queued"]);
+        assert_eq!(outcome.errors.keys().collect::<Vec<_>>(), ["a-fail"]);
+        assert!(outcome.errors["a-fail"].contains("intentional-failure"));
         assert!(!marker.exists());
     }
 

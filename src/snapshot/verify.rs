@@ -630,6 +630,7 @@ impl Report {
 fn outline(request: &PlannedRequest) -> Vec<(&'static str, String)> {
     let PlannedRequest {
         command,
+        keep_going,
         execute,
         nodes,
         requested,
@@ -643,6 +644,7 @@ fn outline(request: &PlannedRequest) -> Vec<(&'static str, String)> {
     } = request;
     vec![
         ("command", format!("{command:?}")),
+        ("keep_going", format!("{keep_going:?}")),
         ("execute", execute.to_string()),
         ("actions", nodes.len().to_string()),
         ("requested", format!("{requested:?}")),

@@ -427,7 +427,7 @@ Recorded by the paired capture (`tests/fixtures/native_rules/reference_receipt.j
   fresh `TMPDIR` (docs/ACTION_ENV.md).
 * Analysis order: when several targets fail, native stops at the first one it
   analyzes, so the first reported error of a wildcard build can differ from
-  Bazel's (`--keep_going` is not implemented).
+  Bazel's (`--keep_going` reports every failure, docs/KEEP_GOING.md).
 
 The receipt (`tests/fixtures/native_rules/reference_receipt.json`, run 3:
 EXACT 52, EXACT_MESSAGE 100, EXPECTED_NATIVE_UNSUPPORTED 21, MISMATCH 30,

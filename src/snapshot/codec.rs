@@ -125,6 +125,7 @@ pub struct Stats {
 #[derive(Serialize)]
 struct Meta<'a> {
     command: &'a crate::request::RequestCommand,
+    keep_going: &'a Option<crate::request::KeepGoingPlan>,
     execute: bool,
     requested: &'a [(crate::label::Label, crate::request::Produced)],
     aspect_reports: &'a [(String, crate::label::Label, Vec<crate::request::Produced>)],
@@ -139,6 +140,7 @@ struct Meta<'a> {
 #[derive(Deserialize)]
 struct MetaOwned {
     command: crate::request::RequestCommand,
+    keep_going: Option<crate::request::KeepGoingPlan>,
     execute: bool,
     requested: Vec<(crate::label::Label, crate::request::Produced)>,
     aspect_reports: Vec<(String, crate::label::Label, Vec<crate::request::Produced>)>,
@@ -166,6 +168,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
     // chunks like `nodes`).
     let PlannedRequest {
         command,
+        keep_going,
         execute,
         nodes: _,
         requested,
@@ -179,6 +182,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
     } = request;
     Meta {
         command,
+        keep_going,
         execute: *execute,
         requested,
         aspect_reports,
@@ -668,6 +672,7 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
     drop(groups);
     Ok(PlannedRequest {
         command: meta.command,
+        keep_going: meta.keep_going,
         execute: meta.execute,
         nodes,
         requested: meta.requested,
@@ -1368,6 +1373,7 @@ mod tests {
             },
         ];
         PlannedRequest {
+            keep_going: None,
             command: RequestCommand::Test {
                 build: vec![label("//pkg:t"), label("@@r+//x:y")],
                 tests: vec![PlannedTest {

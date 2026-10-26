@@ -599,6 +599,8 @@ fn run() -> Result<(), String> {
                                         memory_limit_mb,
                                         pattern_failure: None,
                                         snapshot,
+                                        keep_going: test_options.keep_going,
+                                        run: false,
                                     },
                                 ),
                             };
@@ -691,6 +693,7 @@ fn run() -> Result<(), String> {
     engine.set_runfiles_options(runfiles_options);
     engine.set_workspace_status(workspace_status);
     engine.set_execute_build(!no_build);
+    engine.set_keep_going(test_options.keep_going && builds(&command));
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
@@ -900,6 +903,8 @@ fn run() -> Result<(), String> {
             memory_limit_mb,
             pattern_failure,
             snapshot,
+            keep_going: test_options.keep_going,
+            run: false,
         },
     )
 }
@@ -1078,6 +1083,12 @@ struct BuildTail<'a> {
     /// Always `None` on a snapshot hit (such a run is never saved).
     pattern_failure: Option<&'static str>,
     snapshot: bazel_rs::snapshot::Scope,
+    /// `--keep_going` (docs/KEEP_GOING.md).
+    keep_going: bool,
+    /// `run --keep_going` of targets RunCommand.validateTargets rejected
+    /// (built anyway): a failed build ends with `Build failed. Not running
+    /// target`.
+    run: bool,
 }
 
 /// `build` after planning, on a full analysis and on a snapshot hit alike:
@@ -1093,7 +1104,10 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         memory_limit_mb,
         pattern_failure,
         snapshot,
+        keep_going: keep_going_requested,
+        run,
     } = tail;
+    report_keep_going_errors(&planned.request);
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
@@ -1111,8 +1125,14 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     bazel_rs::repository_store::timing::report(loading_threads);
     // Analysis warnings precede the result, also when the build fails.
     report_diagnostics(planned.diagnostics);
-    let summary = match result {
-        Ok(executed) => executed.summary,
+    let (summary, keep_going) = match result {
+        Ok(executed) => {
+            let keep_going = executed.keep_going.filter(|result| {
+                report_keep_going(result, executed.execute);
+                result.failed()
+            });
+            (executed.summary, keep_going)
+        }
         Err(error) => {
             snapshot.failed(&error);
             return Err(error);
@@ -1120,6 +1140,12 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     };
     let non_empty_targets = summary.non_empty_targets;
     for (label, output) in &summary.outputs {
+        // `run` reports its built targets on stderr (its stdout is the
+        // program's).
+        if run {
+            eprintln!("{label}\t{}", output.display());
+            continue;
+        }
         // The path's raw bytes: a lone-byte target name names the byte
         // itself (bazel_bytes::internal_path), not U+FFFD.
         use std::io::Write as _;
@@ -1171,11 +1197,29 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         );
     }
     bazel_rs::memory_limit::report_peak(memory_limit_mb);
+    // --keep_going: a build with failures fails once everything else built.
+    if let Some(result) = keep_going {
+        snapshot.failed("the --keep_going build failed");
+        bazel_rs::snapshot::hit::heal_after_failure(None);
+        if let Some(message) = keep_going_failure_detail(&result, pattern_failure) {
+            eprintln!("ERROR: {message}");
+        }
+        eprintln!("ERROR: Build did NOT complete successfully");
+        if run {
+            eprintln!("ERROR: Build failed. Not running target");
+        }
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        std::process::exit(1);
+    }
     snapshot.finish();
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
     // a test suite's expansion error fails the command once it has built.
     if let Some(message) = pattern_failure {
         eprintln!("ERROR: {message}");
+        if keep_going_requested {
+            eprintln!("ERROR: Build did NOT complete successfully");
+        }
         write_lockfile();
         bazel_rs::digest_memo::finish();
         std::process::exit(1);
@@ -1313,6 +1357,75 @@ fn report_diagnostics(diagnostics: bazel_rs::request::Diagnostics) {
     }
 }
 
+/// `--keep_going` (docs/KEEP_GOING.md): the analysis's root-cause errors,
+/// each once in the engine's sequential order, before execution (Bazel
+/// reports them as the analysis runs, before the execution's).
+fn report_keep_going_errors(request: &Result<bazel_rs::request::PlannedRequest, String>) {
+    if let Ok(request) = request
+        && let Some(plan) = &request.keep_going
+    {
+        for error in &plan.errors {
+            eprintln!("ERROR: {}", located(error));
+        }
+    }
+}
+
+/// `--keep_going` after execution: each failed action's error (by action
+/// id), `errors encountered while analyzing target 'L', it will not be
+/// built.` per requested target whose analysis failed (with its `Analysis
+/// failed` cause when a dependency failed; SkyframeErrorProcessor
+/// .logOrPrintWarningsKeepGoing :671-685), and BuildView's `Build succeeded
+/// for only N of M top-level targets` (:440-448).
+fn report_keep_going(result: &bazel_rs::request::KeepGoingResult, execute: bool) {
+    for error in &result.plan.input_errors {
+        eprintln!("ERROR: {}", located(error));
+    }
+    for (id, error) in &result.actions {
+        eprintln!("ERROR: {}", located(&format!("action '{id}': {error}")));
+    }
+    for (label, dependency) in &result.plan.failed {
+        let mut message = format!(
+            "errors encountered while analyzing target '{}', it will not be built.",
+            label_print(label)
+        );
+        if *dependency {
+            message.push_str("\nAnalysis failed");
+        }
+        warn(&message);
+    }
+    let succeeded = result.succeeded();
+    if 0 < succeeded && succeeded < result.plan.top_level {
+        eprintln!(
+            "INFO: {} succeeded for only {succeeded} of {} top-level targets",
+            if execute { "Build" } else { "Analysis" },
+            result.plan.top_level
+        );
+    }
+}
+
+/// The failure detail a failed `--keep_going` build ends with
+/// (BuildTool.java:688-703, BuildView.createAnalysisFailureDetail
+/// :760-784): none after an execution failure (its BuildFailedException
+/// has no message), else the target pattern phase's, else `command
+/// succeeded, but not all targets were analyzed`.
+fn keep_going_failure_detail(
+    result: &bazel_rs::request::KeepGoingResult,
+    pattern_failure: Option<&'static str>,
+) -> Option<&'static str> {
+    if !result.actions.is_empty()
+        || !result.unbuilt.is_empty()
+        || !result.plan.input_errors.is_empty()
+    {
+        None
+    } else if pattern_failure.is_some() {
+        pattern_failure
+    } else if !result.plan.failed.is_empty() {
+        Some("command succeeded, but not all targets were analyzed")
+    } else {
+        None
+    }
+}
+
 /// Opens the MODULE.bazel.lock write (update/refresh only) once the whole
 /// module resolution — the dep graph and every module extension the command
 /// demanded — evaluated successfully. BazelLockFileModule.afterCommand
@@ -1439,27 +1552,59 @@ fn run_target(context: RunContext<'_>) -> Result<(), String> {
     } = context;
     let options = tail.options;
     // validateTargets (RunCommand.java:1052-1111) over the target pattern
-    // phase's targets (test suites expanded).
+    // phase's targets (test suites expanded). Under --keep_going each
+    // failure is a warning (`MESSAGE. Will continue anyway`, :1110-1122),
+    // the targets build, and getBuiltTargets/fullyValidateTarget fail the
+    // command after a successful build (:434-470, :1136-1160).
+    let mut rejected = None;
     if labels.len() > 1 {
         let mut names: Vec<String> = labels.iter().map(|label| label.to_string()).collect();
         let truncated = names.len() > 5;
         names.truncate(5);
         names.sort();
-        return Err(format!(
+        rejected = Some(format!(
             "Only a single target can be run. Your target pattern {pattern} expanded to the targets {}{}",
             names.join(", "),
             if truncated { "[TRUNCATED]" } else { "" }
         ));
+    } else if labels.is_empty() {
+        rejected = Some("No targets found to run".to_owned());
+    } else if let bazel_rs::engine::Runnable::No = engine.runnable(&labels[0])? {
+        rejected = Some(format!("Cannot run target {}: Not executable", labels[0]));
     }
-    let Some(label) = labels.first() else {
-        return Err("No targets found to run".into());
-    };
-    match engine.runnable(label)? {
-        bazel_rs::engine::Runnable::No => {
-            return Err(format!("Cannot run target {label}: Not executable"));
+    if let Some(error) = rejected {
+        if !tail.test.keep_going {
+            return Err(error);
         }
-        bazel_rs::engine::Runnable::Test | bazel_rs::engine::Runnable::Yes => {}
+        warn(&format!("{error}. Will continue anyway"));
+        // A failing command: never saved as the snapshot of this `run`.
+        bazel_rs::observed_fs::taint(bazel_rs::observed_fs::Taint::Errors, || {
+            format!("run --keep_going: {error}")
+        });
+        let planned = plan_request(
+            std::mem::ManuallyDrop::into_inner(engine),
+            bazel_rs::engine::RequestSpec::build(&labels),
+            &mut tail.snapshot,
+        );
+        build_tail(
+            planned,
+            BuildTail {
+                cache: tail.cache,
+                jobs: tail.jobs,
+                action_dump: None,
+                show_result: 1,
+                remote_enabled: tail.remote_enabled,
+                loading_threads: 0,
+                memory_limit_mb: None,
+                pattern_failure: tail.pattern_failure,
+                snapshot: tail.snapshot,
+                keep_going: true,
+                run: true,
+            },
+        )?;
+        return Err(error);
     }
+    let label = &labels[0];
     if let Some(value) = options.run_under.as_deref()
         && let Some(first) = value.split_whitespace().next()
         && (first.starts_with("//") || first.starts_with('@'))
@@ -1517,6 +1662,7 @@ fn run_tail(
         pattern_failure,
         snapshot,
     } = tail;
+    report_keep_going_errors(&planned.request);
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute(
             request,
@@ -1532,6 +1678,9 @@ fn run_tail(
     // The build part is the snapshot's scope (the run itself replaces this
     // process).
     match &result {
+        Ok(executed) if executed.keep_going.as_ref().is_some_and(|kg| kg.failed()) => {
+            snapshot.failed("the --keep_going build failed")
+        }
         Ok(_) => snapshot.finish(),
         Err(error) => snapshot.failed(error),
     }
@@ -1540,7 +1689,23 @@ fn run_tail(
         mut targets,
         command: planned_command,
         execute,
+        keep_going,
     } = result?;
+    // --keep_going: the build part failed (RunCommand.runBuild:
+    // `Build failed. Not running target`).
+    if let Some(result) = keep_going.filter(|result| {
+        report_keep_going(result, execute);
+        result.failed()
+    }) {
+        if let Some(message) = keep_going_failure_detail(&result, pattern_failure) {
+            eprintln!("ERROR: {message}");
+        }
+        eprintln!("ERROR: Build did NOT complete successfully");
+        eprintln!("ERROR: Build failed. Not running target");
+        write_lockfile();
+        bazel_rs::digest_memo::finish();
+        std::process::exit(1);
+    }
     let target = targets.remove(label);
     let test_info = match planned_command {
         bazel_rs::request::RequestCommand::Run { test, .. } => test,
@@ -1892,6 +2057,7 @@ fn test_tail(
         )),
         _ => None,
     };
+    report_keep_going_errors(&planned.request);
     let result = planned.request.and_then(|request| {
         bazel_rs::request::execute_with_tests(
             request,
@@ -1905,9 +2071,25 @@ fn test_tail(
         )
     });
     report_diagnostics(planned.diagnostics);
+    // --keep_going: the failures of the build part (docs/KEEP_GOING.md).
+    let mut result = result;
+    let keep_going = match &mut result {
+        Ok(executed) => executed.keep_going.take().filter(|result| {
+            report_keep_going(result, executed.execute);
+            result.failed()
+        }),
+        Err(_) => None,
+    };
+    let build_failed = keep_going.is_some();
+    // Tests whose inputs did not all build (FAILED TO BUILD).
+    let unbuilt: std::collections::BTreeSet<bazel_rs::label::Label> = keep_going
+        .as_ref()
+        .map(|result| result.unbuilt.iter().cloned().collect())
+        .unwrap_or_default();
     // The build part is the snapshot's scope (test results are execution
     // outcomes; the test runner exits the process).
     match &result {
+        Ok(_) if build_failed => snapshot.failed("the --keep_going build failed"),
         Ok(_) => snapshot.finish(),
         Err(error) => snapshot.failed(error),
     }
@@ -1916,6 +2098,7 @@ fn test_tail(
         targets: _,
         command: planned_command,
         execute,
+        keep_going: _,
     } = match result {
         Ok(executed) => executed,
         Err(error) => {
@@ -2010,6 +2193,15 @@ fn test_tail(
     if let Some(error) = outcome.failure {
         return Err(error);
     }
+    let mut outcome = outcome;
+    // --keep_going: a test whose inputs failed to build never ran: FAILED
+    // TO BUILD (AggregatingTestListener: targetFailure; genuine capture
+    // tests/fixtures/keep_going).
+    for (summary, test) in outcome.summaries.iter_mut().zip(&planned_tests) {
+        if unbuilt.contains(&test.label) && summary.test_times.is_empty() {
+            summary.status = bazel_rs::test_command::TestStatus::FailedToBuild;
+        }
+    }
     let mut sorted: Vec<&bazel_rs::test_command::TestSummary> = outcome.summaries.iter().collect();
     sorted.sort_by(|a, b| a.compare(b));
     use std::io::Write;
@@ -2028,7 +2220,7 @@ fn test_tail(
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
     // a test suite's expansion error fails the build once it has run, and
     // passing tests say so (TestCommand.java:216-223).
-    if pattern_failure.is_some() && passed {
+    if (pattern_failure.is_some() || build_failed) && passed {
         let _ =
             stdout.write_all(b"All tests passed but there were other errors during the build.\n\n");
     }
@@ -2047,10 +2239,23 @@ fn test_tail(
         .summaries
         .iter()
         .any(|summary| summary.status == bazel_rs::test_command::TestStatus::FailedToBuild);
-    if let Some(message) = pattern_failure {
-        eprintln!("ERROR: {message}");
+    match &keep_going {
+        Some(result) => {
+            if let Some(message) = keep_going_failure_detail(result, pattern_failure) {
+                eprintln!("ERROR: {message}");
+            }
+            eprintln!("ERROR: Build did NOT complete successfully");
+        }
+        None => {
+            if let Some(message) = pattern_failure {
+                eprintln!("ERROR: {message}");
+                if options.keep_going {
+                    eprintln!("ERROR: Build did NOT complete successfully");
+                }
+            }
+        }
     }
-    if failed_to_build || !passed {
+    if failed_to_build || build_failed || !passed {
         // A snapshot hit whose tests failed: a damaged repository tree the
         // hit trusted heals (crate::snapshot::hit, L2-W5g).
         bazel_rs::snapshot::hit::heal_after_failure(None);
@@ -2058,13 +2263,15 @@ fn test_tail(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    std::process::exit(if failed_to_build || pattern_failure.is_some() {
-        1
-    } else if passed {
-        0
-    } else {
-        3
-    });
+    std::process::exit(
+        if failed_to_build || build_failed || pattern_failure.is_some() {
+            1
+        } else if passed {
+            0
+        } else {
+            3
+        },
+    );
 }
 
 /// The target pattern phase's events (TargetPatternPhaseFunction.java
@@ -2072,6 +2279,11 @@ fn test_tail(
 /// `All specified test targets were excluded by filters`, and `Target
 /// pattern parsing failed.` for an expansion error of the tests to run.
 fn report_target_pattern_phase(phase: &bazel_rs::engine::TargetPatternPhase) {
+    // --keep_going: the skipped packages' loading errors, then (after the
+    // warning, as genuine 9.3 prints them) the skipped patterns.
+    for error in &phase.loading_errors {
+        eprintln!("ERROR: {}", located(error));
+    }
     for error in &phase.errors {
         eprintln!("ERROR: {error}");
     }
@@ -2080,6 +2292,9 @@ fn report_target_pattern_phase(phase: &bazel_rs::engine::TargetPatternPhase) {
     }
     if phase.pattern_error {
         eprintln!("WARNING: Target pattern parsing failed.");
+    }
+    for skipped in &phase.skipped {
+        eprintln!("ERROR: {}", located(skipped));
     }
 }
 
@@ -2131,11 +2346,6 @@ fn test_build_failure(
     use bazel_rs::test_command::{
         TestStatus, TestSummary, TestTimeout, should_output_log, summary_text,
     };
-    if options.keep_going {
-        return Err(format!(
-            "{error}\n--keep_going with a build failure is not supported by the native test command: the native build stops at the first failing action, so tests that would build are not run"
-        ));
-    }
     eprintln!("bazel-rs: {error}");
     let mentions = |label: &str| {
         error.match_indices(label).any(|(index, _)| {
@@ -3044,7 +3254,7 @@ impl NativeOptions {
             used?
         } else if let Some(used) = self.remote.parse(arg, next) {
             used?
-        } else if command == "test" && self.test.parse_keep_going(arg)? {
+        } else if builds(command) && self.test.parse_keep_going(arg)? {
             false
         } else if let Some(used) = builds(command)
             .then(|| self.test.parse(arg, next))

@@ -862,10 +862,8 @@ fn build_failures_keep_going_cache_index_and_attempt_modes() {
         stdout(&failed),
         "//suite:b_test                                                        NO STATUS\n//bf:broken_test                                                FAILED TO BUILD\n\nExecuted 0 out of 2 tests: 1 fails to build and 1 was skipped.\n"
     );
-    let keep_going = ws.run(&["test", "-k", "//bf:broken_test"]);
-    assert!(stderr(&keep_going).contains("--keep_going with a build failure is not supported"));
     let build = ws.run(&["build", "-k", "//suite:b_test"]);
-    assert!(!build.status.success());
+    assert!(build.status.success(), "{}", stderr(&build));
     // With --keep_going every test runs despite the sharding error.
     let all = ws.run(&[
         "test",
@@ -885,6 +883,22 @@ fn build_failures_keep_going_cache_index_and_attempt_modes() {
         !stderr(&all)
             .lines()
             .any(|line| line.starts_with("ERROR: Sharding requested"))
+    );
+    // --keep_going (docs/KEEP_GOING.md): the test whose input is missing
+    // fails to build, the others run.
+    let keep_going = ws.run(&["test", "-k", "//bf:broken_test", "//suite:b_test"]);
+    assert_eq!(keep_going.status.code(), Some(1), "{}", stderr(&keep_going));
+    assert!(
+        stdout(&keep_going).contains(
+            "//bf:broken_test                                                FAILED TO BUILD\n"
+        ),
+        "{}",
+        stdout(&keep_going)
+    );
+    assert!(
+        stdout(&keep_going).contains("1 test passes and 1 fails to build."),
+        "{}",
+        stdout(&keep_going)
     );
     let aborted = ws.run(&["test", "//pkg:noshard_test"]);
     assert_eq!(aborted.status.code(), Some(3));

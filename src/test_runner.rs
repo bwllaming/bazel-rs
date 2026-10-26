@@ -399,10 +399,22 @@ impl<'a> Session<'a> {
         &self,
         target: impl Fn(usize) -> Result<crate::engine::RunTarget, String>,
     ) {
+        self.run_exclusive_built(|_| true, target);
+    }
+
+    /// [`Self::run_exclusive`] of the tests `built` accepts (`--keep_going`:
+    /// a test whose inputs failed to build never runs).
+    pub fn run_exclusive_built(
+        &self,
+        built: impl Fn(usize) -> bool,
+        target: impl Fn(usize) -> Result<crate::engine::RunTarget, String>,
+    ) {
         let never = std::sync::atomic::AtomicBool::new(false);
         for &unit in &self.exclusive {
             let test = self.units[unit].test;
-            self.run(unit, &never, || target(test));
+            if built(test) {
+                self.run(unit, &never, || target(test));
+            }
         }
     }
 

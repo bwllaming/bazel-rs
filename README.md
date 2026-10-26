@@ -162,6 +162,10 @@ Implemented:
 - `ctx.actions.declare_file`, binary-safe native `write`, `run_shell` and direct
   `run`. Shell arguments/environment are keyed; custom shell actions do not
   inherit genrule's strict-shell flags. Only requested output actions execute.
+- `--keep_going`/`-k` for `build`, `test` and `run`: patterns and packages that
+  fail to load, targets that fail to analyze and failing actions skip only what
+  depends on them; everything else is built and tested, with Bazel's summary
+  lines and exit codes (docs/KEEP_GOING.md).
 - `query`: Bazel 9.3's query language (every default function, set algebra,
   `let`, label/label_kind/build/package/location/minrank/maxrank/graph output,
   `--keep_going`, `--[no]implicit_deps`, `--[no]tool_deps`; docs/QUERY.md).

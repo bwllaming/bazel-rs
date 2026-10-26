@@ -28,6 +28,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 mod alloc_report;
+mod keep_going;
 pub mod query;
 mod query_attrs;
 
@@ -1680,6 +1681,19 @@ pub struct TargetPatternPhase {
     /// An expansion of the targets to build failed (hasPostExpansionError:
     /// `command succeeded, but there were loading phase errors`, :770-775).
     pub post_expansion_error: bool,
+    /// `--keep_going`: the loading errors of the wildcard packages skipped,
+    /// in loading order (reported before `Target pattern parsing failed.`).
+    pub loading_errors: Vec<String>,
+    /// `--keep_going`: `Skipping 'PATTERN': MESSAGE` for each pattern that
+    /// failed to parse or to evaluate (getTargetsToBuild, :300-335).
+    pub skipped: Vec<String>,
+}
+
+/// The failures of a keep-going pattern expansion ([`Engine::select_keep_going`]).
+#[derive(Default)]
+struct PatternFailures {
+    loading: Vec<String>,
+    skipped: Vec<String>,
 }
 
 /// The TestExpansionValues of one target pattern phase: each suite's tests
@@ -1911,6 +1925,19 @@ pub struct Engine {
     /// :154-160; the workspace status action is an execution-phase
     /// artifact, so it is not planned under --nobuild).
     execute_build: bool,
+    /// `--keep_going`/`-k` (KeepGoingOption, docs/KEEP_GOING.md): loading
+    /// and analysis failures skip the targets they fail instead of failing
+    /// the build.
+    keep_going: bool,
+    /// The keep-going bookkeeping of the current build ([`keep_going::State`]).
+    keep_going_state: keep_going::State,
+    /// The keep-going outcome of the last planned build, taken by
+    /// [`Self::plan_request`].
+    keep_going_plan: Option<crate::request::KeepGoingPlan>,
+    /// While a keep-going target pattern phase expands a wildcard: the
+    /// loading errors of its packages, each skipped (`Some`), instead of
+    /// failing the pattern (`None`).
+    pattern_load_errors: Option<Vec<String>>,
 }
 
 impl Engine {
@@ -1985,6 +2012,10 @@ impl Engine {
             workspace_status: crate::workspace_status::WorkspaceStatusOptions::default(),
             workspace_status_once: std::sync::OnceLock::new(),
             execute_build: true,
+            keep_going: false,
+            keep_going_state: keep_going::State::default(),
+            keep_going_plan: None,
+            pattern_load_errors: None,
         }
     }
 
@@ -2018,6 +2049,13 @@ impl Engine {
     /// artifactsToBuild only on the execution path).
     pub fn set_execute_build(&mut self, execute: bool) {
         self.execute_build = execute;
+    }
+
+    /// `--keep_going` (docs/KEEP_GOING.md): later target pattern phases skip
+    /// the patterns and packages that fail to load, later builds the
+    /// targets whose analysis fails.
+    pub fn set_keep_going(&mut self, keep_going: bool) {
+        self.keep_going = keep_going;
     }
 
     /// Whether later builds execute (see `set_execute_build`).
@@ -2501,7 +2539,10 @@ impl Engine {
             .collect();
         if pending.len() <= 1 || self.loading_phase_threads <= 1 {
             for id in ids {
-                self.load_package(id)?;
+                if let Err(error) = self.load_package(id) {
+                    self.skip_package_error(error)?;
+                    continue;
+                }
                 after_commit(self, id)?;
             }
             return Ok(());
@@ -2594,11 +2635,28 @@ impl Engine {
                     .take()
                     .expect("every dispatched package finished");
                 dispatched += 1;
-                self.commit_load_unit(id, unit)?;
+                if let Err(error) = self.commit_load_unit(id, unit) {
+                    self.skip_package_error(error)?;
+                    continue;
+                }
             }
             after_commit(self, id)?;
         }
         Ok(())
+    }
+
+    /// A package of a wildcard failed to load: under a keep-going target
+    /// pattern phase its error is recorded and the package skipped (its
+    /// targets are not part of the pattern, docs/KEEP_GOING.md), otherwise
+    /// the error fails the pattern.
+    fn skip_package_error(&mut self, error: String) -> Result<(), String> {
+        match &mut self.pattern_load_errors {
+            Some(errors) if !crate::repository_demand::is_inline_rerun_sentinel(&error) => {
+                errors.push(error);
+                Ok(())
+            }
+            _ => Err(error),
+        }
     }
 
     /// One package load attempt (P1 loading commit order): the BUILD file
@@ -3524,6 +3582,9 @@ impl Engine {
             config,
             apply_rule_transition,
         };
+        if self.keep_going {
+            self.keep_going_state.record_edge(active.last(), &key);
+        }
         if configured.contains_key(&key) {
             return Ok(());
         }
@@ -8859,6 +8920,19 @@ impl Engine {
         self.run_trees = true;
         let (nodes, requested, aspect_reports, non_empty_targets) = planned?;
         let plans = std::mem::take(&mut self.run_plans);
+        // --keep_going: a `test` request runs only the tests that analyzed
+        // (a test whose analysis failed is not one of its tests, genuine
+        // capture tests/fixtures/keep_going).
+        let keep_going = self.keep_going_plan.take();
+        let mut command = spec.command;
+        if let (Some(plan), crate::request::RequestCommand::Test { build, tests }) =
+            (&keep_going, &mut command)
+            && !plan.failed.is_empty()
+        {
+            let failed: HashSet<&Label> = plan.failed.iter().map(|(label, _)| label).collect();
+            build.retain(|label| !failed.contains(label));
+            tests.retain(|test| !failed.contains(&test.label));
+        }
         let produced = |artifact: &Artifact| crate::request::Produced {
             real: artifact.real.clone(),
             producer: artifact.producer.clone(),
@@ -8918,7 +8992,8 @@ impl Engine {
             .collect();
         drop(planned_ids);
         let request = PlannedRequest {
-            command: spec.command,
+            command,
+            keep_going,
             execute: self.execute_build,
             requested: requested
                 .iter()
@@ -9263,7 +9338,12 @@ impl Engine {
         relative_directory: &str,
         options: &TargetPatternPhaseOptions<'_>,
     ) -> Result<TargetPatternPhase, String> {
-        let selected = self.select_filtered(patterns, relative_directory, true)?;
+        let mut failures = PatternFailures::default();
+        let selected = if self.keep_going {
+            self.select_keep_going(patterns, relative_directory, &mut failures)
+        } else {
+            self.select_filtered(patterns, relative_directory, true)?
+        };
         let mut expansions = TestExpansions::default();
         let mut tests = None;
         let mut all_excluded = false;
@@ -9301,14 +9381,65 @@ impl Engine {
                 build.insert(label);
             }
         }
+        let PatternFailures { loading, skipped } = failures;
         Ok(TargetPatternPhase {
             build: build.into_iter().collect(),
             tests: tests_to_run.map(|tests| tests.into_iter().collect()),
             all_excluded,
             errors: expansions.events,
-            pattern_error,
+            pattern_error: pattern_error || !loading.is_empty() || !skipped.is_empty(),
             post_expansion_error,
+            loading_errors: loading,
+            skipped,
         })
+    }
+
+    /// [`Self::select_filtered`] of a keep-going build (FILTER_MANUAL;
+    /// getTargetsToBuild and mergeAll, TargetPatternPhaseFunction.java
+    /// :280-370 under --keep_going): a pattern that does not parse, or whose
+    /// evaluation fails, is skipped (`Skipping 'PATTERN': MESSAGE`; the
+    /// parse failures first, as Bazel parses every pattern before it
+    /// evaluates any); a wildcard keeps the packages that load and skips
+    /// the others, their errors recorded in loading order (natively a
+    /// package with errors contributes no targets, docs/KEEP_GOING.md).
+    fn select_keep_going(
+        &mut self,
+        patterns: &[String],
+        relative_directory: &str,
+        failures: &mut PatternFailures,
+    ) -> Vec<Label> {
+        let mut parsed = Vec::new();
+        for pattern in patterns {
+            match crate::target_pattern::parse(pattern, relative_directory) {
+                Ok(pattern) => parsed.push(pattern),
+                Err(message) => failures
+                    .skipped
+                    .push(format!("Skipping '{pattern}': {message}")),
+            }
+        }
+        let mut selected = BTreeSet::new();
+        for pattern in &parsed {
+            let filter = !pattern.negative;
+            self.pattern_load_errors = Some(Vec::new());
+            let expanded = self.expand_pattern(pattern, filter, true);
+            for error in self.pattern_load_errors.take().unwrap_or_default() {
+                if !failures.loading.contains(&error) {
+                    failures.loading.push(error);
+                }
+            }
+            match expanded {
+                Ok(targets) if pattern.negative => {
+                    selected.retain(|label| !targets.contains(label));
+                }
+                Ok(targets) => selected.extend(targets),
+                Err(error) => failures.skipped.push(format!(
+                    "Skipping '{}': {}",
+                    pattern.original,
+                    error.into_message()
+                )),
+            }
+        }
+        selected.into_iter().collect()
     }
 
     /// TargetPatternPhaseFunction.determineTests (:408-500): the tests of
@@ -9324,17 +9455,32 @@ impl Engine {
         options: &TargetPatternPhaseOptions<'_>,
         expansions: &mut TestExpansions,
     ) -> Result<(BTreeSet<Label>, BTreeSet<Label>, bool), String> {
+        // Under --keep_going the patterns and packages the targets to build
+        // skipped (and reported) are skipped here too.
         let parsed = patterns
             .iter()
             .map(|pattern| crate::target_pattern::parse(pattern, relative_directory))
+            .filter(|parsed| !(self.keep_going && parsed.is_err()))
             .collect::<Result<Vec<_>, _>>()?;
         let mut tests = BTreeSet::new();
         let mut filtered = BTreeSet::new();
         let mut has_error = false;
         for pattern in &parsed {
-            let mut targets = self
-                .expand_pattern(pattern, !pattern.negative, true)
-                .map_err(PatternError::into_message)?;
+            if self.keep_going {
+                self.pattern_load_errors = Some(Vec::new());
+            }
+            let expanded = self.expand_pattern(pattern, !pattern.negative, true);
+            if self.keep_going {
+                has_error |= self
+                    .pattern_load_errors
+                    .take()
+                    .is_some_and(|errors| !errors.is_empty());
+                if expanded.is_err() {
+                    has_error = true;
+                    continue;
+                }
+            }
+            let mut targets = expanded.map_err(PatternError::into_message)?;
             if !pattern.negative {
                 // FilterTests (pkgcache/FilteringPolicies.java:81-87).
                 let mut kept = BTreeSet::new();
@@ -12410,11 +12556,42 @@ impl Engine {
         plan: &Plan,
         configured: &mut ConfiguredNodes,
     ) -> Result<(), String> {
-        use crate::plan_timings::{PlanStage, StageTimer};
         while let Some((key, rule)) = plan.get(state.done) {
             let index = state.done as u64;
             state.done += 1;
             self.flush_delegations(state);
+            if !self.keep_going {
+                self.plan_one_target(state, key, rule, configured, index)?;
+                continue;
+            }
+            // --keep_going (docs/KEEP_GOING.md): a target above a failure is
+            // skipped before its implementation could read the failed
+            // dependency's (missing) providers; a target's own failure is
+            // a root cause, reported once, and fails what is above it.
+            if self.keep_going_state.dependency_failed(key) {
+                self.keep_going_state.fail_propagated(key);
+                continue;
+            }
+            match self.plan_one_target(state, key, rule, configured, index) {
+                Ok(()) => self.keep_going_state.planned(key),
+                Err(error) => self.keep_going_state.fail_own(key, error),
+            }
+        }
+        self.flush_delegations(state);
+        Ok(())
+    }
+
+    /// Phase 2 of one plan entry: prepare, compute, commit.
+    fn plan_one_target(
+        &mut self,
+        state: &mut ActionPlanning,
+        key: &ConfiguredTargetKey,
+        rule: &Rule,
+        configured: &mut ConfiguredNodes,
+        index: u64,
+    ) -> Result<(), String> {
+        use crate::plan_timings::{PlanStage, StageTimer};
+        {
             // The P1 split of plan_target (review §3): prepare builds the
             // coordinator context and the owned snapshot, compute runs the
             // pure implementation analysis, commit applies the effects in
@@ -12463,7 +12640,6 @@ impl Engine {
             timer.finish();
             committed?;
         }
-        self.flush_delegations(state);
         Ok(())
     }
 
@@ -12494,9 +12670,24 @@ impl Engine {
             u64::MAX,
             0,
         );
+        let (errors_before, failed_before) = (
+            self.keep_going_state.error_count(),
+            self.keep_going_state.failed_count(),
+        );
         let result = self.plan_targets(&mut state, plan, configured, false);
         timer.finish();
         self.action_planning = Some(state);
+        // --keep_going: a failure of a target this flush planned fails the
+        // analysis of the requested target that needed it (with the new
+        // root cause, or the one a skipped target's dependency reported).
+        if self.keep_going_state.failed_count() > failed_before {
+            let error = self
+                .keep_going_state
+                .error_at(errors_before)
+                .or_else(|| self.keep_going_state.last_error())
+                .unwrap_or("a dependency failed to analyze");
+            return Err(error.to_owned());
+        }
         result
     }
 
@@ -12532,9 +12723,14 @@ impl Engine {
                 }
                 _ => None,
             };
-            let analyzed = self.analyze(label, top, &mut Vec::new(), configured, plan);
+            let mut active = Vec::new();
+            if self.keep_going {
+                self.keep_going_state.current = Some(label.clone());
+            }
+            let analyzed = self.analyze(label, top, &mut active, configured, plan);
             self.requested_trimmed_root = None;
-            analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
+            self.keep_going_state.current = None;
+            let analyzed = analyzed.map_err(|error| match error.split_once(ANALYSIS_ABORTED) {
                 // BuildView: `Analysis of target 'L' failed; build
                 // aborted: MESSAGE` for the requested target.
                 Some((_, message)) => format!(
@@ -12542,7 +12738,20 @@ impl Engine {
                     crate::rule_declarations::canonical_form(label)
                 ),
                 None => error,
-            })?;
+            });
+            match analyzed {
+                // --keep_going: the target is skipped (docs/KEEP_GOING.md).
+                // A failure is the target's own unless the active chain it
+                // left reaches below the target's own key (a dependency's
+                // analysis failed: `Analysis failed`).
+                Err(error) if self.keep_going => {
+                    self.keep_going_state.error(error);
+                    self.keep_going_state
+                        .failed_targets
+                        .insert(label.clone(), active.len() > 1);
+                }
+                analyzed => analyzed?,
+            }
         }
         // N58: the top-level aspects' applications on each requested target
         // and along their `attr_aspects` closure are analyzed like any
@@ -12557,10 +12766,13 @@ impl Engine {
         }
         let mut seen = BTreeSet::new();
         for label in labels {
+            if self.keep_going_state.failed_targets.contains_key(label) {
+                continue;
+            }
             if !matches!(self.target(label)?, Target::Rule(_) | Target::Output(..)) {
                 continue;
             }
-            self.analyze_aspect_applications(
+            let analyzed = self.analyze_aspect_applications(
                 label,
                 top,
                 aspects.clone(),
@@ -12568,7 +12780,16 @@ impl Engine {
                 configured,
                 plan,
                 &mut seen,
-            )?;
+            );
+            match analyzed {
+                Err(error) if self.keep_going => {
+                    self.keep_going_state.error(error);
+                    self.keep_going_state
+                        .failed_targets
+                        .insert(label.clone(), true);
+                }
+                analyzed => analyzed?,
+            }
         }
         Ok(())
     }
@@ -12664,6 +12885,8 @@ impl Engine {
         self.workspace_status_once = std::sync::OnceLock::new();
         self.action_planning = None;
         self.build_info_actions.clear();
+        self.keep_going_state = keep_going::State::default();
+        self.keep_going_plan = None;
         // TargetPatternPhaseFunction.maybeReportDeprecation
         // (skyframe/TargetPatternPhaseFunction.java:255-275): every requested
         // rule whose `deprecation` is explicitly specified (package defaults
@@ -12737,6 +12960,22 @@ impl Engine {
         // early (a Starlark flag_values key, Self::plan_pending) are kept.
         let mut state = self.action_planning.take().unwrap_or_default();
         self.plan_targets(&mut state, &plan, &mut configured, true)?;
+        // --keep_going: the requested targets whose analysis failed in
+        // either phase (docs/KEEP_GOING.md), skipped from here on.
+        let mut failed_labels = std::mem::take(&mut self.keep_going_state.failed_targets);
+        if self.keep_going {
+            for label in labels {
+                if failed_labels.contains_key(label) {
+                    continue;
+                }
+                let failure = self
+                    .keep_going_state
+                    .phase2_failure(label, |key| self.rule_delegations.get(key).cloned());
+                if let Some(dependency) = failure {
+                    failed_labels.insert(label.clone(), dependency);
+                }
+            }
+        }
         if crate::plan_timings::enabled() {
             // M5 report inputs: plan index -> label, and the dep graph by
             // plan index (rule_edges labels resolved to plan positions).
@@ -12824,6 +13063,9 @@ impl Engine {
             BTreeMap::new();
         if !aspect_defs.is_empty() {
             for label in labels {
+                if failed_labels.contains_key(label) {
+                    continue;
+                }
                 if !matches!(self.target(label)?, Target::Rule(_) | Target::Output(..)) {
                     continue;
                 }
@@ -12834,10 +13076,34 @@ impl Engine {
                     label,
                     top,
                     aspect_defs.clone(),
-                )?;
+                );
+                let planned = match planned {
+                    Err(error) if self.keep_going => {
+                        self.keep_going_state.error(error);
+                        failed_labels.insert(label.clone(), true);
+                        continue;
+                    }
+                    planned => planned?,
+                };
                 top_level_aspects.insert(label.clone(), planned);
             }
         }
+        // --keep_going: what follows serves the targets that analyzed.
+        let all_labels = labels;
+        let analyzed_labels: Vec<Label> = if failed_labels.is_empty() {
+            Vec::new()
+        } else {
+            labels
+                .iter()
+                .filter(|label| !failed_labels.contains_key(*label))
+                .cloned()
+                .collect()
+        };
+        let labels: &[Label] = if failed_labels.is_empty() {
+            labels
+        } else {
+            &analyzed_labels
+        };
         // The top-level aspects above also run rule implementations
         // (N58); implementations and action planning end here.
         if crate::plan_timings::enabled() {
@@ -13493,6 +13759,9 @@ impl Engine {
             .iter()
             .map(|(key, rule)| (key.action_owner(top), rule))
             .collect::<BTreeMap<_, _>>();
+        // The actions whose inputs fail (--keep_going: they fail, and
+        // what depends on them is not built).
+        let mut missing_nodes: Vec<String> = Vec::new();
         for node in &nodes {
             // SourceManifestAction has no inputs (SourceManifestAction.java:
             // 168): its source directories are never traversed.
@@ -13511,6 +13780,7 @@ impl Engine {
             if failures.is_empty() {
                 continue;
             }
+            missing_nodes.push(node.action.id.clone());
             let owner = node.action.id.split('#').next().unwrap_or_default();
             let rule = rules_by_label.get(owner);
             let progress = match rule {
@@ -13535,8 +13805,84 @@ impl Engine {
         if !errors.is_empty() {
             errors.splice(0..0, events);
         }
+        // --keep_going: the input failures are execution failures of the
+        // actions and targets they name (ArtifactFunction /
+        // ActionExecutionFunction errors under keepGoing): those actions and
+        // every action above them do not run, the targets they name are not
+        // built, everything else is.
+        let mut input_unbuilt: Vec<Label> = Vec::new();
+        let input_errors = if self.keep_going && !errors.is_empty() {
+            let mut failed: HashSet<String> = missing_nodes.into_iter().collect();
+            loop {
+                let before = failed.len();
+                for node in &nodes {
+                    if !failed.contains(&node.action.id)
+                        && node
+                            .all_dependencies()
+                            .any(|dependency| failed.contains(&dependency.action_id))
+                    {
+                        failed.insert(node.action.id.clone());
+                    }
+                }
+                if failed.len() == before {
+                    break;
+                }
+            }
+            nodes.retain(|node| !failed.contains(&node.action.id));
+            input_unbuilt = by_target.iter().map(|(label, _)| label.clone()).collect();
+            std::mem::take(&mut errors)
+        } else {
+            Vec::new()
+        };
         if !errors.is_empty() {
             return Err(errors.join("\n"));
+        }
+        // --keep_going (docs/KEEP_GOING.md): what each analyzed requested
+        // target's completion builds (its requested, hidden and aspect
+        // artifacts' producers, the workspace status apart), so execution
+        // knows which top-level targets a failed action fails.
+        if self.keep_going {
+            let mut targets: BTreeMap<&Label, BTreeSet<&str>> = labels
+                .iter()
+                .map(|label| (label, BTreeSet::new()))
+                .collect();
+            let artifacts = requested
+                .iter()
+                .chain(&hidden)
+                .map(|(key, artifact)| (&key.label, artifact))
+                .chain(aspect_reports.iter().flat_map(|(_, label, artifacts)| {
+                    artifacts.iter().map(move |artifact| (label, artifact))
+                }));
+            for (label, artifact) in artifacts {
+                if let Some((id, _)) = &artifact.producer
+                    && !id.starts_with(crate::request::STATUS_ID_PREFIX)
+                    && let Some(ids) = targets.get_mut(label)
+                {
+                    ids.insert(id);
+                }
+            }
+            let errors = self.keep_going_state.take_errors();
+            if !errors.is_empty() || !failed_labels.is_empty() {
+                crate::observed_fs::taint(crate::observed_fs::Taint::Errors, || {
+                    format!(
+                        "--keep_going analysis failed for {} target(s)",
+                        failed_labels.len()
+                    )
+                });
+            }
+            self.keep_going_plan = Some(crate::request::KeepGoingPlan {
+                top_level: all_labels.len(),
+                errors,
+                input_errors,
+                unbuilt: input_unbuilt,
+                failed: std::mem::take(&mut failed_labels).into_iter().collect(),
+                targets: targets
+                    .into_iter()
+                    .map(|(label, ids)| {
+                        (label.clone(), ids.into_iter().map(str::to_owned).collect())
+                    })
+                    .collect(),
+            });
         }
         let built = (nodes, requested, aspect_reports, target_result_labels.len());
         if self.skip_teardown && !self.execute_build {
