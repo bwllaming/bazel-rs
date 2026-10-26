@@ -196,7 +196,10 @@ the change time — and so does the executor, for every repository tree file:
 - **Blobs and published outputs** (`cas/`, `actions/`) have no second check: they are read-only, and an
   in-place edit that keeps their size, mtime and mode (after a `chmod`) is trusted by later commands
   too, where before the table only the rest of the command trusted it (as the per-process memo always
-  did, docs/HARDLINK_STAGING.md, "Trade-offs and limits"). `BAZEL_RS_DIGEST_MEMO=off` restores the
+  did, docs/HARDLINK_STAGING.md, "Trade-offs and limits"). The files of a published tree artifact whose
+  directories still show their stamps are not even inspected by a cache check (perf-cache-hits,
+  docs/HARDLINK_STAGING.md, "Cache checks of published trees"): an in-place edit of one is not
+  re-detected at all, while any change of the tree's structure is. `BAZEL_RS_DIGEST_MEMO=off` restores the
   re-hash per command while it is set, but repairs nothing (below): only deleting `<cache>/digests/`
   drops a record that trusts such an edit.
 

@@ -134,18 +134,25 @@ const BUFFER_BYTES: usize = 1 << 20;
 // worst-case footprints at the caps (32-byte digests, absolute paths of
 // 160-230 bytes as on ~/code, hash-table and B-tree slack included): digest
 // memo ~45 MB of settled states plus ~85 MB of produced files, tree memo
-// ~110 MB, file memo ~85 MB, directory memo ~60 MB. The warm
-// `oauth2token/...` build (689 actions) fills about 3% of them: 8.9k
-// digests, 958 tree entries, 7.4k store files, 7.3k directories.
+// ~440 MB (1 Mi entries), file memo ~85 MB, output memo ~110 MB,
+// directory memos ~60 MB each. The warm `oauth2token/...` build (689
+// actions) fills about 3% of them: 8.9k digests, 958 tree entries, 7.4k
+// store files, 7.3k directories; the warm `//src/ts/...` build (24,608
+// actions) holds ~430k tree entries and ~19k published outputs.
 /// Settled file states with a known digest (88 bytes each, no allocation),
 /// and files the process produced (a path and 88 bytes each).
 const DIGEST_MEMO_LIMIT: usize = 1 << 18;
-/// Entries (files plus directories) of memoized published trees.
-const TREE_MEMO_LIMIT: usize = 1 << 18;
+/// Entries (files plus directories) of memoized published trees. A
+/// TypeScript build's `node_modules` package trees hold ~430k (~/code
+/// `//src/ts/...`): a smaller memo starts over during a warm build and its
+/// consumers walk the trees again.
+const TREE_MEMO_LIMIT: usize = 1 << 20;
 /// Remembered cache-owned real directories (one path each).
 const DIRECTORY_MEMO_LIMIT: usize = 1 << 18;
 /// Remembered immutable-store files (a path and 48 bytes each).
 const FILE_MEMO_LIMIT: usize = 1 << 18;
+/// Remembered published outputs (a path, and an input or a link text).
+const OUTPUT_MEMO_LIMIT: usize = 1 << 18;
 /// Published symlink outputs followed when they are inputs (a chain).
 const MAX_LINK_DEPTH: usize = 32;
 // Bazel 9.3 OutputPermissions.READONLY: all completed regular action outputs,
@@ -828,8 +835,15 @@ fn checked_path(
     cache: Option<&Path>,
     leaf: Option<fs::Metadata>,
 ) -> Result<fs::Metadata, String> {
-    if let Some(metadata) = cache.and_then(|root| owned_no_linked_ancestor(path, root, leaf)) {
-        return Ok(metadata);
+    if let Some(root) = cache {
+        let checked = if owned_by(Some(root), path) {
+            owned_no_linked_ancestor(path, root, leaf)
+        } else {
+            source_no_linked_ancestor(path, leaf)
+        };
+        if let Some(metadata) = checked {
+            return Ok(metadata);
+        }
     }
     #[cfg(test)]
     FULL_ANCESTOR_WALKS.with(|walks| walks.set(walks.get() + 1));
@@ -857,13 +871,14 @@ fn checked_path(
 /// arbitrary code: `modextwd/`, the repository directories `external/`) are
 /// never remembered.
 /// Other writers racing these checks are outside the module's trust model.
-fn verified_directories() -> &'static RwLock<HashSet<PathBuf>> {
-    static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
-    MEMO.get_or_init(|| RwLock::new(HashSet::new()))
+fn verified_directories() -> &'static Shards<HashSet<PathBuf>> {
+    static MEMO: OnceLock<Shards<HashSet<PathBuf>>> = OnceLock::new();
+    MEMO.get_or_init(Shards::new)
 }
 
 fn directory_verified(path: &Path) -> bool {
     verified_directories()
+        .of(path)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .contains(path)
@@ -871,12 +886,43 @@ fn directory_verified(path: &Path) -> bool {
 
 fn remember_directory(path: PathBuf) {
     let mut memo = verified_directories()
+        .of(&path)
         .write()
         .unwrap_or_else(|e| e.into_inner());
-    if memo.len() >= DIRECTORY_MEMO_LIMIT {
+    if memo.len() >= DIRECTORY_MEMO_LIMIT / SHARDS {
         memo.clear();
     }
     memo.insert(path);
+}
+
+/// Shards of a per-process memo keyed by path: a warm build's workers look
+/// up its memos hundreds of thousands of times at once, and one lock's
+/// shared counter would bounce between all their cores. Each shard keeps
+/// the memo's cap divided by [`SHARDS`].
+struct Shards<T>(Vec<RwLock<T>>);
+
+const SHARDS: usize = 64;
+
+impl<T: Default> Shards<T> {
+    fn new() -> Self {
+        Self((0..SHARDS).map(|_| RwLock::default()).collect())
+    }
+
+    /// The shard of `path`: FNV-1a of its last 64 bytes (paths share long
+    /// prefixes).
+    fn of(&self, path: &Path) -> &RwLock<T> {
+        let bytes = path.as_os_str().as_bytes();
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in &bytes[bytes.len().saturating_sub(64)..] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+        &self.0[(hash % SHARDS as u64) as usize]
+    }
+
+    fn all(&self) -> impl Iterator<Item = &RwLock<T>> {
+        self.0.iter()
+    }
 }
 
 /// Whether `bytes` spell a plain absolute path: a leading `/`, no empty
@@ -1004,7 +1050,7 @@ fn owned_no_linked_ancestor(
         return None;
     }
     let parent = path.parent()?;
-    if parent != root && !directory_verified(parent) {
+    if parent != root && !directory_verified(parent) && !verify_directories(parent, root) {
         let mut prefix = root.to_path_buf();
         for component in parent.strip_prefix(root).ok()?.components() {
             prefix.push(component);
@@ -1025,7 +1071,109 @@ fn owned_no_linked_ancestor(
     if metadata.file_type().is_symlink() {
         return None;
     }
+    if metadata.is_dir() {
+        remember_directory(path.to_path_buf());
+    }
     Some(metadata)
+}
+
+/// Directories outside the cache (the workspace's source directories,
+/// local repositories) found to be real directories by lstat, each together
+/// with every directory above it, in this process: like Bazel's per-build
+/// file system values (FileValue of each ancestor, computed once per
+/// build), each is inspected once per command instead of once per action
+/// input (a warm TypeScript build reads its sources ~90k times through ten
+/// ancestors each). A directory replaced by a symlink while the command
+/// runs, after this first look, is not re-detected by the command; inputs
+/// are still read (and staged) by their own lstat and digest.
+fn source_directories() -> &'static RwLock<HashSet<PathBuf>> {
+    static MEMO: OnceLock<RwLock<HashSet<PathBuf>>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// The memoized [`no_linked_ancestor`] of a [`plain`] path outside the cache
+/// root ([`source_directories`]); the leaf is always inspected (or `leaf`,
+/// the caller's lstat of it, is used). `None` when the path is not plain or
+/// anything fails, so that the full walk produces the result (and the exact
+/// error) it always did.
+fn source_no_linked_ancestor(path: &Path, leaf: Option<fs::Metadata>) -> Option<fs::Metadata> {
+    let bytes = path.as_os_str().as_bytes();
+    if !plain(bytes) || has_parent_name(bytes) {
+        return None;
+    }
+    let parent = path.parent()?;
+    let verified = |directory: &Path| {
+        source_directories()
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(directory)
+    };
+    if !verified(parent) {
+        // The directories from the top, skipping those already verified.
+        let mut prefix = PathBuf::from("/");
+        for component in parent.strip_prefix("/").ok()?.components() {
+            prefix.push(component);
+            if verified(&prefix) {
+                continue;
+            }
+            // lstat: a symlink is never a directory here.
+            if !fs::symlink_metadata(&prefix).ok()?.is_dir() {
+                return None;
+            }
+            let mut memo = source_directories()
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            if memo.len() >= DIRECTORY_MEMO_LIMIT {
+                memo.clear();
+            }
+            memo.insert(prefix.clone());
+        }
+    }
+    let metadata = match leaf {
+        Some(metadata) => metadata,
+        None => fs::symlink_metadata(path).ok()?,
+    };
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    Some(metadata)
+}
+
+/// Verify (and remember) every directory from `directory` up to the cache
+/// root `root` that is not verified yet: the deepest verified one is opened
+/// (`O_PATH`), and each directory below it relative to its parent's
+/// descriptor, never through a symlink (`O_NOFOLLOW | O_DIRECTORY`), instead
+/// of an lstat of each one's absolute path. Each action entry's directories
+/// are new to a warm build, and on overlay filesystems absolute-path lookups
+/// serialize across threads (crate::dir_stamps). Any failure leaves the
+/// per-directory walk to decide (and to report).
+fn verify_directories(directory: &Path, root: &Path) -> bool {
+    let Ok(below) = directory.strip_prefix(root) else {
+        return false;
+    };
+    let names: Vec<&OsStr> = below.iter().collect();
+    // The deepest verified directory (the root at the least).
+    let mut start = names.len();
+    let mut base = directory.to_path_buf();
+    while start > 0 {
+        base.pop();
+        start -= 1;
+        if base == root || directory_verified(&base) {
+            break;
+        }
+    }
+    let Ok(mut parent) = crate::dir_stamps::open_directory(None, &base) else {
+        return false;
+    };
+    for name in &names[start..] {
+        let Ok(opened) = crate::dir_stamps::open_directory(Some(&parent), Path::new(name)) else {
+            return false;
+        };
+        base.push(name);
+        remember_directory(base.clone());
+        parent = opened;
+    }
+    true
 }
 
 fn regular_file(path: &Path, cache: Option<&Path>) -> Result<fs::Metadata, String> {
@@ -1129,17 +1277,27 @@ struct DigestMemo {
     entries: HashMap<PathBuf, Vec<PathBuf>>,
 }
 
-fn digest_memo() -> std::sync::MutexGuard<'static, DigestMemo> {
-    static MEMO: OnceLock<Mutex<DigestMemo>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(DigestMemo::default()))
-        .lock()
+/// The digest memo; lookups (most calls of a warm build, from every worker
+/// at once) share it ([`digest_memo_read`]).
+fn digest_memo_lock() -> &'static RwLock<DigestMemo> {
+    static MEMO: OnceLock<RwLock<DigestMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(DigestMemo::default()))
+}
+
+fn digest_memo() -> std::sync::RwLockWriteGuard<'static, DigestMemo> {
+    digest_memo_lock()
+        .write()
         .unwrap_or_else(|e| e.into_inner())
+}
+
+fn digest_memo_read() -> std::sync::RwLockReadGuard<'static, DigestMemo> {
+    digest_memo_lock().read().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The digest this process knows for `path` in the state `key`, and
 /// whether it knows it from a settled state.
 fn memoized(path: &Path, key: &FileKey) -> Option<(Sha256Digest, bool)> {
-    let memo = digest_memo();
+    let memo = digest_memo_read();
     if let Some(digest) = memo.settled.get(key) {
         return Some((*digest, true));
     }
@@ -1193,6 +1351,7 @@ fn forget_produced(path: &Path) {
         table.forget(path);
     }
     file_memo()
+        .of(path)
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .remove(path);
@@ -1463,7 +1622,11 @@ fn resolve_published(
         match fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 if let Some(parent) = current.parent() {
-                    no_linked_ancestor(parent, Some(root))?;
+                    // A directory this process verified is not inspected
+                    // again (owned_no_linked_ancestor remembers it).
+                    if !(owned_area(parent, root) && directory_verified(parent)) {
+                        no_linked_ancestor(parent, Some(root))?;
+                    }
                 }
                 let target = fs::read_link(&current)
                     .map_err(|e| io_error("cannot read link", &current, e))?;
@@ -1489,9 +1652,9 @@ fn resolve_published(
 /// first reader in this process read them, by path: later consumers stage
 /// the same content identity without inspecting the file again, like Bazel's
 /// per-build file metadata.
-fn file_memo() -> &'static RwLock<HashMap<PathBuf, StoreFile>> {
-    static MEMO: OnceLock<RwLock<HashMap<PathBuf, StoreFile>>> = OnceLock::new();
-    MEMO.get_or_init(|| RwLock::new(HashMap::new()))
+fn file_memo() -> &'static Shards<HashMap<PathBuf, StoreFile>> {
+    static MEMO: OnceLock<Shards<HashMap<PathBuf, StoreFile>>> = OnceLock::new();
+    MEMO.get_or_init(Shards::new)
 }
 
 /// What the file memo keeps of a store file's [`Input`]: all but its path,
@@ -1506,6 +1669,7 @@ struct StoreFile {
 
 fn memoized_file(path: &Path) -> Option<Input> {
     let file = *file_memo()
+        .of(path)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(path)?;
@@ -1518,9 +1682,32 @@ fn memoized_file(path: &Path) -> Option<Input> {
     })
 }
 
+/// The lock that [`read_input`] holds while it reads the store file `path`
+/// for the file memo (single flight). Dropped once the file is remembered:
+/// the map holds only the files being read.
+fn store_file_flight(path: &Path) -> FileFlight {
+    static FLIGHTS: OnceLock<Mutex<HashMap<PathBuf, std::sync::Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut flights = FLIGHTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(flight) = flights.get(path).and_then(std::sync::Weak::upgrade) {
+        return flight;
+    }
+    flights.retain(|_, flight| flight.strong_count() > 0);
+    let flight = Arc::new(Mutex::new(()));
+    flights.insert(path.to_path_buf(), Arc::downgrade(&flight));
+    flight
+}
+
+type FileFlight = Arc<Mutex<()>>;
+
 fn remember_file(input: &Input) {
-    let mut memo = file_memo().write().unwrap_or_else(|e| e.into_inner());
-    if memo.len() >= FILE_MEMO_LIMIT {
+    let mut memo = file_memo()
+        .of(&input.path)
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    if memo.len() >= FILE_MEMO_LIMIT / SHARDS {
         memo.clear();
     }
     memo.insert(
@@ -1597,6 +1784,16 @@ fn read_input(path: &Path, root: Option<&Path>, follow: bool) -> Result<Input, S
         (path.to_path_buf(), None)
     };
     let stored = store_file(root, &path);
+    if stored && let Some(input) = memoized_file(&path) {
+        return Ok(input);
+    }
+    // One reader per store file at a time: the actions that start together
+    // read the same files (a toolchain, a package's sources), and every
+    // other reader takes the first one's result from the memo.
+    let flight = stored.then(|| store_file_flight(&path));
+    let _reading = flight
+        .as_ref()
+        .map(|flight| flight.lock().unwrap_or_else(|e| e.into_inner()));
     if stored && let Some(input) = memoized_file(&path) {
         return Ok(input);
     }
@@ -1756,11 +1953,38 @@ where
     try_map_ordered_in(helper_budget(), items, map)
 }
 
+/// [`try_map_ordered`] that maps every item, also after a failure.
+fn try_map_all<T, R>(
+    items: &[T],
+    map: impl Fn(&T) -> Result<R, String> + Sync,
+) -> Vec<Result<R, String>>
+where
+    T: Sync,
+    R: Send,
+{
+    try_map_in(helper_budget(), items, map, false)
+}
+
 /// [`try_map_ordered`] with helpers from `budget`.
 fn try_map_ordered_in<T, R>(
     budget: &HelperBudget,
     items: &[T],
     map: impl Fn(&T) -> Result<R, String> + Sync,
+) -> Vec<Result<R, String>>
+where
+    T: Sync,
+    R: Send,
+{
+    try_map_in(budget, items, map, true)
+}
+
+/// [`try_map_ordered_in`]; `stop` at the first failure when mapping on the
+/// calling thread alone (otherwise every item is mapped).
+fn try_map_in<T, R>(
+    budget: &HelperBudget,
+    items: &[T],
+    map: impl Fn(&T) -> Result<R, String> + Sync,
+    stop: bool,
 ) -> Vec<Result<R, String>>
 where
     T: Sync,
@@ -1780,7 +2004,7 @@ where
             let result = map(item);
             let failed = result.is_err();
             results.push(result);
-            if failed {
+            if failed && stop {
                 break;
             }
         }
@@ -2091,9 +2315,9 @@ struct TreeMemo {
     entries: usize,
 }
 
-fn tree_memo() -> &'static Mutex<TreeMemo> {
-    static MEMO: OnceLock<Mutex<TreeMemo>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(TreeMemo::default()))
+fn tree_memo() -> &'static RwLock<TreeMemo> {
+    static MEMO: OnceLock<RwLock<TreeMemo>> = OnceLock::new();
+    MEMO.get_or_init(|| RwLock::new(TreeMemo::default()))
 }
 
 fn tree_entries(tree: &Tree) -> usize {
@@ -2102,7 +2326,7 @@ fn tree_entries(tree: &Tree) -> usize {
 
 fn memoized_tree(path: &Path) -> Option<Arc<Tree>> {
     tree_memo()
-        .lock()
+        .read()
         .unwrap_or_else(|e| e.into_inner())
         .trees
         .get(path)
@@ -2110,7 +2334,7 @@ fn memoized_tree(path: &Path) -> Option<Arc<Tree>> {
 }
 
 fn remember_tree(path: PathBuf, tree: Arc<Tree>) {
-    let mut memo = tree_memo().lock().unwrap_or_else(|e| e.into_inner());
+    let mut memo = tree_memo().write().unwrap_or_else(|e| e.into_inner());
     if let Some(previous) = memo.trees.remove(&path) {
         memo.entries -= tree_entries(&previous);
     }
@@ -2129,7 +2353,7 @@ fn remember_tree(path: PathBuf, tree: Arc<Tree>) {
 /// Drop the memoized trees at or below `prefix`: an action's cache entry
 /// that is about to be removed (and published again).
 fn forget_trees(prefix: &Path) {
-    let mut memo = tree_memo().lock().unwrap_or_else(|e| e.into_inner());
+    let mut memo = tree_memo().write().unwrap_or_else(|e| e.into_inner());
     let mut removed = 0;
     memo.trees.retain(|path, tree| {
         let keep = !path.starts_with(prefix);
@@ -2139,6 +2363,115 @@ fn forget_trees(prefix: &Path) {
         keep
     });
     memo.entries -= removed;
+}
+
+/// What a consumer reads of a published output ([`read_staged`]): a file
+/// (through the published symlinks that lead to it) or an unresolved
+/// symlink's link text.
+#[derive(Clone)]
+enum PublishedValue {
+    File(Input),
+    Link(PathBuf),
+}
+
+/// Published outputs (other than trees: [`TreeMemo`]) by path, as their
+/// producer's valid cache entry showed them ([`cache_valid`]), read once
+/// per process and shared by every consumer like Bazel's per-build output
+/// metadata, instead of being inspected again by each consuming action (a
+/// TypeScript build's actions read hundreds of thousands of published
+/// files and `node_modules` links). The trust is the tree memo's: a
+/// published output is read-only and replaced only by its producer's
+/// republication, which drops it first ([`forget_outputs`]).
+struct OutputMemo {
+    values: Shards<HashMap<PathBuf, PublishedValue>>,
+    /// The memoized paths that depend on each action entry
+    /// (`actions/<key>`): its own outputs, and the published symlinks of
+    /// other entries that resolve into it; and how many values there are.
+    entries: Mutex<(HashMap<PathBuf, Vec<PathBuf>>, usize)>,
+}
+
+fn output_memo() -> &'static OutputMemo {
+    static MEMO: OnceLock<OutputMemo> = OnceLock::new();
+    MEMO.get_or_init(|| OutputMemo {
+        values: Shards::new(),
+        entries: Mutex::default(),
+    })
+}
+
+fn memoized_output(path: &Path) -> Option<PublishedValue> {
+    output_memo()
+        .values
+        .of(path)
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+        .cloned()
+}
+
+/// The action entry (`<root>/actions/<key>`) of a published path.
+fn action_entry(root: &Path, path: &Path) -> Option<PathBuf> {
+    let key = path
+        .strip_prefix(root.join("actions"))
+        .ok()?
+        .components()
+        .next()?;
+    Some(root.join("actions").join(key))
+}
+
+/// Remember the published outputs of one valid cache entry: each path, its
+/// value, and the entries it depends on.
+fn remember_outputs(root: &Path, values: Vec<(PathBuf, PublishedValue)>) {
+    if values.is_empty() {
+        return;
+    }
+    let memo = output_memo();
+    let mut entries = memo.entries.lock().unwrap_or_else(|e| e.into_inner());
+    if entries.1 + values.len() > OUTPUT_MEMO_LIMIT {
+        for shard in memo.values.all() {
+            shard.write().unwrap_or_else(|e| e.into_inner()).clear();
+        }
+        *entries = Default::default();
+    }
+    for (path, value) in values {
+        let mut dependencies = vec![action_entry(root, &path)];
+        if let PublishedValue::File(input) = &value
+            && input.path != path
+        {
+            dependencies.push(action_entry(root, &input.path));
+        }
+        for entry in dependencies.into_iter().flatten() {
+            entries.0.entry(entry).or_default().push(path.clone());
+        }
+        let previous = memo
+            .values
+            .of(&path)
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path, value);
+        if previous.is_none() {
+            entries.1 += 1;
+        }
+    }
+}
+
+/// This process is about to remove the action entry `entry` (to publish it
+/// again): forget its outputs, and the symlinks that resolve into it.
+fn forget_outputs(entry: &Path) {
+    let memo = output_memo();
+    let mut entries = memo.entries.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(paths) = entries.0.remove(entry) {
+        for path in paths {
+            let removed = memo
+                .values
+                .of(&path)
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&path);
+            if removed.is_some() {
+                entries.1 -= 1;
+            }
+        }
+    }
 }
 
 /// Whether `path` is a published action output below the canonical cache
@@ -2203,12 +2536,22 @@ fn memoized_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Option<
             .then(|| memoized_tree(path))
             .flatten()
             .map(Staged::Tree),
-        InputKind::File => store_file(root, path)
-            .then(|| memoized_file(path))
+        InputKind::File if store_file(root, path) => memoized_file(path).map(Staged::File),
+        InputKind::File => published_output(root, path)
+            .then(|| memoized_output(path))
             .flatten()
-            .map(Staged::File),
+            .and_then(|value| match value {
+                PublishedValue::File(input) => Some(Staged::File(input)),
+                PublishedValue::Link(_) => None,
+            }),
         InputKind::SourceDirectory => memoized_source_directory(path).map(Staged::SourceDirectory),
-        InputKind::Symlink => None,
+        InputKind::Symlink => published_output(root, path)
+            .then(|| memoized_output(path))
+            .flatten()
+            .and_then(|value| match value {
+                PublishedValue::Link(text) => Some(Staged::Symlink(text)),
+                PublishedValue::File(_) => None,
+            }),
     }
 }
 
@@ -2991,7 +3334,20 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     let misses: Vec<usize> = (0..staged.len())
         .filter(|&index| staged[index].is_none())
         .collect();
-    let read_misses = try_map_ordered(&misses, |&index| {
+    // Each action reads its misses from its own starting point: the
+    // actions that start together miss the same files (a toolchain, an npm
+    // package's sources), and in one order they would queue behind each
+    // other's single-flight reads ([`read_input`]); every miss is read
+    // (no early stop), so the first failure in input order is still the one
+    // reported below.
+    let mut misses = misses;
+    if misses.len() > PARALLEL_ITEMS_PER_THREAD {
+        let offset = usize::try_from(crate::digest_memo::path_hash(Path::new(&action.id)))
+            .unwrap_or(0)
+            % misses.len();
+        misses.rotate_left(offset);
+    }
+    let read_misses = try_map_all(&misses, |&index| {
         let (source, kind) = reads[index];
         read_staged(source, kind, root)
     });
@@ -3305,11 +3661,12 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             frame(&mut hash, name.as_os_str().as_bytes());
         }
     }
+    let key = hex(&hash.finalize());
     Ok(PreparedAction {
         inputs,
         origins,
         outputs,
-        key: hex(&hash.finalize()),
+        key,
     })
 }
 
@@ -3948,6 +4305,35 @@ pub fn report_staging() {
         "PERF-STAGE staging {:.3}s calls={calls} tree_links={links} blobs={blobs}",
         micros as f64 / 1e6
     ));
+    let [setup, prepare, lock, check, hits, misses] =
+        CHECKS.each_ref().map(|n| n.load(Ordering::Relaxed));
+    let [stamped, walked, written] = tree_stamps::COUNTS
+        .each_ref()
+        .map(|n| n.load(Ordering::Relaxed));
+    let seconds = |micros: u64| micros as f64 / 1e6;
+    crate::snapshot::diag::line_fmt(format_args!(
+        "PERF-STAGE cache-check setup={:.3}s prepare={:.3}s lock={:.3}s validate={:.3}s hits={hits} misses={misses} trees: stamped={stamped} walked={walked} stamps_written={written}",
+        seconds(setup),
+        seconds(prepare),
+        seconds(lock),
+        seconds(check),
+    ));
+}
+
+/// Summed wall time (microseconds, over all workers) of an action's cache
+/// check, reported under `BAZEL_RS_TIMING` ([`report_staging`]): setting
+/// up the cache directories, computing the key ([`prepare`]), taking the
+/// entry's lock, validating the entry ([`cache_valid`]); then the number
+/// of hits and misses.
+static CHECKS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+
+fn count_check(slot: usize, clock: &mut std::time::Instant) {
+    let now = std::time::Instant::now();
+    CHECKS[slot].fetch_add(
+        u64::try_from(now.duration_since(*clock).as_micros()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+    *clock = now;
 }
 
 /// Stage one input file at `destination`: a file of a published repository
@@ -4345,22 +4731,28 @@ fn tree_valid(path: &Path, expected: &TreeManifest, root: &Path) -> Result<Optio
     Ok(Some(tree))
 }
 
-/// The tree listings of a valid cache entry. Every validated published tree
-/// (also a symlink output's target tree) seeds the tree memo, so consumers
-/// in this process never walk it again ([`read_staged`]).
+/// Tree outputs' listings by output name.
+type Listings = BTreeMap<PathBuf, Vec<PathBuf>>;
+
+/// The tree listings of a valid cache entry, and whether its tree stamps
+/// changed (crate::action::tree_stamps; recorded only when
+/// `write_stamps`: the caller holds the entry's lock). Every validated
+/// published tree (also a symlink output's target tree) seeds the tree
+/// memo, and every other published output the output memo, so consumers in
+/// this process never inspect them again ([`read_staged`]).
 fn cache_valid(
     directory: &Path,
     key: &str,
     outputs: &[PathBuf],
     (trees, links): (&BTreeSet<PathBuf>, &BTreeSet<PathBuf>),
     root: &Path,
-) -> Option<BTreeMap<PathBuf, Vec<PathBuf>>> {
+    write_stamps: bool,
+) -> Option<(Listings, bool)> {
     let manifest_path = directory.join("manifest.json");
     let mut validated = Vec::new();
-    let mut check = || -> Result<Option<BTreeMap<PathBuf, Vec<PathBuf>>>, String> {
-        regular_file(&manifest_path, Some(root))?;
-        let bytes = fs::read(&manifest_path)
-            .map_err(|e| io_error("cannot read manifest", &manifest_path, e))?;
+    let mut values = Vec::new();
+    let mut check = || -> Result<Option<(Listings, bool)>, String> {
+        let bytes = read_manifest(&manifest_path, root)?;
         let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         if manifest.format != MANIFEST_FORMAT
             || manifest.key != key
@@ -4369,7 +4761,8 @@ fn cache_valid(
             return Ok(None);
         }
         let mut listings = BTreeMap::new();
-        for (entry, name) in manifest.outputs.iter().zip(outputs) {
+        let mut stamps = tree_stamps::EntryStamps::new(directory, &bytes);
+        for (index, (entry, name)) in manifest.outputs.iter().zip(outputs).enumerate() {
             if entry.name != hex(name.as_os_str().as_bytes()) {
                 return Ok(None);
             }
@@ -4388,8 +4781,13 @@ fn cache_valid(
                 {
                     return Ok(None);
                 }
+                values.push((
+                    path,
+                    PublishedValue::Link(PathBuf::from(OsStr::from_bytes(text))),
+                ));
                 continue;
             }
+            let published = path.clone();
             if let Some(target) = &entry.symlink {
                 // A symlink output still names the recorded target, which
                 // still has the recorded contents and mode.
@@ -4404,7 +4802,11 @@ fn cache_valid(
                     return Ok(None);
                 }
                 if let Some(tree) = &entry.runfiles
-                    && !runfiles_tree_valid(&directory.join("outputs"), name, tree, root)
+                    && !runfiles_tree_valid(&directory.join("outputs"), name, tree, root, |dir| {
+                        stamps.runfiles(index, dir, tree, root, || {
+                            runfiles_listing(dir, Some(root)).ok().as_ref() == Some(&tree.entries)
+                        })
+                    })
                 {
                     return Ok(None);
                 }
@@ -4412,7 +4814,14 @@ fn cache_valid(
             }
             match (&entry.tree, trees.contains(name)) {
                 (Some(expected), true) => {
-                    let Some(tree) = tree_valid(&path, expected, root)? else {
+                    // A published tree (also a symlink output's target) by
+                    // its directory stamps; any other tree in full.
+                    let tree = if published_output(Some(root), &path) {
+                        stamps.tree(index, &path, expected, root)?
+                    } else {
+                        tree_valid(&path, expected, root)?
+                    };
+                    let Some(tree) = tree else {
                         return Ok(None);
                     };
                     listings.insert(name.clone(), tree_listing(&tree));
@@ -4423,19 +4832,54 @@ fn cache_valid(
                     if actual.mode != entry.mode || !actual.digest.spelled(&entry.digest) {
                         return Ok(None);
                     }
+                    // What a consumer reads through the published symlinks:
+                    // a published output, or a file of the immutable stores
+                    // (a repository tree's file, which the file memo keeps
+                    // by its path for the whole process anyway); a source
+                    // keeps the checks of its own area on every use.
+                    if published_output(Some(root), &actual.path)
+                        || store_file(Some(root), &actual.path)
+                    {
+                        values.push((published, PublishedValue::File(actual)));
+                    }
                 }
                 _ => return Ok(None),
             }
         }
-        Ok(Some(listings))
+        let pending = stamps.finish(write_stamps);
+        Ok(Some((listings, pending)))
     };
-    let listings = check().unwrap_or(None)?;
+    let (listings, pending) = check().unwrap_or(None)?;
     for (path, tree) in validated {
         if published_output(Some(root), &path) {
             remember_tree(path, Arc::new(tree));
         }
     }
-    Some(listings)
+    remember_outputs(root, values);
+    Some((listings, pending))
+}
+
+/// The bytes of an entry's manifest: a regular file (never through a
+/// symlink, also not at the leaf) with no linked ancestor, opened once and
+/// inspected through its descriptor.
+fn read_manifest(path: &Path, root: &Path) -> Result<Vec<u8>, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
+        .open(path)
+        .map_err(|e| io_error("cannot read manifest", path, e))?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| io_error("cannot inspect", path, e))?;
+    let metadata = checked_path(path, Some(root), Some(metadata))?;
+    if !metadata.is_file() {
+        return Err(format!("expected regular file: '{}'", path.display()));
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0) + 1);
+    file.read_to_end(&mut bytes)
+        .map_err(|e| io_error("cannot read manifest", path, e))?;
+    Ok(bytes)
 }
 
 /// The TMPDIR every local spawn runs with, standalone and sandboxed alike:
@@ -4853,13 +5297,11 @@ fn runfiles_tree_valid(
     manifest: &Path,
     expected: &RunfilesTreeManifest,
     root: &Path,
+    entries_valid: impl FnOnce(&Path) -> bool,
 ) -> bool {
     let relative = manifest.parent().unwrap_or(Path::new(""));
-    if runfiles_listing(&outputs.join(relative), Some(root))
-        .ok()
-        .as_ref()
-        != Some(&expected.entries)
-    {
+    // The listing (runfiles_listing), or its directory stamps.
+    if !entries_valid(&outputs.join(relative)) {
         return false;
     }
     match &expected.sibling_file {
@@ -4939,12 +5381,100 @@ impl ContentInput {
 
 /// The canonical cache root, created if needed, and its store directory.
 fn cache_store(cache_root: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let directories = ensure_cache(cache_root)?;
+    Ok((directories.root.clone(), directories.cas.clone()))
+}
+
+/// The canonical cache root and the directories every action uses below it
+/// ([`ensure_cache`]).
+struct CacheDirectories {
+    root: PathBuf,
+    actions: PathBuf,
+    locks: PathBuf,
+    work: PathBuf,
+    cas: PathBuf,
+}
+
+/// Cache roots (as the caller spells them) whose directories this process
+/// created or found to be real directories, with their canonical paths.
+fn ensured_caches() -> &'static Mutex<HashMap<PathBuf, Arc<CacheDirectories>>> {
+    static MEMO: OnceLock<Mutex<HashMap<PathBuf, Arc<CacheDirectories>>>> = OnceLock::new();
+    MEMO.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The directories of `cache_root` when this process already ensured them.
+fn ensured_cache(cache_root: &Path) -> Option<Arc<CacheDirectories>> {
+    ensured_caches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(cache_root)
+        .cloned()
+}
+
+/// Forget that `cache_root`'s directories exist (one of them was found
+/// missing): the next [`ensure_cache`] creates them again.
+fn forget_ensured_cache(cache_root: &Path) {
+    ensured_caches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(cache_root);
+}
+
+/// Create the cache root and its `actions/`, `locks/`, `work/` and `cas/`
+/// directories (each must be a real directory) once per process and cache
+/// root, instead of once per action: a warm build checks tens of thousands
+/// of actions, and `create_dir_all` plus `canonicalize` (a `readlink` per
+/// path component) for each cost more than most cache checks. Nothing
+/// bazel-rs runs removes them while a command runs; a test that removes a
+/// cache sees [`forget_ensured_cache`] (the lock of the next action is
+/// missing) and the directories created again.
+fn ensure_cache(cache_root: &Path) -> Result<Arc<CacheDirectories>, String> {
+    if let Some(directories) = ensured_cache(cache_root) {
+        return Ok(directories);
+    }
     fs::create_dir_all(cache_root).map_err(|e| io_error("cannot create cache", cache_root, e))?;
     let root = fs::canonicalize(cache_root)
         .map_err(|e| io_error("cannot resolve cache", cache_root, e))?;
-    let cas = root.join(CAS);
-    ensure_directory(&cas)?;
-    Ok((root, cas))
+    let directories = CacheDirectories {
+        actions: root.join("actions"),
+        locks: root.join("locks"),
+        work: root.join("work"),
+        cas: root.join(CAS),
+        root,
+    };
+    for path in [
+        &directories.actions,
+        &directories.locks,
+        &directories.work,
+        &directories.cas,
+    ] {
+        ensure_directory(path)?;
+    }
+    let directories = Arc::new(directories);
+    ensured_caches()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cache_root.to_path_buf(), Arc::clone(&directories));
+    Ok(directories)
+}
+
+/// Open (creating it) an action's lock file, never through a symlink.
+fn open_lock(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+}
+
+/// Whether opening a lock failed because something other than a regular
+/// file is at its path: a symlink (ELOOP under `O_NOFOLLOW`) or a directory.
+fn not_a_lock_file(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+        || error.kind() == io::ErrorKind::IsADirectory
 }
 
 /// Read `path` (a source file or a published output; published symlink
@@ -5203,48 +5733,28 @@ pub fn execute_with_remote(
         // Compiled-in inputs live in the store: validate first, then create
         // the cache to store them.
         validate_structure(action)?;
-        fs::create_dir_all(cache_root)
-            .map_err(|e| io_error("cannot create cache", cache_root, e))?;
-        let root = fs::canonicalize(cache_root)
-            .map_err(|e| io_error("cannot resolve cache", cache_root, e))?;
-        let cas = root.join(CAS);
-        ensure_directory(&cas)?;
+        let (_, cas) = cache_store(cache_root)?;
         embedded = with_embedded_inputs(action, &cas)?;
         &embedded
     };
-    let existing = fs::canonicalize(cache_root).ok();
+    let mut clock = std::time::Instant::now();
+    let existing = ensured_cache(cache_root)
+        .map(|directories| directories.root.clone())
+        .or_else(|| fs::canonicalize(cache_root).ok());
+    count_check(0, &mut clock);
     let prepared = prepare(action, existing.as_deref())?;
+    count_check(1, &mut clock);
     let (inputs, outputs, key) = (&prepared.inputs, &prepared.outputs, &prepared.key);
-    fs::create_dir_all(cache_root).map_err(|e| io_error("cannot create cache", cache_root, e))?;
-    let root = fs::canonicalize(cache_root)
-        .map_err(|e| io_error("cannot resolve cache", cache_root, e))?;
-    let actions = root.join("actions");
-    let locks = root.join("locks");
-    let work_parent = root.join("work");
-    let cas = root.join(CAS);
-    for path in [&actions, &locks, &work_parent, &cas] {
-        ensure_directory(path)?;
-    }
-    let lock_path = locks.join(format!("{key}.lock"));
-    // Locks are never unlinked: removing a held lock would permit two distinct
-    // inodes (and thus two owners) for the same action key.
-    if let Ok(metadata) = fs::symlink_metadata(&lock_path)
-        && (!metadata.is_file() || metadata.file_type().is_symlink())
-    {
-        return Err(format!(
-            "expected regular lock file: '{}'",
-            lock_path.display()
-        ));
-    }
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| io_error("cannot open lock", &lock_path, e))?;
-    FileExt::lock_exclusive(&lock).map_err(|e| io_error("cannot lock", &lock_path, e))?;
-    // File drop releases the advisory lock on every success/error path.
+    let directories = ensure_cache(cache_root)?;
+    let CacheDirectories {
+        root,
+        actions,
+        locks,
+        work: work_parent,
+        cas,
+    } = &*directories;
+    let (root, cas): (&Path, &Path) = (root, cas);
+    count_check(0, &mut clock);
     let cached = actions.join(key);
     let result = |listings: BTreeMap<PathBuf, Vec<PathBuf>>, cache_hit: bool, remote_hit: bool| {
         ActionResult {
@@ -5263,21 +5773,73 @@ pub fn execute_with_remote(
                 .collect(),
         }
     };
-    if let Some(listings) = cache_valid(
+    // A valid entry needs no lock: entries are published by an atomic
+    // rename and only ever removed, so a check that finds every output
+    // valid found one complete entry (a check racing a removal fails and
+    // takes the lock below). The lock serializes checking and executing one
+    // key across processes; it never protected an entry after its check.
+    // Stamps to record (crate::action::tree_stamps) are written under it.
+    if let Some((listings, false)) = cache_valid(
         &cached,
         key,
         outputs,
         (&action.extra.tree_outputs, &action.extra.symlink_outputs),
-        &root,
+        root,
+        false,
     ) {
+        count_check(3, &mut clock);
+        CHECKS[4].fetch_add(1, Ordering::Relaxed);
         return Ok(result(listings, true, false));
     }
+    count_check(3, &mut clock);
+    let lock_path = locks.join(format!("{key}.lock"));
+    let lock = match open_lock(&lock_path) {
+        // The cache was removed since this process ensured its directories
+        // (only tests do that): create them again.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            forget_ensured_cache(cache_root);
+            ensure_cache(cache_root)?;
+            open_lock(&lock_path)
+        }
+        opened => opened,
+    };
+    // Locks are never unlinked: removing a held lock would permit two distinct
+    // inodes (and thus two owners) for the same action key.
+    let lock = match lock {
+        Err(error) if not_a_lock_file(&error) => None,
+        opened => Some(opened.map_err(|e| io_error("cannot open lock", &lock_path, e))?),
+    }
+    .filter(|lock| lock.metadata().is_ok_and(|metadata| metadata.is_file()));
+    let Some(lock) = lock else {
+        return Err(format!(
+            "expected regular lock file: '{}'",
+            lock_path.display()
+        ));
+    };
+    FileExt::lock_exclusive(&lock).map_err(|e| io_error("cannot lock", &lock_path, e))?;
+    count_check(2, &mut clock);
+    // File drop releases the advisory lock on every success/error path.
+    if let Some((listings, _)) = cache_valid(
+        &cached,
+        key,
+        outputs,
+        (&action.extra.tree_outputs, &action.extra.symlink_outputs),
+        root,
+        true,
+    ) {
+        count_check(3, &mut clock);
+        CHECKS[4].fetch_add(1, Ordering::Relaxed);
+        return Ok(result(listings, true, false));
+    }
+    count_check(3, &mut clock);
+    CHECKS[5].fetch_add(1, Ordering::Relaxed);
     // This entry's trees and files are no longer what the memos hold: they
     // are removed now and published again below.
     forget_trees(&cached);
+    forget_outputs(&cached);
     forget_published(&cached);
     remove_stale(&cached)?;
-    let work = fresh_work(&work_parent, key)?;
+    let work = fresh_work(work_parent, key)?;
     let execroot = work.0.join("execroot");
     let tmp = local_tmpdir();
     ensure_directory(&execroot)?;
@@ -5358,7 +5920,7 @@ pub fn execute_with_remote(
     // writes and transforms read the verified input files directly, and a
     // remote hit runs nothing.
     let staged = if process && remote_hit.is_none() {
-        stage_inputs(&cas, &root, inputs, &execroot)?
+        stage_inputs(cas, root, inputs, &execroot)?
     } else {
         Vec::new()
     };
@@ -5387,7 +5949,7 @@ pub fn execute_with_remote(
             if write.executable { 0o111 } else { 0 },
         )?;
     } else if let Some(transform) = &action.extra.transform {
-        run_transform(action, transform, &prepared, &execroot, (&cas, &root))?;
+        run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
@@ -5605,7 +6167,7 @@ pub fn execute_with_remote(
                 };
                 (
                     name,
-                    walk_tree(&execroot.join(name), Some(&root), TreeRead::Output(output)),
+                    walk_tree(&execroot.join(name), Some(root), TreeRead::Output(output)),
                 )
             })
             .collect();
@@ -5614,7 +6176,7 @@ pub fn execute_with_remote(
             .map(|(name, walked)| (name, walked.and_then(read_walked)))
             .collect();
         for (name, read) in reads {
-            let read = read.and_then(|(tree, states)| read_output_tree(&cas, &root, tree, states));
+            let read = read.and_then(|(tree, states)| read_output_tree(cas, root, tree, states));
             tree_reads.insert(name, read);
         }
     }
@@ -5716,7 +6278,7 @@ pub fn execute_with_remote(
                 let read = tree_reads
                     .remove(name)
                     .expect("every tree output was read")?;
-                let tree = publish_tree(&cas, &root, &source, &target, read)?;
+                let tree = publish_tree(cas, root, &source, &target, read)?;
                 listings.insert(name.clone(), tree_listing(&tree));
                 let output = Output {
                     name: hex_name,
@@ -5732,7 +6294,7 @@ pub fn execute_with_remote(
             // Match metadata collection order: a successful action may leave a
             // regular output unreadable. Normalize before reading its bytes,
             // but never chmod a symlink or a path through a linked ancestor.
-            let input = publish_file(&cas, &root, &source, &target)?;
+            let input = publish_file(cas, root, &source, &target)?;
             let digest = input.digest;
             published_files.push((name, input));
             Ok(Output {
@@ -5762,14 +6324,14 @@ pub fn execute_with_remote(
     // What a consumer would read from the published entry: the same files,
     // digests and (normalized) modes at their published paths.
     for (name, input) in &published_files {
-        remember_published(&cas, &cached, &cached.join("outputs").join(name), input);
+        remember_published(cas, &cached, &cached.join("outputs").join(name), input);
     }
     for (name, tree) in published_trees {
         let path = cached.join("outputs").join(name);
-        if published_output(Some(&root), &path) {
+        if published_output(Some(root), &path) {
             let tree = relocated(tree, &path);
             for input in tree.files.values() {
-                remember_published(&cas, &cached, &input.path, input);
+                remember_published(cas, &cached, &input.path, input);
             }
             remember_tree(path, Arc::new(tree));
         }
@@ -5821,6 +6383,8 @@ pub fn execute_with_remote(
     }
     Ok(result(listings, false, false))
 }
+
+mod tree_stamps;
 
 #[cfg(test)]
 mod tests {
@@ -5997,6 +6561,20 @@ mod tests {
         // Content changes of a linked source do not change the tree.
         fs::write(&data, b"changed\n").unwrap();
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        // Settled, the tree's directories are stamped
+        // (crate::action::tree_stamps): a later check lists nothing, and an
+        // entry added to any of them still rebuilds the tree.
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(true));
+        let entry = tree.ancestors().nth(4).unwrap().to_path_buf();
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        assert!(entry.join(tree_stamps::FILE_NAME).exists());
+        let stamped = tree_stamps::COUNTS[0].load(Ordering::Relaxed);
+        assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
+        assert!(tree_stamps::COUNTS[0].load(Ordering::Relaxed) > stamped);
+        fs::write(tree.join("_main/pkg/extra"), b"").unwrap();
+        assert!(!execute(&fixture.cache(), &action).unwrap().cache_hit);
+        assert!(!tree.join("_main/pkg/extra").exists());
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(false));
         // SKIP mode: only MANIFEST and `_main`.
         let mut skip = action.clone();
         if let Some(Transform::RunfilesTree { create, .. }) = &mut skip.extra.transform {
@@ -7703,6 +8281,94 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             .collect()
     }
 
+    /// docs/HARDLINK_STAGING.md, "Cache checks of published trees": a
+    /// valid tree's settled directories are stamped next to its manifest;
+    /// later checks inspect only the directories (no walk), take the files
+    /// from the manifest and the stamp, and any entry added, removed or
+    /// renamed in any directory of the tree fails the stamp: the full
+    /// check finds the damage and the entry is published again.
+    #[test]
+    fn published_trees_are_checked_by_their_directory_stamps() {
+        let fixture = Fixture::new();
+        let mut producer = fixture.action();
+        producer.inputs.clear();
+        producer.outputs = vec!["out/tree".into()];
+        producer.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/tree")]);
+        producer.command =
+            "mkdir -p out/tree/sub/deep && printf a > out/tree/a && printf b > out/tree/sub/b && printf c > out/tree/sub/deep/c".into();
+        let first = execute(&fixture.cache(), &producer).unwrap();
+        let tree = first.outputs[0].clone();
+        let entry = tree.ancestors().nth(3).unwrap().to_path_buf();
+        let stamps = entry.join(tree_stamps::FILE_NAME);
+        // Directories just written are not settled: no stamp.
+        assert!(execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert!(!stamps.exists());
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(true));
+        let walks = tree_walks();
+        let hit = execute(&fixture.cache(), &producer).unwrap();
+        assert!(hit.cache_hit);
+        assert!(stamps.exists());
+        // The unlocked check found the stamps missing, the locked one
+        // wrote them: two walks.
+        assert_eq!(tree_walks(), walks + 2);
+        let stamped = fs::metadata(&stamps).unwrap().modified().unwrap();
+        let root = fs::canonicalize(fixture.cache()).unwrap();
+        let walked = read_tree(&tree, Some(&root), TreeRead::Published).unwrap();
+        for _ in 0..2 {
+            let walks = tree_walks();
+            let again = execute(&fixture.cache(), &producer).unwrap();
+            assert!(again.cache_hit);
+            assert_eq!(again.trees, first.trees);
+            // No walk, nothing written, and the stamped tree is exactly the
+            // walked one (paths, digests, sizes and modes).
+            assert_eq!(tree_walks(), walks);
+            assert_eq!(fs::metadata(&stamps).unwrap().modified().unwrap(), stamped);
+            let memoized = memoized_tree(&tree).unwrap();
+            assert!(*memoized == walked);
+            assert_eq!(tree_paths(&memoized), tree_paths(&walked));
+            for (name, input) in &walked.files {
+                assert_eq!(memoized.files[name].size, input.size, "{}", name.display());
+            }
+        }
+        // Damage in any directory of the tree, at any depth, is caught.
+        type Damage<'a> = (&'a str, &'a dyn Fn(&Path));
+        let damage: [Damage; 4] = [
+            ("sub/deep", &|dir| {
+                fs::write(dir.join("extra"), "x").unwrap()
+            }),
+            ("sub", &|dir| fs::remove_file(dir.join("b")).unwrap()),
+            ("", &|dir| {
+                fs::rename(dir.join("a"), dir.join("renamed")).unwrap()
+            }),
+            ("sub/deep", &|dir| {
+                fs::remove_file(dir.join("c")).unwrap();
+                fs::write(dir.join("c"), "c").unwrap();
+            }),
+        ];
+        for (directory, damage) in damage {
+            let directory = tree.join(directory);
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+            damage(&directory);
+            fs::set_permissions(&directory, fs::Permissions::from_mode(OUTPUT_MODE)).unwrap();
+            let rebuilt = execute(&fixture.cache(), &producer).unwrap();
+            assert!(!rebuilt.cache_hit, "{}", directory.display());
+            assert_eq!(fs::read(tree.join("sub/deep/c")).unwrap(), b"c");
+            assert!(!tree.join("sub/deep/extra").exists());
+            // The republished tree is stamped again by a later check.
+            assert!(execute(&fixture.cache(), &producer).unwrap().cache_hit);
+            assert!(stamps.exists());
+        }
+        // A stamp file of another manifest, or a corrupt one, is ignored.
+        fs::write(&stamps, b"BZRSTSTP corrupt").unwrap();
+        let walks = tree_walks();
+        assert!(execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(tree_walks(), walks + 2);
+        let walks = tree_walks();
+        assert!(execute(&fixture.cache(), &producer).unwrap().cache_hit);
+        assert_eq!(tree_walks(), walks);
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(false));
+    }
+
     #[test]
     fn published_trees_are_read_once_per_process_and_replaced_when_published_again() {
         let fixture = Fixture::new();
@@ -8160,15 +8826,35 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         for directory in ["repositories", "repositories/trees/x/a/b"] {
             assert!(directory_verified(&root.join(directory)), "{directory}");
         }
-        // Everything else takes the full walk: paths outside the cache, the
-        // execution roots, other spellings, and calls without a cache root.
+        // Paths outside the cache take their own memo (source_directories):
+        // no full walk, and their directories once per process.
+        let source = fixture.0.join("sources/pkg/source");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"x").unwrap();
+        let before = full_ancestor_walks();
+        for _ in 0..2 {
+            assert!(no_linked_ancestor(&source, Some(&root)).unwrap().is_file());
+        }
+        assert_eq!(full_ancestor_walks(), before);
+        assert!(
+            source_directories()
+                .read()
+                .unwrap()
+                .contains(source.parent().unwrap())
+        );
+        // A source below a linked directory fails exactly as before.
+        symlink(source.parent().unwrap(), fixture.0.join("sources/linked")).unwrap();
+        let linked = fixture.0.join("sources/linked/source");
+        assert_eq!(
+            no_linked_ancestor(&linked, Some(&root)).unwrap_err(),
+            no_linked_ancestor(&linked, None).unwrap_err()
+        );
+        // Everything else takes the full walk: the execution roots, other
+        // spellings, and calls without a cache root.
         let work = root.join("work/x");
         fs::create_dir_all(&work).unwrap();
         fs::write(work.join("file"), b"x").unwrap();
-        let source = fixture.0.join("source");
-        fs::write(&source, b"x").unwrap();
         for (path, cache) in [
-            (source, Some(root.as_path())),
             (work.join("file"), Some(root.as_path())),
             (tree.join("a/./b/file"), Some(root.as_path())),
             (tree.join("a/b/../b/file"), Some(root.as_path())),
@@ -8244,7 +8930,9 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             fs::rename(directory.join("d"), directory.join("moved")).unwrap();
             symlink(directory.join("moved"), directory.join("d")).unwrap();
             assert!(no_linked_ancestor(&file, Some(&root)).is_ok(), "{store}");
-            verified_directories().write().unwrap().clear();
+            for shard in verified_directories().all() {
+                shard.write().unwrap().clear();
+            }
             assert!(
                 no_linked_ancestor(&file, Some(&root))
                     .unwrap_err()

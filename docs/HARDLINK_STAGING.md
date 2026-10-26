@@ -129,8 +129,56 @@ once, like Bazel's per-build file metadata, instead of once per action:
   `--jobs` workers plus that many helpers (and the process's few other
   threads).
 
-The memos are bounded (256 Ki entries each, a few hundred MB at most in all;
-a memo that would exceed its cap starts over).
+Since perf-cache-hits (a warm no-op build of ~/code's `//src/ts/...`
+checks 24,608 cached actions; see "Cache checks of published trees" below
+for the measurements):
+
+* every other published output — a file, an `actions.symlink` output and
+  what it resolves to when that is a published output or a file of the
+  immutable stores, an unresolved symlink's link text — is read once per
+  process too: its producer's valid cache entry seeds the **output memo**
+  (`action::OutputMemo`) with exactly what a consumer's read would return,
+  and drops it before it publishes the entry again (`forget_outputs`, also
+  for the symlinks of other entries that resolve into it). Consumers used
+  to inspect each such input again (a TypeScript build: ~300k inputs, most
+  of them `node_modules` links and published files);
+* the directories of paths outside the cache (the workspace's sources,
+  local repositories) are lstat'ed once per process to establish that they
+  are real directories (`source_directories`), like Bazel's per-build file
+  system values, instead of once per input (~90k lstats of ten ancestors on
+  a TypeScript no-op); the input itself is still inspected (lstat and
+  digest) on every use, and a path through a symlink still fails exactly as
+  before;
+* a cache-owned directory is verified by opening the chain below its
+  deepest verified ancestor one component at a time (`O_PATH | O_NOFOLLOW
+  | O_DIRECTORY`, relative to the parent's descriptor) instead of one
+  absolute-path lstat per directory (`verify_directories`): on overlay
+  filesystems absolute-path lookups serialize across threads
+  (crate::dir_stamps). `openat2(RESOLVE_NO_SYMLINKS)` was measured and is
+  ~70x slower here;
+* the file, output and verified-directory memos are sharded by path (64
+  shards): a warm build's workers look them up ~1M times at once;
+* a store file being read is read by one action at a time (single flight:
+  the others take the result from the file memo), and each action reads its
+  memo misses from its own starting point, so the actions that start
+  together (all reading one toolchain) do not queue behind each other;
+* the cache's `actions/`, `locks/`, `work/` and `cas/` directories are
+  created (and the cache root canonicalized) once per process instead of
+  per action (5 `mkdir` and two `canonicalize` — a `readlink` per path
+  component — per action before); a test that removes a cache meanwhile is
+  served by creating them again when an action's lock is missing;
+* a valid cache entry is accepted without taking its lock: entries are
+  published by an atomic rename and only ever removed, so a check that finds
+  every output valid found one complete entry, and a check racing a removal
+  fails and takes the lock. The lock serializes checking and executing one
+  key across processes; it never protected an entry after its check. Tree
+  stamps (below) are written under it.
+
+The memos are bounded (256 Ki entries each, the tree memo 1 Mi entries — a
+TypeScript build's `node_modules` package trees hold ~430k, and a smaller
+memo started over during a warm build so that consumers walked the trees
+again; a few hundred MB at most in all; a memo that would exceed its cap
+starts over).
 
 **Trust.** These areas are written only by bazel-rs: published outputs and
 blobs are read-only and replaced only by republication, and repository
@@ -152,9 +200,10 @@ tree file that an executable is linked to (below) by mode, size and digest,
 all through the stat-keyed digest memo (the tree file by its change time);
 a copy or tree file whose bytes no longer match fails the action
 (`input ... changed while it was being staged`), and every staged inode is
-re-checked after its process ran. Execution roots (`work/`), the
-working areas of repository rules and module extensions, and every path
-outside the cache keep the full checks on every use.
+re-checked after its process ran. Execution roots (`work/`) and the
+working areas of repository rules and module extensions keep the full
+checks on every use; paths outside the cache keep them for the file itself
+(its directories once per process, above).
 
 **The digest memo answers only for a file state it observed**
 (fix-digest-memo, `action::DigestMemo`). A file deleted and replaced by one
@@ -191,6 +240,84 @@ alone; see docs/DIGEST_MEMO.md, "What is recorded". Unit tests
 `outputs_of_one_size_are_published_with_their_own_content`,
 `stale_states_never_reach_the_persistent_table`; CLI test
 `outputs_of_one_size_keep_their_own_bytes` (tests/digest_memo.rs).
+
+## Cache checks of published trees (perf-cache-hits)
+
+A cache check used to walk every published tree artifact of the entry and
+every published runfiles tree (list each directory, lstat every entry, look
+every file's digest up, `readlink` every runfiles link) on every command: a
+warm no-op `build //src/ts/...` on ~/code made ~2.1M `statx` (1.65M on
+stored npm package trees), 518k `readlink` and 124k `mkdir`, created 8,183
+threads and spent ~150 s of kernel time in 6.5 s of wall time. Source:
+`src/action/tree_stamps.rs`, `src/dir_stamps.rs`.
+
+**Directory stamps.** Once a full check found a published tree valid, the
+entry keeps, next to its manifest, the stamp of each of the tree's
+directories (`actions/<key>/tree-stamps`): device, inode, mode, modification
+and change time. A directory's change time moves with every entry added,
+removed or renamed in it and with every change of its own mode or times, so
+while every directory still shows its stamp the tree still has exactly the
+names, and each name exactly the inode, that the full check found. The next
+check opens each directory relative to its parent's descriptor (`O_PATH`,
+never through a symlink) and compares the stamps, then takes the files from
+the manifest (digests, modes) and the stamp (sizes) without inspecting them,
+like the per-process memos take a published output's metadata once per
+command. A runfiles tree is stamped the same way (its `dir` entries), its
+listing (links and empty files) then not read again; its executable sibling
+is still checked.
+
+* **Trust.** The tree's files are store inodes, read-only like every
+  published output, and follow their trust (docs/DIGEST_MEMO.md, "Trust"):
+  an in-place edit of a file's bytes (after a `chmod`) is not re-detected by
+  a cache check — before, one that kept size, modification time and mode
+  was not; now none is, as long as no directory of the tree changes. Any
+  change of the tree's structure is (an added, removed, renamed or replaced
+  entry, at any depth), and so is a directory replaced or moved (its inode
+  or change time), or a symlink in its place. Staging still verifies every
+  blob it links by mode, size and digest (above), so an executed consumer
+  never runs on bytes other than the keyed ones.
+* **Settled only.** A stamp is recorded only for directories whose
+  modification and change times were at least
+  crate::digest_memo::RACY_MARGIN (2 s) older than the start of the check
+  and that the full check left unchanged, so no later change can show the
+  stamped state again (a change inside the same timestamp tick as the
+  stamp would). A tree published just now is therefore walked once more by
+  the next check, which stamps it.
+* **Format.** `BZRSTSTP`, format version 1 (u32), the first 8 bytes of the
+  body's blake3 hash, then a postcard body: the blake3 of the manifest's
+  bytes (stamps of another manifest never count) and, per stamped output
+  (index, tree or runfiles), the directory stamps (root first, then the
+  manifest's directories in order) and the file sizes. A missing, foreign,
+  corrupt or non-matching stamp file means the full check, which writes a
+  new one (atomically, under the entry's lock). Stamps are written only when
+  they change: a no-op build writes nothing. Entries published again lose
+  their stamps with the entry; binaries without stamps ignore the file
+  (their manifests and keys are unchanged), so caches stay shared both ways
+  (a cache of the master binary gives 100% hits to this one and vice versa).
+* **Switch.** `BAZEL_RS_VERIFY_OUTPUTS=full` never trusts a stamp: every
+  check walks the trees (and records stamps).
+* `PERF-STAGE cache-check setup=<s> prepare=<s> lock=<s> validate=<s>
+  hits=<n> misses=<n> trees: stamped=<n> walked=<n> stamps_written=<n>`
+  (under `BAZEL_RS_TIMING`) sums the cache checks' phases over all workers.
+
+**Measurements** (~/code 31caa52, private cache, release builds, warm no-op
+`build` with an analysis snapshot hit, interleaved, shared 64-core machine;
+wall / user / sys of the whole command):
+
+| target set | actions | master 00e6d59 | perf-cache-hits |
+|---|---|---|---|
+| `//src/ts/...` | 24,608 | 6.53–6.77 s / 20 s / 151 s | 1.50–1.56 s / 13 s / 7–9 s |
+| `//src/beyondwork.ai/bworker/...`¹ | 9,853 | 3.17–3.48 s / 11 s / 68–75 s | 1.36–1.47 s / 8 s / 4–5 s |
+| `//src/beyondwork.ai/tools/oauth2token/...` | 692 | 0.33 s / 0.6 s / 1.3–1.5 s | 0.30–0.31 s / 0.55 s / 0.7 s |
+
+¹ without `//src/beyondwork.ai/bworker/docsfilter:docsfilter_test`, whose
+dependency `//src/python:docstar` fails to execute (also with master).
+Peak RSS of the TS no-op 1.32–1.36 GB → 1.45–1.48 GB (the larger tree memo
+and the output memo). The microbenchmark behind the descriptor-relative
+lookups (this host, overlayfs): an absolute-path `lstat` of a deep cache path
+costs ~2.5–3 µs whatever the number of threads (it does not scale), a
+one-component `fstatat` from the parent's descriptor ~1 µs on one thread and
+~0.3 µs per call with 64 threads.
 
 ## Cache keys
 

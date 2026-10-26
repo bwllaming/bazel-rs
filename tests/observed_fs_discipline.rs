@@ -61,6 +61,9 @@ const ALLOWED_MODULES: &[&str] = &[
     "observed_fs",
     // The execution root's output tree, written after execution.
     "output_tree",
+    // Directory stamps of published trees and of the output tree, checked
+    // by the executor's cache checks and the output tree update.
+    "dir_stamps",
     // `info` reads no planning input (it never plans).
     "info",
     // Bootstrap before the recording window: the git layout of the
@@ -68,7 +71,7 @@ const ALLOWED_MODULES: &[&str] = &[
     // (docs/WORKTREES.md).
     "worktree",
 ];
-const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/"];
+const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/", "action/"];
 
 /// Diagnostics switches and test hooks: never inputs of planning (runs with
 /// a test or debug hook are never saved, PLAN-L2 §1a).

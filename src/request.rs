@@ -813,6 +813,7 @@ pub fn execute_with_tests(
             },
         };
         action_errors = errors.into_iter().collect();
+        crate::perf_mark("execute.graph");
         // `$(bazel-rs info bazel-bin)/...` names the built files
         // (crate::output_tree, docs/INFO.md); never fails the build.
         let published = crate::output_tree::publish(options.cache, &results, &runfiles_trees);
