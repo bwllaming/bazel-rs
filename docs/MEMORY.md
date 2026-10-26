@@ -72,3 +72,20 @@ of `//src/beyondwork.ai/bworker/wcb/...` (3.6 GB live at the end of planning, 4.
 | deep copies of a configured target's runfiles in its shared `Target` value | ~110 MB | `Target.runfiles: Arc<TargetRunfiles>`, shared with the views |
 
 Peaks after each step are in the series' commit messages; the summary table is at the end of this file.
+
+## TypeScript analysis (perf-ts, ~/code `//src/ts/...`)
+
+aspect_rules_js generates one repository per npm package (~4,300 on ~/code), and an extension's
+repositories share one mapping with an entry per sibling. Per-target work proportional to the
+repository count dominated warm `build --nobuild //src/ts/...` (snapshot off, private caches):
+
+| what | cost before | fix |
+|---|---|---|
+| the repo mapping manifest of every js_binary/js_test runfiles tree cloned (and dropped) the mapping of each transitive repository | ~61 s, the ~8.5 GB analysis spike | `runfiles_tree::MappingLookup` borrows the mappings |
+| `validate_structure` scanned all inputs per declared tree/directory/symlink input | ~30 s | one `HashSet` lookup each; `namespace_may_overlap` hashes ancestors instead of sorting |
+| `rule_surface` copied the rule's repository mapping (~0.8 MB for an npm package target) | ~2.3 s | `RepositorySet::shared_mapping`: one `Arc` per mapping table entry |
+| `link_policy` re-canonicalized every materialized root per linked source; resolution re-ran realpath on each | ~4 s | the last canonical root list is shared (`Arc`), resolution trusts it |
+| `ctx.expand_location` copied the rule's location map per call | ~2.6 s | read in place with the call's `targets` |
+
+Result: `--nobuild //src/ts/...` 132 s / 8.2 GB peak -> 26 s / 4.6 GB; warm `build //src/ts/...`
+(24,608 cache hits) 139 s / 9.1 GB -> 36 s / 4.6 GB. Action dump and action keys unchanged.
