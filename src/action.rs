@@ -6026,6 +6026,7 @@ pub fn execute_with_remote(
     } else if let Some(transform) = &action.extra.transform {
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
+        crate::progress::spawn_started(crate::progress::Strategy::RemoteCache);
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
         for (name, output) in action.outputs.iter().zip(&hit.outputs) {
@@ -6065,6 +6066,13 @@ pub fn execute_with_remote(
         let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &execution_info)
             .map_err(|error| format!("action '{}': {error}", action.id))?;
         sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        crate::progress::spawn_started(match strategy {
+            crate::sandbox::Strategy::Sandboxed => crate::progress::Strategy::LinuxSandbox,
+            crate::sandbox::Strategy::ProcessWrapper => {
+                crate::progress::Strategy::ProcessWrapperSandbox
+            }
+            _ => crate::progress::Strategy::Local,
+        });
         let environment = resolved_environment(action);
         // Every spawn runs under a supervisor that outlives it (Bazel's
         // process-wrapper or linux-sandbox; crate::process_wrapper): a child

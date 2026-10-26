@@ -2734,6 +2734,7 @@ impl Engine {
     /// Commit a loaded package (P2's commit order):
     /// validate_output_directory -> generated inserts -> packages.insert.
     fn commit_loaded_package(&mut self, package: &PackageId, rules: Package) -> Result<(), String> {
+        crate::progress::package_loaded();
         let ignored = self.ignored(&package.repository)?;
         for rule in rules.values() {
             for out in &rule.outs {
@@ -12623,6 +12624,7 @@ impl Engine {
         while let Some((key, rule)) = plan.get(state.done) {
             let index = state.done as u64;
             state.done += 1;
+            crate::progress::analysis_configured(state.done);
             self.flush_delegations(state);
             if !self.keep_going {
                 self.plan_one_target(state, key, rule, configured, index)?;
@@ -12939,6 +12941,7 @@ impl Engine {
     /// Analysis and action planning of a build: the actions reachable from
     /// the requested targets' artifacts, validated before any execution.
     fn plan_build(&mut self, labels: &[Label]) -> Result<BuildPlan, String> {
+        crate::progress::analysis_targets(labels.len());
         crate::perf_mark("plan.start");
         // The workspace status is computed at most once per build
         // (OnceLock), and recomputed by the NEXT build of this Engine —
@@ -13004,6 +13007,7 @@ impl Engine {
         let analyzed = self.analyze_requested(labels, top, &mut configured, &mut plan);
         self.stop_prefetch();
         analyzed?;
+        crate::progress::analysis_planned(plan.len());
         crate::perf_mark("plan.phase1_analysis_done");
         // Alias-like targets and the end of their alias chain: dependents see
         // that target's label, kind and providers (AliasConfiguredTarget).

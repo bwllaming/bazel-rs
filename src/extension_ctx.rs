@@ -1218,6 +1218,10 @@ pub fn execute(
     root_has_non_dev_dependency: bool,
     facts: Vec<(String, crate::lockfile::Json)>,
 ) -> Result<ExtensionExecution, String> {
+    // `Fetching module extension …` in the progress display (when on).
+    let _fetching = crate::progress::fetching_extension(|| {
+        format!("{}%{extension_name}", public_label.canonical_starlark())
+    });
     let run = || -> anyhow::Result<ExtensionExecution> {
         let tag_repo_mappings = RefCell::new(Vec::new());
         let modules = bind_modules(&repositories, definition, participants, &tag_repo_mappings)

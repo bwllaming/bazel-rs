@@ -618,6 +618,7 @@ impl Report {
         }
         if strict {
             crate::digest_memo::finish();
+            crate::progress::abandon();
             std::process::exit(EXIT_MISMATCH);
         }
     }

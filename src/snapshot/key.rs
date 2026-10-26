@@ -64,6 +64,10 @@ pub const FORMAT: u32 = 3;
 ///   credential helpers (read by downloads — network, which a saved run
 ///   never used — and the remote cache).
 /// * `native-action-dump`: written from the planned request on every run.
+/// * the UI options (crate::progress: `curses`, `color`, `show_progress`,
+///   `show_progress_rate_limit`, `progress_in_terminal_title`,
+///   `ui_actions_shown` and its old name): read by the progress display
+///   only, whose lines never enter a snapshot window.
 pub const EXCLUDED: &[&str] = &[
     "jobs",
     "loading_phase_threads",
@@ -118,6 +122,13 @@ pub const EXCLUDED: &[&str] = &[
     "experimental_credential_helper_timeout",
     "experimental_credential_helper_cache_duration",
     "native-action-dump",
+    "curses",
+    "color",
+    "show_progress",
+    "show_progress_rate_limit",
+    "progress_in_terminal_title",
+    "ui_actions_shown",
+    "experimental_ui_actions_shown",
 ];
 
 /// The option name of an option argument: `--name=value` / `--name` /

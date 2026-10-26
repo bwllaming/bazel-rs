@@ -20,6 +20,11 @@ fs2 = "0.4"
 hyper = { version = "=1.12.0", default-features = false }
 landlock = "=0.4.7"
 lzma-rust2 = { version = "=0.22.0", default-features = false, features = ["std", "optimization", "xz"] }
+# sigaction(2) for the interactive progress display (crate::progress): a
+# SIGINT/SIGTERM/SIGHUP clears its status area before the signal ends the
+# process. Same version the lock already has through std's dependents (no
+# new code is built).
+libc = "=0.2.190"
 # SIMD substring search: the store-path scan of a repository tree rides on
 # its hashing read (crate::repository_slots); same version the lock already
 # has through regex/aho-corasick (no new code is built).
@@ -39,8 +44,9 @@ ruzstd = "=0.9.1"
 # what planning printed, crate::snapshot::capture). `event`: poll(2) on a
 # pidfd and the control channel in the spawn supervisor
 # (crate::process_wrapper; `process` brings the subreaper prctl, pidfds and
-# waitid).
-rustix = { version = "=1.1.5", default-features = false, features = ["std", "process", "stdio", "fs", "event"] }
+# waitid). `termios`: isatty and the terminal width (TIOCGWINSZ) of the
+# interactive progress display (crate::progress).
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "process", "stdio", "fs", "event", "termios"] }
 # `rc`: the planned request's shared command-line parts (Arc) encode by value.
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order"] }

@@ -339,6 +339,7 @@ impl<'a> Session<'a> {
             }
             expected.push(units.len() - before);
         }
+        crate::progress::tests_planned(tests.len());
         Session {
             specs: tests.iter().map(|_| std::sync::OnceLock::new()).collect(),
             results: Mutex::new(tests.iter().map(|_| Vec::new()).collect()),
@@ -531,6 +532,7 @@ impl<'a> Session<'a> {
         results[test].push(outcome);
         if results[test].len() == self.expected[test] {
             let summary = self.aggregate(test, &results[test]);
+            crate::progress::test_finished(summary.status == TestStatus::Passed);
             // UiEventHandler.testSummary (runtime/UiEventHandler.java:938-966).
             let new_information = !matches!(
                 summary.status,
@@ -732,6 +734,8 @@ impl Runner<'_> {
         let env = self.environment(unit, &paths);
         let args = self.arguments(spec);
         let test_name = test_name(&spec.label, unit.shard, unit.shards, unit.run, unit.runs);
+        // The interactive progress display's running test (None when off).
+        let _running = crate::progress::Running::test(&test_name);
         // Inputs by content: the runner scripts, then the runfiles.
         let mut inputs: Vec<(ContentInput, PathBuf)> = vec![
             (

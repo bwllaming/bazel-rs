@@ -86,6 +86,7 @@ mod platform_providers;
 pub mod platforms;
 mod prefetch;
 pub mod process_wrapper;
+pub mod progress;
 pub mod providers;
 pub mod query_language;
 pub mod rc_options;
@@ -158,6 +159,8 @@ pub fn perf_mark(name: &str) {
     if name == "plan.end" {
         observed_fs::close_window();
     }
+    // The interactive progress display's phases (a no-op when it is off).
+    progress::mark(name);
     static START: OnceLock<std::time::Instant> = OnceLock::new();
     let start = START.get_or_init(std::time::Instant::now);
     if diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {

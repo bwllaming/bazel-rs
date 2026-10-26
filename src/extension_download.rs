@@ -684,6 +684,7 @@ pub(crate) fn copy_hashed(
         };
         hash.update(&buffer[..n]);
         writer.write_all(&buffer[..n])?;
+        crate::progress::downloaded(n);
         total += n as u64;
     }
 }
@@ -775,6 +776,8 @@ pub(crate) fn fetch_to_file(
                     }
                 })?;
             let mut hash = Hash::new(algorithm);
+            // The download's bytes in the progress display (when on).
+            let _downloading = crate::progress::downloading(url.as_str());
             let size = copy_hashed(&mut *reader, &mut file, &mut hash).map_err(io_error)?;
             file.flush().map_err(io_error)?;
             let actual = Checksum {

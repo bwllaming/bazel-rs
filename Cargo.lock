@@ -148,6 +148,7 @@ dependencies = [
  "fs2",
  "hyper",
  "landlock",
+ "libc",
  "lzma-rust2",
  "memchr",
  "num-bigint",

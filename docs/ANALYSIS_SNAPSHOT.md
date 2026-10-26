@@ -80,7 +80,10 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
    `--runs_per_test`, `--test_sharding_strategy`, ...), the run options
    (`--script_path`, `--run_env`, `--[no]run`, `--run_in_cwd`,
    `--omit_run_args`), spawn strategies and sandbox paths, the remote cache,
-   credential helpers and `--native-action-dump` (`snapshot::key::EXCLUDED`
+   credential helpers, `--native-action-dump` and the UI options of the
+   progress display (`--curses`, `--color`, `--[no]show_progress`,
+   `--show_progress_rate_limit`, `--[no]progress_in_terminal_title`,
+   `--ui_actions_shown`; docs/PROGRESS.md) (`snapshot::key::EXCLUDED`
    lists them with the reason). The test filters, `--build_tests_only`,
    `--[no]expand_test_suites` (the target pattern phase selects the targets
    and tests before planning, and the planned request carries its expanded

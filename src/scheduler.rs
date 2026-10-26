@@ -792,8 +792,18 @@ where
     // A failure can arrive while this job waits for its worker. Do not
     // invoke another action in that case.
     if failed.load(Ordering::Acquire) {
+        crate::progress::action_done();
         return (id, None);
     }
+    // The interactive progress display's running-action slot (None when
+    // the display is off): the mnemonic and the primary output.
+    let running = crate::progress::Running::action(
+        &node.action.extra.mnemonic,
+        node.action
+            .outputs
+            .first()
+            .map_or(Path::new(""), PathBuf::as_path),
+    );
     let result = catch_unwind(AssertUnwindSafe(|| {
         // The groups' inputs are listed in the action now, for this one
         // execution (PA-1): their sources after the action's own, their
@@ -829,6 +839,8 @@ where
         Ok(result)
     }))
     .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
+    drop(running);
+    crate::progress::action_done();
     if result.is_err() && !keep_going {
         // Publish cancellation before sending, so another ready node cannot
         // slip through behind a queued failure.
@@ -985,6 +997,7 @@ where
     F: Fn(&Path, &Action) -> Result<ActionResult, String> + Sync,
 {
     let mut graph = validate(nodes, jobs)?;
+    crate::progress::execution_started(graph.nodes.len());
     // Infrastructure failures (worker spawn, panics) of a keep-going run.
     let mut fatal: Vec<String> = Vec::new();
     let mut lane = LeafState::new(leaves, &graph, keep_going)?;

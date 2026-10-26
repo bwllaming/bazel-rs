@@ -1497,6 +1497,8 @@ where
     let executed = {
         let _m = timing::mark(&timing::PHASES.execute);
         let _tainted = crate::observed_fs::tainted_section();
+        // `Fetching repository @@name` in the progress display (when on).
+        let _fetching = crate::progress::fetching_repository(stage_key);
         execute(&slot)
     };
     // A local rule's execution is recorded for replay by the caller instead.

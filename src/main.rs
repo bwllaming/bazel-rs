@@ -189,6 +189,7 @@ fn run() -> Result<(), String> {
     let mut run_options = bazel_rs::run_command::RunOptions::default();
     let mut test_options = bazel_rs::test_command::TestOptions::default();
     let mut deferred = None;
+    let mut ui_options = bazel_rs::progress::UiOptions::default();
     let rc_options;
     let rest = if command == "mod" {
         let (rest, rc) = mod_arguments(&options, &mut credential_options, &mut remote_options)?;
@@ -269,6 +270,7 @@ fn run() -> Result<(), String> {
         runfiles_options = native.runfiles;
         workspace_status = native.workspace_status;
         no_build = native.no_build;
+        ui_options = native.ui;
         output_selection = native.output.clone();
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
@@ -277,6 +279,21 @@ fn run() -> Result<(), String> {
         test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
+    // The interactive progress display (crate::progress, docs/PROGRESS.md):
+    // `build`, `test` and `run` on a terminal (Bazel's curses mode), never
+    // otherwise. Everything printed from here on reaches the terminal
+    // through its thread; every exit path below ends it ([`exit`]).
+    if let Some(config) = bazel_rs::progress::decide(
+        &command,
+        &ui_options,
+        &bazel_rs::progress::TerminalEnvironment::from_process(
+            is_standard_terminal(),
+            usize::try_from(terminal_columns()).unwrap_or(80),
+        ),
+    ) && let Err(error) = bazel_rs::progress::start(config)
+    {
+        eprintln!("bazel-rs: warning: the progress display is off: {error}");
+    }
     // Memory ceiling (native-only safety valve, crate::memory_limit):
     // --memory-limit=<MB> wins over BAZEL_RS_MAX_MEMORY_MB (Bazel's
     // CLI-over-env convention). Unset both = the default cap (the
@@ -381,7 +398,7 @@ fn run() -> Result<(), String> {
     // (SpawnStrategyRegistry.toStrategy:718-727).
     if let Err(error) = bazel_rs::sandbox::validate(&spawn_options) {
         eprintln!("ERROR: {error}");
-        std::process::exit(2);
+        exit(2);
     }
     bazel_rs::sandbox::install(spawn_options);
     // Option parser warnings (deprecated options) once the native options
@@ -398,7 +415,7 @@ fn run() -> Result<(), String> {
     let rest = if command == "query" {
         match bazel_rs::engine::query::read_query(&rest, &query_options) {
             Some(query) => vec![query],
-            None => std::process::exit(2),
+            None => exit(2),
         }
     } else {
         rest
@@ -800,7 +817,7 @@ fn run() -> Result<(), String> {
             drop(snapshot);
             write_lockfile();
             bazel_rs::digest_memo::finish();
-            std::process::exit(outcome.exit_code);
+            exit(outcome.exit_code);
         }
         bazel_rs::memory_limit::report_peak(memory_limit_mb);
         snapshot.finish();
@@ -1063,7 +1080,7 @@ fn info_command(
     if let Some(message) = outcome.unknown {
         // ExitCode.COMMAND_LINE_ERROR, InfoCommand.Code.KEY_NOT_RECOGNIZED.
         eprintln!("ERROR: {message}");
-        std::process::exit(2);
+        exit(2);
     }
     Ok(())
 }
@@ -1210,7 +1227,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         }
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        std::process::exit(1);
+        exit(1);
     }
     snapshot.finish();
     // BuildView.createAnalysisFailureDetail (analysis/BuildView.java:760-776):
@@ -1222,7 +1239,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         }
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        std::process::exit(1);
+        exit(1);
     }
     Ok(())
 }
@@ -1704,7 +1721,7 @@ fn run_tail(
         eprintln!("ERROR: Build failed. Not running target");
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        std::process::exit(1);
+        exit(1);
     }
     let target = targets.remove(label);
     let test_info = match planned_command {
@@ -1866,6 +1883,8 @@ fn run_tail(
         })?;
         return Ok(());
     }
+    // The progress display ends before the target takes the terminal.
+    bazel_rs::progress::finish(0);
     let prefix = if options.run { "Running" } else { "Runnable" };
     eprintln!(
         "bazel-rs: {prefix} command line: {}",
@@ -2170,7 +2189,7 @@ fn test_tail(
         eprintln!("ERROR: No test targets were found, yet testing was requested");
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        std::process::exit(4);
+        exit(4);
     }
     if !execute {
         // --nobuild: the build succeeded with 0 actions but nothing was
@@ -2181,7 +2200,7 @@ fn test_tail(
         eprintln!("ERROR: Couldn't start the build. Unable to run tests");
         write_lockfile();
         bazel_rs::digest_memo::finish();
-        std::process::exit(1);
+        exit(1);
     }
     let outcome = match session {
         Some(session) => session.finish(),
@@ -2263,7 +2282,7 @@ fn test_tail(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    std::process::exit(
+    exit(
         if failed_to_build || build_failed || pattern_failure.is_some() {
             1
         } else if passed {
@@ -2416,7 +2435,7 @@ fn test_build_failure(
     write_lockfile();
     bazel_rs::loading::module_timings::report();
     bazel_rs::digest_memo::finish();
-    std::process::exit(1);
+    exit(1);
 }
 
 struct RunTest<'a> {
@@ -2587,6 +2606,8 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     } else {
         escaped.join(" ")
     };
+    // The progress display ends before the target takes the terminal.
+    bazel_rs::progress::finish(0);
     let prefix = if options.run { "Running" } else { "Runnable" };
     eprintln!("bazel-rs: {prefix} command line: {pretty}");
     if !options.run {
@@ -2802,6 +2823,9 @@ struct NativeOptions {
     /// stop before the execution phase; the workspace status action (an
     /// execution-phase artifact) is not planned.
     no_build: bool,
+    /// The UI options of the interactive progress display (UiOptions,
+    /// crate::progress).
+    ui: bazel_rs::progress::UiOptions,
 }
 
 impl NativeOptions {
@@ -2834,6 +2858,7 @@ impl NativeOptions {
             spawn: bazel_rs::sandbox::SpawnOptions::default(),
             workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions::default(),
             no_build: false,
+            ui: bazel_rs::progress::UiOptions::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -2874,6 +2899,9 @@ impl NativeOptions {
                 .parse(command, arg, next, &unit.option.origin_suffix())?
         {
             used
+        } else if let Some(used) = self.ui.parse(arg, next) {
+            // UiOptions (every command): the progress display's.
+            used?
         } else if let Some(disabled) =
             bazel_rs::module_cli::repository_disable_download_argument(arg)?
         {
@@ -3715,9 +3743,13 @@ fn main() {
     {
         std::process::exit(bazel_rs::process_wrapper::main(&raw.collect::<Vec<_>>()));
     }
+    bazel_rs::progress::process_start();
     // This process is the CLI binary: spawns run under its re-executed
     // process-wrapper.
     bazel_rs::process_wrapper::enable();
+    // A panic unwinding out of `run` ends the progress display (its message
+    // is in the display's pipe by then).
+    let _progress = ProgressGuard;
     let result = run();
     // BAZEL_RS_SNAPSHOT=verify: a hit whose shadow full analysis ended
     // before planning completed is a mismatch (reported and logged; the
@@ -3745,7 +3777,26 @@ fn main() {
         } else {
             1
         };
-        std::process::exit(code);
+        exit(code);
+    }
+    bazel_rs::progress::finish(0);
+}
+
+/// Exit with `code`, ending the progress display first (its summary, and
+/// whatever is still in its pipe).
+fn exit(code: i32) -> ! {
+    bazel_rs::progress::finish(code);
+    std::process::exit(code)
+}
+
+/// Ends the progress display when a panic unwinds out of `main`.
+struct ProgressGuard;
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            bazel_rs::progress::abandon();
+        }
     }
 }
 

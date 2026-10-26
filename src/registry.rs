@@ -465,6 +465,8 @@ pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
         open_http(url)?.map(|response| Box::new(response) as Box<dyn Read>)
     };
     let mut reader = reader.ok_or("download resource not found")?;
+    // The download's bytes in the progress display (when on).
+    let _downloading = crate::progress::downloading(url);
     let mut buffer = vec![0u8; 64 * 1024];
     let mut total = 0u64;
     loop {
@@ -477,6 +479,7 @@ pub fn download_to(url: &str, writer: &mut dyn Write) -> Result<u64, String> {
         writer
             .write_all(&buffer[..n])
             .map_err(|error| format!("cannot write downloaded resource: {error}"))?;
+        crate::progress::downloaded(n);
         total += n as u64;
     }
 }

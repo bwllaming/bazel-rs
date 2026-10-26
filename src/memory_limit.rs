@@ -328,6 +328,7 @@ fn start_watchdog(cap_mb: u64) {
                     STOP_REQUESTED.store(true, Ordering::SeqCst);
                     kill_live_groups();
                     crate::snapshot::capture::restore_for_exit();
+                    crate::progress::abandon();
                     std::process::exit(LIMIT_EXIT_CODE);
                 }
                 if !warned && rss > warn_at {
