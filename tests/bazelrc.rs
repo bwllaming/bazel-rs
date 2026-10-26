@@ -189,7 +189,7 @@ fn groups_inherit_in_order_and_common_ignores_other_commands_options() {
     let ws = Workspace::new();
     ws.file(
         ".bazelrc",
-        "build -c dbg\ncommon -c opt\ncommon --worker_verbose\ntest --bogus\nquery --bogus\nalways --define=x=1\n",
+        "build -c dbg\ncommon -c opt\ncommon --experimental_worker_cancellation\ntest --bogus\nquery --bogus\nalways --define=x=1\n",
     );
     // build options override common ones regardless of order.
     assert_eq!(
@@ -198,7 +198,8 @@ fn groups_inherit_in_order_and_common_ignores_other_commands_options() {
     );
     let out = ws.run(&["build", ":mode"]);
     assert!(
-        stderr(&out).contains("unsupported option \"--worker_verbose\" from rc file"),
+        stderr(&out)
+            .contains("unsupported option \"--experimental_worker_cancellation\" from rc file"),
         "{}",
         stderr(&out)
     );

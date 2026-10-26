@@ -35,6 +35,8 @@ const ROOT: &str = env!("CARGO_MANIFEST_DIR");
 const ALLOWED_MODULES: &[&str] = &[
     "action",
     "sandbox",
+    // Persistent workers: their working directories and logs (execution).
+    "worker",
     "scheduler",
     "run_command",
     "spawn_lock",

@@ -222,13 +222,15 @@ multiplex keys are not sandboxed, as in genuine.
 
 ## Not modelled
 
+These options are still rejected as unsupported options, as before:
+
 - Worker cancellation (`--experimental_worker_cancellation`), because there
   is no dynamic execution.
 - Cgroups and memory limits.
 - Metrics collection and `--experimental_shrink_worker_pool`.
 - `--high_priority_workers`.
 
-These options are still accepted. `--worker_verbose` prints genuine's
+`--worker_verbose` prints genuine's
 `INFO: Created new ... worker (id N, key hash H), logging to <log>` line.
 The key hash is native's own.
 
