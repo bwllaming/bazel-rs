@@ -838,8 +838,7 @@ fn rule_surface(
             )
         }),
         mapping: repositories
-            .mapping(&rule.label.repository)
-            .cloned()
+            .shared_mapping(&rule.label.repository)
             .unwrap_or_default(),
         locations: Default::default(),
         errors: Default::default(),

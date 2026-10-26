@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+/// [`RepositorySet::shared_mapping`]'s copy of a mapping table entry.
+type SharedMapping = Arc<BTreeMap<String, String>>;
+
 /// The canonical form of a root, the repository store or a blocked prefix
 /// as the link policy and the recorded-input keys take it (W6R): not
 /// recorded where taken — [`RepositorySet::record_link_anchors`] records
@@ -149,6 +152,9 @@ struct RepositoryState {
     /// Canonical forms of materialized roots and blocked prefixes for the
     /// link policy, memoized per invocation (published roots never move).
     link_canonical: std::sync::Mutex<BTreeMap<PathBuf, PathBuf>>,
+    /// [`RepositorySet::shared_mapping`]: one shared copy per mapping table
+    /// entry, by the entry's address.
+    shared_mappings: std::sync::Mutex<std::collections::HashMap<usize, SharedMapping>>,
     /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
     /// every package that loads them (BzlLoadValue; crate::loading).
     build_bzl: crate::loading::BzlCache,
@@ -768,6 +774,7 @@ impl RepositorySet {
                 host,
                 ignored: std::sync::Mutex::default(),
                 link_canonical: std::sync::Mutex::default(),
+                shared_mappings: std::sync::Mutex::default(),
                 build_bzl: crate::loading::BzlCache::default(),
                 definition_bzl: crate::loading::DefinitionBzlCache::default(),
                 module_globals: OnceLock::new(),
@@ -2323,6 +2330,31 @@ impl RepositorySet {
             capture.note_mapping(repository, mapping, || self.isolated_imports(repository));
         }
         Ok(mapping)
+    }
+
+    /// [`Self::mapping`] as one shared copy per mapping table entry (a rule
+    /// context keeps its repository's mapping; an extension's, which all
+    /// its generated repositories share, can hold thousands of apparent
+    /// names). The lookup itself (and what it notes for the snapshot) runs
+    /// every time. The entries live in this set's write-once state (catalog,
+    /// prepared groups, pinned tables) and are never freed or changed while
+    /// it lives, so an entry's address identifies its content.
+    pub fn shared_mapping(
+        &self,
+        repository: &str,
+    ) -> Result<Arc<BTreeMap<String, String>>, String> {
+        let mapping = self.mapping(repository)?;
+        let address = std::ptr::from_ref(mapping) as usize;
+        let mut shared = self
+            .state
+            .shared_mappings
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(Arc::clone(
+            shared
+                .entry(address)
+                .or_insert_with(|| Arc::new(mapping.clone())),
+        ))
     }
 
     fn unpinned_mapping(&self, repository: &str) -> Result<&BTreeMap<String, String>, String> {
