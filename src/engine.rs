@@ -1544,7 +1544,7 @@ type BuildPlan = (
 
 /// The analyzed rules of a build in analysis (postorder) order, each with
 /// its configured target key (the configuration it was analyzed in).
-type Plan = Vec<(ConfiguredTargetKey, Rule)>;
+type Plan = Vec<(ConfiguredTargetKey, Arc<Rule>)>;
 
 /// The owned, `Send` inputs of one custom rule's pure analysis (the
 /// compute boundary, review §1.7): the rule with its rule context
@@ -1937,7 +1937,7 @@ pub struct Engine {
     /// The select()-configured rules action planning saw, by configured
     /// target key (aspect applications read the base target's configured
     /// attribute values for `ctx.rule`, N58).
-    configured_rules: BTreeMap<ConfiguredTargetKey, Rule>,
+    configured_rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
     /// The configuration of each label attribute of each aspect
     /// application (base configured target key, aspect identity), computed
     /// when phase 1 analyzes the application's own attribute dependencies
@@ -4272,7 +4272,7 @@ impl Engine {
             },
         );
         self.analyze_aspect_edges(&rule, &key, config, active, configured, plan)?;
-        plan.push((key, rule));
+        plan.push((key, Arc::new(rule)));
         Ok(())
     }
 
@@ -11434,13 +11434,13 @@ impl Engine {
         &mut self,
         state: &mut ActionPlanning,
         configured: &mut ConfiguredNodes,
-        rule: &Rule,
+        rule: &Arc<Rule>,
         prepared: PreparedTarget,
         computed: Option<ComputeOutcome>,
     ) -> Result<(), String> {
         if rule.custom.is_some() {
             self.configured_rules
-                .insert(prepared.key.clone(), rule.clone());
+                .insert(prepared.key.clone(), Arc::clone(rule));
         }
         let PreparedTarget {
             key,
@@ -12650,7 +12650,7 @@ impl Engine {
         &mut self,
         state: &mut ActionPlanning,
         key: &ConfiguredTargetKey,
-        rule: &Rule,
+        rule: &Arc<Rule>,
         configured: &mut ConfiguredNodes,
         index: u64,
     ) -> Result<(), String> {
@@ -15561,6 +15561,10 @@ fn plan_action(
                 .push((artifact.real.clone(), artifact.exec.clone()));
         }
     }
+    // The input list was sized for every input, generated ones included,
+    // and is kept for the rest of the build (MEM4).
+    action.inputs.shrink_to_fit();
+    dependencies.shrink_to_fit();
     Ok(PlannedAction::new(action, dependencies))
 }
 
@@ -16431,7 +16435,7 @@ mod tests {
             package_metadata: Vec::new(),
             location: None,
             explicit_visibility: false,
-            call_stack: Vec::new(),
+            call_stack: Arc::from([]),
             generator: None,
         }
     }
@@ -16484,7 +16488,10 @@ mod tests {
                 &mut plan,
             )?;
         }
-        Ok(plan.into_iter().map(|(_, rule)| rule).collect())
+        Ok(plan
+            .into_iter()
+            .map(|(_, rule)| Arc::unwrap_or_clone(rule))
+            .collect())
     }
 
     fn group(label: &str, specs: &[&str], includes: &[&str]) -> Rule {
@@ -17621,7 +17628,7 @@ m = macro(implementation=emit)
             package_metadata: Vec::new(),
             location: None,
             explicit_visibility: false,
-            call_stack: Vec::new(),
+            call_stack: Arc::from([]),
             generator: None,
         };
         assert_eq!(

@@ -832,8 +832,15 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
     };
     let mut configured = rule.clone();
     if let Some(native) = &rule.native {
-        let mut target = (**native).clone();
-        store(&mut target, native_values);
+        // Without select() values there is nothing to store: the configured
+        // rule shares the declared native target (MEM4).
+        let target = if native.configurable.is_empty() {
+            std::sync::Arc::clone(native)
+        } else {
+            let mut target = (**native).clone();
+            store(&mut target, native_values);
+            std::sync::Arc::new(target)
+        };
         match configured.kind {
             crate::package::RuleKind::Filegroup => configured.srcs = target.labels("srcs"),
             crate::package::RuleKind::Genrule => {
@@ -842,7 +849,7 @@ pub fn configure(rule: &Rule, resolver: &Resolver<'_>) -> Result<Rule, String> {
             }
             _ => {}
         }
-        configured.native = Some(std::sync::Arc::new(target));
+        configured.native = Some(target);
     }
     if let Some(custom) = configured.custom.as_mut() {
         store(&mut custom.declaration.builtin.target, builtin_values);

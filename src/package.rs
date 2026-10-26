@@ -91,7 +91,7 @@ pub struct Rule {
     pub explicit_visibility: bool,
     /// Rule.reconstructCallStack (packages/Rule.java:322-329), for
     /// `query --output=build`.
-    pub call_stack: Vec<(String, String)>,
+    pub call_stack: std::sync::Arc<[(String, String)]>,
     /// The computed `generator_*` values of a rule created by a macro.
     pub generator: Option<Generator>,
 }
@@ -426,7 +426,7 @@ pub(crate) fn register_custom<'v>(
     let call_stack = java_call_stack(eval);
     context.declare(name, RuleKind::Custom, srcs, outs, None, visibility, site)?;
     if let Some(rule) = context.rules.borrow_mut().last_mut() {
-        rule.call_stack = call_stack;
+        rule.call_stack = call_stack.into();
         rule.generator = generator;
     }
     // Not a valid Starlark identifier: BUILD assignments cannot overwrite roots.
@@ -574,7 +574,7 @@ impl Declarations {
             package_metadata: Vec::new(),
             location: site.location,
             explicit_visibility,
-            call_stack: Vec::new(),
+            call_stack: Arc::from([]),
             generator: None,
         });
         Ok(NoneType)
@@ -1268,7 +1268,7 @@ fn declare_native<'v>(
     let mut rules = context.rules.borrow_mut();
     let rule = rules.last_mut().expect("declared rule");
     rule.native = Some(Arc::new(target));
-    rule.call_stack = call_stack;
+    rule.call_stack = call_stack.into();
     rule.generator = generator;
     Ok(())
 }
