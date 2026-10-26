@@ -108,5 +108,6 @@ store with their own pointers and stages.
   covered: into a mutable slot unlocked, or through an ordinary slot's link
   into its tree (the stat fingerprints catch that: the tree is republished).
 * Build actions writing into slots are not covered.
-* No collector removes unused trees or mutable slots yet (`refs` is recorded
-  for one).
+* The cache's garbage collection (docs/CACHE_GC.md) removes unused trees
+  with their pointers, slot links, markers and mutable slots; kept trees keep
+  the trees their `refs` name.

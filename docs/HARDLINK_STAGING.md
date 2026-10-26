@@ -371,9 +371,9 @@ never trusted, so every cache executes its actions once more; the keys stay
   docs/SOURCE_DIRECTORIES.md). `readlink` of a published symlink output names a native path
   (workspace source or cache entry), like Bazel's absolute execroot path.
   One exception (below): an executable aliasing a repository file.
-* The store persists one copy of each distinct input/output content; there is
-  no store garbage collection (native has no cache GC) and no sweep of
-  `.tmp-*` files a killed process left (docs/ROADMAP.md, milestone 3).
+* The store persists one copy of each distinct input/output content until
+  the cache's garbage collection removes blobs no entry links and abandoned
+  `.tmp-*` files (docs/CACHE_GC.md).
 * Cross-device or link-limited filesystems (`EXDEV`, `EMLINK`, ...) fall back
   to copies for staging and to rename/copy for publication (unit tests
   `failed_hardlinks_fall_back_to_copies`, `emlink_hardlink_failures_fall_back_to_copies`).

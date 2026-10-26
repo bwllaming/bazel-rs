@@ -64,7 +64,8 @@ holds it exclusive (docs/COMMANDS.md).
 `<output_user_root>/<md5 of the workspace>`, one per workspace — while the
 store is shared like Bazel's output user root (`info repository_cache` is
 `<cache>/repositories/downloads`). The state directory of a deleted worktree
-stays until removed by hand (no garbage collection yet).
+is removed by the cache's garbage collection (docs/CACHE_GC.md:
+`<cache>/gc/worktrees/<state name>` records each workspace's path).
 
 Startup `--output_base=PATH` (also `--output_base PATH`, or `startup` in an rc
 file) replaces that per-workspace state directory, **not the shared cache**.
@@ -151,9 +152,10 @@ Not fixed yet (later phases of the options report):
    own `--cache-dir`.
 4. Two `run`s of one test in the SAME worktree still share its execution
    root (as before).
-5. **No garbage collection** of the shared store, nor of the state
-   directories of deleted worktrees; the digest memo grows with the
-   worktrees' source files up to its bound.
+5. Garbage collection (docs/CACHE_GC.md) removes what no worktree used for
+   its age limits or beyond its size budget, and the state of deleted
+   worktrees; the digest memo grows with the worktrees' source files up to
+   its bound.
 6. Shared actions keep their first owner in the key: on another branch a
    different owner re-runs such an action once (time only).
 
@@ -169,4 +171,5 @@ its own `external/` and action cache) and shares only the repository cache
 cache; `--disk_cache` shares action results. bazel-rs shares its whole store
 between the worktrees of one repository and keeps per workspace only what
 names the workspace: closer to an output base per worktree over a shared
-repo contents cache plus disk cache, with no server and no GC.
+repo contents cache plus disk cache, with no server; the collector runs at
+the end of a command (docs/CACHE_GC.md).

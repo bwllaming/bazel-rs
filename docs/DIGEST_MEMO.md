@@ -270,8 +270,8 @@ action manifests therefore move to `native-action-v9` (`action::MANIFEST_FORMAT`
   with the digest table's version 2 (each file the build reads is hashed once more) the measured cost is
   below ("Upgrade cost").
 - **Old entries stay on disk.** Entries of actions that are not built again stay in `<cache>/actions/`,
-  never trusted, until they are deleted: there is no action-cache garbage collection; deleting
-  `<cache>/actions/` drops them (with every other entry). `<cache>/digests/v1.dmemo` can be deleted too.
+  never trusted, until the cache's garbage collection removes them by age or budget
+  (docs/CACHE_GC.md); deleting `<cache>/actions/` drops them (with every other entry). `<cache>/digests/v1.dmemo` can be deleted too.
 - **Do not alternate binaries on one cache.** An older binary treats the v9 entries as misses in turn, so
   two binaries of different manifest formats sharing a cache re-execute each other's actions.
 - **Remote caches.** The remote cache keys are Bazel's (REAPI action digests), not this format: an entry

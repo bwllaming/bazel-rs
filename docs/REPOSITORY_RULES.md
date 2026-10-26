@@ -289,8 +289,8 @@ re-runs, once:
   `build --nobuild //src/beyondwork.ai/{prober,pvcautoscaler,decommission}/...`:
   221 re-executions (217 go_repository), 221 pointers rewritten, 221 new
   trees (743 MB); 344 s against 317 s for a settled warm run. The superseded
-  trees stay on disk: the store has no garbage collection yet (removing the
-  cache directory reclaims them, at the cost of a cold run).
+  trees stay on disk until the cache's garbage collection removes them
+  (unreferenced trees a day after their last use; docs/CACHE_GC.md).
 * in the default `--lockfile_mode=update`, every module extension whose
   MODULE.bazel.lock or hidden-lockfile entry keys a file by a store path,
   `@@//bazel-rs-out/repositories/...`: what bazel-rs recorded before i20

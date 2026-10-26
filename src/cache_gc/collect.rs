@@ -206,6 +206,8 @@ struct Item {
     refs: Vec<String>,
     /// Blobs: the link count when scanned.
     links: u64,
+    /// Blobs: (device, inode).
+    inode: (u64, u64),
 }
 
 /// Something removed whatever the policy: an abandoned temporary, a dangling
@@ -656,6 +658,7 @@ fn scan(context: &Context<'_>) -> Scan {
                 anchor: Some(anchor),
                 refs,
                 links: 0,
+                inode: (0, 0),
             });
     });
     let mut items = items
@@ -695,6 +698,7 @@ fn scan(context: &Context<'_>) -> Scan {
                     anchor: Some(Anchor::of(path, &metadata)),
                     refs: Vec::new(),
                     links: metadata.nlink(),
+                    inode: (metadata.dev(), metadata.ino()),
                 });
         }
     });
@@ -703,6 +707,29 @@ fn scan(context: &Context<'_>) -> Scan {
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
     );
+    // Last-use stamps of trees that are gone (removed by hand, or by a
+    // collection killed before it removed the stamp).
+    let present: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item.kind {
+            Kind::Tree(kind) => Some(format!("{}-{}", kind.name(), item.name)),
+            _ => None,
+        })
+        .collect();
+    let used = super::directory(cache).join(super::USED);
+    for (name, _) in list(&used) {
+        if !present.contains(&name) {
+            let path = used.join(&name);
+            if fs::symlink_metadata(&path).is_ok_and(|metadata| context.stale(&metadata)) {
+                sweeps.push(Sweep {
+                    path,
+                    category: "repositories",
+                    slot: None,
+                    also: None,
+                });
+            }
+        }
+    }
     // Specification pointers: which direct trees are referenced.
     let trees: HashSet<String> = items
         .iter()
@@ -991,13 +1018,16 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
     let automatic = mode == Mode::Automatic;
     let gc = super::directory(cache);
     let _ = fs::create_dir_all(&gc);
-    // What a killed collection left in the trash goes first.
-    if !dry_run {
+    // What a killed or bounded collection left in the trash goes first.
+    let left_orphans = if dry_run {
+        HashSet::new()
+    } else {
         empty_trash(
             &gc.join(super::TRASH),
             automatic.then(|| Instant::now() + AUTOMATIC_TRASH / 2),
-        );
-    }
+        )
+        .1
+    };
     let context = Context {
         cache,
         store: cache.join("repositories"),
@@ -1012,13 +1042,21 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
     };
     let scan = scan(&context);
     let Scan {
-        items,
+        mut items,
         sweeps,
         pointers,
         links,
         mutable,
         index,
     } = scan;
+    // Blobs that only entries an earlier collection removed linked: their
+    // last use went with those entries (emptying the trash just changed
+    // their ctime).
+    for item in &mut items {
+        if item.kind == Kind::Blob && item.links == 1 && left_orphans.contains(&item.inode) {
+            item.last_use = 0;
+        }
+    }
     // Sizes: the trees' units include their mutable slots.
     let unit_size = |item: &Item| -> Option<u64> {
         let slots: u64 = if item.kind == Kind::Tree(TreeKind::Direct) {
@@ -1151,12 +1189,14 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
             dry_run || remove_item(&context, item, &trash, &pointers, &links, &mutable, &busy);
         if removed {
             report.deleted(item.kind.category(), unit_size(item).unwrap_or(0));
-            removed_names.insert((item.kind, item.name.clone()));
+            if !dry_run {
+                removed_names.insert((item.kind, item.name.clone()));
+            }
         }
     }
     report.busy = busy.load(Ordering::Relaxed);
-    // The index of what stays.
-    if !dry_run {
+    // The index of what stays (a dry run records the sizes it measured).
+    {
         let kept: Vec<IndexRecord> = index
             .into_iter()
             .filter(|record| {
@@ -1177,27 +1217,25 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
     // The cache is consistent: the lock goes, then the trash.
     drop(lock);
     if !dry_run {
-        let emptied = empty_trash(
+        let (emptied, orphans) = empty_trash(
             &trash.root,
             automatic.then(|| Instant::now() + AUTOMATIC_TRASH),
         );
         report.trash_emptied = emptied;
         // Blobs that only the removed entries linked are unlinked now; the
         // scan saw their last use.
-        if emptied {
-            let freed = collect_unlinked_blobs(
-                cache,
-                policy,
-                &items,
-                &victims,
-                remaining,
-                report.budget,
-                recent_cutoff,
-                age_cutoff(Kind::Blob),
-            );
-            for bytes in freed {
-                report.deleted("cas", bytes);
-            }
+        let freed = collect_unlinked_blobs(
+            cache,
+            &items,
+            &victims,
+            &orphans,
+            remaining,
+            report.budget,
+            recent_cutoff,
+            age_cutoff(Kind::Blob),
+        );
+        for bytes in freed {
+            report.deleted("cas", bytes);
         }
         super::write_stamp(cache, !sized || !emptied);
     }
@@ -1205,26 +1243,28 @@ fn collect_at(cache: &Path, policy: &Policy, mode: Mode, lock: Option<File>, now
     report
 }
 
-/// After the trash was emptied: the blobs that were linked by entries when
-/// scanned and no longer are, removed by the age limit and the budget like
-/// every entry, by the use the scan saw. Returns the bytes of each removed.
+/// After the trash was emptied: the blobs that only the removed entries
+/// linked (`orphans`: what emptying the trash left with one link), removed
+/// by the age limit and the budget like every entry, by the use the scan
+/// saw. Returns the bytes of each removed.
 #[allow(clippy::too_many_arguments)]
 fn collect_unlinked_blobs(
     cache: &Path,
-    policy: &Policy,
     items: &[Item],
     victims: &[bool],
+    orphans: &HashSet<(u64, u64)>,
     mut remaining: u64,
     budget: Option<u64>,
     recent_cutoff: i64,
     age_cutoff: Option<i64>,
 ) -> Vec<u64> {
-    let _ = policy;
     let cas = cache.join("cas");
     let mut candidates: Vec<(i64, u64, PathBuf)> = items
         .iter()
         .zip(victims)
-        .filter(|(item, victim)| item.kind == Kind::Blob && item.links > 1 && !**victim)
+        .filter(|(item, victim)| {
+            item.kind == Kind::Blob && !**victim && orphans.contains(&item.inode)
+        })
         .filter_map(|(item, _)| {
             let path = cas.join(&item.name);
             let metadata = fs::symlink_metadata(&path).ok()?;
@@ -1286,7 +1326,7 @@ impl Trash {
                 make_writable(path);
                 fs::rename(path, &destination).is_ok()
             }
-            Err(_) => remove_in_place(path, None),
+            Err(_) => remove_in_place(path, None, None),
         }
     }
 }
@@ -1302,15 +1342,31 @@ fn make_writable(path: &Path) {
     }
 }
 
+/// Files (device, inode) whose removal left them one link: a blob that
+/// only removed entries linked.
+type Inodes = Mutex<HashSet<(u64, u64)>>;
+
 /// Remove `path` (a file, a link or a whole directory, never following
 /// links; read-only directories are made writable), stopping at `deadline`.
-/// True when it is gone.
-fn remove_in_place(path: &Path, deadline: Option<Instant>) -> bool {
+/// True when it is gone. Regular files of two links note their inode in
+/// `orphans` (their other link may be a blob nothing else links now).
+fn remove_in_place(path: &Path, deadline: Option<Instant>, orphans: Option<&Inodes>) -> bool {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return true;
     };
     if !metadata.is_dir() {
-        return fs::remove_file(path).is_ok()
+        let removed = fs::remove_file(path).is_ok();
+        if removed
+            && metadata.is_file()
+            && metadata.nlink() == 2
+            && let Some(orphans) = orphans
+        {
+            orphans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert((metadata.dev(), metadata.ino()));
+        }
+        return removed
             || fs::symlink_metadata(path).is_err_and(|error| error.kind() == ErrorKind::NotFound);
     }
     make_writable(path);
@@ -1320,7 +1376,7 @@ fn remove_in_place(path: &Path, deadline: Option<Instant>) -> bool {
             if deadline.is_some_and(|deadline| Instant::now() > deadline) {
                 return false;
             }
-            complete &= remove_in_place(&entry.path(), deadline);
+            complete &= remove_in_place(&entry.path(), deadline, orphans);
         }
     }
     complete
@@ -1329,22 +1385,25 @@ fn remove_in_place(path: &Path, deadline: Option<Instant>) -> bool {
 }
 
 /// Delete what is in the trash (several processes may: whoever is first).
-/// True when it is empty.
-fn empty_trash(trash: &Path, deadline: Option<Instant>) -> bool {
+/// Whether it is empty, and the files it left with one link
+/// ([`remove_in_place`]).
+fn empty_trash(trash: &Path, deadline: Option<Instant>) -> (bool, HashSet<(u64, u64)>) {
     let entries = list(trash);
     let paths: Vec<PathBuf> = entries.iter().map(|(name, _)| trash.join(name)).collect();
     let complete = std::sync::atomic::AtomicBool::new(true);
+    let orphans = Inodes::default();
     super::parallel(&paths, 8, |path| {
-        if !remove_in_place(path, deadline) {
+        if !remove_in_place(path, deadline, Some(&orphans)) {
             complete.store(false, Ordering::Relaxed);
         }
     });
-    if paths.len() >= 256 {
-        complete.load(Ordering::Relaxed)
-    } else {
-        // Few entries ran on one thread; anything left?
-        complete.load(Ordering::Relaxed) && list(trash).is_empty()
-    }
+    let orphans = orphans
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    (
+        complete.load(Ordering::Relaxed) && list(trash).is_empty(),
+        orphans,
+    )
 }
 
 fn remove_sweep(context: &Context<'_>, sweep: &Sweep, trash: &Trash) -> bool {
@@ -1768,6 +1827,33 @@ mod tests {
         fs::write(&copy, b"copy").unwrap();
         fixture.collect(&policy(Budget::Off, None, None));
         assert!(copy.exists());
+    }
+
+    #[test]
+    fn blobs_only_removed_entries_linked_go_by_the_entries_last_use() {
+        let fixture = Fixture::new();
+        let cas = fixture.cache().join("cas");
+        fs::create_dir_all(&cas).unwrap();
+        // Every blob was last linked 100 days ago (its ctime); the age limit
+        // is 200 days.
+        let old_entry = fixture.action(&id(1), 100, Some(300 * DAY));
+        let removed_now = cas.join(format!("{}-555", id(1)));
+        fs::hard_link(old_entry.join("outputs/out"), &removed_now).unwrap();
+        // Left in the trash by an earlier collection: its blob's last use
+        // went with it.
+        let left = fixture.cache().join("gc/trash/1-0");
+        fs::create_dir_all(&left).unwrap();
+        fs::write(left.join("out"), b"left").unwrap();
+        let removed_earlier = cas.join(format!("{}-555", id(2)));
+        fs::hard_link(left.join("out"), &removed_earlier).unwrap();
+        // Unlinked all along, used 100 days ago: within the limit.
+        let unlinked = cas.join(format!("{}-444", id(3)));
+        fs::write(&unlinked, b"source").unwrap();
+        fixture.collect(&policy(Budget::Off, Some(200), None));
+        assert!(!old_entry.exists());
+        assert!(fs::symlink_metadata(&removed_now).is_ok());
+        assert!(fs::symlink_metadata(&removed_earlier).is_err());
+        assert!(unlinked.exists());
     }
 
     #[test]

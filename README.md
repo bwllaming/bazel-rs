@@ -94,8 +94,10 @@ the worktree's path are kept per worktree. A worktree's old
 `bazel-rs-out` is left alone with a one-line note (delete it to free the
 space). Caveats — a branch that bumps Go or gazelle must not build for the
 first time while another worktree builds; repositories watching files that
-differ between branches re-run on each switch; no garbage collection yet —
-are in docs/WORKTREES.md.
+differ between branches re-run on each switch —
+are in docs/WORKTREES.md. The cache is garbage-collected at the end of
+commands (by age, a size budget and deleted worktrees; `bazel-rs gc` collects
+now): docs/CACHE_GC.md.
 
 `bazel-rs fetch` (target patterns, `--repo`, `--all`, `--configure`,
 `--force`) materializes repositories without building; `bazel-rs clean`
