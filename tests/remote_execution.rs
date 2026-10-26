@@ -227,9 +227,18 @@ fn spawns_execute_remotely_with_genuine_keys_and_hit_afterwards() {
     assert_eq!(calls["Execution/Execute"], 3);
     assert_eq!(calls["ContentAddressableStorage/FindMissingBlobs"], 3);
     // A fresh native cache: every spawn is a remote cache hit.
+    let exec_log = ws.0.join("exec.json");
+    let log_flag = format!("--execution_log_json_file={}", exec_log.display());
     let again = ws.run(
         "c2",
-        &["build", &flag, "//pkg:gen", "//pkg:run", "//pkg:sh"],
+        &[
+            "build",
+            &flag,
+            &log_flag,
+            "//pkg:gen",
+            "//pkg:run",
+            "//pkg:sh",
+        ],
     );
     assert!(again.status.success(), "{}", stderr(&again));
     assert!(
@@ -240,6 +249,14 @@ fn spawns_execute_remotely_with_genuine_keys_and_hit_afterwards() {
     assert_eq!(outputs(&again), built);
     let calls = counts(&server);
     assert!(!calls.contains_key("Execution/Execute"), "{calls:?}");
+    // The execution log records the remote runner's cache hits.
+    let logged = fs::read_to_string(&exec_log).unwrap();
+    assert_eq!(
+        logged.matches("\"runner\": \"remote\"").count(),
+        3,
+        "{logged}"
+    );
+    assert_eq!(logged.matches("\"cacheHit\": true").count(), 3, "{logged}");
 }
 
 #[test]
@@ -574,7 +591,7 @@ fn capabilities_strategies_and_options() {
     assert!(!strict.status.success());
     assert!(
         stderr(&strict).contains(
-            "Genrule spawn cannot be executed with any of the available strategies: remote"
+            "Genrule spawn cannot be executed with any of the available strategies: [remote]"
         ),
         "{}",
         stderr(&strict)
@@ -975,4 +992,183 @@ fn genuine_bazel_and_native_share_a_nativelink_executor() {
         genuine_read_summary.contains("11 remote cache hit"),
         "{genuine_read_summary}"
     );
+}
+
+const TESTS_BZL: &str = "def _t(ctx):\n    out = ctx.actions.declare_file(ctx.label.name + \".sh\")\n    ctx.actions.write(out, \"#!/bin/bash\\necho testing; cat pkg/in.txt; echo out > $TEST_UNDECLARED_OUTPUTS_DIR/u.txt; exit $1\\n\", is_executable = True)\n    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]\nt_test = rule(_t, test = True, attrs = {\"data\": attr.label_list(allow_files = True)})\n";
+
+const TESTS_BUILD: &str = "load(\":tests.bzl\", \"t_test\")\nt_test(name = \"ok\", data = [\"in.txt\"], args = [\"0\"])\nt_test(name = \"bad\", data = [\"in.txt\"], args = [\"1\"])\n";
+
+#[test]
+fn tests_execute_remotely_with_their_xml_spawn() {
+    let ws = Workspace::new();
+    ws.file("pkg/tests.bzl", TESTS_BZL);
+    ws.file("pkg/BUILD.bazel", TESTS_BUILD);
+    let server = executor();
+    let flag = format!("--remote_executor={}", server.url());
+    let tested = ws.run("c1", &["test", &flag, "//pkg:ok", "//pkg:bad"]);
+    assert_eq!(tested.status.code(), Some(3), "{}", stderr(&tested));
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&tested.stdout),
+        stderr(&tested)
+    );
+    assert!(
+        text.contains("//pkg:ok") && text.contains("PASSED"),
+        "{text}"
+    );
+    assert!(
+        text.contains("//pkg:bad") && text.contains("FAILED"),
+        "{text}"
+    );
+    // Per test: the test spawn and the XML generating spawn.
+    let executed = server.executed();
+    assert_eq!(executed.len(), 4, "{executed:?}");
+    let test_spawn = executed
+        .iter()
+        .find(|executed| executed.command.arguments[1] == "pkg/ok.sh")
+        .unwrap();
+    assert_eq!(
+        test_spawn.command.arguments[0],
+        "external/bazel_tools/tools/test/test-setup.sh"
+    );
+    assert!(
+        test_spawn
+            .files
+            .contains_key("bazel-out/k8-fastbuild/bin/pkg/ok.sh.runfiles/_main/pkg/in.txt"),
+        "{test_spawn:?}"
+    );
+    assert!(
+        test_spawn
+            .directories
+            .iter()
+            .any(|directory| directory == "bazel-out/k8-fastbuild/testlogs/pkg/ok/test.outputs")
+    );
+    // The test log is the spawn's stdout; test.xml came from the XML spawn.
+    let testlogs = ws.run("c1", &["info", "bazel-testlogs"]);
+    let testlogs = PathBuf::from(String::from_utf8_lossy(&testlogs.stdout).trim());
+    let log = fs::read_to_string(testlogs.join("pkg/ok/test.log")).unwrap();
+    assert!(log.contains("testing\nhello\n"), "{log}");
+    let xml = fs::read_to_string(testlogs.join("pkg/ok/test.xml")).unwrap();
+    assert!(xml.contains("<testsuites>"), "{xml}");
+    // The undeclared outputs came back (zipped by default, like Bazel's
+    // --zip_undeclared_test_outputs).
+    assert!(
+        testlogs.join("pkg/ok/test.outputs/u.txt").exists()
+            || testlogs.join("pkg/ok/test.outputs/outputs.zip").exists()
+            || testlogs.join("pkg/ok/test.outputs.zip").exists(),
+        "{:?}",
+        fs::read_dir(testlogs.join("pkg/ok")).map(|entries| entries
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>())
+    );
+    // A fresh native cache: the passing test is a remote cache hit (with its
+    // XML spawn); the failing one runs again.
+    server.take_log();
+    let again = ws.run("c2", &["test", &flag, "//pkg:ok", "//pkg:bad"]);
+    assert_eq!(again.status.code(), Some(3), "{}", stderr(&again));
+    let log = server.take_log();
+    let executes = log
+        .iter()
+        .filter(|call| call.method.ends_with("/Execute"))
+        .count();
+    let calls = log
+        .iter()
+        .map(|call| format!("{} {}", call.method, call.detail))
+        .collect::<Vec<_>>();
+    // bad's test spawn and its XML spawn (a new duration may change the
+    // XML spawn's key) at most.
+    assert!(executes <= 2, "{executes} {calls:#?}");
+    // The passing test's spawn was answered from the Action Cache.
+    let ok_hit = log.iter().any(|call| {
+        call.method.ends_with("/GetActionResult")
+            && server
+                .ac_keys("")
+                .iter()
+                .any(|key| call.detail.ends_with(key.as_str()))
+    });
+    assert!(ok_hit, "{calls:#?}");
+}
+
+#[test]
+#[ignore = "needs genuine Bazel 9.3 (BAZEL_RS_GENUINE_BAZEL)"]
+fn genuine_bazel_sends_identical_test_spawns() {
+    let binary = std::env::var("BAZEL_RS_GENUINE_BAZEL").expect("BAZEL_RS_GENUINE_BAZEL");
+    let registry = format!(
+        "file://{}",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/builtin_modules/registry")
+            .display()
+    );
+    let ws = Workspace::new();
+    ws.file("pkg/tests.bzl", TESTS_BZL);
+    ws.file("pkg/BUILD.bazel", TESTS_BUILD);
+    let run = |native: bool, server: &Server| -> Output {
+        let flags = [
+            "test".to_owned(),
+            format!("--registry={registry}"),
+            "--lockfile_mode=off".to_owned(),
+            format!("--remote_executor={}", server.url()),
+            "//pkg:ok".to_owned(),
+            "//pkg:bad".to_owned(),
+        ];
+        let mut command = if native {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_bazel-rs"));
+            command
+                .arg("--ignore_all_rc_files")
+                .arg(format!("--cache-dir={}", ws.0.join("ncache").display()));
+            command
+        } else {
+            let mut command = Command::new(&binary);
+            command.args([
+                "--batch",
+                "--ignore_all_rc_files",
+                &format!("--output_user_root={}", ws.0.join("our").display()),
+            ]);
+            command
+        };
+        command.args(&flags[..1]);
+        if native {
+            command.arg("--experimental-builtin-modules");
+        }
+        command
+            .args(&flags[1..])
+            .current_dir(ws.0.join("ws"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", ws.0.join("home"))
+            .output()
+            .unwrap()
+    };
+    // Only the test spawns: the XML spawns' keys carry the measured
+    // duration.
+    let test_spawns = |server: &Server| {
+        execute_view(server)
+            .into_iter()
+            .filter(|(outputs, _)| outputs.contains("test.exited_prematurely"))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let genuine_server = executor();
+    let genuine = run(false, &genuine_server);
+    assert_eq!(
+        genuine.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&genuine.stderr)
+    );
+    let native_server = executor();
+    let native = run(true, &native_server);
+    assert_eq!(native.status.code(), Some(3), "{}", stderr(&native));
+    let genuine_view = test_spawns(&genuine_server);
+    let native_view = test_spawns(&native_server);
+    if let Ok(path) = std::env::var("BAZEL_RS_REMOTE_TEST_RECEIPT") {
+        let receipt = serde_json::json!({
+            "server": "in-process tests/support/grpc_cache_server.rs (Execution service)",
+            "genuine_test_spawns": genuine_view,
+            "native_test_spawns": native_view,
+        });
+        fs::write(path, serde_json::to_string_pretty(&receipt).unwrap() + "\n").unwrap();
+    }
+    assert_eq!(genuine_view.len(), 2);
+    assert_eq!(native_view, genuine_view);
 }

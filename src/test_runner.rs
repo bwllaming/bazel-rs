@@ -485,7 +485,14 @@ impl<'a> Session<'a> {
                 started.elapsed(),
                 log,
                 xml,
-                if crate::sandbox::all_sandboxed() {
+                // TestResult.execution_info.strategy: the resolved one
+                // (a remote spawn's "remote").
+                if matches!(
+                    self.runner.strategy(&action),
+                    Ok((crate::sandbox::Strategy::Remote, _))
+                ) {
+                    "remote"
+                } else if crate::sandbox::all_sandboxed() {
                     "linux-sandbox"
                 } else {
                     "local"
@@ -967,12 +974,48 @@ impl Runner<'_> {
             let path = execroot.join(destination);
             fs::create_dir_all(&path).map_err(|e| io("cannot create", &path, e))?;
         }
+        // The remote executor's view of the inputs (docs/REMOTE_EXECUTION.md),
+        // built once per action when `--remote_executor` is set.
+        let remote_inputs = if crate::sandbox::remote_executor() {
+            let mut remote = RemoteTestInputs {
+                spec: crate::remote_cache::SpawnSpec::default(),
+                blobs: BTreeMap::new(),
+                accept,
+            };
+            for (input, destination) in &inputs {
+                let destination = crate::remote_cache::path_string(destination)?;
+                input.add_remote(&destination, &mut remote.spec, &mut remote.blobs)?;
+            }
+            for destination in &empty_files {
+                remote.spec.inputs.insert(
+                    crate::remote_cache::path_string(destination)?,
+                    crate::reapi::Digest::of(b""),
+                );
+            }
+            for destination in &empty_trees {
+                remote
+                    .spec
+                    .directories
+                    .insert(crate::remote_cache::path_string(destination)?);
+            }
+            Some(remote)
+        } else {
+            None
+        };
         let max_attempts = options.attempts(&spec.info);
         let mut failed_attempts: Vec<Attempt> = Vec::new();
         let mut printed = Vec::new();
         let outcome = loop {
             let attempt = match self.attempt(
-                unit, &paths, &env, &args, &execroot, &test_name, parse_xml, interrupt,
+                unit,
+                &paths,
+                &env,
+                &args,
+                &execroot,
+                &test_name,
+                parse_xml,
+                interrupt,
+                remote_inputs.as_ref(),
             )? {
                 Attempted::Finished(attempt) => attempt,
                 Attempted::Failed(error) => {
@@ -1214,6 +1257,7 @@ impl Runner<'_> {
         test_name: &str,
         parse_xml: bool,
         interrupt: &std::sync::atomic::AtomicBool,
+        remote: Option<&RemoteTestInputs<'_>>,
     ) -> Result<Attempted, String> {
         let options = self.options;
         let base = execroot.join(&paths.base);
@@ -1253,108 +1297,141 @@ impl Runner<'_> {
         // the action suggestion text (StandaloneTestStrategy reports the
         // spawn's own status).
         let (strategy, deny_network) = self.strategy(unit)?;
-        let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
-        // The test runs under a supervisor (the process-wrapper or the
-        // sandbox worker, crate::process_wrapper) in its own process group:
-        // once it has exited, every process it left is killed and reaped —
-        // also daemons that left its group (setsid; embedded databases'
-        // `pg_ctl start`) — like Bazel's process-wrapper and linux-sandbox.
-        let mut launch = if sandboxed {
-            crate::process_wrapper::Launch::sandbox_worker(self.worker_args(
-                env,
-                execroot,
-                args,
-                SETUP_EXEC_PATH,
-                &args[0],
-                deny_network,
-            ))
-        } else {
-            crate::process_wrapper::Launch::new(
-                execroot.join(SETUP_EXEC_PATH),
-                Some(std::ffi::OsStr::new(&args[0])),
-                &args[1..],
-            )
+        // The `remote` strategy (StandaloneTestStrategy's spawn through
+        // RemoteSpawnRunner, docs/REMOTE_EXECUTION.md); a failure with
+        // `--remote_local_fallback` runs the attempt standalone.
+        let remote_run = match remote {
+            Some(remote) if strategy == crate::sandbox::Strategy::Remote => {
+                Some(self.run_test_remotely(unit, paths, env, args, remote, execroot)?)
+            }
+            _ => None,
         };
-        launch
-            .command()
-            .env_clear()
-            .envs(env)
-            // PosixLocalEnvProvider.rewriteLocalEnv (exec/local/PosixLocalEnvProvider.java:44-60).
-            .env("TMPDIR", tmpdir)
-            .current_dir(execroot)
-            .stdout(log)
-            .stderr(err);
-        let start = Instant::now();
-        let mut child = launch
-            .start()
-            .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
-        let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
-        let mut timed_out = false;
-        let mut interrupted = false;
-        let mut terminated_at = None;
-        let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
-        let status = loop {
+        let strategy = match remote_run {
+            Some(RemoteTestRun::Fallback) => crate::sandbox::Strategy::Standalone,
+            _ => strategy,
+        };
+        if let Some(RemoteTestRun::Failed(message)) = remote_run {
+            return Ok(Attempted::Failed(message));
+        }
+        let remote_done = match remote_run {
+            Some(RemoteTestRun::Done {
+                exit_code,
+                timed_out,
+                millis,
+            }) => Some((millis, exit_code, timed_out)),
+            _ => None,
+        };
+        let sandboxed = strategy == crate::sandbox::Strategy::Sandboxed;
+        let (millis, exit_code, timed_out) = if let Some(done) = remote_done {
+            drop((log, err));
+            done
+        } else {
+            // The test runs under a supervisor (the process-wrapper or the
+            // sandbox worker, crate::process_wrapper) in its own process group:
+            // once it has exited, every process it left is killed and reaped —
+            // also daemons that left its group (setsid; embedded databases'
+            // `pg_ctl start`) — like Bazel's process-wrapper and linux-sandbox.
+            let mut launch = if sandboxed {
+                crate::process_wrapper::Launch::sandbox_worker(self.worker_args(
+                    env,
+                    execroot,
+                    args,
+                    SETUP_EXEC_PATH,
+                    &args[0],
+                    deny_network,
+                ))
+            } else {
+                crate::process_wrapper::Launch::new(
+                    execroot.join(SETUP_EXEC_PATH),
+                    Some(std::ffi::OsStr::new(&args[0])),
+                    &args[1..],
+                )
+            };
+            launch
+                .command()
+                .env_clear()
+                .envs(env)
+                // PosixLocalEnvProvider.rewriteLocalEnv (exec/local/PosixLocalEnvProvider.java:44-60).
+                .env("TMPDIR", tmpdir)
+                .current_dir(execroot)
+                .stdout(log)
+                .stderr(err);
+            let start = Instant::now();
+            let mut child = launch
+                .start()
+                .map_err(|e| format!("cannot start {}: {e}", args[0]))?;
+            let mut streamer = (options.output == TestOutput::Streamed).then(Streamer::default);
+            let mut timed_out = false;
+            let mut interrupted = false;
+            let mut terminated_at = None;
+            let timeout = Duration::from_secs(options.timeout_seconds(unit.spec.info.timeout));
+            let status = loop {
+                if let Some(streamer) = streamer.as_mut() {
+                    streamer.pump(&log_path);
+                }
+                if let Some(status) = child.try_wait().map_err(|e| format!("cannot wait: {e}"))? {
+                    break status;
+                }
+                let elapsed = start.elapsed();
+                // The build failed (--nokeep_going): the test is interrupted like
+                // a timed-out one — SIGTERM, SIGKILL after the grace period —
+                // and reports no result (Bazel interrupts in-flight actions).
+                if !timed_out
+                    && !interrupted
+                    && interrupt.load(std::sync::atomic::Ordering::Acquire)
+                {
+                    interrupted = true;
+                    terminated_at = Some(Instant::now());
+                    child.terminate();
+                } else if !timed_out && !interrupted && elapsed >= timeout {
+                    // SIGTERM to the test's process group, SIGKILL after the
+                    // grace period (the process-wrapper's --timeout and
+                    // --kill_delay, process-tools.cc:93-111).
+                    timed_out = true;
+                    terminated_at = Some(Instant::now());
+                    child.terminate();
+                } else if let Some(at) = terminated_at
+                    && at.elapsed() >= TERMINATION_GRACE
+                {
+                    child.kill();
+                    terminated_at = None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            // What the interrupted test left was killed and reaped by its
+            // supervisor, as after any exit.
+            if interrupted {
+                return Ok(Attempted::Interrupted);
+            }
+            // A sandbox setup failure is an infrastructure failure of the attempt
+            // (crate::sandbox), not a test result.
+            if sandboxed
+                && let Some(work) = execroot.parent()
+                && let Ok(error) = fs::read_to_string(work.join("sandbox-setup-error"))
+                && !error.is_empty()
+            {
+                crate::sandbox::note_setup_failure();
+                return Ok(Attempted::Failed(format!(
+                    "{test_name}: could not set up the sandbox: {}",
+                    error.trim_end()
+                )));
+            }
+            // Test spawns stay out of crate::sandbox::count: the build summary's
+            // "(... sandboxed)" note describes the build's actions, as it did
+            // when the tests ran only after that summary was printed.
+            let millis = start.elapsed().as_millis() as u64;
             if let Some(streamer) = streamer.as_mut() {
                 streamer.pump(&log_path);
             }
-            if let Some(status) = child.try_wait().map_err(|e| format!("cannot wait: {e}"))? {
-                break status;
-            }
-            let elapsed = start.elapsed();
-            // The build failed (--nokeep_going): the test is interrupted like
-            // a timed-out one — SIGTERM, SIGKILL after the grace period —
-            // and reports no result (Bazel interrupts in-flight actions).
-            if !timed_out && !interrupted && interrupt.load(std::sync::atomic::Ordering::Acquire) {
-                interrupted = true;
-                terminated_at = Some(Instant::now());
-                child.terminate();
-            } else if !timed_out && !interrupted && elapsed >= timeout {
-                // SIGTERM to the test's process group, SIGKILL after the
-                // grace period (the process-wrapper's --timeout and
-                // --kill_delay, process-tools.cc:93-111).
-                timed_out = true;
-                terminated_at = Some(Instant::now());
-                child.terminate();
-            } else if let Some(at) = terminated_at
-                && at.elapsed() >= TERMINATION_GRACE
-            {
-                child.kill();
-                terminated_at = None;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        // What the interrupted test left was killed and reaped by its
-        // supervisor, as after any exit.
-        if interrupted {
-            return Ok(Attempted::Interrupted);
-        }
-        // A sandbox setup failure is an infrastructure failure of the attempt
-        // (crate::sandbox), not a test result.
-        if sandboxed
-            && let Some(work) = execroot.parent()
-            && let Ok(error) = fs::read_to_string(work.join("sandbox-setup-error"))
-            && !error.is_empty()
-        {
-            crate::sandbox::note_setup_failure();
-            return Ok(Attempted::Failed(format!(
-                "{test_name}: could not set up the sandbox: {}",
-                error.trim_end()
-            )));
-        }
-        // Test spawns stay out of crate::sandbox::count: the build summary's
-        // "(... sandboxed)" note describes the build's actions, as it did
-        // when the tests ran only after that summary was printed.
-        let millis = start.elapsed().as_millis() as u64;
-        if let Some(streamer) = streamer.as_mut() {
-            streamer.pump(&log_path);
-        }
-        let exit_code = if timed_out {
-            TIMEOUT_EXIT_CODE
-        } else {
-            use std::os::unix::process::ExitStatusExt;
-            status
-                .code()
-                .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+            let exit_code = if timed_out {
+                TIMEOUT_EXIT_CODE
+            } else {
+                use std::os::unix::process::ExitStatusExt;
+                status
+                    .code()
+                    .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+            };
+            (millis, exit_code, timed_out)
         };
         let mut test_status = if timed_out {
             TestStatus::Timeout
@@ -1400,7 +1477,13 @@ impl Runner<'_> {
         }
         // The XML generating spawn when the test wrote no test.xml (:784-813).
         let xml = base.join("test.xml");
-        if !xml.exists() {
+        if !xml.exists()
+            && let (Some(remote), Some(_)) = (remote, remote_done)
+        {
+            self.xml_remotely(
+                unit, paths, env, test_name, remote, execroot, millis, exit_code,
+            )?;
+        } else if !xml.exists() {
             let mut xml_env = env.clone();
             xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
             if unit.shards <= 1 {
@@ -1491,6 +1574,276 @@ struct AttemptResult {
     millis: u64,
     cachable: bool,
     test_case: Option<TestCase>,
+}
+
+/// A test action's inputs as a remote spawn's input root, and whether a
+/// cached result is acceptable (TestRunnerAction.shouldAcceptCachedResult:
+/// otherwise the spawn carries `no-cache`, StandaloneTestStrategy.java:113-120).
+struct RemoteTestInputs<'a> {
+    spec: crate::remote_cache::SpawnSpec,
+    blobs: BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'a>>,
+    accept: bool,
+}
+
+/// How a remote test spawn ended.
+enum RemoteTestRun {
+    Done {
+        exit_code: i32,
+        timed_out: bool,
+        millis: u64,
+    },
+    Fallback,
+    Failed(String),
+}
+
+/// Spawns.mayBeCachedRemotely over a test's execution requirements.
+fn remotely_cacheable(info: &std::collections::BTreeSet<String>) -> bool {
+    ["no-cache", "local", "no-remote", "no-remote-cache"]
+        .iter()
+        .all(|tag| !info.contains(*tag))
+}
+
+impl Runner<'_> {
+    /// The test's execution requirements (its tags and the rule's
+    /// testing.ExecutionInfo, TargetUtils.getExecutionInfo).
+    fn requirements(&self, unit: &Unit<'_>) -> std::collections::BTreeSet<String> {
+        let mut info: std::collections::BTreeSet<String> =
+            unit.spec.info.tags.iter().cloned().collect();
+        info.extend(unit.spec.execution_info().into_keys());
+        info
+    }
+
+    /// One remote spawn of a test action (crate::action::remote_spawn).
+    fn remote_test_spawn(
+        &self,
+        spec: crate::remote_cache::SpawnSpec,
+        blobs: &BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'_>>,
+        declared: &[(String, crate::remote_cache::OutputKind)],
+        cacheable: bool,
+    ) -> Result<crate::action::RemoteSpawn, String> {
+        let remote =
+            crate::remote_cache::active().ok_or("remote execution without a remote module")?;
+        let mut spec = spec;
+        spec.cacheable = cacheable;
+        let action = crate::remote_cache::remote_action_of(&spec)?;
+        crate::action::remote_spawn(remote, &action, blobs, declared, cacheable, false)
+    }
+
+    /// The common SpawnSpec fields of a test action's spawns: the
+    /// environment, the `Platform` (`--remote_default_exec_properties`; a
+    /// test target's own exec_properties are not recorded natively) and the
+    /// REAPI output form.
+    fn remote_base(
+        &self,
+        remote_inputs: &RemoteTestInputs<'_>,
+        env: &BTreeMap<String, String>,
+    ) -> Result<crate::remote_cache::SpawnSpec, String> {
+        let remote =
+            crate::remote_cache::active().ok_or("remote execution without a remote module")?;
+        let output_paths = remote.output_paths().map_err(|error| error.to_string())?;
+        let mut spec = remote_inputs.spec.clone();
+        spec.environment = env.clone();
+        spec.platform = crate::remote_execution::platform_properties(
+            &crate::remote_execution::SpawnPlatform::default(),
+            &remote.default_exec_properties,
+        )?;
+        spec.use_output_paths = output_paths;
+        spec.may_be_executed_remotely = true;
+        Ok(spec)
+    }
+
+    /// The test spawn on the remote executor (StandaloneTestStrategy
+    /// .createTestRunnerSpawn through RemoteSpawnRunner): TestRunnerAction
+    /// .getSpawnOutputs (none mandatory), the `timeout` requirement as
+    /// `Action.timeout`; stdout becomes test.log and stderr test.err, the
+    /// outputs land in the attempt's execution root.
+    #[allow(clippy::too_many_arguments)]
+    fn run_test_remotely(
+        &self,
+        unit: &Unit<'_>,
+        paths: &Paths,
+        env: &BTreeMap<String, String>,
+        args: &[String],
+        remote_inputs: &RemoteTestInputs<'_>,
+        execroot: &Path,
+    ) -> Result<RemoteTestRun, String> {
+        use crate::remote_cache::OutputKind;
+        let base = &paths.base;
+        let mut spec = self.remote_base(remote_inputs, env)?;
+        spec.arguments = args.to_vec();
+        let undeclared = if self.options.zip_undeclared_outputs {
+            (format!("{base}/test.outputs/outputs.zip"), OutputKind::File)
+        } else {
+            (format!("{base}/test.outputs"), OutputKind::Directory)
+        };
+        let mut declared = vec![
+            (format!("{base}/test.xml"), OutputKind::File),
+            (format!("{base}/test.exited_prematurely"), OutputKind::File),
+        ];
+        if unit.shards > 1 {
+            declared.push((format!("{base}/test.shard"), OutputKind::File));
+        }
+        declared.extend([
+            (format!("{base}/test.warnings"), OutputKind::File),
+            (
+                format!("{base}/test.raw_splitlogs/test.splitlogs"),
+                OutputKind::File,
+            ),
+            (format!("{base}/test.unused_runfiles_log"), OutputKind::File),
+            (
+                format!("{base}/test.infrastructure_failure"),
+                OutputKind::File,
+            ),
+            undeclared,
+            (
+                format!("{base}/test.outputs_manifest/MANIFEST"),
+                OutputKind::File,
+            ),
+            (
+                format!("{base}/test.outputs_manifest/ANNOTATIONS"),
+                OutputKind::File,
+            ),
+            (
+                format!("{base}/test.outputs_manifest/ANNOTATIONS.pb"),
+                OutputKind::File,
+            ),
+        ]);
+        for (path, kind) in &declared {
+            spec.outputs.push(path.clone());
+            if *kind == OutputKind::Directory {
+                spec.output_directories.insert(path.clone());
+                spec.directories.insert(path.clone());
+            }
+        }
+        spec.timeout_seconds = Some(self.options.timeout_seconds(unit.spec.info.timeout));
+        let mut info = self.requirements(unit);
+        if !remote_inputs.accept {
+            info.insert("no-cache".to_owned());
+        }
+        let start = Instant::now();
+        let outcome = self.remote_test_spawn(
+            spec,
+            &remote_inputs.blobs,
+            &declared,
+            remotely_cacheable(&info),
+        )?;
+        let millis = start.elapsed().as_millis() as u64;
+        let root = execroot.join(base);
+        let write = |name: &str, bytes: &[u8]| {
+            let path = root.join(name);
+            fs::write(&path, bytes).map_err(|e| io("cannot write", &path, e))
+        };
+        match outcome {
+            crate::action::RemoteSpawn::Fallback => Ok(RemoteTestRun::Fallback),
+            crate::action::RemoteSpawn::Failed(message) => Ok(RemoteTestRun::Failed(message)),
+            crate::action::RemoteSpawn::Timeout => Ok(RemoteTestRun::Done {
+                exit_code: TIMEOUT_EXIT_CODE,
+                timed_out: true,
+                millis,
+            }),
+            crate::action::RemoteSpawn::Done { result, .. } => {
+                for ((path, _), output) in declared.iter().zip(&result.outputs) {
+                    let full = execroot.join(path);
+                    if matches!(output, crate::remote_cache::Downloaded::Missing) {
+                        continue;
+                    }
+                    if let Some(parent) = full.parent() {
+                        fs::create_dir_all(parent).map_err(|e| io("cannot create", parent, e))?;
+                    }
+                    if !matches!(output, crate::remote_cache::Downloaded::Directory(_)) {
+                        let _ = fs::remove_file(&full);
+                    }
+                    crate::action::write_downloaded(&full, output)?;
+                }
+                write("test.log", &result.stdout)?;
+                write("test.err", &result.stderr)?;
+                Ok(RemoteTestRun::Done {
+                    exit_code: result.exit_code,
+                    timed_out: false,
+                    millis,
+                })
+            }
+        }
+    }
+
+    /// The XML generating spawn on the remote executor
+    /// (StandaloneTestStrategy.createXmlGeneratingSpawn: the test log and
+    /// generate-xml.sh as inputs, test.xml the only output, the action's
+    /// execution info without `no-cache` or a timeout).
+    #[allow(clippy::too_many_arguments)]
+    fn xml_remotely(
+        &self,
+        unit: &Unit<'_>,
+        paths: &Paths,
+        env: &BTreeMap<String, String>,
+        test_name: &str,
+        remote_inputs: &RemoteTestInputs<'_>,
+        execroot: &Path,
+        millis: u64,
+        exit_code: i32,
+    ) -> Result<(), String> {
+        use crate::remote_cache::{BlobSource, OutputKind};
+        let base = &paths.base;
+        let mut xml_env = env.clone();
+        xml_env.insert("TEST_NAME".to_owned(), test_name.to_owned());
+        if unit.shards <= 1 {
+            xml_env.insert("TEST_SHARD_INDEX".to_owned(), "0".to_owned());
+            xml_env.insert("TEST_TOTAL_SHARDS".to_owned(), "0".to_owned());
+        }
+        let mut spec = self.remote_base(remote_inputs, &xml_env)?;
+        let script = spec
+            .inputs
+            .get(XML_EXEC_PATH)
+            .cloned()
+            .ok_or("generate-xml.sh is not a test input")?;
+        spec.inputs.clear();
+        spec.symlinks.clear();
+        spec.directories.clear();
+        spec.inputs.insert(XML_EXEC_PATH.to_owned(), script.clone());
+        let log_path = execroot.join(base).join("test.log");
+        let log = fs::read(&log_path).map_err(|e| io("cannot read", &log_path, e))?;
+        let log_digest = crate::reapi::Digest::of(&log);
+        spec.inputs
+            .insert(format!("{base}/test.log"), log_digest.clone());
+        let mut blobs = BTreeMap::new();
+        if let Some(source) = remote_inputs.blobs.get(&script) {
+            blobs.insert(script, *source);
+        }
+        blobs.insert(log_digest, BlobSource::Bytes(&log));
+        spec.arguments = vec![
+            XML_EXEC_PATH.to_owned(),
+            format!("{base}/test.log"),
+            format!("{base}/test.xml"),
+            (millis / 1000).to_string(),
+            exit_code.to_string(),
+        ];
+        let declared = vec![(format!("{base}/test.xml"), OutputKind::File)];
+        spec.outputs = vec![declared[0].0.clone()];
+        let info = self.requirements(unit);
+        match self.remote_test_spawn(spec, &blobs, &declared, remotely_cacheable(&info))? {
+            crate::action::RemoteSpawn::Done { result, .. } if result.exit_code == 0 => {
+                if let Some(output) = result.outputs.first() {
+                    crate::action::write_downloaded(&execroot.join(&declared[0].0), output)?;
+                }
+                Ok(())
+            }
+            crate::action::RemoteSpawn::Done { result, .. } => Err(format!(
+                "{test_name}: generating test.xml failed (exit status: {}): {}",
+                result.exit_code,
+                String::from_utf8_lossy(&result.stderr)
+            )),
+            crate::action::RemoteSpawn::Failed(message) => Err(format!(
+                "{test_name}: generating test.xml failed: {message}"
+            )),
+            crate::action::RemoteSpawn::Timeout => {
+                Err(format!("{test_name}: generating test.xml timed out"))
+            }
+            // The fallback strategy for the XML spawn: run it locally.
+            crate::action::RemoteSpawn::Fallback => Err(format!(
+                "{test_name}: generating test.xml remotely failed and the local fallback of the XML spawn is not modelled"
+            )),
+        }
+    }
 }
 
 /// A failed attempt kept for the final result.

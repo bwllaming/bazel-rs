@@ -654,6 +654,7 @@ mod tests {
             outputs: outputs.iter().map(|path| path.to_path_buf()).collect(),
             cache_hit: false,
             remote_hit: false,
+            remote_executed: false,
             trees: BTreeMap::new(),
         }
     }

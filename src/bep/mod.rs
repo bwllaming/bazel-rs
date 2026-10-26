@@ -457,6 +457,9 @@ struct ActionRecord {
     primary_output: String,
     success: bool,
     cache_hit: bool,
+    /// A remote cache hit / a remotely executed spawn.
+    remote_hit: bool,
+    remote_executed: bool,
     exit_code: i32,
     error: Option<String>,
     argv: Vec<String>,
@@ -1057,6 +1060,8 @@ pub fn action_done(
             .unwrap_or_default(),
         success,
         cache_hit,
+        remote_hit: result.as_ref().is_ok_and(|result| result.remote_hit),
+        remote_executed: result.as_ref().is_ok_and(|result| result.remote_executed),
         exit_code: error.as_deref().map_or(0, exit_code_of),
         error,
         argv: if keep && action.write.is_none() && action.extra.transform.is_none() {
@@ -1884,25 +1889,38 @@ fn critical_path_text(actions: &[ActionRecord]) -> String {
     text
 }
 
-/// `N processes: X action cache hit, Y internal, Z <strategy>.`
+/// `N processes: X action cache hit, R remote cache hit, Y internal,
+/// E remote, Z <strategy>.`
 fn process_stats(actions: &[ActionRecord]) -> String {
     let hits = actions.iter().filter(|action| action.cache_hit).count();
     let executed: Vec<&ActionRecord> = actions
         .iter()
         .filter(|action| !action.cache_hit && action.success)
         .collect();
+    let remote_hits = executed.iter().filter(|action| action.remote_hit).count();
+    let remote = executed
+        .iter()
+        .filter(|action| action.remote_executed)
+        .count();
     let spawns = executed
         .iter()
+        .filter(|action| !action.remote_hit && !action.remote_executed)
         .filter(|action| !action.argv.is_empty() || action.mnemonic == "Genrule")
         .count();
-    let internal = executed.len() - spawns;
+    let internal = executed.len() - spawns - remote_hits - remote;
     let total = executed.len();
     let mut parts = Vec::new();
     if hits > 0 {
         parts.push(format!("{hits} action cache hit"));
     }
+    if remote_hits > 0 {
+        parts.push(format!("{remote_hits} remote cache hit"));
+    }
     if internal > 0 {
         parts.push(format!("{internal} internal"));
+    }
+    if remote > 0 {
+        parts.push(format!("{remote} remote"));
     }
     if spawns > 0 {
         let strategy = if crate::sandbox::all_sandboxed() {

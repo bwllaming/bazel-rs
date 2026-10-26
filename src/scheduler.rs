@@ -1269,6 +1269,7 @@ mod tests {
             cache_hit: false,
             trees: BTreeMap::new(),
             remote_hit: false,
+            remote_executed: false,
         })
     }
 

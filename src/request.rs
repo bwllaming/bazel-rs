@@ -1075,6 +1075,7 @@ mod tests {
                 outputs: vec![executed.clone()],
                 cache_hit: false,
                 remote_hit: false,
+                remote_executed: false,
                 trees: BTreeMap::new(),
             },
         );
