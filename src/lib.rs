@@ -34,6 +34,7 @@ pub mod config_registry;
 pub mod config_setting;
 pub mod configuration;
 pub mod configured_attributes;
+pub mod cquery_proto;
 pub mod credentials;
 pub mod ctx_surface;
 pub mod custom_rule;

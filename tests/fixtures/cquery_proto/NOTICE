@@ -1,0 +1,12 @@
+schema.pb is a protoc-generated FileDescriptorSet from Bazel 9.3.0:
+  src/main/protobuf/build.proto (Copyright 2014 The Bazel Authors)
+  src/main/protobuf/analysis_v2.proto (Copyright 2018 The Bazel Authors)
+  src/main/protobuf/stardoc_output.proto (Copyright 2019 The Bazel Authors)
+Source: https://github.com/bazelbuild/bazel/tree/9.3.0/src/main/protobuf
+Licensed under the Apache License, Version 2.0. See LICENSE.apache-2.0.
+Original source SHA256 values and generating Bazel ELF are pinned in SHA256SUMS.
+
+genuine.* files were produced by that Bazel ELF against the adjacent original
+workspace fixture, using the commands in fixture.py and docs/CQUERY_PROTO.md.
+captured.rs and canonical.* are generated using the upstream descriptors and
+Python protobuf, not the Rust serializer under test.

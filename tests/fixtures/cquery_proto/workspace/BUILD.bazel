@@ -1,0 +1,32 @@
+load(":rules.bzl", "fixture_rule")
+
+package(default_visibility = ["//visibility:public"])
+
+config_setting(name = "selected", values = {"compilation_mode": "fastbuild"})
+
+fixture_rule(
+    name = "main",
+    srcs = select({":selected": ["selected.txt", "source.txt"], "//conditions:default": ["unselected.txt"]}),
+    dep = ":alias",
+    aspect_dep = ":leaf",
+    integer = -2147483648,
+    integers = [-1, 0, 2147483647],
+    text = "héllo 世界\n",
+    texts = ["z", "", "a", "z"],
+    enabled = False,
+    dict = {"z": "", "": "零", "a": "last"},
+    list_dict = {"z": ["b", "a"], "": []},
+    label_dict = {"source.txt": "source", ":alias": "alias"},
+    unary_dict = {"z": "source.txt", "a": ":alias"},
+    labels_dict = {"z": ["source.txt", ":alias"], "": []},
+    out = "made.txt",
+)
+
+alias(name = "alias", actual = "source.txt")
+filegroup(name = "leaf", srcs = ["source.txt"])
+exports_files(["source.txt", "selected.txt", "unselected.txt", "extra.txt"])
+package_group(name = "group", packages = ["//...", "-//private/..."])
+
+genrule(name = "stamp_auto", outs = ["auto.txt"], cmd = "echo auto > $@", stamp = -1)
+genrule(name = "stamp_no", outs = ["no.txt"], cmd = "echo no > $@", stamp = 0)
+genrule(name = "stamp_yes", outs = ["yes.txt"], cmd = "echo yes > $@", stamp = 1)
