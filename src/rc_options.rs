@@ -25,10 +25,6 @@ pub struct RcOptions {
     pub gc: crate::cache_gc::GcOptions,
 }
 
-/// Remote execution options (remote/options/RemoteOptions.java:91, :601).
-/// `--remote_instance_name` (:367) is N41's: HTTP caches accept and ignore it.
-const REMOTE_EXECUTION: &[&str] = &["remote_executor", "remote_default_exec_properties"];
-
 /// `ARG :: MESSAGE` (BlazeOptionHandler.java:104, 628-637).
 fn invalid_argument(arg: &str, message: String) -> String {
     format!("{arg} :: {message}")
@@ -129,10 +125,10 @@ impl RcOptions {
             self.isolated_extension_usages = value?;
             return Ok(Some(false));
         }
-        // `--[no]remote_upload_local_results`, `--remote_instance_name` and
-        // the other modelled RemoteOptions are N41's
-        // (crate::remote_cache::RemoteOptions); remote execution stays an
-        // explicit failure here (REMOTE_EXECUTION).
+        // `--[no]remote_upload_local_results`, `--remote_instance_name`,
+        // `--remote_executor`, `--remote_default_exec_properties` and the
+        // other modelled RemoteOptions are crate::remote_cache::RemoteOptions
+        // (N41, docs/REMOTE_EXECUTION.md).
         if let Some(value) = boolean(arg, &["incompatible_enable_proto_toolchain_resolution"]) {
             // Default true (packages/semantics/FlagConstants.java:48); the
             // native proto_common_do_not_use exports True (crate::language_modules).
@@ -165,14 +161,6 @@ impl RcOptions {
                 return Err(unrecognized());
             }
             return Ok(None);
-        }
-        for name in REMOTE_EXECUTION {
-            if let Some(parsed) = value_option(arg, next, name) {
-                parsed?;
-                return Err(format!(
-                    "unsupported option --{name}{origin}: remote execution is not implemented"
-                ));
-            }
         }
         Ok(None)
     }
@@ -303,23 +291,10 @@ mod tests {
                 "{arg}"
             );
         }
-        for (args, needle) in [
-            (
-                &["--incompatible_enable_proto_toolchain_resolution=false"][..],
-                "legacy --proto_compiler",
-            ),
-            (
-                &["--remote_executor=grpc://h:1"][..],
-                "remote execution is not implemented",
-            ),
-            (
-                &["--remote_default_exec_properties", "OSFamily=linux"][..],
-                "remote execution is not implemented",
-            ),
-        ] {
-            let message = error("build", args);
-            assert!(message.contains(needle), "{message}");
-            assert!(!message.contains("grpc://"), "{message}");
-        }
+        let message = error(
+            "build",
+            &["--incompatible_enable_proto_toolchain_resolution=false"],
+        );
+        assert!(message.contains("legacy --proto_compiler"), "{message}");
     }
 }

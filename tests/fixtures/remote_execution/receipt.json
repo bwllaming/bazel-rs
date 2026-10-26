@@ -1,0 +1,827 @@
+{
+  "server": "in-process tests/support/grpc_cache_server.rs (Execution service)",
+  "genuine_execute": {
+    "bazel-out/k8-fastbuild/bin/pkg/chain.txt": {
+      "action": "5855a0254b5a540050e46ff74818ea2ed97077c8bd0c623fcdb1e6dd2897f64f/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; tr a-z A-Z < bazel-out/k8-fastbuild/bin/pkg/gen.txt > bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-fastbuild/bin/pkg/gen.txt 0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc/11 true",
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/gen.txt": {
+      "action": "99fd02724ffe64832f839519bdee8ee931d7ff58835a272ff5cf351da4571a69/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/gen.txt; echo done >> bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true",
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule",
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/mk.sh": {
+      "action": "17b7beceb443a7c4961fb9b5a5032f50d8ebcd805ed4fcbca19d32e28cc5dee9/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf '#!/bin/bash\\necho made > $1\\n' > bazel-out/k8-fastbuild/bin/pkg/mk.sh"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/mk.sh"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/nc.txt": {
+      "action": "d86c4fe2b957feb7468842f7b3108897eefcbf853ec8a1d415e838889d3d8901/168",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo nc > bazel-out/k8-fastbuild/bin/pkg/nc.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/nc.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": true
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/props.txt": {
+      "action": "59e622c7a95d76bdf64e3e2cbf8cf39633efff579adae61517fc743c789f1296/179",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo props > bazel-out/k8-fastbuild/bin/pkg/props.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/props.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ],
+        [
+          "pool",
+          "big"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/run.out": {
+      "action": "ef926d65ccd5ae101177406b6049f6cb1e65d12d02979c92df0707e488a790dd/165",
+      "arguments": [
+        "pkg/tool.sh",
+        "pkg/in.txt",
+        "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true",
+        "pkg/tool.sh 8b82fd3bd47fe1cc595015fe8fd40d38013b57acee9764866ee83e1b753c7742/25 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/sh.out": {
+      "action": "1e559da65d120f850e80098ef404e90c97eb3c8d6c93cd6abbc867ddc227eaad/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "tr a-z A-Z < $1 > $2",
+        "",
+        "pkg/in.txt",
+        "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.d": {
+      "action": "03bfcb0cb09284db48ccb243f1fd218456021135bd17ead7885b5d2f4b3c7329/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "mkdir -p $1/sub && echo a > $1/a.txt && echo b > $1/sub/b.txt && ln -s a.txt $1/link",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.empty": {
+      "action": "0ca64c3b4f7e4c8561fb2e77babb52f995f45900394d8c0911e520f82a9c3c9a/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "true",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.txt": {
+      "action": "012663966fab2b0ac64055d93ae49d9d2d100a79f364c5109a23012db44d254c/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "(cd $1 && find . | sort && cat a.txt sub/b.txt) > $3; ls -A $2 | wc -l >> $3",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.txt"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/a.txt 87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7/2 true",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/link 87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7/2 true",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/sub/b.txt 0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f/2 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/sub",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/use.txt": {
+      "action": "3a84b348bc9a0e34ea4ea9b610ac4ec2cbe5e1ad3cf60eec670d780ec0e60353/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/pkg/mk.sh bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-opt-exec/bin/pkg/mk.sh 9406ca7d6e8c5d0670f25a20cd3b68c56b13689f3826208cace84f5722a7eb7e/27 true",
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-opt-exec",
+        "bazel-out/k8-opt-exec/bin",
+        "bazel-out/k8-opt-exec/bin/pkg",
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-opt-exec/bin/pkg/mk.sh": {
+      "action": "1b76f9fca2a4ee207ae16e9ae5f87b592e04ec49d9c9e6f47d50ecd093b6f25c/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf '#!/bin/bash\\necho made > $1\\n' > bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    }
+  },
+  "native_execute": {
+    "bazel-out/k8-fastbuild/bin/pkg/chain.txt": {
+      "action": "5855a0254b5a540050e46ff74818ea2ed97077c8bd0c623fcdb1e6dd2897f64f/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; tr a-z A-Z < bazel-out/k8-fastbuild/bin/pkg/gen.txt > bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/chain.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-fastbuild/bin/pkg/gen.txt 0dcdcdbdf187330fa0484a3394c802582c28f1bb33aee24db776129c8d00dddc/11 true",
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/gen.txt": {
+      "action": "99fd02724ffe64832f839519bdee8ee931d7ff58835a272ff5cf351da4571a69/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/gen.txt; echo done >> bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/gen.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true",
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule",
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/mk.sh": {
+      "action": "17b7beceb443a7c4961fb9b5a5032f50d8ebcd805ed4fcbca19d32e28cc5dee9/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf '#!/bin/bash\\necho made > $1\\n' > bazel-out/k8-fastbuild/bin/pkg/mk.sh"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/mk.sh"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/nc.txt": {
+      "action": "d86c4fe2b957feb7468842f7b3108897eefcbf853ec8a1d415e838889d3d8901/168",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo nc > bazel-out/k8-fastbuild/bin/pkg/nc.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/nc.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": true
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/props.txt": {
+      "action": "59e622c7a95d76bdf64e3e2cbf8cf39633efff579adae61517fc743c789f1296/179",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; echo props > bazel-out/k8-fastbuild/bin/pkg/props.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/props.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ],
+        [
+          "pool",
+          "big"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/run.out": {
+      "action": "ef926d65ccd5ae101177406b6049f6cb1e65d12d02979c92df0707e488a790dd/165",
+      "arguments": [
+        "pkg/tool.sh",
+        "pkg/in.txt",
+        "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/run.out"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true",
+        "pkg/tool.sh 8b82fd3bd47fe1cc595015fe8fd40d38013b57acee9764866ee83e1b753c7742/25 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/sh.out": {
+      "action": "1e559da65d120f850e80098ef404e90c97eb3c8d6c93cd6abbc867ddc227eaad/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "tr a-z A-Z < $1 > $2",
+        "",
+        "pkg/in.txt",
+        "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/sh.out"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "pkg/in.txt 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03/6 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "pkg"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.d": {
+      "action": "03bfcb0cb09284db48ccb243f1fd218456021135bd17ead7885b5d2f4b3c7329/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "mkdir -p $1/sub && echo a > $1/a.txt && echo b > $1/sub/b.txt && ln -s a.txt $1/link",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.empty": {
+      "action": "0ca64c3b4f7e4c8561fb2e77babb52f995f45900394d8c0911e520f82a9c3c9a/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "true",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/tree.txt": {
+      "action": "012663966fab2b0ac64055d93ae49d9d2d100a79f364c5109a23012db44d254c/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "(cd $1 && find . | sort && cat a.txt sub/b.txt) > $3; ls -A $2 | wc -l >> $3",
+        "",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.txt"
+      ],
+      "environment": {},
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/a.txt 87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7/2 true",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/link 87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7/2 true",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/sub/b.txt 0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f/2 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-fastbuild",
+        "bazel-out/k8-fastbuild/bin",
+        "bazel-out/k8-fastbuild/bin/pkg",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.d/sub",
+        "bazel-out/k8-fastbuild/bin/pkg/tree.empty"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-fastbuild/bin/pkg/use.txt": {
+      "action": "3a84b348bc9a0e34ea4ea9b610ac4ec2cbe5e1ad3cf60eec670d780ec0e60353/167",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; bazel-out/k8-opt-exec/bin/pkg/mk.sh bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/pkg/use.txt"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "bazel-out/k8-opt-exec/bin/pkg/mk.sh 9406ca7d6e8c5d0670f25a20cd3b68c56b13689f3826208cace84f5722a7eb7e/27 true",
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "bazel-out",
+        "bazel-out/k8-opt-exec",
+        "bazel-out/k8-opt-exec/bin",
+        "bazel-out/k8-opt-exec/bin/pkg",
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    },
+    "bazel-out/k8-opt-exec/bin/pkg/mk.sh": {
+      "action": "1b76f9fca2a4ee207ae16e9ae5f87b592e04ec49d9c9e6f47d50ecd093b6f25c/166",
+      "arguments": [
+        "/bin/bash",
+        "-c",
+        "source external/bazel_tools/tools/genrule/genrule-setup.sh; printf '#!/bin/bash\\necho made > $1\\n' > bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "environment": {
+        "PATH": "/bin:/usr/bin:/usr/local/bin"
+      },
+      "outputs": [
+        "bazel-out/k8-opt-exec/bin/pkg/mk.sh"
+      ],
+      "platform": [
+        [
+          "OSFamily",
+          "linux"
+        ]
+      ],
+      "files": [
+        "external/bazel_tools/tools/genrule/genrule-setup.sh 2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f/866 true"
+      ],
+      "symlinks": {},
+      "directories": [
+        "external",
+        "external/bazel_tools",
+        "external/bazel_tools/tools",
+        "external/bazel_tools/tools/genrule"
+      ],
+      "skip_cache_lookup": false
+    }
+  },
+  "genuine_calls": {
+    "ActionCache/GetActionResult": 11,
+    "ByteStream/Read": 12,
+    "ByteStream/Write": 64,
+    "Capabilities/GetCapabilities": 1,
+    "ContentAddressableStorage/FindMissingBlobs": 13,
+    "Execution/Execute": 12
+  },
+  "native_calls": {
+    "ActionCache/GetActionResult": 11,
+    "ByteStream/Read": 14,
+    "ByteStream/Write": 64,
+    "Capabilities/GetCapabilities": 1,
+    "ContentAddressableStorage/FindMissingBlobs": 12,
+    "Execution/Execute": 12
+  },
+  "native_read_calls": {
+    "ActionCache/GetActionResult": 11,
+    "ByteStream/Read": 14,
+    "Capabilities/GetCapabilities": 1,
+    "ContentAddressableStorage/FindMissingBlobs": 1,
+    "Execution/Execute": 1
+  },
+  "genuine_outputs": {
+    "chain.txt": "HELLO\nDONE\n",
+    "gen.txt": "hello\ndone\n",
+    "nc.txt": "nc\n",
+    "props.txt": "props\n",
+    "run.out": "hello\n",
+    "sh.out": "HELLO\n",
+    "tree.txt": ".\n./a.txt\n./link\n./sub\n./sub/b.txt\na\nb\n0\n",
+    "use.txt": "made\n"
+  },
+  "native_outputs": {
+    "chain.txt": "HELLO\nDONE\n",
+    "gen.txt": "hello\ndone\n",
+    "nc.txt": "nc\n",
+    "props.txt": "props\n",
+    "run.out": "hello\n",
+    "sh.out": "HELLO\n",
+    "tree.txt": ".\n./a.txt\n./link\n./sub\n./sub/b.txt\na\nb\n0\n",
+    "use.txt": "made\n"
+  },
+  "native_read_stderr_summary": [
+    "bazel-rs: 1 actions executed, 0 cache hits, 11 remote cache hits (experimental local execution; 1 executed remotely, local spawns not sandboxed)"
+  ]
+}

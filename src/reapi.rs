@@ -172,15 +172,37 @@ pub fn utf8(bytes: &[u8]) -> Result<String, String> {
 /// `Command` for an HTTP cache (RemoteExecutionService.buildCommand,
 /// remote/RemoteExecutionService.java:269-332, with API >= 2.1 output_paths
 /// and no platform or working directory).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Command {
     pub arguments: Vec<String>,
     /// Sorted by name (`TreeSet<String>`).
     pub environment: BTreeMap<String, String>,
-    /// Sorted output paths.
+    /// Sorted output paths (files and directories).
     pub output_paths: Vec<String>,
+    /// The members of `output_paths` that are tree artifacts: REAPI 2.0's
+    /// `output_directories` (field 4) when `output_paths` are not used.
+    pub output_directories: std::collections::BTreeSet<String>,
     /// `Platform` properties, sorted (PlatformUtils.sortPlatformProperties).
     pub platform: Vec<(String, String)>,
+}
+
+/// The properties of an encoded `Platform`.
+pub fn decode_platform(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+    let mut properties = Vec::new();
+    for field in fields(bytes)? {
+        if let (1, Value::Bytes(property)) = field {
+            let (mut name, mut value) = (String::new(), String::new());
+            for field in fields(property)? {
+                match field {
+                    (1, Value::Bytes(text)) => name = utf8(text)?,
+                    (2, Value::Bytes(text)) => value = utf8(text)?,
+                    _ => {}
+                }
+            }
+            properties.push((name, value));
+        }
+    }
+    Ok(properties)
 }
 
 fn platform(properties: &[(String, String)]) -> Vec<u8> {
@@ -198,12 +220,7 @@ impl Command {
     /// Arguments, environment and output paths of an encoded Command
     /// (other fields are ignored).
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        let mut command = Command {
-            arguments: Vec::new(),
-            environment: BTreeMap::new(),
-            output_paths: Vec::new(),
-            platform: Vec::new(),
-        };
+        let mut command = Command::default();
         for field in fields(bytes)? {
             match field {
                 (1, Value::Bytes(value)) => command.arguments.push(utf8(value)?),
@@ -219,6 +236,12 @@ impl Command {
                     command.environment.insert(name, value);
                 }
                 (3 | 7, Value::Bytes(value)) => command.output_paths.push(utf8(value)?),
+                (4, Value::Bytes(value)) => {
+                    let path = utf8(value)?;
+                    command.output_directories.insert(path.clone());
+                    command.output_paths.push(path);
+                }
+                (5, Value::Bytes(value)) => command.platform = decode_platform(value)?,
                 _ => {}
             }
         }
@@ -230,9 +253,9 @@ impl Command {
     }
 
     /// With `output_paths` false, the outputs are REAPI 2.0's
-    /// `output_files` (field 3; RemoteExecutionService.buildCommand for a
-    /// server whose highest API version is below 2.1; every modelled cached
-    /// output is a file).
+    /// `output_files` (field 3) and `output_directories` (field 4;
+    /// RemoteExecutionService.buildCommand for a server whose highest API
+    /// version is below 2.1).
     pub fn encode_with(&self, output_paths: bool) -> Vec<u8> {
         let mut out = Vec::new();
         for argument in &self.arguments {
@@ -246,7 +269,14 @@ impl Command {
         }
         if !output_paths {
             for path in &self.output_paths {
-                bytes_field(&mut out, 3, path.as_bytes());
+                if !self.output_directories.contains(path) {
+                    bytes_field(&mut out, 3, path.as_bytes());
+                }
+            }
+            for path in &self.output_paths {
+                if self.output_directories.contains(path) {
+                    bytes_field(&mut out, 4, path.as_bytes());
+                }
             }
         }
         if !self.platform.is_empty() {
@@ -266,6 +296,10 @@ impl Command {
 pub struct Action {
     pub command_digest: Digest,
     pub input_root_digest: Digest,
+    /// `timeout` in whole seconds (Spawns.getTimeout; `None` for zero).
+    pub timeout_seconds: Option<u64>,
+    /// `do_not_cache` (`!Spawns.mayBeCachedRemotely`).
+    pub do_not_cache: bool,
     /// `CacheSalt.may_be_executed_remotely`
     /// (RemoteExecutionService.buildSalt, :373-391).
     pub may_be_executed_remotely: bool,
@@ -287,6 +321,12 @@ impl Action {
         let mut out = Vec::new();
         message(&mut out, 1, &self.command_digest.encode());
         message(&mut out, 2, &self.input_root_digest.encode());
+        if let Some(seconds) = self.timeout_seconds.filter(|seconds| *seconds != 0) {
+            let mut duration = Vec::new();
+            varint_field(&mut duration, 1, seconds);
+            message(&mut out, 6, &duration);
+        }
+        varint_field(&mut out, 7, u64::from(self.do_not_cache));
         let mut salt = Vec::new();
         varint_field(&mut salt, 1, u64::from(self.may_be_executed_remotely));
         // `bytes salt = 9`: an empty CacheSalt serializes to no bytes.
@@ -315,19 +355,42 @@ pub struct InputFile {
 /// executable), no node properties; symlinks (`Directory.symlinks`, field
 /// 3) after the directories.
 pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Vec<u8>>), String> {
+    let (digest, blobs) = input_tree(files, &std::collections::BTreeSet::new())?;
+    Ok((digest, blobs.into_iter().map(|(_, blob)| blob).collect()))
+}
+
+/// One encoded `Directory` with its digest.
+pub type DirectoryBlob = (Digest, Vec<u8>);
+
+/// [`input_root`] with `directories` that must exist even when nothing is
+/// below them: an empty tree artifact or source directory input, and every
+/// tree artifact output (MerkleTreeComputer.doBuildForSpawn's
+/// `EmptyInputDirectory`, a `DirectoryNode` with the empty digest). Returns
+/// every `Directory` blob with its digest, the root's last.
+pub fn input_tree(
+    files: &BTreeMap<String, InputFile>,
+    directories: &std::collections::BTreeSet<String>,
+) -> Result<(Digest, Vec<DirectoryBlob>), String> {
     #[derive(Default)]
     struct Node<'a> {
         files: BTreeMap<&'a str, &'a InputFile>,
         directories: BTreeMap<&'a str, Node<'a>>,
     }
+    fn segments(path: &str) -> Result<Vec<&str>, String> {
+        let segments = path.split('/').collect::<Vec<_>>();
+        if segments
+            .iter()
+            .any(|segment| segment.is_empty() || *segment == "." || *segment == "..")
+        {
+            return Err(format!("invalid input path '{path}'"));
+        }
+        Ok(segments)
+    }
     let mut root = Node::default();
     for (path, file) in files {
         let mut node = &mut root;
-        let mut segments = path.split('/').peekable();
+        let mut segments = segments(path)?.into_iter().peekable();
         while let Some(segment) = segments.next() {
-            if segment.is_empty() || segment == "." || segment == ".." {
-                return Err(format!("invalid input path '{path}'"));
-            }
             if segments.peek().is_none() {
                 if node.directories.contains_key(segment)
                     || node.files.insert(segment, file).is_some()
@@ -342,7 +405,16 @@ pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Ve
             }
         }
     }
-    fn encode(node: &Node<'_>, blobs: &mut Vec<Vec<u8>>) -> Digest {
+    for path in directories {
+        let mut node = &mut root;
+        for segment in segments(path)? {
+            if node.files.contains_key(segment) {
+                return Err(format!("conflicting input path '{path}'"));
+            }
+            node = node.directories.entry(segment).or_default();
+        }
+    }
+    fn encode(node: &Node<'_>, blobs: &mut Vec<DirectoryBlob>) -> Digest {
         let mut out = Vec::new();
         for (name, file) in node.files.iter().filter(|(_, file)| file.symlink.is_none()) {
             let mut entry = Vec::new();
@@ -369,12 +441,165 @@ pub fn input_root(files: &BTreeMap<String, InputFile>) -> Result<(Digest, Vec<Ve
             message(&mut out, 3, &entry);
         }
         let digest = Digest::of(&out);
-        blobs.push(out);
+        blobs.push((digest.clone(), out));
         digest
     }
     let mut blobs = Vec::new();
     let digest = encode(&root, &mut blobs);
     Ok((digest, blobs))
+}
+
+/// A decoded `Directory`: files `(name, digest, is_executable)`,
+/// subdirectories `(name, digest)` and symlinks `(name, target)`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Directory {
+    pub files: Vec<(String, Digest, bool)>,
+    pub directories: Vec<(String, Digest)>,
+    pub symlinks: Vec<(String, String)>,
+}
+
+impl Directory {
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut directory = Directory::default();
+        for field in fields(bytes)? {
+            let (number, Value::Bytes(entry)) = field else {
+                continue;
+            };
+            let (mut name, mut digest, mut executable, mut target) =
+                (String::new(), None, false, String::new());
+            for field in fields(entry)? {
+                match field {
+                    (1, Value::Bytes(value)) => name = utf8(value)?,
+                    (2, Value::Bytes(value)) if number == 3 => target = utf8(value)?,
+                    (2, Value::Bytes(value)) => digest = Some(Digest::decode(value)?),
+                    (4, Value::Varint(value)) if number == 1 => executable = value != 0,
+                    _ => {}
+                }
+            }
+            let digest = || {
+                digest
+                    .clone()
+                    .ok_or_else(|| format!("Directory entry '{name}' without a digest"))
+            };
+            match number {
+                1 => directory.files.push((name.clone(), digest()?, executable)),
+                2 => directory.directories.push((name.clone(), digest()?)),
+                3 => directory.symlinks.push((name, target)),
+                _ => {}
+            }
+        }
+        Ok(directory)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, digest, executable) in &self.files {
+            let mut entry = Vec::new();
+            string(&mut entry, 1, name);
+            message(&mut entry, 2, &digest.encode());
+            varint_field(&mut entry, 4, u64::from(*executable));
+            message(&mut out, 1, &entry);
+        }
+        for (name, digest) in &self.directories {
+            let mut entry = Vec::new();
+            string(&mut entry, 1, name);
+            message(&mut entry, 2, &digest.encode());
+            message(&mut out, 2, &entry);
+        }
+        for (name, target) in &self.symlinks {
+            let mut entry = Vec::new();
+            string(&mut entry, 1, name);
+            string(&mut entry, 2, target);
+            message(&mut out, 3, &entry);
+        }
+        out
+    }
+}
+
+/// A decoded `Tree` (an output directory): the root and every
+/// descendant `Directory`, by digest.
+#[derive(Clone, Debug, Default)]
+pub struct Tree {
+    pub root: Directory,
+    pub children: BTreeMap<Digest, Directory>,
+}
+
+impl Tree {
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let mut tree = Tree::default();
+        for field in fields(bytes)? {
+            match field {
+                (1, Value::Bytes(root)) => tree.root = Directory::decode(root)?,
+                (2, Value::Bytes(child)) => {
+                    tree.children
+                        .insert(Digest::of(child), Directory::decode(child)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(tree)
+    }
+
+    /// Every file and symlink below the root by relative path, and every
+    /// directory (empty ones included).
+    pub fn entries(&self) -> Result<TreeEntries, String> {
+        let mut entries = TreeEntries::default();
+        fn walk(
+            tree: &Tree,
+            directory: &Directory,
+            prefix: &str,
+            depth: usize,
+            entries: &mut TreeEntries,
+        ) -> Result<(), String> {
+            if depth > 4096 {
+                return Err("output directory Tree is too deep".into());
+            }
+            let join = |name: &str| -> Result<String, String> {
+                if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                    return Err(format!("invalid output directory entry name '{name}'"));
+                }
+                Ok(if prefix.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{prefix}/{name}")
+                })
+            };
+            for (name, digest, executable) in &directory.files {
+                entries
+                    .files
+                    .push((join(name)?, digest.clone(), *executable));
+            }
+            for (name, target) in &directory.symlinks {
+                entries.symlinks.push((join(name)?, target.clone()));
+            }
+            for (name, digest) in &directory.directories {
+                let path = join(name)?;
+                let child = tree.children.get(digest).ok_or_else(|| {
+                    format!("output directory Tree lacks the Directory {digest} of '{path}'")
+                })?;
+                entries.directories.push(path.clone());
+                walk(tree, child, &path, depth + 1, entries)?;
+            }
+            Ok(())
+        }
+        walk(self, &self.root, "", 0, &mut entries)?;
+        Ok(entries)
+    }
+}
+
+/// The flattened contents of a [`Tree`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreeEntries {
+    pub files: Vec<(String, Digest, bool)>,
+    pub symlinks: Vec<(String, String)>,
+    pub directories: Vec<String>,
+}
+
+/// `ActionResult.output_directories` entry (path, tree_digest).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutputDirectory {
+    pub path: String,
+    pub tree_digest: Digest,
 }
 
 /// `ActionResult.output_files` entry.
@@ -418,7 +643,9 @@ pub struct ActionResult {
     /// Symlink outputs (UploadManifest.addFileSymbolicLink writes each to
     /// `output_file_symlinks` and `output_symlinks`; a reader takes both).
     pub output_symlinks: Vec<OutputSymlink>,
-    /// Paths of outputs that are not plain files (directories, symlinks).
+    /// `output_directories` (field 3).
+    pub output_directories: Vec<OutputDirectory>,
+    /// Paths of `output_directory_symlinks` (field 11).
     pub other_outputs: Vec<String>,
     pub exit_code: i32,
     pub stdout_raw: Vec<u8>,
@@ -441,6 +668,12 @@ impl ActionResult {
                 bytes_field(&mut entry, 5, &file.contents);
             }
             message(&mut out, 2, &entry);
+        }
+        for directory in &self.output_directories {
+            let mut entry = Vec::new();
+            string(&mut entry, 1, &directory.path);
+            message(&mut entry, 3, &directory.tree_digest.encode());
+            message(&mut out, 3, &entry);
         }
         varint_field(&mut out, 4, i64::from(self.exit_code) as u64);
         if !self.stdout_raw.is_empty() {
@@ -529,9 +762,24 @@ impl ActionResult {
                         None => result.output_symlinks.push(symlink),
                     }
                 }
-                // output_directories, output_directory_symlinks: path is
-                // field 1.
-                (3 | 11, Value::Bytes(entry)) => {
+                (3, Value::Bytes(entry)) => {
+                    let mut directory = OutputDirectory {
+                        path: String::new(),
+                        tree_digest: Digest::of(b""),
+                    };
+                    for field in fields(entry)? {
+                        match field {
+                            (1, Value::Bytes(value)) => directory.path = utf8(value)?,
+                            (3, Value::Bytes(value)) => {
+                                directory.tree_digest = Digest::decode(value)?
+                            }
+                            _ => {}
+                        }
+                    }
+                    result.output_directories.push(directory);
+                }
+                // output_directory_symlinks: path is field 1.
+                (11, Value::Bytes(entry)) => {
                     let mut path = String::new();
                     for field in fields(entry)? {
                         if let (1, Value::Bytes(value)) = field {
@@ -625,7 +873,7 @@ mod tests {
             .to_vec(),
             environment: BTreeMap::new(),
             output_paths: vec!["bazel-out/k8-fastbuild/bin/pkg/sh.out".into()],
-            platform: Vec::new(),
+            ..Command::default()
         };
         let command_digest = Digest::of(&command.encode());
         assert_eq!(
@@ -638,6 +886,8 @@ mod tests {
         let action = Action {
             command_digest,
             input_root_digest: root,
+            timeout_seconds: None,
+            do_not_cache: false,
             may_be_executed_remotely: true,
             platform: Vec::new(),
         };
@@ -656,13 +906,15 @@ mod tests {
             arguments: vec!["a".into(), String::new()],
             environment: BTreeMap::from([("K".to_owned(), "v".to_owned())]),
             output_paths: vec!["o".into()],
-            platform: Vec::new(),
+            ..Command::default()
         };
         assert_eq!(Command::decode(&command.encode()).unwrap(), command);
         let digest = Digest::of(&command.encode());
         let action = Action {
             command_digest: digest.clone(),
             input_root_digest: Digest::of(b""),
+            timeout_seconds: None,
+            do_not_cache: false,
             may_be_executed_remotely: true,
             platform: Vec::new(),
         };
@@ -685,7 +937,7 @@ mod tests {
                 "/bin:/usr/bin:/usr/local/bin".to_owned(),
             )]),
             output_paths: vec!["bazel-out/k8-fastbuild/bin/pkg/gen.txt".into()],
-            platform: Vec::new(),
+            ..Command::default()
         };
         assert_eq!(
             Digest::of(&command.encode()).hash,

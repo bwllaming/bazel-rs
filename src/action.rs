@@ -213,10 +213,15 @@ pub struct Action {
     /// (crate::builtin_tools::GENRULE_SETUP); encoded as the blob's tag.
     #[serde(with = "crate::snapshot::codec::embedded")]
     pub embedded_inputs: Vec<(PathBuf, &'static [u8])>,
-    /// Why this spawn's remote cache key cannot equal Bazel's (e.g. execution
-    /// properties, which Bazel puts into a Platform message); such spawns
-    /// never use the remote cache.
+    /// Why this spawn's remote cache key cannot equal Bazel's (an execution
+    /// platform whose properties analysis did not resolve); such spawns
+    /// never use the remote cache or remote execution.
     pub remote_unsupported: Option<String>,
+    /// The spawn's exec properties and execution platform, for its REAPI
+    /// `Platform` (PlatformUtils.getPlatformProto,
+    /// crate::remote_execution::platform_properties). Not part of the
+    /// native key.
+    pub remote_platform: crate::remote_execution::SpawnPlatform,
 }
 
 /// The process argv, exactly as Bazel's spawn has it
@@ -5877,28 +5882,46 @@ fn with_embedded_inputs(action: &Action, cas: &Path) -> Result<Action, String> {
 /// (RemoteExecutionService.buildRemoteAction, crate::remote_cache): the argv,
 /// [`resolved_environment`], the input root (every regular input file at its
 /// execution path; tree inputs and source directories as their files,
-/// without empty subdirectories; parameter files at their paths,
-/// ParamFileActionInput) and the declared outputs.
-fn remote_action(
-    action: &Action,
-    prepared: &PreparedAction,
+/// without empty subdirectories, an empty one as an empty directory;
+/// parameter files at their paths, ParamFileActionInput; every tree output
+/// as an empty directory, MerkleTreeComputer's EmptyInputDirectory), the
+/// declared outputs, the `Platform` and the timeout. Also returns where
+/// each input blob's bytes are, for remote execution's uploads.
+fn remote_action<'a>(
+    action: &'a Action,
+    prepared: &'a PreparedAction,
     output_paths: bool,
-) -> Result<crate::remote_cache::RemoteAction, String> {
-    use crate::remote_cache::path_string;
+    platform: &[(String, String)],
+) -> Result<
+    (
+        crate::remote_cache::RemoteAction,
+        BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'a>>,
+    ),
+    String,
+> {
+    use crate::remote_cache::{BlobSource, path_string};
     let file_digest = |input: &Input| crate::reapi::Digest {
         hash: input.digest.hex(),
         size: input.size,
     };
-    let mut files = BTreeMap::new();
-    let mut symlinks = BTreeMap::new();
+    let mut spec = crate::remote_cache::SpawnSpec::default();
+    let mut blobs = BTreeMap::new();
+    let mut add = |spec: &mut crate::remote_cache::SpawnSpec, path: String, input: &'a Input| {
+        let digest = file_digest(input);
+        blobs
+            .entry(digest.clone())
+            .or_insert(BlobSource::File(input.path.as_path()));
+        spec.inputs.insert(path, digest);
+    };
     for (path, staged) in &prepared.inputs {
         match staged {
-            Staged::File(input) => {
-                files.insert(path_string(path)?, file_digest(input));
-            }
+            Staged::File(input) => add(&mut spec, path_string(path)?, input),
             Staged::Tree(tree) => {
+                if tree.files.is_empty() {
+                    spec.directories.insert(path_string(path)?);
+                }
                 for (name, input) in &tree.files {
-                    files.insert(path_string(&path.join(name))?, file_digest(input));
+                    add(&mut spec, path_string(&path.join(name))?, input);
                 }
             }
             // MerkleTreeComputer.explodeDirectory (remote/merkletree/
@@ -5914,8 +5937,11 @@ fn remote_action(
                         path.join(link).display()
                     ));
                 }
+                if directory.files.is_empty() {
+                    spec.directories.insert(path_string(path)?);
+                }
                 for (name, input) in &directory.files {
-                    files.insert(path_string(&path.join(name))?, file_digest(input));
+                    add(&mut spec, path_string(&path.join(name))?, input);
                 }
             }
             // MerkleTreeComputer (remote/merkletree/MerkleTreeComputer.java:
@@ -5924,19 +5950,28 @@ fn remote_action(
                 let text = text
                     .to_str()
                     .ok_or_else(|| format!("non-UTF-8 symlink target of '{}'", path.display()))?;
-                symlinks.insert(path_string(path)?, text.to_owned());
+                spec.symlinks.insert(path_string(path)?, text.to_owned());
             }
         }
     }
     for (path, content) in &action.extra.param_files {
-        files.insert(path_string(path)?, crate::reapi::Digest::of(content));
+        let digest = crate::reapi::Digest::of(content);
+        blobs
+            .entry(digest.clone())
+            .or_insert(BlobSource::Bytes(content.as_slice()));
+        spec.inputs.insert(path_string(path)?, digest);
     }
-    let outputs = action
+    spec.outputs = action
         .outputs
         .iter()
         .map(|path| path_string(path))
         .collect::<Result<Vec<_>, _>>()?;
-    let environment = resolved_environment(action)
+    for tree in &action.extra.tree_outputs {
+        let tree = path_string(tree)?;
+        spec.directories.insert(tree.clone());
+        spec.output_directories.insert(tree);
+    }
+    spec.environment = resolved_environment(action)
         .into_iter()
         .map(|(name, value)| match value.into_string() {
             Ok(value) => Ok((name, value)),
@@ -5945,15 +5980,43 @@ fn remote_action(
             )),
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
-    crate::remote_cache::remote_action(
-        arguments(action),
-        &environment,
-        &files,
-        &symlinks,
-        &outputs,
-        remote_policy(action).1,
-        output_paths,
-    )
+    spec.arguments = arguments(action);
+    spec.platform = platform.to_vec();
+    // Spawns.getTimeout: the `timeout` execution requirement in seconds.
+    spec.timeout_seconds = match action.extra.execution_info.get("timeout") {
+        None => None,
+        Some(text) => Some(
+            text.parse::<i32>()
+                .map_err(|_| "could not parse timeout".to_owned())?
+                .max(0) as u64,
+        ),
+    };
+    let (cacheable, executable) = remote_policy(action);
+    spec.cacheable = cacheable;
+    spec.may_be_executed_remotely = executable;
+    spec.use_output_paths = output_paths;
+    Ok((crate::remote_cache::remote_action_of(&spec)?, blobs))
+}
+
+/// The declared outputs of `action` for downloads.
+fn declared_outputs(
+    action: &Action,
+) -> Result<Vec<(String, crate::remote_cache::OutputKind)>, String> {
+    use crate::remote_cache::OutputKind;
+    action
+        .outputs
+        .iter()
+        .map(|path| {
+            let kind = if action.extra.symlink_outputs.contains(path) {
+                OutputKind::Symlink
+            } else if action.extra.tree_outputs.contains(path) {
+                OutputKind::Directory
+            } else {
+                OutputKind::File
+            };
+            Ok((crate::remote_cache::path_string(path)?, kind))
+        })
+        .collect()
 }
 
 /// How UploadManifest.addFiles (remote/UploadManifest.java:238-300) uploads
@@ -5980,11 +6043,295 @@ fn symlink_upload(path: &Path) -> Result<Option<crate::remote_cache::Output>, St
     }
 }
 
+/// Materializes one downloaded output at `path` in the execution root
+/// (RemoteExecutionService.downloadOutputs and createSymlinks): a file
+/// (executable like every remote output), a symlink with its text, or a
+/// tree artifact's directories, files (with their executable bits) and
+/// symlinks below the already created tree root. A missing output stays
+/// missing (the publication reports it).
+fn write_downloaded(path: &Path, output: &crate::remote_cache::Downloaded) -> Result<(), String> {
+    use crate::remote_cache::Downloaded;
+    match output {
+        Downloaded::File(bytes) => write_executable_file(path, bytes, 0o111),
+        Downloaded::Symlink(target) => std::os::unix::fs::symlink(target, path)
+            .map_err(|e| io_error("cannot create symbolic link", path, e)),
+        Downloaded::Directory(tree) => {
+            ensure_directory(path)?;
+            for directory in &tree.directories {
+                validate_relative(Path::new(directory))?;
+                ensure_directory(&path.join(directory))?;
+            }
+            for (name, bytes, executable) in &tree.files {
+                validate_relative(Path::new(name))?;
+                let file = path.join(name);
+                if let Some(parent) = file.parent() {
+                    ensure_directory(parent)?;
+                }
+                write_executable_file(&file, bytes, if *executable { 0o111 } else { 0 })?;
+            }
+            for (name, target) in &tree.symlinks {
+                validate_relative(Path::new(name))?;
+                let link = path.join(name);
+                if let Some(parent) = link.parent() {
+                    ensure_directory(parent)?;
+                }
+                std::os::unix::fs::symlink(target, &link)
+                    .map_err(|e| io_error("cannot create symbolic link", &link, e))?;
+            }
+            Ok(())
+        }
+        Downloaded::Missing => Ok(()),
+    }
+}
+
 fn replay_logs(id: &str, stdout: &str, stderr: &str) {
     if !stdout.is_empty() || !stderr.is_empty() {
         // Bazel's `INFO: From …` event, the output bound to it: dropped
         // with it under --quiet (crate::ui).
         crate::note!("action '{id}' logs:\nstdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+}
+
+/// The outputs of a spawn that ran remotely or hit the remote cache.
+struct RemoteDone {
+    outputs: Vec<crate::remote_cache::Downloaded>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    /// A cache hit (GetActionResult, or an ExecuteResponse with
+    /// `cached_result`): counted as a remote cache hit.
+    cached: bool,
+}
+
+/// How a remote spawn ended.
+enum RemoteRun {
+    Done(RemoteDone),
+    /// `--remote_local_fallback`: run it with the local strategy (and
+    /// upload the result like RemoteSpawnRunner.execLocallyAndUpload).
+    Fallback,
+}
+
+/// The `(Exit 34)` failure of a remote spawn (RemoteSpawnRunner.handleError:
+/// ExitCode.REMOTE_ERROR, Utils.grpcAwareErrorMessage).
+fn remote_failure(action: &Action, message: &str) -> String {
+    format!("action '{}' failed: (Exit 34): {message}", action.id)
+}
+
+/// RemoteSpawnRunner.maybeGetMissingMandatoryOutput: a declared output the
+/// result lacks.
+fn missing_mandatory(
+    result: &crate::reapi::ActionResult,
+    declared: &[(String, crate::remote_cache::OutputKind)],
+) -> bool {
+    declared.iter().any(|(path, _)| {
+        !result.output_files.iter().any(|file| &file.path == path)
+            && !result.output_symlinks.iter().any(|link| &link.path == path)
+            && !result
+                .output_directories
+                .iter()
+                .any(|directory| &directory.path == path)
+    })
+}
+
+/// RemoteSpawnRunner.exec (remote/RemoteSpawnRunner.java:175-380): the
+/// remote cache lookup (with `--remote_accept_cached` for a remotely
+/// cacheable spawn), then, retried by the ExecuteRetrier (RetryInfo
+/// details, FAILED_PRECONDITION with MISSING violations, lost output blobs),
+/// the input upload (forced after the first attempt), Execute (with
+/// `skip_cache_lookup` once a cached result was unusable) and the output
+/// download. A failure falls back to local execution with
+/// `--remote_local_fallback` (never for an execution timeout), else fails
+/// the action with Bazel's text.
+fn run_remotely(
+    remote: &crate::remote_cache::RemoteCache,
+    action: &Action,
+    spec: &crate::remote_cache::RemoteAction,
+    blobs: &BTreeMap<crate::reapi::Digest, crate::remote_cache::BlobSource<'_>>,
+) -> Result<RemoteRun, String> {
+    use crate::remote_cache::CacheError;
+    use crate::remote_execution::ExecError;
+    let executor = remote
+        .executor()
+        .ok_or("remote execution without an executor")?;
+    let declared = declared_outputs(action)?;
+    let key = &spec.key;
+    // The input root's Directory blobs, the Action and the Command
+    // (uploadInputsIfNotPresent's additionalInputs) join the input files.
+    let mut blobs = blobs.clone();
+    for (digest, directory) in &spec.directories {
+        blobs
+            .entry(digest.clone())
+            .or_insert(crate::remote_cache::BlobSource::Bytes(directory));
+    }
+    blobs
+        .entry(spec.key.clone())
+        .or_insert(crate::remote_cache::BlobSource::Bytes(&spec.action));
+    blobs
+        .entry(spec.command_digest.clone())
+        .or_insert(crate::remote_cache::BlobSource::Bytes(&spec.command));
+    let blobs = &blobs;
+    // execLocallyAndUploadOrFail.
+    let fail = |error: ExecError| -> Result<RemoteRun, String> {
+        if remote.local_fallback && !error.is_execution_timeout() {
+            return Ok(RemoteRun::Fallback);
+        }
+        if error.is_execution_timeout() {
+            if let ExecError::Execution {
+                response: Some(response),
+                ..
+            } = &error
+                && remote.print_execution_messages.should_print(false)
+                && !response.message.is_empty()
+            {
+                crate::note!("Remote server execution message: {}", response.message);
+            }
+            return Err(format!(
+                "action '{}' failed: (Exit 142): remote spawn timed out (failed due to timeout.)",
+                action.id
+            ));
+        }
+        Err(remote_failure(action, &error.message()))
+    };
+    let cache_error = |error: CacheError| -> Result<Result<RemoteRun, String>, String> {
+        match error {
+            // Utils.createExecExceptionForCredentialHelperException.
+            CacheError::Credentials(error) => Err(format!(
+                "Exec failed due to CredentialHelperException: {error}"
+            )),
+            CacheError::Capabilities(error) => Err(error),
+            CacheError::Other(message) => Ok(fail(ExecError::Io(message))),
+        }
+    };
+    let cacheable = remote_policy(action).0;
+    let mut accept_cached = remote.accept_cached && cacheable;
+    if accept_cached {
+        match remote.cached_result(key) {
+            Ok(Some(result)) if result.exit_code == 0 && !missing_mandatory(&result, &declared) => {
+                match remote.download(&result, &declared, key) {
+                    Ok(Some(downloaded)) => {
+                        remote.count_hit();
+                        return Ok(RemoteRun::Done(RemoteDone {
+                            outputs: downloaded.outputs,
+                            stdout: downloaded.stdout,
+                            stderr: downloaded.stderr,
+                            cached: true,
+                        }));
+                    }
+                    // A lost output blob: execute instead.
+                    Ok(None) => accept_cached = false,
+                    Err(error) => return cache_error(error)?,
+                }
+            }
+            // Failed actions are cache misses (flaky tests).
+            Ok(Some(_)) => accept_cached = false,
+            Ok(None) => {}
+            Err(error) => return cache_error(error)?,
+        }
+    }
+    // One attempt's failure: retried after the delay (ExecuteRetrier's
+    // transient classification), final, or the action's own failure.
+    enum Failed {
+        Retry(ExecError, std::time::Duration),
+        Final(ExecError),
+        Credentials(String),
+        Action(String),
+    }
+    let mut use_cached = accept_cached;
+    let mut force = false;
+    let mut retries = 0u32;
+    let max_retries = executor.retries();
+    loop {
+        let attempt = (|| -> Result<RemoteDone, Failed> {
+            let upload_force = std::mem::replace(&mut force, true);
+            remote
+                .ensure_inputs_present(blobs, key, upload_force)
+                .map_err(|error| match error {
+                    CacheError::Credentials(error) => Failed::Credentials(format!(
+                        "Exec failed due to CredentialHelperException: {error}"
+                    )),
+                    error => Failed::Final(ExecError::Io(error.to_string())),
+                })?;
+            let request = crate::remote_execution::execute_request(
+                executor.instance_name(),
+                key,
+                !use_cached,
+            );
+            let response = crate::remote_execution::execute(executor, &request, &key.hash)
+                .map_err(|error| match error.retry_delay() {
+                    Some(delay) => Failed::Retry(error, delay),
+                    None => Failed::Final(error),
+                })?;
+            let result =
+                crate::reapi::ActionResult::decode(response.result.as_deref().unwrap_or(&[]))
+                    .map_err(|error| Failed::Final(ExecError::Io(error)))?;
+            if response.cached_result
+                && (result.exit_code != 0 || missing_mandatory(&result, &declared))
+            {
+                // Retried with forced execution (a NOT_FOUND with RetryInfo).
+                use_cached = false;
+                return Err(Failed::Retry(
+                    ExecError::Io("the cached result of the remote executor is unusable".into()),
+                    std::time::Duration::ZERO,
+                ));
+            }
+            if remote
+                .print_execution_messages
+                .should_print(result.exit_code == 0)
+                && !response.message.is_empty()
+            {
+                crate::note!("Remote server execution message: {}", response.message);
+            }
+            match remote.download(&result, &declared, key) {
+                Ok(Some(downloaded)) if downloaded.exit_code != 0 => Err(Failed::Action(format!(
+                    "action '{}' failed (exit status: {}):\nstdout:\n{}\nstderr:\n{}",
+                    action.id,
+                    downloaded.exit_code,
+                    String::from_utf8_lossy(&downloaded.stdout),
+                    String::from_utf8_lossy(&downloaded.stderr)
+                ))),
+                Ok(Some(downloaded)) => Ok(RemoteDone {
+                    outputs: downloaded.outputs,
+                    stdout: downloaded.stdout,
+                    stderr: downloaded.stderr,
+                    cached: response.cached_result,
+                }),
+                // A BulkTransferException of CacheNotFoundExceptions:
+                // retried without cached results.
+                Ok(None) => {
+                    use_cached = false;
+                    Err(Failed::Retry(
+                        ExecError::Io(format!(
+                            "Failed to fetch the outputs of {} because they do not exist remotely.",
+                            key.hash
+                        )),
+                        std::time::Duration::ZERO,
+                    ))
+                }
+                Err(CacheError::Credentials(error)) => Err(Failed::Credentials(format!(
+                    "Exec failed due to CredentialHelperException: {error}"
+                ))),
+                Err(error) => Err(Failed::Final(ExecError::Io(error.to_string()))),
+            }
+        })();
+        match attempt {
+            Ok(done) => {
+                if done.cached {
+                    remote.count_hit();
+                } else {
+                    remote.count_execution();
+                }
+                return Ok(RemoteRun::Done(done));
+            }
+            Err(Failed::Action(message)) => {
+                remote.count_execution();
+                return Err(message);
+            }
+            Err(Failed::Credentials(message)) => return Err(message),
+            Err(Failed::Retry(_, delay)) if retries < max_retries => {
+                retries += 1;
+                std::thread::sleep(delay);
+            }
+            Err(Failed::Retry(error, _) | Failed::Final(error)) => return fail(error),
+        }
     }
 }
 
@@ -6120,20 +6467,52 @@ pub fn execute_with_remote(
     let tmp = local_tmpdir();
     ensure_directory(&execroot)?;
     let process = action.write.is_none() && action.extra.transform.is_none();
+    let module = remote;
+    // The execution info merges the rule tags with the spawn's
+    // execution_requirements map, exactly like remote_policy
+    // (crate::action::remote_policy).
+    let execution_info = {
+        let mut merged = action.execution_info.clone();
+        merged.extend(action.extra.execution_info.keys().cloned());
+        merged
+    };
+    // With a remote executor the strategy is resolved first: the `remote`
+    // strategy does its own cache lookup (RemoteSpawnRunner.handlesCaching)
+    // and the remote cache serves the other strategies' spawns
+    // (RemoteSpawnCache).
+    let can_worker = process
+        && crate::worker::can_exec(
+            &action.extra.mnemonic,
+            &action.extra.execution_info,
+            action.executable_file,
+        );
+    let early_strategy = match module {
+        Some(module) if process && module.executor().is_some() => Some(
+            crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
+                .map_err(|error| format!("action '{}': {error}", action.id))?,
+        ),
+        _ => None,
+    };
+    let mut remote_exec = early_strategy == Some(crate::sandbox::Strategy::Remote);
     // The remote cache applies to cacheable process actions only
     // (RemoteSpawnCache.java:85-92).
-    let remote = remote
-        .filter(|_| process && remote_policy(action).0)
-        .filter(|remote| remote.accept_cached || remote.upload_local_results);
+    let remote = if remote_exec {
+        module
+    } else {
+        module
+            .filter(|_| process && remote_policy(action).0)
+            .filter(|remote| remote.accept_cached || remote.upload_local_results)
+    };
     // Tree artifact outputs need ActionResult.output_directories, which the
-    // native remote cache does not model: such spawns stay local.
+    // native remote cache does not upload: such spawns stay off the cache
+    // (remote execution downloads them).
     let tree_reason;
     let unsupported = match (
         &action.remote_unsupported,
         action.extra.tree_outputs.first(),
     ) {
         (Some(reason), _) => Some(reason.as_str()),
-        (None, Some(tree)) => {
+        (None, Some(tree)) if !remote_exec => {
             tree_reason = format!(
                 "{} (tree artifact output {}; output_directories are not modelled)",
                 action.id,
@@ -6141,7 +6520,7 @@ pub fn execute_with_remote(
             );
             Some(tree_reason.as_str())
         }
-        (None, None) => None,
+        (None, _) => None,
     };
     let remote = match (remote, unsupported) {
         (Some(_), Some(reason)) => {
@@ -6160,8 +6539,18 @@ pub fn execute_with_remote(
         Some(Ok(output_paths)) => output_paths,
         None => true,
     };
+    // PlatformUtils.getPlatformProto: the spawn's Platform, with
+    // `--remote_default_exec_properties` (a parse failure fails the spawn).
+    let platform = match remote {
+        Some(remote) => crate::remote_execution::platform_properties(
+            &action.remote_platform,
+            &remote.default_exec_properties,
+        )
+        .map_err(|error| format!("action '{}': {error}", action.id))?,
+        None => Vec::new(),
+    };
     let remote_spec = match remote {
-        Some(_) => match remote_action(action, &prepared, output_paths) {
+        Some(_) => match remote_action(action, &prepared, output_paths, &platform) {
             Ok(spec) => Some(spec),
             Err(reason) => {
                 crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
@@ -6174,8 +6563,16 @@ pub fn execute_with_remote(
         None => None,
     };
     let remote = remote.filter(|_| remote_spec.is_some());
-    let mut remote_hit = None;
-    if let (Some(remote), Some(spec)) = (remote, &remote_spec)
+    remote_exec &= remote.is_some();
+    let mut remote_hit: Option<RemoteDone> = None;
+    // `--remote_local_fallback` after a failed remote execution.
+    let mut fallback = false;
+    if remote_exec && let (Some(remote), Some((spec, blobs))) = (remote, &remote_spec) {
+        match run_remotely(remote, action, spec, blobs)? {
+            RemoteRun::Done(done) => remote_hit = Some(done),
+            RemoteRun::Fallback => fallback = true,
+        }
+    } else if let (Some(remote), Some((spec, _))) = (remote, &remote_spec)
         && remote.accept_cached
     {
         let declared = action
@@ -6189,7 +6586,25 @@ pub fn execute_with_remote(
             })
             .collect::<Result<Vec<_>, String>>()?;
         match remote.lookup(spec, &declared) {
-            Ok(hit) => remote_hit = hit,
+            Ok(hit) => {
+                remote_hit = hit.map(|hit| RemoteDone {
+                    outputs: hit
+                        .outputs
+                        .into_iter()
+                        .map(|output| match output {
+                            crate::remote_cache::Output::File(bytes) => {
+                                crate::remote_cache::Downloaded::File(bytes)
+                            }
+                            crate::remote_cache::Output::Symlink(target) => {
+                                crate::remote_cache::Downloaded::Symlink(target)
+                            }
+                        })
+                        .collect(),
+                    stdout: hit.stdout,
+                    stderr: hit.stderr,
+                    cached: true,
+                })
+            }
             Err(crate::remote_cache::CacheError::Credentials(error)) => {
                 // Utils.createExecExceptionForCredentialHelperException
                 // (remote/util/Utils.java:637-648) and its cause.
@@ -6200,6 +6615,10 @@ pub fn execute_with_remote(
             Err(error) => crate::remote_cache::warn(&error),
         }
     }
+    // A local fallback uploads like RemoteSpawnRunner.execLocallyAndUpload
+    // (the write policy: a remotely cacheable spawn).
+    let remote = remote.filter(|_| !remote_exec || (fallback && remote_policy(action).0));
+    let remote_spec = remote_spec.map(|(spec, _)| spec);
     // The spawn strategy (N59): the highest-priority strategy that can
     // execute this spawn (SpawnStrategyResolver.resolveOne), resolved per
     // action from its mnemonic before anything is staged — a worker spawn
@@ -6212,18 +6631,14 @@ pub fn execute_with_remote(
     let mut spawn_strategy = None;
     let mut worker: Option<(crate::worker::Lease, Vec<String>)> = None;
     if process && remote_hit.is_none() {
-        let execution_info = {
-            let mut merged = action.execution_info.clone();
-            merged.extend(action.extra.execution_info.keys().cloned());
-            merged
+        // A failed remote spawn falls back to
+        // `--remote_local_fallback_strategy`, `local` (standalone).
+        let strategy = match early_strategy {
+            _ if fallback => crate::sandbox::Strategy::Standalone,
+            Some(strategy) => strategy,
+            None => crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
+                .map_err(|error| format!("action '{}': {error}", action.id))?,
         };
-        let can_worker = crate::worker::can_exec(
-            &action.extra.mnemonic,
-            &action.extra.execution_info,
-            action.executable_file,
-        );
-        let strategy = crate::sandbox::resolve(&action.extra.mnemonic, &execution_info, can_worker)
-            .map_err(|error| format!("action '{}': {error}", action.id))?;
         if strategy == crate::sandbox::Strategy::Worker {
             // WorkerParser.compute: the worker key's environment is the
             // spawn's with the local TMPDIR (PosixLocalEnvProvider).
@@ -6249,7 +6664,7 @@ pub fn execute_with_remote(
             clear_directory(lease.execroot())?;
             worker = Some((lease, config.flag_files));
         }
-        spawn_strategy = Some((strategy, execution_info));
+        spawn_strategy = Some((strategy, execution_info.clone()));
     }
     let execroot = match &worker {
         Some((lease, _)) => lease.execroot().to_path_buf(),
@@ -6292,21 +6707,15 @@ pub fn execute_with_remote(
     } else if let Some(transform) = &action.extra.transform {
         run_transform(action, transform, &prepared, &execroot, (cas, root))?;
     } else if let Some(hit) = &remote_hit {
-        crate::progress::spawn_started(crate::progress::Strategy::RemoteCache);
+        crate::progress::spawn_started(if hit.cached {
+            crate::progress::Strategy::RemoteCache
+        } else {
+            crate::progress::Strategy::Remote
+        });
         // The downloaded (verified) outputs take the place of the process's;
         // they are published below like executed outputs.
         for (name, output) in action.outputs.iter().zip(&hit.outputs) {
-            match output {
-                crate::remote_cache::Output::File(bytes) => {
-                    write_executable_file(&execroot.join(name), bytes, 0o111)?
-                }
-                // RemoteExecutionService.createSymlinks.
-                crate::remote_cache::Output::Symlink(target) => {
-                    let path = execroot.join(name);
-                    std::os::unix::fs::symlink(target, &path)
-                        .map_err(|e| io_error("cannot create symbolic link", &path, e))?;
-                }
-            }
+            write_downloaded(&execroot.join(name), output)?;
         }
         replay_logs(
             &action.id,
@@ -6314,13 +6723,20 @@ pub fn execute_with_remote(
             &String::from_utf8_lossy(&hit.stderr),
         );
         if crate::exec_log::active() {
+            // SpawnResult runner names: RemoteSpawnCache's "remote cache
+            // hit", RemoteSpawnRunner's "remote" (a server-side cached
+            // result is a cache hit of the remote runner).
             log_spawn(
                 action,
                 &prepared,
                 &execroot,
-                "remote cache hit",
+                if hit.cached && !remote_exec {
+                    "remote cache hit"
+                } else {
+                    "remote"
+                },
                 0,
-                true,
+                hit.cached,
                 (started, clock.elapsed()),
             );
         }
@@ -6737,8 +7153,10 @@ pub fn execute_with_remote(
             remember_tree(path, Arc::new(tree));
         }
     }
-    if remote_hit.is_some() {
-        return Ok(result(listings, false, true));
+    if let Some(hit) = &remote_hit {
+        // A remotely executed spawn counts as executed; the remote executor
+        // stored its result.
+        return Ok(result(listings, false, hit.cached));
     }
     if let (Some(remote), Some(spec)) = (remote, &remote_spec)
         && remote.upload_local_results
@@ -8612,8 +9030,9 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut action = fixture.action();
         action.inputs = vec![(dir.clone().into(), "in/dir".into())];
         action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
-        let directory_key = remote_action(&action, &prepare(&action, None).unwrap(), true)
+        let directory_key = remote_action(&action, &prepare(&action, None).unwrap(), true, &[])
             .unwrap()
+            .0
             .key;
         let mut files = fixture.action();
         files.inputs = [
@@ -8631,13 +9050,14 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             )
         })
         .collect();
-        let files_key = remote_action(&files, &prepare(&files, None).unwrap(), true)
+        let files_key = remote_action(&files, &prepare(&files, None).unwrap(), true, &[])
             .unwrap()
+            .0
             .key;
         assert_eq!(directory_key, files_key);
         std::os::unix::fs::symlink("missing.txt", dir.join("dangling")).unwrap();
         forget_source_directories();
-        let error = remote_action(&action, &prepare(&action, None).unwrap(), true)
+        let error = remote_action(&action, &prepare(&action, None).unwrap(), true, &[])
             .err()
             .unwrap();
         assert_eq!(

@@ -1301,6 +1301,12 @@ mod tests {
                 crate::builtin_tools::GENRULE_SETUP,
             )],
             remote_unsupported: Some("exec_properties".into()),
+            remote_platform: crate::remote_execution::SpawnPlatform {
+                combined: vec![("pool".into(), "x".into())],
+                label: "//:p".into(),
+                exec_properties: Vec::new(),
+                remote_execution_properties: "properties {}".into(),
+            },
             program: None,
             write: None,
         };

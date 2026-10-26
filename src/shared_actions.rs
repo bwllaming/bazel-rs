@@ -367,6 +367,7 @@ impl Fingerprint {
             execution_info,
             embedded_inputs,
             remote_unsupported: _,
+            remote_platform: _,
         } = action;
         self.str(command);
         self.count(inputs.len());

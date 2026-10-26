@@ -61,7 +61,9 @@ pub const FORMAT: u32 = 3;
 /// * spawn strategies and the sandbox (crate::sandbox::SpawnOptions, read
 ///   by action execution and the test runner only), and the persistent
 ///   worker options (crate::worker::WorkerOptions, read by action execution).
-/// * the remote cache (crate::remote_cache, read by action execution) and
+/// * the remote cache and remote execution (crate::remote_cache, read by
+///   action execution: `--remote_default_exec_properties` joins a spawn's
+///   recorded platform at execution, crate::remote_execution) and
 ///   credential helpers (read by downloads — network, which a saved run
 ///   never used — and the remote cache).
 /// * `native-action-dump`: written from the planned request on every run.
@@ -133,6 +135,13 @@ pub const EXCLUDED: &[&str] = &[
     "remote_upload_local_results",
     "remote_accept_cached",
     "remote_http_cache",
+    "remote_exec_header",
+    "remote_default_exec_properties",
+    "remote_local_fallback",
+    "remote_local_fallback_strategy",
+    "remote_print_execution_messages",
+    "remote_execution_priority",
+    "remote_result_cache_priority",
     "credential_helper",
     "credential_helper_timeout",
     "credential_helper_cache_duration",

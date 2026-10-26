@@ -18,11 +18,12 @@
 //! never calls BatchReadBlobs or BatchUpdateBlobs, and compression
 //! (`--remote_cache_compression`, off by default) is not modelled.
 //!
-//! Remote execution (`--remote_executor`) stays an explicit failure; it
-//! would add Execution.Execute/WaitExecution (server-streaming
+//! Remote execution (`--remote_executor`, docs/REMOTE_EXECUTION.md) adds
+//! Execution.Execute/WaitExecution (server-streaming
 //! `google.longrunning.Operation`s through
-//! [`crate::grpc_channel::Channel::server_streaming`]) on the same channel
-//! when both options name one endpoint (RemoteModule.java:742-822).
+//! [`crate::grpc_channel::Channel::server_streaming`]) on the same kind of
+//! endpoint, one shared endpoint when both options name the same target
+//! (RemoteModule.java:742-822); the protocol is crate::remote_execution.
 
 use crate::grpc_channel::{Call, Channel, Code, Limits, Status, Target, TlsOptions};
 use crate::reapi::{self, Digest, Value};
@@ -35,6 +36,7 @@ const CAPABILITIES: &str = "build.bazel.remote.execution.v2.Capabilities";
 const ACTION_CACHE: &str = "build.bazel.remote.execution.v2.ActionCache";
 const CAS: &str = "build.bazel.remote.execution.v2.ContentAddressableStorage";
 const BYTE_STREAM: &str = "google.bytestream.ByteStream";
+pub const EXECUTION: &str = "build.bazel.remote.execution.v2.Execution";
 /// `DigestFunction.Value.SHA256`.
 const SHA256: u64 = 1;
 /// Chunker.getDefaultChunkSize.
@@ -61,6 +63,30 @@ pub struct GrpcOptions {
     pub tls: TlsOptions,
     /// `--remote_upload_local_results` as given (the capability warning).
     pub upload_local_results: bool,
+    /// What the endpoint must support (ServerCapabilitiesRequirement).
+    pub requirement: Requirement,
+}
+
+/// GoogleChannelConnectionFactory's ServerCapabilitiesRequirement: what
+/// checkClientServerCompatibility checks for one endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Requirement {
+    Cache,
+    Execution,
+    ExecutionAndCache,
+}
+
+impl Requirement {
+    fn execution(self) -> bool {
+        matches!(
+            self,
+            Requirement::Execution | Requirement::ExecutionAndCache
+        )
+    }
+
+    fn cache(self) -> bool {
+        matches!(self, Requirement::Cache | Requirement::ExecutionAndCache)
+    }
 }
 
 /// `SemVer` / ApiVersion.
@@ -145,6 +171,11 @@ fn highest_supported(low: &ApiVersion, high: &ApiVersion) -> Option<ApiVersion> 
 pub struct ServerCapabilities {
     digest_functions: Vec<u64>,
     update_enabled: bool,
+    /// ExecutionCapabilities: `exec_enabled`, `digest_function` (singular)
+    /// and `digest_functions`.
+    exec_enabled: bool,
+    exec_digest_function: u64,
+    exec_digest_functions: Vec<u64>,
     deprecated: Option<ApiVersion>,
     low: Option<ApiVersion>,
     high: Option<ApiVersion>,
@@ -199,6 +230,16 @@ impl ServerCapabilities {
                         }
                     }
                 }
+                (2, Value::Bytes(execution)) => {
+                    for field in reapi::fields(execution)? {
+                        match field {
+                            (1, Value::Varint(value)) => capabilities.exec_digest_function = value,
+                            (2, Value::Varint(value)) => capabilities.exec_enabled = value != 0,
+                            (5, value) => enums(&value, &mut capabilities.exec_digest_functions)?,
+                            _ => {}
+                        }
+                    }
+                }
                 (3, Value::Bytes(value)) => {
                     capabilities.deprecated = Some(ApiVersion::decode(value)?)
                 }
@@ -245,6 +286,25 @@ pub fn check_compatibility(
     capabilities: &ServerCapabilities,
     upload_local_results: bool,
 ) -> Compatibility {
+    check_requirement(capabilities, upload_local_results, Requirement::Cache)
+}
+
+/// `DigestFunction.Value` list as Java's `List.toString`.
+fn digest_function_names(values: &[u64]) -> String {
+    values
+        .iter()
+        .map(|value| digest_function_name(*value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// RemoteServerCapabilities.checkClientServerCompatibility
+/// (remote/RemoteServerCapabilities.java:155-250) for `requirement`.
+pub fn check_requirement(
+    capabilities: &ServerCapabilities,
+    upload_local_results: bool,
+    requirement: Requirement,
+) -> Compatibility {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let zero = ApiVersion::new(0, 0);
@@ -269,21 +329,41 @@ pub fn check_compatibility(
             )),
         }
     }
-    if !capabilities.digest_functions.contains(&SHA256) {
-        let names = capabilities
-            .digest_functions
-            .iter()
-            .map(|value| digest_function_name(*value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        errors.push(format!(
-            "Cannot use hash function SHA256 with remote cache. Server supported functions are: [{names}]"
-        ));
-    }
-    if upload_local_results && !capabilities.update_enabled {
-        warnings.push("--remote_upload_local_results is set, but the remote cache does not support uploading action results or the current account is not authorized to write local results to the remote cache.".into());
-    }
     let output_paths = highest.is_none_or(|version| version.cmp(&ApiVersion::new(2, 1)).is_ge());
+    if requirement.execution() {
+        if !capabilities.exec_enabled {
+            errors.push("Remote execution is not supported by the remote server, or the current account is not authorized to use remote execution.".into());
+            return Compatibility {
+                warnings,
+                errors,
+                output_paths,
+            };
+        }
+        if capabilities.exec_digest_functions.is_empty() && capabilities.exec_digest_function != 0 {
+            if capabilities.exec_digest_function != SHA256 {
+                errors.push(format!(
+                    "Cannot use hash function SHA256 with remote execution. Server supported function is {}",
+                    digest_function_name(capabilities.exec_digest_function)
+                ));
+            }
+        } else if !capabilities.exec_digest_functions.contains(&SHA256) {
+            errors.push(format!(
+                "Cannot use hash function SHA256 with remote execution. Server supported functions are: [{}]",
+                digest_function_names(&capabilities.exec_digest_functions)
+            ));
+        }
+    }
+    if requirement.cache() {
+        if !capabilities.digest_functions.contains(&SHA256) {
+            errors.push(format!(
+                "Cannot use hash function SHA256 with remote cache. Server supported functions are: [{}]",
+                digest_function_names(&capabilities.digest_functions)
+            ));
+        }
+        if upload_local_results && !capabilities.update_enabled {
+            warnings.push("--remote_upload_local_results is set, but the remote cache does not support uploading action results or the current account is not authorized to write local results to the remote cache.".into());
+        }
+    }
     Compatibility {
         warnings,
         errors,
@@ -338,7 +418,7 @@ fn retriable(status: &Status) -> bool {
 
 /// RemoteRetrier.ExponentialBackoff: 100 ms, doubling up to
 /// `--remote_retry_max_delay`, jitter 0.1, `--remote_retries` attempts.
-struct Backoff {
+pub struct Backoff {
     next: Duration,
     max: Duration,
     attempts: u32,
@@ -356,7 +436,7 @@ impl Backoff {
         }
     }
 
-    fn next_delay(&mut self) -> Option<Duration> {
+    pub fn next_delay(&mut self) -> Option<Duration> {
         if self.attempts >= self.max_attempts {
             return None;
         }
@@ -557,6 +637,44 @@ impl GrpcCache {
         )
     }
 
+    /// A fresh RemoteRetrier backoff (`--remote_retries`,
+    /// `--remote_retry_max_delay`).
+    pub fn backoff(&self) -> Backoff {
+        Backoff::new(&self.options)
+    }
+
+    /// `--remote_retries`.
+    pub fn retries(&self) -> u32 {
+        self.options.retries
+    }
+
+    pub fn instance_name(&self) -> &str {
+        &self.options.instance_name
+    }
+
+    /// One Execution `method` call (`Execute` or `WaitExecution`), every
+    /// streamed Operation to `on_message`; no deadline
+    /// (RemoteGrpcServiceConfig sets none for the Execution service).
+    pub fn operation_stream(
+        &self,
+        method: &str,
+        request: Vec<u8>,
+        action_id: &str,
+        on_message: &mut dyn FnMut(bytes::Bytes) -> Result<(), Status>,
+    ) -> Result<(), Status> {
+        let metadata = self.metadata(EXECUTION, action_id)?;
+        let path = format!("/{EXECUTION}/{method}");
+        self.channel.server_streaming(
+            &Call {
+                path: &path,
+                metadata: &metadata,
+                timeout: None,
+            },
+            request,
+            on_message,
+        )
+    }
+
     /// The capability check before the first call
     /// (GoogleChannelConnectionFactory.getAndVerifyServerCapabilities):
     /// warnings print once; a failure is every action's
@@ -571,7 +689,11 @@ impl GrpcCache {
                     .retry(|| self.unary(CAPABILITIES, "GetCapabilities", "capabilities", &request))
                     .map_err(|status| status.cause_message())?;
                 let capabilities = ServerCapabilities::decode(&response)?;
-                let result = check_compatibility(&capabilities, self.options.upload_local_results);
+                let result = check_requirement(
+                    &capabilities,
+                    self.options.upload_local_results,
+                    self.options.requirement,
+                );
                 for warning in &result.warnings {
                     crate::note!("WARNING: {warning}");
                 }
@@ -881,6 +1003,9 @@ mod tests {
         let good = ServerCapabilities {
             digest_functions: vec![SHA256],
             update_enabled: true,
+            exec_enabled: false,
+            exec_digest_function: 0,
+            exec_digest_functions: Vec::new(),
             deprecated: None,
             low: version(2, 0),
             high: version(2, 3),
@@ -919,6 +1044,64 @@ mod tests {
     }
 
     #[test]
+    fn execution_compatibility_follows_remote_server_capabilities() {
+        let caps = ServerCapabilities {
+            digest_functions: vec![SHA256],
+            update_enabled: true,
+            exec_enabled: false,
+            exec_digest_function: 0,
+            exec_digest_functions: Vec::new(),
+            deprecated: None,
+            low: version(2, 0),
+            high: version(2, 3),
+        };
+        let result = check_requirement(&caps, true, Requirement::ExecutionAndCache);
+        assert_eq!(
+            result.errors,
+            [
+                "Remote execution is not supported by the remote server, or the current account is not authorized to use remote execution."
+            ]
+        );
+        // A cache-only check ignores the execution capabilities.
+        assert!(
+            check_requirement(&caps, true, Requirement::Cache)
+                .errors
+                .is_empty()
+        );
+        let enabled = ServerCapabilities {
+            exec_enabled: true,
+            exec_digest_function: 2,
+            ..caps.clone()
+        };
+        assert_eq!(
+            check_requirement(&enabled, true, Requirement::Execution).errors,
+            [
+                "Cannot use hash function SHA256 with remote execution. Server supported function is SHA1"
+            ]
+        );
+        let listed = ServerCapabilities {
+            exec_enabled: true,
+            exec_digest_functions: vec![3],
+            digest_functions: vec![],
+            ..caps.clone()
+        };
+        assert_eq!(
+            check_requirement(&listed, true, Requirement::ExecutionAndCache).errors,
+            [
+                "Cannot use hash function SHA256 with remote execution. Server supported functions are: [MD5]",
+                "Cannot use hash function SHA256 with remote cache. Server supported functions are: []"
+            ]
+        );
+        let good = ServerCapabilities {
+            exec_enabled: true,
+            exec_digest_functions: vec![SHA256],
+            ..caps
+        };
+        let result = check_requirement(&good, true, Requirement::ExecutionAndCache);
+        assert!(result.errors.is_empty() && result.warnings.is_empty());
+    }
+
+    #[test]
     fn capabilities_decode_packed_and_unpacked_enums() {
         let mut cache = Vec::new();
         reapi::bytes_field(&mut cache, 1, &[1, 2]);
@@ -954,6 +1137,7 @@ mod tests {
             },
             tls: TlsOptions::default(),
             upload_local_results: true,
+            requirement: Requirement::Cache,
         };
         let mut backoff = Backoff::new(&options);
         let first = backoff.next_delay().unwrap();

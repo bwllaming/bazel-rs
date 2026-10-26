@@ -115,7 +115,7 @@ common --experimental_isolated_extension_usages
 common --incompatible_enable_proto_toolchain_resolution
 build:linux_amd64 --platforms=//platforms:linux_amd64
 build:linux_amd64 --sandbox_add_mount_pair=/tmp
-build:buildbarn --remote_executor=grpc://buildbarn.invalid:8980
+build:buildbarn --remote_executor=grpc://127.0.0.1:1
 build:buildbarn --remote_instance_name=dev
 build:buildbarn --remote_default_exec_properties=OSFamily=linux
 ";
@@ -142,14 +142,22 @@ fn code_rc_options_reach_query_and_build() {
         "{}",
         stderr(&cross)
     );
-    let buildbarn = f.run(&["build", "--config=buildbarn", "//:plain"]);
-    rejected(
-        &buildbarn,
-        &format!(
-            "unsupported option --remote_executor from rc file {rc}:12 (config definition 'build:buildbarn'): remote execution is not implemented"
-        ),
+    // Remote execution is modelled (docs/REMOTE_EXECUTION.md): the native
+    // action cache hit needs no executor; a new spawn fails the closed
+    // loopback port's capability check.
+    assert_eq!(
+        built(&f.run(&["build", "--config=buildbarn", "//:plain"])),
+        "plain\n"
     );
-    assert!(!stderr(&buildbarn).contains("buildbarn.invalid"));
+    let buildbarn = f.run(&["build", "--config=buildbarn", "//:copy"]);
+    assert!(!buildbarn.status.success());
+    assert!(
+        stderr(&buildbarn).contains(
+            "Failed to query remote execution capabilities: finishConnect(..) failed: Connection refused: /127.0.0.1:1"
+        ),
+        "{}",
+        stderr(&buildbarn)
+    );
     // The `test` group's options reach N23g's test command (and never
     // build/query): a non-test target is built and Bazel's exit 4 follows.
     let test = f.run(&["test", "//:plain"]);

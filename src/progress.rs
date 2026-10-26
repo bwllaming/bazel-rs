@@ -300,6 +300,7 @@ pub enum Strategy {
     ProcessWrapperSandbox = 3,
     RemoteCache = 4,
     Worker = 5,
+    Remote = 6,
 }
 
 impl Strategy {
@@ -310,6 +311,7 @@ impl Strategy {
             3 => Some(Self::ProcessWrapperSandbox),
             4 => Some(Self::RemoteCache),
             5 => Some(Self::Worker),
+            6 => Some(Self::Remote),
             _ => None,
         }
     }
@@ -322,6 +324,7 @@ impl Strategy {
             Self::ProcessWrapperSandbox => "processwrapper-sandbox",
             Self::RemoteCache => "remote-cache",
             Self::Worker => "worker",
+            Self::Remote => "remote",
         }
     }
 }

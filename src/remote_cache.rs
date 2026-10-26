@@ -11,8 +11,9 @@
 //! The action key is computed exactly as Bazel computes it
 //! (crate::reapi), so a native build and genuine Bazel share entries when
 //! their spawns agree (same argv, environment, inputs and output paths).
-//! The gRPC protocol is crate::remote_grpc; remote execution is an explicit
-//! failure.
+//! The gRPC protocol is crate::remote_grpc; remote execution
+//! (`--remote_executor`) is crate::remote_execution over the same endpoint
+//! type (docs/REMOTE_EXECUTION.md).
 
 use crate::credentials::{Credentials, HelperError};
 pub use crate::grpc_channel::TlsOptions;
@@ -49,6 +50,32 @@ pub struct RemoteOptions {
     /// `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`,
     /// `--tls_authority_override` (AuthAndTLSOptions).
     pub tls: TlsOptions,
+    /// `--remote_exec_header` (RemoteOptions.java:205-217).
+    pub exec_headers: Vec<(String, String)>,
+    /// `--remote_default_exec_properties` (RemoteOptions.java:600-610).
+    pub default_exec_properties: Vec<(String, String)>,
+    /// `--remote_local_fallback` (RemoteOptions.java:306-313).
+    pub local_fallback: bool,
+    /// `--remote_print_execution_messages` (default `failure`).
+    pub print_execution_messages: PrintExecutionMessages,
+}
+
+/// RemoteOptions.ExecutionMessagePrintMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintExecutionMessages {
+    Failure,
+    Success,
+    All,
+}
+
+impl PrintExecutionMessages {
+    pub fn should_print(self, success: bool) -> bool {
+        match self {
+            PrintExecutionMessages::Failure => !success,
+            PrintExecutionMessages::Success => success,
+            PrintExecutionMessages::All => true,
+        }
+    }
 }
 
 /// RemoteOutputsMode.
@@ -77,6 +104,10 @@ impl Default for RemoteOptions {
             max_concurrency_per_connection: 100,
             download_outputs: DownloadOutputs::Toplevel,
             tls: TlsOptions::default(),
+            exec_headers: Vec::new(),
+            default_exec_properties: Vec::new(),
+            local_fallback: false,
+            print_execution_messages: PrintExecutionMessages::Failure,
         }
     }
 }
@@ -143,6 +174,7 @@ impl RemoteOptions {
                 "remote_upload_local_results",
                 &mut self.upload_local_results,
             ),
+            ("remote_local_fallback", &mut self.local_fallback),
         ] {
             if let Some(value) = crate::configuration::boolean_option(arg, name) {
                 return Some(value.map(|value| {
@@ -285,9 +317,57 @@ impl RemoteOptions {
                 used
             }));
         }
+        if let Some(found) = value_option(arg, next, &["remote_print_execution_messages"]) {
+            return Some(found.and_then(|(value, used)| {
+                self.print_execution_messages = match value.to_ascii_lowercase().as_str() {
+                    "failure" => PrintExecutionMessages::Failure,
+                    "success" => PrintExecutionMessages::Success,
+                    "all" => PrintExecutionMessages::All,
+                    _ => {
+                        return Err(format!(
+                            "While parsing option --remote_print_execution_messages={value}: Not a valid execution message print mode: '{value}' (should be failure, success or all)"
+                        ));
+                    }
+                };
+                Ok(used)
+            }));
+        }
+        // `--remote_local_fallback_strategy` (deprecated, default `local`):
+        // the standalone strategy is the only local fallback modelled.
+        if let Some(found) = value_option(arg, next, &["remote_local_fallback_strategy"]) {
+            return Some(found.and_then(|(value, used)| {
+                if matches!(value, "local" | "standalone") {
+                    Ok(used)
+                } else {
+                    Err(format!(
+                        "unsupported option --remote_local_fallback_strategy={value}: only the default local fallback strategy (local/standalone) is modelled by the native profile"
+                    ))
+                }
+            }));
+        }
+        // Priorities are server-dependent ExecuteRequest fields with a
+        // capability range check; only the default 0 is modelled.
+        for name in ["remote_execution_priority", "remote_result_cache_priority"] {
+            if let Some(found) = value_option(arg, next, &[name]) {
+                return Some(found.and_then(|(value, used)| {
+                    if integer(name, value)? == 0 {
+                        Ok(used)
+                    } else {
+                        Err(format!(
+                            "unsupported option --{name}={value}: only the default priority 0 is modelled by the native profile"
+                        ))
+                    }
+                }));
+            }
+        }
         for (name, list) in [
             ("remote_header", &mut self.headers),
             ("remote_cache_header", &mut self.cache_headers),
+            ("remote_exec_header", &mut self.exec_headers),
+            (
+                "remote_default_exec_properties",
+                &mut self.default_exec_properties,
+            ),
         ] {
             if let Some(found) = value_option(arg, next, &[name]) {
                 return Some(found.and_then(|(value, used)| {
@@ -424,7 +504,7 @@ struct HttpCache {
 
 enum Backend {
     Http(HttpCache),
-    Grpc(Box<crate::remote_grpc::GrpcCache>),
+    Grpc(Arc<crate::remote_grpc::GrpcCache>),
 }
 
 impl From<crate::grpc_channel::Status> for CacheError {
@@ -433,16 +513,29 @@ impl From<crate::grpc_channel::Status> for CacheError {
     }
 }
 
-/// The configured remote cache of this invocation.
+/// The configured remote cache (and remote executor) of this invocation.
 pub struct RemoteCache {
     backend: Backend,
+    /// The `--remote_executor` endpoint (the cache's own when both options
+    /// name one target).
+    executor: Option<Arc<crate::remote_grpc::GrpcCache>>,
     pub accept_cached: bool,
     pub upload_local_results: bool,
+    /// `--remote_local_fallback`.
+    pub local_fallback: bool,
+    /// `--remote_default_exec_properties` in flag order.
+    pub default_exec_properties: Vec<(String, String)>,
+    pub print_execution_messages: PrintExecutionMessages,
     uploaded: Mutex<HashSet<Digest>>,
+    /// Blobs known to be in the CAS (RemoteExecutionCache's findMissingCache:
+    /// reported present or uploaded in this invocation): not asked again.
+    present: Mutex<HashSet<Digest>>,
     /// In-flight uploads: concurrent uploads of one blob run once
     /// (CombinedCache/RemoteCacheClient upload deduplication).
     uploading: Mutex<HashMap<Digest, Arc<Mutex<()>>>>,
     hits: AtomicUsize,
+    /// Spawns executed remotely (ExecuteResponse without `cached_result`).
+    executions: AtomicUsize,
 }
 
 impl std::fmt::Debug for RemoteCache {
@@ -485,16 +578,23 @@ pub fn setup(
         errors: Vec::new(),
         exit: error,
     };
-    if !options.executor.is_empty() {
-        return Err(fail(format!(
-            "unsupported option --remote_executor={}: remote execution is not implemented by the native profile (only an http(s):// --remote_cache is)",
-            options.executor
-        )));
-    }
-    if options.cache.is_empty() {
+    // RemoteModule.setup: an empty --remote_cache reuses --remote_executor.
+    let executor_target = options.executor.as_str();
+    let cache_target = if options.cache.is_empty() {
+        executor_target
+    } else {
+        options.cache.as_str()
+    };
+    if cache_target.is_empty() {
         return Ok(None);
     }
-    let lower = options.cache.to_ascii_lowercase();
+    let lower = cache_target.to_ascii_lowercase();
+    let http = lower.starts_with("http://") || lower.starts_with("https://");
+    if http && !executor_target.is_empty() {
+        return Err(fail(
+            "Cannot combine gRPC based remote execution with HTTP-based caching".into(),
+        ));
+    }
     // Intentional safety divergence (docs/REMOTE_CACHE.md): until native
     // execution parity with Bazel is established, native results are written
     // to a shared cache only on explicit opt-in. Reads stay Bazel-like.
@@ -506,53 +606,102 @@ pub fn setup(
             );
         }
     };
-    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+    if !http {
         // GrpcCacheClient.isRemoteCacheOptions: anything else is gRPC.
-        let grpc = crate::remote_grpc::GrpcCache::new(
-            &options.cache,
-            crate::remote_grpc::GrpcOptions {
-                instance_name: options.instance_name.clone(),
-                timeout: options.timeout,
-                retries: options.retries.max(0) as u32,
-                retry_max_delay: options.retry_max_delay,
-                // newCacheHeadersInterceptor (TracingMetadataUtils.java:139-143).
-                headers: options
-                    .headers
-                    .iter()
-                    .chain(&options.cache_headers)
-                    .cloned()
-                    .collect(),
-                limits: crate::grpc_channel::Limits {
-                    max_connections: options.max_connections.max(0) as usize,
-                    max_concurrency_per_connection: options.max_concurrency_per_connection.max(0)
-                        as usize,
-                    connect_timeout: options.timeout,
+        let endpoint = |target: &str,
+                        option: &str,
+                        headers: Vec<(String, String)>,
+                        requirement: crate::remote_grpc::Requirement|
+         -> Result<Arc<crate::remote_grpc::GrpcCache>, SetupError> {
+            let grpc = crate::remote_grpc::GrpcCache::new(
+                target,
+                crate::remote_grpc::GrpcOptions {
+                    instance_name: options.instance_name.clone(),
+                    timeout: options.timeout,
+                    retries: options.retries.max(0) as u32,
+                    retry_max_delay: options.retry_max_delay,
+                    headers,
+                    limits: crate::grpc_channel::Limits {
+                        max_connections: options.max_connections.max(0) as usize,
+                        max_concurrency_per_connection: options
+                            .max_concurrency_per_connection
+                            .max(0)
+                            as usize,
+                        connect_timeout: options.timeout,
+                    },
+                    tls: options.tls.clone(),
+                    upload_local_results: options.upload_local_results,
+                    requirement,
                 },
-                tls: options.tls.clone(),
-                upload_local_results: options.upload_local_results,
-            },
-        )
-        .map_err(|error| fail(format!("--remote_cache={}: {error}", options.cache)))?;
-        // GoogleAuthUtils.newCredentials falls back to .netrc for gRPC
-        // services too.
-        let probe = grpc.credential_uri("build.bazel.remote.execution.v2.Capabilities");
-        if credentials.is_none_or(|credentials| credentials.helper_for(&probe).is_none())
-            && let Some(netrc) = netrc_file()
-        {
-            return Err(fail(format!(
-                "the remote cache {} has no matching --credential_helper and Bazel would fall back to the .netrc file {}; .netrc credentials are not implemented by the native profile",
-                options.cache,
-                netrc.display()
-            )));
-        }
+            )
+            .map_err(|error| fail(format!("--{option}={target}: {error}")))?;
+            // GoogleAuthUtils.newCredentials falls back to .netrc for gRPC
+            // services too.
+            let probe = grpc.credential_uri("build.bazel.remote.execution.v2.Capabilities");
+            if credentials.is_none_or(|credentials| credentials.helper_for(&probe).is_none())
+                && let Some(netrc) = netrc_file()
+            {
+                return Err(fail(format!(
+                    "the remote cache {target} has no matching --credential_helper and Bazel would fall back to the .netrc file {}; .netrc credentials are not implemented by the native profile",
+                    netrc.display()
+                )));
+            }
+            Ok(Arc::new(grpc))
+        };
+        // newCacheHeadersInterceptor / newExecHeadersInterceptor
+        // (TracingMetadataUtils.java:139-155): one endpoint for both
+        // options carries the execution headers.
+        let with = |extra: &[(String, String)]| -> Vec<(String, String)> {
+            options.headers.iter().chain(extra).cloned().collect()
+        };
+        use crate::remote_grpc::Requirement;
+        let (cache, executor) = if executor_target.is_empty() {
+            (
+                endpoint(
+                    cache_target,
+                    "remote_cache",
+                    with(&options.cache_headers),
+                    Requirement::Cache,
+                )?,
+                None,
+            )
+        } else if cache_target == executor_target {
+            let shared = endpoint(
+                executor_target,
+                "remote_executor",
+                with(&options.exec_headers),
+                Requirement::ExecutionAndCache,
+            )?;
+            (shared.clone(), Some(shared))
+        } else {
+            let executor = endpoint(
+                executor_target,
+                "remote_executor",
+                with(&options.exec_headers),
+                Requirement::Execution,
+            )?;
+            let cache = endpoint(
+                cache_target,
+                "remote_cache",
+                with(&options.cache_headers),
+                Requirement::Cache,
+            )?;
+            (cache, Some(executor))
+        };
         warn_upload();
         return Ok(Some(RemoteCache {
-            backend: Backend::Grpc(Box::new(grpc)),
+            backend: Backend::Grpc(cache),
+            executor,
             accept_cached: options.accept_cached,
             upload_local_results,
+            local_fallback: options.local_fallback,
+            default_exec_properties: options.default_exec_properties.clone(),
+            print_execution_messages: options.print_execution_messages,
             uploaded: Mutex::new(HashSet::new()),
             uploading: Mutex::new(HashMap::new()),
+            present: Mutex::new(HashSet::new()),
             hits: AtomicUsize::new(0),
+            executions: AtomicUsize::new(0),
         }));
     }
     let uri = CacheUri::parse(&options.cache).map_err(fail)?;
@@ -650,11 +799,17 @@ pub fn setup(
             client,
             headers,
         }),
+        executor: None,
         accept_cached: options.accept_cached,
         upload_local_results,
+        local_fallback: options.local_fallback,
+        default_exec_properties: options.default_exec_properties.clone(),
+        print_execution_messages: options.print_execution_messages,
         uploaded: Mutex::new(HashSet::new()),
         uploading: Mutex::new(HashMap::new()),
+        present: Mutex::new(HashSet::new()),
         hits: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
     }))
 }
 
@@ -729,6 +884,93 @@ pub struct RemoteAction {
     pub command_digest: Digest,
     pub action: Vec<u8>,
     pub key: Digest,
+    /// Every `Directory` blob of the input root (the root last).
+    pub directories: Vec<reapi::DirectoryBlob>,
+}
+
+/// What RemoteExecutionService.buildRemoteAction reads from a spawn.
+#[derive(Clone, Debug, Default)]
+pub struct SpawnSpec {
+    pub arguments: Vec<String>,
+    pub environment: BTreeMap<String, String>,
+    /// Input files by execution path.
+    pub inputs: BTreeMap<String, Digest>,
+    /// Unresolved symlink inputs by execution path (their link text).
+    pub symlinks: BTreeMap<String, String>,
+    /// Directories that exist even when empty: empty tree artifact or
+    /// source directory inputs and every tree artifact output
+    /// (MerkleTreeComputer's EmptyInputDirectory).
+    pub directories: std::collections::BTreeSet<String>,
+    /// The declared outputs.
+    pub outputs: Vec<String>,
+    /// The outputs that are tree artifacts.
+    pub output_directories: std::collections::BTreeSet<String>,
+    /// The sorted `Platform` properties (PlatformUtils.getPlatformProto).
+    pub platform: Vec<(String, String)>,
+    /// `Action.timeout` (Spawns.getTimeout), whole seconds.
+    pub timeout_seconds: Option<u64>,
+    /// Spawns.mayBeCachedRemotely (`Action.do_not_cache` when false).
+    pub cacheable: bool,
+    pub may_be_executed_remotely: bool,
+    /// `Command.output_paths` (REAPI >= 2.1) or REAPI 2.0's
+    /// `output_files`/`output_directories`.
+    pub use_output_paths: bool,
+}
+
+/// RemoteExecutionService.buildRemoteAction (:530-591): the Command, the
+/// input root and the Action of `spec`.
+pub fn remote_action_of(spec: &SpawnSpec) -> Result<RemoteAction, String> {
+    let mut output_paths = spec.outputs.clone();
+    output_paths.sort();
+    let command = reapi::Command {
+        arguments: spec.arguments.clone(),
+        environment: spec.environment.clone(),
+        output_paths,
+        output_directories: spec.output_directories.clone(),
+        platform: spec.platform.clone(),
+    }
+    .encode_with(spec.use_output_paths);
+    let command_digest = Digest::of(&command);
+    let mut files: BTreeMap<String, reapi::InputFile> = spec
+        .inputs
+        .iter()
+        .map(|(path, digest)| {
+            (
+                path.clone(),
+                reapi::InputFile {
+                    digest: digest.clone(),
+                    symlink: None,
+                },
+            )
+        })
+        .collect();
+    for (path, target) in &spec.symlinks {
+        let symlink = reapi::InputFile {
+            digest: Digest::of(b""),
+            symlink: Some(target.clone()),
+        };
+        if files.insert(path.clone(), symlink).is_some() {
+            return Err(format!("conflicting input path '{path}'"));
+        }
+    }
+    let (input_root_digest, directories) = reapi::input_tree(&files, &spec.directories)?;
+    let action = reapi::Action {
+        command_digest: command_digest.clone(),
+        input_root_digest,
+        timeout_seconds: spec.timeout_seconds,
+        do_not_cache: !spec.cacheable,
+        may_be_executed_remotely: spec.may_be_executed_remotely,
+        platform: spec.platform.clone(),
+    }
+    .encode();
+    let key = Digest::of(&action);
+    Ok(RemoteAction {
+        command,
+        command_digest,
+        action,
+        key,
+        directories,
+    })
 }
 
 /// RemoteExecutionService.buildRemoteAction for the HTTP cache: `inputs`
@@ -742,51 +984,16 @@ pub fn remote_action(
     may_be_executed_remotely: bool,
     use_output_paths: bool,
 ) -> Result<RemoteAction, String> {
-    let mut output_paths = outputs.to_vec();
-    output_paths.sort();
-    let command = reapi::Command {
+    remote_action_of(&SpawnSpec {
         arguments,
         environment: environment.clone(),
-        output_paths,
-        platform: Vec::new(),
-    }
-    .encode_with(use_output_paths);
-    let command_digest = Digest::of(&command);
-    let mut files: BTreeMap<String, reapi::InputFile> = inputs
-        .iter()
-        .map(|(path, digest)| {
-            (
-                path.clone(),
-                reapi::InputFile {
-                    digest: digest.clone(),
-                    symlink: None,
-                },
-            )
-        })
-        .collect();
-    for (path, target) in symlinks {
-        let symlink = reapi::InputFile {
-            digest: Digest::of(b""),
-            symlink: Some(target.clone()),
-        };
-        if files.insert(path.clone(), symlink).is_some() {
-            return Err(format!("conflicting input path '{path}'"));
-        }
-    }
-    let (input_root_digest, _) = reapi::input_root(&files)?;
-    let action = reapi::Action {
-        command_digest: command_digest.clone(),
-        input_root_digest,
+        inputs: inputs.clone(),
+        symlinks: symlinks.clone(),
+        outputs: outputs.to_vec(),
+        cacheable: true,
         may_be_executed_remotely,
-        platform: Vec::new(),
-    }
-    .encode();
-    let key = Digest::of(&action);
-    Ok(RemoteAction {
-        command,
-        command_digest,
-        action,
-        key,
+        use_output_paths,
+        ..SpawnSpec::default()
     })
 }
 
@@ -938,11 +1145,18 @@ impl RemoteCache {
     /// Whether `Command` lists `output_paths` (REAPI >= 2.1) rather than
     /// `output_files`: always for HTTP; for gRPC it needs the capability
     /// check, whose failure fails the action (CacheError::Capabilities).
+    /// With an executor, its endpoint's highest version counts too
+    /// (RemoteExecutionService.initUseOutputPaths).
     pub fn output_paths(&self) -> Result<bool, CacheError> {
-        match &self.backend {
-            Backend::Http(_) => Ok(true),
-            Backend::Grpc(grpc) => grpc.capabilities().map_err(CacheError::Capabilities),
-        }
+        let executor = match &self.executor {
+            Some(executor) => executor.capabilities().map_err(CacheError::Capabilities)?,
+            None => true,
+        };
+        let cache = match &self.backend {
+            Backend::Http(_) => true,
+            Backend::Grpc(grpc) => grpc.capabilities().map_err(CacheError::Capabilities)?,
+        };
+        Ok(executor && cache)
     }
 
     fn action_result(&self, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
@@ -1185,6 +1399,267 @@ impl RemoteCache {
     }
 }
 
+/// Where the bytes of one input blob come from.
+#[derive(Clone, Copy, Debug)]
+pub enum BlobSource<'a> {
+    Bytes(&'a [u8]),
+    File(&'a Path),
+}
+
+/// What a declared output is (for downloads).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputKind {
+    File,
+    /// An unresolved symlink artifact.
+    Symlink,
+    /// A tree artifact.
+    Directory,
+}
+
+/// A downloaded tree artifact: files `(path, bytes, is_executable)`,
+/// symlinks `(path, target)` and every directory, by path below the tree.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DownloadedTree {
+    pub files: Vec<(String, Vec<u8>, bool)>,
+    pub symlinks: Vec<(String, String)>,
+    pub directories: Vec<String>,
+}
+
+/// One declared output of a downloaded result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Downloaded {
+    File(Vec<u8>),
+    Symlink(String),
+    Directory(DownloadedTree),
+    /// Not in the result (a failed action's).
+    Missing,
+}
+
+/// A downloaded ActionResult (RemoteExecutionService.downloadOutputs with
+/// `--remote_download_outputs=all`).
+#[derive(Clone, Debug)]
+pub struct DownloadedResult {
+    pub exit_code: i32,
+    /// Per declared output, in declaration order.
+    pub outputs: Vec<Downloaded>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+impl RemoteCache {
+    /// The `--remote_executor` endpoint, if configured.
+    pub fn executor(&self) -> Option<&crate::remote_grpc::GrpcCache> {
+        self.executor.as_deref()
+    }
+
+    /// Spawns executed remotely so far.
+    pub fn executions(&self) -> usize {
+        self.executions.load(Ordering::Relaxed)
+    }
+
+    pub fn count_execution(&self) {
+        self.executions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn count_hit(&self) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// GetActionResult, decoded; `Ok(None)` on a miss.
+    pub fn cached_result(&self, key: &Digest) -> Result<Option<reapi::ActionResult>, CacheError> {
+        let Some(bytes) = self.action_result(key)? else {
+            return Ok(None);
+        };
+        reapi::ActionResult::decode(&bytes)
+            .map(Some)
+            .map_err(|error| {
+                CacheError::Other(format!("Failed to parse the ActionResult: {error}"))
+            })
+    }
+
+    /// RemoteExecutionCache.ensureInputsPresent: one FindMissingBlobs over
+    /// every blob not known present (all of them with `force`, after the
+    /// server reported missing inputs), then a ByteStream.Write per missing
+    /// blob (once per invocation unless forced).
+    pub fn ensure_inputs_present(
+        &self,
+        blobs: &BTreeMap<Digest, BlobSource<'_>>,
+        key: &Digest,
+        force: bool,
+    ) -> Result<(), CacheError> {
+        let Backend::Grpc(grpc) = &self.backend else {
+            return Err(CacheError::Other(
+                "remote execution needs a gRPC cache".into(),
+            ));
+        };
+        let query = {
+            let present = self.present.lock().expect("present blobs");
+            blobs
+                .keys()
+                .filter(|digest| force || !present.contains(*digest))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if query.is_empty() {
+            return Ok(());
+        }
+        let missing = grpc.find_missing(&query, &key.hash)?;
+        {
+            let mut present = self.present.lock().expect("present blobs");
+            for digest in &query {
+                if !missing.contains(digest) {
+                    present.insert(digest.clone());
+                }
+            }
+        }
+        for digest in missing {
+            let Some(source) = blobs.get(&digest) else {
+                return Err(CacheError::Other(format!(
+                    "findMissingDigests returned a missing digest that has not been requested: {digest}"
+                )));
+            };
+            if digest.size != 0 {
+                let lock = self
+                    .uploading
+                    .lock()
+                    .expect("in-flight uploads")
+                    .entry(digest.clone())
+                    .or_default()
+                    .clone();
+                let _uploading = lock.lock().expect("in-flight upload");
+                let done = self.uploaded.lock().expect("upload set").contains(&digest);
+                if force || !done {
+                    let bytes;
+                    let data: &[u8] = match source {
+                        BlobSource::Bytes(bytes) => bytes,
+                        BlobSource::File(path) => {
+                            bytes = std::fs::read(path).map_err(|error| {
+                                CacheError::Other(format!(
+                                    "cannot read input {}: {error}",
+                                    path.display()
+                                ))
+                            })?;
+                            if Digest::of(&bytes) != digest {
+                                return Err(CacheError::Other(format!(
+                                    "input {} changed during the build (expected digest {digest})",
+                                    path.display()
+                                )));
+                            }
+                            &bytes
+                        }
+                    };
+                    grpc.write_blob(&digest, data, &key.hash)?;
+                    self.uploaded
+                        .lock()
+                        .expect("upload set")
+                        .insert(digest.clone());
+                }
+            }
+            self.present
+                .lock()
+                .expect("present blobs")
+                .insert(digest.clone());
+        }
+        Ok(())
+    }
+
+    /// One downloaded blob, verified (`--remote_verify_downloads`);
+    /// `Ok(None)` when the CAS lacks it (CacheNotFoundException).
+    fn verified(
+        &self,
+        digest: &Digest,
+        inline: &[u8],
+        what: &str,
+        key: &Digest,
+    ) -> Result<Option<Vec<u8>>, CacheError> {
+        self.blob(digest, inline, what, key)
+    }
+
+    /// RemoteExecutionService.downloadOutputs (`all`): every declared
+    /// output of `result` (files, symlinks, tree artifacts from their
+    /// `Tree`), stdout and stderr. `Ok(None)` when a blob is missing.
+    pub fn download(
+        &self,
+        result: &reapi::ActionResult,
+        declared: &[(String, OutputKind)],
+        key: &Digest,
+    ) -> Result<Option<DownloadedResult>, CacheError> {
+        let mut outputs = Vec::new();
+        for (path, kind) in declared {
+            let file = result.output_files.iter().find(|file| &file.path == path);
+            let link = result
+                .output_symlinks
+                .iter()
+                .find(|link| &link.path == path);
+            let directory = result
+                .output_directories
+                .iter()
+                .find(|directory| &directory.path == path);
+            let output = match (kind, file, link, directory) {
+                (OutputKind::File, Some(file), _, _) => {
+                    match self.verified(&file.digest, &file.contents, path, key)? {
+                        Some(bytes) => Downloaded::File(bytes),
+                        None => return Ok(None),
+                    }
+                }
+                (OutputKind::Symlink, None, Some(link), _) => {
+                    Downloaded::Symlink(link.target.clone())
+                }
+                (OutputKind::Directory, None, None, Some(directory)) => {
+                    let Some(bytes) = self.verified(&directory.tree_digest, &[], path, key)? else {
+                        return Ok(None);
+                    };
+                    let tree = reapi::Tree::decode(&bytes).map_err(|error| {
+                        CacheError::Other(format!("Failed to parse the Tree of {path}: {error}"))
+                    })?;
+                    let entries = tree.entries().map_err(CacheError::Other)?;
+                    let mut downloaded = DownloadedTree {
+                        symlinks: entries.symlinks,
+                        directories: entries.directories,
+                        ..DownloadedTree::default()
+                    };
+                    for (name, digest, executable) in entries.files {
+                        let what = format!("{path}/{name}");
+                        match self.verified(&digest, &[], &what, key)? {
+                            Some(bytes) => downloaded.files.push((name, bytes, executable)),
+                            None => return Ok(None),
+                        }
+                    }
+                    Downloaded::Directory(downloaded)
+                }
+                (_, None, None, None) => Downloaded::Missing,
+                (kind, ..) => {
+                    return Err(CacheError::Other(format!(
+                        "output {path} of the remote result is not a {}",
+                        match kind {
+                            OutputKind::File => "regular file",
+                            OutputKind::Symlink => "symlink",
+                            OutputKind::Directory => "directory",
+                        }
+                    )));
+                }
+            };
+            outputs.push(output);
+        }
+        let stream = |raw: &[u8], digest: &Option<Digest>, what: &str| match digest {
+            Some(digest) => self.verified(digest, raw, what, key),
+            None => Ok(Some(raw.to_vec())),
+        };
+        let Some(stdout) = stream(&result.stdout_raw, &result.stdout_digest, "stdout")? else {
+            return Ok(None);
+        };
+        let Some(stderr) = stream(&result.stderr_raw, &result.stderr_digest, "stderr")? else {
+            return Ok(None);
+        };
+        Ok(Some(DownloadedResult {
+            exit_code: result.exit_code,
+            outputs,
+            stdout,
+            stderr,
+        }))
+    }
+}
+
 /// The `Remote Cache:` warning of a non-credential failure, once per
 /// distinct message (RemoteExecutionService.report, :2158-2166).
 pub fn warn(error: &CacheError) {
@@ -1324,12 +1799,13 @@ mod tests {
     }
 
     #[test]
-    fn setup_accepts_grpc_and_rejects_remote_execution() {
+    fn setup_accepts_grpc_and_remote_execution() {
         let options = RemoteOptions {
             cache: "grpc://127.0.0.1:1".into(),
             ..RemoteOptions::default()
         };
-        assert!(setup(&options, None).unwrap().is_some());
+        let cache = setup(&options, None).unwrap().unwrap();
+        assert!(cache.executor().is_none());
         let options = RemoteOptions {
             cache: "grpc://h:1/path".into(),
             ..RemoteOptions::default()
@@ -1340,15 +1816,21 @@ mod tests {
                 .exit
                 .contains("invalid gRPC target")
         );
+        // The executor doubles as the cache (RemoteModule.setup).
         let options = RemoteOptions {
-            executor: "grpc://x".into(),
+            executor: "grpc://127.0.0.1:1".into(),
             ..RemoteOptions::default()
         };
-        assert!(
-            setup(&options, None)
-                .unwrap_err()
-                .exit
-                .contains("remote execution")
+        let remote = setup(&options, None).unwrap().unwrap();
+        assert!(remote.executor().is_some());
+        let options = RemoteOptions {
+            executor: "grpc://127.0.0.1:1".into(),
+            cache: "http://127.0.0.1:2".into(),
+            ..RemoteOptions::default()
+        };
+        assert_eq!(
+            setup(&options, None).unwrap_err().exit,
+            "Cannot combine gRPC based remote execution with HTTP-based caching"
         );
         assert!(setup(&RemoteOptions::default(), None).unwrap().is_none());
     }

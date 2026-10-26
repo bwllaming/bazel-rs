@@ -552,6 +552,10 @@ fn run() -> Result<(), String> {
     }
     // Credential helpers and the remote cache (N41) for every command.
     let remote_enabled = setup_credentials_and_remote(&root, &credential_options, &remote_options)?;
+    // RemoteModule registers the `remote` strategy with any remote cache or
+    // executor; only an executor makes it usable and the default.
+    spawn_options.remote_registered = remote_enabled;
+    spawn_options.remote_executor = !remote_options.executor.is_empty();
     // The spawn strategy and sandbox options (N59) for every executing
     // command. Unknown strategy identifiers are rejected once here, at
     // startup, with Bazel's STRATEGY_NOT_FOUND text and exit code 2
@@ -4126,7 +4130,7 @@ fn setup_credentials_and_remote(
     let path = std::env::var("PATH").unwrap_or_default();
     // RemoteModule.beforeCommand creates the credentials for any remote
     // cache (http(s) or gRPC).
-    let remote_cache = remote_options.executor.is_empty() && !remote_options.cache.is_empty();
+    let remote_cache = !remote_options.executor.is_empty() || !remote_options.cache.is_empty();
     let credentials =
         match bazel_rs::credentials::Credentials::new(credential_options, Some(root), &path) {
             Ok(credentials) => credentials,
@@ -4848,10 +4852,19 @@ impl Drop for ProgressGuard {
 /// actions (N59). "sandboxed" when every executed spawn ran under the sandbox
 /// strategy, "not sandboxed" otherwise (a --spawn_strategy=standalone request
 /// or a kernel without Landlock support).
-fn execution_note() -> &'static str {
-    if bazel_rs::sandbox::all_sandboxed() {
+/// With a remote executor it starts with the number of remotely executed
+/// spawns (docs/REMOTE_EXECUTION.md).
+fn execution_note() -> String {
+    let local = if bazel_rs::sandbox::all_sandboxed() {
         "sandboxed"
     } else {
         "not sandboxed"
+    };
+    match bazel_rs::remote_cache::active().filter(|remote| remote.executor().is_some()) {
+        Some(remote) => format!(
+            "{} executed remotely, local spawns {local}",
+            remote.executions()
+        ),
+        None => local.to_owned(),
     }
 }

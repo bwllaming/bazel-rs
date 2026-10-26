@@ -601,16 +601,24 @@ fn credential_cache_duration_and_mid_build_helper_failure() {
 }
 
 #[test]
-fn remote_execution_and_netrc_are_explicit() {
+fn http_remote_execution_and_netrc_are_explicit() {
     // gRPC caches are tests/remote_grpc_cache.rs's.
     let ws = Workspace::new();
+    // Remote execution is tests/remote_execution.rs's; an HTTP cache cannot
+    // serve it (RemoteModule.setup).
     let failed = ws.run(
         "c",
-        &["build", "--remote_executor=grpc://127.0.0.1:1", "//pkg:gen"],
+        &[
+            "build",
+            "--remote_executor=grpc://127.0.0.1:1",
+            "--remote_cache=http://127.0.0.1:1",
+            "//pkg:gen",
+        ],
     );
     assert!(!failed.status.success());
     assert!(
-        stderr(&failed).contains("remote execution is not implemented"),
+        stderr(&failed)
+            .contains("Cannot combine gRPC based remote execution with HTTP-based caching"),
         "{}",
         stderr(&failed)
     );
@@ -1092,14 +1100,29 @@ fn inline_contents_and_exec_properties_are_checked() {
         "props/BUILD.bazel",
         "genrule(name = \"p\", outs = [\"p.txt\"], cmd = \"echo p > $@\", exec_properties = {\"k\": \"v\"})\n",
     );
+    // Execution properties enter the key as the Command's and the Action's
+    // Platform (PlatformUtils.getPlatformProto, docs/REMOTE_EXECUTION.md).
     let built = ws.run("c2", &["build", &cache, "//props:p"]);
     assert!(built.status.success(), "{}", stderr(&built));
-    assert!(
-        stderr(&built).contains("WARNING: Remote Cache: not used for actions of //props:p (exec_properties are not modelled"),
-        "{}",
-        stderr(&built)
-    );
-    assert!(server.summary().is_empty());
+    assert!(!stderr(&built).contains("not used"), "{}", stderr(&built));
+    let state = server.state.lock().unwrap();
+    let platforms = state
+        .blobs
+        .keys()
+        .filter_map(|blob| blob.strip_prefix("/ac/"))
+        .filter_map(|key| {
+            let digest = bazel_rs::reapi::Action::decode_command_digest(
+                &state.blobs[&format!("/cas/{key}")],
+            )
+            .unwrap();
+            let command =
+                bazel_rs::reapi::Command::decode(&state.blobs[&format!("/cas/{}", digest.hash)])
+                    .unwrap();
+            (command.output_paths == ["bazel-out/k8-fastbuild/bin/props/p.txt"])
+                .then_some(command.platform)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(platforms, [vec![("k".to_owned(), "v".to_owned())]]);
 }
 
 /// The N41 x N42 invariant (crate::action::resolved_environment): the

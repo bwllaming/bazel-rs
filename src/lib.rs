@@ -108,6 +108,7 @@ pub mod reapi;
 pub mod registry;
 pub mod registry_session;
 pub mod remote_cache;
+pub mod remote_execution;
 pub mod remote_grpc;
 pub mod repo_env;
 pub mod repository;

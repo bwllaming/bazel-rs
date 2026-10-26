@@ -101,6 +101,12 @@ pub enum Strategy {
     /// that support them (WorkerSpawnRunner.canExec), skipped otherwise like
     /// SpawnStrategyRegistry filtering on canExec.
     Worker,
+    /// `remote` (RemoteSpawnStrategy, registered by RemoteModule with a
+    /// remote cache or executor): usable for a spawn that may be executed
+    /// remotely (RemoteExecutionService.mayBeExecutedRemotely: an executor
+    /// and no `local`/`no-remote`/`no-remote-exec` requirement;
+    /// docs/REMOTE_EXECUTION.md).
+    Remote,
 }
 
 impl Strategy {
@@ -111,6 +117,7 @@ impl Strategy {
             Strategy::Sandboxed => IDENTIFIER_SANDBOXED,
             Strategy::ProcessWrapper => "processwrapper-sandbox",
             Strategy::Worker => "worker",
+            Strategy::Remote => "remote",
         }
     }
 
@@ -157,6 +164,12 @@ pub struct SpawnOptions {
     /// `block-network` or the flag is off (and the spawn does not tag
     /// `requires-network`).
     pub sandbox_default_allow_network: bool,
+    /// A remote cache or executor is configured: RemoteModule registers the
+    /// `remote` strategy (RemoteModule.registerSpawnStrategies).
+    pub remote_registered: bool,
+    /// `--remote_executor` is set: `remote` heads the default strategies
+    /// (BazelStrategyModule.java:67-80) and can execute spawns.
+    pub remote_executor: bool,
 }
 
 impl Default for SpawnOptions {
@@ -171,6 +184,8 @@ impl Default for SpawnOptions {
             sandbox_add_mount_pair: Vec::new(),
             sandbox_debug: false,
             sandbox_default_allow_network: true,
+            remote_registered: false,
+            remote_executor: false,
         }
     }
 }
@@ -245,12 +260,13 @@ pub fn mount_pair(input: &str) -> Result<(String, String), String> {
 /// strategies its modules registered on the host (an order the registry
 /// does not define); this engine's fixed set follows.
 pub fn validate(options: &SpawnOptions) -> Result<(), String> {
+    let registered = registered(options);
     let check = |identifier: &str, request: &str| -> Result<(), String> {
-        if !REGISTERED.contains(&identifier) {
+        if !registered.contains(&identifier) {
             return Err(format!(
                 "'{identifier}' was requested for {request} but no strategy with that \
                  identifier was registered. Valid values are: [{}]",
-                REGISTERED.join(", ")
+                registered.join(", ")
             ));
         }
         Ok(())
@@ -267,6 +283,21 @@ pub fn validate(options: &SpawnOptions) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The registered identifiers: [`REGISTERED`], plus `remote` when a remote
+/// cache or executor is configured.
+fn registered(options: &SpawnOptions) -> Vec<&'static str> {
+    let mut identifiers = REGISTERED.to_vec();
+    if options.remote_registered {
+        identifiers.push("remote");
+    }
+    identifiers
+}
+
+/// Whether `--remote_executor` is set (the `remote` strategy can execute).
+pub fn remote_executor() -> bool {
+    options().remote_executor
 }
 
 /// The Landlock ABI the ruleset requests; every handled access is a
@@ -319,7 +350,16 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
         &options.spawn_strategy
     };
     let identifiers: Vec<&str> = if requested.is_empty() {
-        vec!["worker", IDENTIFIER_SANDBOXED, IDENTIFIER_STANDALONE]
+        if options.remote_executor {
+            vec![
+                "remote",
+                "worker",
+                IDENTIFIER_SANDBOXED,
+                IDENTIFIER_STANDALONE,
+            ]
+        } else {
+            vec!["worker", IDENTIFIER_SANDBOXED, IDENTIFIER_STANDALONE]
+        }
     } else {
         requested
             .iter()
@@ -334,10 +374,11 @@ fn strategies(mnemonic: &str) -> Result<Vec<Strategy>, String> {
             IDENTIFIER_SANDBOXED | "linux-sandbox" => Ok(Strategy::Sandboxed),
             "processwrapper-sandbox" => Ok(Strategy::ProcessWrapper),
             "worker" => Ok(Strategy::Worker),
+            "remote" if options.remote_registered => Ok(Strategy::Remote),
             other => Err(format!(
                 "'{other}' was requested for --spawn_strategy but no strategy with that \
                  identifier was registered. Valid values are: [{}]",
-                REGISTERED.join(", ")
+                registered(options).join(", ")
             )),
         })
         .collect()
@@ -364,12 +405,18 @@ pub fn resolve(
     let sandboxable = !execution_info.contains("no-sandbox")
         && !execution_info.contains("nosandbox")
         && !execution_info.contains("local");
+    // Spawns.mayBeExecutedRemotely (actions/Spawns.java:52-56).
+    let remotable = options().remote_executor
+        && !execution_info.contains("local")
+        && !execution_info.contains("no-remote")
+        && !execution_info.contains("no-remote-exec");
     for strategy in &list {
         match strategy {
             Strategy::Standalone | Strategy::ProcessWrapper => return Ok(*strategy),
             Strategy::Sandboxed if sandboxable && supported() => return Ok(*strategy),
             Strategy::Worker if worker => return Ok(*strategy),
-            Strategy::Sandboxed | Strategy::Worker => continue,
+            Strategy::Remote if remotable => return Ok(*strategy),
+            Strategy::Sandboxed | Strategy::Worker | Strategy::Remote => continue,
         }
     }
     Err(format!(

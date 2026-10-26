@@ -664,7 +664,7 @@ fn tls_mutual_tls_and_unix_sockets() {
 }
 
 #[test]
-fn options_and_remote_execution_stay_explicit() {
+fn options_and_their_errors() {
     let ws = Workspace::new();
     let server = Server::new();
     let cache = format!("--remote_cache={}", server.url());
@@ -694,8 +694,8 @@ fn options_and_remote_execution_stay_explicit() {
             "zstd remote cache compression is not implemented",
         ),
         (
-            "--remote_executor=grpc://127.0.0.1:1",
-            "remote execution is not implemented",
+            "--remote_executor=grpc://127.0.0.1:1/path",
+            "--remote_executor=grpc://127.0.0.1:1/path: invalid gRPC target",
         ),
     ] {
         let failed = ws.run("c2", &["build", &cache, option, "//pkg:gen"]);

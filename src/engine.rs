@@ -9436,52 +9436,109 @@ impl Engine {
         std::mem::take(&mut self.workspace_status_once).into_inner()
     }
 
-    /// Why the remote cache key of `rule`'s spawns in `config` cannot equal
-    /// Bazel's, if it cannot. Execution properties enter Bazel's key as a
-    /// Platform message (PlatformUtils.getPlatformProto,
-    /// analysis/platform/PlatformUtils.java), which the native key does not
-    /// model: the target's `exec_properties`, an action's combined exec-group
-    /// properties (N35, crate::exec_groups::ActionExecution) and an execution
-    /// platform with exec_properties/remote_execution_properties. The
-    /// execution platform is the host platform; a non-default one that was
-    /// not resolved during analysis counts as unknown, hence gated (N41).
-    fn remote_platform_gate(
+    /// The REAPI platform inputs of `rule`'s spawns in `config`
+    /// (PlatformUtils.getPlatformProto, analysis/platform/PlatformUtils.java;
+    /// crate::remote_execution::SpawnPlatform): the spawn's combined exec
+    /// properties — its exec group's (N35, crate::exec_groups::ActionExecution)
+    /// or, for a rule without an execution table (genrule), its execution
+    /// platform's default-group properties under the target's
+    /// `exec_properties` (`target_properties`: an aspect's spawn has none of
+    /// its base target's, ConfiguredTargetFactory.createAspect) — and the
+    /// execution platform's own `exec_properties` and
+    /// `remote_execution_properties`. `Err` names why they are unknown: an
+    /// execution platform analysis did not resolve (N41), whose spawns then
+    /// never use the remote cache or remote execution.
+    fn remote_platform(
         &self,
         rule: &Rule,
         config: ConfigId,
         execution: Option<&crate::exec_groups::ActionExecution>,
-    ) -> Option<String> {
-        let attrs = match (&rule.native, &rule.custom) {
-            (Some(native), _) => Some(&native.attrs),
-            (None, Some(custom)) => Some(&custom.declaration.builtin.target.attrs),
-            _ => None,
-        };
-        if attrs.is_some_and(|attrs| {
-            matches!(attrs.get("exec_properties"), Some(crate::custom_rule::AttrValue::StringDict(d)) if !d.is_empty())
-        }) || execution.is_some_and(|execution| !execution.properties.is_empty())
-        {
-            return Some(format!(
-                "actions of {} (exec_properties are not modelled in native remote cache keys)",
-                rule.label
-            ));
-        }
+        target_properties: bool,
+    ) -> Result<crate::remote_execution::SpawnPlatform, String> {
         let host = &self.configurations.get(config).native.host_platform;
-        if *host == crate::configuration::default_host_platform() {
-            return None;
-        }
-        match self
-            .platforms
-            .get(&ConfiguredTargetKey::new(host.clone(), config))
+        let label = execution.map_or(host, |execution| &execution.platform);
+        let (exec_properties, remote_execution_properties) = if *label
+            == crate::configuration::default_host_platform()
         {
-            Some(Ok(info))
-                if info.exec_properties.is_empty()
-                    && info.remote_execution_properties.is_empty() =>
+            (Vec::new(), String::new())
+        } else {
+            match self
+                .platforms
+                .get(&ConfiguredTargetKey::new(label.clone(), config))
             {
-                None
+                Some(Ok(info)) => (
+                    info.exec_properties.clone(),
+                    info.remote_execution_properties.clone(),
+                ),
+                _ => {
+                    return Err(format!(
+                        "actions whose execution platform {label} has or may have exec_properties/remote_execution_properties (not resolved by the native analysis)"
+                    ));
+                }
             }
-            _ => Some(format!(
-                "actions whose execution platform {host} has or may have exec_properties/remote_execution_properties (not modelled in native remote cache keys)"
-            )),
+        };
+        let combined = match execution {
+            Some(execution) => execution.properties.clone(),
+            None => {
+                let attrs = match (&rule.native, &rule.custom) {
+                    (Some(native), _) => Some(&native.attrs),
+                    (None, Some(custom)) => Some(&custom.declaration.builtin.target.attrs),
+                    _ => None,
+                };
+                let raw = match attrs.and_then(|attrs| attrs.get("exec_properties")) {
+                    Some(crate::custom_rule::AttrValue::StringDict(entries))
+                        if target_properties =>
+                    {
+                        entries.clone()
+                    }
+                    Some(crate::custom_rule::AttrValue::StringDict(_)) | None => Vec::new(),
+                    Some(_) => {
+                        return Err(format!(
+                            "actions of {} (a configurable exec_properties value)",
+                            rule.label
+                        ));
+                    }
+                };
+                let group = crate::exec_groups::GroupPlatform {
+                    name: crate::exec_groups::DEFAULT_EXEC_GROUP_NAME,
+                    platform_properties: &exec_properties,
+                };
+                crate::exec_groups::combined_exec_properties(
+                    Some(std::slice::from_ref(&group)),
+                    &raw,
+                    &self.display_form(&rule.label),
+                )
+                .map_err(|error| format!("actions of {}: {error}", rule.label))?
+                .into_iter()
+                .find(|(name, _)| name == crate::exec_groups::DEFAULT_EXEC_GROUP_NAME)
+                .map(|(_, properties)| properties)
+                .unwrap_or_default()
+            }
+        };
+        Ok(crate::remote_execution::SpawnPlatform {
+            combined,
+            label: self.display_form(label),
+            exec_properties,
+            remote_execution_properties,
+        })
+    }
+
+    /// [`Self::remote_platform`] applied to a spawn: the platform, or the
+    /// reason that keeps it off the remote cache and remote execution.
+    fn set_remote_platform(
+        &self,
+        action: &mut Action,
+        rule: &Rule,
+        config: ConfigId,
+        execution: Option<&crate::exec_groups::ActionExecution>,
+        target_properties: bool,
+    ) {
+        match self.remote_platform(rule, config, execution, target_properties) {
+            Ok(platform) => {
+                action.remote_platform = platform;
+                action.remote_unsupported = None;
+            }
+            Err(reason) => action.remote_unsupported = Some(reason),
         }
     }
 
@@ -11012,8 +11069,13 @@ impl Engine {
                     .insert(action.id.clone(), execution.clone());
             }
             if action.write.is_none() && action.extra.transform.is_none() {
-                action.remote_unsupported =
-                    self.remote_platform_gate(&base_rule, base_key.config, execution);
+                self.set_remote_platform(
+                    &mut action,
+                    &base_rule,
+                    base_key.config,
+                    execution,
+                    false,
+                );
             }
             // Like a rule's action (PA-1 follow-up B6): its tools' runfiles
             // trees (shared input groups) and its deferred completion,
@@ -12112,7 +12174,7 @@ impl Engine {
             // The spawn's propagated tags are set at registration
             // (crate::analysis_runtime::Context::register_action, keyed).
             if action.write.is_none() && action.extra.transform.is_none() {
-                action.remote_unsupported = self.remote_platform_gate(rule, config, execution);
+                self.set_remote_platform(&mut action, rule, config, execution, true);
             }
             self.commit_action(
                 action,
@@ -12627,7 +12689,7 @@ impl Engine {
                 if native_bool(rule, "local") {
                     execution_info.insert("local".to_owned());
                 }
-                let action = Action {
+                let mut action = Action {
                     id: action_owner.clone(),
                     command: format!(
                         "source {}; {command}",
@@ -12642,13 +12704,13 @@ impl Engine {
                     },
                     environment: action_env.fixed.clone(),
                     execution_info,
-                    remote_unsupported: self.remote_platform_gate(rule, config, None),
                     embedded_inputs: vec![(
                         crate::builtin_tools::GENRULE_SETUP_EXEC_PATH.into(),
                         crate::builtin_tools::GENRULE_SETUP,
                     )],
                     ..Action::default()
                 };
+                self.set_remote_platform(&mut action, rule, config, None, true);
                 let action_inputs = inputs.iter().cloned().chain(tools).collect::<Vec<_>>();
                 // The tools' runfiles trees are shared input groups, as a
                 // Starlark action's tools' (GenRuleAction's spawn expands the
