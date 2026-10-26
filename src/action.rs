@@ -2370,8 +2370,36 @@ fn forget_trees(prefix: &Path) {
 /// symlink's link text.
 #[derive(Clone)]
 enum PublishedValue {
-    File(Input),
+    /// The file and, when the published path is that file itself (no
+    /// symlink output), its device and inode.
+    File(Input, Option<(u64, u64)>),
     Link(PathBuf),
+}
+
+/// What the output tree links for a published output (crate::output_tree):
+/// the published file itself (a hardlink of this device and inode), or a
+/// symlink to its path (a tree, a symlink output).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishedKind {
+    File { device: u64, inode: u64 },
+    Link,
+}
+
+/// [`PublishedKind`] of `path` when this process validated it in a cache
+/// check (the output and tree memos), without inspecting it again; `None`
+/// when it does not know.
+pub fn published_kind(path: &Path) -> Option<PublishedKind> {
+    match memoized_output(path) {
+        Some(PublishedValue::File(_, Some((device, inode)))) => {
+            return Some(PublishedKind::File { device, inode });
+        }
+        Some(PublishedValue::File(input, None)) if input.path != path => {
+            return Some(PublishedKind::Link);
+        }
+        Some(PublishedValue::Link(_)) => return Some(PublishedKind::Link),
+        _ => {}
+    }
+    memoized_tree(path).map(|_| PublishedKind::Link)
 }
 
 /// Published outputs (other than trees: [`TreeMemo`]) by path, as their
@@ -2434,7 +2462,7 @@ fn remember_outputs(root: &Path, values: Vec<(PathBuf, PublishedValue)>) {
     }
     for (path, value) in values {
         let mut dependencies = vec![action_entry(root, &path)];
-        if let PublishedValue::File(input) = &value
+        if let PublishedValue::File(input, _) = &value
             && input.path != path
         {
             dependencies.push(action_entry(root, &input.path));
@@ -2472,6 +2500,25 @@ fn forget_outputs(entry: &Path) {
             }
         }
     }
+}
+
+/// Test hook: remember the published file `path` (below `<root>/actions/`)
+/// as a cache check would, with its current device and inode.
+#[cfg(test)]
+pub(crate) fn remember_published_file(root: &Path, path: &Path) {
+    let metadata = fs::symlink_metadata(path).unwrap();
+    let input = Input {
+        path: path.to_path_buf(),
+        digest: Sha256Digest([0; 32]),
+        size: metadata.len(),
+        executable: 0o111,
+        mode: OUTPUT_MODE,
+    };
+    let identity = Some((metadata.dev(), metadata.ino()));
+    remember_outputs(
+        root,
+        vec![(path.to_path_buf(), PublishedValue::File(input, identity))],
+    );
 }
 
 /// Whether `path` is a published action output below the canonical cache
@@ -2541,7 +2588,7 @@ fn memoized_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Option<
             .then(|| memoized_output(path))
             .flatten()
             .and_then(|value| match value {
-                PublishedValue::File(input) => Some(Staged::File(input)),
+                PublishedValue::File(input, _) => Some(Staged::File(input)),
                 PublishedValue::Link(_) => None,
             }),
         InputKind::SourceDirectory => memoized_source_directory(path).map(Staged::SourceDirectory),
@@ -2550,7 +2597,7 @@ fn memoized_staged(path: &Path, kind: InputKind, root: Option<&Path>) -> Option<
             .flatten()
             .and_then(|value| match value {
                 PublishedValue::Link(text) => Some(Staged::Symlink(text)),
-                PublishedValue::File(_) => None,
+                PublishedValue::File(..) => None,
             }),
     }
 }
@@ -4828,7 +4875,19 @@ fn cache_valid(
                     validated.push((path, tree));
                 }
                 (None, false) => {
-                    let actual = read_input(&path, Some(root), false)?;
+                    // read_input (no symlink to follow), with the file's
+                    // identity for the output tree.
+                    let (actual, identity) = if store_file(Some(root), &path) {
+                        (read_input(&path, Some(root), false)?, None)
+                    } else {
+                        let metadata = regular_file(&path, Some(root))?;
+                        let identity = (metadata.dev(), metadata.ino());
+                        let owned = owned_by(Some(root), &path);
+                        (
+                            read_regular_from(&path, metadata, owned, false)?,
+                            Some(identity),
+                        )
+                    };
                     if actual.mode != entry.mode || !actual.digest.spelled(&entry.digest) {
                         return Ok(None);
                     }
@@ -4840,7 +4899,8 @@ fn cache_valid(
                     if published_output(Some(root), &actual.path)
                         || store_file(Some(root), &actual.path)
                     {
-                        values.push((published, PublishedValue::File(actual)));
+                        let identity = identity.filter(|_| actual.path == published);
+                        values.push((published, PublishedValue::File(actual, identity)));
                     }
                 }
                 _ => return Ok(None),

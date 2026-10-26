@@ -115,7 +115,26 @@ An entry that already links the same output costs one `lstat`/`readlink`;
 anything else at the path is replaced by renaming a temporary link over it;
 a directory link of an earlier build is never written through. Entries of
 earlier builds stay until a later build replaces them, like genuine's output
-tree. A failure to update the tree prints
+tree.
+
+The update is O(changed), not O(outputs) (perf-cache-hits; a warm
+`//src/ts/...` links 25,088 outputs in 16,840 directories): the tree keeps a
+record next to it (`<state>/execroot/.bazel-rs-output-tree`; magic
+`BZRSOTRE`, version 1, blake3 check, postcard body) of the stamps of its
+directories (crate::dir_stamps: device, inode, mode, modification and change
+time) and of the entries it found in them (a hash of the source path, and
+for a hardlink the source's inode). A directory reached from the root
+through real directories only (each opened relative to its parent, never
+through a symlink) that still shows its stamp still holds exactly the
+recorded entries, so an output whose record entry names the same source —
+and for a hardlink the inode the cache check found the published output to
+be (an entry published again has a new inode) — is left alone without a
+`lstat`/`readlink`; everything else takes the per-entry update above. A
+directory is stamped only when it was settled (2 s old,
+crate::digest_memo::RACY_MARGIN) and unchanged while the build updated the
+tree, so the directories a build changed are checked entry by entry once
+more by the next build; the record is written only when it changes. A
+missing or corrupt record means per-entry updates (and a new record). A failure to update the tree prints
 `bazel-rs: warning: the output tree below execroot/ is incomplete: ...` and
 never fails the command.
 

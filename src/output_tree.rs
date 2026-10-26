@@ -35,11 +35,16 @@
 //! the tree never fails the build (the caller warns).
 
 use crate::action::ActionResult;
-use std::collections::{BTreeMap, HashSet};
+use crate::dir_stamps::DirectoryStamp;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs;
 use std::io::ErrorKind;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
+use std::time::SystemTime;
 
 /// The main repository's execution root directory name under Bzlmod
 /// (RepositoryUtils.WORKSPACE_SYMLINK_NAME, bazel/repository/RepositoryUtils.java:41).
@@ -83,11 +88,25 @@ pub struct Published {
 /// Link every output of `results` at its exec path below the execution root
 /// of `cache`. `runfiles_trees` are the ids of the request's
 /// `Transform::RunfilesTree` actions.
+///
+/// O(changed), not O(outputs): the tree keeps a record of what it linked
+/// ([`Record`]) and of its directories' stamps (crate::dir_stamps). A
+/// directory that still shows its stamp, reached from the root through real
+/// directories only, still holds exactly the entries the record lists (an entry is replaced only by
+/// a rename or removal in its directory), so an output the record lists
+/// there with the same source, and for a hardlink the same inode the cache
+/// check found the published output to be (crate::action::published_kind),
+/// is left alone without inspecting it. Everything else takes the
+/// per-entry check. A directory is stamped only when it was settled
+/// (crate::digest_memo::RACY_MARGIN) and unchanged while this build
+/// published, so the directories a build changed are checked once more by
+/// the next one.
 pub fn publish(
     cache: &Path,
     results: &BTreeMap<String, ActionResult>,
     runfiles_trees: &HashSet<String>,
 ) -> Published {
+    let start = SystemTime::now();
     let root = execution_root(cache);
     let actions = cache.join("actions");
     let mut tree = Tree {
@@ -95,28 +114,343 @@ pub fn publish(
         verified: HashSet::new(),
         published: Published::default(),
     };
+    // (exec path, source) in result order.
+    let mut wanted: Vec<(PathBuf, PathBuf)> = Vec::new();
     for (id, result) in results {
         let runfiles_tree = runfiles_trees.contains(id);
         for output in &result.outputs {
             let Some(exec) = exec_path(&actions, output) else {
                 continue;
             };
-            let (source, exec) = if runfiles_tree {
+            if runfiles_tree {
                 // `<exe>.runfiles/MANIFEST`: the whole directory.
-                match (output.parent(), exec.parent()) {
-                    (Some(source), Some(exec)) => (source.to_path_buf(), exec.to_path_buf()),
-                    _ => continue,
+                if let (Some(source), Some(exec)) = (output.parent(), exec.parent()) {
+                    wanted.push((exec.to_path_buf(), source.to_path_buf()));
                 }
             } else {
-                (output.clone(), exec)
-            };
-            let destination = root.join(&exec);
-            if let Err(error) = tree.link(&source, &destination) {
+                wanted.push((exec, output.clone()));
+            }
+        }
+    }
+    let record_path = record_path(&root);
+    let mut record = Record::read(&record_path);
+    let mut changed = false;
+    // Every directory that holds a wanted entry, with its ancestors below
+    // the root, and the stamps they show now.
+    let mut directories: BTreeSet<&Path> = BTreeSet::new();
+    for (exec, _) in &wanted {
+        for ancestor in exec.ancestors().skip(1) {
+            if ancestor.as_os_str().is_empty() || !directories.insert(ancestor) {
+                break;
+            }
+        }
+    }
+    let directories: Vec<&Path> = directories.into_iter().collect();
+    let root_state = crate::dir_stamps::open_directory(None, &root)
+        .ok()
+        .and_then(|file| file.metadata().ok())
+        .and_then(|metadata| DirectoryStamp::of(&metadata));
+    let states: HashMap<&Path, DirectoryStamp> = match &root_state {
+        Some(_) => directory_states(&root, &directories),
+        None => HashMap::new(),
+    };
+    let state = |directory: &Path| {
+        if directory.as_os_str().is_empty() {
+            root_state.as_ref()
+        } else {
+            states.get(directory)
+        }
+    };
+    // Clean: the directory shows its recorded stamp. The walk reached it
+    // through real directories only (no symlink at any component), and a
+    // directory moved elsewhere has a new change time, so its ancestors
+    // need not be unchanged themselves (`bazel-out/` holds the workspace
+    // status files, which every build links anew).
+    let clean: HashSet<&Path> = std::iter::once(Path::new(""))
+        .chain(directories.iter().copied())
+        .filter(|directory| {
+            let current = state(directory);
+            current.is_some()
+                && record.directories.get(*directory).map(|entry| &entry.stamp) == current
+        })
+        .collect();
+    // The entries this build checked one by one (found or made), by
+    // directory.
+    let mut entries: HashMap<&Path, BTreeMap<OsString, Entry>> = HashMap::new();
+    for (exec, source) in &wanted {
+        let parent = exec.parent().unwrap_or(Path::new(""));
+        let Some(name) = exec.file_name() else {
+            continue;
+        };
+        if clean.contains(parent)
+            && let Some(kind) = crate::action::published_kind(source)
+            && record
+                .directories
+                .get(parent)
+                .and_then(|directory| directory.entries.get(name))
+                .is_some_and(|entry| {
+                    entry.kind == EntryKind::from(kind) && entry.source == source_hash(source)
+                })
+        {
+            tree.published.unchanged += 1;
+            continue;
+        }
+        match tree.link(source, &root.join(exec)) {
+            Ok(Some(kind)) => {
+                entries.entry(parent).or_default().insert(
+                    name.to_owned(),
+                    Entry {
+                        source: source_hash(source),
+                        kind,
+                    },
+                );
+            }
+            Ok(None) => {}
+            Err(error) => {
                 tree.published.error.get_or_insert(error);
             }
         }
     }
+    // The next record: clean directories keep their stamps and entries;
+    // every other directory this build looked at is stamped
+    // when it was settled and unchanged since it was looked at, with the
+    // entries found in it now. Directories of earlier builds' outputs keep
+    // theirs.
+    for directory in std::iter::once(Path::new("")).chain(directories.iter().copied()) {
+        if clean.contains(directory) {
+            // Entries found unchanged in a clean directory join its record
+            // (one it lacked); one this build replaced changed the
+            // directory, whose stamp then no longer matches.
+            if let Some(found) = entries.remove(directory)
+                && let Some(recorded) = record.directories.get_mut(directory)
+            {
+                for (name, entry) in found {
+                    if recorded.entries.get(&name) != Some(&entry) {
+                        recorded.entries.insert(name, entry);
+                        changed = true;
+                    }
+                }
+            }
+            continue;
+        }
+        let before = state(directory);
+        let after = DirectoryStamp::at(&root.join(directory));
+        match (before, after) {
+            (Some(before), Some(after)) if *before == after && after.settled(start) => {
+                let recorded = RecordedDirectory {
+                    stamp: after,
+                    entries: entries.remove(directory).unwrap_or_default(),
+                };
+                if record.directories.get(directory) != Some(&recorded) {
+                    record.directories.insert(directory.to_path_buf(), recorded);
+                    changed = true;
+                }
+            }
+            _ => {
+                changed |= record.directories.remove(directory).is_some();
+            }
+        }
+    }
+    if changed {
+        // Failing to keep the record only costs the next build its shortcut.
+        let _ = record.write(&record_path);
+    }
     tree.published
+}
+
+/// The stamps the `directories` (relative to `root`, a real directory)
+/// show now; a directory missing from the map is missing, no real
+/// directory, or below such a path. Walked on several threads, each over a
+/// contiguous part of the directories in component order (with the
+/// ancestors of its first one), each lookup relative to its parent's
+/// descriptor (crate::dir_stamps::walk).
+fn directory_states<'a>(
+    root: &Path,
+    directories: &[&'a Path],
+) -> HashMap<&'a Path, DirectoryStamp> {
+    const PER_THREAD: usize = 1024;
+    let threads = directories
+        .len()
+        .div_ceil(PER_THREAD)
+        .clamp(1, 16)
+        .min(std::thread::available_parallelism().map_or(1, usize::from));
+    let chunk = directories.len().div_ceil(threads).max(1);
+    let walk_part = |part: &[&'a Path]| -> Vec<(&'a Path, DirectoryStamp)> {
+        let Some(first) = part.first() else {
+            return Vec::new();
+        };
+        // The part's directories after the ancestors of its first one,
+        // so that each is opened below its parent.
+        let mut names: Vec<PathBuf> = first
+            .ancestors()
+            .skip(1)
+            .filter(|ancestor| !ancestor.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .collect();
+        let ancestors = names.len();
+        names.extend(part.iter().map(|directory| directory.to_path_buf()));
+        let Ok(root_file) = crate::dir_stamps::open_directory(None, root) else {
+            return Vec::new();
+        };
+        let mut found = Vec::with_capacity(part.len());
+        crate::dir_stamps::walk(root_file, &names, |index, stamp| {
+            if index >= ancestors
+                && let Some(stamp) = stamp
+            {
+                found.push((part[index - ancestors], stamp));
+            }
+            true
+        });
+        found
+    };
+    if threads == 1 {
+        return walk_part(directories).into_iter().collect();
+    }
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = directories
+            .chunks(chunk)
+            .map(|part| scope.spawn(move || walk_part(part)))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    })
+}
+
+/// The output tree's record, next to the execution root (outside it).
+fn record_path(root: &Path) -> PathBuf {
+    root.with_file_name(RECORD_NAME)
+}
+
+const RECORD_NAME: &str = ".bazel-rs-output-tree";
+const RECORD_MAGIC: &[u8; 8] = b"BZRSOTRE";
+const RECORD_VERSION: u32 = 1;
+/// Magic, version, the first 8 bytes of the body's blake3 hash.
+const RECORD_HEADER: usize = 8 + 4 + 8;
+
+/// What an output tree entry is: a hardlink of this inode, or a symlink.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum EntryKind {
+    File { device: u64, inode: u64 },
+    Link,
+}
+
+impl From<crate::action::PublishedKind> for EntryKind {
+    fn from(kind: crate::action::PublishedKind) -> Self {
+        match kind {
+            crate::action::PublishedKind::File { device, inode } => Self::File { device, inode },
+            crate::action::PublishedKind::Link => Self::Link,
+        }
+    }
+}
+
+/// One entry: the first 16 bytes of the blake3 hash of its source path,
+/// and its kind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct Entry {
+    source: [u8; 16],
+    kind: EntryKind,
+}
+
+fn source_hash(source: &Path) -> [u8; 16] {
+    let hash = blake3::hash(source.as_os_str().as_bytes());
+    hash.as_bytes()[..16].try_into().expect("16 bytes")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RecordedDirectory {
+    stamp: DirectoryStamp,
+    /// The entries known to be in the directory in that state, by name.
+    entries: BTreeMap<OsString, Entry>,
+}
+
+/// The record: stamped directories (relative to the execution root; the
+/// root itself is the empty path) and their entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Record {
+    directories: HashMap<PathBuf, RecordedDirectory>,
+}
+
+/// The record's encoding: paths and names as bytes (not necessarily UTF-8).
+#[derive(Serialize, Deserialize)]
+struct RecordFile {
+    directories: Vec<EncodedDirectory>,
+}
+
+/// A directory's path, stamp and entries (name, entry).
+type EncodedDirectory = (Vec<u8>, DirectoryStamp, Vec<(Vec<u8>, Entry)>);
+
+impl Record {
+    /// The record at `path`; empty when it is missing, foreign or corrupt.
+    fn read(path: &Path) -> Self {
+        let Ok(bytes) = fs::read(path) else {
+            return Self::default();
+        };
+        let Some((header, body)) = bytes.split_at_checked(RECORD_HEADER) else {
+            return Self::default();
+        };
+        if &header[..8] != RECORD_MAGIC
+            || header[8..12] != RECORD_VERSION.to_le_bytes()
+            || header[12..20] != blake3::hash(body).as_bytes()[..8]
+        {
+            return Self::default();
+        }
+        let Ok(file) = postcard::from_bytes::<RecordFile>(body) else {
+            return Self::default();
+        };
+        Self {
+            directories: file
+                .directories
+                .into_iter()
+                .map(|(directory, stamp, entries)| {
+                    (
+                        PathBuf::from(OsString::from_vec(directory)),
+                        RecordedDirectory {
+                            stamp,
+                            entries: entries
+                                .into_iter()
+                                .map(|(name, entry)| (OsString::from_vec(name), entry))
+                                .collect(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// Replace the record at `path` atomically.
+    fn write(&self, path: &Path) -> std::io::Result<()> {
+        let mut directories: Vec<_> = self
+            .directories
+            .iter()
+            .map(|(directory, recorded)| {
+                (
+                    directory.as_os_str().as_bytes().to_vec(),
+                    recorded.stamp.clone(),
+                    recorded
+                        .entries
+                        .iter()
+                        .map(|(name, entry)| (name.as_bytes().to_vec(), entry.clone()))
+                        .collect(),
+                )
+            })
+            .collect();
+        directories.sort_by(|a, b| a.0.cmp(&b.0));
+        let body =
+            postcard::to_stdvec(&RecordFile { directories }).map_err(std::io::Error::other)?;
+        let mut bytes = Vec::with_capacity(RECORD_HEADER + body.len());
+        bytes.extend_from_slice(RECORD_MAGIC);
+        bytes.extend_from_slice(&RECORD_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&blake3::hash(&body).as_bytes()[..8]);
+        bytes.extend_from_slice(&body);
+        let temporary = temporary(path);
+        let written = fs::write(&temporary, &bytes).and_then(|()| fs::rename(&temporary, path));
+        if written.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        written
+    }
 }
 
 /// Link one published directory at its exec path `exec` (below
@@ -139,7 +473,7 @@ pub fn link_directory(cache: &Path, exec: &Path, source: &Path) -> Result<(), St
         verified: HashSet::new(),
         published: Published::default(),
     };
-    tree.link(source, &root.join(exec))
+    tree.link(source, &root.join(exec)).map(drop)
 }
 
 /// The exec path of a published action output
@@ -167,6 +501,12 @@ fn exec_path(actions: &Path, output: &Path) -> Option<PathBuf> {
     Some(exec.to_path_buf())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test hook: output tree entries checked one by one on this thread.
+    static ENTRY_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 struct Tree {
     root: PathBuf,
     /// Directories of the tree known to be real directories in this run.
@@ -175,12 +515,20 @@ struct Tree {
 }
 
 impl Tree {
-    fn link(&mut self, source: &Path, destination: &Path) -> Result<(), String> {
+    /// Link `source` at `destination`; what the entry is now (`None`:
+    /// nothing is published at `source`).
+    fn link(&mut self, source: &Path, destination: &Path) -> Result<Option<EntryKind>, String> {
+        #[cfg(test)]
+        ENTRY_CHECKS.with(|checks| checks.set(checks.get() + 1));
         let metadata = match fs::symlink_metadata(source) {
             Ok(metadata) => metadata,
             // Nothing published at this path (never expected): nothing to link.
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(io("cannot inspect", source, &error)),
+        };
+        let file = EntryKind::File {
+            device: metadata.dev(),
+            inode: metadata.ino(),
         };
         let parent = destination
             .parent()
@@ -194,12 +542,12 @@ impl Tree {
                     && current.ino() == metadata.ino()
             }) {
                 self.published.unchanged += 1;
-                return Ok(());
+                return Ok(Some(file));
             }
             let temporary = temporary(destination);
             let _ = fs::remove_file(&temporary);
             if fs::hard_link(source, &temporary).is_ok() {
-                return self.replace(&temporary, destination);
+                return self.replace(&temporary, destination).map(|()| Some(file));
             }
         } else if current
             .as_ref()
@@ -207,7 +555,7 @@ impl Tree {
             && fs::read_link(destination).is_ok_and(|target| target == source)
         {
             self.published.unchanged += 1;
-            return Ok(());
+            return Ok(Some(EntryKind::Link));
         }
         // A directory, a symlink, or a file that cannot be hardlinked.
         let temporary = temporary(destination);
@@ -215,6 +563,7 @@ impl Tree {
         std::os::unix::fs::symlink(source, &temporary)
             .map_err(|error| io("cannot link", &temporary, &error))?;
         self.replace(&temporary, destination)
+            .map(|()| Some(EntryKind::Link))
     }
 
     /// Rename `temporary` over `destination`; a real directory there (an
@@ -370,6 +719,71 @@ mod tests {
         // Unchanged entries are left alone.
         let again = publish(cache, &results, &trees);
         assert_eq!((again.linked, again.unchanged), (0, 3));
+    }
+
+    /// [`publish`] is O(changed): once its directories are stamped, an
+    /// entry the record lists with the output's source and inode is left
+    /// alone without inspecting it; anything that changed a directory, or a
+    /// source published again (another inode), is checked and relinked.
+    #[test]
+    fn unchanged_directories_are_not_checked_entry_by_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache = fs::canonicalize(temp.path()).unwrap();
+        let cache = cache.as_path();
+        let bin = "bazel-out/k8-fastbuild/bin";
+        let file = cache.join(format!("actions/a/outputs/{bin}/pkg/tool"));
+        write(&file, "tool");
+        let other = cache.join(format!("actions/a/outputs/{bin}/pkg/sub/data"));
+        write(&other, "data");
+        let mut results = BTreeMap::new();
+        results.insert("a".to_owned(), result(&[&file, &other]));
+        let checks = || ENTRY_CHECKS.with(std::cell::Cell::get);
+        let publish = || {
+            // Directory times have a coarse granularity: a change and the
+            // relink after it must not fall into one tick, which the settled
+            // rule guarantees outside this test (SETTLE_ALL).
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            let before = checks();
+            let published = publish(cache, &results, &HashSet::new());
+            assert_eq!(published.error, None);
+            (published.linked, published.unchanged, checks() - before)
+        };
+        let out = output_path(cache).join("k8-fastbuild/bin/pkg");
+        assert_eq!(publish(), (2, 0, 2));
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(true));
+        // The cache check's view of the outputs (crate::action::published_kind).
+        crate::action::remember_published_file(cache, &file);
+        crate::action::remember_published_file(cache, &other);
+        // Unchanged since the last build, but not stamped yet: checked once.
+        assert_eq!(publish(), (0, 2, 2));
+        assert!(record_path(&execution_root(cache)).exists());
+        assert_eq!(publish(), (0, 2, 0));
+        // An entry replaced in the tree is found through its directory.
+        fs::remove_file(out.join("tool")).unwrap();
+        write(&out.join("tool"), "edited");
+        assert_eq!(publish(), (1, 1, 1));
+        assert_eq!(fs::read_to_string(out.join("tool")).unwrap(), "tool");
+        // The output published again (a new inode at the same path).
+        assert_eq!(publish(), (0, 2, 1));
+        fs::remove_file(&file).unwrap();
+        write(&file, "tool v2");
+        crate::action::remember_published_file(cache, &file);
+        assert_eq!(publish(), (1, 1, 1));
+        assert_eq!(fs::read_to_string(out.join("tool")).unwrap(), "tool v2");
+        assert_eq!(publish(), (0, 2, 1));
+        assert_eq!(publish(), (0, 2, 0));
+        // A directory of the tree replaced by a symlink is never trusted.
+        let moved = out.with_file_name("moved");
+        fs::rename(out.join("sub"), &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, out.join("sub")).unwrap();
+        // (Its parent changed too: both entries are checked.)
+        assert_eq!(publish(), (1, 1, 2));
+        assert!(!fs::symlink_metadata(out.join("sub")).unwrap().is_symlink());
+        assert_eq!(fs::read_to_string(out.join("sub/data")).unwrap(), "data");
+        // A corrupt record is no record.
+        fs::write(record_path(&execution_root(cache)), b"BZRSOTRE").unwrap();
+        assert_eq!(publish(), (0, 2, 2));
+        crate::dir_stamps::SETTLE_ALL.with(|settle| settle.set(false));
     }
 
     #[test]
