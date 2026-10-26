@@ -88,14 +88,14 @@ impl LoadedFunctions {
 /// a derived artifact of the build-data root `bazel-out` without an owner
 /// label (WorkspaceStatusValue.BUILD_INFO_KEY).
 pub(crate) fn workspace_status_file(name: &str) -> File {
-    File {
+    File::new(crate::starlark_types::FileData {
         path: format!("bazel-out/{name}"),
         short_path: name.to_owned(),
         owner: String::new(),
         is_source: false,
         is_directory: false,
         is_symlink: false,
-    }
+    })
 }
 
 pub(crate) fn is_workspace_status_file(file: &File) -> bool {
@@ -279,7 +279,7 @@ impl Context {
     fn declare_artifact(&self, name: &str, directory: bool, symlink: bool) -> anyhow::Result<File> {
         self.sync_default_executable();
         let output = self.label.with_name(name).map_err(anyhow::Error::msg)?;
-        let file = File {
+        let file = File::new(crate::starlark_types::FileData {
             is_directory: directory,
             is_symlink: symlink,
             path: output
@@ -289,7 +289,7 @@ impl Context {
             short_path: output.generated_short_path(),
             owner: self.label.to_string(),
             is_source: false,
-        };
+        });
         let mut declared = self.declared.borrow_mut();
         // A path declared both as a file and as a directory is reported when
         // the implementation returns (StarlarkProviderValidationUtil), like Bazel.
@@ -318,7 +318,7 @@ impl Context {
     pub(crate) fn declare_shareable(&self, root: &str, path: &str) -> anyhow::Result<File> {
         self.sync_default_executable();
         let relative = shareable_relative_path(path)?;
-        let file = File {
+        let file = File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: if relative.is_empty() {
@@ -329,7 +329,7 @@ impl Context {
             short_path: crate::label::generated_short_path(&relative),
             owner: self.label.to_string(),
             is_source: false,
-        };
+        });
         let mut declared = self.declared.borrow_mut();
         // As for declare_kind: an output path another target already
         // produces is shared or a conflict at the commit (crate::engine
@@ -1932,7 +1932,7 @@ fn file_action_methods(builder: &mut MethodsBuilder) {
             environment: BTreeMap::new(),
             extra: ActionExtra {
                 transform: Some(Transform::Template {
-                    template: template.path.into(),
+                    template: template.path.clone().into(),
                     substitutions: entries
                         .iter()
                         .map(|(key, value)| {
@@ -2229,15 +2229,17 @@ mod tests {
     /// provider of the same runfiles under another identity has its own.
     #[test]
     fn a_tools_runfiles_tree_is_shared_by_identity() {
-        let file = |path: &str, is_source: bool| File {
-            path: path.into(),
-            short_path: path
-                .trim_start_matches("bazel-out/k8-fastbuild/bin/")
-                .into(),
-            owner: "//p:t".into(),
-            is_source,
-            is_directory: false,
-            is_symlink: false,
+        let file = |path: &str, is_source: bool| {
+            File::new(crate::starlark_types::FileData {
+                path: path.into(),
+                short_path: path
+                    .trim_start_matches("bazel-out/k8-fastbuild/bin/")
+                    .into(),
+                owner: "//p:t".into(),
+                is_source,
+                is_directory: false,
+                is_symlink: false,
+            })
         };
         let mut builder = crate::runfiles::RunfilesBuilder::default();
         builder.add_artifact(file("p/data.txt", true));

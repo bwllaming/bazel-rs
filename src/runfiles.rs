@@ -393,7 +393,11 @@ impl Runfiles {
             .symlink_entries(false)
             .into_iter()
             .map(|(path, _)| path)
-            .chain(self.artifacts().into_iter().map(|file| file.short_path))
+            .chain(
+                self.artifacts()
+                    .into_iter()
+                    .map(|file| file.short_path.clone()),
+            )
         {
             if seen.insert(path.clone()) {
                 keys.push(path);
@@ -1800,14 +1804,14 @@ fn merge_executable(runfiles: Runfiles, executable: Option<&File>) -> anyhow::Re
 }
 
 fn suffixed(file: &File, suffix: &str, owner: &str) -> File {
-    File {
+    File::new(crate::starlark_types::FileData {
         is_directory: false,
         is_symlink: false,
         path: format!("{}{suffix}", file.path),
         short_path: format!("{}{suffix}", file.short_path),
         owner: owner.to_owned(),
         is_source: false,
-    }
+    })
 }
 
 /// StarlarkRuleConfiguredTargetUtil.parseDefaultProviderFields and
@@ -1939,14 +1943,14 @@ mod tests {
     use super::*;
 
     fn file(path: &str, owner: &str) -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: format!("bazel-out/x/bin/{path}"),
             short_path: path.to_owned(),
             owner: owner.to_owned(),
             is_source: false,
-        }
+        })
     }
 
     fn rule<'a>(test: bool) -> RuleClassification<'a> {
@@ -1960,7 +1964,7 @@ mod tests {
     }
 
     fn source(path: &str, owner: &str) -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: path.to_owned(),
@@ -1969,7 +1973,7 @@ mod tests {
                 .map_or_else(|| path.to_owned(), |rest| format!("../{rest}")),
             owner: owner.to_owned(),
             is_source: true,
-        }
+        })
     }
 
     /// GenRuleBase (rules/genrule/GenRuleBase.java:232, 288-298): an
@@ -2137,7 +2141,7 @@ mod tests {
         let names = |files: Vec<File>| {
             files
                 .into_iter()
-                .map(|file| file.short_path)
+                .map(|file| file.short_path.clone())
                 .collect::<Vec<_>>()
         };
         let set_names = |runfiles: &Runfiles| {

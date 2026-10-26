@@ -16,7 +16,7 @@ use crate::repository_budget::HostBudget;
 use crate::request::PlannedRequest;
 use crate::scheduler::{self, Dependency, PlannedAction};
 use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
-use crate::starlark_types::File;
+use crate::starlark_types::{File, FileData};
 use crate::toolchains::{
     DeclaredToolchainInfo, RegisteredToolchains, ToolchainContextKey, ToolchainTypeInfo,
     ToolchainTypeRequirement, UnloadedToolchainContext,
@@ -141,14 +141,14 @@ impl Artifact {
         } else {
             exec.clone().into_owned()
         };
-        File {
+        File::new(FileData {
             is_directory: directory,
             is_symlink: false,
             path: exec.into_owned(),
             short_path,
             owner: owner.to_owned(),
             is_source: !generated,
-        }
+        })
     }
 
     fn file(&self) -> File {
@@ -160,10 +160,10 @@ impl Artifact {
     /// declared symlink File.
     fn with_symlink(mut self, symlink: bool) -> Self {
         if symlink {
-            self.file = Arc::new(File {
+            self.file = Arc::new(File::new(FileData {
                 is_symlink: true,
-                ..File::clone(&self.file)
-            });
+                ..File::clone(&self.file).into_data()
+            }));
         }
         self
     }
@@ -12066,14 +12066,14 @@ impl Engine {
                 let output = rule.label.with_name(name)?;
                 location_map.add(
                     &output.to_string(),
-                    [File {
+                    [File::new(FileData {
                         is_directory: false,
                         is_symlink: false,
                         path: path.to_string_lossy().into_owned(),
                         short_path: output.generated_short_path(),
                         owner: rule.label.to_string(),
                         is_source: false,
-                    }],
+                    })],
                 );
             }
             // GenRuleBase.determineCommandTypeAndAttribute
@@ -14820,14 +14820,14 @@ impl RunfilesPlanning<'_> {
 /// `file` with `suffix` appended to its paths (RunfilesSupport's derived
 /// artifacts next to the executable).
 fn suffixed_file(file: &File, suffix: &str) -> File {
-    File {
+    File::new(FileData {
         is_directory: false,
         is_symlink: false,
         path: format!("{}{suffix}", file.path),
         short_path: format!("{}{suffix}", file.short_path),
         owner: file.owner.clone(),
         is_source: false,
-    }
+    })
 }
 
 impl Engine {
@@ -15752,15 +15752,17 @@ mod tests {
         };
         let files = outputs
             .iter()
-            .map(|path| File {
-                path: (*path).to_owned(),
-                short_path: crate::label::generated_short_path(
-                    crate::label::split_generated_root(path).unwrap().1,
-                ),
-                owner: owner.to_owned(),
-                is_source: false,
-                is_directory: false,
-                is_symlink: false,
+            .map(|path| {
+                File::new(FileData {
+                    path: (*path).to_owned(),
+                    short_path: crate::label::generated_short_path(
+                        crate::label::split_generated_root(path).unwrap().1,
+                    ),
+                    owner: owner.to_owned(),
+                    is_source: false,
+                    is_directory: false,
+                    is_symlink: false,
+                })
             })
             .collect::<Vec<_>>();
         let key = crate::shared_actions::ActionKey::of(
@@ -15892,16 +15894,18 @@ mod tests {
         let key = earlier.action.as_ref().unwrap().1;
         let outputs = [x, y]
             .iter()
-            .map(|path| File {
-                path: (*path).to_owned(),
-                short_path: crate::label::split_generated_root(path)
-                    .unwrap()
-                    .1
-                    .to_owned(),
-                owner: "//p:b".to_owned(),
-                is_source: false,
-                is_directory: false,
-                is_symlink: false,
+            .map(|path| {
+                File::new(FileData {
+                    path: (*path).to_owned(),
+                    short_path: crate::label::split_generated_root(path)
+                        .unwrap()
+                        .1
+                        .to_owned(),
+                    owner: "//p:b".to_owned(),
+                    is_source: false,
+                    is_directory: false,
+                    is_symlink: false,
+                })
             })
             .collect::<Vec<_>>();
         let registered = crate::analysis_runtime::RegisteredAction {
@@ -15972,14 +15976,14 @@ mod tests {
         // in a main-repository package below external/.
         let output = Label::parse("//external/dep:out.txt", "").unwrap();
         let exec = output.generated_exec_path(crate::label::GENERATED_EXEC_ROOT);
-        let declared = File {
+        let declared = File::new(FileData {
             is_directory: false,
             is_symlink: false,
             path: exec.to_string_lossy().into_owned(),
             short_path: output.generated_short_path(),
             owner: "//external/dep:rule".into(),
             is_source: false,
-        };
+        });
         assert_eq!(
             generated(&declared.path, &declared.owner),
             declared,
@@ -16014,7 +16018,7 @@ mod tests {
         let mut declared = artifact.file();
         verify_declared_file(&declared, &artifact);
         // The pre-F2 owner-dependent short path of the engine's File.
-        declared.short_path = "external/somerepo/x.txt".into();
+        declared.make_mut().short_path = "external/somerepo/x.txt".into();
         verify_declared_file(&declared, &artifact);
     }
 
@@ -17530,14 +17534,14 @@ m = macro(implementation=emit)
     }
 
     fn source_file(path: &Path) -> File {
-        File {
+        File::new(FileData {
             path: path.to_string_lossy().into_owned(),
             short_path: path.to_string_lossy().into_owned(),
             owner: String::new(),
             is_source: true,
             is_directory: false,
             is_symlink: false,
-        }
+        })
     }
 
     #[test]
@@ -18002,14 +18006,14 @@ m = macro(implementation=emit)
         let mut locations = crate::location_expander::LocationMap::default();
         locations.add(
             "//pkg:in",
-            [File {
+            [File::new(FileData {
                 path: "pkg/in".into(),
                 short_path: "pkg/in".into(),
                 owner: "//pkg:in".into(),
                 is_source: true,
                 is_directory: false,
                 is_symlink: false,
-            }],
+            })],
         );
         let parse = |text: &str| Label::parse(text, "pkg");
         let expand = |command: &str, srcs: &[PathBuf]| {

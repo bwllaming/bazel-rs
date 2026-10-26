@@ -211,14 +211,14 @@ mod tests {
     fn runfiles(owners: &[&str]) -> Runfiles {
         let mut builder = crate::runfiles::RunfilesBuilder::default();
         for owner in owners {
-            builder.add_artifact(File {
+            builder.add_artifact(File::new(crate::starlark_types::FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: "x".into(),
                 short_path: "x".into(),
                 owner: (*owner).to_owned(),
                 is_source: true,
-            });
+            }));
         }
         builder.build().unwrap()
     }

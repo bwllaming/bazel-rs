@@ -846,11 +846,17 @@ fields!(PackageId {
     package
 });
 fields!(ConfiguredTargetKey { label });
-fields!(File {
+// MEM4: a File's data is shared by its copies (one Arc per File).
+fields!(crate::starlark_types::FileData {
     path,
     short_path,
     owner
 });
+impl Footprint for File {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.shared_data().heap(walker)
+    }
+}
 // W1a: an Artifact caches its File (one Arc per artifact, shared by its
 // copies in `dry`, the declared map and the artifact index).
 fields!(Artifact {

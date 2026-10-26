@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use allocative::Allocative;
-use bazel_rs::starlark_types::{File, alloc_file, analysis_globals};
+use bazel_rs::starlark_types::{File, FileData, alloc_file, analysis_globals};
 use starlark::codemap::FileSpanRef;
 use starlark::collections::StarlarkHasher;
 use starlark::environment::{FrozenModule, Globals, GlobalsBuilder, Module};
@@ -965,14 +965,14 @@ fn rooted_sets_survive_real_gc_and_freeze_with_native_file_label_members() {
             "FILE",
             alloc_file(
                 module.heap(),
-                File {
+                File::new(FileData {
                     is_directory: false,
                     is_symlink: false,
                     path: "pkg/input.txt".to_owned(),
                     short_path: "pkg/input.txt".to_owned(),
                     owner: "//pkg:rule".to_owned(),
                     is_source: true,
-                },
+                }),
             ),
         );
         module.set("member", module.heap().alloc(host_values::ReprMember));

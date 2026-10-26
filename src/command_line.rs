@@ -343,14 +343,14 @@ pub(crate) fn assemble(shape: &VectorShape, values: Vec<String>) -> Result<Vec<S
 /// The File of one tree child (TreeFileArtifact): below the tree's paths.
 pub(crate) fn tree_child(tree: &File, relative: &std::path::Path) -> File {
     let relative = relative.to_string_lossy();
-    File {
+    File::new(crate::starlark_types::FileData {
         is_directory: false,
         is_symlink: false,
         path: format!("{}/{relative}", tree.path),
         short_path: format!("{}/{relative}", tree.short_path),
         owner: tree.owner.clone(),
         is_source: false,
-    }
+    })
 }
 
 /// Call a deferred map_each with one value (a tree child, or an unexpanded
@@ -432,7 +432,7 @@ fn expand_deferred(vector: &DeferredVector, trees: TreeLookup<'_>) -> Result<Vec
                         Some(mapper) => {
                             values.extend(call_mapper(mapper, child, listings.as_ref())?)
                         }
-                        None => values.push(child.path),
+                        None => values.push(child.path.clone()),
                     }
                 }
             }

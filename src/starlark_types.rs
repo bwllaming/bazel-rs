@@ -26,20 +26,19 @@ use std::sync::Arc;
 mod owned {
     use super::*;
 
+    /// A File value (actions/Artifact.java): its data is shared, so a copy
+    /// of a File — in a depset, a dependency view, a configured target's
+    /// files, an action's planning structures — is one reference count,
+    /// never three copied strings (MEM4). Compares, orders and hashes by its
+    /// data ([`FileData`]), exactly like the struct it wraps.
     #[derive(
-        Clone,
-        Debug,
-        PartialEq,
-        Eq,
-        PartialOrd,
-        Ord,
-        Hash,
-        ProvidesStaticType,
-        NoSerialize,
-        Allocative,
-        StarlarkPagable,
+        Clone, PartialEq, Eq, PartialOrd, Ord, Hash, ProvidesStaticType, NoSerialize, Allocative,
     )]
-    pub struct File {
+    pub struct File(pub(super) Arc<FileData>);
+
+    /// The fields of a [`File`].
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Allocative, StarlarkPagable)]
+    pub struct FileData {
         pub path: String,
         pub short_path: String,
         pub owner: String,
@@ -260,7 +259,76 @@ pub(crate) use owned::Target;
 pub(crate) use owned::TargetValue;
 use owned::{DefaultInfoConstructor, DefaultInfoValue, FileRoot, LabelValue};
 pub(crate) use owned::{Depset, DepsetNode, Item, ItemType, Order};
-pub use owned::{File, SymlinkEntry};
+pub use owned::{File, FileData, SymlinkEntry};
+
+impl File {
+    /// The File holding `data`.
+    pub fn new(data: FileData) -> Self {
+        Self(Arc::new(data))
+    }
+
+    /// This File's data, to change (copied first when shared).
+    pub fn make_mut(&mut self) -> &mut FileData {
+        Arc::make_mut(&mut self.0)
+    }
+
+    /// This File's data, owned (copied when shared).
+    pub fn into_data(self) -> FileData {
+        Arc::unwrap_or_clone(self.0)
+    }
+
+    /// The shared data (the allocation report follows the pointer).
+    pub(crate) fn shared_data(&self) -> &Arc<FileData> {
+        &self.0
+    }
+}
+
+impl From<FileData> for File {
+    fn from(data: FileData) -> Self {
+        Self::new(data)
+    }
+}
+
+impl std::ops::Deref for File {
+    type Target = FileData;
+
+    fn deref(&self) -> &FileData {
+        &self.0
+    }
+}
+
+// Exactly the derived format of the struct it wraps (`File { path: .. }`).
+impl fmt::Debug for File {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("File")
+            .field("path", &self.path)
+            .field("short_path", &self.short_path)
+            .field("owner", &self.owner)
+            .field("is_source", &self.is_source)
+            .field("is_directory", &self.is_directory)
+            .field("is_symlink", &self.is_symlink)
+            .finish()
+    }
+}
+
+// The paged form is the data's (the fields in order), as before the File
+// was shared.
+impl starlark::pagable::StarlarkSerialize for File {
+    fn starlark_serialize(
+        &self,
+        ctx: &mut dyn starlark::pagable::StarlarkSerializeContext,
+    ) -> starlark::Result<()> {
+        self.0.starlark_serialize(ctx)
+    }
+}
+
+impl starlark::pagable::StarlarkDeserialize for File {
+    fn starlark_deserialize(
+        ctx: &mut dyn starlark::pagable::StarlarkDeserializeContext<'_>,
+    ) -> starlark::Result<Self> {
+        FileData::starlark_deserialize(ctx).map(File::new)
+    }
+}
 
 /// The configured-target class behind a `Target` value; it selects only the
 /// repr (and str) of the value.
@@ -2285,14 +2353,14 @@ mod tests {
     use starlark::syntax::{AstModule, Dialect};
 
     fn file(path: &str) -> File {
-        File {
+        File::new(FileData {
             is_directory: false,
             is_symlink: false,
             path: path.to_owned(),
             short_path: path.to_owned(),
             owner: "//pkg:rule".to_owned(),
             is_source: true,
-        }
+        })
     }
 
     fn globals() -> Globals {
@@ -2539,7 +2607,7 @@ names = [main.repo_name, external.repo_name]
                 let label = alloc_label(module.heap(), &canonical).unwrap();
                 let hash = label.get_hashed().unwrap().hash();
                 let mut owned_file = file("pkg/input");
-                owned_file.owner = canonical.clone();
+                owned_file.make_mut().owner = canonical.clone();
                 module.set("label", label);
                 module.set("file", alloc_file(module.heap(), owned_file.clone()));
                 module.set(
@@ -2784,19 +2852,19 @@ copies = [Label(main), Label(external)]
             ("@@//pkg:input.txt", "input.txt"),
         ] {
             let label = crate::label::Label::parse_canonical(owner).unwrap();
-            let source = File {
+            let source = File::new(FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: label.source_exec_path().to_string_lossy().into_owned(),
                 short_path: label.short_path().to_string_lossy().into_owned(),
                 owner: owner.into(),
                 is_source: true,
-            };
+            });
             let before = source.clone();
             assert_eq!(file_json_root(&source).unwrap(), "");
             assert_eq!(source, before);
             let output = label.with_name(&format!("generated/{name}")).unwrap();
-            let generated = File {
+            let generated = File::new(FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: output
@@ -2808,7 +2876,7 @@ copies = [Label(main), Label(external)]
                 // its output name. Only its package must match the owner.
                 owner: owner.into(),
                 is_source: false,
-            };
+            });
             let before = generated.clone();
             assert_eq!(
                 file_json_root(&generated).unwrap(),
@@ -2817,14 +2885,14 @@ copies = [Label(main), Label(external)]
             assert_eq!(generated, before);
             // Every configuration's root (crate::config_registry).
             let root = "bazel-out/k8-opt-exec-ST-0123456789ab/bin";
-            let exec = File {
+            let exec = File::new(FileData {
                 is_directory: false,
                 path: output
                     .generated_exec_path(root)
                     .to_string_lossy()
                     .into_owned(),
-                ..generated.clone()
-            };
+                ..generated.clone().into_data()
+            });
             assert_eq!(file_json_root(&exec).unwrap(), root);
         }
     }
@@ -2906,14 +2974,14 @@ copies = [Label(main), Label(external)]
             ),
             ("pkg/out", "pkg/out", "//pkg:rule", false),
         ] {
-            let file = File {
+            let file = File::new(FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: path.into(),
                 short_path: short_path.into(),
                 owner: owner.into(),
                 is_source,
-            };
+            });
             let error = file_json_root(&file).unwrap_err().to_string();
             assert!(
                 error.contains("unsupported File JSON profile"),
@@ -2964,14 +3032,14 @@ copies = [Label(main), Label(external)]
     #[test]
     fn external_labels_files_and_targets_retain_repository_when_frozen() {
         let frozen = Module::with_temp_heap(|module| {
-            let external = File {
+            let external = File::new(FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: "external/dep+/pkg/input".into(),
                 short_path: "../dep+/pkg/input".into(),
                 owner: "@@dep+//pkg:rule".into(),
                 is_source: true,
-            };
+            });
             module.set("file", alloc_file(module.heap(), external.clone()));
             module.set(
                 "target",
@@ -3249,32 +3317,32 @@ ok = (len(labels.to_list()) == 2 and owner == target.label and
 
     #[test]
     fn file_and_target_reprs_follow_their_configured_class() {
-        let generated = File {
+        let generated = File::new(FileData {
             is_directory: false,
             is_symlink: false,
             path: "bazel-out/k8-fastbuild/bin/pkg/out.txt".into(),
             short_path: "pkg/out.txt".into(),
             owner: "//pkg:rule".into(),
             is_source: false,
-        };
+        });
         assert_eq!(generated.to_string(), "<generated file pkg/out.txt>");
-        let external_source = File {
+        let external_source = File::new(FileData {
             is_directory: false,
             is_symlink: false,
             path: "external/dep+/pkg/in.txt".into(),
             short_path: "../dep+/pkg/in.txt".into(),
             owner: "@@dep+//pkg:in.txt".into(),
             is_source: true,
-        };
+        });
         assert_eq!(external_source.to_string(), "<source file pkg/in.txt>");
-        let external_generated = File {
+        let external_generated = File::new(FileData {
             is_directory: false,
             is_symlink: false,
             path: "bazel-out/k8-fastbuild/bin/external/dep+/pkg/out.txt".into(),
             short_path: "../dep+/pkg/out.txt".into(),
             owner: "@@dep+//pkg:rule".into(),
             is_source: false,
-        };
+        });
         assert_eq!(
             external_generated.to_string(),
             "<generated file external/dep+/pkg/out.txt>"

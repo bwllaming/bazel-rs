@@ -221,14 +221,14 @@ mod tests {
     use super::*;
 
     fn file(path: &str, short_path: &str) -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             path: path.to_owned(),
             short_path: short_path.to_owned(),
             owner: String::new(),
             is_source: false,
             is_directory: false,
             is_symlink: false,
-        }
+        })
     }
 
     #[test]

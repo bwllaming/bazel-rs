@@ -863,7 +863,7 @@ fn location_map(
         let output = rule.label.with_name(name).map_err(anyhow::Error::msg)?;
         map.add(
             &output.to_string(),
-            [File {
+            [File::new(crate::starlark_types::FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: output
@@ -873,7 +873,7 @@ fn location_map(
                 short_path: output.generated_short_path(),
                 owner: rule.label.to_string(),
                 is_source: false,
-            }],
+            })],
         );
     }
     for name in ["srcs", "deps", "implementation_deps", "tools"] {
@@ -2254,17 +2254,19 @@ fn analyze_inner(
                 .map_err(anyhow::Error::msg)?;
             // Below the target's own configuration output root (an exec
             // configuration's executable lives in its exec root).
-            Ok(crate::runfiles::DefaultExecutable::new(File {
-                is_directory: false,
-                is_symlink: false,
-                path: output
-                    .generated_exec_path(target.output_root)
-                    .to_string_lossy()
-                    .into_owned(),
-                short_path: output.generated_short_path(),
-                owner: rule.label.to_string(),
-                is_source: false,
-            }))
+            Ok(crate::runfiles::DefaultExecutable::new(File::new(
+                crate::starlark_types::FileData {
+                    is_directory: false,
+                    is_symlink: false,
+                    path: output
+                        .generated_exec_path(target.output_root)
+                        .to_string_lossy()
+                        .into_owned(),
+                    short_path: output.generated_short_path(),
+                    owner: rule.label.to_string(),
+                    is_source: false,
+                },
+            )))
         })
         .transpose()?;
     let mut surface = rule_surface(rule, invocation, &repositories, dependencies);
@@ -3097,14 +3099,17 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
                 .to_string()
                 .contains("must produce a single file")
         );
-        deps.get_mut("//pkg:dep").unwrap().files.push(File {
-            is_directory: false,
-            is_symlink: false,
-            path: "pkg/dep".into(),
-            short_path: "pkg/dep".into(),
-            owner: "//pkg:dep".into(),
-            is_source: true,
-        });
+        deps.get_mut("//pkg:dep")
+            .unwrap()
+            .files
+            .push(File::new(crate::starlark_types::FileData {
+                is_directory: false,
+                is_symlink: false,
+                path: "pkg/dep".into(),
+                short_path: "pkg/dep".into(),
+                owner: "//pkg:dep".into(),
+                is_source: true,
+            }));
         dependency("//pkg:dep", "src", &spec, &deps, "", Consumer::default()).unwrap();
         // Output-file targets also have no rule class. Preserve the existing
         // is_source-only permission behavior independently of provider checks.
@@ -3141,13 +3146,15 @@ erased = attr.label(providers=[[], [NotPackageSpecificationInfo]])
             .map(|_| ())
             .map_err(|error| error.to_string())
         };
-        let file = |path: &str| File {
-            path: path.into(),
-            short_path: path.into(),
-            owner: "//pkg:dep".into(),
-            is_source: false,
-            is_directory: false,
-            is_symlink: false,
+        let file = |path: &str| {
+            File::new(crate::starlark_types::FileData {
+                path: path.into(),
+                short_path: path.into(),
+                owner: "//pkg:dep".into(),
+                is_source: false,
+                is_directory: false,
+                is_symlink: false,
+            })
         };
         // RuleContext.java:1975-1993: no file to build, or none matching.
         let expected =
@@ -3401,7 +3408,7 @@ ctx.actions.write(first, 'hello')
         let context = empty_context();
         let output = context.declare("out").unwrap();
         let mut foreign = output.clone();
-        foreign.owner = "//other:rule".into();
+        foreign.make_mut().owner = "//other:rule".into();
         assert!(
             context
                 .register(

@@ -579,14 +579,14 @@ mod tests {
     use std::collections::BTreeSet;
 
     fn file(name: &str) -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             path: format!("bazel-out/k8-fastbuild/bin/{name}"),
             short_path: name.to_owned(),
             owner: "//p:r".to_owned(),
             is_source: false,
             is_directory: false,
             is_symlink: false,
-        }
+        })
     }
 
     fn set(direct: &[&str], children: &[&Depset], order: Order) -> Depset {
@@ -605,7 +605,7 @@ mod tests {
     fn names(depset: &Depset) -> Vec<String> {
         depset_files(depset)
             .into_iter()
-            .map(|file| file.short_path)
+            .map(|file| file.short_path.clone())
             .collect()
     }
 

@@ -316,7 +316,7 @@ fn string_value(value: Value<'_>, eval: &Evaluator<'_, '_, '_>) -> anyhow::Resul
     if let Some(text) = value.unpack_str() {
         Ok(text.to_owned())
     } else if let Ok(file) = crate::starlark_types::unpack_file(value) {
-        Ok(file.path)
+        Ok(file.path.clone())
     } else if let Some(label) = crate::starlark_types::label_command_line_form(value, eval) {
         // Label.getDisplayForm with the main repository mapping
         // (StarlarkCustomCommandLine.java:967-978): `@dep//pkg:x`, not `@@dep+//pkg:x`.
@@ -711,14 +711,14 @@ mod tests {
                 "file",
                 crate::starlark_types::alloc_file(
                     module.heap(),
-                    crate::starlark_types::File {
+                    crate::starlark_types::File::new(crate::starlark_types::FileData {
                         is_directory: false,
                         is_symlink: false,
                         path: "pkg/file with $ spaces".into(),
                         short_path: "pkg/file with $ spaces".into(),
                         owner: "//pkg:rule".into(),
                         is_source: true,
-                    },
+                    }),
                 ),
             );
             let globals = GlobalsBuilder::standard()

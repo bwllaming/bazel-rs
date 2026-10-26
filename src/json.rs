@@ -1881,33 +1881,35 @@ x['nested'].append(4)
                     "{\"path\":\"bazel-out/k8-fastbuild/bin/pkg/out\",\"root\":\"bazel-out/k8-fastbuild/bin\",\"short_path\":\"pkg/out\"}",
                 ),
             ] {
-                let file = heap.alloc(crate::starlark_types::File {
-                    is_directory: false,
-                    is_symlink: false,
-                    path: path.into(),
-                    short_path: short_path.into(),
-                    owner: owner.into(),
-                    is_source,
-                });
+                let file = heap.alloc(crate::starlark_types::File::new(
+                    crate::starlark_types::FileData {
+                        is_directory: false,
+                        is_symlink: false,
+                        path: path.into(),
+                        short_path: short_path.into(),
+                        owner: owner.into(),
+                        is_source,
+                    },
+                ));
                 assert_eq!(
                     encode(file, heap, &mut JsonBudget::default()).unwrap(),
                     expected
                 );
             }
-            let mut file = crate::starlark_types::File {
+            let mut file = crate::starlark_types::File::new(crate::starlark_types::FileData {
                 is_directory: false,
                 is_symlink: false,
                 path: "x".into(),
                 short_path: "x".into(),
                 owner: "\0".repeat(600_000),
                 is_source: true,
-            };
+            });
             assert!(matches!(
                 encode(heap.alloc(file.clone()), heap, &mut JsonBudget::default()),
                 Err(Error::Resource)
             ));
             for owner in ["not canonical", "@@external//:x", "//:wrong"] {
-                file.owner = owner.into();
+                file.make_mut().owner = owner.into();
                 assert!(matches!(
                     encode(heap.alloc(file.clone()), heap, &mut JsonBudget::default()),
                     Err(Error::Unsupported(_))

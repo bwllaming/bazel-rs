@@ -1078,14 +1078,14 @@ pub(crate) mod file {
         // Every field by name (no `..`): a new field of File is a compile
         // error here until the encoding carries it (deserialize builds the
         // value with a struct literal, which is exhaustive too).
-        let File {
+        let crate::starlark_types::FileData {
             path,
             short_path,
             owner,
             is_source,
             is_directory,
             is_symlink,
-        } = value;
+        } = &**value;
         (path, short_path, owner, is_source, is_directory, is_symlink).serialize(serializer)
     }
 
@@ -1094,14 +1094,14 @@ pub(crate) mod file {
     ) -> Result<File, D::Error> {
         let (path, short_path, owner, is_source, is_directory, is_symlink) =
             <(String, String, String, bool, bool, bool)>::deserialize(deserializer)?;
-        Ok(File {
+        Ok(File::new(crate::starlark_types::FileData {
             path,
             short_path,
             owner,
             is_source,
             is_directory,
             is_symlink,
-        })
+        }))
     }
 }
 
@@ -1163,14 +1163,14 @@ mod tests {
     }
 
     fn tree() -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             path: "bazel-out/k8-fastbuild/bin/pkg/dir".into(),
             short_path: "pkg/dir".into(),
             owner: "//pkg:t".into(),
             is_source: false,
             is_directory: true,
             is_symlink: false,
-        }
+        })
     }
 
     fn vector(map_each: Option<starlark::values::OwnedFrozenValue>) -> Group {
@@ -1450,7 +1450,7 @@ mod tests {
     /// Expand a deferred completion against one listing.
     fn applied(deferred: &Deferred, write: bool) -> Expansion {
         let listings: TreeListings = BTreeMap::from([(
-            PathBuf::from(tree().path),
+            PathBuf::from(&tree().path),
             vec![PathBuf::from("a.txt"), PathBuf::from("sub/b.txt")],
         )]);
         let mut action = Action {
@@ -1745,14 +1745,14 @@ mod tests {
         // File's every field, `is_symlink` included.
         #[derive(Serialize, Deserialize)]
         struct Wrapped(#[serde(with = "super::file")] File);
-        let symlink = File {
+        let symlink = File::new(crate::starlark_types::FileData {
             path: "bazel-out/k8-fastbuild/bin/pkg/link".into(),
             short_path: "pkg/link".into(),
             owner: "//pkg:link".into(),
             is_source: false,
             is_directory: false,
             is_symlink: true,
-        };
+        });
         let encoded = postcard::to_stdvec(&Wrapped(symlink.clone())).unwrap();
         let Wrapped(back) = postcard::from_bytes(&encoded).unwrap();
         assert!(back == symlink && back.is_symlink);

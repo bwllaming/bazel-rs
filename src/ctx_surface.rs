@@ -2207,15 +2207,17 @@ mod tests {
 
     #[test]
     fn expand_location_uses_the_location_map_and_reports_rule_errors() {
-        let file = |path: &str| crate::starlark_types::File {
-            path: path.to_owned(),
-            short_path: path
-                .trim_start_matches("bazel-out/k8-fastbuild/bin/")
-                .to_owned(),
-            owner: String::new(),
-            is_source: false,
-            is_directory: false,
-            is_symlink: false,
+        let file = |path: &str| {
+            crate::starlark_types::File::new(crate::starlark_types::FileData {
+                path: path.to_owned(),
+                short_path: path
+                    .trim_start_matches("bazel-out/k8-fastbuild/bin/")
+                    .to_owned(),
+                owner: String::new(),
+                is_source: false,
+                is_directory: false,
+                is_symlink: false,
+            })
         };
         let mut locations = crate::location_expander::LocationMap::default();
         locations.add("//p:src", [file("p/src")]);

@@ -1283,14 +1283,14 @@ mod tests {
         let action = |path: &str| {
             compile_action_name(
                 None,
-                &File {
+                &File::new(crate::starlark_types::FileData {
                     path: path.to_owned(),
                     short_path: path.to_owned(),
                     owner: String::new(),
                     is_source: true,
                     is_directory: false,
                     is_symlink: false,
-                },
+                }),
             )
         };
         // CppFileTypes (case-sensitive suffixes) and getActionName's order
@@ -1316,14 +1316,14 @@ mod tests {
         assert_eq!(
             compile_action_name(
                 Some("c++-module-deps-scanning"),
-                &File {
+                &File::new(crate::starlark_types::FileData {
                     path: "a.cc".into(),
                     short_path: "a.cc".into(),
                     owner: String::new(),
                     is_source: true,
                     is_directory: false,
                     is_symlink: false,
-                },
+                }),
             ),
             "c++-module-deps-scanning"
         );

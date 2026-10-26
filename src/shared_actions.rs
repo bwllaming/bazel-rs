@@ -603,7 +603,7 @@ mod tests {
     use super::*;
 
     fn file(path: &str, owner: &str) -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             path: path.to_owned(),
             short_path: crate::label::split_generated_root(path)
                 .map_or(path, |(_, relative)| relative)
@@ -612,7 +612,7 @@ mod tests {
             is_source: !path.starts_with("bazel-out/"),
             is_directory: false,
             is_symlink: false,
-        }
+        })
     }
 
     fn spawn(id: &str, argument: &str) -> Action {
@@ -900,10 +900,10 @@ mod tests {
         let mut directory_file = data();
         directory_file.insert(
             "_main/data".to_owned(),
-            Some(File {
+            Some(File::new(crate::starlark_types::FileData {
                 is_directory: true,
-                ..file("tools/data", "//tools:a")
-            }),
+                ..file("tools/data", "//tools:a").into_data()
+            })),
         );
         let mut renamed = data();
         let moved = renamed.remove("_main/data").unwrap();

@@ -472,7 +472,7 @@ pub(crate) fn as_variable_value<'v>(
     }
     if raw.get_type() == "File" {
         let file = crate::starlark_types::unpack_file(raw).map_err(starlark::Error::new_other)?;
-        return Ok(Some(VarValue::Artifact(file.path)));
+        return Ok(Some(VarValue::Artifact(file.path.clone())));
     }
     if is_iterable(raw) {
         return Ok(Some(VarValue::Sequence(iterate(raw, eval)?)));

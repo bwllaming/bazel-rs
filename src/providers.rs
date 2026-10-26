@@ -881,14 +881,14 @@ mod tests {
     }
 
     fn file() -> File {
-        File {
+        File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: "pkg/input.txt".to_owned(),
             short_path: "pkg/input.txt".to_owned(),
             owner: "//pkg:input.txt".to_owned(),
             is_source: true,
-        }
+        })
     }
 
     /// The File held by field `name` of a provider instance.
@@ -1786,22 +1786,22 @@ template = platform_common.TemplateVariableInfo({})
 
     #[test]
     fn set_payloads_keep_first_encounter_order_through_freeze_and_reowning() {
-        let generated = File {
+        let generated = File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: "bazel-rs-out/bin/pkg/generated.txt".into(),
             short_path: "pkg/generated.txt".into(),
             owner: "//pkg:producer".into(),
             is_source: false,
-        };
-        let second_source = File {
+        });
+        let second_source = File::new(crate::starlark_types::FileData {
             is_directory: false,
             is_symlink: false,
             path: "pkg/second.txt".into(),
             short_path: "pkg/second.txt".into(),
             owner: "//pkg:second.txt".into(),
             is_source: true,
-        };
+        });
         // `shared` (field `a`): first-encounter order, duplicates dropped.
         let expected = vec![generated.clone(), file()];
         let set_files = |value: Value<'_>| -> Vec<File> {
