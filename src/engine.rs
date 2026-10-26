@@ -32,8 +32,41 @@ mod keep_going;
 pub mod query;
 mod query_attrs;
 
-#[derive(Clone, Debug)]
-struct Artifact {
+/// A planned artifact. Its data is shared by its copies (MEM4): the
+/// planner holds one artifact in many places — a target's files to build
+/// (`dry`), the declared map, the artifact index, the dependency views, the
+/// runfiles mappings of every executable and the top-level request — and a
+/// copy is one reference count.
+#[derive(Clone)]
+struct Artifact(Arc<ArtifactData>);
+
+impl std::ops::Deref for Artifact {
+    type Target = ArtifactData;
+
+    fn deref(&self) -> &ArtifactData {
+        &self.0
+    }
+}
+
+// The derived format of the artifact's fields (`Artifact { real: .. }`).
+impl std::fmt::Debug for Artifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let data = &*self.0;
+        f.debug_struct("Artifact")
+            .field("real", &data.real)
+            .field("exec", &data.exec)
+            .field("producer", &data.producer)
+            .field("owner", &data.owner)
+            .field("directory", &data.directory)
+            .field("constant_metadata", &data.constant_metadata)
+            .field("file", &data.file)
+            .finish()
+    }
+}
+
+/// The fields of an [`Artifact`].
+#[derive(Clone)]
+struct ArtifactData {
     real: PathBuf,
     exec: PathBuf,
     producer: Option<(String, usize)>,
@@ -52,7 +85,7 @@ struct Artifact {
     /// construction: a staged tool runfile (commit_custom_target) rewrites
     /// only `exec` to its runfiles-tree destination and keeps the staged
     /// artifact's File; plan_action compares such copies on their fields.
-    file: Arc<File>,
+    file: File,
 }
 
 impl Artifact {
@@ -64,13 +97,8 @@ impl Artifact {
         directory: bool,
         constant_metadata: bool,
     ) -> Self {
-        let file = Arc::new(Self::compute_file(
-            &exec,
-            producer.is_some(),
-            &owner,
-            directory,
-        ));
-        Self {
+        let file = Self::compute_file(&exec, producer.is_some(), &owner, directory);
+        Self(Arc::new(ArtifactData {
             real,
             exec,
             producer,
@@ -78,7 +106,7 @@ impl Artifact {
             directory,
             constant_metadata,
             file,
-        }
+        }))
     }
 
     /// A workspace status artifact (BazelWorkspaceStatusModule.java:280-281):
@@ -103,15 +131,15 @@ impl Artifact {
         crate::plan_timings::note_artifact_file();
         let file = crate::analysis_runtime::workspace_status_file(name);
         let exec = PathBuf::from(&file.path);
-        Self {
+        Self(Arc::new(ArtifactData {
             real: exec.clone(),
             exec,
             producer,
             owner: file.owner.clone(),
             directory: file.is_directory,
             constant_metadata,
-            file: Arc::new(file),
-        }
+            file,
+        }))
     }
 
     /// The File of an artifact at `exec` (the algorithm `file()` ran on
@@ -152,7 +180,12 @@ impl Artifact {
     }
 
     fn file(&self) -> File {
-        File::clone(&self.file)
+        self.file.clone()
+    }
+
+    /// This artifact's data, to change (copied first when shared).
+    fn make_mut(&mut self) -> &mut ArtifactData {
+        Arc::make_mut(&mut self.0)
     }
 
     /// The artifact as an unresolved symlink artifact
@@ -160,10 +193,11 @@ impl Artifact {
     /// declared symlink File.
     fn with_symlink(mut self, symlink: bool) -> Self {
         if symlink {
-            self.file = Arc::new(File::new(FileData {
+            let file = File::new(FileData {
                 is_symlink: true,
-                ..File::clone(&self.file).into_data()
-            }));
+                ..self.file.clone().into_data()
+            });
+            self.make_mut().file = file;
         }
         self
     }
@@ -506,7 +540,7 @@ fn register_artifact(index: &mut BTreeMap<File, Artifact>, file: &File, artifact
 /// divergence is an internal error, checked in debug builds and under
 /// BAZEL_RS_VERIFY_ARTIFACTS like [`register_artifact`].
 fn verify_declared_file(file: &File, artifact: &Artifact) {
-    if (cfg!(debug_assertions) || verify_artifacts()) && *artifact.file != *file {
+    if (cfg!(debug_assertions) || verify_artifacts()) && artifact.file != *file {
         panic!(
             "internal error: declared output {} differs from its artifact's File: declared {file:?}, artifact {:?}",
             file.path, artifact.file
@@ -14655,7 +14689,7 @@ fn runfiles_tree_entries(
                         file.path
                     )
                 })?;
-                artifact.exec = destination;
+                artifact.make_mut().exec = destination;
                 artifacts.push(artifact);
             }
             None => empty_files.push(destination),
@@ -14703,14 +14737,14 @@ fn runfiles_input_group(
         if artifact.constant_metadata {
             constant_metadata.push(artifact.exec.clone());
         }
-        if let Some((action_id, output_index)) = artifact.producer {
+        if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {
-                action_id,
-                output_index,
-                destination: artifact.exec,
+                action_id: action_id.clone(),
+                output_index: *output_index,
+                destination: artifact.exec.clone(),
             });
         } else if planted(&artifact, main_ignored) {
-            inputs.push((artifact.real, artifact.exec));
+            inputs.push((artifact.real.clone(), artifact.exec.clone()));
         }
     }
     // A tree input is listed (a planted source or a generated input), as
@@ -15449,14 +15483,16 @@ fn plan_action(
         if artifact.constant_metadata {
             action.extra.constant_metadata.push(artifact.exec.clone());
         }
-        if let Some((action_id, output_index)) = artifact.producer {
+        if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {
-                action_id,
-                output_index,
-                destination: artifact.exec,
+                action_id: action_id.clone(),
+                output_index: *output_index,
+                destination: artifact.exec.clone(),
             });
         } else if planted(&artifact, main_ignored) {
-            action.inputs.push((artifact.real, artifact.exec));
+            action
+                .inputs
+                .push((artifact.real.clone(), artifact.exec.clone()));
         }
     }
     Ok(PlannedAction::new(action, dependencies))
@@ -15706,7 +15742,7 @@ mod tests {
         register_artifact(&mut index, &artifact.file, &artifact);
         register_artifact(&mut index, &artifact.file, &artifact.clone());
         assert_eq!(index.len(), 1);
-        assert!(same_artifact(&index[&*artifact.file], &artifact));
+        assert!(same_artifact(&index[&artifact.file], &artifact));
     }
 
     /// Re-registering a File with a different Artifact is an internal error
@@ -15718,7 +15754,7 @@ mod tests {
         let mut index = BTreeMap::new();
         register_artifact(&mut index, &artifact.file, &artifact);
         let mut other = artifact.clone();
-        other.producer = Some(("//pkg:other#0".into(), 0));
+        other.make_mut().producer = Some(("//pkg:other#0".into(), 0));
         register_artifact(&mut index, &artifact.file, &other);
     }
 
@@ -16061,7 +16097,7 @@ mod tests {
         assert_eq!(artifact.real, Path::new("bazel-out/volatile-status.txt"));
         assert!(artifact.producer.is_none() && artifact.constant_metadata);
         // The bare artifact's File is the status File itself.
-        assert_eq!(*artifact.file, volatile);
+        assert_eq!(artifact.file, volatile);
         let stable = crate::analysis_runtime::workspace_status_file("stable-status.txt");
         assert!(index.contains_key(&stable) && index.len() == 3);
         assert!(nodes.is_empty() && producers.is_empty());
@@ -16116,7 +16152,7 @@ mod tests {
             .zip(&planned)
             {
                 let file = crate::analysis_runtime::workspace_status_file(name);
-                assert_eq!(*artifact.file, file, "{name}, executing: {execute_build}");
+                assert_eq!(artifact.file, file, "{name}, executing: {execute_build}");
                 assert_eq!((file.short_path.as_str(), file.is_source), (name, false));
                 assert_eq!(artifact.exec, Path::new(&file.path));
                 assert_eq!(

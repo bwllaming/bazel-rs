@@ -74,8 +74,8 @@ use allocative::{Allocative, FlameGraphBuilder, Key, Visitor};
 use starlark::values::{FrozenHeapRef, OwnedFrozenValue};
 
 use super::{
-    ActionPlanning, Artifact, ConfiguredNode, ConfiguredNodes, Engine, OutputProducer, Plan,
-    RunfilesNodes,
+    ActionPlanning, Artifact, ArtifactData, ConfiguredNode, ConfiguredNodes, Engine,
+    OutputProducer, Plan, RunfilesNodes,
 };
 use crate::config_registry::ConfiguredTargetKey;
 use crate::configuration::ConfigId;
@@ -859,13 +859,19 @@ impl Footprint for File {
 }
 // W1a: an Artifact caches its File (one Arc per artifact, shared by its
 // copies in `dry`, the declared map and the artifact index).
-fields!(Artifact {
+// MEM4: an Artifact's data is shared by its copies (one Arc per artifact).
+fields!(ArtifactData {
     real,
     exec,
     producer,
     owner,
     file
 });
+impl Footprint for Artifact {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        self.0.heap(walker)
+    }
+}
 // One producer per producing action, shared by its outputs' entries.
 fields!(OutputProducer {
     owner,
