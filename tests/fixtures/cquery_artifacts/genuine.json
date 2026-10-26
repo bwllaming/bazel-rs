@@ -1,0 +1,18 @@
+{
+  "version": "Bazel 9.3.0",
+  "options": "--batch --platforms=//:platform --host_platform=//:platform --lockfile_mode=off --incompatible_autoload_externally=; private output_base and local registry",
+  "probes": {
+    "p_equal": {"executable_owner":null,"files":[["same.txt","@@//:a",false,false],["same.txt","@@//:b",false,false]]},
+    "p_unequal": {"executable_owner":null,"files":[["same.txt","@@//:a",false,false],["same.txt","@@//:c",false,false]]},
+    "p_forwarded": {"executable_owner":"@@//:a","files":[["same.txt","@@//:a",false,false]]},
+    "p_ordered": {"executable_owner":null,"files":[["same.txt","@@//:b",false,false],["same.txt","@@//:a",false,false]]},
+    "p_trees": {"executable_owner":null,"files":[["same.dir","@@//:tree_a",true,false],["same.dir","@@//:tree_b",true,false]]},
+    "p_links": {"executable_owner":null,"files":[["same.link","@@//:link_a",false,false],["same.link","@@//:link_b",false,false]]},
+    "p_cross_kind": {"executable_owner":null,"files":[["cross","@@//:cross_file",false,false],["cross","@@//:cross_tree",true,false]]}
+  },
+  "negative_exit_codes": {"tree_file":1,"orphan":1,"duplicate":1,"bad_provider":1,"bad_executable":1},
+  "build_equal_exit": 0,
+  "build_unequal_exit": 1,
+  "nobuild_unequal_exit": 1,
+  "note": "cquery accepts inter-target action conflicts only. Same-rule conflicts, orphan Files, missing providers and invalid executable ownership still fail. Genuine ordinary build reports both shared same.txt artifacts; existing native build normalization is intentionally unchanged in this cquery-only correction."
+}

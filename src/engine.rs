@@ -9076,6 +9076,34 @@ impl Engine {
         }
     }
 
+    /// Native provider collection for configured analysis, before any global
+    /// action reconciliation. Filegroup's NestedSet<Artifact> distinguishes
+    /// owner/kind identities even when their execution paths coincide. Repeated
+    /// aliases/forwarded Files deduplicate, in first-occurrence order.
+    ///
+    /// This is intentionally not `inputs`: cquery skips global action conflicts
+    /// and has no producers to normalize by. No location/path vectors, action
+    /// inputs, fingerprints or execution trees are needed here.
+    fn semantic_inputs(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        built: &BTreeMap<ConfiguredTargetKey, Artifacts>,
+        declared: &Declared,
+    ) -> Result<Vec<Artifact>, String> {
+        let mut inputs = Vec::new();
+        let mut seen: HashSet<File> = HashSet::new();
+        for src in &rule.srcs {
+            let label = self.resolve_rule_src(rule, src)?;
+            for artifact in self.artifacts(&label, config, built, declared)? {
+                if seen.insert(artifact.file.clone()) {
+                    inputs.push(artifact);
+                }
+            }
+        }
+        Ok(inputs)
+    }
+
     fn inputs(
         &mut self,
         rule: &Rule,
@@ -12464,7 +12492,14 @@ impl Engine {
         }
         // A native rule's source inputs join the index here (W1b
         // registration invariant); generated ones are registered already.
-        let (mut inputs, _) = self.inputs(rule, config, dry, declared)?;
+        let mut inputs = if self.cquery_capture.is_some() {
+            self.semantic_inputs(rule, config, dry, declared)?
+        } else {
+            // Build and --nobuild retain strict execution-path normalization
+            // after shared-action reconciliation. Do not use execute_build as
+            // the analysis-only switch: --nobuild is not cquery.
+            self.inputs(rule, config, dry, declared)?.0
+        };
         for artifact in &inputs {
             register_artifact(artifact_index, &artifact.file, artifact);
         }
