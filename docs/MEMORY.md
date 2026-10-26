@@ -107,3 +107,31 @@ out of 9.4 GB live at the end of planning.
 Result (`BAZEL_RS_SNAPSHOT=off`, private caches): `--nobuild //src/rust/...` 10.1 GB peak, plan 25 s ->
 1.86 GB, plan 15 s; warm `build //src/rust/...` (2,001 cache hits) 10.1 GB / 31 s -> 1.86 GB / 18 s.
 Action dump byte-identical and action keys unchanged (the warm build hits every action).
+
+## The whole repository (MEM4, ~/code `//src/...`)
+
+`build --nobuild //src/...` (10,500 packages, 121,000 configured targets, 96,000 planned actions)
+peaked at 17.3 GB with the snapshot off and 20.7 GB on a first run with it on (default cap: 16 GB).
+Nothing grew super-linearly: the per-tree peaks add up to more than the whole. What dominated was
+copies — the same strings held once per place that refers to them:
+
+| what | cost before | fix |
+|---|---|---|
+| a `File` (three Strings) copied into every depset, dependency view, `ctx.files` struct, target's files and runfiles | ~4.5 GB of String copies | `File` is `Arc<FileData>` |
+| an `Artifact` (two PathBufs, owner, producer id) copied into `dry`, the declared map, the index, views and every runfiles mapping | ~2 GB | `Artifact` is `Arc<ArtifactData>` |
+| every planned action's inputs and generated inputs as owned `(PathBuf, PathBuf)` pairs: the transitive inputs of Rustc, Clippy, PythonZipper, and each executable's runfiles tree and manifest | ~1.8 GB | `shared_path::SharedPath` (an `Arc<Path>` that compares, hashes and borrows as its `Path`) for `Action::inputs`, `Dependency::destination` and the artifacts' paths |
+| each executable's runfiles mapping three times (manifest transform, tree transform, the target's entries) | ~0.8 GB | one shared `RunfilesEntries` list, shared path strings |
+| the hidden top-level artifacts (every runfile of every requested executable) each with a copy of the target's key | ~0.6 GB spike at the end of planning | keys by index (`KeyTable`) |
+| a configured rule copied into `configured_rules`; native targets deep-copied without select()s; call stacks per copy | ~0.6 GB | `Arc<Rule>` in the plan, the declared native target shared, `Arc<[..]>` call stacks |
+| a depset `Item` sized by its largest variants (a label value, 72 bytes) | ~0.3 GB | label and symlink entries boxed: 32-byte items |
+| the snapshot save: the 2.1 GB plan encoded, copied into one buffer and compressed while the analysis is in memory | +3.8 GB | parts compressed as they are encoded (`codec::encode_parts_with`, `format::compress_part`) |
+
+Result (release builds, warm private cache, `--memory-limit=24000`):
+
+| run | master 4b8e690 | MEM4 |
+|---|---|---|
+| `--nobuild //src/...`, snapshot off | 17.3 GB, 188 s | 6.8 GB, 168 s |
+| `--nobuild //src/...`, snapshot on, first run (miss, save) | 20.7 GB, 146 s | 8.0 GB, 127 s |
+| `--nobuild //src/...`, snapshot hit | — | 5.1 GB, 2 s |
+
+The action dump (`BAZEL_RS_DUMP_ACTIONS=1`, 59,788 actions) is byte-identical.
