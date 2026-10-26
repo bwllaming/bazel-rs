@@ -130,7 +130,6 @@ fn code_rc_options_reach_query_and_build() {
         built(&f.run(&["build", "--config=dev", "//:plain"])),
         "plain\n"
     );
-    let rc = f.ws().join(".bazelrc").display().to_string();
     // ~/code's `build:linux_* --sandbox_add_mount_pair=/tmp` is an identity
     // mount: accepted with genuine's (here: no observable) effect
     // (tests/fixtures/sandbox_mount_pair). The fixture's //platforms
