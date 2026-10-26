@@ -229,10 +229,11 @@ outer = repository_rule(_outer, local = True)
                 .filter_map(|line| line.split(' ').find(|part| part.starts_with("output:")))
                 .collect();
             // "outer before\nouter echo\nouter after\n" and
-            // "inner print\ninner echo\n".
+            // "inner print\ninner echo\n", each print() a marked note
+            // (crate::ui: 17 + 16 bytes of marks around it).
             assert_eq!(outputs.len(), 2, "{dump}");
-            assert!(outputs.contains(&"output:36"), "{dump}");
-            assert!(outputs.contains(&"output:23"), "{dump}");
+            assert!(outputs.contains(&"output:102"), "{dump}");
+            assert!(outputs.contains(&"output:56"), "{dump}");
         }
     }
 }
