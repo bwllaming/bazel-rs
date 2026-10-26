@@ -47,10 +47,41 @@ aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed b
   `attr_aspects` closure.
 - On each dependency, the aspects the target does not admit are silently
   dropped (`computeAspectCollection`: `required_providers` unsatisfied)
-  unless an already-kept aspect requires them (`required_aspect_providers`,
-  `requires`); required aspects are ordered before their dependents and a
-  repeated aspect that would see a different aspect set fails
-  (`AspectCollection.create`'s `AspectCycleOnPathException`).
+  unless an already-kept aspect explicitly `requires` them
+  (`isAspectRequired`; `required_aspect_providers` only decides
+  visibility); a repeated aspect that would see a different aspect set
+  fails (`AspectCollection.create`'s `AspectCycleOnPathException`,
+  `Aspect X is applied twice, both before and after aspect Y (when
+  propagating to //pkg:t)`).
+
+### Required aspects (`aspect(requires = [...])`)
+
+- An `attr.*(aspects = [...])` list and the `--aspects` list are an
+  `AspectsList` (AspectsList.Builder.addAspect, packages/AspectsList.java:
+  331-425): each aspect is preceded by its required aspects (depth first,
+  recursively), each aspect once; listing a required aspect explicitly
+  BEFORE its requirer is legal, after it fails `aspect X was added before
+  as a required aspect of aspect Y`, a repeated aspect `aspect X added more
+  than once` (an `attr.label_list` error at load; for `--aspects` the
+  build's error).
+- A required aspect propagates along every edge its requirer propagates
+  along, even without `attr_aspects` of its own (`collectPropagatingAspects`'
+  `isAspectRequired`: explicit `requires` only — an aspect seen only
+  through `required_aspect_providers` does not follow its viewer).
+- The requirer sees its required aspects' providers on `target` without
+  `required_aspect_providers` (`AspectCollection.create`: visible =
+  required_aspect_providers satisfied OR required); the `target` merges the
+  DIRECTLY visible aspects only (a transitively required aspect's providers
+  are not on it).
+- A required aspect whose `required_providers` the target does not satisfy
+  stays on the path (and in the key) but is a `NonApplicableAspect`
+  (AspectFunction.java:332-339): no implementation call, no own
+  dependencies, no providers.
+- Top-level required aspects take the `--aspects_parameters` values, and
+  the parameter validation (`Missing mandatory attribute 'p' for aspect
+  'X'.`, the unused-parameter error) runs over the expanded list.
+- Paired capture tests/fixtures/aspect_requires (reference_receipt.json,
+  11/11 MATCH; tests/aspects.rs `required_aspects_expand_like_aspects_list`).
 - Output-file edges apply the aspect to the generating rule only with
   `apply_to_generating_rules` (the native ValidateTarget applies to files);
   aliases apply at the alias chain's end; aspects never apply to source
@@ -127,7 +158,14 @@ AspectDescriptor):
   are the aspect-applied `Target`s for attributes the aspect (or the path)
   propagates along, plain configured targets otherwise; `ctx.rule.kind` is
   the base rule class;
-- `ctx.aspect_ids`: the applied aspects' descriptions in application order;
+- `ctx.aspect_ids`: the descriptions of the application's aspect path —
+  its base aspects in topological order (a postorder over the directly
+  required aspects, AspectFunction.collectAspectKeysInTopologicalOrder),
+  then itself; a top-level aspect's description lists every parameter
+  attribute's value, given or default (`//:defs.bzl%a[tag="t0"]`,
+  AspectDescriptor.getDescription), an attribute's aspect is its class
+  name. The same path names the aspect in `ASPECTS aspect on KIND`
+  messages;
 - `ctx.label`, `ctx.actions`, `ctx.var`, `ctx.expand_location`,
   `ctx.fragments` (the base target's configuration, the aspect's fragment
   policy), the shared configuration surface; `ctx.toolchains` and
@@ -301,7 +339,13 @@ identity unchanged, and depset snapshots taken from either agree.
 - aspect `subrules` at application;
 - parameter values of `--aspects_parameters` are string/bool/int/string-list
   typed by the attribute (AspectParameters); other types are rejected at
-  aspect() load (N33).
+  aspect() load (N33). They apply to the top-level aspects (and the
+  aspects those require) only;
+- an attribute's aspect takes no parameters from the propagating rule's
+  same-named attributes (StarlarkDefinedAspect.getDefaultParametersExtractor
+  is not modelled: its parameter attributes keep their defaults), and an
+  aspect applied both top-level and through an attribute on one target is
+  one application (Bazel's two descriptors differ by parameters).
 
 ## Divergences
 

@@ -3580,7 +3580,7 @@ fn dependency_descriptor<'v>(
         .and_then(|extra| extra.downcast_ref::<crate::loading::ExtensionContext>())
         .is_some_and(|context| context.repositories.disable_starlark_host_transitions());
     declaration.cfg = crate::rule_declarations::attribute_cfg(options.cfg, disable_host)?;
-    declaration.aspects = crate::rule_declarations::aspect_identities(options.aspects, "aspects")?;
+    declaration.aspects = crate::rule_declarations::aspects_list(options.aspects, "aspects")?;
     declaration.aspect_definitions = crate::rule_declarations::query_aspects(options.aspects);
     let declaration = declaration.clone();
     let mut descriptor = with_required_providers(descriptor, options.providers)?;

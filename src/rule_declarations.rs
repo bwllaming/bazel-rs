@@ -926,6 +926,78 @@ pub(crate) fn query_aspects(value: Value<'_>) -> Vec<QueryAspect> {
     result
 }
 
+/// The `AspectsList` of `attr.*(aspects=...)`: every listed aspect preceded
+/// by its required aspects (`requires`, depth first), each aspect once
+/// (AspectsList.Builder.addAspect, packages/AspectsList.java:331-425). An
+/// aspect listed explicitly that is already present fails like Bazel's
+/// `needsToBeAdded`: `aspect X added more than once`, or `aspect X was
+/// added before as a required aspect of aspect Y`.
+pub(crate) fn aspects_list(value: Value<'_>, what: &str) -> anyhow::Result<Vec<String>> {
+    // Sequence.cast first (StarlarkAttrModule: every element an Aspect).
+    aspect_identities(value, what)?;
+    let mut list = AspectsListBuilder::default();
+    for item in crate::custom_rule::sequence_ref(value).unwrap_or_default() {
+        add_starlark_aspect(&mut list, *item, None, 0)?;
+    }
+    Ok(list.build())
+}
+
+fn add_starlark_aspect(
+    list: &mut AspectsListBuilder,
+    value: Value<'_>,
+    required_by: Option<&str>,
+    depth: usize,
+) -> anyhow::Result<()> {
+    // `aspect(requires=...)` validated its elements at definition.
+    let aspect = Aspect::from_value(value)
+        .ok_or_else(|| anyhow!("got element of type {}, want Aspect", value.get_type()))?;
+    let identity = aspect.identity().ok_or_else(|| {
+        anyhow!("Aspects should be top-level values in extension files that define them.")
+    })?;
+    // `requires` lists aspects defined before the requiring one, so the
+    // recursion is acyclic; the bound only guards malformed values.
+    if depth < 256 {
+        for required in &aspect.requires {
+            add_starlark_aspect(list, *required, Some(&identity), depth + 1)?;
+        }
+    }
+    list.add(&identity, required_by)
+}
+
+/// `AspectsList.Builder` over aspect identities: insertion order, each
+/// aspect once, with the aspect that required it (`requiredByAspect`).
+#[derive(Default)]
+pub(crate) struct AspectsListBuilder {
+    aspects: Vec<(String, Option<String>)>,
+}
+
+impl AspectsListBuilder {
+    /// AspectsList.Builder.addAspect's `needsToBeAdded` (:401-425) and put.
+    pub(crate) fn add(&mut self, identity: &str, required_by: Option<&str>) -> anyhow::Result<()> {
+        if let Some((_, old_required_by)) = self.aspects.iter().find(|(id, _)| id == identity) {
+            if required_by.is_some() {
+                return Ok(());
+            }
+            if let Some(base) = old_required_by {
+                bail!("aspect {identity} was added before as a required aspect of aspect {base}");
+            }
+            bail!("aspect {identity} added more than once");
+        }
+        self.aspects
+            .push((identity.to_owned(), required_by.map(str::to_owned)));
+        Ok(())
+    }
+
+    /// Whether `identity` is in the list already.
+    pub(crate) fn contains(&self, identity: &str) -> bool {
+        self.aspects.iter().any(|(id, _)| id == identity)
+    }
+
+    pub(crate) fn build(self) -> Vec<String> {
+        self.aspects.into_iter().map(|(id, _)| id).collect()
+    }
+}
+
 /// Exported aspect identities for `attr.*(aspects=...)` / `aspect(requires=...)`.
 pub(crate) fn aspect_identities(value: Value<'_>, what: &str) -> anyhow::Result<Vec<String>> {
     let items = crate::custom_rule::sequence_ref(value)

@@ -1657,11 +1657,11 @@ pub fn analyze_in(
 pub(crate) struct AspectApplication {
     /// The applied aspect.
     pub aspect: std::sync::Arc<crate::aspects::AspectDefinition>,
-    /// The applied aspects' descriptions in application order
-    /// (`ctx.aspect_ids`).
+    /// The descriptions of the application's aspect path: its base aspects
+    /// in topological order, then itself (`ctx.aspect_ids`,
+    /// RuleContext.getAspectDescriptors).
     pub aspect_ids: Vec<String>,
-    /// The aspect path of this application: its directly required aspects,
-    /// then itself (RuleContext's aspects, named in messages).
+    /// The same path, named in messages (`ASPECTS aspect on KIND`).
     pub aspect_path: Vec<String>,
     /// The `target` parameter: the base configured target merged with the
     /// directly required aspects' providers (MergedConfiguredTarget.of,

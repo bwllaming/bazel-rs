@@ -2061,6 +2061,115 @@ impl Engine {
         aspects
     }
 
+    /// The top-level aspects as LoadAspectsFunction.getTopLevelAspects
+    /// builds them (skyframe/LoadAspectsFunction.java:82-126): an
+    /// AspectsList over the `--aspects` classes in order, each Starlark
+    /// aspect preceded by its required aspects (AspectsList.Builder,
+    /// required first, each aspect once; a repeated explicit aspect fails),
+    /// a native class put once.
+    fn top_level_aspects_list(
+        &mut self,
+    ) -> Result<Vec<std::sync::Arc<crate::aspects::AspectDefinition>>, String> {
+        let mut list = crate::rule_declarations::AspectsListBuilder::default();
+        for identity in self.effective_aspects() {
+            if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                // Builder.addAspect(NativeAspectClass): a plain put.
+                if !list.contains(&identity) {
+                    list.add(&identity, None)
+                        .map_err(|error| error.to_string())?;
+                }
+                continue;
+            }
+            self.add_top_level_aspect(&mut list, &identity, None, 0)?;
+        }
+        let mut definitions = Vec::new();
+        for identity in list.build() {
+            let definition = self
+                .aspect_definition(&identity, true)?
+                .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+            if identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                // Native aspects ignore top-level parameters
+                // (NativeAspectDetails.getTopLevelAspect).
+                definitions.push(definition);
+                continue;
+            }
+            // AspectsList.buildAspects: each Starlark aspect with its
+            // top-level parameters (StarlarkDefinedAspect.
+            // extractTopLevelParameters, :345-390).
+            let mut top_level = (*definition).clone();
+            top_level.parameters = self.top_level_aspect_parameters(&definition)?;
+            top_level.top_level = true;
+            definitions.push(std::sync::Arc::new(top_level));
+        }
+        Ok(definitions)
+    }
+
+    /// The `--aspects_parameters` values of `aspect`'s parameter attributes
+    /// (public, of a scalar or string-list type), typed by their attribute
+    /// (StarlarkDefinedAspect.extractTopLevelParameters: boolean, int and
+    /// string parsing, :345-416).
+    fn top_level_aspect_parameters(
+        &self,
+        aspect: &crate::aspects::AspectDefinition,
+    ) -> Result<BTreeMap<String, crate::custom_rule::AttrValue>, String> {
+        use crate::custom_rule::{AttrKind, AttrValue};
+        let mut parameters = BTreeMap::new();
+        for (parameter, raw) in &self.aspect_parameters {
+            let Some((_, spec)) = aspect.declaration.attrs.iter().find(|(attr, spec)| {
+                attr == parameter && crate::aspects::is_parameter_attribute(attr, spec)
+            }) else {
+                continue;
+            };
+            let value = match spec.kind {
+                AttrKind::Bool => match raw.to_ascii_lowercase().as_str() {
+                    "true" | "1" | "yes" | "t" | "y" => AttrValue::Bool(true),
+                    "false" | "0" | "no" | "f" | "n" => AttrValue::Bool(false),
+                    _ => {
+                        return Err(format!(
+                            "{}: expected value of type 'bool' for attribute '{parameter}' but got '{raw}'",
+                            aspect.identity
+                        ));
+                    }
+                },
+                AttrKind::Int => AttrValue::Int(raw.parse().map_err(|_| {
+                    format!(
+                        "{}: expected value of type 'int' for attribute '{parameter}' but got '{raw}'",
+                        aspect.identity
+                    )
+                })?),
+                AttrKind::StringList => {
+                    AttrValue::Strings(raw.split(',').map(str::to_owned).collect::<Vec<_>>())
+                }
+                _ => AttrValue::String(raw.clone()),
+            };
+            parameters.insert(parameter.clone(), value);
+        }
+        Ok(parameters)
+    }
+
+    /// AspectsList.Builder.addAspect(StarlarkAspect, requiredByAspect)
+    /// over a loaded definition: its `requires` first (recursively), then
+    /// the aspect itself. A `--aspects` class loads public-only like a
+    /// load(); a required aspect is the value the requiring aspect holds.
+    fn add_top_level_aspect(
+        &mut self,
+        list: &mut crate::rule_declarations::AspectsListBuilder,
+        identity: &str,
+        required_by: Option<&str>,
+        depth: usize,
+    ) -> Result<(), String> {
+        let definition = self
+            .aspect_definition(identity, required_by.is_some())?
+            .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+        if depth < 256 {
+            for required in &definition.declaration.requires {
+                self.add_top_level_aspect(list, required, Some(identity), depth + 1)?;
+            }
+        }
+        list.add(identity, required_by)
+            .map_err(|error| error.to_string())
+    }
+
     /// The aspect definition of `identity`, loading its `.bzl` export on
     /// first use (LoadAspectsFunction/AspectFunction.loadAspectFromBzl).
     /// `None` resolves nothing (an unknown identity is the caller's error).
@@ -2100,6 +2209,7 @@ impl Engine {
                         .expect("__impl was set")
                 }),
                 parameters: BTreeMap::new(),
+                top_level: false,
             });
             return Ok(self.aspects.get(identity));
         }
@@ -2135,46 +2245,14 @@ impl Engine {
         else {
             return Err(format!("{name} from {label} is not an aspect"));
         };
-        // AspectParameters (--aspects_parameters): the aspect's parameter
-        // attributes (public, of a scalar or string-list type), typed by
-        // their attribute (AspectParameters.java: boolean, int, string,
-        // string list).
-        let mut parameters = BTreeMap::new();
-        for (parameter, raw) in &self.aspect_parameters {
-            let Some((_, spec)) = aspect.declaration.attrs.iter().find(|(attr, spec)| {
-                attr == parameter && crate::aspects::is_parameter_attribute(attr, spec)
-            }) else {
-                continue;
-            };
-            let value = match spec.kind {
-                crate::custom_rule::AttrKind::Bool => match raw.as_str() {
-                    "true" | "True" | "1" => crate::custom_rule::AttrValue::Bool(true),
-                    "false" | "False" | "0" => crate::custom_rule::AttrValue::Bool(false),
-                    _ => {
-                        return Err(format!(
-                            "invalid value for aspect parameter {parameter}: {raw}"
-                        ));
-                    }
-                },
-                crate::custom_rule::AttrKind::Int => {
-                    crate::custom_rule::AttrValue::Int(raw.parse().map_err(|_| {
-                        format!("invalid value for aspect parameter {parameter}: {raw}")
-                    })?)
-                }
-                crate::custom_rule::AttrKind::StringList => crate::custom_rule::AttrValue::Strings(
-                    raw.split(',').map(str::to_owned).collect::<Vec<_>>(),
-                ),
-                _ => crate::custom_rule::AttrValue::String(raw.clone()),
-            };
-            parameters.insert(parameter.clone(), value);
-        }
         let definition = crate::aspects::AspectDefinition {
             identity: identity.to_owned(),
             definition_label: label,
             exported_name: name.to_owned(),
             declaration: aspect.declaration.clone(),
             value: loaded.value,
-            parameters,
+            parameters: BTreeMap::new(),
+            top_level: false,
         };
         self.aspects.insert(definition);
         Ok(self.aspects.get(identity))
@@ -4161,7 +4239,11 @@ impl Engine {
             .map(|(aspect, _)| aspect.clone())
             .collect();
         for (aspect, _) in &collection.used {
-            if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+            // A NonApplicableAspect (AspectFunction.java:332-339) resolves
+            // no dependencies of its own.
+            if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
+                || !aspect.applies_to_rule(&base_rule)
+            {
                 continue;
             }
             // The aspect's own attribute dependencies, each in its
@@ -9596,10 +9678,17 @@ impl Engine {
         // outputs from.
         let mut base_aspect_maps = Vec::new();
         for base_aspect in bases {
+            // The base aspect's own key carries its directly required
+            // aspects (AspectCollection.buildAspectKey over AspectDeps).
             let base_aspect_key = crate::aspects::AspectApplicationKey {
                 base: base_key.clone(),
                 aspect: base_aspect.clone(),
-                bases: Vec::new(),
+                bases: collection
+                    .used
+                    .iter()
+                    .find(|(used, _)| used.identity == *base_aspect)
+                    .map(|(_, used_bases)| used_bases.clone())
+                    .unwrap_or_default(),
             };
             let providers = state
                 .aspect_providers
@@ -9635,6 +9724,13 @@ impl Engine {
                 crate::output_group_info::PROVIDER_ID.to_owned(),
                 info,
             )]));
+        }
+        // A target that does not satisfy the aspect's required providers
+        // (an aspect kept only because another one requires it) gets
+        // ConfiguredAspect.NonApplicableAspect: no implementation, no
+        // dependencies, no providers (AspectFunction.java:332-339).
+        if !aspect.applies_to_rule(&base_rule) {
+            return Ok(BTreeMap::new());
         }
         // The application's dependencies: the aspect's own attributes, each
         // in its attribute's configuration (phase 1 analyzed them there,
@@ -9955,12 +10051,8 @@ impl Engine {
         }
         let application = analysis::AspectApplication {
             aspect: aspect.clone(),
-            aspect_ids: collection.descriptions(),
-            aspect_path: bases
-                .iter()
-                .cloned()
-                .chain(std::iter::once(aspect.identity.clone()))
-                .collect(),
+            aspect_ids: collection.path_descriptions(&aspect.identity),
+            aspect_path: collection.path_descriptions(&aspect.identity),
             target: merged_target,
             rule: analyzed_rule,
             dependencies: dependencies.clone(),
@@ -12147,13 +12239,7 @@ impl Engine {
         // its attribute's configuration, Self::aspect_attribute_configurations),
         // their attribute dependencies validated from the aspect's `.bzl`
         // package.
-        let mut aspects = Vec::new();
-        for identity in self.effective_aspects() {
-            let Some(definition) = self.aspect_definition(&identity, false)? else {
-                return Err(format!("Aspect '{identity}' is unknown"));
-            };
-            aspects.push(definition);
-        }
+        let aspects = self.top_level_aspects_list()?;
         if aspects.is_empty() {
             return Ok(());
         }
@@ -12373,16 +12459,28 @@ impl Engine {
         // to each requested target (ToplevelStarlarkAspectFunction): the
         // applications are planned here, before the action graph is taken
         // apart, and their merged views answer the output-group request.
-        let mut aspect_defs = Vec::new();
-        for identity in self.effective_aspects() {
-            let definition = self
-                .aspect_definition(&identity, false)?
-                .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
-            aspect_defs.push(definition);
-        }
-        // AspectsList.validateTopLevelAspectsParameters: every
+        let aspect_defs = self.top_level_aspects_list()?;
+        // AspectsList.validateTopLevelAspectsParameters (AspectsList.java:
+        // 124-158), over the expanded list (required aspects included): a
+        // mandatory parameter attribute needs a value, and every
         // --aspects_parameters key must be a parameter of some top-level
-        // aspect (AspectsList.java:117-121).
+        // aspect.
+        for aspect in &aspect_defs {
+            if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY {
+                continue;
+            }
+            for (name, spec) in &aspect.declaration.attrs {
+                if crate::aspects::is_parameter_attribute(name, spec)
+                    && spec.mandatory
+                    && !self.aspect_parameters.contains_key(name)
+                {
+                    return Err(format!(
+                        "Missing mandatory attribute '{name}' for aspect '{}'.",
+                        aspect.identity
+                    ));
+                }
+            }
+        }
         if !self.aspect_parameters.is_empty() {
             let mut known = BTreeSet::new();
             for aspect in &aspect_defs {

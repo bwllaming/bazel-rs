@@ -1,0 +1,2 @@
+load("//err:twice.bzl", "r")
+r(name = "x")

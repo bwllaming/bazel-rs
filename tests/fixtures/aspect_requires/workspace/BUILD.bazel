@@ -1,0 +1,17 @@
+load(":defs.bzl", "lib", "use_b", "use_e", "use_m", "use_q")
+
+lib(name = "base")
+
+lib(name = "mid", deps = [":base"])
+
+alias(name = "mid_alias", actual = ":mid")
+
+use_b(name = "b_direct", deps = [":mid"])
+
+use_b(name = "b_alias", deps = [":mid_alias"])
+
+use_e(name = "e_top", deps = [":mid"])
+
+use_q(name = "q_top", deps = [":mid"])
+
+use_m(name = "m_top", deps = [":mid"])

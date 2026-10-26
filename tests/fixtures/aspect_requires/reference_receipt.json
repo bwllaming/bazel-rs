@@ -1,0 +1,399 @@
+{
+ "schema": "parity-aspects-reference-receipt/v1",
+ "fixture": "aspect_requires",
+ "purpose": "aspect(requires = [...]) expansion (AspectsList.Builder.addAspect, packages/AspectsList.java:331-425) for attr(aspects=...) and --aspects: required aspects first, each once, a repeated explicit aspect failing with Bazel's texts; required aspects propagate with their requirer (AspectResolutionHelpers.collectPropagatingAspects isAspectRequired: explicit requires only, not required_aspect_providers), are visible to it without required_aspect_providers (AspectCollection.create), stay on the path but are NonApplicableAspect where their required_providers are unmet (AspectFunction.java:332-339); top-level required aspects take --aspects_parameters (validated over the expanded list) and ctx.aspect_ids is the application's topological aspect path with top-level parameter descriptions (AspectDescriptor.getDescription).",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of tests/fixtures/aspect_requires/workspace per case"
+ },
+ "native": {
+  "binary": "bazel-rs",
+  "sha256": "6e3ce5a9e5b73ddfc355687df743b8de986c235dedf7b43a3745b3cb4a99d974",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/preq-capture.py, preq-receipt.py (not committed)",
+  "sha256": {
+   "preq-capture.py": "89d5e530a620d8f0027812e9e17de89b77327b844d59750f505c3d9c18b65e12",
+   "preq-receipt.py": "964d3c0f53bb0168033aa4a60556bbf2b0170da6afc78d914f39fc0ea2e28785"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "8ba40cd1e05d323bf17a7188c51ccf6fa96c93056d4b495f35a43bf3b504421a",
+  "MODULE.bazel": "e26b55d64672a569c504643ebdfa13fc69abc4a0d635105283b97cca8c5be950",
+  "defs.bzl": "a5e74bb8f2f63ebdb2f712c97228c2fb3015dcb4c08be595de54d620d855c354",
+  "err/BUILD.bazel": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "err/after.bzl": "0b2061a0282c4f5627ae80959f65cf8d1f324191ca4d8b9fb31985d214a3d8fa",
+  "err/after/BUILD.bazel": "715939c4682a9a97b764d3142e56dd7b197df038ceaea2f70679a3f93670efe6",
+  "err/twice.bzl": "b417e762efb81274465f39391a6602f9d83af6bfa01c167a10228935f486504d",
+  "err/twice/BUILD.bazel": "f46d8c7cf42e4713eadaefee6041e403b5e7d2b319bf229f0f05094f7cde2c79"
+ },
+ "normalization": "<WS> = the case's workspace copy. prints: the print() lines carrying the case's marker, genuine's `DEBUG: <file>:<line>:<col>: ` prefix removed, sorted. outputs: every file below bazel-out whose name ends with one of the case's suffixes, by path below bazel-out (genuine: the bazel-out convenience symlink; native: the published action outputs), with its contents. errors: genuine's ERROR lines; native's stderr without the memory-limit notice.",
+ "comparison": "MATCH = equal exit code, prints and outputs, and for a failing case genuine's first error message (location removed) appears in a native error line.",
+ "counts": {
+  "MATCH": 11,
+  "DECLARED_DIVERGENCE": 0,
+  "DIFF": 0
+ },
+ "scratch_removed": true,
+ "cases": {
+  "attribute_requires": {
+   "argv": [
+    "build",
+    "//:b_direct",
+    "//:b_alias"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/b_alias.req": "b(mid)\n",
+     "k8-fastbuild/bin/b_direct.req": "b(mid)\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/b_alias.req": "b(mid)\n",
+     "k8-fastbuild/bin/b_direct.req": "b(mid)\n"
+    }
+   }
+  },
+  "transitive_requires": {
+   "argv": [
+    "build",
+    "//:e_top"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "E base b=b(base) a=False ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]",
+     "E mid b=b(mid) a=False ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/e_top.req": "e(b(mid))\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\"]",
+     "E base b=b(base) a=False ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]",
+     "E mid b=b(mid) a=False ids=[\"//:defs.bzl%asp_a\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/e_top.req": "e(b(mid))\n"
+    }
+   }
+  },
+  "provider_visibility_does_not_propagate": {
+   "argv": [
+    "build",
+    "//:q_top"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "Q base pp=False ids=[\"//:defs.bzl%asp_q\"]",
+     "Q mid pp=True ids=[\"//:defs.bzl%asp_p\", \"//:defs.bzl%asp_q\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/q_top.req": "mid\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "Q base pp=False ids=[\"//:defs.bzl%asp_q\"]",
+     "Q mid pp=True ids=[\"//:defs.bzl%asp_p\", \"//:defs.bzl%asp_q\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/q_top.req": "mid\n"
+    }
+   }
+  },
+  "non_applicable_required_aspect": {
+   "argv": [
+    "build",
+    "//:m_top"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "M base pn=False ids=[\"//:defs.bzl%asp_n\", \"//:defs.bzl%asp_m\"]",
+     "M mid pn=False ids=[\"//:defs.bzl%asp_n\", \"//:defs.bzl%asp_m\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/m_top.req": "mid\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "M base pn=False ids=[\"//:defs.bzl%asp_n\", \"//:defs.bzl%asp_m\"]",
+     "M mid pn=False ids=[\"//:defs.bzl%asp_n\", \"//:defs.bzl%asp_m\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/m_top.req": "mid\n"
+    }
+   }
+  },
+  "attribute_added_twice": {
+   "argv": [
+    "build",
+    "//err/twice:x"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: Traceback (most recent call last):",
+     "ERROR: Skipping '//err/twice:x': error loading package 'err/twice': initialization of module 'err/twice.bzl' failed",
+     "ERROR: error loading package 'err/twice': initialization of module 'err/twice.bzl' failed",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: cannot evaluate //err:twice.bzl: Traceback (most recent call last):",
+     "  * //err:twice.bzl:6, in <module>",
+     "      r = rule(implementation = _impl, attrs = {\"deps\": attr.label_list(aspects = [...",
+     "error: aspect //:defs.bzl%asp_a added more than once",
+     " --> //err:twice.bzl:6:51",
+     "  |",
+     "6 | r = rule(implementation = _impl, attrs = {\"deps\": attr.label_list(aspects = [asp_a, asp_a])})",
+     "  |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+     "  |",
+     ""
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "aspect //:defs.bzl%asp_a added more than once"
+  },
+  "attribute_added_after_required": {
+   "argv": [
+    "build",
+    "//err/after:x"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: Traceback (most recent call last):",
+     "ERROR: Skipping '//err/after:x': error loading package 'err/after': initialization of module 'err/after.bzl' failed",
+     "ERROR: error loading package 'err/after': initialization of module 'err/after.bzl' failed",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: cannot evaluate //err:after.bzl: Traceback (most recent call last):",
+     "  * //err:after.bzl:6, in <module>",
+     "      r = rule(implementation = _impl, attrs = {\"deps\": attr.label_list(aspects = [...",
+     "error: aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b",
+     " --> //err:after.bzl:6:51",
+     "  |",
+     "6 | r = rule(implementation = _impl, attrs = {\"deps\": attr.label_list(aspects = [asp_b, asp_a])})",
+     "  |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^",
+     "  |",
+     ""
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b"
+  },
+  "top_level_requires": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%asp_b",
+    "//:mid"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   }
+  },
+  "top_level_required_parameter": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%asp_b",
+    "--aspects_parameters=tag=t1",
+    "//:mid"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t1 ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\"]",
+     "A mid tag=t1 ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t1 ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\"]",
+     "A mid tag=t1 ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t1\\\"]\", \"//:defs.bzl%asp_b\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   }
+  },
+  "top_level_required_listed_first": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%asp_a",
+    "--aspects=//:defs.bzl%asp_e",
+    "//:mid"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "E base b=b(base) a=False ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]",
+     "E mid b=b(mid) a=False ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "A base tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "A mid tag=t0 ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\"]",
+     "B base a=base ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "B mid a=mid ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\"]",
+     "E base b=b(base) a=False ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]",
+     "E mid b=b(mid) a=False ids=[\"//:defs.bzl%asp_a[tag=\\\"t0\\\"]\", \"//:defs.bzl%asp_b\", \"//:defs.bzl%asp_e\"]"
+    ],
+    "errors": [],
+    "outputs": {}
+   }
+  },
+  "top_level_added_after_required": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%asp_b",
+    "--aspects=//:defs.bzl%asp_a",
+    "//:mid"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b",
+     "ERROR: Analysis of aspects '[//:defs.bzl%asp_b, //:defs.bzl%asp_a] with parameters {} on //:mid' failed; build aborted: aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b"
+  },
+  "top_level_added_twice": {
+   "argv": [
+    "build",
+    "--aspects=//:defs.bzl%asp_b",
+    "--aspects=//:defs.bzl%asp_b",
+    "//:mid"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: aspect //:defs.bzl%asp_b added more than once",
+     "ERROR: Analysis of aspects '[//:defs.bzl%asp_b, //:defs.bzl%asp_b] with parameters {} on //:mid' failed; build aborted: aspect //:defs.bzl%asp_b added more than once",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: aspect //:defs.bzl%asp_b added more than once"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "aspect //:defs.bzl%asp_b added more than once"
+  }
+ }
+}

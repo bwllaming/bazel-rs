@@ -760,3 +760,100 @@ fn aspect_fragments_are_the_aspects_own() {
         "//:defs.bzl%hostfrag_aspect aspect on lib has to declare 'java' as a required fragment in order to access it.",
     );
 }
+
+#[test]
+fn required_aspects_expand_like_aspects_list() {
+    // aspect(requires = [...]): attr(aspects=...) and --aspects lists are
+    // AspectsLists (required aspects first, each once, Bazel's texts for a
+    // repeated explicit aspect); a required aspect propagates with its
+    // requirer, is visible to it without required_aspect_providers, and is
+    // a NonApplicableAspect where its required_providers are unmet.
+    // Genuine Bazel 9.3.0 strings (tests/fixtures/aspect_requires/
+    // reference_receipt.json, 11/11 MATCH).
+    let marked = |text: &str, markers: &[&str]| {
+        let mut found = Vec::new();
+        for marker in markers {
+            found.extend(prints(text, marker));
+        }
+        found.sort();
+        found
+    };
+    let a = r#""//:defs.bzl%asp_a""#;
+    let ab = r#""//:defs.bzl%asp_a", "//:defs.bzl%asp_b""#;
+    let abe = r#""//:defs.bzl%asp_a", "//:defs.bzl%asp_b", "//:defs.bzl%asp_e""#;
+
+    let ws = Workspace::fixture("aspect_requires");
+    let text = ok(&ws.build_with(&[], &["//:b_direct", "//:b_alias", "//:e_top"]));
+    assert_eq!(
+        marked(&text, &["A ", "B ", "E "]),
+        [
+            format!("A base tag=t0 ids=[{a}]"),
+            format!("A mid tag=t0 ids=[{a}]"),
+            format!("B base a=base ids=[{ab}]"),
+            format!("B mid a=mid ids=[{ab}]"),
+            format!("E base b=b(base) a=False ids=[{abe}]"),
+            format!("E mid b=b(mid) a=False ids=[{abe}]"),
+        ]
+    );
+    assert_eq!(ws.output("b_direct.req"), "b(mid)\n");
+    assert_eq!(ws.output("b_alias.req"), "b(mid)\n");
+    assert_eq!(ws.output("e_top.req"), "e(b(mid))\n");
+
+    // Visibility through required_aspect_providers alone does not carry
+    // asp_p along `deps`; asp_n is kept but not applicable.
+    let ws = Workspace::fixture("aspect_requires");
+    let text = ok(&ws.build_with(&[], &["//:q_top", "//:m_top"]));
+    assert_eq!(
+        marked(&text, &["Q ", "M ", "N "]),
+        [
+            r#"M base pn=False ids=["//:defs.bzl%asp_n", "//:defs.bzl%asp_m"]"#,
+            r#"M mid pn=False ids=["//:defs.bzl%asp_n", "//:defs.bzl%asp_m"]"#,
+            r#"Q base pp=False ids=["//:defs.bzl%asp_q"]"#,
+            r#"Q mid pp=True ids=["//:defs.bzl%asp_p", "//:defs.bzl%asp_q"]"#,
+        ]
+    );
+
+    // Top level: the required aspect carries the top-level parameters
+    // (validated over the expanded list) and their description.
+    let ws = Workspace::fixture("aspect_requires");
+    let text = ok(&ws.build_with(
+        &["--aspects=//:defs.bzl%asp_b", "--aspects_parameters=tag=t1"],
+        &["//:mid"],
+    ));
+    let a1 = r#""//:defs.bzl%asp_a[tag=\"t1\"]""#;
+    assert_eq!(
+        marked(&text, &["A ", "B "]),
+        [
+            format!("A base tag=t1 ids=[{a1}]"),
+            format!("A mid tag=t1 ids=[{a1}]"),
+            format!(r#"B base a=base ids=[{a1}, "//:defs.bzl%asp_b"]"#),
+            format!(r#"B mid a=mid ids=[{a1}, "//:defs.bzl%asp_b"]"#),
+        ]
+    );
+
+    for (flags, targets, message) in [
+        (
+            vec![],
+            "//err/twice:x",
+            "aspect //:defs.bzl%asp_a added more than once",
+        ),
+        (
+            vec![],
+            "//err/after:x",
+            "aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b",
+        ),
+        (
+            vec!["--aspects=//:defs.bzl%asp_b", "--aspects=//:defs.bzl%asp_a"],
+            "//:mid",
+            "aspect //:defs.bzl%asp_a was added before as a required aspect of aspect //:defs.bzl%asp_b",
+        ),
+        (
+            vec!["--aspects=//:defs.bzl%asp_b", "--aspects=//:defs.bzl%asp_b"],
+            "//:mid",
+            "aspect //:defs.bzl%asp_b added more than once",
+        ),
+    ] {
+        let ws = Workspace::fixture("aspect_requires");
+        rejected(&ws.build_with(&flags, &[targets]), message);
+    }
+}

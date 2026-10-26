@@ -1,0 +1,2 @@
+load("//err:after.bzl", "r")
+r(name = "x")
