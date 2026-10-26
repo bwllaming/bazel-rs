@@ -197,7 +197,8 @@ genuine** (receipt row `cc/primary`: `//bin:tool`, both stamped headers).
   linkstamp-carrying dependency fails explicitly (receipt row
   `cc/linkstamp` — genuine builds and embeds the stamps).
 * The `BuildInfoEvent` (Bazel's build event of the combined status map) is
-  not posted: the native has no build-event stream.
+  posted as the WorkspaceStatus event of the build event files (docs/BEP.md):
+  the stable and volatile keys, sorted.
 * Genuine reports the failing action as
   `ERROR: <builtin>: BazelWorkspaceStatusAction stable-status.txt failed:`;
   the native's executor framing is `action 'BazelWorkspaceStatusAction#...'`

@@ -325,4 +325,4 @@ default, docs/SANDBOX.md; runfiles other than external repository files
 are hardlinks where Bazel's sandbox shows symlinks); Bazel's
 convenience symlinks (`bazel-testlogs`) and relative log paths; the
 test.cache_status proto (native `status.json`); `test.err` splitting beyond
-appending; BEP/test result events; Windows (`tw.exe`, `xml.exe`).
+appending; BEP TestProgress events (TestResult/TestSummary are posted, docs/BEP.md); Windows (`tw.exe`, `xml.exe`).

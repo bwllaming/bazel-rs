@@ -185,6 +185,13 @@ Implemented:
   fail to load, targets that fail to analyze and failing actions skip only what
   depends on them; everything else is built and tested, with Bazel's summary
   lines and exit codes (docs/KEEP_GOING.md).
+- Build Event Protocol files for `build`, `test` and `run`
+  (`--build_event_json_file`, `--build_event_binary_file`,
+  `--build_event_text_file`, `--build_event_publish_all_actions`;
+  `--bes_backend` is an explicit error; docs/BEP.md), `--profile=<file>[.gz]`
+  Chrome trace profiles and the spawn execution logs
+  (`--execution_log_compact_file`, `--execution_log_json_file`,
+  `--execution_log_binary_file`; docs/PROFILE.md). All off by default.
 - The `--quiet` startup option (`bazel-rs --quiet build …`, `startup --quiet`
   in rc files): only errors and the command's own output reach the console,
   like Bazel 9.3's server mode (docs/STARTUP_QUIET.md).

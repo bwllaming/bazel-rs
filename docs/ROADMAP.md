@@ -282,7 +282,9 @@ cache corruption and concurrent-process tests; reproducibility tests across host
   `--test_strategy` values beyond `standalone`/`local`/`exclusive` (test
   actions themselves run sandboxed like any action, docs/SANDBOX.md),
   `--notest_keep_going` and a FAILED TO BUILD summary remain.
-- BEP, profiles, query output formats, target-pattern files, info/clean/shutdown.
+- BEP file outputs, `--profile` and the execution logs are in (docs/BEP.md,
+  docs/PROFILE.md; the gRPC Build Event Service upload remains); query output
+  formats, target-pattern files, info/clean/shutdown.
 - Remaining supported OSes, upstream rule families and CLI compatibility matrix.
 
 Gate: safely selected real-repo Go/Python/Node/shell tests actually execute and

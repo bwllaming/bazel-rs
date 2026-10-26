@@ -860,7 +860,7 @@ pub fn planned(request: &crate::request::PlannedRequest) {
         let mut created_by_mnemonic: BTreeMap<String, usize> = BTreeMap::new();
         for node in &request.nodes {
             *created_by_mnemonic
-                .entry(node.action.extra.mnemonic.clone())
+                .entry(crate::profile::mnemonic(&node.action).to_owned())
                 .or_default() += 1;
         }
         let analysis_failed = request
