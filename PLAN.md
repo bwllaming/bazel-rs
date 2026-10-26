@@ -17,6 +17,10 @@ Measured on `~/code` with private caches (see `artifacts/RELEASES.log` for each 
   (`valuehunterlivedata_test`) and `website3:image_structure_test` are fixed since.
 - Warm no-op builds: `//src/ts/...` 1.5 s, bworker 1.4 s, oauth2token 0.3 s.
 - Peak memory: every tree is under ~8 GB; the default cap is min(16 GB, 50% RAM).
+- `cquery 'deps(//src/...)' --output=streamed_proto --transitions=lite` succeeds:
+  143–145 s / 8,001 MiB peak analysis, then 2.04 s / 1,514 MiB on a graph hit.
+  The roots query shares the graph (1.74 s). All runs retained an 8 GiB cap.
+  This verifies native full-source queries, not a TD revision switch on `~/code`.
 
 Done since the last increment recorded under "History", one line each:
 
@@ -42,8 +46,9 @@ Done since the last increment recorded under "History", one line each:
       execution and binary graph reuse; `config --output=json --dump_all`,
       explicit output bases and root `mod dump_repo_mapping` (docs/CQUERY.md).
       Real target-determinator v0.34.0 matches 11 genuine-Bazel scratch mutation
-      cases with incompatible-target filtering disabled. Whole-repo support is
-      still blocked as noted below; this is not full cquery parity.
+      cases with incompatible-target filtering disabled. Full-source queries
+      now pass, with additional split/aspect/shared-output TD scratch coverage;
+      full-workspace revision comparisons remain unmeasured, not full cquery parity.
 
 ## Remaining work
 
@@ -60,10 +65,14 @@ Done since the last increment recorded under "History", one line each:
       parameter-file metadata, matching Bazel's nullable API.
 - [x] Configured aspect dependency discovery uses phase-one select-resolved
       declarations; the Rustfmt/fastrand analysis-order failure is fixed.
-- [ ] Whole-source cquery: separate semantic File identity from execution-path
-      uniqueness in native input collection. The current query reaches a shared
-      TypeScript `node_modules` artifact collision at 7,770 MiB; whole-repository
-      target-determinator remains blocked.
+- [x] Whole-source cquery preserves semantic File identity independently of
+      execution-path uniqueness, registers semantic runfiles-support Files and
+      omits execution-only repository closures (docs/CQUERY_ARTIFACTS.md).
+      The bounded full-source query passes and its outputs decode with upstream
+      schemas; ordinary build and `--nobuild` validation remain strict.
+- [ ] Reduce uncached cquery memory below the current 8,001 MiB peak (~191 MiB
+      headroom under the 8 GiB test cap), and check TD's default `//...` universe
+      separately from the measured `//src/...` universe.
 - [x] Cquery aspect dependency projection places implicit aspect edges on
       requesting rules, matching 8 genuine-schema edge matrices and 9 actual
       target-determinator mutation cases. First-instance selection across all
