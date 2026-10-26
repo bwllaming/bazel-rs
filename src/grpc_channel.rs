@@ -322,8 +322,15 @@ struct Connection {
     alive: Arc<AtomicBool>,
 }
 
-/// Counts a call against its connection while it runs.
-struct InFlight(Arc<AtomicUsize>);
+/// Counts a call against its connection while it runs; `alive` retires
+/// the connection after a transport error.
+struct InFlight(Arc<AtomicUsize>, Arc<AtomicBool>);
+
+impl InFlight {
+    fn retire(&self) {
+        self.1.store(false, Ordering::Relaxed);
+    }
+}
 
 impl Drop for InFlight {
     fn drop(&mut self) {
@@ -625,7 +632,10 @@ impl Channel {
                 })
                 .min_by_key(|connection| connection.in_flight.load(Ordering::Relaxed))?;
             chosen.in_flight.fetch_add(1, Ordering::Relaxed);
-            Some((chosen.send.clone(), InFlight(chosen.in_flight.clone())))
+            Some((
+                chosen.send.clone(),
+                InFlight(chosen.in_flight.clone(), chosen.alive.clone()),
+            ))
         };
         if let Some(found) = pick(&mut self.connections.lock().expect("connections"), false) {
             return Ok(found);
@@ -671,9 +681,15 @@ impl Channel {
         on_message: &mut dyn FnMut(Bytes) -> Result<(), Status>,
     ) -> Result<bool, Status> {
         let request = self.request(call)?;
-        let (send, _in_flight) = self.acquire().await?;
-        let mut send = send.ready().await.map_err(h2_status)?;
-        let (response, mut stream) = send.send_request(request, false).map_err(h2_status)?;
+        let (send, in_flight) = self.acquire().await?;
+        // A connection that cannot start a stream (GOAWAY, a broken
+        // transport) is not used again; the retry opens a new one.
+        let retire = |error: h2::Error| {
+            in_flight.retire();
+            h2_status(error)
+        };
+        let mut send = send.ready().await.map_err(retire)?;
+        let (response, mut stream) = send.send_request(request, false).map_err(retire)?;
         let mut response = std::pin::pin!(response);
         let mut early = None;
         let mut next = requests.next();
