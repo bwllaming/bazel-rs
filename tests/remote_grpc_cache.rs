@@ -792,6 +792,31 @@ impl PairedCache {
         }
     }
 
+    /// The sorted metadata names of each method's calls (local server).
+    fn header_names(&self) -> BTreeMap<String, Vec<String>> {
+        let mut out = BTreeMap::new();
+        if let PairedCache::Local(server) = self {
+            for call in server.state.lock().unwrap().log.iter() {
+                let mut names = call
+                    .metadata
+                    .iter()
+                    .map(|(name, value)| match name.as_str() {
+                        // Deadlines vary by the elapsed microseconds.
+                        "grpc-timeout" => format!("{name}={}", &value[..2]),
+                        "user-agent" | "te" | "content-type" | "grpc-accept-encoding" => {
+                            format!("{name}={value}")
+                        }
+                        _ => name.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                names.sort();
+                names.dedup();
+                out.insert(call.method.clone(), names);
+            }
+        }
+        out
+    }
+
     fn log(&self) -> Vec<String> {
         match self {
             PairedCache::Local(server) => {
@@ -951,6 +976,7 @@ fn genuine_bazel_shares_grpc_entries_both_ways() {
     );
     let genuine_outputs = bazel_bin(&ws);
     let genuine_keys = cache.ac_keys();
+    let genuine_headers = cache.header_names();
     let genuine_log = cache.log();
     let read = native(&ws, "ncache-1", &registry, &cache.url());
     assert!(read.status.success(), "{}", stderr(&read));
@@ -966,6 +992,7 @@ fn genuine_bazel_shares_grpc_entries_both_ways() {
     let written = native(&ws, "ncache-2", &registry, &cache.url());
     assert!(written.status.success(), "{}", stderr(&written));
     let native_keys = cache.ac_keys();
+    let native_headers = cache.header_names();
     let native_log = cache.log();
     let _ = fs::remove_dir_all(ws.0.join("our-1"));
     let read_back = genuine(&binary, &ws, "our-2", &registry, &cache.url());
@@ -985,6 +1012,8 @@ fn genuine_bazel_shares_grpc_entries_both_ways() {
         }),
     );
     receipt.insert("genuine_keys".into(), json(&genuine_keys));
+    receipt.insert("genuine_header_names".into(), json(&genuine_headers));
+    receipt.insert("native_header_names".into(), json(&native_headers));
     receipt.insert("native_keys".into(), json(&native_keys));
     receipt.insert("native_read_hits".into(), json(&native_read_hits));
     receipt.insert("genuine_read_hits".into(), json(&genuine_read_hits));

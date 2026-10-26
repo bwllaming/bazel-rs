@@ -213,8 +213,8 @@ Implemented:
   SHA256 action keys use `native-action-v8`, their manifests `native-action-v9` (entries of
   earlier binaries are executed once more: docs/DIGEST_MEMO.md, "Upgrade note"); output-content and executable
   mode validation on cache hits; per-key cross-process locks; atomic publication.
-- An http(s) `--remote_cache` with Bazel's action keys (entries are shared with
-  genuine Bazel both ways) and Bazel's credential helpers for the cache and the
+- An http(s) or REAPI gRPC (`grpc://`, `grpcs://`, `unix:`) `--remote_cache`
+  with Bazel's action keys (entries are shared with genuine Bazel both ways) and Bazel's credential helpers for the cache and the
   downloader ([`docs/REMOTE_CACHE.md`](docs/REMOTE_CACHE.md)); uploads need
   the explicit opt-in `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1` (safety divergence).
 

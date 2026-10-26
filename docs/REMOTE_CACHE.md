@@ -1,7 +1,8 @@
-# Credential helpers and the HTTP remote cache (N41)
+# Credential helpers and the HTTP and gRPC remote caches (N41)
 
-`bazel-rs` implements Bazel 9.3.0's credential helpers and its HTTP remote
-cache. Action keys are computed exactly as Bazel computes them, so a native
+`bazel-rs` implements Bazel 9.3.0's credential helpers, its HTTP remote
+cache and its REAPI v2 gRPC remote cache (section "The gRPC remote
+cache"). Action keys are computed exactly as Bazel computes them, so a native
 build reuses cache entries genuine Bazel wrote and genuine Bazel reuses
 entries a native build wrote. Implementation: `src/credentials.rs`,
 `src/reapi.rs`, `src/remote_cache.rs`, the spawn model in `src/action.rs` and
@@ -97,14 +98,19 @@ and `mod`:
 | option | native |
 | --- | --- |
 | `--remote_cache=http(s)://[user@]host[:port][/path]` (old `--remote_http_cache`) | HTTP cache |
-| `--remote_cache=grpc://…`, `grpcs://…`, `unix:…`, no scheme | explicit failure (gRPC) |
+| `--remote_cache=grpc://…`, `grpcs://…`, `unix:…`, no scheme (TLS) | gRPC cache (below) |
 | `--remote_executor` | explicit failure (remote execution) |
 | `--[no]remote_accept_cached`, `--[no]remote_upload_local_results` | modelled |
 | `--remote_timeout` (default 60s; unitless means seconds) | connect and read timeout |
 | `--remote_header`, `--remote_cache_header` (`NAME=VALUE`) | sent with every request |
-| `--remote_instance_name` | accepted; HTTP caches ignore it, like Bazel |
+| `--remote_instance_name` | gRPC requests and resource names; HTTP caches ignore it, like Bazel |
+| `--remote_retries` (old `--experimental_remote_retry_max_attempts`, default 5), `--remote_retry_max_delay` (5s) | gRPC retries (HTTP requests are not retried) |
+| `--remote_max_connections` (100; 0 unlimited), `--remote_max_concurrency_per_connection` (100) | gRPC connection pool |
+| `--remote_download_outputs=all\|minimal\|toplevel`, `--remote_download_{all,minimal,toplevel}` | accepted; every output is downloaded (divergence below) |
+| `--noremote_cache_compression` | the default; `--remote_cache_compression` (zstd) is an explicit failure |
+| `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`, `--tls_authority_override` | grpcs:// (and the root/client certificate for https://) |
 | `--[no]incompatible_strict_action_env` (build) | both values, N42's action environment (docs/ACTION_ENV.md) |
-| anything else (`--disk_cache`, `--remote_retries`, `--remote_download_outputs`, TLS options…) | unmodelled option error |
+| anything else (`--disk_cache`, `--remote_local_fallback`, `--remote_proxy`…) | unmodelled option error |
 
 **Setup** (`RemoteModule.java:429-640, 1458-1490`). An absent port becomes the
 scheme's default, so credentials are requested for `https://host:443`
@@ -254,6 +260,96 @@ could publish, and with this opt-in upload, another action's output as an
 action's result: purge the Action Cache entries such a binary uploaded
 (docs/DIGEST_MEMO.md, "Upgrade note").
 
+## The gRPC remote cache
+
+`--remote_cache` values that are not `http://`/`https://` are gRPC
+(`GrpcCacheClient.isRemoteCacheOptions`). Implementation:
+`src/grpc_channel.rs` (gRPC over HTTP/2: `h2` and the tokio runtime and
+rustls that reqwest already brings; protobuf hand-encoded with
+`src/reapi.rs`'s primitives; no tonic/prost/protoc, so the only new crates
+are `h2` 0.4.20 and `tokio-util` 0.7.20, both MIT) and `src/remote_grpc.rs`
+(the REAPI client). Pinned source: `remote/GrpcCacheClient.java`,
+`ByteStreamUploader.java`, `RemoteServerCapabilities.java`,
+`GoogleChannelConnectionFactory.java`, `RemoteRetrier.java`,
+`util/TracingMetadataUtils.java`, `authandtls/GoogleAuthUtils.java`.
+
+**Targets** (`GoogleAuthUtils.newChannel`): `grpc://HOST[:PORT]` is
+plaintext, `grpcs://HOST[:PORT]` and `HOST[:PORT]` use TLS (ALPN h2; the
+default port is 443 with TLS, 80 without), `unix:PATH` is a plaintext Unix
+domain socket. `--tls_certificate` replaces the system roots;
+`--tls_client_certificate` with `--tls_client_key` enables mutual TLS.
+Other forms (`dns:`, a path after the authority) fail at startup.
+
+**Capabilities.** The first cache use calls `GetCapabilities` (with
+`--remote_instance_name`) and applies
+`checkClientServerCompatibility` for a cache: the server's API range must
+meet Bazel's 2.0–2.11 (else `The client supported API versions, 2.0 to
+2.11, is not supported by the server, …`), `SHA256` must be a cache digest
+function (`Cannot use hash function SHA256 with remote cache. Server
+supported functions are: [...]`), and `--remote_upload_local_results`
+without `update_enabled` warns. Errors before the last print as `ERROR:`;
+the last, or a failed call, fails every action that consults the cache
+with `Failed to query remote execution capabilities: CAUSE` (Bazel's
+`RemoteSpawnCache` without `--remote_local_fallback`), CAUSE being the
+transport error (`finishConnect(..) failed: Connection refused:
+/127.0.0.1:PORT`, as grpc-java prints it), the credential helper error, or
+`CODE: description`. The highest common API version selects the key:
+`Command.output_paths` from 2.1 on, REAPI 2.0's `output_files` before
+(`RemoteExecutionService.initUseOutputPaths`). Genuine Bazel starts this
+check in the background at startup; the native profile runs it lazily, so
+a build whose actions all hit the native action cache makes no request.
+
+**Calls** (`GrpcCacheClient`, `ByteStreamUploader`): lookups are
+`ActionCache.GetActionResult` (`digest_function` SHA256, no inlining;
+NOT_FOUND is a miss) and a `ByteStream.Read` of
+`[INSTANCE/]blobs/HASH/SIZE` per output, stdout and stderr (a server
+sending more than the digest's size fails the download; an interrupted read
+resumes at `read_offset` = the bytes received, with ProgressiveBackoff's
+immediate retry after progress; NOT_FOUND is a miss). Uploads are one
+`ContentAddressableStorage.FindMissingBlobs` per action over the Action,
+Command, outputs, stdout and stderr (empty digests included, batches of at
+most 1 MiB), a `ByteStream.Write` of
+`[INSTANCE/]uploads/UUID/blobs/HASH/SIZE` in 16 KiB requests per missing
+non-empty blob not yet uploaded in this invocation (concurrent uploads of
+one blob run once; a server completing early or ALREADY_EXISTS means the
+blob exists; `committed_size` must equal the size; a retry resumes at
+`QueryWriteStatus`'s committed size, or from the start when it is
+UNIMPLEMENTED), then `ActionCache.UpdateActionResult`. Like Bazel 9.3 the
+cache never uses `BatchReadBlobs`/`BatchUpdateBlobs`. Every call carries
+`--remote_header`/`--remote_cache_header` (lowercased names), the binary
+`RequestMetadata` header (tool `bazel-rs`, action id = the action key, a
+command id and build request id per invocation) and the credential
+helper's headers, and has `--remote_timeout` as its deadline
+(`RemoteGrpcServiceConfig`; also the connect timeout).
+
+**Retries** (`RemoteRetrier`): CANCELLED, UNKNOWN, DEADLINE_EXCEEDED,
+ABORTED, INTERNAL, UNAVAILABLE and RESOURCE_EXHAUSTED are retried up to
+`--remote_retries` times with exponential backoff (100 ms doubling up to
+`--remote_retry_max_delay`, jitter 0.1); connection failures are
+`UNAVAILABLE: io exception`. An UNAUTHENTICATED call refreshes the
+credential helper cache and runs once more (`refreshIfUnauthenticated`).
+Other failures are `WARNING: Remote Cache: CODE: description` and the
+action runs locally, as for HTTP.
+
+**Credentials.** The helper is asked for grpc-java's per-service URI
+`https://AUTHORITY/SERVICE` (`:443` omitted), e.g.
+`https://127.0.0.1:8980/build.bazel.remote.execution.v2.Capabilities`, so
+one cache uses four URIs (Capabilities, ActionCache,
+ContentAddressableStorage, google.bytestream.ByteStream); a failure inside
+a call is `UNAUTHENTICATED: Failed computing credential metadata: …`. Unlike
+`http://`, `grpc://` prints no plaintext-credentials warning (Bazel checks
+the `http://` prefix only); a helper path error is still `Error
+initializing RemoteModule`. Without a matching helper and with a `.netrc`
+file the cache fails explicitly, as for HTTP. Responses are single-flight
+per URI (Caffeine's `Cache.get(key, loader)`), for HTTP caches and the
+downloader too.
+
+**Remote execution** stays an explicit failure. The channel is shared
+code: `Execution.Execute`/`WaitExecution` are server-streaming
+`Operation` calls (`grpc_channel::Channel::server_streaming`, the call
+ByteStream.Read uses), and Bazel shares one channel when
+`--remote_executor` and `--remote_cache` are equal.
+
 ## D1: output roots
 
 Before N41, native target configurations wrote `bazel-out/rust-<mode>/bin`
@@ -275,8 +371,19 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 
 ## Remaining divergences
 
-* No retries (`--remote_retries`, default 5 in Bazel): a failing request is
-  one warning and local execution.
+* HTTP caches are not retried (`--remote_retries`, default 5 in Bazel): a
+  failing request is one warning and local execution. gRPC calls are.
+* `--remote_download_outputs=toplevel` (the default) and `minimal` are
+  accepted, but every output of a hit is downloaded, like `all`: genuine
+  Bazel's gRPC paired capture reads 9 blobs where native reads 10 (the
+  exec-configuration tool output is not top level). Outputs are never
+  missing; only the transfer is larger.
+* gRPC metadata: native sends no `grpc-accept-encoding` (it accepts no
+  compressed messages), `user-agent: bazel-rs/<version> grpc-h2` and a
+  millisecond `grpc-timeout`; RequestMetadata names the tool `bazel-rs` and
+  carries no mnemonic, target or configuration id.
+* The gRPC capability check is lazy (above), and a failed action exits like
+  other native action failures (genuine: exit code 34).
 * Request headers: the native `User-Agent` is `bazel-rs/<version>`, and
   `Accept-Encoding` is `gzip,deflate` (decoded natively; Bazel also offers
   snappy and zstd). Header names are lowercase on the wire (HTTP/1.1 header
@@ -284,7 +391,7 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 * The credential cache lives for one native invocation.
 * Gson leniency in helper output (comments, single quotes, unquoted names) is
   not reproduced; such output is `error parsing output`.
-* gRPC caches, remote execution, the disk cache, the remote downloader,
+* Remote execution, the disk cache, the remote downloader,
   remote output services, build without the bytes, `.netrc` for the cache and
   helper scopes needing Punycode remain explicit failures.
 
@@ -297,6 +404,24 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
   registry, local helper scripts): the fixture's three AC keys equal the keys
   genuine Bazel 9.3.0 wrote, round trips, flags, tags, failures, helper
   errors and caching, registry downloads.
+* gRPC: unit tests in `src/grpc_channel.rs` and `src/remote_grpc.rs`;
+  `tests/remote_grpc_cache.rs` against the in-process REAPI server
+  `tests/support/grpc_cache_server.rs` (in-memory CAS/AC, request log,
+  failure injection, TLS/mTLS, Unix sockets): genuine keys, call counts,
+  headers and instance names, per-service helper URIs, 3 MB blobs with
+  interrupted reads/writes resumed (QueryWriteStatus or a restart), retries,
+  capability errors/warnings and the REAPI 2.0 key, helper failures, TLS.
+  Paired check: the ignored test
+  `genuine_bazel_shares_grpc_entries_both_ways`
+  (`BAZEL_RS_GENUINE_BAZEL=<ELF> [BAZEL_RS_BAZEL_REMOTE=<bazel-remote>]
+  [BAZEL_RS_GRPC_RECEIPT=<out>] cargo test --test remote_grpc_cache --
+  --ignored`); tracked receipt `tests/fixtures/remote_cache/grpc_receipt.json`.
+  With the in-process server and with bazel-remote 2.6.4 (GitHub release
+  binary, loopback): genuine writes 10 AC entries and native reads all 10
+  (10 remote hits), native writes the same 10 keys and genuine reads all
+  10 (`10 remote cache hit`) with identical outputs; the cold builds'
+  request multisets (GetActionResult, FindMissingBlobs, Write resources,
+  UpdateActionResult) are identical.
 * Paired capture: `artifacts/remote_cache-capture.py`; tracked receipt
   `tests/fixtures/remote_cache/reference_receipt.json` (no test reads it).
   Both engines use one loopback HTTP cache (127.0.0.1) or registry
