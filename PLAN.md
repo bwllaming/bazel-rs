@@ -53,9 +53,12 @@ Done since the last increment recorded under "History", one line each:
 - [x] Startup option `--quiet` (docs/STARTUP_QUIET.md).
 - [x] `print()` is a no-op in registry MODULE.bazel files, which removes the
       gazelle/rules_go "highly experimental" warnings (done).
-- [ ] Split transitions: the bounded `cquery 'deps(//src/...)'` probe fails on
-      appscanner's `image_push_index` -> `image_image` two-configuration edge.
-      Needed before target-determinator can scan the complete repository.
+- [x] Attribute split transitions in ordinary builds and cquery, including
+      `ctx.split_attr`, aspects and converged-configuration cleanup matching 9.3
+      (docs/SPLIT_TRANSITIONS.md). Appscanner's image query now succeeds.
+- [ ] Whole-source cquery: the next blocker is rules_cc `get_link_args` accepting
+      `parameter_file_type=None`, reached by `sandbox-extension:policy` in another
+      configuration. Whole-repository target-determinator remains blocked.
 
 ### Commands that are rejected today
 
