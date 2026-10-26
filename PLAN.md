@@ -64,8 +64,10 @@ Done since the last increment recorded under "History", one line each:
       uniqueness in native input collection. The current query reaches a shared
       TypeScript `node_modules` artifact collision at 7,770 MiB; whole-repository
       target-determinator remains blocked.
-- [ ] Cquery aspect dependency projection: match genuine ownership of implicit
-      aspect edges on requesting rules rather than their base targets.
+- [x] Cquery aspect dependency projection places implicit aspect edges on
+      requesting rules, matching 8 genuine-schema edge matrices and 9 actual
+      target-determinator mutation cases. First-instance selection across all
+      split/parameter combinations is not exhaustively certified (docs/CQUERY.md).
 
 ### Commands that are rejected today
 
