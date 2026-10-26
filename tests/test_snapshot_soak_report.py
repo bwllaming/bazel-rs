@@ -313,7 +313,7 @@ class ExitCheckAndArchiveTests(unittest.TestCase):
             ("a bazel-rs upgrade", "not yet"),
             ("no mismatch, heal or cannot-verify you did not cause", "look"),
             ("no SUSPECT always-miss pattern", "look"), ("hit rate on unchanged re-runs", "look"),
-            ("local <= replay on", "look"), ("hit p95 <= 1 s", "ok"), ("store <= 1 GiB", "ok")])
+            ("local <= replay on", "look"), ("hit p95 <= 1 s", "ok"), ("store <= 4 GiB", "ok")])
 
     def test_a_soak_that_meets_every_threshold(self):
         lines = []

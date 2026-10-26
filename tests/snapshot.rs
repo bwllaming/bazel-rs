@@ -630,6 +630,9 @@ fn fixture() -> Twin {
     ])
 }
 
+/// The snapshots a store keeps at most (crate::snapshot::store::KEEP).
+const STORE_KEEP: usize = 64;
+
 const BUILD_ALL: &[&str] = &["build", "//:all_inputs"];
 
 /// A fixture whose snapshot of `args` was just saved (the cold run executes
@@ -2513,7 +2516,8 @@ fn hit_refreshes_racing_a_concurrent_save_leave_a_valid_snapshot() {
 
 /// Test gap (L2-W5f): garbage collection during a hit. A hit holds its
 /// snapshot open (sections are read by offset), so another process's save
-/// that collects it as the least recently used of more than the store's 16
+/// that collects it as the least recently used of more than the store's
+/// [`STORE_KEEP`]
 /// never breaks it; a refresh written after the collection is a valid
 /// snapshot again.
 #[test]
@@ -2522,7 +2526,7 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
     twin.same(BUILD_ALL, &[]).assert_hit();
     let off = twin.run_side(OFF, BUILD_ALL, &[]);
     for round in 0..3 {
-        // Fifteen newer snapshots of other keys (never read: stand-ins), the
+        // STORE_KEEP - 1 newer snapshots of other keys (never read: stand-ins), the
         // hit's own made the least recently used.
         {
             let store = twin.store(ON).join("v1");
@@ -2538,7 +2542,7 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
                         .unwrap();
                 }
             }
-            for n in 0..15 {
+            for n in 0..STORE_KEEP - 1 {
                 fs::write(
                     store.join(format!("0000000000000000000000000000{n:04}.snap")),
                     b"x",
@@ -2568,7 +2572,11 @@ fn garbage_collection_during_a_hit_never_breaks_it() {
             mode: twin.mode.get(),
         };
         pair.assert_same(BUILD_ALL);
-        assert!(twin.snapshots().len() <= 16, "{}", twin.snapshots().len());
+        assert!(
+            twin.snapshots().len() <= STORE_KEEP,
+            "{}",
+            twin.snapshots().len()
+        );
         // Back to one snapshot of this key (hit, or saved again).
         for entry in fs::read_dir(twin.store(ON).join("v1")).unwrap().flatten() {
             if entry
@@ -4065,7 +4073,7 @@ fn mutation_fuzz() {
                 }
                 Special::ConcurrentOther => {
                     // Another command (from the root), warmed like the
-                    // first; fifteen stand-in snapshots make any save
+                    // first; STORE_KEEP - 1 stand-in snapshots make any save
                     // collect, racing the other's hit and its refresh.
                     let cwd = *twin.cwd.borrow();
                     *twin.cwd.borrow_mut() = None;
@@ -4077,7 +4085,7 @@ fn mutation_fuzz() {
                     twin.same(&argv, &env);
                     let off = twin.run_side(OFF, &argv, &env);
                     let store = twin.store(ON).join("v1");
-                    for n in 0..15 {
+                    for n in 0..STORE_KEEP - 1 {
                         let _ = fs::write(
                             store.join(format!("0000000000000000000000000000{n:04}.snap")),
                             b"x",

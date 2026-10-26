@@ -27,8 +27,10 @@ use std::path::Path;
 /// The snapshot format (the file layout of crate::snapshot::format and
 /// the payloads it frames). 2 (L2-W5f): ENV records lost the `fixed` flag
 /// (validated against the repository environment), INPUTS gained the
-/// workspace-status flag, per-tree INTEGRITY keeps directories.
-pub const FORMAT: u32 = 2;
+/// workspace-status flag, per-tree INTEGRITY keeps directories. 3 (P3):
+/// the PLAN section is stored compressed (crate::snapshot::format::
+/// compress_plan).
+pub const FORMAT: u32 = 3;
 
 /// Options left out of G (PLAN-L2 §1a "Options left out of G"), by name
 /// (an `--[no]name` boolean's `no` form matches too). Each was traced to

@@ -93,7 +93,7 @@ OUTPUT_TREES = {'bazel-out', 'bazel-bin', 'bazel-testlogs', 'bazel-genfiles', 'b
 UNEXPECTED_NOT_SAVED = {'capture', 'too-large', 'incomplete', 'other'}
 # The soak's exit thresholds (docs/ANALYSIS_SNAPSHOT.md "Soak", L2-W5i).
 EXIT = {'days': 7, 'verified': 300, 'verified_keys': 20, 'verified_test': 50, 'verified_run': 10,
-        'hit_rate': 0.90, 'local_above': 0.01, 'hit_p95_ms': 1000.0, 'store_bytes': 1 << 30}
+        'hit_rate': 0.90, 'local_above': 0.01, 'hit_p95_ms': 1000.0, 'store_bytes': 4 << 30}
 
 
 def unescape(token):
@@ -589,7 +589,7 @@ def exit_check(report, events):
                        'not yet' if p95 is None else ('ok' if p95 <= EXIT['hit_p95_ms'] else 'look')))
     store = report['store']
     if store is not None:
-        checks.append(item('store <= 1 GiB', f"{store['bytes'] / (1 << 20):.1f} MiB",
+        checks.append(item('store <= 4 GiB', f"{store['bytes'] / (1 << 20):.1f} MiB",
                            'ok' if store['bytes'] <= EXIT['store_bytes'] else 'look'))
     return checks
 

@@ -422,8 +422,8 @@ rest counted) — bounded and rotated like the other logs (1 MiB plus one
 deleted (crate::snapshot::store::set_aside; a move that fails deletes it,
 and the block says so). The next lookup misses (`absent`) as before. The
 directory keeps the **3 newest** files; it is outside `v1/`, so lookups
-never read it and the garbage collection neither counts it against its 16
-snapshots / 1 GiB nor removes it — its own bound is those 3 files (at most
+never read it and the garbage collection neither counts it against its 64
+snapshots and byte budget nor removes it — its own bound is those 3 files (at most
 3 × 512 MiB, in practice 3 × the size of the largest snapshot, tens of MB
 on ~/code).
 
@@ -601,7 +601,7 @@ and logs):
    worktree or `--cache-dir` has its own logs. The
    report ends with a "soak exit check": the thresholds L2-W5i proposed for
    the default flip (verified hits, days, hit rate ≥ 90 % on unchanged
-   re-runs, hit p95 ≤ 1 s, store ≤ 1 GiB, no mismatch, heal or SUSPECT
+   re-runs, hit p95 ≤ 1 s, store ≤ 4 GiB (1 GiB before P3), no mismatch, heal or SUSPECT
    pattern). They gate nothing now; read their values as a summary of the
    cache's health.
 4. **What is a problem** — please report it with the MISMATCH line, the
@@ -629,7 +629,8 @@ and logs):
 
    **Not** problems: misses naming what you just changed (`read`,
    `readdir`, `stat`, `env`, …; the report's "likely your edits" patterns),
-   `absent` after an `evicted` (the store keeps 16 snapshots / 1 GiB),
+   `absent` after an `evicted` (the store keeps 64 snapshots within its
+   byte budget, see "The file"),
    `not-saved` for `lockfile-write-pending` (the run after a lockfile
    change), `repository-rule-executed` (after a fetch that printed or
    whose re-probe failed), `network` or
@@ -907,19 +908,47 @@ fixed-width fields; no JSON):
 | 0 | header, 352 bytes, little-endian: magic `BZRSSNP1`, format (u32), flags (u32), binary identity (32), G (32), created (i64 ns), section count (u32), reserved (u32), six section slots of kind (u32), reserved (u32), offset (u64), length (u64), blake3-128 of the section; blake3-128 of the header |
 | INPUTS | window start; paths sorted and front-coded (u16 shared prefix, suffix bytes); observations by path index; environment digests (of the repository environment's values); repository trees with the integrity entries the policy validates (per tree: root, manifest, directories); replay records (definition, bound attributes, names, identity digests, recorded output); the pinned tables; whether planning computed the workspace status (format 2, L2-W5f) |
 | EVENTS | the window's stderr bytes |
-| PLAN | the planned request (docs/PLANNED_REQUEST.md) |
+| PLAN | the planned request (docs/PLANNED_REQUEST.md), stored compressed (P3, format 3): magic `BZRSPZ01`, the frame count, per frame its plan and stored sizes, then independent deflate frames of 4 MiB of plan (fastest level), compressed on the writer thread and inflated on up to 8 threads by the hit's plan thread before the decode; the same plan always gives the same bytes |
 | STATS | counts, sizes and times (diagnostics; a hit does not read it) |
 
 Rules: a different format or binary identity reads as absent; a damaged
 header or section (a torn write: no fsync) is a miss; writers use a
 temporary file in the same directory and a rename, so several writers of
 one key all write valid files and the last rename wins; readers never lock.
-Garbage collection after each save keeps at most 16 snapshots and 1 GiB per
-store (per workspace: every worktree sharing a cache has its own budget),
-least recently used first, and removes temporary files older than an
-hour; the snapshots a verify mismatch set aside in `snapshots/mismatched/`
+Garbage collection after each save keeps at most 64 snapshots and the
+store's byte budget per store (per workspace: every worktree sharing a cache
+has its own budget), least recently used first — a hit sets its file's
+modification time, so the order is that of the last hit or save — and
+removes temporary files older than an hour. The **byte budget** (P3,
+crate::snapshot::store::budget) is 10 % of what the store's file system has
+available plus the store's own bytes, at least 512 MiB (one snapshot of the
+largest size written) and at most 4 GiB; until P3 it was 1 GiB and 16
+snapshots whatever the disk, and on ~/code three large trees (rust 331 MB,
+bworker 344 MB, ts 233 MB) evicted everything else — every first warm run of
+the survey missed on an eviction (`kind=evicted reason=bytes`). P3 also
+compresses the PLAN section (the table above), which shrinks the large
+snapshots about tenfold; the snapshots a verify mismatch set aside in `snapshots/mismatched/`
 are neither counted nor collected (their own bound: the 3 newest, L2-W5i). `exe.id` is a fixed 104-byte record (magic `BZRSEXID`, the stat key,
 the identity, a checksum).
+
+**P3 measured on ~/code** (release binary, private cache, update-mode recipe,
+the machine shared). The compressed PLAN instead of an interned path table in
+the codec: the repetition is not only input paths but arguments, ids and
+groups, and deflate frames take all of it without touching the in-memory
+types or the codec's determinism gate (the encoding itself is unchanged):
+
+| tree | plan | snapshot file before → after | compress (writer) | hit's PLAN read + inflate + decode |
+|---|---|---|---|---|
+| `build //src/ts/...` (24,610 actions) | 230.0 MB | 232.7 MB → 21.9 MB | 54 ms | 275–282 ms → 148–165 ms |
+| `build //src/rust/...` (2,003 actions) | 352.6 MB | ~355 MB → 28.4 MB | — | — |
+| `build //src/beyondwork.ai/bworker/...` minus docsfilter_test (9,855 actions) | 353.5 MB | ~357 MB → 31.0 MB | — | — |
+
+With the three saved, `ts`, `rust` and `bworker` builds alternated keep
+hitting (rounds of all three, each a hit after the first round's one miss on
+the hidden lockfile the cold builds had changed): ts 7.7–10.9 s / 1.30–1.36 GB
+(attempt 0.19–0.21 s; the rest is the execution tail's 24,608 action-cache
+checks), rust 1.55–2.19 s / 0.86 GB, bworker 3.4–9.2 s / 0.92–1.0 GB; the
+store held 4 snapshots, 314 MB, no eviction.
 
 ## Measured on ~/code (L2-W5, warm, update-mode recipe, release binary)
 

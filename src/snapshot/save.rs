@@ -235,20 +235,28 @@ impl Save {
                 encode_us: started.elapsed().as_micros() as u64,
                 full_validation: policy == Policy::Full,
             };
+            let inputs_ms = ms(started.elapsed());
+            // P3: the plan is stored compressed, here on the writer while
+            // the actions execute.
+            let compressing = Instant::now();
+            let stored = format::compress_plan(&plan);
             let note = format!(
-                "{} observations validated of {}, {} trees, {} replayed local repositories; INPUTS {} bytes encoded in {:.1} ms on the writer",
+                "{} observations validated of {}, {} trees, {} replayed local repositories; INPUTS {} bytes encoded in {:.1} ms on the writer; PLAN compressed to {} bytes in {:.1} ms",
                 stats.validated,
                 stats.observations,
                 stats.trees,
                 stats.replay_records,
                 stats.inputs_bytes,
-                ms(started.elapsed()),
+                inputs_ms,
+                stored.len(),
+                ms(compressing.elapsed()),
             );
+            drop(plan);
             Ok((
                 vec![
                     (Section::Inputs, inputs),
                     (Section::Events, events),
-                    (Section::Plan, plan),
+                    (Section::Plan, stored),
                     (Section::Stats, format::encode_stats(&stats)),
                 ],
                 note,

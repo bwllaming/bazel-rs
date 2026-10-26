@@ -632,7 +632,7 @@ fn refresh_in_background(
             ),
         )];
         for kind in [Section::Events, Section::Plan, Section::Stats] {
-            match reader.section(kind) {
+            match reader.stored_section(kind) {
                 Ok(bytes) => sections.push((kind, bytes)),
                 Err(_) if kind == Section::Stats => {}
                 Err(_) => return,

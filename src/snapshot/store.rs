@@ -17,13 +17,15 @@
 //!   Several writers of the same G all write valid files; the last rename
 //!   wins. A reader that already opened a file keeps reading it.
 //! * **Garbage collection** after each save: at most [`KEEP`] snapshots and
-//!   [`BUDGET`] bytes per store (per worktree), least recently used first (a
-//!   hit sets its file's mtime), and temporary files older than an hour.
+//!   a size-aware byte budget per store (per worktree, [`budget`]: 10 % of
+//!   what the store's file system has available plus the store's own bytes,
+//!   between [`BUDGET_FLOOR`] and [`BUDGET_CAP`]), least recently used first
+//!   (a hit sets its file's mtime), and temporary files older than an hour.
 //! * **Set aside** (L2-W5i): a snapshot a verify-mode mismatch contradicted
 //!   is moved to `<state>/snapshots/mismatched/` ([`set_aside`]) instead of
 //!   being deleted, so the soak's report can be acted on. Lookups never
 //!   look there and the garbage collection never counts it (neither the
-//!   [`KEEP`] snapshots nor the [`BUDGET`] bytes): its own bound is the
+//!   [`KEEP`] snapshots nor the byte budget): its own bound is the
 //!   [`MISMATCHED_KEEP`] newest files.
 
 use crate::snapshot::format::{self, HEADER_LEN, Header, Section};
@@ -36,10 +38,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
-/// Snapshots kept per store (per worktree).
-pub const KEEP: usize = 16;
-/// Bytes of snapshots kept per store (per worktree).
-pub const BUDGET: u64 = 1 << 30;
+/// Snapshots kept per store (per worktree) at most. (P3: 16 before; with
+/// ~/code's large trees saved — rust 331 MB, bworker 344 MB — every first
+/// warm run of a survey missed on an eviction.)
+pub const KEEP: usize = 64;
+/// The byte budget of a store at most ([`budget`]).
+pub const BUDGET_CAP: u64 = 4 << 30;
+/// The byte budget of a store at least ([`budget`]): one snapshot of the
+/// largest size written.
+pub const BUDGET_FLOOR: u64 = MAX_BYTES;
+/// The byte budget's share, in percent, of the store's file system's
+/// available bytes plus the store's own ([`budget`]).
+pub const BUDGET_PERCENT: u64 = 10;
 /// The largest snapshot written (PLAN-L2 §1b "Size").
 pub const MAX_BYTES: u64 = 512 << 20;
 /// Snapshots a verify mismatch set aside that are kept ([`set_aside`]).
@@ -135,8 +145,20 @@ impl Reader {
         self.identity
     }
 
-    /// One section's bytes, checked against its checksum.
+    /// One section's content, checked against its checksum: the PLAN
+    /// section inflated (P3, format::decompress_plan).
     pub fn section(&self, kind: Section) -> Result<Vec<u8>, String> {
+        let stored = self.stored_section(kind)?;
+        if kind == Section::Plan {
+            format::decompress_plan(stored)
+        } else {
+            Ok(stored)
+        }
+    }
+
+    /// One section's bytes as stored, checked against its checksum (a
+    /// refresh copies them).
+    pub fn stored_section(&self, kind: Section) -> Result<Vec<u8>, String> {
         let slot = self
             .header
             .slot(kind)
@@ -422,18 +444,41 @@ pub struct Evicted {
     /// Its key (the file name: the short form of G).
     pub key: String,
     pub path: PathBuf,
-    /// `count` (beyond [`KEEP`]) or `bytes` (beyond [`BUDGET`]).
+    /// `count` (beyond [`KEEP`]) or `bytes` (beyond the [`budget`]).
     pub reason: &'static str,
     /// The snapshots and bytes kept.
     pub kept: usize,
     pub kept_bytes: u64,
 }
 
-/// Keep at most [`KEEP`] snapshots and [`BUDGET`] bytes, most recently used
-/// first; remove temporary files older than an hour. Returns the snapshots
-/// it removed (the event log names them, L2-W5h: an `absent` miss of an
-/// evicted key is no snapshot that was never saved).
+/// The byte budget of a store holding `stored` bytes in `directory`
+/// (P3): [`BUDGET_PERCENT`] of what its file system has available to this
+/// user plus `stored` (the store may use what it already holds), between
+/// [`BUDGET_FLOOR`] and [`BUDGET_CAP`] — [`BUDGET_CAP`] when the file
+/// system cannot be asked. A nearly full disk keeps few snapshots; a large
+/// one keeps up to 4 GiB of them (1 GiB before P3, whatever the disk).
+pub fn budget(directory: &Path, stored: u64) -> u64 {
+    match rustix::fs::statvfs(directory) {
+        Ok(stat) => {
+            let available = stat.f_bavail.saturating_mul(stat.f_frsize);
+            (available.saturating_add(stored) / 100 * BUDGET_PERCENT)
+                .clamp(BUDGET_FLOOR, BUDGET_CAP)
+        }
+        Err(_) => BUDGET_CAP,
+    }
+}
+
+/// Keep at most [`KEEP`] snapshots and the store's byte [`budget`], most
+/// recently used first; remove temporary files older than an hour. Returns
+/// the snapshots it removed (the event log names them, L2-W5h: an `absent`
+/// miss of an evicted key is no snapshot that was never saved).
 pub fn collect_garbage(cache: &Path) -> Vec<Evicted> {
+    collect_garbage_within(cache, KEEP, None)
+}
+
+/// [`collect_garbage`] with `keep` snapshots and `bytes` (default: the
+/// [`budget`]).
+fn collect_garbage_within(cache: &Path, keep: usize, bytes: Option<u64>) -> Vec<Evicted> {
     let directory = directory(cache);
     let Ok(entries) = fs::read_dir(&directory) else {
         return Vec::new();
@@ -460,15 +505,21 @@ pub fn collect_garbage(cache: &Path) -> Vec<Evicted> {
     }
     // Newest first; ties by name for a stable order.
     snapshots.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+    let limit = bytes.unwrap_or_else(|| {
+        budget(
+            &directory,
+            snapshots.iter().map(|(_, len, _)| *len).sum::<u64>(),
+        )
+    });
     let mut kept = 0usize;
     let mut bytes = 0u64;
     let mut removed = Vec::new();
     for (_, len, path) in snapshots {
-        if kept < KEEP && bytes.saturating_add(len) <= BUDGET {
+        if kept < keep && bytes.saturating_add(len) <= limit {
             kept += 1;
             bytes += len;
         } else {
-            let reason = if kept >= KEEP { "count" } else { "bytes" };
+            let reason = if kept >= keep { "count" } else { "bytes" };
             // Only what this collection removed (another may race it).
             if fs::remove_file(&path).is_ok() {
                 let key = path
@@ -731,7 +782,7 @@ mod tests {
             command: "build".to_owned(),
             targets: vec!["//:x".to_owned()],
         };
-        write_in_background(cache, &key(40), sections(b"p"))
+        write_in_background(cache, &key(250), sections(b"p"))
             .logged(log)
             .commit()
             .unwrap();
@@ -745,7 +796,7 @@ mod tests {
             events.contains(&format!(
                 " kind=evicted mode=on key={} command=- reason=count path=",
                 key(6).short()
-            )) && events.contains(&format!(" detail=by:{},kept:16,", key(40).short())),
+            )) && events.contains(&format!(" detail=by:{},kept:{KEEP},", key(250).short())),
             "{events}"
         );
         // A stale temporary file goes, a fresh one stays.
@@ -761,5 +812,50 @@ mod tests {
             .unwrap();
         collect_garbage(cache);
         assert!(!stale.exists() && fresh.exists());
+    }
+
+    /// P3: the byte budget is a share of the disk, capped and floored; a
+    /// collection over it evicts the least recently used by `bytes`.
+    #[test]
+    fn the_byte_budget_follows_the_disk_and_evicts_by_bytes() {
+        let cache = tempfile::tempdir().unwrap();
+        let cache = cache.path();
+        fs::create_dir_all(directory(cache)).unwrap();
+        let budget = budget(&directory(cache), 0);
+        assert!((BUDGET_FLOOR..=BUDGET_CAP).contains(&budget), "{budget}");
+        // The store's own bytes count as available.
+        assert!(super::budget(&directory(cache), 1 << 40) == BUDGET_CAP);
+        assert_eq!(
+            super::budget(Path::new("/nonexistent/snapshots"), 0),
+            BUDGET_CAP
+        );
+        for seed in 0..4u8 {
+            fs::write(path(cache, &key(seed)), vec![0u8; 100]).unwrap();
+            File::options()
+                .write(true)
+                .open(path(cache, &key(seed)))
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(100 - u64::from(seed)))
+                .unwrap();
+        }
+        let evicted = collect_garbage_within(cache, KEEP, Some(250));
+        let mut names: Vec<(String, &str, usize, u64)> = evicted
+            .iter()
+            .map(|evicted| {
+                (
+                    evicted.key.clone(),
+                    evicted.reason,
+                    evicted.kept,
+                    evicted.kept_bytes,
+                )
+            })
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [0, 1]
+                .map(|seed| (key(seed).short(), "bytes", 2, 200))
+                .to_vec()
+        );
     }
 }

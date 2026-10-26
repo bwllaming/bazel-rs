@@ -25,7 +25,10 @@
 //!   every entry), the local repository rules' replay records and the
 //!   pinned tables their replay answers from.
 //! * EVENTS — what planning printed: the window's stderr bytes.
-//! * PLAN — the planned request (crate::snapshot::codec, self-framed).
+//! * PLAN — the planned request (crate::snapshot::codec, self-framed),
+//!   stored compressed (P3, [`compress_plan`]: independent deflate frames of
+//!   4 MiB, compressed and inflated on threads; [`Reader::section`] of
+//!   crate::snapshot::store inflates it).
 //! * STATS — counts, sizes and times, for diagnostics.
 //!
 //! The payloads hold no hash order and no per-process ids: the same
@@ -462,6 +465,190 @@ pub struct Stats {
     pub inputs_bytes: u64,
     pub encode_us: u64,
     pub full_validation: bool,
+}
+
+// ---- PLAN compression (P3) ------------------------------------------------
+
+/// The magic of a compressed PLAN section ([`compress_plan`]); an encoded
+/// plan itself starts with crate::snapshot::codec::MAGIC.
+pub const COMPRESSED_MAGIC: &[u8; 8] = b"BZRSPZ01";
+/// Plan bytes per compressed frame (fixed: the stored bytes must not depend
+/// on the machine).
+const FRAME: usize = 4 << 20;
+/// Threads compressing or inflating the frames of one plan at most.
+const FRAME_THREADS: usize = 8;
+
+/// Run `work` over `items` on up to [`FRAME_THREADS`] scoped threads (the
+/// calling thread alone for one item), results in item order.
+fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, FRAME_THREADS)
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(work).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: Vec<std::sync::Mutex<Option<R>>> =
+        items.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    let result = work(item);
+                    *results[index]
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+                }
+            });
+        }
+    });
+    results
+        .into_iter()
+        .map(|result| {
+            result
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .expect("every frame was processed")
+        })
+        .collect()
+}
+
+/// The stored form of the PLAN section (P3): [`COMPRESSED_MAGIC`], the
+/// frame count (u32), per frame its plan bytes and stored bytes (u32 each),
+/// then the frames — each [`FRAME`] plan bytes (the last fewer) deflated
+/// at the fastest level, independently, so they compress and inflate on
+/// threads. The same plan always gives the same bytes. On ~/code a plan
+/// shrinks about 13 times (`//src/ts/...`: 230 MB to 18 MB): its actions
+/// repeat the same input paths, arguments and ids over and over.
+pub fn compress_plan(plan: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let frames: Vec<&[u8]> = plan.chunks(FRAME).collect();
+    let compressed = on_threads(&frames, |frame| {
+        let mut encoder = flate2::write::DeflateEncoder::new(
+            Vec::with_capacity(frame.len() / 8),
+            flate2::Compression::fast(),
+        );
+        encoder
+            .write_all(frame)
+            .and_then(|()| encoder.finish())
+            .expect("deflating into memory cannot fail")
+    });
+    let mut stored =
+        Vec::with_capacity(16 + 8 * frames.len() + compressed.iter().map(Vec::len).sum::<usize>());
+    stored.extend_from_slice(COMPRESSED_MAGIC);
+    stored.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+    for (frame, deflated) in frames.iter().zip(&compressed) {
+        stored.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        stored.extend_from_slice(&(deflated.len() as u32).to_le_bytes());
+    }
+    for deflated in &compressed {
+        stored.extend_from_slice(deflated);
+    }
+    stored
+}
+
+/// The plan of a stored PLAN section: inflated when [`compress_plan`]
+/// wrote it (frames on threads), else as it is. A malformed frame table, a
+/// frame that does not inflate to its recorded size, or bytes left over
+/// are errors (the section's checksum already passed: a bug or a crafted
+/// file, never a torn write).
+pub fn decompress_plan(stored: Vec<u8>) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let Some(rest) = stored.strip_prefix(COMPRESSED_MAGIC.as_slice()) else {
+        return Ok(stored);
+    };
+    let malformed = || "malformed compressed plan".to_owned();
+    let count = u32::from_le_bytes(rest.get(..4).ok_or_else(malformed)?.try_into().unwrap());
+    let count = usize::try_from(count).map_err(|_| malformed())?;
+    let table = rest
+        .get(4..4 + count.checked_mul(8).ok_or_else(malformed)?)
+        .ok_or_else(malformed)?;
+    let mut frames = Vec::with_capacity(count);
+    let mut offset = 4 + table.len();
+    let mut total = 0usize;
+    for entry in table.as_chunks::<8>().0 {
+        let raw = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+        let len = u32::from_le_bytes(entry[4..].try_into().unwrap()) as usize;
+        if raw > FRAME {
+            return Err(malformed());
+        }
+        let deflated = rest.get(offset..offset + len).ok_or_else(malformed)?;
+        frames.push((deflated, raw));
+        offset += len;
+        total += raw;
+    }
+    if offset != rest.len() {
+        return Err(malformed());
+    }
+    // Each frame inflates in place into its slice of the plan (no second
+    // copy of a plan of hundreds of MB).
+    let mut plan = vec![0u8; total];
+    let mut jobs: Vec<(&[u8], &mut [u8])> = Vec::with_capacity(frames.len());
+    let mut remaining = plan.as_mut_slice();
+    for (deflated, raw) in &frames {
+        let (slice, rest) = remaining.split_at_mut(*raw);
+        jobs.push((deflated, slice));
+        remaining = rest;
+    }
+    let inflate = |(deflated, slice): (&[u8], &mut [u8])| -> Result<(), String> {
+        let mut decoder = flate2::read::DeflateDecoder::new(deflated);
+        decoder
+            .read_exact(slice)
+            .map_err(|error| format!("a compressed plan frame does not inflate: {error}"))?;
+        let mut extra = [0u8; 1];
+        match decoder.read(&mut extra) {
+            Ok(0) => Ok(()),
+            Ok(_) => Err("a compressed plan frame inflates to more than its size".to_owned()),
+            Err(error) => Err(format!("a compressed plan frame does not inflate: {error}")),
+        }
+    };
+    let threads = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, FRAME_THREADS)
+        .min(jobs.len());
+    if threads <= 1 {
+        for job in jobs {
+            inflate(job)?;
+        }
+        return Ok(plan);
+    }
+    let queue = std::sync::Mutex::new(jobs);
+    let failure = std::sync::Mutex::new(None::<String>);
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let job = queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pop();
+                    let Some(job) = job else {
+                        break;
+                    };
+                    if let Err(error) = inflate(job) {
+                        failure
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .get_or_insert(error);
+                    }
+                }
+            });
+        }
+    });
+    match failure
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        Some(error) => Err(error),
+        None => Ok(plan),
+    }
 }
 
 // ---- INPUTS ----------------------------------------------------------------
@@ -1179,5 +1366,41 @@ mod tests {
             ..Stats::default()
         };
         assert_eq!(decode_stats(&encode_stats(&stats)).unwrap(), stats);
+    }
+
+    /// P3: a plan of several frames compresses deterministically and
+    /// inflates back; an uncompressed plan reads as it is; damage is an
+    /// error.
+    #[test]
+    fn plans_compress_in_frames_and_inflate_back() {
+        // Repetitive like a plan, not trivially so: 2.5 frames.
+        let plan: Vec<u8> = (0..(FRAME * 5 / 2))
+            .map(|index| ((index / 7) % 251) as u8 ^ ((index % 13) as u8))
+            .collect();
+        let stored = compress_plan(&plan);
+        assert!(stored.starts_with(COMPRESSED_MAGIC) && stored.len() < plan.len() / 4);
+        assert_eq!(u32::from_le_bytes(stored[8..12].try_into().unwrap()), 3);
+        assert_eq!(compress_plan(&plan), stored);
+        assert_eq!(decompress_plan(stored.clone()).unwrap(), plan);
+        assert_eq!(decompress_plan(compress_plan(b"")).unwrap(), b"");
+        assert_eq!(
+            decompress_plan(b"BZRSPLN1 as encoded".to_vec()).unwrap(),
+            b"BZRSPLN1 as encoded"
+        );
+        // A frame's recorded size, the frame table, the frames' bytes.
+        let mut wrong_size = stored.clone();
+        wrong_size[12] ^= 1;
+        assert!(decompress_plan(wrong_size).is_err());
+        let mut truncated = stored.clone();
+        truncated.pop();
+        assert!(decompress_plan(truncated).is_err());
+        let mut extra = stored.clone();
+        extra.push(0);
+        assert!(decompress_plan(extra).is_err());
+        let mut damaged = stored.clone();
+        let last = damaged.len() - 40;
+        damaged[last] ^= 0xff;
+        assert!(decompress_plan(damaged).is_err_and(|error| error.contains("inflate")));
+        assert!(decompress_plan(COMPRESSED_MAGIC.to_vec()).is_err());
     }
 }
