@@ -4,7 +4,7 @@ Target: Bazel 9.3 compatibility, with measured startup and build performance.
 Full parity is not claimed; the status and the open work are listed first, the
 history of increments follows under "History".
 
-## Status (2026-10-26, master 9f1df5a)
+## Status (2026-10-26, branch `main`, formerly `master`)
 
 Measured on `~/code` with private caches (see `artifacts/RELEASES.log` for each release):
 
@@ -43,10 +43,10 @@ Done since the last increment recorded under "History", one line each:
 
 ### In progress
 
-- [ ] Interactive progress display, TTY only (branch `progress-ui`).
+- [x] Interactive progress display, TTY only (docs/PROGRESS.md).
 - [ ] Startup option `--quiet` (branch `startup-quiet`).
-- [ ] `print()` is a no-op in registry MODULE.bazel files, which removes the
-      gazelle/rules_go "highly experimental" warnings (branch `module-print-noop`).
+- [x] `print()` is a no-op in registry MODULE.bazel files, which removes the
+      gazelle/rules_go "highly experimental" warnings (done).
 
 ### Commands that are rejected today
 
@@ -99,8 +99,8 @@ Done since the last increment recorded under "History", one line each:
 - [ ] Console text: `INFO: Analyzed …` / `INFO: Found …` lines, `DEBUG:` prefix on
       transition prints, exclusive-test order, `-k` error ordering.
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
-- [ ] Children inherit an ignored SIGINT (fix needs a few lines of `unsafe`;
-      awaiting approval; patch in /tmp/opencode/fixdigest/).
+- [ ] Children inherit an ignored SIGINT (minimal `unsafe` approved; branch
+      `sigint-reset`).
 - [ ] Five network-dependent tests: serve their archives from a checksum-verified
       local cache.
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces); Linux x86_64 only.
