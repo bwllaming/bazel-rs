@@ -73,8 +73,18 @@ const ALLOWED_MODULES: &[&str] = &[
     // workspace decides the cache root, which is part of the snapshot key
     // (docs/WORKTREES.md).
     "worktree",
+    // The cache's garbage collection (docs/CACHE_GC.md): the lock and the
+    // last-use records around the command, the collection after it.
+    "cache_gc",
 ];
-const ALLOWED_PREFIXES: &[&str] = &["test_", "git_", "extension_", "snapshot/", "action/"];
+const ALLOWED_PREFIXES: &[&str] = &[
+    "test_",
+    "git_",
+    "extension_",
+    "snapshot/",
+    "action/",
+    "cache_gc/",
+];
 
 /// Diagnostics switches and test hooks: never inputs of planning (runs with
 /// a test or debug hook are never saved, PLAN-L2 §1a).
