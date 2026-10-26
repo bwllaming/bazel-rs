@@ -934,13 +934,11 @@ fn scan(context: &Context<'_>) -> Scan {
         .filter(|(_, file_type)| file_type.is_some_and(|file_type| file_type.is_dir()))
         .map(|(name, _)| name)
         .collect();
-    let mut recorded = HashSet::new();
     for (name, _) in list(&records) {
         if dotted(&name) {
             continue;
         }
         let record = records.join(&name);
-        recorded.insert(name.clone());
         if !state_names.contains(&name) {
             sweeps.push(Sweep {
                 path: record,
@@ -976,25 +974,9 @@ fn scan(context: &Context<'_>) -> Scan {
             });
         }
     }
-    // States without a record (written by binaries before the collector):
-    // removed when nothing in them changed for the age limit.
-    for name in state_names.difference(&recorded) {
-        let state = states.join(name);
-        let changed = ["", "snapshots", "MODULE.bazel.lock", "execroot"]
-            .iter()
-            .filter_map(|part| fs::symlink_metadata(state.join(part)).ok())
-            .map(|metadata| metadata.mtime())
-            .max()
-            .unwrap_or(0);
-        if context.max_age_passed(changed) {
-            sweeps.push(Sweep {
-                path: state,
-                category: "worktrees",
-                slot: None,
-                also: None,
-            });
-        }
-    }
+    // A state directory without a record (written by binaries before the
+    // collector, or an explicit output base nobody recorded) is never
+    // removed: only a recorded workspace that is gone makes a state garbage.
     Scan {
         items,
         sweeps,
@@ -1928,7 +1910,12 @@ mod tests {
             fs::create_dir_all(cache.join("worktrees").join(name).join("snapshots")).unwrap();
             fs::write(records.join(name), format!("{}\n", path.display())).unwrap();
         }
+        // A state without a record (an older binary's, an explicit output
+        // base): never removed, however old.
+        let unrecorded = cache.join("worktrees/legacy-3");
+        fs::create_dir_all(unrecorded.join("snapshots")).unwrap();
         fixture.collect(&policy(Budget::Off, None, None));
+        assert!(unrecorded.exists());
         assert!(!old_work.exists() && new_work.exists());
         assert!(!tmp.exists() && !stage.exists());
         assert!(cache.join("worktrees/alive-1").exists() && records.join("alive-1").exists());

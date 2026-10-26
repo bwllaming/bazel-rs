@@ -343,12 +343,40 @@ fn the_state_of_a_deleted_worktree_is_swept() {
     assert_eq!(states.len(), 2, "{states:?}");
     let records = list(&fixture.cache().join("gc/worktrees"));
     assert_eq!(records.len(), 2, "{records:?}");
+    // Explicit output bases (startup --output_base): one inside the cache's
+    // state directories is recorded and kept while its workspace exists;
+    // one outside the cache is never looked at.
+    let inside = fixture.cache().join("worktrees/explicit-base");
+    let outside = fixture.base().join("outside-base");
+    for base in [&inside, &outside] {
+        let output = fixture.run(
+            "ws",
+            &[
+                &format!("--output_base={}", base.display()),
+                "build",
+                "--experimental-builtin-modules=false",
+                "//:a",
+            ],
+            &[],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(base.is_dir());
+    }
+    assert!(fixture.cache().join("gc/worktrees/explicit-base").is_file());
     fs::remove_dir_all(fixture.base().join("other")).unwrap();
     let output = fixture.gc(&[], &[]);
     assert!(output.status.success());
     let report = stdout(&output);
     assert!(report.contains("worktrees    1 of 1 entries"), "{report}");
-    let states = list(&fixture.cache().join("worktrees"));
+    assert!(inside.is_dir() && outside.is_dir());
+    let states: Vec<PathBuf> = list(&fixture.cache().join("worktrees"))
+        .into_iter()
+        .filter(|state| *state != inside)
+        .collect();
     assert_eq!(states.len(), 1, "{states:?}");
     assert!(
         states[0]
@@ -357,8 +385,14 @@ fn the_state_of_a_deleted_worktree_is_swept() {
             .to_string_lossy()
             .starts_with("ws-")
     );
-    assert_eq!(list(&fixture.cache().join("gc/worktrees")).len(), 1);
+    assert_eq!(list(&fixture.cache().join("gc/worktrees")).len(), 2);
     fixture.build("ws", &["//:a"], &[]);
+    // The explicit base's workspace gone: its state goes too.
+    fs::remove_dir_all(fixture.base().join("ws")).unwrap();
+    fixture.workspace("ws2");
+    let output = fixture.run("ws2", &["gc"], &[]);
+    assert!(output.status.success());
+    assert!(!inside.exists() && outside.is_dir());
 }
 
 /// A collection killed at its first, second, ... removal step leaves a

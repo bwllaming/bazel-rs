@@ -606,8 +606,28 @@ fn write_workspace_record(installed: &Installed) {
         return;
     };
     let cache = &installed.cache;
-    let state = cache.join(crate::worktree::WORKTREES).join(&name);
-    if !fs::read_dir(&state).is_ok_and(|mut entries| entries.next().is_some()) {
+    // The state directory this command used: the workspace's own, or an
+    // explicit `--output_base`. One outside `<cache>/worktrees` is never
+    // scanned (nothing to record); one inside it is recorded under its own
+    // name, so the collector keeps it while its workspace exists.
+    let worktrees = cache.join(crate::worktree::WORKTREES);
+    let state = crate::worktree::state_directory(cache);
+    let name = if state == worktrees.join(&name) {
+        name
+    } else {
+        let parent = state.parent().map(Path::to_path_buf);
+        let same = |a: &Path, b: &Path| {
+            a == b
+                || fs::canonicalize(a)
+                    .ok()
+                    .is_some_and(|a| fs::canonicalize(b).ok() == Some(a))
+        };
+        match (parent, state.file_name().and_then(|name| name.to_str())) {
+            (Some(parent), Some(own)) if same(&parent, &worktrees) => own.to_owned(),
+            _ => return,
+        }
+    };
+    if !fs::read_dir(worktrees.join(&name)).is_ok_and(|mut entries| entries.next().is_some()) {
         return;
     }
     let records = directory(cache).join(WORKSPACES);

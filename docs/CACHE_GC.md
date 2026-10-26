@@ -178,8 +178,13 @@ The collector reads manifests and pointers with `O_NOATIME`.
   path no longer exists and its parent does (a removed checkout), the state
   directory `worktrees/<name>-<hash>/` and the record go; when the parent is
   gone too (an unmounted disk?), after 60 days. The record is written at the
-  end of a command whose workspace has a non-empty state directory. A state without a record
-  (written by older binaries) goes when nothing in it changed for 60 days.
+  end of a command whose state directory is non-empty. **Explicit output
+  bases** (startup `--output_base`, docs/WORKTREES.md): one below
+  `<cache>/worktrees/` is recorded under its own name and kept while its
+  recorded workspace exists; one outside the cache is never scanned. A
+  state directory without a record (written by older binaries, or an
+  explicit base no command of this version used) is never removed: only a
+  recorded workspace that is gone makes a state garbage.
 
 Never removed: lock files (zero bytes: unlinking a lock another process has
 open would let two processes hold "the" lock), the per-worktree state of
