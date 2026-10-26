@@ -895,25 +895,6 @@ show(name = "pick", mode = select({":is_linux": "linux", ":is_debian": "debian"}
     }
 }
 
-#[test]
-fn execution_platform_registrations_fail_explicitly() {
-    let ws = Workspace::new(
-        "module(name = 'main')\nregister_execution_platforms('//:p')\n",
-        &[(
-            "BUILD.bazel",
-            "platform(name = 'p')\ngenrule(name = 'g', outs = ['g.txt'], cmd = 'echo g > $@')\n",
-        )],
-    );
-    assert_eq!(
-        ws.rejected(&["//:g"]),
-        "bazel-rs: register_execution_platforms(\"//:p\") is not implemented in the native profile: execution platform resolution (N17)\n"
-    );
-    // Only toolchain resolution loads them: a platform target builds (paired
-    // capture B5/reg_platform_target).
-    let output = ws.run(&["build", "//:p"]);
-    assert!(output.status.success(), "{}", errors(&output));
-}
-
 /// Extract the genuine platforms 1.0.0 module archive
 /// (tests/fixtures/label_repo_name/platforms_archive.json) into `to`.
 fn extract_platforms(to: &Path) {
@@ -1142,6 +1123,36 @@ fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .iter()
         .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
         .collect()
+}
+
+#[test]
+fn module_execution_platform_registrations_follow_bazel() {
+    // Genuine capture: tests/fixtures/extra_execution_platforms/module_registrations.
+    let ws = extra_execution_platforms_fixture();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/extra_execution_platforms/module_registrations/dep");
+    fs::create_dir_all(ws.path().join("dep")).unwrap();
+    for name in ["MODULE.bazel", "BUILD.bazel"] {
+        fs::copy(fixture.join(name), ws.path().join("dep").join(name)).unwrap();
+    }
+    let mut module = fs::read_to_string(ws.path().join("MODULE.bazel")).unwrap();
+    module.push_str(
+        "bazel_dep(name = 'dep')\nlocal_path_override(module_name = 'dep', path = 'dep')\nregister_execution_platforms('//p:bar')\n",
+    );
+    fs::write(ws.path().join("MODULE.bazel"), module).unwrap();
+    assert_eq!(
+        built_outputs(&ws, &["//:tool", "//:plain"]),
+        owned(&[
+            (
+                "k8-fastbuild/bin/plain.out",
+                "leaf=bazel-out/bar-opt-exec/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/tool.out",
+                "tc=freebsd_exec\nleaf=bazel-out/freebsd-opt-exec/bin/exec_leaf.out\n"
+            ),
+        ])
+    );
 }
 
 #[test]

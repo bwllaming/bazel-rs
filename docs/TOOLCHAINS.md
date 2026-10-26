@@ -87,9 +87,12 @@ types (N18b): it resolves the host platform then, with the same failure.
 
 1. **Platform keys** (`PlatformKeys.java:78-224`): the target platform, then
    the execution platforms: the configuration's `--extra_execution_platforms`
-   (below), then the host platform unless it is one of them (module
-   registrations, `register_execution_platforms`, fail explicitly before,
-   unchanged from N16c). Platform errors
+   (below), the modules' `register_execution_platforms` (Registered-
+   ExecutionPlatformsFunction.getBzlmodExecutionPlatforms: the dependency
+   graph's modules, root first, each pattern parsed in its module's
+   repository; non-root dev registrations never, the root's unless
+   `--ignore_dev_dependency`), then the host platform unless it is one of
+   them. Platform errors
    are wrapped (`While resolving toolchains for target L (CONFIG): Target
    //e:fg was referenced as a platform, but does not provide PlatformInfo`).
    The execution constraints are looked up like
@@ -296,8 +299,7 @@ parent's selected platform. Paired capture
 
 ## Explicitly unsupported
 
-* Module execution platform registrations (`register_execution_platforms`);
-  `required_settings` of platforms. Two registered labels of one platform
+* `required_settings` of platforms. Two registered labels of one platform
   (`--extra_execution_platforms=//p:foo,//p:foo_alias`, or `//p:all` with an
   alias) fail explicitly: Bazel 9.3 crashes on them (exit 37,
   `ImmutableMap.buildOrThrow` in `configureRegisteredExecutionPlatforms`).

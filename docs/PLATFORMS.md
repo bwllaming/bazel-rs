@@ -285,13 +285,14 @@ and referenced by '//:cv_missing'`) or select() key error.
   built-in profile; a failure is reported where the native profile first
   needs it (inside a `config_setting` key, followed by `errors encountered
   resolving select() keys for ...`).
-* Execution platform registrations of non-root modules are only seen when
-  the module graph has already been resolved in the build: a main-repository-
-  only build (no external label resolved) never resolves it, so a non-root
-  module's `register_execution_platforms` is not validated there, where
-  Bazel would fail (`invalid registered execution platform ...` or its
-  explicit native gap). This divergence only drops an error; it never changes
-  a successful build's result (registrations are not used natively).
+* Execution platform registrations of non-root modules need the module graph:
+  a rule that resolves toolchains resolves it (as its registered toolchains
+  do), while a rule without toolchain types only sees them once the graph has
+  been resolved in the build. A main-repository-only build of such rules (no
+  external label resolved, the native lazy profile) never resolves it, so
+  those rules run on the root module's registered platforms or the host
+  platform where Bazel would pick a non-root module's first registered
+  platform.
 * Platforms and their trees are analyzed in the build configuration; trees
   that would differ in the empty configuration fail explicitly (above).
   `constraint_setting`/`constraint_value` with select() keys fail explicitly
@@ -317,12 +318,10 @@ and referenced by '//:cv_missing'`) or select() key error.
 
 * Toolchain resolution is implemented with the host platform as the only
   execution platform (docs/TOOLCHAINS.md).
-* `register_execution_platforms` (the root module's registrations, and the
-  non-dev registrations of the other modules once the module graph has been
-  resolved; no extra module resolution I/O) fails the first toolchain-resolving
-  rule: `register_execution_platforms("//:p") is not implemented in the native
-  profile: execution platform resolution (N17)`. `--extra_execution_platforms`
-  is modelled (docs/TOOLCHAINS.md "`--extra_execution_platforms`").
+* `register_execution_platforms` is modelled (docs/TOOLCHAINS.md "Resolution":
+  after `--extra_execution_platforms`, the modules' registrations in
+  dependency-graph order, root first, each parsed in its module's repository;
+  paired capture tests/fixtures/extra_execution_platforms/module_registrations).
 * Exec groups are N35 (docs/EXEC_GROUPS.md); the exec transition is modelled (N18b,
   docs/CONFIGURATION.md: an exec configuration's target platform is the
   execution platform, the end of the host platform's alias chain); platform

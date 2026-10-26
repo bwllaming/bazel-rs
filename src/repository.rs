@@ -1390,42 +1390,6 @@ impl RepositorySet {
         ))
     }
 
-    /// `register_execution_platforms` label lists in effect without new
-    /// module resolution I/O: the root module's (dev registrations unless
-    /// dev dependencies are ignored) and, when the module graph has already
-    /// been resolved, the non-dev registrations of the other modules
-    /// (RegisteredExecutionPlatformsFunction semantics).
-    pub(crate) fn known_execution_platform_registrations(&self) -> Vec<Vec<String>> {
-        use crate::bzlmod::RegistrationKind;
-        let mut found = Vec::new();
-        let ignore_dev = self.state.options.ignore_dev_dependencies;
-        if let Ok(root) = self.root_module()
-            && let Some(module) = root.module_file()
-        {
-            for registration in &module.registrations {
-                if registration.kind == RegistrationKind::ExecutionPlatforms
-                    && !(ignore_dev && registration.dev_dependency)
-                    && !registration.labels.is_empty()
-                {
-                    found.push(registration.labels.clone());
-                }
-            }
-        }
-        if let Some(Ok(graph)) = self.state.resolved.get() {
-            for module in graph.modules.values() {
-                for registration in &module.module.registrations {
-                    if registration.kind == RegistrationKind::ExecutionPlatforms
-                        && !registration.dev_dependency
-                        && !registration.labels.is_empty()
-                    {
-                        found.push(registration.labels.clone());
-                    }
-                }
-            }
-        }
-        found
-    }
-
     /// `register_toolchains` patterns with the repository they are parsed
     /// in, in RegisteredToolchainsFunction order
     /// (skyframe/toolchains/RegisteredToolchainsFunction.java:96-104, 149-172):
@@ -1434,27 +1398,81 @@ impl RepositorySet {
     /// --ignore_dev_dependency (bazel/bzlmod/ModuleFileGlobals.java:390-411).
     /// The module graph is resolved when the root module has dependencies.
     pub(crate) fn toolchain_registrations(&self) -> Result<Vec<(String, Vec<String>)>, String> {
-        use crate::bzlmod::RegistrationKind;
+        let root = self.root_module()?;
+        self.registrations(root, crate::bzlmod::RegistrationKind::Toolchains)
+    }
+
+    /// `register_execution_platforms` patterns with the repository they are
+    /// parsed in, in RegisteredExecutionPlatformsFunction.getBzlmodExecution-
+    /// Platforms order (skyframe/toolchains/RegisteredExecutionPlatforms-
+    /// Function.java:165-189: the dependency graph's modules, root first, each
+    /// with its own repository mapping); dev registrations as for toolchains.
+    /// Every rule resolving its execution platform asks: a workspace without
+    /// a readable root module (whose failure the build reports where it
+    /// needs the module) registers none. The other modules' registrations
+    /// need the module graph: resolved when `resolve` (a rule that resolves
+    /// toolchains, which resolves it anyway), else only read when it has
+    /// already been resolved (the native lazy profile: a main-repository-only
+    /// build never resolves it). The flag: whether the list is complete.
+    pub(crate) fn execution_platform_registrations(
+        &self,
+        resolve: bool,
+    ) -> Result<(Registrations, bool), String> {
+        let Ok(root) = self.root_module() else {
+            return Ok((Vec::new(), true));
+        };
+        let complete = resolve
+            || root
+                .module_file()
+                .is_none_or(|module| module.effective_dependencies().next().is_none())
+            || matches!(self.state.resolved.get(), Some(Ok(_)));
+        if !complete {
+            let mut found = self.registrations_of(
+                root,
+                crate::bzlmod::RegistrationKind::ExecutionPlatforms,
+                false,
+            )?;
+            found.retain(|(repository, _)| repository.is_empty());
+            return Ok((found, false));
+        }
+        Ok((
+            self.registrations(root, crate::bzlmod::RegistrationKind::ExecutionPlatforms)?,
+            true,
+        ))
+    }
+
+    fn registrations(
+        &self,
+        root: &module_graph::RootModuleSnapshot,
+        kind: crate::bzlmod::RegistrationKind,
+    ) -> Result<Vec<(String, Vec<String>)>, String> {
+        self.registrations_of(root, kind, true)
+    }
+
+    /// The root module's registrations of `kind`, then (with `graph`) the
+    /// other modules' in breadth-first order.
+    fn registrations_of(
+        &self,
+        root: &module_graph::RootModuleSnapshot,
+        kind: crate::bzlmod::RegistrationKind,
+        graph: bool,
+    ) -> Result<Vec<(String, Vec<String>)>, String> {
         let ignore_dev = self.state.options.ignore_dev_dependencies;
         let mut found = Vec::new();
-        let root = self.root_module()?;
         let Some(module) = root.module_file() else {
             return Ok(found);
         };
         for registration in &module.registrations {
-            if registration.kind == RegistrationKind::Toolchains
-                && !(ignore_dev && registration.dev_dependency)
-            {
+            if registration.kind == kind && !(ignore_dev && registration.dev_dependency) {
                 found.push((String::new(), registration.labels.clone()));
             }
         }
-        if module.effective_dependencies().next().is_none() {
+        if !graph || module.effective_dependencies().next().is_none() {
             return Ok(found);
         }
         for module in self.resolve_graph()?.modules_in_bfs_order() {
             for registration in &module.module.registrations {
-                if registration.kind == RegistrationKind::Toolchains && !registration.dev_dependency
-                {
+                if registration.kind == kind && !registration.dev_dependency {
                     found.push((module.canonical_name.clone(), registration.labels.clone()));
                 }
             }
@@ -4304,6 +4322,10 @@ fn guarded_root_slot<'a>(
         .map(PathBuf::as_path)
         .map_err(Clone::clone)
 }
+
+/// Registration patterns with the repository each is parsed in (module
+/// order, `""` for the main repository).
+pub(crate) type Registrations = Vec<(String, Vec<String>)>;
 
 #[cfg(test)]
 mod tests {

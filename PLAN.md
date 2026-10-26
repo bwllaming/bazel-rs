@@ -114,8 +114,8 @@ Done since the last increment recorded under "History", one line each:
 - [ ] Aspects: parameters from rule attributes; the same aspect from `--aspects`
       and an attribute; `ctx.rule.attr` of required aspects; function
       `attr_aspects`, `toolchains_aspects`, subrules on aspects.
-- [ ] One toolchain needed on two execution platforms in one configuration;
-      `register_execution_platforms` from non-root modules.
+- [ ] One toolchain needed on two execution platforms in one configuration.
+- [x] `register_execution_platforms` from root and non-root modules.
 - [x] Console text: `INFO: Analyzed …` / `Found …` / `Elapsed time` / `Build
       completed …` in every UI mode, `DEBUG: FILE:LINE:COL:` on every `print()`
       (docs/PROGRESS.md; no critical path, `N processes` or `Target … up-to-date`).

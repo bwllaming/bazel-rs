@@ -1,0 +1,7 @@
+module(name = "dep")
+
+bazel_dep(name = "platforms", version = "1.0.0")
+
+register_execution_platforms("//:freebsd")
+
+register_execution_platforms("//:netbsd", dev_dependency = True)

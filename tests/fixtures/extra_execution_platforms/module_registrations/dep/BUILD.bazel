@@ -1,0 +1,11 @@
+platform(
+    name = "freebsd",
+    constraint_values = ["@platforms//os:freebsd"],
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "netbsd",
+    constraint_values = ["@platforms//os:netbsd"],
+    visibility = ["//visibility:public"],
+)

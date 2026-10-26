@@ -1851,8 +1851,10 @@ pub struct Engine {
     platforms: BTreeMap<ConfiguredTargetKey, Result<Arc<PlatformInfo>, PlatformError>>,
     /// Platforms being resolved (reentrancy guard).
     resolving_platforms: Vec<ConfiguredTargetKey>,
-    /// Whether execution platform registrations were checked in this build.
-    registrations_checked: bool,
+    /// The modules' `register_execution_platforms` patterns with the
+    /// repository each is parsed in (crate::repository::RepositorySet::
+    /// execution_platform_registrations), once per build.
+    module_execution_platforms: Option<Result<Vec<(String, String)>, String>>,
     /// Rules analyzed while resolving a platform (no toolchain context).
     empty_configuration_rules: BTreeSet<ConfiguredTargetKey>,
     /// RegisteredToolchainsValue per configuration, computed when a rule
@@ -2051,7 +2053,7 @@ impl Engine {
             warnings: Vec::new(),
             platforms: BTreeMap::new(),
             resolving_platforms: Vec::new(),
-            registrations_checked: false,
+            module_execution_platforms: None,
             empty_configuration_rules: BTreeSet::new(),
             registered_toolchains: BTreeMap::new(),
             computing_toolchains: Vec::new(),
@@ -3801,9 +3803,6 @@ impl Engine {
             configured,
             plan,
         )?;
-        if uses_toolchains {
-            self.check_execution_platform_registrations()?;
-        }
         if let Some(custom) = &rule.custom
             && !custom.declaration.toolchain_gaps.is_empty()
         {
@@ -4699,7 +4698,6 @@ impl Engine {
         let in_empty_configuration = !self.resolving_platforms.is_empty()
             || self.configurations.get(config).native.no_config;
         if !in_empty_configuration {
-            self.check_execution_platform_registrations()?;
             let mut processed = Vec::new();
             for group in &declaration.exec_groups {
                 let mut constraints = Vec::new();
@@ -6717,29 +6715,42 @@ impl Engine {
             == crate::configuration::default_host_platform()
     }
 
-    /// RegisteredExecutionPlatformsFunction: registered execution platforms
-    /// fail explicitly (N17 keeps the host platform as the only execution
-    /// platform), once per build, at the first toolchain-resolving rule.
-    fn check_execution_platform_registrations(&mut self) -> Result<(), String> {
-        if !self.registrations_checked {
-            self.registrations_checked = true;
-            if let Some(labels) = self
-                .repositories
-                .known_execution_platform_registrations()
+    /// The modules' execution platform registrations (patterns with the
+    /// repository each is parsed in), computed once per build: the other
+    /// modules' need the module graph, resolved when `resolve` (a rule that
+    /// resolves toolchains) or already resolved
+    /// (crate::repository::RepositorySet::execution_platform_registrations);
+    /// an incomplete list is not kept.
+    fn module_execution_platforms(
+        &mut self,
+        resolve: bool,
+    ) -> Result<Vec<(String, String)>, String> {
+        if let Some(found) = &self.module_execution_platforms {
+            return found.clone();
+        }
+        let flatten = |registrations: Vec<(String, Vec<String>)>| -> Vec<(String, String)> {
+            registrations
                 .into_iter()
-                .next()
-            {
-                return Err(format!(
-                    "register_execution_platforms({}) is not implemented in the native profile: execution platform resolution (N17)",
-                    labels
-                        .iter()
-                        .map(|label| format!("{label:?}"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                .flat_map(|(repository, patterns)| {
+                    patterns
+                        .into_iter()
+                        .map(move |pattern| (repository.clone(), pattern))
+                })
+                .collect()
+        };
+        match self.repositories.execution_platform_registrations(resolve) {
+            Ok((registrations, complete)) => {
+                let found = flatten(registrations);
+                if complete {
+                    self.module_execution_platforms = Some(Ok(found.clone()));
+                }
+                Ok(found)
+            }
+            Err(error) => {
+                self.module_execution_platforms = Some(Err(error.clone()));
+                Err(error)
             }
         }
-        Ok(())
     }
 
     /// ToolchainException.asConfiguredValueCreationException
@@ -7140,11 +7151,15 @@ impl Engine {
         let host = configuration.native.host_platform.clone();
         let target_label = configuration.native.target_platform().clone();
         let default_host = host == crate::configuration::default_host_platform();
-        // `--extra_execution_platforms`: the registered execution platforms
+        // `--extra_execution_platforms` and the modules'
+        // `register_execution_platforms`: the registered execution platforms
         // come before the host platform (PlatformKeys.findExecutionPlatformKeys,
         // :106-133), so a rule without toolchain types may run on one of
         // them; resolved first, like Bazel.
-        let extra = !configuration.native.extra_execution_platforms.is_empty();
+        let extra = !configuration.native.extra_execution_platforms.is_empty()
+            || !self
+                .module_execution_platforms(key.needs_platforms())?
+                .is_empty();
         if !key.needs_platforms() && !extra {
             if default_host {
                 return Ok(None);
@@ -7438,7 +7453,7 @@ impl Engine {
     /// for a configuration with `--extra_execution_platforms`, once per
     /// configuration: the platforms in registration order (alias-resolved
     /// PlatformInfo). Module registrations (`register_execution_platforms`)
-    /// fail explicitly before (Self::check_execution_platform_registrations).
+    /// come after the configuration's (Self::module_execution_platforms).
     /// A registered target that needs toolchain resolution itself is
     /// RegisteredExecutionPlatformsCycleReporter's cycle.
     fn execution_platforms(
@@ -7478,8 +7493,9 @@ impl Engine {
         plan: &mut Plan,
     ) -> Result<ExecutionPlatforms, ResolutionError> {
         // The configuration's platforms, parsed with the main repository
-        // mapping (:86-99).
-        let patterns = self
+        // mapping (:86-99), then the modules' registrations, each in its
+        // module's repository (:107-111, 165-189).
+        let mut patterns = self
             .configurations
             .get(config)
             .native
@@ -7487,6 +7503,10 @@ impl Engine {
             .iter()
             .map(|pattern| (String::new(), pattern.clone()))
             .collect::<Vec<_>>();
+        patterns.extend(
+            self.module_execution_platforms(true)
+                .map_err(ResolutionError::Propagated)?,
+        );
         let labels =
             self.expand_registration_patterns(&patterns, Registration::ExecutionPlatform)?;
         // configureRegisteredExecutionPlatforms (:193-243): each target in
@@ -13297,7 +13317,7 @@ impl Engine {
         let top = self.configurations.top();
         let mut plan = Plan::new();
         let mut configured = ConfiguredNodes::new();
-        self.registrations_checked = false;
+        self.module_execution_platforms = None;
         self.registered_toolchains.clear();
         self.toolchain_cycle_reports.clear();
         self.registered_execution_platforms.clear();

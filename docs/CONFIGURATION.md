@@ -1366,8 +1366,7 @@ documented divergences:
 
 ## Explicitly unsupported (unchanged boundaries)
 
-* Execution platforms (`register_execution_platforms` fails explicitly;
-  toolchain resolution uses the host platform, docs/TOOLCHAINS.md), platform
+* Platform
   `flags`, `required_settings`/select() in a target platform's tree,
   incompatible target skipping (a compatible `target_compatible_with` is
   analyzed), `--experimental_platforms_api` (docs/PLATFORMS.md).
