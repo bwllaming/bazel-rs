@@ -9,13 +9,13 @@
   "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022; a local HTTP server for the download"
  },
  "native": {
-  "binary": "/tmp/opencode/bazel-startup-quiet-target/debug/bazel-rs",
-  "sha256": "d1601894b7c8d87c55378a2ed5df85dbc8f5b11122b6aa020b6218d655c83e7e",
+  "binary": "/tmp/opencode/bazel-startup-quiet-target/release/bazel-rs",
+  "sha256": "a3f4211659cbe13f5282203beded68244badd9233e44b78c7716fbcd3ef2d727",
   "flags": "--ignore_all_rc_files [--quiet] --cache-dir=<private> --experimental-builtin-modules=false (not info); BAZEL_RS_MAX_MEMORY_MB unset"
  },
  "script": "/tmp/opencode/perf-research/quiet-capture.py",
  "script_sha256": "d1e05624365a36a09b4caea34565545a038d80c20df4ebef077f397f6394cca6",
- "fixture_sha256": "443467850bf7638d43411255a86a551f2a4cdc5d102ba643d3db8255e27ea8cc",
+ "fixture_sha256": "b2d143c68d22784a932156d35af96dbaebea7f32f1ee58c4588dcfff3b68b50d",
  "distdir_seeded_count": 19,
  "categories": "per run, the kinds of console output it shows: debug (DEBUG lines; native: the raw print lines), info (INFO lines; native also `bazel-rs: Running command line`), warning, fail_line, error (native also its `bazel-rs: action|analysis of` failure lines), native_note (other `bazel-rs:` lines, native-only), target_result (`Target //x up-to-date:`; native `LABEL<TAB>PATH`), test_summary, test_log (`Test output for`), successful_action_output, failed_action_output, run_binary_output, repository_execute_echo, query_output, info_output.",
  "comparison": "EXACT = equal exit codes (loud = quiet = genuine); of the categories both loud runs show, the quiet runs show the same ones (each kept or dropped by both), and the native quiet run shows no native_note and nothing its loud run does not. Categories only one side shows whatever the verbosity are pre-existing format differences, not compared: target_result (genuine --show_result=1 prints no `Target` lines for 2+ targets, native always prints `LABEL<TAB>PATH`; genuine prints `Target //:broken failed to build`). The native test pins the native quiet stdout/stderr bytes.",
@@ -228,7 +228,7 @@
     "warning"
    ],
    "reference_quiet_stdout": "broken-stdout\n",
-   "reference_quiet_stderr": "ERROR: <WS>/BUILD.bazel:11:11: in fails_rule rule //:bad: \nTraceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 15, column 9, in _fails\n\t\tfail(\"intentional analysis failure\")\nError in fail: intentional analysis failure\nERROR: <WS>/BUILD.bazel:11:11: Analysis of target '//:bad' (config: a7a71fd) failed\nERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nUse --verbose_failures to see the command lines of failed build steps.\nERROR: Build did NOT complete successfully\n",
+   "reference_quiet_stderr": "ERROR: <WS>/BUILD.bazel:11:11: in fails_rule rule //:bad: \nTraceback (most recent call last):\n\tFile \"<WS>/defs.bzl\", line 15, column 9, in _fails\n\t\tfail(\"intentional analysis failure\")\nError in fail: intentional analysis failure\nERROR: <WS>/BUILD.bazel:11:11: Analysis of target '//:bad' (config: a7a71fd) failed\nERROR: <WS>/BUILD.bazel:9:8: Executing genrule //:broken failed: (Exit 1): bash failed: error executing Genrule command (from genrule rule target //:broken) /bin/bash -c 'source external/bazel_tools/tools/genrule/genrule-setup.sh; echo broken-stdout; echo broken-stderr >&2; exit 1'\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nbroken-stderr\nERROR: Build did NOT complete successfully\n",
    "native_quiet_stdout": "//:noisy\t<BASE>/cache/actions/0d795551a9700dcd9cbc68633eb970e2cf382700983f34e6fea5b98ffc535e82/outputs/bazel-out/k8-fastbuild/bin/noisy.txt\n//:uses_old\t<BASE>/cache/actions/a122c5266304866b89e6b45cf2629061acb0ce394491cf6a23a502c788ef1d01/outputs/bazel-out/k8-fastbuild/bin/uses_old.txt\n",
    "native_quiet_stderr": "ERROR: analysis of //:bad: Traceback (most recent call last):\n  File <builtin>, in <module>\n  * //:defs.bzl:15, in _fails\n      fail(\"intentional analysis failure\")\nerror: fail: intentional analysis failure\n  --> //:defs.bzl:15:5\n   |\n15 |     fail(\"intentional analysis failure\")\n   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n   |\n\nERROR: action '//:broken': action '//:broken' failed (exit status: 1):\nstdout:\nbroken-stdout\n\nstderr:\nbroken-stderr\n\n\nUse --sandbox_debug to see verbose messages from the sandbox and retain the sandbox build root for debugging\nERROR: Build did NOT complete successfully\n"
   },
@@ -482,7 +482,7 @@
     "debug"
    ],
    "reference_quiet_stdout": "",
-   "reference_quiet_stderr": "repo-execute-stderr\nrepo-execute-stdout\nTarget //:fetched_copy up-to-date:\n  bazel-bin/fetched_copy.txt\n",
+   "reference_quiet_stderr": "repo-execute-stdout\nrepo-execute-stderr\nTarget //:fetched_copy up-to-date:\n  bazel-bin/fetched_copy.txt\n",
    "native_quiet_stdout": "//:fetched_copy\t<BASE>/cache/actions/02f68f956e0271c2946905ea6f7debb6af29eb7c66c2c27fe8519d40bde3f1e6/outputs/bazel-out/k8-fastbuild/bin/fetched_copy.txt\n",
    "native_quiet_stderr": "repo-execute-stdout\nrepo-execute-stderr\n"
   },

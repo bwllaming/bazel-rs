@@ -292,12 +292,15 @@ mod values {
         pub print_location: RefCell<Option<String>>,
     }
 
-    /// Event.makeDebugPrintHandler (Event.java): `DEBUG: LOCATION: TEXT`.
+    /// Event.makeDebugPrintHandler (Event.java): `DEBUG: LOCATION: TEXT`
+    /// (a DEBUG event: dropped under `--quiet`, crate::ui).
     impl starlark::PrintHandler for Collector {
         fn println(&self, text: &str) -> starlark::Result<()> {
             match self.print_location.borrow_mut().take() {
-                Some(location) if !location.is_empty() => eprintln!("DEBUG: {location}: {text}"),
-                _ => eprintln!("DEBUG: {text}"),
+                Some(location) if !location.is_empty() => {
+                    crate::note!("DEBUG: {location}: {text}")
+                }
+                _ => crate::note!("DEBUG: {text}"),
             }
             Ok(())
         }
@@ -571,7 +574,6 @@ pub(crate) fn evaluate_source_with_builtins(
     };
     Module::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
-        eval.set_print_handler(&crate::ui::NotePrints);
         eval.extra = Some(&collector);
         eval.set_print_handler(&collector);
         eval.set_max_callstack_size(128)

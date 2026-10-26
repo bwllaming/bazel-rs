@@ -22,6 +22,8 @@ use std::process::{Command, Output};
 
 const MODULE: &str = r##"module(name = "q")
 
+print("module file print")
+
 fetched = use_repo_rule("//:repo.bzl", "fetched")
 
 fetched(name = "fetched")
@@ -326,7 +328,10 @@ fn quiet_keeps_only_errors_and_the_commands_output() {
         // What the quiet run drops is there without --quiet (the
         // informational lines of the fixture), unless it is `info`.
         let loud_stderr = ws.normalize(&loud.stderr);
-        if *name != "info" && !loud_stderr.contains("bzl top-level print") {
+        if *name != "info"
+            && !(loud_stderr.contains("bzl top-level print")
+                && loud_stderr.contains("DEBUG: <WS>/MODULE.bazel:3:6: module file print"))
+        {
             failures.push(format!(
                 "{name}: loud stderr without the print:\n{loud_stderr}"
             ));
