@@ -26,14 +26,16 @@ impl Digest {
         }
     }
 
-    fn encode(&self) -> Vec<u8> {
+    /// The encoded `Digest` message.
+    pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         string(&mut out, 1, &self.hash);
         varint_field(&mut out, 2, self.size);
         out
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, String> {
+    /// A decoded `Digest` message.
+    pub fn decode(bytes: &[u8]) -> Result<Self, String> {
         let mut digest = Digest {
             hash: String::new(),
             size: 0,
@@ -59,7 +61,8 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn varint(out: &mut Vec<u8>, mut value: u64) {
+/// A protobuf varint.
+pub fn varint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
         value >>= 7;
@@ -71,25 +74,27 @@ fn varint(out: &mut Vec<u8>, mut value: u64) {
     }
 }
 
-fn key(out: &mut Vec<u8>, field: u32, wire: u8) {
+/// A field key (number and wire type).
+pub fn key(out: &mut Vec<u8>, field: u32, wire: u8) {
     varint(out, (u64::from(field) << 3) | u64::from(wire));
 }
 
-fn bytes_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
+/// A length-delimited field, written even when empty.
+pub fn bytes_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
     key(out, field, 2);
     varint(out, value.len() as u64);
     out.extend_from_slice(value);
 }
 
 /// A proto3 singular string/bytes field: omitted when empty.
-fn string(out: &mut Vec<u8>, field: u32, value: &str) {
+pub fn string(out: &mut Vec<u8>, field: u32, value: &str) {
     if !value.is_empty() {
         bytes_field(out, field, value.as_bytes());
     }
 }
 
 /// A proto3 singular scalar: omitted when zero.
-fn varint_field(out: &mut Vec<u8>, field: u32, value: u64) {
+pub fn varint_field(out: &mut Vec<u8>, field: u32, value: u64) {
     if value != 0 {
         key(out, field, 0);
         varint(out, value);
@@ -97,11 +102,12 @@ fn varint_field(out: &mut Vec<u8>, field: u32, value: u64) {
 }
 
 /// A singular message field: present even when the message is empty.
-fn message(out: &mut Vec<u8>, field: u32, value: &[u8]) {
+pub fn message(out: &mut Vec<u8>, field: u32, value: &[u8]) {
     bytes_field(out, field, value);
 }
 
-enum Value<'a> {
+/// A decoded field value (fixed-width values are skipped).
+pub enum Value<'a> {
     Varint(u64),
     Bytes(&'a [u8]),
     Fixed,
@@ -120,7 +126,8 @@ fn read_varint(bytes: &[u8], position: &mut usize) -> Result<u64, String> {
     Err("malformed protobuf varint".into())
 }
 
-fn fields(bytes: &[u8]) -> Result<Vec<(u64, Value<'_>)>, String> {
+/// The fields of an encoded message, in wire order.
+pub fn fields(bytes: &[u8]) -> Result<Vec<(u64, Value<'_>)>, String> {
     let mut position = 0;
     let mut out = Vec::new();
     while position < bytes.len() {
@@ -157,7 +164,8 @@ fn fields(bytes: &[u8]) -> Result<Vec<(u64, Value<'_>)>, String> {
     Ok(out)
 }
 
-fn utf8(bytes: &[u8]) -> Result<String, String> {
+/// A protobuf string's text.
+pub fn utf8(bytes: &[u8]) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| "invalid UTF-8 in protobuf string".into())
 }
 
@@ -210,7 +218,7 @@ impl Command {
                     }
                     command.environment.insert(name, value);
                 }
-                (7, Value::Bytes(value)) => command.output_paths.push(utf8(value)?),
+                (3 | 7, Value::Bytes(value)) => command.output_paths.push(utf8(value)?),
                 _ => {}
             }
         }
@@ -218,6 +226,14 @@ impl Command {
     }
 
     pub fn encode(&self) -> Vec<u8> {
+        self.encode_with(true)
+    }
+
+    /// With `output_paths` false, the outputs are REAPI 2.0's
+    /// `output_files` (field 3; RemoteExecutionService.buildCommand for a
+    /// server whose highest API version is below 2.1; every modelled cached
+    /// output is a file).
+    pub fn encode_with(&self, output_paths: bool) -> Vec<u8> {
         let mut out = Vec::new();
         for argument in &self.arguments {
             bytes_field(&mut out, 1, argument.as_bytes());
@@ -228,11 +244,18 @@ impl Command {
             string(&mut variable, 2, value);
             message(&mut out, 2, &variable);
         }
+        if !output_paths {
+            for path in &self.output_paths {
+                bytes_field(&mut out, 3, path.as_bytes());
+            }
+        }
         if !self.platform.is_empty() {
             message(&mut out, 5, &platform(&self.platform));
         }
-        for path in &self.output_paths {
-            bytes_field(&mut out, 7, path.as_bytes());
+        if output_paths {
+            for path in &self.output_paths {
+                bytes_field(&mut out, 7, path.as_bytes());
+            }
         }
         out
     }

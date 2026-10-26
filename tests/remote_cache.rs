@@ -601,24 +601,19 @@ fn credential_cache_duration_and_mid_build_helper_failure() {
 }
 
 #[test]
-fn grpc_caches_and_remote_execution_are_explicit() {
+fn remote_execution_and_netrc_are_explicit() {
+    // gRPC caches are tests/remote_grpc_cache.rs's.
     let ws = Workspace::new();
-    for (option, error) in [
-        ("--remote_cache=grpc://127.0.0.1:1", "gRPC remote caches"),
-        ("--remote_cache=127.0.0.1:1", "gRPC remote caches"),
-        (
-            "--remote_executor=grpc://127.0.0.1:1",
-            "remote execution is not implemented",
-        ),
-    ] {
-        let failed = ws.run("c", &["build", option, "//pkg:gen"]);
-        assert!(!failed.status.success());
-        assert!(
-            stderr(&failed).contains(error),
-            "{option}: {}",
-            stderr(&failed)
-        );
-    }
+    let failed = ws.run(
+        "c",
+        &["build", "--remote_executor=grpc://127.0.0.1:1", "//pkg:gen"],
+    );
+    assert!(!failed.status.success());
+    assert!(
+        stderr(&failed).contains("remote execution is not implemented"),
+        "{}",
+        stderr(&failed)
+    );
     // .netrc fallback for the cache is explicit.
     fs::write(
         ws.0.join("home/.netrc"),

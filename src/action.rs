@@ -5688,6 +5688,7 @@ fn with_embedded_inputs(action: &Action, cas: &Path) -> Result<Action, String> {
 fn remote_action(
     action: &Action,
     prepared: &PreparedAction,
+    output_paths: bool,
 ) -> Result<crate::remote_cache::RemoteAction, String> {
     use crate::remote_cache::path_string;
     let file_digest = |input: &Input| crate::reapi::Digest {
@@ -5757,6 +5758,7 @@ fn remote_action(
         &symlinks,
         &outputs,
         remote_policy(action).1,
+        output_paths,
     )
 }
 
@@ -5956,8 +5958,16 @@ pub fn execute_with_remote(
         }
         (remote, _) => remote,
     };
+    // The gRPC capability check precedes the key (initUseOutputPaths); its
+    // failure fails the action (RemoteSpawnCache.java:189-197).
+    let output_paths = match remote.map(|remote| remote.output_paths()) {
+        Some(Err(crate::remote_cache::CacheError::Capabilities(error))) => return Err(error),
+        Some(Err(error)) => return Err(error.to_string()),
+        Some(Ok(output_paths)) => output_paths,
+        None => true,
+    };
     let remote_spec = match remote {
-        Some(_) => match remote_action(action, &prepared) {
+        Some(_) => match remote_action(action, &prepared, output_paths) {
             Ok(spec) => Some(spec),
             Err(reason) => {
                 crate::remote_cache::warn(&crate::remote_cache::CacheError::Other(format!(
@@ -8299,7 +8309,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut action = fixture.action();
         action.inputs = vec![(dir.clone().into(), "in/dir".into())];
         action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
-        let directory_key = remote_action(&action, &prepare(&action, None).unwrap())
+        let directory_key = remote_action(&action, &prepare(&action, None).unwrap(), true)
             .unwrap()
             .key;
         let mut files = fixture.action();
@@ -8318,13 +8328,13 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             )
         })
         .collect();
-        let files_key = remote_action(&files, &prepare(&files, None).unwrap())
+        let files_key = remote_action(&files, &prepare(&files, None).unwrap(), true)
             .unwrap()
             .key;
         assert_eq!(directory_key, files_key);
         std::os::unix::fs::symlink("missing.txt", dir.join("dangling")).unwrap();
         forget_source_directories();
-        let error = remote_action(&action, &prepare(&action, None).unwrap())
+        let error = remote_action(&action, &prepare(&action, None).unwrap(), true)
             .err()
             .unwrap();
         assert_eq!(

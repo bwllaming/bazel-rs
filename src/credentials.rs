@@ -697,6 +697,10 @@ pub struct Credentials {
     timeout: Duration,
     cache_duration: Duration,
     cache: Mutex<HashMap<String, (Response, Instant)>>,
+    /// One lock per URI: concurrent requests for a URI wait for one helper
+    /// invocation (Caffeine's `Cache.get(key, loader)` in
+    /// CredentialHelperCredentials.getRequestMetadata).
+    loading: Mutex<HashMap<String, std::sync::Arc<Mutex<()>>>>,
     invocations: Mutex<Vec<String>>,
 }
 
@@ -716,6 +720,7 @@ impl Credentials {
             timeout: options.timeout,
             cache_duration: options.cache_duration,
             cache: Mutex::new(HashMap::new()),
+            loading: Mutex::new(HashMap::new()),
             invocations: Mutex::new(Vec::new()),
         };
         for helper in &options.helpers {
@@ -764,15 +769,33 @@ impl Credentials {
     /// CredentialHelperCredentials.getRequestMetadata without a fallback:
     /// `Ok(None)` when no helper applies to `uri`.
     pub fn headers(&self, uri: &str) -> Result<Option<Vec<(String, String)>>, HelperError> {
-        let now = Instant::now();
-        if let Some((response, expiry)) = self.cache.lock().expect("cache lock").get(uri)
-            && *expiry > now
-        {
-            return Ok(Some(response.pairs()));
+        let cached = || {
+            let now = Instant::now();
+            self.cache
+                .lock()
+                .expect("cache lock")
+                .get(uri)
+                .filter(|(_, expiry)| *expiry > now)
+                .map(|(response, _)| response.pairs())
+        };
+        if let Some(pairs) = cached() {
+            return Ok(Some(pairs));
         }
         let Some(helper) = self.helper_for(uri) else {
             return Ok(None);
         };
+        let lock = self
+            .loading
+            .lock()
+            .expect("loading lock")
+            .entry(uri.to_owned())
+            .or_default()
+            .clone();
+        let _loading = lock.lock().expect("uri lock");
+        if let Some(pairs) = cached() {
+            return Ok(Some(pairs));
+        }
+        let now = Instant::now();
         self.invocations
             .lock()
             .expect("invocation lock")

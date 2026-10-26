@@ -3941,7 +3941,7 @@ fn mod_arguments(
 /// Credential helpers and the remote cache (CredentialModule,
 /// BazelRepositoryModule.beforeCommand and RemoteModule.setup; N41,
 /// docs/REMOTE_CACHE.md): helper paths resolve eagerly for every command; an
-/// http(s) cache is set up for every command too (RemoteOptions is a common
+/// http(s) or gRPC cache is set up for every command too (RemoteOptions is a common
 /// option class), so an http:// cache invokes the helper at startup.
 /// Returns whether a remote cache is active.
 fn setup_credentials_and_remote(
@@ -3950,11 +3950,9 @@ fn setup_credentials_and_remote(
     remote_options: &bazel_rs::remote_cache::RemoteOptions,
 ) -> Result<bool, String> {
     let path = std::env::var("PATH").unwrap_or_default();
-    let http_cache = {
-        let lower = remote_options.cache.to_ascii_lowercase();
-        remote_options.executor.is_empty()
-            && (lower.starts_with("http://") || lower.starts_with("https://"))
-    };
+    // RemoteModule.beforeCommand creates the credentials for any remote
+    // cache (http(s) or gRPC).
+    let remote_cache = remote_options.executor.is_empty() && !remote_options.cache.is_empty();
     let credentials =
         match bazel_rs::credentials::Credentials::new(credential_options, Some(root), &path) {
             Ok(credentials) => credentials,
@@ -3962,7 +3960,7 @@ fn setup_credentials_and_remote(
                 // Both modules report the path error; the last exit wins
                 // (BazelRepositoryModule.java:446-477, RemoteModule.java:604-621).
                 eprintln!("ERROR: {error}");
-                if http_cache {
+                if remote_cache {
                     eprintln!("ERROR: {error}");
                     return Err("Error initializing RemoteModule".into());
                 }

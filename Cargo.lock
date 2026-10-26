@@ -142,10 +142,13 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "bzip2",
  "fancy-regex",
  "flate2",
  "fs2",
+ "h2",
+ "http",
  "hyper",
  "landlock",
  "libc",
@@ -155,6 +158,9 @@ dependencies = [
  "postcard",
  "reqwest",
  "rustix",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "ruzstd",
  "serde",
  "serde_json",
@@ -164,6 +170,8 @@ dependencies = [
  "tar",
  "tempfile",
  "tikv-jemallocator",
+ "tokio",
+ "tokio-rustls",
  "zip",
 ]
 
@@ -896,6 +904,25 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "h2"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "indexmap",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2519,6 +2546,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "libc",
+ "pin-project-lite",
  "tokio",
 ]
 

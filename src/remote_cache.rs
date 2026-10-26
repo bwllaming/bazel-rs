@@ -1,4 +1,4 @@
-//! Bazel 9.3's HTTP remote cache (N41, docs/REMOTE_CACHE.md).
+//! Bazel 9.3's HTTP and gRPC remote caches (N41, docs/REMOTE_CACHE.md).
 //!
 //! Pinned source (`src/main/java/com/google/devtools/build/lib/remote/`):
 //! `RemoteModule.java:429-640, 1458-1490` (setup and the http:// credential
@@ -11,15 +11,17 @@
 //! The action key is computed exactly as Bazel computes it
 //! (crate::reapi), so a native build and genuine Bazel share entries when
 //! their spawns agree (same argv, environment, inputs and output paths).
-//! gRPC caches and remote execution are explicit failures.
+//! The gRPC protocol is crate::remote_grpc; remote execution is an explicit
+//! failure.
 
 use crate::credentials::{Credentials, HelperError};
+pub use crate::grpc_channel::TlsOptions;
 use crate::reapi::{self, Digest};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The modelled `RemoteOptions` (remote/options/RemoteOptions.java).
@@ -36,6 +38,25 @@ pub struct RemoteOptions {
     pub timeout: Duration,
     pub headers: Vec<(String, String)>,
     pub cache_headers: Vec<(String, String)>,
+    /// `--remote_retries` (gRPC; HTTP requests are not retried).
+    pub retries: i32,
+    pub retry_max_delay: Duration,
+    pub max_connections: i32,
+    pub max_concurrency_per_connection: i32,
+    /// `--remote_download_outputs`: accepted; the native profile always
+    /// materializes every output (docs/REMOTE_CACHE.md).
+    pub download_outputs: DownloadOutputs,
+    /// `--tls_certificate`, `--tls_client_certificate`, `--tls_client_key`,
+    /// `--tls_authority_override` (AuthAndTLSOptions).
+    pub tls: TlsOptions,
+}
+
+/// RemoteOutputsMode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadOutputs {
+    All,
+    Minimal,
+    Toplevel,
 }
 
 impl Default for RemoteOptions {
@@ -50,8 +71,33 @@ impl Default for RemoteOptions {
             timeout: Duration::from_secs(60),
             headers: Vec::new(),
             cache_headers: Vec::new(),
+            retries: 5,
+            retry_max_delay: Duration::from_secs(5),
+            max_connections: 100,
+            max_concurrency_per_connection: 100,
+            download_outputs: DownloadOutputs::Toplevel,
+            tls: TlsOptions::default(),
         }
     }
+}
+
+/// CommonRemoteOptions.RemoteDurationConverter (:61-77): unitless values
+/// are seconds.
+fn remote_duration(option: &str, value: &str) -> Result<Duration, String> {
+    let input = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        format!("{value}s")
+    } else {
+        value.to_owned()
+    };
+    crate::credentials::parse_duration(&input)
+        .map_err(|error| format!("While parsing option --{option}={value}: {error}"))
+}
+
+/// Converters.IntegerConverter.
+fn integer(option: &str, value: &str) -> Result<i32, String> {
+    value
+        .parse::<i32>()
+        .map_err(|_| format!("While parsing option --{option}={value}: '{value}' is not an int"))
 }
 
 fn value_option<'a>(
@@ -125,17 +171,118 @@ impl RemoteOptions {
         }
         if let Some(found) = value_option(arg, next, &["remote_timeout"]) {
             return Some(found.and_then(|(value, used)| {
-                // CommonRemoteOptions.RemoteDurationConverter (:61-77):
-                // unitless values are seconds.
-                let input = if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
-                    format!("{value}s")
-                } else {
-                    value.to_owned()
-                };
-                self.timeout = crate::credentials::parse_duration(&input).map_err(|error| {
-                    format!("While parsing option --remote_timeout={value}: {error}")
-                })?;
+                self.timeout = remote_duration("remote_timeout", value)?;
                 Ok(used)
+            }));
+        }
+        if let Some(found) = value_option(arg, next, &["remote_retry_max_delay"]) {
+            return Some(found.and_then(|(value, used)| {
+                self.retry_max_delay = remote_duration("remote_retry_max_delay", value)?;
+                Ok(used)
+            }));
+        }
+        for (names, target) in [
+            (
+                &["remote_retries", "experimental_remote_retry_max_attempts"][..],
+                &mut self.retries,
+            ),
+            (&["remote_max_connections"][..], &mut self.max_connections),
+            (
+                &["remote_max_concurrency_per_connection"][..],
+                &mut self.max_concurrency_per_connection,
+            ),
+        ] {
+            if let Some(found) = value_option(arg, next, names) {
+                return Some(found.and_then(|(value, used)| {
+                    *target = integer(names[0], value)?;
+                    Ok(used)
+                }));
+            }
+        }
+        if let Some(found) = value_option(
+            arg,
+            next,
+            &[
+                "remote_download_outputs",
+                "experimental_remote_download_outputs",
+            ],
+        ) {
+            return Some(found.and_then(|(value, used)| {
+                self.download_outputs = match value.to_ascii_lowercase().as_str() {
+                    "all" => DownloadOutputs::All,
+                    "minimal" => DownloadOutputs::Minimal,
+                    "toplevel" => DownloadOutputs::Toplevel,
+                    _ => {
+                        return Err(format!(
+                            "While parsing option --remote_download_outputs={value}: Not a valid download remote outputs: '{value}' (should be all, minimal or toplevel)"
+                        ));
+                    }
+                };
+                Ok(used)
+            }));
+        }
+        // Expansion options (RemoteOptions.java:542-578).
+        for (names, mode) in [
+            (
+                [
+                    "remote_download_minimal",
+                    "experimental_remote_download_minimal",
+                ],
+                DownloadOutputs::Minimal,
+            ),
+            (
+                [
+                    "remote_download_toplevel",
+                    "experimental_remote_download_toplevel",
+                ],
+                DownloadOutputs::Toplevel,
+            ),
+            (
+                ["remote_download_all", "remote_download_all"],
+                DownloadOutputs::All,
+            ),
+        ] {
+            if let Some(name) = arg.strip_prefix("--")
+                && names.contains(&name)
+            {
+                self.download_outputs = mode;
+                return Some(Ok(false));
+            }
+        }
+        // `--remote_cache_compression` (default false) is not modelled when
+        // enabled (zstd ByteStream resources).
+        for name in [
+            "remote_cache_compression",
+            "experimental_remote_cache_compression",
+        ] {
+            if let Some(value) = crate::configuration::boolean_option(arg, name) {
+                return Some(value.and_then(|value| {
+                    if value {
+                        Err(format!(
+                            "unsupported option {arg}: zstd remote cache compression is not implemented by the native profile (Bazel's default --noremote_cache_compression is)"
+                        ))
+                    } else {
+                        Ok(false)
+                    }
+                }));
+            }
+        }
+        for (name, target) in [
+            ("tls_certificate", &mut self.tls.certificate),
+            ("tls_client_certificate", &mut self.tls.client_certificate),
+            ("tls_client_key", &mut self.tls.client_key),
+        ] {
+            if let Some(found) = value_option(arg, next, &[name]) {
+                return Some(found.map(|(value, used)| {
+                    *target = (!value.is_empty()).then(|| PathBuf::from(value));
+                    used
+                }));
+            }
+        }
+        if let Some(found) = value_option(arg, next, &["tls_authority_override"]) {
+            return Some(found.map(|(value, used)| {
+                self.tls.authority_override = (!value.is_empty()).then(|| value.to_owned());
+                used
             }));
         }
         for (name, list) in [
@@ -251,6 +398,10 @@ impl CacheUri {
 #[derive(Debug)]
 pub enum CacheError {
     Credentials(HelperError),
+    /// The gRPC capability check failed: every action using the cache
+    /// fails with this message (RemoteSpawnCache.java:189-197 without
+    /// `--remote_local_fallback`).
+    Capabilities(String),
     Other(String),
 }
 
@@ -258,28 +409,51 @@ impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CacheError::Credentials(error) => write!(f, "{error}"),
-            CacheError::Other(error) => f.write_str(error),
+            CacheError::Capabilities(error) | CacheError::Other(error) => f.write_str(error),
         }
     }
 }
 
-/// The configured HTTP cache of this invocation.
-pub struct RemoteCache {
+/// The HTTP protocol (HttpCacheClient).
+struct HttpCache {
     uri: CacheUri,
     credential_uri: String,
     client: reqwest::blocking::Client,
     headers: Vec<(String, String)>,
+}
+
+enum Backend {
+    Http(HttpCache),
+    Grpc(Box<crate::remote_grpc::GrpcCache>),
+}
+
+impl From<crate::grpc_channel::Status> for CacheError {
+    fn from(status: crate::grpc_channel::Status) -> Self {
+        CacheError::Other(status.to_string())
+    }
+}
+
+/// The configured remote cache of this invocation.
+pub struct RemoteCache {
+    backend: Backend,
     pub accept_cached: bool,
     pub upload_local_results: bool,
     uploaded: Mutex<HashSet<Digest>>,
+    /// In-flight uploads: concurrent uploads of one blob run once
+    /// (CombinedCache/RemoteCacheClient upload deduplication).
+    uploading: Mutex<HashMap<Digest, Arc<Mutex<()>>>>,
     hits: AtomicUsize,
 }
 
 impl std::fmt::Debug for RemoteCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RemoteCache")
-            .field("uri", &self.credential_uri)
-            .finish()
+        match &self.backend {
+            Backend::Http(http) => f
+                .debug_struct("RemoteCache")
+                .field("uri", &http.credential_uri)
+                .finish(),
+            Backend::Grpc(grpc) => f.debug_struct("RemoteCache").field("grpc", grpc).finish(),
+        }
     }
 }
 
@@ -321,16 +495,65 @@ pub fn setup(
         return Ok(None);
     }
     let lower = options.cache.to_ascii_lowercase();
+    // Intentional safety divergence (docs/REMOTE_CACHE.md): until native
+    // execution parity with Bazel is established, native results are written
+    // to a shared cache only on explicit opt-in. Reads stay Bazel-like.
+    let upload_local_results = options.upload_local_results && upload_opt_in();
+    let warn_upload = || {
+        if options.upload_local_results && !upload_local_results {
+            crate::note!(
+                "WARNING: native remote cache uploads are disabled by default (a safety divergence from Bazel's --remote_upload_local_results); set {UPLOAD_OPT_IN}=1 to upload local results"
+            );
+        }
+    };
     if !(lower.starts_with("http://") || lower.starts_with("https://")) {
         // GrpcCacheClient.isRemoteCacheOptions: anything else is gRPC.
-        return Err(fail(format!(
-            "unsupported option --remote_cache={}: gRPC remote caches (grpc://, grpcs://, unix:, or no scheme) are not implemented by the native profile; use an http:// or https:// cache",
-            options.cache
-        )));
-    }
-    if !options.accept_cached && !options.upload_local_results {
-        // RemoteSpawnCache.lookup returns NO_RESULT_NO_STORE (:90-92), but
-        // the module still initializes; keep the startup check below.
+        let grpc = crate::remote_grpc::GrpcCache::new(
+            &options.cache,
+            crate::remote_grpc::GrpcOptions {
+                instance_name: options.instance_name.clone(),
+                timeout: options.timeout,
+                retries: options.retries.max(0) as u32,
+                retry_max_delay: options.retry_max_delay,
+                // newCacheHeadersInterceptor (TracingMetadataUtils.java:139-143).
+                headers: options
+                    .headers
+                    .iter()
+                    .chain(&options.cache_headers)
+                    .cloned()
+                    .collect(),
+                limits: crate::grpc_channel::Limits {
+                    max_connections: options.max_connections.max(0) as usize,
+                    max_concurrency_per_connection: options.max_concurrency_per_connection.max(0)
+                        as usize,
+                    connect_timeout: options.timeout,
+                },
+                tls: options.tls.clone(),
+                upload_local_results: options.upload_local_results,
+            },
+        )
+        .map_err(|error| fail(format!("--remote_cache={}: {error}", options.cache)))?;
+        // GoogleAuthUtils.newCredentials falls back to .netrc for gRPC
+        // services too.
+        let probe = grpc.credential_uri("build.bazel.remote.execution.v2.Capabilities");
+        if credentials.is_none_or(|credentials| credentials.helper_for(&probe).is_none())
+            && let Some(netrc) = netrc_file()
+        {
+            return Err(fail(format!(
+                "the remote cache {} has no matching --credential_helper and Bazel would fall back to the .netrc file {}; .netrc credentials are not implemented by the native profile",
+                options.cache,
+                netrc.display()
+            )));
+        }
+        warn_upload();
+        return Ok(Some(RemoteCache {
+            backend: Backend::Grpc(Box::new(grpc)),
+            accept_cached: options.accept_cached,
+            upload_local_results,
+            uploaded: Mutex::new(HashSet::new()),
+            uploading: Mutex::new(HashMap::new()),
+            hits: AtomicUsize::new(0),
+        }));
     }
     let uri = CacheUri::parse(&options.cache).map_err(fail)?;
     let credential_uri = uri.credential_uri(&options.cache);
@@ -363,6 +586,7 @@ pub fn setup(
         )));
     }
     let mut builder = reqwest::blocking::Client::builder()
+        .use_rustls_tls()
         .no_proxy()
         .http1_only()
         .referer(false)
@@ -372,6 +596,41 @@ pub fn setup(
         builder = builder
             .timeout(options.timeout)
             .connect_timeout(options.timeout);
+    }
+    // AuthAndTLSOptions for an https:// cache (HttpCacheClient's SslContext).
+    if let Some(path) = &options.tls.certificate {
+        let pem = std::fs::read(path).map_err(|error| {
+            fail(format!(
+                "Failed to init TLS infrastructure using '{}' as root certificate: {error}",
+                path.display()
+            ))
+        })?;
+        let certificates = reqwest::Certificate::from_pem_bundle(&pem).map_err(|error| {
+            fail(format!(
+                "Failed to init TLS infrastructure using '{}' as root certificate: {error}",
+                path.display()
+            ))
+        })?;
+        builder = builder.tls_built_in_root_certs(false);
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    if let (Some(certificate), Some(key)) =
+        (&options.tls.client_certificate, &options.tls.client_key)
+    {
+        let failed = |error: String| {
+            fail(format!(
+                "Failed to init TLS infrastructure using '{}' as client certificate: {error}",
+                certificate.display()
+            ))
+        };
+        let mut pem = std::fs::read(certificate).map_err(|error| failed(error.to_string()))?;
+        pem.push(b'\n');
+        pem.extend(std::fs::read(key).map_err(|error| failed(error.to_string()))?);
+        builder = builder.identity(
+            reqwest::Identity::from_pem(&pem).map_err(|error| failed(error.to_string()))?,
+        );
     }
     let client = builder
         .build()
@@ -383,23 +642,18 @@ pub fn setup(
         .chain(&options.cache_headers)
         .cloned()
         .collect();
-    // Intentional safety divergence (docs/REMOTE_CACHE.md): until native
-    // execution parity with Bazel is established, native results are written
-    // to a shared cache only on explicit opt-in. Reads stay Bazel-like.
-    let upload_local_results = options.upload_local_results && upload_opt_in();
-    if options.upload_local_results && !upload_local_results {
-        crate::note!(
-            "WARNING: native remote cache uploads are disabled by default (a safety divergence from Bazel's --remote_upload_local_results); set {UPLOAD_OPT_IN}=1 to upload local results"
-        );
-    }
+    warn_upload();
     Ok(Some(RemoteCache {
-        uri,
-        credential_uri,
-        client,
-        headers,
+        backend: Backend::Http(HttpCache {
+            uri,
+            credential_uri,
+            client,
+            headers,
+        }),
         accept_cached: options.accept_cached,
         upload_local_results,
         uploaded: Mutex::new(HashSet::new()),
+        uploading: Mutex::new(HashMap::new()),
         hits: AtomicUsize::new(0),
     }))
 }
@@ -486,6 +740,7 @@ pub fn remote_action(
     symlinks: &BTreeMap<String, String>,
     outputs: &[String],
     may_be_executed_remotely: bool,
+    use_output_paths: bool,
 ) -> Result<RemoteAction, String> {
     let mut output_paths = outputs.to_vec();
     output_paths.sort();
@@ -495,7 +750,7 @@ pub fn remote_action(
         output_paths,
         platform: Vec::new(),
     }
-    .encode();
+    .encode_with(use_output_paths);
     let command_digest = Digest::of(&command);
     let mut files: BTreeMap<String, reapi::InputFile> = inputs
         .iter()
@@ -535,11 +790,7 @@ pub fn remote_action(
     })
 }
 
-impl RemoteCache {
-    pub fn hits(&self) -> usize {
-        self.hits.load(Ordering::Relaxed)
-    }
-
+impl HttpCache {
     /// AbstractHttpHandler.addCredentialHeaders: URI user info is Basic
     /// authentication (Guava base64Url); otherwise the helper's headers.
     fn credential_headers(&self) -> Result<Vec<(String, String)>, CacheError> {
@@ -677,18 +928,52 @@ impl RemoteCache {
         }
         unreachable!("the loop returns on its second attempt")
     }
+}
+
+impl RemoteCache {
+    pub fn hits(&self) -> usize {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    /// Whether `Command` lists `output_paths` (REAPI >= 2.1) rather than
+    /// `output_files`: always for HTTP; for gRPC it needs the capability
+    /// check, whose failure fails the action (CacheError::Capabilities).
+    pub fn output_paths(&self) -> Result<bool, CacheError> {
+        match &self.backend {
+            Backend::Http(_) => Ok(true),
+            Backend::Grpc(grpc) => grpc.capabilities().map_err(CacheError::Capabilities),
+        }
+    }
+
+    fn action_result(&self, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
+        match &self.backend {
+            Backend::Http(http) => http.get(false, &key.hash),
+            Backend::Grpc(grpc) => {
+                grpc.capabilities().map_err(CacheError::Capabilities)?;
+                Ok(grpc.get_action_result(key)?.map(|bytes| bytes.to_vec()))
+            }
+        }
+    }
+
+    fn read(&self, digest: &Digest, key: &Digest) -> Result<Option<Vec<u8>>, CacheError> {
+        match &self.backend {
+            Backend::Http(http) => http.get(true, &digest.hash),
+            Backend::Grpc(grpc) => Ok(grpc.read_blob(digest, &key.hash)?),
+        }
+    }
 
     fn blob(
         &self,
         digest: &Digest,
         inline: &[u8],
         what: &str,
+        key: &Digest,
     ) -> Result<Option<Vec<u8>>, CacheError> {
         // Inlined contents are verified like downloaded blobs.
         let bytes = if !inline.is_empty() || digest.size == 0 {
             inline.to_vec()
         } else {
-            match self.get(true, &digest.hash)? {
+            match self.read(digest, key)? {
                 Some(bytes) => bytes,
                 None => return Ok(None),
             }
@@ -715,7 +1000,7 @@ impl RemoteCache {
         action: &RemoteAction,
         outputs: &[(String, bool)],
     ) -> Result<Option<Hit>, CacheError> {
-        let Some(bytes) = self.get(false, &action.key.hash)? else {
+        let Some(bytes) = self.action_result(&action.key)? else {
             return Ok(None);
         };
         let result = reapi::ActionResult::decode(&bytes).map_err(|error| {
@@ -735,7 +1020,7 @@ impl RemoteCache {
                 // (else SkyframeActionExecutor.checkOutputs fails it as `not
                 // a symlink`, a miss here).
                 Some(_) if *symlink => return Ok(None),
-                Some(file) => match self.blob(&file.digest, &file.contents, output)? {
+                Some(file) => match self.blob(&file.digest, &file.contents, output, &action.key)? {
                     Some(bytes) => downloaded.push(Output::File(bytes)),
                     None => return Ok(None),
                 },
@@ -757,7 +1042,7 @@ impl RemoteCache {
             }
         }
         let stream = |raw: &[u8], digest: &Option<Digest>, what: &str| match digest {
-            Some(digest) => self.blob(digest, raw, what),
+            Some(digest) => self.blob(digest, raw, what, &action.key),
             None => Ok(Some(raw.to_vec())),
         };
         let Some(stdout) = stream(&result.stdout_raw, &result.stdout_digest, "stdout")? else {
@@ -814,13 +1099,7 @@ impl RemoteCache {
         let stderr_digest = Digest::of(stderr);
         blobs.push((stdout_digest.clone(), stdout));
         blobs.push((stderr_digest.clone(), stderr));
-        for (digest, bytes) in blobs {
-            if digest.size == 0 || self.uploaded.lock().expect("upload set").contains(&digest) {
-                continue;
-            }
-            self.put(true, &digest.hash, bytes)?;
-            self.uploaded.lock().expect("upload set").insert(digest);
-        }
+        self.upload_blobs(&blobs, &action.key)?;
         // UploadManifest.create: timestamps only when the wall time is
         // nonzero (milliseconds).
         let millis = wall.as_millis() as u64;
@@ -841,7 +1120,68 @@ impl RemoteCache {
             execution,
             ..reapi::ActionResult::default()
         };
-        self.put(false, &action.key.hash, &result.encode())
+        match &self.backend {
+            Backend::Http(http) => http.put(false, &action.key.hash, &result.encode()),
+            Backend::Grpc(grpc) => Ok(grpc.update_action_result(&action.key, &result.encode())?),
+        }
+    }
+
+    /// The CAS part of UploadManifest.upload: HTTP PUTs every non-empty
+    /// blob not yet uploaded in this invocation; gRPC asks
+    /// FindMissingBlobs for all of them (empty ones included) and writes
+    /// the missing non-empty blobs not yet uploaded.
+    fn upload_blobs(&self, blobs: &[(Digest, &[u8])], key: &Digest) -> Result<(), CacheError> {
+        let done = |digest: &Digest| self.uploaded.lock().expect("upload set").contains(digest);
+        // Uploads `bytes` unless this invocation already did, waiting for a
+        // concurrent upload of the same blob.
+        let once = |digest: &Digest,
+                    upload: &dyn Fn() -> Result<(), CacheError>|
+         -> Result<(), CacheError> {
+            if digest.size == 0 || done(digest) {
+                return Ok(());
+            }
+            let lock = self
+                .uploading
+                .lock()
+                .expect("in-flight uploads")
+                .entry(digest.clone())
+                .or_default()
+                .clone();
+            let _uploading = lock.lock().expect("in-flight upload");
+            if done(digest) {
+                return Ok(());
+            }
+            upload()?;
+            self.uploaded
+                .lock()
+                .expect("upload set")
+                .insert(digest.clone());
+            Ok(())
+        };
+        match &self.backend {
+            Backend::Http(http) => {
+                for (digest, bytes) in blobs {
+                    once(digest, &|| http.put(true, &digest.hash, bytes))?;
+                }
+            }
+            Backend::Grpc(grpc) => {
+                let mut unique: Vec<Digest> = Vec::new();
+                for (digest, _) in blobs {
+                    if !unique.contains(digest) {
+                        unique.push(digest.clone());
+                    }
+                }
+                for digest in grpc.find_missing(&unique, &key.hash)? {
+                    let Some((_, bytes)) = blobs.iter().find(|(known, _)| *known == digest) else {
+                        return Err(CacheError::Other(format!(
+                            "FindMissingBlobs call returned an unknown digest: {digest}"
+                        )));
+                    };
+                    once(&digest, &|| Ok(grpc.write_blob(&digest, bytes, &key.hash)?))?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -918,7 +1258,49 @@ mod tests {
             options.parse("--remote_instance_name=dev", None),
             Some(Ok(false))
         );
-        assert_eq!(options.parse("--remote_download_outputs=all", None), None);
+        assert_eq!(
+            options.parse("--remote_download_outputs=ALL", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.download_outputs, DownloadOutputs::All);
+        assert_eq!(
+            options.parse("--remote_download_minimal", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.download_outputs, DownloadOutputs::Minimal);
+        assert_eq!(
+            options.parse("--experimental_remote_retry_max_attempts", Some("0")),
+            Some(Ok(true))
+        );
+        assert_eq!(options.retries, 0);
+        assert_eq!(
+            options.parse("--remote_retry_max_delay=250ms", None),
+            Some(Ok(false))
+        );
+        assert_eq!(options.retry_max_delay, Duration::from_millis(250));
+        assert_eq!(
+            options.parse("--remote_max_connections=x", None),
+            Some(Err(
+                "While parsing option --remote_max_connections=x: 'x' is not an int".into()
+            ))
+        );
+        assert_eq!(
+            options.parse("--tls_certificate=/ca.pem", None),
+            Some(Ok(false))
+        );
+        assert_eq!(
+            options.tls.certificate.as_deref(),
+            Some(Path::new("/ca.pem"))
+        );
+        assert_eq!(
+            options.parse("--noremote_cache_compression", None),
+            Some(Ok(false))
+        );
+        assert!(matches!(
+            options.parse("--remote_cache_compression", None),
+            Some(Err(_))
+        ));
+        assert_eq!(options.parse("--remote_download_regex=x", None), None);
     }
 
     #[test]
@@ -942,16 +1324,21 @@ mod tests {
     }
 
     #[test]
-    fn setup_rejects_grpc_and_remote_execution() {
+    fn setup_accepts_grpc_and_rejects_remote_execution() {
         let options = RemoteOptions {
             cache: "grpc://127.0.0.1:1".into(),
+            ..RemoteOptions::default()
+        };
+        assert!(setup(&options, None).unwrap().is_some());
+        let options = RemoteOptions {
+            cache: "grpc://h:1/path".into(),
             ..RemoteOptions::default()
         };
         assert!(
             setup(&options, None)
                 .unwrap_err()
                 .exit
-                .contains("gRPC remote caches")
+                .contains("invalid gRPC target")
         );
         let options = RemoteOptions {
             executor: "grpc://x".into(),

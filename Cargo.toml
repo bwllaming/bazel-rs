@@ -11,10 +11,22 @@ allocative = "=0.3.6"
 anyhow = "1"
 base64 = "=0.22.1"
 blake3 = "=1.8.2"
+# h2's buffer and request types (crate::grpc_channel); the lock's versions.
+bytes = "=1.12.1"
 bzip2 = "=0.6.1"
 fancy-regex = "=0.16.2"
 flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
 fs2 = "0.4"
+# The REAPI v2 gRPC remote cache (crate::grpc_channel, docs/REMOTE_CACHE.md):
+# gRPC is HTTP/2 framing plus a 5-byte message prefix and trailers, so the
+# client speaks it directly over h2 (MIT) with hand-encoded protobuf like
+# crate::reapi; no tonic/prost/protoc. h2's only new transitive crate is
+# tokio-util (MIT). tokio (MIT), tokio-rustls, rustls, rustls-pki-types and
+# rustls-native-certs (Apache-2.0/MIT/ISC) are the versions reqwest already
+# brings; the extra tokio features (multi-thread runtime, TCP/Unix sockets,
+# timers) build no new crates.
+h2 = "=0.4.20"
+http = "=1.5.0"
 # Only for the client-side HTTP/1 reason phrase (hyper::ext::ReasonPhrase) that
 # Bazel shows in "GET returned CODE REASON"; same version reqwest already uses.
 hyper = { version = "=1.12.0", default-features = false }
@@ -36,6 +48,9 @@ num-bigint = "=0.4.8"
 postcard = { version = "=1.1.3", default-features = false, features = ["use-std"] }
 reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "rustls-tls-native-roots"] }
 ruzstd = "=0.9.1"
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "=0.8.4"
+rustls-pki-types = { version = "=1.15.1", features = ["std"] }
 # kill(2)/killpg on a child's process group without spawning kill(1) and
 # without unsafe code (git_process); renameat2(RENAME_EXCHANGE) for the
 # atomic replacement of a published repository tree (repository_store); same
@@ -59,6 +74,8 @@ zip = { version = "=9.0.2", default-features = false, features = ["deflate-flate
 # Process-wide Rust allocator (feature "jemalloc", on by default): linked
 # statically with prefixed symbols, so C code keeps glibc malloc. Building it
 # needs a C compiler, make and sh (README "Global allocator").
+tokio = { version = "=1.53.2", default-features = false, features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 tikv-jemallocator = { version = "=0.7.0", optional = true }
 
 [features]
