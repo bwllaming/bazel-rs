@@ -641,9 +641,20 @@ impl Channel {
             return Ok(found);
         }
         let connection = self.connect().await?;
-        let mut connections = self.connections.lock().expect("connections");
-        connections.push(connection);
-        Ok(pick(&mut connections, true).expect("a live connection was just added"))
+        // The new connection itself: the server may already have closed it
+        // (an mTLS rejection right after the handshake), and then starting
+        // the stream fails with the transport's status, like any dead
+        // connection, instead of finding no connection.
+        connection.in_flight.fetch_add(1, Ordering::Relaxed);
+        let found = (
+            connection.send.clone(),
+            InFlight(connection.in_flight.clone(), connection.alive.clone()),
+        );
+        self.connections
+            .lock()
+            .expect("connections")
+            .push(connection);
+        Ok(found)
     }
 
     fn request(&self, call: &Call<'_>) -> Result<http::Request<()>, Status> {
