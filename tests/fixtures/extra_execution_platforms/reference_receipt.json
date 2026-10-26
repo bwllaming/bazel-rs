@@ -1,0 +1,425 @@
+{
+ "schema": "parity-extra-execution-platforms-reference-receipt/v1",
+ "fixture": "extra_execution_platforms",
+ "purpose": "//command_line_option:extra_execution_platforms (PlatformOptions.java:66-81) as a Starlark transition input and output (rules_uv's transition_to_target: the target platforms) and on the command line: RegisteredExecutionPlatformsFunction (:72-157: pattern expansion with HAS_PLATFORM_INFO, configured in the rule's configuration, alias-resolved) before the host platform (PlatformKeys.findExecutionPlatformKeys), the selected execution platform of toolchain resolution and of rules without toolchain types (exec-transition edges use it), the forced platform of toolchain implementations, the ST- hash of the transitioned configuration and its exec configuration (propagated by the exec transition, builtin_exec_platforms.bzl:411-419), a no-op transition to the same value, reading the option as a list of strings, 'None' values, invalid and cyclic (toolchain-resolving) registered targets, and query's Unrecognized option.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed>",
+  "command_flags": "<command> --noshow_progress --color=no --curses=no <case flags> -- <targets>",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of tests/fixtures/extra_execution_platforms/workspace per case"
+ },
+ "native": {
+  "binary": "bazel-rs",
+  "sha256": "25255c7969a5d940c8382105d58f4893576549189d64064e74233645b67ab3ad",
+  "argv": "--ignore_all_rc_files --cache-dir=<private> <command> --experimental-builtin-modules --registry=file://<repo>/tests/fixtures/builtin_modules/registry <case flags> <targets>"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/xep-capture.py, xep-receipt.py (not committed)",
+  "sha256": {
+   "xep-capture.py": "a85bb1141ecc6696e1e2750f17d1be5f2d90a859cdfafe34f230c867729b194f",
+   "xep-receipt.py": "0815d944d3ad67953c65d7745bb45a596d650e32a692b3342f10c96131de8078"
+  }
+ },
+ "fixture_files_sha256": {
+  "BUILD.bazel": "c52ea38945312fbf312fa2282cfdec914d000dedce71a7667bb65202eb347a58",
+  "MODULE.bazel": "bd432cc96811fab48a07a454e8fb90786cd1f3be2bfef23da083398954f4894d",
+  "defs.bzl": "eb544df2351ac3c5a72e1e80b4d0e37de8553bab9e0e9f5b0a4b60ab038bc954",
+  "p/BUILD.bazel": "dec6c41e90c692ae1a6adbf9b872f3da8ebeba5c18f6bb0c8695907bc349dd56",
+  "tc/BUILD.bazel": "36f6886351d196524bcc2e53c08b1f29a99388845545612058fa09b507e163fa"
+ },
+ "normalization": "<WS> = the case's workspace copy. prints: the print() lines carrying the case's marker, genuine's `DEBUG: <file>:<line>:<col>: ` prefix removed, sorted. outputs: every file below bazel-out whose name ends with one of the case's suffixes, by path below bazel-out (genuine: the bazel-out convenience symlink; native: the published action outputs), with its contents. errors: genuine's ERROR lines; native's stderr without the memory-limit notice; 7-hex configuration identifiers `(abcdef0)` compared as `(<CONFIG>)` (native identifiers).",
+ "comparison": "MATCH = equal exit code, prints and outputs, and for a failing case genuine's first error message (location removed) appears in a native error line.",
+ "counts": {
+  "MATCH": 11,
+  "DECLARED_DIVERGENCE": 3,
+  "DIFF": 0
+ },
+ "scratch_removed": true,
+ "cases": {
+  "default_host": {
+   "argv": [
+    "build",
+    "//:pip"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-f7ead6e6535a/bin/plain.out": "leaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n",
+     "k8-fastbuild-ST-f7ead6e6535a/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/tool.out\nbazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/plain.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-f7ead6e6535a/bin/plain.out": "leaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n",
+     "k8-fastbuild-ST-f7ead6e6535a/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/tool.out\nbazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/plain.out\n"
+    }
+   }
+  },
+  "target_foo": {
+   "argv": [
+    "build",
+    "--platforms=//p:foo",
+    "//:pip"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-51b47c7fe43b/bin/plain.out": "leaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n",
+     "k8-fastbuild-ST-51b47c7fe43b/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/tool.out\nbazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/plain.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-51b47c7fe43b/bin/plain.out": "leaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n",
+     "k8-fastbuild-ST-51b47c7fe43b/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/tool.out\nbazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/plain.out\n"
+    }
+   }
+  },
+  "cli_extra": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:foo",
+    "//:tool",
+    "//:plain"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   }
+  },
+  "cli_pattern": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:all",
+    "//:tool",
+    "//:plain"
+   ],
+   "classification": "DECLARED_DIVERGENCE",
+   "genuine": {
+    "exit": 37,
+    "prints": [],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: the registered execution platforms //p:foo and //p:foo_alias are the same platform //p:foo: Bazel 9.3 crashes on it (IllegalArgumentException: Multiple entries with same key, ImmutableMap.Builder.buildOrThrow in RegisteredExecutionPlatformsFunction.configureRegisteredExecutionPlatforms, skyframe/toolchains/RegisteredExecutionPlatformsFunction.java:243), which is not implemented in the native profile"
+    ],
+    "outputs": {}
+   },
+   "divergence": "Genuine Bazel 9.3 crashes (exit 37, IllegalArgumentException: Multiple entries with same key in RegisteredExecutionPlatformsFunction.configureRegisteredExecutionPlatforms ImmutableMap.buildOrThrow): //p:all expands to //p:bar, //p:foo and the alias //p:foo_alias (alias-like rules may have any provider), two of which are the platform //p:foo. Natively an explicit error names the two labels and the crash."
+  },
+  "cli_alias": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:foo_alias",
+    "//:tool",
+    "//:plain"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   }
+  },
+  "cli_last_wins": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:bar",
+    "--extra_execution_platforms=//p:foo",
+    "//:plain"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n"
+    }
+   }
+  },
+  "cli_duplicate": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:foo,//p:foo_alias",
+    "//:tool"
+   ],
+   "classification": "DECLARED_DIVERGENCE",
+   "genuine": {
+    "exit": 37,
+    "prints": [],
+    "errors": [],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: the registered execution platforms //p:foo and //p:foo_alias are the same platform //p:foo: Bazel 9.3 crashes on it (IllegalArgumentException: Multiple entries with same key, ImmutableMap.Builder.buildOrThrow in RegisteredExecutionPlatformsFunction.configureRegisteredExecutionPlatforms, skyframe/toolchains/RegisteredExecutionPlatformsFunction.java:243), which is not implemented in the native profile"
+    ],
+    "outputs": {}
+   },
+   "divergence": "Same crash as cli_pattern for --extra_execution_platforms=//p:foo,//p:foo_alias: an explicit native error."
+  },
+  "cli_same_as_transition": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=@@bazel_tools//tools:host_platform",
+    "//:pip"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild/bin/tool.out\nbazel-out/k8-fastbuild/bin/plain.out\n",
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild/bin/pip.out": "bazel-out/k8-fastbuild/bin/tool.out\nbazel-out/k8-fastbuild/bin/plain.out\n",
+     "k8-fastbuild/bin/plain.out": "leaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n"
+    }
+   }
+  },
+  "reader": {
+   "argv": [
+    "build",
+    "//:reader"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "READ list []"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-1373b923d83a/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-1373b923d83a/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/reader.out": "bazel-out/k8-fastbuild-ST-1373b923d83a/bin/tool.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "READ list []"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-1373b923d83a/bin/tool.out": "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-1373b923d83a/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/reader.out": "bazel-out/k8-fastbuild-ST-1373b923d83a/bin/tool.out\n"
+    }
+   }
+  },
+  "reader_cli": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:foo",
+    "//:reader"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 0,
+    "prints": [
+     "READ list [\"//p:foo\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-8292844d64e9/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-8292844d64e9/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/reader.out": "bazel-out/k8-fastbuild-ST-8292844d64e9/bin/tool.out\n"
+    }
+   },
+   "native": {
+    "exit": 0,
+    "prints": [
+     "READ list [\"//p:foo\"]"
+    ],
+    "errors": [],
+    "outputs": {
+     "k8-fastbuild-ST-8292844d64e9/bin/tool.out": "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-8292844d64e9/bin/exec_leaf.out\n",
+     "k8-fastbuild/bin/reader.out": "bazel-out/k8-fastbuild-ST-8292844d64e9/bin/tool.out\n"
+    }
+   }
+  },
+  "none_value": {
+   "argv": [
+    "build",
+    "//:none_reader"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [
+     "READ list []"
+    ],
+    "errors": [
+     "ERROR: <WS>/defs.bzl:38:29: 'None' value not allowed for List-type option 'extra_execution_platforms'. Please use '[]' instead if trying to set option to empty value.",
+     "ERROR: <WS>/BUILD.bazel:17:7: on dependency edge //:none_reader (a7a71fd) -|$tool|-> //:tool: Errors encountered while applying Starlark transition",
+     "ERROR: Analysis of target '//:none_reader' failed; build aborted",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [
+     "READ list []"
+    ],
+    "errors": [
+     "bazel-rs: <WS>/defs.bzl:38:29: 'None' value not allowed for List-type option 'extra_execution_platforms'. Please use '[]' instead if trying to set option to empty value.",
+     "<WS>/BUILD.bazel:17:7: on dependency edge //:none_reader (25220f3) -|$tool|-> //:tool: Errors encountered while applying Starlark transition"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "'None' value not allowed for List-type option 'extra_execution_platforms'. Please use '[]' instead if trying to set option to empty value."
+  },
+  "not_platform": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:not_platform",
+    "//:tool"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: Misconfigured execution platforms: //p:not_platform is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.",
+     "ERROR: Analysis of target '//:tool' failed; build aborted",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: Misconfigured execution platforms: //p:not_platform is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.",
+     ".-> RegisteredExecutionPlatforms",
+     "|   //p:not_platform",
+     "|   toolchain types ",
+     "`-- RegisteredExecutionPlatforms"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "Misconfigured execution platforms: //p:not_platform is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution."
+  },
+  "missing_target": {
+   "argv": [
+    "build",
+    "--extra_execution_platforms=//p:missing",
+    "//:tool"
+   ],
+   "classification": "MATCH",
+   "genuine": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "ERROR: <WS>/BUILD.bazel:5:5: While resolving toolchains for target //:tool (bb376d3): invalid registered execution platform '//p:missing': no such target '//p:missing': target 'missing' not declared in package 'p' defined by <WS>/p/BUILD.bazel",
+     "ERROR: Analysis of target '//:tool' failed; build aborted",
+     "ERROR: Build did NOT complete successfully"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: <WS>/BUILD.bazel:5:5: While resolving toolchains for target //:tool (a6d498f): invalid registered execution platform '//p:missing': no such target '//p:missing': target 'missing' not declared in package 'p' defined by <WS>/p/BUILD.bazel"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "While resolving toolchains for target //:tool (bb376d3): invalid registered execution platform '//p:missing': no such target '//p:missing': target 'missing' not declared in package 'p' defined by <WS>/p/BUILD.bazel"
+  },
+  "query_rejects": {
+   "argv": [
+    "query",
+    "--extra_execution_platforms=//p:foo",
+    "//:tool"
+   ],
+   "classification": "DECLARED_DIVERGENCE",
+   "genuine": {
+    "exit": 2,
+    "prints": [],
+    "errors": [
+     "ERROR: --extra_execution_platforms=//p:foo :: Unrecognized option: --extra_execution_platforms=//p:foo"
+    ],
+    "outputs": {}
+   },
+   "native": {
+    "exit": 1,
+    "prints": [],
+    "errors": [
+     "bazel-rs: --extra_execution_platforms=//p:foo :: Unrecognized option: --extra_execution_platforms=//p:foo"
+    ],
+    "outputs": {}
+   },
+   "genuine_error_message": "--extra_execution_platforms=//p:foo :: Unrecognized option: --extra_execution_platforms=//p:foo",
+   "divergence": "Same message; the native CLI exits 1 for every failure where Bazel exits 2 for an options-parsing error (docs/PLATFORMS.md Divergences, Exit codes)."
+  }
+ }
+}

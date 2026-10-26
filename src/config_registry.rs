@@ -408,7 +408,7 @@ pub fn mnemonic(configuration: &Configuration, baseline: &Configuration) -> Resu
 /// * `java_runtime_version`/`java_language_version` become
 ///   `tool_java_runtime_version`/`tool_java_language_version`, which
 ///   propagate (`_java_options`, builtin_exec_platforms.bzl:350-385);
-/// * `host_platform` and `extra_toolchains` propagate (PlatformOptions,
+/// * `host_platform`, `extra_execution_platforms` and `extra_toolchains` propagate (PlatformOptions,
 ///   builtin_exec_platforms.bzl:411-419); `platforms` becomes the parent's
 ///   execution platform (ExecutionTransitionFactory.java:203-207);
 /// * `platform_suffix` = `exec` (the default
@@ -438,6 +438,7 @@ pub fn exec_transition(
         platforms: vec![execution_platform],
         host_platform: from.native.host_platform.clone(),
         extra_toolchains: from.native.extra_toolchains.clone(),
+        extra_execution_platforms: from.native.extra_execution_platforms.clone(),
         host_compilation_mode: from.native.host_compilation_mode,
         is_exec: true,
         platform_suffix: Some("exec"),
@@ -525,6 +526,10 @@ fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, Strin
     }
     let list = |items: &[String]| format!("=[{}]", items.join(", "));
     options.insert("extra_toolchains", list(&native.extra_toolchains));
+    options.insert(
+        "extra_execution_platforms",
+        list(&native.extra_execution_platforms),
+    );
     options.insert("is exec configuration", format!("={}", native.is_exec));
     options.insert(
         "platform_suffix",
@@ -1146,6 +1151,29 @@ mod tests {
         assert_eq!(
             exec_transition(&coverage, label("//p:h"), &none).id,
             exec_transition(&top, label("//p:h"), &none).id
+        );
+    }
+
+    /// rules_uv's transition_to_target (paired capture
+    /// tests/fixtures/extra_execution_platforms, default_host: Bazel's
+    /// k8-fastbuild-ST-f7ead6e6535a): `extra_execution_platforms` enters the
+    /// ST- hash as its Java list form, and the exec transition propagates it.
+    #[test]
+    fn extra_execution_platforms_enter_the_st_hash_and_propagate_to_exec() {
+        let top = Configuration::default();
+        let mut native = top.native.clone();
+        native.extra_execution_platforms = vec!["@@bazel_tools//tools:host_platform".into()];
+        let transitioned = Configuration::new(native, BTreeMap::new());
+        assert_eq!(
+            mnemonic(&transitioned, &top),
+            Ok("k8-fastbuild-ST-f7ead6e6535a".to_owned())
+        );
+        let none = BTreeSet::new();
+        assert_eq!(
+            exec_transition(&transitioned, label("//p:h"), &none)
+                .native
+                .extra_execution_platforms,
+            ["@@bazel_tools//tools:host_platform"]
         );
     }
 

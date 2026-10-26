@@ -1,0 +1,28 @@
+package(default_visibility = ["//visibility:public"])
+
+platform(
+    name = "foo",
+    constraint_values = [
+        "@platforms//os:freebsd",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+platform(
+    name = "bar",
+    constraint_values = [
+        "@platforms//os:openbsd",
+        "@platforms//cpu:arm64",
+    ],
+)
+
+alias(
+    name = "foo_alias",
+    actual = ":foo",
+)
+
+genrule(
+    name = "not_platform",
+    outs = ["not_platform.txt"],
+    cmd = "echo > $@",
+)

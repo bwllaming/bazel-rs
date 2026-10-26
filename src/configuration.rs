@@ -908,6 +908,14 @@ pub struct NativeOptions {
     /// their value.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_toolchains: Vec<String>,
+    /// `--extra_execution_platforms` target patterns (PlatformOptions.java:66-81,
+    /// CommaSeparatedOptionListConverter, not repeatable: the last
+    /// occurrence wins; empty values kept): the first execution platforms of
+    /// RegisteredExecutionPlatformsFunction (:86-99). Omitted from the
+    /// identity serialization when empty, so existing identities keep their
+    /// value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_execution_platforms: Vec<String>,
     /// `--host_compilation_mode` (CoreOptions.java:406-417, default `opt`):
     /// the compilation mode of the exec configuration
     /// (builtin_exec_platforms.bzl:221-229); omitted from the identity
@@ -1183,6 +1191,7 @@ impl Default for NativeOptions {
             platforms: vec![host_platform.clone()],
             host_platform,
             extra_toolchains: Vec::new(),
+            extra_execution_platforms: Vec::new(),
             host_compilation_mode: DEFAULT_HOST_COMPILATION_MODE,
             is_exec: false,
             platform_suffix: None,
@@ -1519,6 +1528,8 @@ pub struct CommandLineOptions {
     query: bool,
     /// `--extra_toolchains` values in command-line order.
     extra_toolchains: Vec<String>,
+    /// The last `--extra_execution_platforms` value, converted.
+    extra_execution_platforms: Option<Vec<String>>,
     /// OptionsParserImpl warnings (deprecated options), each once, in first
     /// occurrence order (OptionsParserImpl.java:191, 336-369).
     warnings: Vec<String>,
@@ -1551,6 +1562,16 @@ const STRICT_ACTION_ENV: [&str; 2] = [
 /// `ARG :: MESSAGE` (runtime/BlazeOptionHandler.java:104, 628-637).
 fn invalid_argument(arg: &str, message: String) -> String {
     format!("{arg} :: {message}")
+}
+
+/// CommaSeparatedOptionListConverter (common/options/Converters.java:253-287,
+/// 319-323): an empty input is the empty list; otherwise every
+/// comma-separated piece, empty pieces included.
+pub fn comma_separated_option_list(input: &str) -> Vec<String> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+    input.split(',').map(str::to_owned).collect()
 }
 
 /// Result of [`CommandLineOptions::parse`] for one argument.
@@ -1682,6 +1703,7 @@ impl CommandLineOptions {
                     "host_platform",
                     "experimental_host_platform",
                     "extra_toolchains",
+                    "extra_execution_platforms",
                     "crosstool_top",
                 ]
                 .contains(&name)
@@ -1752,6 +1774,28 @@ impl CommandLineOptions {
                     self.extra_toolchains
                         .extend(value.split(',').map(str::to_owned));
                 }
+                return Ok(Parsed::Consumed(used_next));
+            }
+            // --extra_execution_platforms (PlatformOptions.java:66-81): a
+            // comma-separated list of target patterns, not repeatable (the
+            // last occurrence wins; empty values kept, an empty input is the
+            // empty list; Converters.java:253-287).
+            if name == "extra_execution_platforms" || name == "noextra_execution_platforms" {
+                if name == "noextra_execution_platforms" {
+                    return Err(invalid_argument(
+                        arg,
+                        format!("Illegal use of 'no' prefix on non-boolean option: {arg}"),
+                    ));
+                }
+                let (value, used_next) = match value {
+                    Some(value) => (value.to_owned(), false),
+                    None => (
+                        next.ok_or_else(|| format!("Expected value after {arg}"))?
+                            .to_owned(),
+                        true,
+                    ),
+                };
+                self.extra_execution_platforms = Some(comma_separated_option_list(&value));
                 return Ok(Parsed::Consumed(used_next));
             }
             let (option, negated) = match lookup(name) {
@@ -1915,6 +1959,8 @@ impl CommandLineOptions {
         }
         extra_toolchains.reverse();
         native.extra_toolchains = extra_toolchains;
+        native.extra_execution_platforms =
+            self.extra_execution_platforms.clone().unwrap_or_default();
         // CoreOptions/TestOptions.getNormalized (CoreOptions.java:1253-1254,
         // TestConfiguration.java:409; FragmentOptions.normalizeEnvVars).
         let entries = |name: &str| {
@@ -2933,6 +2979,55 @@ mod tests {
         assert_eq!(
             query.parse("--extra_toolchains=//a:b", None).err().unwrap(),
             "--extra_toolchains=//a:b :: Unrecognized option: --extra_toolchains=//a:b"
+        );
+    }
+
+    #[test]
+    fn extra_execution_platforms_are_a_list_the_last_occurrence_sets() {
+        // PlatformOptions.java:66-81 (not allowMultiple); Converters.java:253-287.
+        let configuration = parsed(&[
+            "--extra_execution_platforms=//a:b,//c:d",
+            "--extra_execution_platforms",
+            "//e:f,,//a:b",
+        ])
+        .unwrap();
+        assert_eq!(
+            configuration.native.extra_execution_platforms,
+            ["//e:f", "", "//a:b"]
+        );
+        assert!(
+            parsed(&[
+                "--extra_execution_platforms=//a:b",
+                "--extra_execution_platforms="
+            ])
+            .unwrap()
+            .native
+            .extra_execution_platforms
+            .is_empty()
+        );
+        assert_eq!(
+            parsed(&["--extra_execution_platforms="]).unwrap().id,
+            Configuration::default().id
+        );
+        assert_ne!(
+            parsed(&["--extra_execution_platforms=//a:b"]).unwrap().id,
+            Configuration::default().id
+        );
+        assert_eq!(
+            parsed(&["--noextra_execution_platforms"]).unwrap_err(),
+            "--noextra_execution_platforms :: Illegal use of 'no' prefix on non-boolean option: --noextra_execution_platforms"
+        );
+        assert_eq!(
+            parsed(&["--extra_execution_platforms"]).unwrap_err(),
+            "Expected value after --extra_execution_platforms"
+        );
+        let mut query = CommandLineOptions::for_query();
+        assert_eq!(
+            query
+                .parse("--extra_execution_platforms=//a:b", None)
+                .err()
+                .unwrap(),
+            "--extra_execution_platforms=//a:b :: Unrecognized option: --extra_execution_platforms=//a:b"
         );
     }
 

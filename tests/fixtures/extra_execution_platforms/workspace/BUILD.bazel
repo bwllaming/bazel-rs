@@ -1,0 +1,20 @@
+load("//:defs.bzl", "leaf", "pip", "plain", "reader", "tool")
+
+leaf(name = "exec_leaf")
+
+tool(name = "tool")
+
+plain(name = "plain")
+
+# rules_uv's pip_compile shape: the tool and a toolchain-less rule behind
+# transition_to_target (extra_execution_platforms = the target platforms).
+pip(name = "pip")
+
+# Reads //command_line_option:extra_execution_platforms and appends //p:bar.
+reader(name = "reader")
+
+# Sets //command_line_option:extra_execution_platforms to None.
+reader(
+    name = "none_reader",
+    set_none = True,
+)

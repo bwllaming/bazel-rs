@@ -1048,3 +1048,326 @@ has(name = "has_linux", cv = "@platforms//os:linux")
     let output = ws.run(&["build", &builtin[1], "--platforms=//:mac", "//:host"]);
     assert!(output.status.success(), "{}", errors(&output));
 }
+
+/// tests/fixtures/extra_execution_platforms in a fresh workspace: the
+/// genuine platforms 1.0.0 module extracted into `platforms`, and N30's
+/// builtin-closure stubs as `local_path_override`s, which keep the built-in
+/// profile offline (none registers a toolchain of the fixture's type;
+/// tests/aspects.rs's approach).
+fn extra_execution_platforms_fixture() -> Workspace {
+    fn copy_tree(from: &Path, to: &Path) {
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                fs::create_dir_all(&target).unwrap();
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+    let base = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let ws = Workspace(
+        tempfile::Builder::new()
+            .prefix("xep-")
+            .tempdir_in(base)
+            .unwrap(),
+    );
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    copy_tree(
+        &manifest.join("tests/fixtures/extra_execution_platforms/workspace"),
+        ws.path(),
+    );
+    extract_platforms(&ws.path().join("platforms"));
+    let mut module = fs::read_to_string(ws.path().join("MODULE.bazel")).unwrap();
+    for name in [
+        "apple_support",
+        "buildozer",
+        "protobuf",
+        "rules_cc",
+        "rules_java",
+        "rules_python",
+        "rules_shell",
+        "zlib",
+    ] {
+        module.push_str(&format!(
+            "local_path_override(module_name = '{name}', path = '{}')\n",
+            manifest
+                .join("tests/fixtures/test_flags/stubs")
+                .join(name)
+                .display()
+        ));
+    }
+    fs::write(ws.path().join("MODULE.bazel"), module).unwrap();
+    ws
+}
+
+/// `COMMAND ARGS` under the built-in module profile with the offline
+/// fixture registry, as the paired capture runs it.
+fn run_builtin(ws: &Workspace, command: &str, args: &[&str]) -> Output {
+    let registry = format!(
+        "--registry=file://{}/tests/fixtures/builtin_modules/registry",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let mut all = vec![command, "--experimental-builtin-modules", registry.as_str()];
+    all.extend_from_slice(args);
+    ws.run(&all)
+}
+
+/// The top-level outputs of a successful `build ARGS`: path below
+/// `bazel-out` and contents, sorted by path.
+fn built_outputs(ws: &Workspace, args: &[&str]) -> Vec<(String, String)> {
+    let output = run_builtin(ws, "build", args);
+    assert!(output.status.success(), "{args:?}: {}", errors(&output));
+    let mut outputs = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| {
+            let path = line.split_once('\t').unwrap().1;
+            (
+                path.split_once("/bazel-out/").unwrap().1.to_owned(),
+                fs::read_to_string(path).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    outputs.sort();
+    outputs.dedup();
+    outputs
+}
+
+fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(path, contents)| ((*path).to_owned(), (*contents).to_owned()))
+        .collect()
+}
+
+#[test]
+fn extra_execution_platforms_come_before_the_host_platform() {
+    // Paired capture tests/fixtures/extra_execution_platforms
+    // (reference_receipt.json; genuine Bazel 9.3.0 outputs below).
+    let ws = extra_execution_platforms_fixture();
+    // rules_uv's transition_to_target: extra_execution_platforms = the
+    // target platforms ("@@bazel_tools//tools:host_platform", an alias of
+    // the host platform): the host only, in a configuration with an ST- hash
+    // (also its exec configuration's).
+    assert_eq!(
+        built_outputs(&ws, &["//:pip"]),
+        owned(&[
+            (
+                "k8-fastbuild-ST-f7ead6e6535a/bin/plain.out",
+                "leaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild-ST-f7ead6e6535a/bin/tool.out",
+                "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-f7ead6e6535a/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/pip.out",
+                "bazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/tool.out\nbazel-out/k8-fastbuild-ST-f7ead6e6535a/bin/plain.out\n"
+            ),
+        ])
+    );
+    // The transitioned execution platforms are //p:foo, then the host: the
+    // toolchain resolves for //p:foo (first of the platforms with the most
+    // toolchains), and a rule without toolchain types runs on //p:foo.
+    assert_eq!(
+        built_outputs(&ws, &["--platforms=//p:foo", "//:pip"]),
+        owned(&[
+            (
+                "k8-fastbuild-ST-51b47c7fe43b/bin/plain.out",
+                "leaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild-ST-51b47c7fe43b/bin/tool.out",
+                "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-51b47c7fe43b/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/pip.out",
+                "bazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/tool.out\nbazel-out/k8-fastbuild-ST-51b47c7fe43b/bin/plain.out\n"
+            ),
+        ])
+    );
+    // On the command line (part of the exec baseline: no ST- hash); an
+    // alias resolves; the last occurrence wins.
+    let foo = owned(&[
+        (
+            "k8-fastbuild/bin/plain.out",
+            "leaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+        ),
+        (
+            "k8-fastbuild/bin/tool.out",
+            "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec/bin/exec_leaf.out\n",
+        ),
+    ]);
+    assert_eq!(
+        built_outputs(
+            &ws,
+            &["--extra_execution_platforms=//p:foo", "//:tool", "//:plain"]
+        ),
+        foo
+    );
+    assert_eq!(
+        built_outputs(
+            &ws,
+            &[
+                "--extra_execution_platforms=//p:foo_alias",
+                "//:tool",
+                "//:plain"
+            ]
+        ),
+        foo
+    );
+    assert_eq!(
+        built_outputs(
+            &ws,
+            &[
+                "--extra_execution_platforms=//p:bar",
+                "--extra_execution_platforms=//p:foo",
+                "//:plain"
+            ]
+        ),
+        foo[..1]
+    );
+    // The transition writes the value the configuration already has: a
+    // no-op (the option compares as strings).
+    assert_eq!(
+        built_outputs(
+            &ws,
+            &[
+                "--extra_execution_platforms=@@bazel_tools//tools:host_platform",
+                "//:pip"
+            ]
+        ),
+        owned(&[
+            (
+                "k8-fastbuild/bin/pip.out",
+                "bazel-out/k8-fastbuild/bin/tool.out\nbazel-out/k8-fastbuild/bin/plain.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/plain.out",
+                "leaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/tool.out",
+                "tc=linux_exec\nleaf=bazel-out/k8-opt-exec/bin/exec_leaf.out\n"
+            ),
+        ])
+    );
+    // A transition reads the option as a list of strings.
+    let output = run_builtin(&ws, "build", &["//:reader"]);
+    assert!(output.status.success(), "{}", errors(&output));
+    assert!(
+        errors(&output).contains("READ list []"),
+        "{}",
+        errors(&output)
+    );
+    assert_eq!(
+        built_outputs(&ws, &["//:reader"]),
+        owned(&[
+            (
+                "k8-fastbuild-ST-1373b923d83a/bin/tool.out",
+                "tc=linux_exec\nleaf=bazel-out/k8-opt-exec-ST-1373b923d83a/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/reader.out",
+                "bazel-out/k8-fastbuild-ST-1373b923d83a/bin/tool.out\n"
+            ),
+        ])
+    );
+    let output = run_builtin(
+        &ws,
+        "build",
+        &["--extra_execution_platforms=//p:foo", "//:reader"],
+    );
+    assert!(output.status.success(), "{}", errors(&output));
+    assert!(
+        errors(&output).contains("READ list [\"//p:foo\"]"),
+        "{}",
+        errors(&output)
+    );
+    assert_eq!(
+        built_outputs(&ws, &["--extra_execution_platforms=//p:foo", "//:reader"]),
+        owned(&[
+            (
+                "k8-fastbuild-ST-8292844d64e9/bin/tool.out",
+                "tc=freebsd_exec\nleaf=bazel-out/foo-opt-exec-ST-8292844d64e9/bin/exec_leaf.out\n"
+            ),
+            (
+                "k8-fastbuild/bin/reader.out",
+                "bazel-out/k8-fastbuild-ST-8292844d64e9/bin/tool.out\n"
+            ),
+        ])
+    );
+}
+
+#[test]
+fn extra_execution_platform_errors_follow_bazel() {
+    let ws = extra_execution_platforms_fixture();
+    let rejected = |args: &[&str]| {
+        let output = run_builtin(&ws, "build", args);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            errors(&output)
+        );
+        assert!(output.stdout.is_empty(), "partial output on failure");
+        errors(&output).replace(&ws.path().display().to_string(), "WS")
+    };
+    // The print() output precedes the transition's error; the edge names
+    // the private attribute by its native name (`$tool`).
+    let text = rejected(&["//:none_reader"]);
+    assert!(
+        text.contains("READ list []\nbazel-rs: WS/defs.bzl:38:29: 'None' value not allowed for List-type option 'extra_execution_platforms'. Please use '[]' instead if trying to set option to empty value.\nWS/BUILD.bazel:17:7: on dependency edge //:none_reader ("),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            ") -|$tool|-> //:tool: Errors encountered while applying Starlark transition\n"
+        ),
+        "{text}"
+    );
+    // RegisteredExecutionPlatformsCycleReporter: a registered target that
+    // resolves toolchains itself.
+    assert_eq!(
+        rejected(&["--extra_execution_platforms=//p:not_platform", "//:tool"]),
+        "bazel-rs: Misconfigured execution platforms: //p:not_platform is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.\n.-> RegisteredExecutionPlatforms\n|   //p:not_platform\n|   toolchain types \n`-- RegisteredExecutionPlatforms\n"
+    );
+    let text = rejected(&["--extra_execution_platforms=//p:missing", "//:tool"]);
+    assert!(
+        text.starts_with(
+            "bazel-rs: WS/BUILD.bazel:5:5: While resolving toolchains for target //:tool ("
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("): invalid registered execution platform '//p:missing': no such target '//p:missing': target 'missing' not declared in package 'p' defined by WS/p/BUILD.bazel\n"),
+        "{text}"
+    );
+    // Two registered labels of one platform crash Bazel 9.3 (exit 37,
+    // ImmutableMap.buildOrThrow): explicit natively. `//p:all` keeps the
+    // alias (alias-like rules may have any provider).
+    for platforms in ["//p:all", "//p:foo,//p:foo_alias"] {
+        let text = rejected(&[
+            &format!("--extra_execution_platforms={platforms}"),
+            "//:tool",
+        ]);
+        assert!(
+            text.starts_with("bazel-rs: the registered execution platforms //p:foo and //p:foo_alias are the same platform //p:foo: Bazel 9.3 crashes on it (IllegalArgumentException"),
+            "{text}"
+        );
+    }
+    // `query` registers no PlatformOptions.
+    let output = run_builtin(
+        &ws,
+        "query",
+        &["--extra_execution_platforms=//p:foo", "//:tool"],
+    );
+    assert_eq!(
+        errors(&output),
+        "bazel-rs: --extra_execution_platforms=//p:foo :: Unrecognized option: --extra_execution_platforms=//p:foo\n"
+    );
+}

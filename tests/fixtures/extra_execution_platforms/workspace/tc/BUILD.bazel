@@ -1,0 +1,29 @@
+load("//:defs.bzl", "my_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+toolchain_type(name = "t")
+
+my_toolchain(
+    name = "freebsd_impl",
+    tc_name = "freebsd_exec",
+)
+
+toolchain(
+    name = "a_freebsd_tc",
+    exec_compatible_with = ["@platforms//os:freebsd"],
+    toolchain = ":freebsd_impl",
+    toolchain_type = ":t",
+)
+
+my_toolchain(
+    name = "linux_impl",
+    tc_name = "linux_exec",
+)
+
+toolchain(
+    name = "b_linux_tc",
+    exec_compatible_with = ["@platforms//os:linux"],
+    toolchain = ":linux_impl",
+    toolchain_type = ":t",
+)

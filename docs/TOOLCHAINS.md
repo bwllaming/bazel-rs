@@ -86,8 +86,10 @@ types (N18b): it resolves the host platform then, with the same failure.
 ## Resolution (`ToolchainResolutionFunction.java:62-345`)
 
 1. **Platform keys** (`PlatformKeys.java:78-224`): the target platform, then
-   the host platform as the only execution platform (registered execution
-   platforms fail explicitly before, unchanged from N16c). Platform errors
+   the execution platforms: the configuration's `--extra_execution_platforms`
+   (below), then the host platform unless it is one of them (module
+   registrations, `register_execution_platforms`, fail explicitly before,
+   unchanged from N16c). Platform errors
    are wrapped (`While resolving toolchains for target L (CONFIG): Target
    //e:fg was referenced as a platform, but does not provide PlatformInfo`).
    The execution constraints are looked up like
@@ -260,11 +262,48 @@ resolves never silently becomes `None`.
   attributes: a` (`src/toolchain_info.rs`, docs/STARLARK_VENDOR.md);
   Starlark tracebacks keep the native format.
 
+## `--extra_execution_platforms`
+
+`--extra_execution_platforms` (`PlatformOptions.java:66-81`: a
+comma-separated list of target patterns, not repeatable, the last occurrence
+wins) is a configuration option: on the command line, read and written by
+Starlark transitions (rules_uv's `transition_to_target` sets it to the
+target platforms; a list value's elements are joined with `,` and converted,
+`None` is `'None' value not allowed for List-type option ...`), propagated by
+the exec transition (`builtin_exec_platforms.bzl:411-419`), and part of the
+`ST-` hash of a transitioned configuration (`=[a, b]`, the Java list form;
+`query` rejects it, `Unrecognized option`). Per configuration
+(RegisteredExecutionPlatformsFunction, `:72-157`) its patterns are parsed
+with the main repository mapping and expanded like registered toolchains:
+wildcards keep the targets with PlatformInfo (`PlatformLookupUtil.hasPlatformInfo`:
+`platform` and the alias-like rules `alias`/`label_flag`/`label_setting`
+that resolve no toolchains), explicit labels are kept whatever they are; an
+invalid pattern is `invalid registered execution platform 'P': ...`. Each
+target is configured in the rule's configuration; its alias-resolved
+PlatformInfo is the platform. A registered target that resolves toolchains
+itself is RegisteredExecutionPlatformsCycleReporter's `Misconfigured
+execution platforms: L is declared as a platform but has inappropriate
+dependencies. ...` cycle (`.-> RegisteredExecutionPlatforms`, the targets,
+`toolchain types ...`). The execution platforms of a resolution are these,
+then the host platform (`PlatformKeys.findExecutionPlatformKeys`, a
+LinkedHashSet of alias-resolved keys), filtered by the execution
+constraints; the selected platform is the first one with the most resolved
+types — for a rule without toolchain types the first suitable one, so its
+exec-transition edges use it (a context that runs on the host platform
+stays the lazy host context). A toolchain implementation forces its
+parent's selected platform. Paired capture
+`tests/fixtures/extra_execution_platforms` (reference_receipt.json).
+
 ## Explicitly unsupported
 
-* Registered execution platforms (`register_execution_platforms`,
-  `--extra_execution_platforms`): the host platform is the only execution
-  platform; `required_settings` of platforms.
+* Module execution platform registrations (`register_execution_platforms`);
+  `required_settings` of platforms. Two registered labels of one platform
+  (`--extra_execution_platforms=//p:foo,//p:foo_alias`, or `//p:all` with an
+  alias) fail explicitly: Bazel 9.3 crashes on them (exit 37,
+  `ImmutableMap.buildOrThrow` in `configureRegisteredExecutionPlatforms`).
+* A toolchain implementation needed for two execution platforms in one
+  configuration fails explicitly (Bazel keys it by its execution platform,
+  `ConfiguredTargetKey.executionPlatformLabel`; the native key has none).
 * Declared and automatic exec groups, `exec_group_compatible_with`,
   `ctx.exec_groups` and `config.exec(exec_group = NAME)` are N35
   (docs/EXEC_GROUPS.md); only exec groups of aspects remain unsupported.

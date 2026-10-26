@@ -1,0 +1,9 @@
+module(name = "extra_execution_platforms")
+
+# The genuine platforms 1.0.0 module (@platforms//os:*, the default host
+# platform's constraints), extracted into `platforms` from
+# tests/fixtures/label_repo_name/platforms_archive.json before each run.
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")
+
+register_toolchains("//tc:all")

@@ -763,6 +763,51 @@ struct ConfiguredNode {
 /// an error that already carries its own report (the analysis error of a
 /// prerequisite, ConfiguredValueCreationException, which
 /// asConfiguredValueCreationException propagates unchanged).
+/// A configuration's registered execution platforms, in order
+/// (RegisteredExecutionPlatformsValue).
+type ExecutionPlatforms = Arc<Vec<Arc<PlatformInfo>>>;
+
+/// What a registration pattern registers (Engine::expand_registration_patterns).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Registration {
+    Toolchain,
+    ExecutionPlatform,
+}
+
+impl Registration {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Toolchain => "toolchain",
+            Self::ExecutionPlatform => "execution platform",
+        }
+    }
+}
+
+/// Attribute.getName of a Starlark rule's attribute: a private `_x` is
+/// `$x` natively (StarlarkRuleClassFunctions.java:1855, Attribute.getStarlarkName,
+/// packages/Attribute.java:2307-2312), as dependency errors name it
+/// (DependencyProducer.getMessageWithEdgeTransitionInfo, :258-266).
+fn native_attribute_name(name: &str) -> std::borrow::Cow<'_, str> {
+    match name.strip_prefix('_') {
+        Some(rest) => format!("${rest}").into(),
+        None => name.into(),
+    }
+}
+
+/// Engine::platform_resolution_error's split as a ResolutionError: a
+/// loading error names the label as a non-platform; other errors keep their
+/// reported lines and wrap the last one.
+fn platform_resolution_failure(label: &Label, error: PlatformError) -> ResolutionError {
+    let text = match error {
+        PlatformError::Missing { .. } => crate::platforms::not_a_platform(label),
+        PlatformError::Other(text) => text,
+    };
+    match text.rsplit_once('\n') {
+        Some((events, last)) => ResolutionError::Reported(events.to_owned(), last.to_owned()),
+        None => ResolutionError::Toolchain(text),
+    }
+}
+
 #[derive(Clone, Debug)]
 enum ResolutionError {
     Toolchain(String),
@@ -1731,6 +1776,19 @@ pub struct Engine {
     /// The cycle report of a registered toolchain that needs toolchain
     /// resolution itself (Self::toolchain_cycle), per configuration.
     toolchain_cycle_reports: BTreeMap<ConfigId, String>,
+    /// RegisteredExecutionPlatformsValue per configuration with
+    /// `--extra_execution_platforms` (the platforms in registration order,
+    /// before the host platform; RegisteredExecutionPlatformsFunction.java:72-157),
+    /// computed when a rule of the configuration first resolves toolchains.
+    registered_execution_platforms: BTreeMap<ConfigId, Result<ExecutionPlatforms, ResolutionError>>,
+    /// Reentrancy guards of [`Self::registered_execution_platforms`]: per
+    /// configuration whose execution platforms are being computed, the
+    /// registered target being analyzed.
+    computing_execution_platforms: Vec<ConfiguredTargetKey>,
+    /// The cycle report of a registered execution platform that needs
+    /// toolchain resolution itself (Self::execution_platform_cycle), per
+    /// configuration.
+    execution_platform_cycle_reports: BTreeMap<ConfigId, String>,
     /// The exec configuration of each analyzed target's default exec group
     /// (its parent configuration when the exec transition is a no-op), for
     /// targets with exec-transition dependency edges.
@@ -1780,10 +1838,10 @@ pub struct Engine {
     action_executions: BTreeMap<String, crate::exec_groups::ActionExecution>,
     /// Phase-2 state of the current build (Self::plan_pending).
     action_planning: Option<ActionPlanning>,
-    /// Targets analyzed as toolchain implementations: their own resolution
-    /// forces the parent's execution platform, the host platform
-    /// (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
-    toolchain_implementations: BTreeSet<ConfiguredTargetKey>,
+    /// Targets analyzed as toolchain implementations, with their parent's
+    /// execution platform (the PlatformInfo label), which their own
+    /// resolution forces (ToolchainContextUtil.java:136-141; docs/TOOLCHAINS.md).
+    toolchain_implementations: BTreeMap<ConfiguredTargetKey, Label>,
     /// Duplicate-label attribute errors of Starlark rules, reported with
     /// their other prerequisite errors (Self::starlark_prerequisite_errors).
     deferred_duplicates: BTreeMap<ConfiguredTargetKey, Vec<String>>,
@@ -1890,6 +1948,9 @@ impl Engine {
             registered_toolchains: BTreeMap::new(),
             computing_toolchains: Vec::new(),
             toolchain_cycle_reports: BTreeMap::new(),
+            registered_execution_platforms: BTreeMap::new(),
+            computing_execution_platforms: Vec::new(),
+            execution_platform_cycle_reports: BTreeMap::new(),
             exec_configurations: BTreeMap::new(),
             flag_scopes: BTreeMap::new(),
             exec_transitions: HashMap::new(),
@@ -1903,7 +1964,7 @@ impl Engine {
             group_exec_configurations: BTreeMap::new(),
             action_executions: BTreeMap::new(),
             action_planning: None,
-            toolchain_implementations: BTreeSet::new(),
+            toolchain_implementations: BTreeMap::new(),
             deferred_duplicates: BTreeMap::new(),
             source_directories: BTreeMap::new(),
             runfiles_options: crate::runfiles_tree::RunfilesOptions::default(),
@@ -2270,6 +2331,7 @@ impl Engine {
         self.configurations = Configurations::new(configuration);
         self.platforms.clear();
         self.registered_toolchains.clear();
+        self.registered_execution_platforms.clear();
         self.flag_scopes.clear();
         self.exec_transitions.clear();
         self.transition_cache.clear();
@@ -3747,7 +3809,7 @@ impl Engine {
                                 rule.location.as_deref(),
                                 format!(
                                     "Attr '{}' declares a transition for non-existent exec group '{group}'",
-                                    edge.attribute
+                                    native_attribute_name(&edge.attribute)
                                 ),
                             ));
                         };
@@ -3912,8 +3974,12 @@ impl Engine {
             .flatten()
         {
             for implementation in context.resolved_labels() {
-                self.toolchain_implementations
-                    .insert(ConfiguredTargetKey::new(implementation.clone(), config));
+                self.toolchain_implementation(
+                    &implementation,
+                    config,
+                    &context.exec_platform.label,
+                )
+                .map_err(|error| located(rule.location.as_deref(), error))?;
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
@@ -4452,7 +4518,7 @@ impl Engine {
                     ToolchainContextKey {
                         types: requirements(&group.toolchains)?,
                         exec_constraints: constraints,
-                        forced_exec: false,
+                        forced_exec: None,
                     },
                 ));
             }
@@ -4463,7 +4529,7 @@ impl Engine {
                         ToolchainContextKey {
                             types: vec![requirement.clone()],
                             exec_constraints: exec_constraints.clone(),
-                            forced_exec: false,
+                            forced_exec: None,
                         },
                     ));
                 }
@@ -4471,7 +4537,7 @@ impl Engine {
             let default_key = ToolchainContextKey {
                 types: if use_auto { Vec::new() } else { types.clone() },
                 exec_constraints: exec_constraints.clone(),
-                forced_exec: false,
+                forced_exec: None,
             };
             self.resolving_aspect_toolchains = true;
             let resolved = (|| -> Result<(), String> {
@@ -4516,11 +4582,16 @@ impl Engine {
                         .map(|group| group.context.as_ref()),
                 )
                 .flatten()
-                .flat_map(|context| context.resolved_labels())
+                .flat_map(|context| {
+                    context
+                        .resolved_labels()
+                        .into_iter()
+                        .map(|label| (label, context.exec_platform.label.clone()))
+                })
                 .collect::<Vec<_>>();
-            for implementation in implementations {
-                self.toolchain_implementations
-                    .insert(ConfiguredTargetKey::new(implementation.clone(), config));
+            for (implementation, exec_platform) in implementations {
+                self.toolchain_implementation(&implementation, config, &exec_platform)
+                    .map_err(|error| located(base_rule.location.as_deref(), error))?;
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(base_rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
@@ -5249,9 +5320,10 @@ impl Engine {
             lines.push(located(
                 rule.location.as_deref(),
                 format!(
-                    "on dependency edge {} ({}) -|{attribute}|-> {}: {}",
+                    "on dependency edge {} ({}) -|{}|-> {}: {}",
                     crate::rule_declarations::canonical_form(&rule.label),
                     &config.to_string()[..7],
+                    native_attribute_name(attribute),
                     crate::rule_declarations::canonical_form(dependency),
                     failure.message
                 ),
@@ -6496,6 +6568,36 @@ impl Engine {
         }
     }
 
+    /// Record `implementation` as a toolchain implementation of a parent
+    /// whose execution platform is `exec_platform`. Bazel keys the
+    /// implementation's configured target by that platform
+    /// (ConfiguredTargetKey.executionPlatformLabel, DependencyResolver.java:835-866);
+    /// the native key has no execution platform, so one implementation
+    /// needed for two execution platforms in one configuration fails
+    /// explicitly.
+    fn toolchain_implementation(
+        &mut self,
+        implementation: &Label,
+        config: ConfigId,
+        exec_platform: &Label,
+    ) -> Result<(), String> {
+        let key = ConfiguredTargetKey::new(implementation.clone(), config);
+        match self.toolchain_implementations.get(&key) {
+            Some(existing) if existing != exec_platform => Err(format!(
+                "toolchain implementation {} is needed for the execution platforms {} and {} in one configuration: configured targets keyed by their execution platform (ConfiguredTargetKey.executionPlatformLabel) are not implemented in the native profile",
+                crate::rule_declarations::canonical_form(implementation),
+                crate::rule_declarations::canonical_form(existing),
+                crate::rule_declarations::canonical_form(exec_platform),
+            )),
+            Some(_) => Ok(()),
+            None => {
+                self.toolchain_implementations
+                    .insert(key, exec_platform.clone());
+                Ok(())
+            }
+        }
+    }
+
     /// ToolchainContextUtil.getUnloadedToolchainContextsInputs
     /// (skyframe/toolchains/ToolchainContextUtil.java:60-165): the rule
     /// class's toolchain types and execution constraints; a toolchain
@@ -6508,7 +6610,8 @@ impl Engine {
         let mut key = ToolchainContextKey {
             forced_exec: self
                 .toolchain_implementations
-                .contains(&ConfiguredTargetKey::new(rule.label.clone(), config)),
+                .get(&ConfiguredTargetKey::new(rule.label.clone(), config))
+                .cloned(),
             ..Default::default()
         };
         if let Some(custom) = &rule.custom {
@@ -6745,7 +6848,7 @@ impl Engine {
                 key: ToolchainContextKey {
                     types,
                     exec_constraints: union(&constraints, more),
-                    forced_exec: false,
+                    forced_exec: None,
                 },
                 name,
                 builtin_only,
@@ -6762,7 +6865,7 @@ impl Engine {
                     key: ToolchainContextKey {
                         exec_constraints: union(&default_exec, more),
                         types: vec![requirement],
-                        forced_exec: false,
+                        forced_exec: None,
                     },
                     builtin_only: false,
                 });
@@ -6793,7 +6896,12 @@ impl Engine {
         let host = configuration.native.host_platform.clone();
         let target_label = configuration.native.target_platform().clone();
         let default_host = host == crate::configuration::default_host_platform();
-        if !key.needs_platforms() {
+        // `--extra_execution_platforms`: the registered execution platforms
+        // come before the host platform (PlatformKeys.findExecutionPlatformKeys,
+        // :106-133), so a rule without toolchain types may run on one of
+        // them; resolved first, like Bazel.
+        let extra = !configuration.native.extra_execution_platforms.is_empty();
+        if !key.needs_platforms() && !extra {
             if default_host {
                 return Ok(None);
             }
@@ -6803,7 +6911,7 @@ impl Engine {
             // PlatformKeys.isPlatformSuitable (:265-275): without toolchain
             // types a platform that checks toolchain types is unsuitable,
             // unless forced.
-            if host_info.check_toolchain_types && !key.forced_exec {
+            if host_info.check_toolchain_types && key.forced_exec.is_none() {
                 let target = self
                     .platform_info(&target_label, config, configured, plan)
                     .map_err(|error| {
@@ -6818,12 +6926,27 @@ impl Engine {
             }
             return Ok(None);
         }
+        let registered_platforms = if extra {
+            self.execution_platforms(rule, config, &key, active, configured, plan)?
+        } else {
+            Arc::new(Vec::new())
+        };
         let target = self
             .platform_info(&target_label, config, configured, plan)
             .map_err(|error| self.platform_resolution_error(rule, config, &target_label, error))?;
         let host_info = self
             .platform_info(&host, config, configured, plan)
             .map_err(|error| self.platform_resolution_error(rule, config, &host, error))?;
+        // PlatformKeys.build (:66-104): the registered execution platforms,
+        // then the host platform unless it is one of them (a LinkedHashSet
+        // of the alias-resolved keys).
+        let mut candidates = registered_platforms.as_ref().clone();
+        if !candidates
+            .iter()
+            .any(|platform| platform.label == host_info.label)
+        {
+            candidates.push(host_info.clone());
+        }
         // Phase-1 prefetch: from here on, the implementation of every
         // toolchain compatible with these platforms is queued as soon as
         // the toolchain is analyzed (`prefetch_compatible_toolchain`).
@@ -6838,14 +6961,11 @@ impl Engine {
                 .map_err(|error| self.resolution_error(rule, config, error))?;
             constraints.push(value);
         }
-        let exec = if host_info
-            .constraints
-            .contains_all(&constraints.iter().collect::<Vec<_>>())
-        {
-            vec![host_info.clone()]
-        } else {
-            Vec::new()
-        };
+        let required = constraints.iter().collect::<Vec<_>>();
+        let exec = candidates
+            .into_iter()
+            .filter(|platform| platform.constraints.contains_all(&required))
+            .collect::<Vec<_>>();
         let mut lookups = Vec::new();
         for requirement in &key.types {
             let info = self
@@ -6878,8 +6998,12 @@ impl Engine {
         };
         // PlatformKeys.find (:230-245): the forced platform is the target
         // platform or one of the execution platforms.
-        let forced = key.forced_exec.then(|| host_info.clone()).filter(|forced| {
-            forced.label == target.label || exec.iter().any(|exec| exec.label == forced.label)
+        let forced = key.forced_exec.as_ref().and_then(|forced| {
+            if *forced == target.label {
+                Some(target.clone())
+            } else {
+                exec.iter().find(|exec| exec.label == *forced).cloned()
+            }
         });
         let resolved = crate::toolchains::resolve(
             &types,
@@ -6892,6 +7016,12 @@ impl Engine {
             &registered,
         )
         .map_err(|message| self.toolchain_error(rule, config, "", &message))?;
+        // A context that needed no platform and runs on the host platform
+        // stays the lazy host context (`None`, as without
+        // `--extra_execution_platforms`).
+        if !key.needs_platforms() && resolved.exec_platform.label == host_info.label {
+            return Ok(None);
+        }
         // Phase-1 prefetch: the selected implementations are analyzed after
         // the rule's attribute dependencies.
         if self.prefetch.is_some() {
@@ -7057,6 +7187,152 @@ impl Engine {
                 is_toolchain,
             ),
         ))
+    }
+
+    /// RegisteredExecutionPlatformsFunction.compute
+    /// (skyframe/toolchains/RegisteredExecutionPlatformsFunction.java:72-157)
+    /// for a configuration with `--extra_execution_platforms`, once per
+    /// configuration: the platforms in registration order (alias-resolved
+    /// PlatformInfo). Module registrations (`register_execution_platforms`)
+    /// fail explicitly before (Self::check_execution_platform_registrations).
+    /// A registered target that needs toolchain resolution itself is
+    /// RegisteredExecutionPlatformsCycleReporter's cycle.
+    fn execution_platforms(
+        &mut self,
+        rule: &Rule,
+        config: ConfigId,
+        key: &ToolchainContextKey,
+        active: &[ConfiguredTargetKey],
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<ExecutionPlatforms, String> {
+        if let Some(cached) = self.registered_execution_platforms.get(&config) {
+            return cached
+                .clone()
+                .map_err(|error| self.resolution_error(rule, config, error));
+        }
+        if self
+            .computing_execution_platforms
+            .iter()
+            .any(|computing| computing.config == config)
+        {
+            return Err(self.execution_platform_cycle(config, active, key));
+        }
+        self.computing_execution_platforms
+            .push(ConfiguredTargetKey::new(rule.label.clone(), config));
+        let result = self.compute_execution_platforms(config, configured, plan);
+        self.computing_execution_platforms.pop();
+        self.registered_execution_platforms
+            .insert(config, result.clone());
+        result.map_err(|error| self.resolution_error(rule, config, error))
+    }
+
+    fn compute_execution_platforms(
+        &mut self,
+        config: ConfigId,
+        configured: &mut ConfiguredNodes,
+        plan: &mut Plan,
+    ) -> Result<ExecutionPlatforms, ResolutionError> {
+        // The configuration's platforms, parsed with the main repository
+        // mapping (:86-99).
+        let patterns = self
+            .configurations
+            .get(config)
+            .native
+            .extra_execution_platforms
+            .iter()
+            .map(|pattern| (String::new(), pattern.clone()))
+            .collect::<Vec<_>>();
+        let labels =
+            self.expand_registration_patterns(&patterns, Registration::ExecutionPlatform)?;
+        // configureRegisteredExecutionPlatforms (:193-243): each target in
+        // the configuration; its key is the alias-resolved label.
+        let mut platforms: Vec<(Label, Arc<PlatformInfo>)> = Vec::new();
+        let mut cycle = None;
+        for label in labels {
+            let info = match self.target(&label) {
+                Ok(Target::Rule(rule)) if rule.label == label && has_platform_info(&rule) => self
+                    .platform_info(&label, config, configured, plan)
+                    .map_err(|error| platform_resolution_failure(&label, error)),
+                // Any other target is configured like a dependency: one
+                // that resolves toolchains needs these platforms (a cycle);
+                // otherwise it lacks PlatformInfo (InvalidPlatformException,
+                // after its own errors).
+                _ => match self.analyze(&label, config, &mut Vec::new(), configured, plan) {
+                    Ok(()) => configured
+                        .get(&ConfiguredTargetKey::new(label.clone(), config))
+                        .and_then(|node| node.platform.clone())
+                        .ok_or_else(|| {
+                            ResolutionError::Toolchain(crate::platforms::not_a_platform(&label))
+                        }),
+                    Err(error) => match self.execution_platform_cycle_reports.remove(&config) {
+                        Some(report) if error.contains(&report) => {
+                            cycle = Some(report);
+                            continue;
+                        }
+                        _ => Err(ResolutionError::Reported(
+                            error,
+                            crate::platforms::not_a_platform(&label),
+                        )),
+                    },
+                },
+            };
+            let info = info?;
+            if let Some((first, _)) = platforms.iter().find(|(_, seen)| seen.label == info.label) {
+                return Err(ResolutionError::Propagated(format!(
+                    "the registered execution platforms {} and {} are the same platform {}: Bazel 9.3 crashes on it (IllegalArgumentException: Multiple entries with same key, ImmutableMap.Builder.buildOrThrow in RegisteredExecutionPlatformsFunction.configureRegisteredExecutionPlatforms, skyframe/toolchains/RegisteredExecutionPlatformsFunction.java:243), which is not implemented in the native profile",
+                    crate::rule_declarations::canonical_form(first),
+                    crate::rule_declarations::canonical_form(&label),
+                    crate::rule_declarations::canonical_form(&info.label),
+                )));
+            }
+            platforms.push((label, info));
+        }
+        if let Some(report) = cycle {
+            return Err(ResolutionError::Propagated(report));
+        }
+        Ok(Arc::new(
+            platforms.into_iter().map(|(_, info)| info).collect(),
+        ))
+    }
+
+    /// RegisteredExecutionPlatformsCycleReporter.maybeReportCycle
+    /// (skyframe/toolchains/RegisteredExecutionPlatformsCycleReporter.java:55-104)
+    /// with AbstractLabelCycleReporter.printCycle: a registered execution
+    /// platform target whose analysis (`active`, from the registered target
+    /// to the rule) needs the configuration's execution platforms. The
+    /// cycle is RegisteredExecutionPlatforms, the configured targets and the
+    /// rule's toolchain context key (`toolchain types ...`); reported
+    /// without location.
+    fn execution_platform_cycle(
+        &mut self,
+        config: ConfigId,
+        active: &[ConfiguredTargetKey],
+        key: &ToolchainContextKey,
+    ) -> String {
+        let shown = crate::rule_declarations::canonical_form;
+        let head = active
+            .first()
+            .map(|key| shown(&key.label))
+            .unwrap_or_default();
+        let mut report = format!(
+            "Misconfigured execution platforms: {head} is declared as a platform but has inappropriate dependencies. Execution platforms should not have dependencies that themselves require toolchain resolution.\n.-> RegisteredExecutionPlatforms"
+        );
+        for element in active {
+            report.push_str("\n|   ");
+            report.push_str(&shown(&element.label));
+        }
+        report.push_str(&format!(
+            "\n|   toolchain types {}\n`-- RegisteredExecutionPlatforms",
+            key.types
+                .iter()
+                .map(|requirement| shown(&requirement.label))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        self.execution_platform_cycle_reports
+            .insert(config, report.clone());
+        report
     }
 
     /// RegisteredToolchainsFunction.compute (skyframe/toolchains/RegisteredToolchainsFunction.java:64-147),
@@ -7231,6 +7507,19 @@ impl Engine {
         &mut self,
         patterns: &[(String, String)],
     ) -> Result<Vec<Label>, ResolutionError> {
+        self.expand_registration_patterns(patterns, Registration::Toolchain)
+    }
+
+    /// TargetPatternUtil.expandTargetPatterns for registered toolchains
+    /// (above) or execution platforms (RegisteredExecutionPlatformsFunction.HAS_PLATFORM_INFO,
+    /// :66-68: wildcards keep the rules PlatformLookupUtil.hasPlatformInfo
+    /// accepts, :160-173 — `platform`, and the alias-like rules that do not
+    /// resolve toolchains; explicit labels are kept whatever they are).
+    fn expand_registration_patterns(
+        &mut self,
+        patterns: &[(String, String)],
+        kind: Registration,
+    ) -> Result<Vec<Label>, ResolutionError> {
         let mut labels: Vec<Label> = Vec::new();
         // The labels already in `labels`: first-copy dedupe in O(1) per
         // label (a linear `labels.contains` was quadratic in the number of
@@ -7238,13 +7527,20 @@ impl Engine {
         let mut seen: HashSet<Label> = HashSet::new();
         for (repository, pattern) in patterns {
             let invalid = |message: String| {
-                ResolutionError::Toolchain(crate::toolchains::invalid_registered_toolchain(
-                    pattern, &message,
-                ))
+                ResolutionError::Toolchain(match kind {
+                    Registration::Toolchain => {
+                        crate::toolchains::invalid_registered_toolchain(pattern, &message)
+                    }
+                    // InvalidExecutionPlatformLabelException (:262-275).
+                    Registration::ExecutionPlatform => {
+                        format!("invalid registered execution platform '{pattern}': {message}")
+                    }
+                })
             };
             if pattern.starts_with('-') {
                 return Err(ResolutionError::Propagated(format!(
-                    "negative toolchain registration pattern {pattern:?} is not implemented in the native profile"
+                    "negative {} registration pattern {pattern:?} is not implemented in the native profile",
+                    kind.noun()
                 )));
             }
             // An unknown apparent repository fails the whole analysis, not
@@ -7265,6 +7561,11 @@ impl Engine {
             };
             let (base, wildcard) = match pattern.rsplit_once(':') {
                 Some((base, "all")) => (base, true),
+                // HAS_PLATFORM_INFO reads the associated rule null-safely:
+                // file targets are dropped like any non-platform target.
+                Some((base, "*" | "all-targets")) if kind == Registration::ExecutionPlatform => {
+                    (base, true)
+                }
                 // FilteringPolicies.RuleTypeFilter.shouldRetain
                 // (pkgcache/FilteringPolicies.java:120) dereferences the
                 // associated rule of every target, so Bazel 9.3 crashes with
@@ -7330,7 +7631,7 @@ impl Engine {
                         package,
                     };
                     self.load_package(&id).map_err(invalid)?;
-                    found.extend(self.package_toolchain_rules(&id));
+                    found.extend(self.package_registration_rules(&id, kind));
                 }
                 found
             } else if wildcard {
@@ -7339,7 +7640,7 @@ impl Engine {
                 // (pkgcache/TargetPatternResolverUtil.java:33-39).
                 self.load_package(&id)
                     .map_err(|error| invalid(format!("while parsing '{pattern}': {error}")))?;
-                self.package_toolchain_rules(&id)
+                self.package_registration_rules(&id, kind)
             } else {
                 let label = parse(self, pattern)?;
                 self.target(&label).map_err(invalid)?;
@@ -7355,11 +7656,15 @@ impl Engine {
         Ok(labels)
     }
 
-    /// The `toolchain` rules of a loaded package, by name.
-    fn package_toolchain_rules(&self, id: &PackageId) -> Vec<Label> {
+    /// The rules of a loaded package a registration wildcard keeps, by
+    /// name: `toolchain` rules, or those with PlatformInfo.
+    fn package_registration_rules(&self, id: &PackageId, kind: Registration) -> Vec<Label> {
         self.packages[id]
             .values()
-            .filter(|rule| matches!(rule.kind, RuleKind::Native("toolchain")))
+            .filter(|rule| match kind {
+                Registration::Toolchain => matches!(rule.kind, RuleKind::Native("toolchain")),
+                Registration::ExecutionPlatform => has_platform_info(rule),
+            })
             .map(|rule| rule.label.clone())
             .collect()
     }
@@ -12367,6 +12672,8 @@ impl Engine {
         self.registrations_checked = false;
         self.registered_toolchains.clear();
         self.toolchain_cycle_reports.clear();
+        self.registered_execution_platforms.clear();
+        self.execution_platform_cycle_reports.clear();
         self.exec_configurations.clear();
         self.deferred_duplicates.clear();
         self.toolchain_contexts.clear();

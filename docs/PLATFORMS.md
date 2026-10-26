@@ -321,8 +321,8 @@ and referenced by '//:cv_missing'`) or select() key error.
   non-dev registrations of the other modules once the module graph has been
   resolved; no extra module resolution I/O) fails the first toolchain-resolving
   rule: `register_execution_platforms("//:p") is not implemented in the native
-  profile: execution platform resolution (N17)`; `--extra_execution_platforms`
-  is an unsupported option.
+  profile: execution platform resolution (N17)`. `--extra_execution_platforms`
+  is modelled (docs/TOOLCHAINS.md "`--extra_execution_platforms`").
 * Exec groups are N35 (docs/EXEC_GROUPS.md); the exec transition is modelled (N18b,
   docs/CONFIGURATION.md: an exec configuration's target platform is the
   execution platform, the end of the host platform's alias chain); platform

@@ -380,7 +380,8 @@ analyzed in the parent's configuration
 (`ExecutionTransitionFactory.ExecTransitionFinalizer.patch`,
 `analysis/config/ExecutionTransitionFactory.java:192-197`). Otherwise the
 execution platform is the one toolchain resolution selected — the host
-platform, the only execution platform (docs/TOOLCHAINS.md) — and its label
+platform, or one of the configuration's `--extra_execution_platforms`
+(docs/TOOLCHAINS.md) — and its label
 is the PlatformInfo label, the end of an alias chain
 (`@@platforms//host:host` for the default `--host_platform`). Extending the
 lazy default host platform (docs/PLATFORMS.md, D2): a toolchain-using rule
@@ -410,7 +411,7 @@ options:
 | `force_pic` | default (`false`) | not propagated |
 | `define` | carried (`--experimental_exclude_defines_from_exec_config` is false) | `FunctionTransitionUtil.java:210-223` |
 | `platforms` | `[execution platform]` | `ExecutionTransitionFactory.java:203-207` |
-| `host_platform`, `extra_toolchains` | carried | `builtin_exec_platforms.bzl:411-419` (PlatformOptions) |
+| `host_platform`, `extra_execution_platforms`, `extra_toolchains` | carried | `builtin_exec_platforms.bzl:411-419` (PlatformOptions) |
 | `is exec configuration` | `true` | `:224` |
 | `platform_suffix` | `exec` (`--experimental_exec_configuration_distinguisher=off`) | `CoreOptions.java:488-505`, `ExecutionTransitionFactory.java:255-258` |
 
@@ -473,10 +474,9 @@ native `rust-opt-exec` before N41) — no `ST-` hash. A platform name with `/` i
 InvalidMnemonicException `CPU/Platform descriptor 'D' is invalid as part of a
 path: must not contain /` (`OutputPathMnemonicComputer.java:55-61`,
 `vfs/PathFragment.java:948-957`), reported at the parent rule. Like Bazel,
-two execution platforms with the same name share a root; natively every
-exec configuration of one build has the same execution platform (the host
-platform), so its outputs cannot collide, and action cache keys differ by
-the configuration (`LABEL[CONFIG8]`).
+two execution platforms with the same name share a root (with
+`--extra_execution_platforms` a build can have several execution
+platforms); action cache keys differ by the configuration (`LABEL[CONFIG8]`).
 
 **Remaining exec divergences (paired capture, tests/fixtures/exec_transition/reference_receipt.json):**
 `File.root` is absent (an interpreter unknown-field error, with Bazel's

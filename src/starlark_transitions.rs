@@ -53,6 +53,7 @@ const MODELLED_NATIVE_OPTIONS: &[&str] = &[
     "platforms",
     "host_platform",
     "extra_toolchains",
+    "extra_execution_platforms",
     "cpu",
     "collect_code_coverage",
     "java_runtime_version",
@@ -603,8 +604,32 @@ pub(crate) fn apply(
         }
     }
     let prints = Prints::default();
-    let outcome = evaluate(def, application, &prints)?;
+    let result = evaluate(def, application, &prints)
+        .and_then(|outcome| finish(def, application, outcome, &location));
     let printed = prints.0.into_inner();
+    match result {
+        Ok(configuration) => Ok(Applied {
+            configuration,
+            printed,
+        }),
+        // The application's print() events precede its error (they are
+        // reported as they happen, StarlarkTransitionCache.java:128-185).
+        Err(failure) => {
+            for line in &printed {
+                eprintln!("{line}");
+            }
+            Err(failure)
+        }
+    }
+}
+
+/// The configuration of an evaluated transition's outcome.
+fn finish(
+    def: &TransitionDef,
+    application: &Application<'_>,
+    outcome: Outcome,
+    location: &str,
+) -> Result<Configuration, Failure> {
     let changes = match outcome {
         Outcome::NoOp => Vec::new(),
         Outcome::Patch(changes) => changes,
@@ -612,7 +637,7 @@ pub(crate) fn apply(
         // (analysis/starlark/StarlarkRuleTransitionProvider.java:247-262).
         Outcome::Split(_) if application.kind == Kind::Rule => {
             return Err(Failure::event(
-                &location,
+                location,
                 "Rule transition only allowed to return a single transitioned configuration."
                     .to_owned(),
             ));
@@ -623,11 +648,7 @@ pub(crate) fn apply(
             )));
         }
     };
-    let configuration = apply_changes(def, application, changes, &location)?;
-    Ok(Applied {
-        configuration,
-        printed,
-    })
+    apply_changes(def, application, changes, location)
 }
 
 /// The `transition()` location as Bazel prints it: the `.bzl` file's path.
@@ -743,6 +764,7 @@ fn native_input<'v>(
         ),
         "host_platform" => label(&native.host_platform)?,
         "extra_toolchains" => heap.alloc(native.extra_toolchains.clone()),
+        "extra_execution_platforms" => heap.alloc(native.extra_execution_platforms.clone()),
         // CoreOptions.cpu after AutoCpuConverter (the host CPU by default).
         "cpu" => heap.alloc(
             native
@@ -1504,7 +1526,10 @@ fn convert_native(
     package_label: &dyn Fn(&str) -> Result<Label, String>,
 ) -> Result<(), String> {
     let option = crate::configuration::option(name);
-    let list_typed = matches!(name, "platforms" | "extra_toolchains");
+    let list_typed = matches!(
+        name,
+        "platforms" | "extra_toolchains" | "extra_execution_platforms"
+    );
     let invalid = || format!("Invalid value type for option '{name}'");
     let parsing = |message: String| format!("OptionsParsingError for option '{name}': {message}");
     if matches!(raw.kind, RawKind::None) {
@@ -1694,6 +1719,24 @@ fn convert_native(
             deduped.reverse();
             native.extra_toolchains = deduped;
         }
+        "extra_execution_platforms" => {
+            // Not allowMultiple: a non-empty list's elements joined with ","
+            // (each element's toString; a Label in its unambiguous
+            // canonical form), a string as is, then
+            // CommaSeparatedOptionListConverter (:687-707, 731-734).
+            native.extra_execution_platforms = match &raw.kind {
+                RawKind::List(items) if items.is_empty() => Vec::new(),
+                RawKind::List(items) => crate::configuration::comma_separated_option_list(
+                    &items
+                        .iter()
+                        .map(|item| item.element_text(true))
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                RawKind::String(text) => crate::configuration::comma_separated_option_list(text),
+                _ => return Err(invalid()),
+            };
+        }
         other => {
             return Err(format!(
                 "internal error: unmodelled native transition output {other}"
@@ -1831,6 +1874,49 @@ mod tests {
         )
         .unwrap();
         assert_eq!(native.extra_toolchains, ["//b", "//a"]);
+        // Not allowMultiple: the elements joined with "," (a Label in its
+        // unambiguous canonical form), then CommaSeparatedOptionListConverter.
+        convert_native(
+            &mut native,
+            "extra_execution_platforms",
+            &raw(
+                RawKind::List(vec![
+                    raw(RawKind::String("//a,//b".into()), "", "string"),
+                    raw(
+                        RawKind::Label(Label::parse_canonical("//p:x").unwrap()),
+                        "Label(\"//p:x\")",
+                        "Label",
+                    ),
+                    raw(RawKind::String("//a".into()), "", "string"),
+                ]),
+                "",
+                "list",
+            ),
+            &parse,
+        )
+        .unwrap();
+        assert_eq!(
+            native.extra_execution_platforms,
+            ["//a", "//b", "@@//p:x", "//a"]
+        );
+        convert_native(
+            &mut native,
+            "extra_execution_platforms",
+            &raw(RawKind::String("".into()), "", "string"),
+            &parse,
+        )
+        .unwrap();
+        assert!(native.extra_execution_platforms.is_empty());
+        assert_eq!(
+            convert_native(
+                &mut native,
+                "extra_execution_platforms",
+                &raw(RawKind::None, "None", "NoneType"),
+                &parse,
+            )
+            .unwrap_err(),
+            "'None' value not allowed for List-type option 'extra_execution_platforms'. Please use '[]' instead if trying to set option to empty value."
+        );
         // None: enum options read as their default, booleans reject it.
         native.compilation_mode = "dbg";
         convert_native(

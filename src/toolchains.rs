@@ -237,8 +237,8 @@ pub struct ToolchainContextKey {
     /// (ToolchainContextUtil.getExecutionPlatformConstraints, :147-165).
     pub exec_constraints: Vec<Label>,
     /// The target is a toolchain implementation: its parent's execution
-    /// platform (the host platform) is forced (ToolchainContextUtil.java:136-141).
-    pub forced_exec: bool,
+    /// platform (the PlatformInfo label) is forced (ToolchainContextUtil.java:136-141).
+    pub forced_exec: Option<Label>,
 }
 
 impl ToolchainContextKey {
@@ -267,7 +267,7 @@ pub fn default_test_exec_group_key() -> ToolchainContextKey {
             ignore_if_invalid: false,
         }],
         exec_constraints: Vec::new(),
-        forced_exec: false,
+        forced_exec: None,
     }
 }
 
