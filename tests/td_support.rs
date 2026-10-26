@@ -152,6 +152,37 @@ fn startup_output_base_rc_precedence_relative_paths_and_symlinks() {
 }
 
 #[test]
+fn output_base_and_quiet_startup_options_both_take_effect() {
+    let ws = Workspace::new();
+    for (rc, startup, directory) in [
+        (
+            "startup --quiet\n",
+            vec!["--output_base=from_cli"],
+            "from_cli",
+        ),
+        (
+            "startup --output_base=from_rc\n",
+            vec!["--quiet"],
+            "from_rc",
+        ),
+    ] {
+        fs::write(ws.root.join(".bazelrc"), rc).unwrap();
+        let out = ws.run(&startup, &["info", "output_base"]);
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            format!("{}\n", ws.root.join(directory).display())
+        );
+        assert!(out.stderr.is_empty(), "{:?}", out.stderr);
+        assert!(!ws.root.join(directory).exists());
+        let built = ws.run(&startup, &["build", "//:g"]);
+        assert!(built.status.success(), "{built:?}");
+        assert!(built.stderr.is_empty(), "{:?}", built.stderr);
+        assert!(ws.root.join(directory).join("execroot").is_dir());
+    }
+}
+
+#[test]
 fn dump_root_mapping_uses_real_module_aliases_and_extension_imports() {
     let ws = Workspace::new();
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
