@@ -402,9 +402,20 @@ fn commands_collect_at_their_end_after_the_idle_delay() {
         "--experimental_disk_cache_gc_idle_delay=1h",
         "--experimental_disk_cache_gc_max_age=2d",
     ];
-    // The first command collects (no collection before): nothing to remove.
+    // A new cache is not collected before it is the idle delay old.
     let first = fixture.build("ws", &["//:a"], &flags);
     assert!(!first.contains("cache garbage collection"), "{first}");
+    assert!(!fixture.cache().join("gc/stamp").exists());
+    // With an idle delay of zero it is: nothing to remove, the stamp.
+    let zero = [
+        "--experimental_disk_cache_gc_idle_delay=0",
+        "--experimental_disk_cache_gc_max_age=2d",
+    ];
+    let collected = fixture.build("ws", &["//:a"], &zero);
+    assert!(
+        !collected.contains("cache garbage collection"),
+        "{collected}"
+    );
     assert!(fixture.cache().join("gc/stamp").is_file());
     fixture.backdate(3);
     // Within the idle delay: no collection.

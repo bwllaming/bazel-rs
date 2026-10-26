@@ -488,7 +488,7 @@ fn run() -> Result<(), String> {
     // exclusively), records which worktree uses the cache, and collects at
     // its end under its options.
     bazel_rs::cache_gc::install(&cache);
-    bazel_rs::cache_gc::record_workspace(&cache, &root);
+    bazel_rs::cache_gc::record_workspace(&root);
     bazel_rs::cache_gc::set_options(&rc_options.gc);
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
     let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(

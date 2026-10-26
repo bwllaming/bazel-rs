@@ -45,13 +45,18 @@ The native cache is an output base, a disk cache, a repo contents cache and
 a repository cache at once, shared by every worktree of a repository
 (docs/WORKTREES.md), with no server. So:
 
-* **The lock.** Every command takes `<cache>/gc/lock` shared as soon as it
-  knows its cache and holds it until it exits (`cache_gc::install`; a note
-  is printed only if it waits more than a second for a collection).
-* **When.** At the end of a command (`cache_gc::finish`, also after a
-  failure; not before `run` execs its target), when the last collection
-  (the modification time of `gc/stamp`) is at least the idle delay old, or
-  the last one left work: the command drops its shared lock, takes the
+* **The lock.** Every command takes a flock of the cache directory itself
+  shared as soon as it knows its cache and holds it until it exits
+  (`cache_gc::install`; a note is printed only if it waits more than a
+  second for a collection). Locking the directory creates nothing: a
+  command that fails before it writes leaves no cache (genuine's
+  `gc/lock` would). A cache that does not exist yet holds nothing to
+  protect and is not locked.
+* **When.** At the end of a command (`cache_gc::finish`, after the
+  progress display ended, also after a failure; not before `run` execs its
+  target), when the last collection (the modification time of `gc/stamp`;
+  for a cache never collected, the cache directory's birth time) is at least
+  the idle delay old, or the last one left work: the command drops its shared lock, takes the
   exclusive one **without waiting** — only when no other bazel-rs process
   uses the cache — lowers its priority (`nice` +10) and collects in bounded
   time. The idle delay is `--experimental_disk_cache_gc_idle_delay` or
@@ -172,7 +177,8 @@ The collector reads manifests and pointers with `O_NOATIME`.
   canonical path (written by the first command of a workspace); when that
   path no longer exists and its parent does (a removed checkout), the state
   directory `worktrees/<name>-<hash>/` and the record go; when the parent is
-  gone too (an unmounted disk?), after 60 days. A state without a record
+  gone too (an unmounted disk?), after 60 days. The record is written at the
+  end of a command whose workspace has a non-empty state directory. A state without a record
   (written by older binaries) goes when nothing in it changed for 60 days.
 
 Never removed: lock files (zero bytes: unlinking a lock another process has

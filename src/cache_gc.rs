@@ -15,7 +15,7 @@
 //! The native cache is all of these at once (action cache, CAS, repository
 //! trees and downloads, test results, per-worktree state) and has no server:
 //!
-//! * every command holds `<cache>/gc/lock` shared from the moment it knows
+//! * every command holds a flock of the cache directory shared from the moment it knows
 //!   its cache until it exits ([`install`]);
 //! * at the end of a command ([`finish`]), when the last collection is at
 //!   least the idle delay old, the collector takes the lock exclusively
@@ -28,7 +28,7 @@
 pub mod collect;
 
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{ErrorKind, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -37,8 +37,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// `<cache>/gc`: everything the collector owns.
 pub const GC_DIRECTORY: &str = "gc";
-/// The cache-wide lock: shared by every command, exclusive for a collection.
-pub const LOCK: &str = "lock";
 /// The time of the last collection (its modification time) and whether work
 /// remains (plain text).
 pub const STAMP: &str = "stamp";
@@ -242,6 +240,9 @@ struct Installed {
     /// The shared lock (None: not held; the cache is not writable).
     lock: Mutex<Option<File>>,
     options: Mutex<Option<GcOptions>>,
+    /// The canonical workspace and its state directory's name
+    /// ([`record_workspace`]).
+    workspace: Mutex<Option<(PathBuf, String)>>,
     /// Files whose access time is to be set (`true`: known to be older than
     /// the recent window).
     files: Mutex<Vec<(PathBuf, bool)>>,
@@ -257,15 +258,12 @@ pub fn directory(cache: &Path) -> PathBuf {
     cache.join(GC_DIRECTORY)
 }
 
+/// The cache lock: a flock of the cache directory itself, so that a command
+/// creates nothing in a cache it does not write to (and no cache at all
+/// when it fails before it needs one). A cache that does not exist yet
+/// holds nothing to protect.
 fn open_lock(cache: &Path) -> std::io::Result<File> {
-    let directory = directory(cache);
-    fs::create_dir_all(&directory)?;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(directory.join(LOCK))
+    File::open(cache)
 }
 
 fn would_block(error: &std::io::Error) -> bool {
@@ -297,8 +295,8 @@ fn shared(cache: &Path, file: File) -> Option<File> {
 
 /// Make `cache` this process's cache: take its lock shared (waiting, with a
 /// note, while a collection runs) and hold it until the process exits.
-/// Called once by the CLI when it knows its cache. A cache that cannot be
-/// written is used without the lock.
+/// Called once by the CLI when it knows its cache. A cache that does not
+/// exist yet is used without the lock.
 pub fn install(cache: &Path) {
     let canonical = fs::canonicalize(cache).unwrap_or_else(|_| cache.to_path_buf());
     let lock = open_lock(cache).ok().and_then(|file| shared(cache, file));
@@ -307,6 +305,7 @@ pub fn install(cache: &Path) {
         canonical,
         lock: Mutex::new(lock),
         options: Mutex::new(None),
+        workspace: Mutex::new(None),
         files: Mutex::new(Vec::new()),
         trees: Mutex::new(HashSet::new()),
         recent: std::sync::atomic::AtomicU64::new(DAY.as_secs()),
@@ -580,19 +579,47 @@ pub(crate) fn parallel<T: Sync>(items: &[T], threads: usize, work: impl Fn(&T) +
     });
 }
 
-/// Record this workspace's state directory for the collector:
-/// `<cache>/gc/worktrees/<state name>` names its canonical path, so the
-/// state of a deleted worktree can be removed. Written when missing or
-/// different; its access time is the state's last use.
-pub fn record_workspace(cache: &Path, workspace: &Path) {
-    let canonical = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
-    let name = crate::worktree::state_name(workspace);
+/// This command's workspace: at its end, when the workspace has a state
+/// directory in the cache, `<cache>/gc/worktrees/<state name>` records its
+/// canonical path, so that the state of a deleted worktree can be removed
+/// ([`write_workspace_record`]).
+pub fn record_workspace(workspace: &Path) {
+    if let Some(installed) = INSTALLED.get() {
+        let canonical = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        let name = crate::worktree::state_name(workspace);
+        *installed
+            .workspace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((canonical, name));
+    }
+}
+
+/// Write the workspace record when missing or different and the state
+/// directory holds anything; its access time is the state's last use.
+fn write_workspace_record(installed: &Installed) {
+    let Some((canonical, name)) = installed
+        .workspace
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    else {
+        return;
+    };
+    let cache = &installed.cache;
+    let state = cache.join(crate::worktree::WORKTREES).join(&name);
+    if !fs::read_dir(&state).is_ok_and(|mut entries| entries.next().is_some()) {
+        return;
+    }
     let records = directory(cache).join(WORKSPACES);
     let path = records.join(&name);
     let mut content = canonical.as_os_str().as_encoded_bytes().to_vec();
     content.push(b'\n');
     if fs::read(&path).is_ok_and(|existing| existing == content) {
-        note_used_path(&path);
+        installed
+            .files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((path, false));
         return;
     }
     let write = || -> std::io::Result<()> {
@@ -612,6 +639,13 @@ fn read_stamp(cache: &Path) -> Option<(SystemTime, bool)> {
     let metadata = fs::metadata(&path).ok()?;
     let pending = fs::read(&path).is_ok_and(|bytes| bytes.ends_with(b"pending\n"));
     Some((metadata.modified().ok()?, pending))
+}
+
+/// When `cache` was created: its birth time, else (a file system without
+/// one) its last change.
+fn created(cache: &Path) -> Option<SystemTime> {
+    let metadata = fs::metadata(cache).ok()?;
+    metadata.created().or_else(|_| metadata.modified()).ok()
 }
 
 /// Write the stamp of a collection that ended now.
@@ -638,6 +672,7 @@ pub fn finish(collect: bool) {
     let Some(installed) = INSTALLED.get() else {
         return;
     };
+    write_workspace_record(installed);
     flush(installed);
     if !collect || automatic_disabled() {
         return;
@@ -651,8 +686,16 @@ pub fn finish(collect: bool) {
         return;
     };
     let policy = Policy::of(&options);
-    if let Some((last, pending)) = read_stamp(&installed.cache)
-        && !pending
+    // The last collection; a cache never collected counts from its
+    // creation (a new cache is not collected at once).
+    let (last, pending) = match read_stamp(&installed.cache) {
+        Some(stamp) => stamp,
+        None => match created(&installed.cache) {
+            Some(created) => (created, false),
+            None => return,
+        },
+    };
+    if !pending
         && SystemTime::now()
             .duration_since(last)
             .is_ok_and(|age| age < policy.idle_delay)
