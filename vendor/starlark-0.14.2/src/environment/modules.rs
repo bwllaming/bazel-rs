@@ -16,6 +16,9 @@
  */
 
 // Modified for native Bazel 9.3 repr/type/hashability compatibility; see vendor provenance.
+// Modified (bazel-rs): every module keeps the `DefInfo` of each `def` and `lambda`
+// it compiled, so a frozen function can be found again in a re-evaluated module
+// (crate::eval::PortableDef); see vendor provenance.
 
 //! The environment, called "Module" in [this spec](
 //! https://github.com/bazelbuild/starlark/blob/master/spec.md)
@@ -53,6 +56,8 @@ use crate::environment::slots::ModuleSlotId;
 use crate::environment::slots::MutableSlots;
 use crate::errors::did_you_mean::did_you_mean;
 use crate::eval::ProfileData;
+use crate::eval::compiler::def::FrozenDefInfos;
+use crate::eval::compiler::def::ModuleDefInfos;
 use crate::eval::runtime::profile::heap::RetainedHeapProfileMode;
 use crate::pagable::StarlarkDeserialize;
 use crate::pagable::StarlarkDeserializerImpl;
@@ -181,6 +186,10 @@ pub(crate) struct FrozenModuleData {
     /// serialization and restore as `None`.
     #[starlark_pagable(skip)]
     heap_profile: Option<RetainedHeapProfile>,
+    /// Modified (bazel-rs): the compiled `def`s and `lambda`s of the module
+    /// ([`ModuleDefInfos`]).
+    #[starlark_pagable(skip)]
+    pub(crate) def_infos: FrozenDefInfos,
 }
 
 /// A container for user values, used during execution.
@@ -210,6 +219,9 @@ pub struct Module<'v> {
     extra_value: Cell<Option<Value<'v>>>,
     /// When `Some`, heap profile is collected on freeze.
     heap_profile_on_freeze: Cell<Option<RetainedHeapProfileMode>>,
+    /// Modified (bazel-rs): the `DefInfo` of every `def` and `lambda`
+    /// compiled in this module, in compilation order.
+    pub(crate) def_infos: ModuleDefInfos,
 }
 
 impl FrozenModule {
@@ -297,6 +309,12 @@ impl FrozenModule {
     /// Obtain the [`FrozenHeapRef`] which owns the storage of all values defined in this module.
     pub fn frozen_heap(&self) -> &FrozenHeapRef {
         &self.heap
+    }
+
+    /// Modified (bazel-rs): the module data a frozen `def` of this module
+    /// refers back to.
+    pub(crate) fn data(&self) -> FrozenAnyValue<FrozenModuleData> {
+        self.module
     }
 
     /// Print out some approximation of the module definitions.
@@ -438,6 +456,7 @@ impl<'v> Module<'v> {
             eval_duration: Cell::new(Duration::ZERO),
             extra_value: Cell::new(None),
             heap_profile_on_freeze: Cell::new(None),
+            def_infos: ModuleDefInfos::default(),
         }
     }
 
@@ -533,6 +552,7 @@ impl<'v> Module<'v> {
             eval_duration,
             extra_value,
             heap_profile_on_freeze,
+            def_infos,
         } = self;
         #[cfg(not(target_arch = "wasm32"))]
         let start = Instant::now();
@@ -563,6 +583,7 @@ impl<'v> Module<'v> {
             slots,
             docstring: docstring.into_inner(),
             heap_profile: stacks,
+            def_infos: def_infos.freeze(),
         };
         let frozen_module_ref = freezer.heap.alloc_any_value(rest);
         for frozen_def in freezer.frozen_defs.borrow().as_slice() {

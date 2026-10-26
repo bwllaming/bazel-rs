@@ -8944,6 +8944,13 @@ impl Engine {
         };
         // The link policy's canonical forms, once (W6R).
         self.repositories.record_link_anchors();
+        // Portable descriptions of the deferred `map_each` functions, while
+        // the analysis snapshot records (crate::snapshot::mapper): checked
+        // ones do not block the save.
+        if self.repositories.records_for_replay() {
+            let settled = crate::snapshot::mapper::settle(&request, &self.repositories);
+            crate::snapshot::mapper::report_settled(&settled);
+        }
         crate::observed_fs::settle_plan_taints(
             request
                 .blockers()

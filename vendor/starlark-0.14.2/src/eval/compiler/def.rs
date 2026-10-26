@@ -18,6 +18,9 @@
 // Modified for native Bazel 9.3 function repr compatibility; see vendor provenance.
 // Modified for Bazel 9.3's rejection of recursive calls (`function 'NAME' called
 // recursively`, net/starlark/java/eval/StarlarkFunction.java:571-574); see vendor provenance.
+// Modified (bazel-rs): portable `def` and `lambda` values ([`PortableDef`]: a frozen
+// function taken apart and instantiated again from its module's compiled code in
+// another process, the analysis snapshot's Args `map_each`); see vendor provenance.
 
 //! Implementation of `def`.
 
@@ -537,6 +540,8 @@ impl Compiler<'_, '_, '_, '_> {
             stmt_compile_context: self.compile_context(return_type.is_some()),
             globals: self.globals,
         });
+        // Modified (bazel-rs): kept with the module ([`ModuleDefInfos`]).
+        self.eval.module_env.def_infos.0.borrow_mut().push(info);
 
         Ok(ExprCompiled::Def(DefCompiled {
             function_name,
@@ -979,3 +984,285 @@ impl FrozenDef {
 
 register_starlark_any!(DefInfo);
 register_starlark_any!(CopySlotFromParent);
+
+// ---- Modified (bazel-rs): portable `def` and `lambda` values ----------------
+
+/// Modified (bazel-rs): the `DefInfo` of every `def` and `lambda` a module
+/// compiled, in compilation order (crate::environment::Module). A frozen
+/// function's code is found again by its name and location in another
+/// evaluation of the same file ([`PortableDef::instantiate`]).
+#[derive(Default)]
+pub(crate) struct ModuleDefInfos(pub(crate) std::cell::RefCell<Vec<FrozenAnyValue<DefInfo>>>);
+
+impl fmt::Debug for ModuleDefInfos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "ModuleDefInfos({})", self.0.borrow().len())
+    }
+}
+
+impl ModuleDefInfos {
+    pub(crate) fn freeze(self) -> FrozenDefInfos {
+        FrozenDefInfos(self.0.into_inner())
+    }
+}
+
+/// Modified (bazel-rs): [`ModuleDefInfos`] of a frozen module.
+#[derive(Default, Allocative)]
+pub(crate) struct FrozenDefInfos(#[allocative(skip)] pub(crate) Vec<FrozenAnyValue<DefInfo>>);
+
+impl fmt::Debug for FrozenDefInfos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "FrozenDefInfos({})", self.0.len())
+    }
+}
+
+/// Modified (bazel-rs): the kind of one parameter of a [`PortableDef`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortableParamKind<V> {
+    /// A parameter without default.
+    Required,
+    /// A parameter of a native function without default (never a `def`'s).
+    Optional,
+    /// A parameter with its default value (evaluated when the `def` ran).
+    Defaulted(V),
+    /// `*args`.
+    Args,
+    /// `**kwargs`.
+    Kwargs,
+}
+
+/// Modified (bazel-rs): a frozen `def` or `lambda` value taken apart: its
+/// code (found again by its name, file and identifier span in another
+/// evaluation of the same file) and what the `def` statement evaluated when
+/// it ran — the parameter defaults and the captured variables of a nested
+/// function. Instantiated against a module evaluated from the same source,
+/// it is the same function: the same compiled code and module globals,
+/// equal defaults and captured values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortableDef<V> {
+    /// The function's name (`lambda` for a lambda).
+    pub name: String,
+    /// The file (code map name) the function is written in.
+    pub file: String,
+    /// The identifier span (`def` name, or the start of the `lambda`): byte
+    /// offsets in the file.
+    pub begin: u32,
+    /// The end of the identifier span.
+    pub end: u32,
+    /// The name in argument-binding errors.
+    pub function_name: String,
+    /// The parameters in order (`*args` and `**kwargs` named as the
+    /// parameter list names them).
+    pub params: Vec<(String, PortableParamKind<V>)>,
+    /// Parameters that can only be filled positionally (DefParamIndices).
+    pub num_positional_only: u32,
+    /// Parameters that can be filled positionally.
+    pub num_positional: u32,
+    /// The index of `*args`, if any.
+    pub args: Option<u32>,
+    /// The index of `**kwargs`, if any.
+    pub kwargs: Option<u32>,
+    /// The captured variables of a nested function, in the order its code
+    /// copies them from the enclosing frame (`None`: not assigned yet).
+    pub captured: Vec<Option<V>>,
+}
+
+impl PortableDef<FrozenValue> {
+    /// Take the frozen `def` or `lambda` `value` apart; an error for any
+    /// other value and for a function with type annotations.
+    pub fn of(value: FrozenValue) -> Result<PortableDef<FrozenValue>, String> {
+        let def = value
+            .to_value()
+            .downcast_ref::<FrozenDef>()
+            .ok_or_else(|| format!("{} is not a def or lambda", value.to_value().get_type()))?;
+        if !def.parameter_types.is_empty() || def.return_type.is_some() {
+            return Err(format!(
+                "function {} has type annotations",
+                def.def_info.name.as_str()
+            ));
+        }
+        let (function_name, params, indices, def_style) = def.parameters.portable_parts();
+        if !def_style {
+            return Err(format!(
+                "function {} has a native parameter list",
+                def.def_info.name.as_str()
+            ));
+        }
+        let params = params
+            .into_iter()
+            .map(|(name, kind)| {
+                use crate::eval::runtime::params::spec::ParameterKind;
+                let kind = match kind {
+                    ParameterKind::Required => PortableParamKind::Required,
+                    ParameterKind::Optional => PortableParamKind::Optional,
+                    ParameterKind::Defaulted(value) => PortableParamKind::Defaulted(value),
+                    ParameterKind::Args => PortableParamKind::Args,
+                    ParameterKind::KWargs => PortableParamKind::Kwargs,
+                };
+                (name, kind)
+            })
+            .collect();
+        let mut captured = Vec::with_capacity(def.captured.len());
+        for cell in &def.captured {
+            let value = crate::values::layout::value_captured::value_captured_get(cell.to_value());
+            captured.push(match value {
+                None => None,
+                Some(value) => Some(value.unpack_frozen().ok_or_else(|| {
+                    format!(
+                        "function {} captured an unfrozen value",
+                        def.def_info.name.as_str()
+                    )
+                })?),
+            });
+        }
+        let info = def.def_info;
+        let span = info.identifier_span.span();
+        Ok(PortableDef {
+            name: info.name.as_str().to_owned(),
+            file: info.codemap.filename().to_owned(),
+            begin: span.begin().get(),
+            end: span.end().get(),
+            function_name,
+            params,
+            num_positional_only: indices.num_positional_only,
+            num_positional: indices.num_positional,
+            args: indices.args,
+            kwargs: indices.kwargs,
+            captured,
+        })
+    }
+}
+
+impl<'v> PortableDef<Value<'v>> {
+    /// The function this describes, allocated on `module`'s heap (it is
+    /// frozen with `module`): the code the `defining` module compiled at
+    /// this name, file and span, with these defaults and captured values,
+    /// its globals those of `defining`. An error when `defining` compiled
+    /// no such function or the description does not fit its code.
+    pub fn instantiate(
+        &self,
+        defining: &crate::environment::FrozenModule,
+        module: &crate::environment::Module<'v>,
+    ) -> Result<Value<'v>, String> {
+        let data = defining.data();
+        let info = data
+            .def_infos
+            .0
+            .iter()
+            .copied()
+            .find(|info| {
+                let span = info.identifier_span.span();
+                info.name.as_str() == self.name
+                    && span.begin().get() == self.begin
+                    && span.end().get() == self.end
+                    && info.codemap.filename() == self.file
+            })
+            .ok_or_else(|| {
+                format!(
+                    "{} compiled no function {} at {}..{}",
+                    self.file, self.name, self.begin, self.end
+                )
+            })?;
+        if info.parent.len() != self.captured.len() {
+            return Err(format!(
+                "function {} captures {} variables, not {}",
+                self.name,
+                info.parent.len(),
+                self.captured.len()
+            ));
+        }
+        use crate::eval::runtime::params::spec::ParameterKind;
+        let mut params = Vec::with_capacity(self.params.len());
+        for (index, (name, kind)) in self.params.iter().enumerate() {
+            let kind = match kind {
+                PortableParamKind::Required => ParameterKind::Required,
+                PortableParamKind::Optional => ParameterKind::Optional,
+                PortableParamKind::Defaulted(value) => ParameterKind::Defaulted(*value),
+                PortableParamKind::Args => ParameterKind::Args,
+                PortableParamKind::Kwargs => ParameterKind::KWargs,
+            };
+            // A parameter's slot is its index, named as the code names it.
+            if !matches!(kind, ParameterKind::Args | ParameterKind::KWargs)
+                && info.used.get(index).map(|used| used.as_str()) != Some(name.as_str())
+            {
+                return Err(format!(
+                    "function {} has no parameter {name} at {index}",
+                    self.name
+                ));
+            }
+            params.push((name.clone(), kind));
+        }
+        let parameters = ParametersSpec::from_portable_parts(
+            self.function_name.clone(),
+            params,
+            DefParamIndices {
+                num_positional: self.num_positional,
+                num_positional_only: self.num_positional_only,
+                args: self.args,
+                kwargs: self.kwargs,
+            },
+            true,
+        )?;
+        if parameters.len() > info.used.len() {
+            return Err(format!("function {} has more parameters", self.name));
+        }
+        module.frozen_heap().add_reference(defining.frozen_heap());
+        let heap = module.heap();
+        let captured = self
+            .captured
+            .iter()
+            .map(|value| {
+                heap.alloc_complex(crate::values::layout::value_captured::ValueCaptured::new(
+                    *value,
+                ))
+            })
+            .collect();
+        Ok(heap.alloc(Def {
+            parameters,
+            parameter_captures: info.parameter_captures,
+            parameter_types: Vec::new(),
+            return_type: None,
+            captured,
+            module: AtomicFrozenAnyValueOption::new(Some(data)),
+            optimized_on_freeze_stmt: StmtCompiledCell::new(),
+            def_info: info,
+        }))
+    }
+}
+
+/// Modified (bazel-rs): whether the frozen functions `a` and `b` run the
+/// same compiled code against the same module (parameters and captured
+/// values aside: compare their [`PortableDef`]s).
+pub fn def_same_code(a: FrozenValue, b: FrozenValue) -> bool {
+    match (
+        a.to_value().downcast_ref::<FrozenDef>(),
+        b.to_value().downcast_ref::<FrozenDef>(),
+    ) {
+        (Some(a), Some(b)) => {
+            let module = |def: &FrozenDef| def.module.load_relaxed().map(|m| m.to_frozen_value());
+            a.def_info
+                .to_frozen_value()
+                .to_value()
+                .ptr_eq(b.def_info.to_frozen_value().to_value())
+                && match (module(a), module(b)) {
+                    (Some(x), Some(y)) => x.to_value().ptr_eq(y.to_value()),
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+/// Modified (bazel-rs): whether the frozen function `value`'s globals are
+/// those of `module` (the module whose evaluation created it).
+pub fn def_module_is(value: FrozenValue, module: &crate::environment::FrozenModule) -> bool {
+    value
+        .to_value()
+        .downcast_ref::<FrozenDef>()
+        .and_then(|def| def.module.load_relaxed())
+        .is_some_and(|data| {
+            data.to_frozen_value()
+                .to_value()
+                .ptr_eq(module.data().to_frozen_value().to_value())
+        })
+}

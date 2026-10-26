@@ -208,7 +208,8 @@ pub enum StatusSource {
 impl PlannedRequest {
     /// The snapshot blockers among the planned actions: build-info
     /// callbacks (their substitutions are this run's workspace status) and
-    /// deferred command lines whose `map_each` is a Starlark function.
+    /// deferred command lines whose `map_each` is a Starlark function
+    /// without a checked portable description (crate::snapshot::mapper).
     pub fn blockers(&self) -> Vec<Blocker> {
         let mut blockers: Vec<Blocker> = self
             .build_info
@@ -221,7 +222,11 @@ impl PlannedRequest {
         blockers.extend(
             self.nodes
                 .iter()
-                .filter(|node| node.deferred.as_ref().is_some_and(|d| d.uses_map_each()))
+                .filter(|node| {
+                    node.deferred
+                        .as_ref()
+                        .is_some_and(|d| d.uses_unportable_map_each())
+                })
                 .map(|node| Blocker {
                     taint: crate::observed_fs::Taint::MapEach,
                     detail: node.action.id.clone(),

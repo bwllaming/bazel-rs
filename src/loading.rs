@@ -612,6 +612,32 @@ pub(crate) fn load_shared_definition_any_in(
     })
 }
 
+/// A BUILD-phase `.bzl` module evaluated anew, outside the invocation's
+/// shared cache (crate::snapshot::mapper: the defining module of a portable
+/// `map_each` function, on a snapshot hit against a pinned repository set
+/// and at the save's checks): the BUILD-phase globals and char model, its
+/// loads evaluated by the same private loader, every `print()` line
+/// dropped (a hit prints only the recorded window; the analysis that saved
+/// the snapshot printed them already).
+pub(crate) fn load_build_module_private(
+    repositories: Arc<RepositorySet>,
+    label: &Label,
+) -> Result<FrozenModule, String> {
+    if !label.name.ends_with(".bzl") {
+        return Err(format!("load {label} requires a .bzl suffix"));
+    }
+    let globals = repositories.build_phase_globals().1;
+    let prints = LoadPrints::default();
+    let mut loader = Loader::shared_build_phase(repositories, &globals, &prints);
+    loader.shared = false;
+    loader.load(label.clone())?;
+    loader
+        .cache
+        .get(label)
+        .cloned()
+        .ok_or_else(|| format!("internal loader error: module {label} was not evaluated"))
+}
+
 pub fn load_modules_with_functions(
     root: &Path,
     current_package: &str,
@@ -855,6 +881,16 @@ impl BzlCache {
             .entry(label)
             .or_insert_with(|| result.map(Arc::new).map_err(Arc::new));
         Ok(())
+    }
+
+    /// The frozen module of `label` the invocation evaluated, if it did and
+    /// its evaluation succeeded (crate::snapshot::mapper: the module a
+    /// planned `map_each` function was created by).
+    pub(crate) fn module(&self, label: &Label) -> Option<FrozenModule> {
+        match self.get(label).ok()?? {
+            Ok(cached) => Some(cached.module.clone()),
+            Err(_) => None,
+        }
     }
 
     /// The buffered top-level `print()` lines stored for a cached label

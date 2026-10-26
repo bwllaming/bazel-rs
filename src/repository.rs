@@ -948,6 +948,36 @@ impl RepositorySet {
         self.state.replay.is_some()
     }
 
+    /// Give the replay capture this set's configuration (the first set
+    /// wins), when it records for replay; false otherwise. A local rule's
+    /// execution does it; so does a portable `map_each`, whose module a hit
+    /// loads against the pinned tables even without local rules
+    /// (crate::snapshot::mapper).
+    pub(crate) fn note_replay_context(&self) -> bool {
+        let Some(capture) = &self.state.replay else {
+            return false;
+        };
+        let Ok(source_cache) = self.source_cache_path() else {
+            return false;
+        };
+        self.set_replay_context(capture, source_cache);
+        true
+    }
+
+    fn set_replay_context(
+        &self,
+        capture: &crate::snapshot::replay::ReplayCapture,
+        source_cache: &Path,
+    ) {
+        capture.set_context(|| crate::snapshot::replay::CaptureContext {
+            options: self.state.options.clone(),
+            environment: self.state.environment.fresh(),
+            downloads_enabled: self.state.repository_downloads_enabled,
+            main_root: self.state.root.clone(),
+            source_cache: source_cache.to_path_buf(),
+        });
+    }
+
     /// The replay capture, while a replay scope is open on this thread.
     fn capturing(&self) -> Option<&crate::snapshot::replay::ReplayCapture> {
         self.state
@@ -1017,13 +1047,7 @@ impl RepositorySet {
                 return;
             }
         };
-        capture.set_context(|| crate::snapshot::replay::CaptureContext {
-            options: self.state.options.clone(),
-            environment: self.state.environment.fresh(),
-            downloads_enabled: self.state.repository_downloads_enabled,
-            main_root: self.state.root.clone(),
-            source_cache: source_cache.to_path_buf(),
-        });
+        self.set_replay_context(capture, source_cache);
         capture.record(crate::snapshot::replay::ReplayRecord {
             canonical: canonical.to_owned(),
             original_name: original_name.to_owned(),

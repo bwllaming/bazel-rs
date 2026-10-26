@@ -43,9 +43,11 @@
 //! What the encoding leaves out, by design: an action's resolved client
 //! environment values (re-resolved by crate::request finalize on every run,
 //! and never written to disk), the workspace status (placeholders, expanded
-//! by finalize), an Args `map_each` function (an in-memory Starlark value:
-//! a request that still needs one cannot be encoded,
-//! [`EncodeError::NotSerializable`]), and everything PA-1 keeps in process
+//! by finalize), an Args `map_each` function itself (an in-memory Starlark
+//! value: its checked portable description stands in for it,
+//! crate::snapshot::mapper; a request that still needs one without a
+//! description cannot be encoded, [`EncodeError::NotSerializable`]), and
+//! everything PA-1 keeps in process
 //! (per-process identities and memos, docs/PLANNED_REQUEST.md): the tool
 //! runfiles trees (crate::analysis_runtime::ToolRunfilesTree), the
 //! planner's tree memo (crate::engine's ActionPlanning::input_groups and its
@@ -71,8 +73,9 @@ use std::time::{Duration, Instant};
 pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// The container format version (bumped with any layout change; the store
 /// also keys snapshots by the binary's identity). 2: the GROUPS section
-/// (PA-1's shared input groups, integration-21).
-pub const FORMAT: u32 = 2;
+/// (PA-1's shared input groups, integration-21). 3: portable Args
+/// `map_each` functions (crate::snapshot::mapper).
+pub const FORMAT: u32 = 3;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -421,7 +424,7 @@ fn not_serializable_reason(chunk: &[PlannedAction], error: postcard::Error) -> S
     let reason = if node
         .deferred
         .as_ref()
-        .is_some_and(|deferred| deferred.uses_map_each())
+        .is_some_and(|deferred| deferred.uses_unportable_map_each())
     {
         "an Args map_each function expands a tree artifact at execution time".to_owned()
     } else if let Some((destination, _)) = node
@@ -723,12 +726,16 @@ pub fn hand_over(request: PlannedRequest) -> Result<PlannedRequest, String> {
     }
     let result = if roundtrip {
         // The decoded request executes: the planned one is not needed any
-        // more (one copy of the plan in memory, as on a hit).
+        // more (one copy of the plan in memory, as on a hit) — but for its
+        // `map_each` functions, which the decoded descriptions name (a hit
+        // resolves them from their modules, crate::snapshot::mapper).
+        let functions = crate::snapshot::mapper::functions(&request);
         drop(request);
         let start = Instant::now();
         let decoded = decode(&bytes).map_err(|error| {
             format!("internal error: the planned request does not decode: {error}")
         })?;
+        crate::snapshot::mapper::fill_decoded(&decoded, functions)?;
         stats.decode = Some(start.elapsed());
         let same = encodes_to(&decoded, &bytes).map_err(|error| {
             format!("internal error: the decoded planned request does not encode: {error}")
@@ -1093,31 +1100,39 @@ pub(crate) mod file {
     }
 }
 
-/// An Args `map_each` function: an in-memory Starlark value with no
-/// encoding — a frozen function or a callable its analysis module retains
-/// (crate::command_line::Mapper). `None` encodes as nothing; `Some` makes
-/// the request unencodable (the snapshot blocker `map-each-deferred`,
-/// PLAN-L2 §1b).
+/// An Args `map_each` function (crate::command_line::Mapper): an in-memory
+/// Starlark value, encoded as its portable description
+/// (crate::snapshot::mapper::MapperRef: the defining `.bzl` module, the
+/// function's code location, its defaults and captured values) once
+/// planning checked that the description names this very function
+/// (crate::snapshot::mapper::settle). A mapper without one makes the
+/// request unencodable (the snapshot blocker `map-each-deferred`, PLAN-L2
+/// §1b). A decoded mapper's function is resolved by the hit
+/// (crate::snapshot::mapper::resolve_request) before anything executes.
 pub(crate) mod map_each {
     use super::*;
     use crate::command_line::Mapper;
+    use crate::snapshot::mapper::MapperRef;
 
     pub(crate) fn serialize<S: Serializer>(
         value: &Option<Mapper>,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         match value {
-            None => serializer.serialize_unit(),
-            Some(_) => Err(S::Error::custom(
-                "an Args map_each function expands a tree artifact at execution time",
-            )),
+            None => None::<&MapperRef>.serialize(serializer),
+            Some(mapper) => match mapper.portable() {
+                Some(reference) => Some(&**reference).serialize(serializer),
+                None => Err(S::Error::custom(
+                    "an Args map_each function expands a tree artifact at execution time",
+                )),
+            },
         }
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<Mapper>, D::Error> {
-        <()>::deserialize(deserializer).map(|()| None)
+        Option::<MapperRef>::deserialize(deserializer).map(|value| value.map(Mapper::decoded))
     }
 }
 
@@ -1163,7 +1178,7 @@ mod tests {
                 ..VectorShape::default()
             },
             items: vec![Item::Strings(vec!["lit".into()]), Item::Directory(tree())],
-            map_each: map_each.map(crate::command_line::Mapper::Frozen),
+            map_each: map_each.map(crate::command_line::Mapper::frozen),
             expander: false,
         }))
     }

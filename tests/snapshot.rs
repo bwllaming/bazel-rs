@@ -1706,37 +1706,160 @@ fn plans_with_analysis_errors_are_never_saved() {
     assert!(twin.snapshots().is_empty());
 }
 
-const MAPPED_RULES: &str = r#"def _basename(f):
+const MAPPED_RULES: &str = r#"load(":consts.bzl", "SUFFIX")
+
+def _basename(f):
     return f.basename
 
-def _mapped(ctx):
+_TPL = "%s:%s:%s"
+
+def _shouter(prefix):
+    return lambda f: prefix + "-" + f.basename
+
+def _tree(ctx):
     d = ctx.actions.declare_directory(ctx.label.name + "_dir")
-    ctx.actions.run_shell(outputs = [d], command = "mkdir -p {d} && echo a > {d}/a.txt && echo b > {d}/b.txt".format(d = d.path))
+    names = ctx.file.names
+    ctx.actions.run_shell(
+        outputs = [d],
+        inputs = [names],
+        command = "mkdir -p {d} && for n in $(cat {names}); do echo $n > {d}/$n; done".format(d = d.path, names = names.path),
+    )
+    return d
+
+def _mapped(ctx):
+    d = _tree(ctx)
+    prefix = ctx.attr.prefix
+    table = {"k": [1, (True, None)], "f": ctx.file.names, "n": -3}
+    shout = _shouter(prefix.upper())
+
+    def entry(f, expander, sep = "/"):
+        if f.is_directory:
+            return [_TPL % (prefix, x.basename, SUFFIX) + sep + str(table["k"]) + table["f"].basename + str(table["n"]) + shout(x) for x in expander.expand(f)]
+        return f.path
+
+    written = ctx.actions.declare_file(ctx.label.name + ".written")
+    wargs = ctx.actions.args()
+    wargs.set_param_file_format("multiline")
+    wargs.add_all([d], map_each = lambda f, expander: entry(f, expander, sep = "!"), allow_closure = True)
+    ctx.actions.write(written, wargs)
     out = ctx.actions.declare_file(ctx.label.name + ".list")
     args = ctx.actions.args()
     args.add_all([d], map_each = _basename)
+    args.add_all([d], map_each = entry, allow_closure = True, expand_directories = False)
+    args.add_all([d], map_each = lambda f: prefix + f.basename, allow_closure = True)
+    ctx.actions.run_shell(outputs = [out], inputs = [d, written], arguments = [args], command = "echo \"$@\" > {out} && cat {w} >> {out}".format(out = out.path, w = written.path))
+    return [DefaultInfo(files = depset([out]))]
+
+mapped = rule(implementation = _mapped, attrs = {"names": attr.label(allow_single_file = True), "prefix": attr.string()})
+
+def _unportable(ctx):
+    d = _tree(ctx)
+    files = depset([ctx.file.names])
+    out = ctx.actions.declare_file(ctx.label.name + ".list")
+    args = ctx.actions.args()
+    args.add_all([d], map_each = lambda f: str(len(files.to_list())) + f.basename, allow_closure = True)
     ctx.actions.run_shell(outputs = [out], inputs = [d], arguments = [args], command = "echo \"$@\" > " + out.path)
     return [DefaultInfo(files = depset([out]))]
 
-mapped = rule(implementation = _mapped)
+unportable = rule(implementation = _unportable, attrs = {"names": attr.label(allow_single_file = True)})
 "#;
 
-/// W4 review: an Args `map_each` over a tree artifact (a Starlark call at
-/// execution time) keeps the plan from being saved.
+const MAPPED_BUILD: &str = "load(':defs.bzl', 'mapped', 'unportable')\nmapped(name = 'm', names = 'names.txt', prefix = 'p')\nunportable(name = 'u', names = 'names.txt')\n";
+
+/// P1 (formerly "map_each plans are never saved"): Args `map_each`
+/// functions over a tree artifact — a top-level function, nested `def`s
+/// and lambdas capturing strings, ints, lists, tuples, dicts, a File and
+/// another closure, a parameter default, in a spawn's arguments and in an
+/// `actions.write` — have portable descriptions: the plan is saved and
+/// hits, the hit resolves the functions from their module and runs them
+/// on the tree's current contents (a source edit that changes the tree's
+/// files is a hit whose expansion sees the new files), and an edit of a
+/// module the functions read misses. A closure capturing a value with no
+/// portable form (a depset) keeps the plan unsaved.
 #[test]
-fn map_each_plans_are_never_saved() {
+fn map_each_plans_save_and_hit() {
     let twin = fixture();
     twin.write("mapped/defs.bzl", MAPPED_RULES);
-    twin.write(
-        "mapped/BUILD.bazel",
-        "load(':defs.bzl', 'mapped')\nmapped(name = 'm')\n",
+    twin.write("mapped/consts.bzl", "SUFFIX = 's1'\n");
+    twin.write("mapped/names.txt", "a.txt b.txt\n");
+    twin.write("mapped/BUILD.bazel", MAPPED_BUILD);
+    let args = &["build", "//mapped:m"];
+    let mut saved = twin.same(args, &[]);
+    if saved.line("saved ").is_none() {
+        saved = twin.same(args, &[]);
+    }
+    saved.assert_saved().assert_success();
+    let expected = |names: &[&str], suffix: &str| {
+        let basenames = names.join(" ");
+        let entries = names
+            .iter()
+            .map(|name| format!("p:{name}:{suffix}/[1, (True, None)]names.txt-3P-{name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let lambdas = names
+            .iter()
+            .map(|name| format!("p{name}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let written = names
+            .iter()
+            .map(|name| format!("bazel-out/k8-fastbuild/bin/mapped/m_dir/{name}\n"))
+            .collect::<String>();
+        format!("{basenames} {entries} {lambdas}\n{written}")
+    };
+    assert_eq!(
+        built_output(&twin, ON, &saved.on),
+        expected(&["a.txt", "b.txt"], "s1")
     );
     for _ in 0..2 {
-        twin.same(&["build", "//mapped:m"], &[])
+        let hit = twin.same(args, &[]);
+        hit.assert_hit().assert_success();
+        assert!(
+            hit.stderr().contains("0 actions executed"),
+            "{}",
+            hit.stderr()
+        );
+        assert_eq!(
+            built_output(&twin, ON, &hit.on),
+            expected(&["a.txt", "b.txt"], "s1")
+        );
+    }
+    // The tree's files change at execution: a hit, whose functions map the
+    // new files.
+    twin.write("mapped/names.txt", "a.txt c.txt d.txt\n");
+    let edited = twin.same(args, &[]);
+    edited.assert_hit().assert_success();
+    assert_eq!(
+        built_output(&twin, ON, &edited.on),
+        expected(&["a.txt", "c.txt", "d.txt"], "s1")
+    );
+    assert_eq!(
+        built_output(&twin, OFF, &edited.off),
+        expected(&["a.txt", "c.txt", "d.txt"], "s1")
+    );
+    // A module the functions read: a miss, saved, then a hit.
+    twin.write("mapped/consts.bzl", "SUFFIX = 's2'\n");
+    let missed = twin.same(args, &[]);
+    missed
+        .assert_miss("consts.bzl")
+        .assert_saved()
+        .assert_success();
+    assert_eq!(
+        built_output(&twin, ON, &missed.on),
+        expected(&["a.txt", "c.txt", "d.txt"], "s2")
+    );
+    let hit = twin.same(args, &[]);
+    hit.assert_hit();
+    assert_eq!(
+        built_output(&twin, ON, &hit.on),
+        expected(&["a.txt", "c.txt", "d.txt"], "s2")
+    );
+    // A captured depset has no portable form.
+    for _ in 0..2 {
+        twin.same(&["build", "//mapped:u"], &[])
             .assert_success()
             .assert_not_saved("map-each-deferred");
     }
-    assert!(twin.snapshots().is_empty());
 }
 
 /// The package prints nothing while it is analyzed (no `//:rules.bzl`,
@@ -2947,6 +3070,15 @@ fn localdep_build(variant: usize) -> String {
 /// reads an environment variable and a watched file, a status command,
 /// file, directory, package and `.bzl` symlinks, `.bazelrc`,
 /// `.bazelignore` and `REPO.bazel`.
+/// The fuzz's `mapped` package: the portable map_each rule only (its
+/// unportable twin would keep `--nobuild //...` from ever saving).
+fn fuzz_mapped_build(q: bool) -> String {
+    format!(
+        "load(':defs.bzl', 'mapped')\nmapped(name = 'm', names = 'names.txt', prefix = '{}')\n",
+        if q { "q" } else { "p" }
+    )
+}
+
 fn fuzz_fixture() -> Twin {
     let twin = fixture();
     twin.write("MODULE.bazel", &fuzz_module(false));
@@ -2974,6 +3106,11 @@ fn fuzz_fixture() -> Twin {
     twin.write("ext/BUILD.bazel", "exports_files(['input.txt'])\n");
     twin.write("pkg/other.txt", "other\n");
     twin.write("pkg/BUILD.bazel", &fuzz_pkg_build(false));
+    // Portable Args map_each functions over a tree artifact (P1).
+    twin.write("mapped/defs.bzl", MAPPED_RULES);
+    twin.write("mapped/consts.bzl", "SUFFIX = 's0'\n");
+    twin.write("mapped/names.txt", "a.txt b.txt\n");
+    twin.write("mapped/BUILD.bazel", &fuzz_mapped_build(false));
     twin.each(|root| std::os::unix::fs::symlink("in.txt", root.join("ws/pkg/link.txt")).unwrap());
     // Symlink swaps (L2-W5g): a package directory, a BUILD file, a `.bzl`.
     for (variant, word) in [("a", "alpha"), ("b", "beta")] {
@@ -3149,7 +3286,7 @@ enum Special {
 }
 
 /// The number of mutations of the catalogue ([`mutate`]).
-const MUTATIONS: usize = 52;
+const MUTATIONS: usize = 56;
 
 /// Apply one random mutation of the catalogue (the same to both copies);
 /// returns its name and what the step does besides its command.
@@ -3557,13 +3694,40 @@ fn mutate(twin: &Twin, rng: &mut Rng, state: &mut FuzzState, step: usize) -> (St
             special = Special::TamperOn;
             name("store tree tool made non-executable under on (a failing consumer)")
         }
+        51 => {
+            // P1: the tree's files change at execution (a hit's map_each
+            // functions map the new files).
+            twin.write("mapped/names.txt", &format!("a.txt b{step}.txt\n"));
+            name("edit mapped/names.txt (map_each over other tree files)")
+        }
+        52 => {
+            twin.write("mapped/consts.bzl", &format!("SUFFIX = 's{step}'\n"));
+            name("edit mapped/consts.bzl (a global of the map_each functions)")
+        }
+        53 => {
+            // Every function of the module moves: a description of the old
+            // spans must never resolve.
+            let moved = state.toggle("mapped-moved");
+            let rules = if moved {
+                format!("# moved\n{MAPPED_RULES}")
+            } else {
+                MAPPED_RULES.to_owned()
+            };
+            twin.write("mapped/defs.bzl", &rules);
+            name("move the map_each functions in mapped/defs.bzl")
+        }
+        54 => {
+            let q = state.toggle("mapped-prefix");
+            twin.write("mapped/BUILD.bazel", &fuzz_mapped_build(q));
+            name("edit a captured value of the map_each closures (mapped/BUILD.bazel)")
+        }
         _ => name("no change"),
     };
     (name, special)
 }
 
 /// The commands of the fuzz ([`fuzz_command`]).
-const FUZZ_COMMANDS: usize = 11;
+const FUZZ_COMMANDS: usize = 12;
 /// The command consuming the generated repository's tool
 /// ([`Special::TamperOn`]).
 const TOOL_COMMAND: usize = 10;
@@ -3627,6 +3791,7 @@ fn fuzz_command(
             cwd = Some("pkg");
             vec!["build".into(), ":l".into()]
         }
+        11 => vec!["build".into(), "//mapped:m".into()],
         _ => vec!["build".into(), "//swap:s".into(), "//pkgl:x".into()],
     };
     let mut options = Vec::new();
@@ -4420,8 +4585,8 @@ mod verify_mode {
     }
 
     #[test]
-    fn map_each_plans_are_never_saved() {
-        verified(super::map_each_plans_are_never_saved);
+    fn map_each_plans_save_and_hit() {
+        verified(super::map_each_plans_save_and_hit);
     }
 
     #[test]

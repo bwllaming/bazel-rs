@@ -50,7 +50,9 @@ failed hit that removes its snapshot (step 6 below).
 
 A `build`, `test` or `run` whose every recorded input is unchanged skips
 module resolution, loading and analysis — no Starlark but the local
-repository rules' replay — and executes the saved plan:
+repository rules' replay and the defining modules of the plan's Args
+`map_each` functions ("Args map_each functions" below) — and executes the
+saved plan:
 
 ```text
 full analysis: check point -> registry, modules, loading, analysis -> PlannedRequest -> finalize -> execute -> report
@@ -141,7 +143,12 @@ hit:           check point -> G -> snapshot validated ∥ replayed ∥ decoded -
      published tree differs from its manifest: <entry> <path>`, events.log
      reason `local-tree`), and the full analysis repairs the tree.
    * **plan**: the PLAN section read, checked and decoded
-     (`snapshot::codec`, chunks decoded on threads for large plans).
+     (`snapshot::codec`, chunks decoded on threads for large plans), then
+     its Args `map_each` functions resolved from their portable
+     descriptions (`snapshot::mapper::resolve_request`: each defining
+     module loaded once against a repository set pinned to the snapshot's
+     tables; a failure is a miss, `the plan's map_each functions do not
+     resolve: ...`).
    * **warm-up**: the digest table (crate::digest_memo) is loaded for the
      execution tail.
 4. The workspace status of the plan's status placeholders — or of a plan
@@ -722,7 +729,8 @@ network, an executed non-local repository rule — unless re-probed, see
 below —, a printing local or non-local repository rule — v1 of the
 printing protocol —, an evaluated extension, a
 (re)published tree, a symlink into a live repository root, build-info
-callbacks or `map_each` of planned actions, Unstable, and the new
+callbacks or a `map_each` of a planned action without a portable
+description — see "Args map_each functions" —, Unstable, and the new
 `workspace-status-stderr`: a status command that wrote to stderr would
 print twice on a hit), no lockfile or hidden lockfile write is pending, the
 request has no analysis error, the target pattern phase reported no
@@ -794,6 +802,100 @@ inside a forwarded line, which goes out whole under the same order lock): the PE
 `PERF-STAGE`, `PERF-PLAN`, the memory watchdog's lines and the
 `bazel-rs-snapshot:` lines write to the original stderr while a capture
 holds file descriptor 2; they are never part of the replayed bytes.
+
+## Args map_each functions (P1)
+
+An action whose Args expand a tree artifact at execution time keeps its
+`map_each` callable: Bazel calls it with each file of the tree
+(StarlarkCustomCommandLine.applyMapEach), and the tree's files exist only
+once its producing action ran — on a hit as on a full analysis. Before P1
+such a plan was never saved (`not-saved reason=map-each-deferred`): every
+warm `//src/ts/...` build on ~/code (rules_js `js_image_layer`, whose
+`map_entry` closure maps the runfiles of an image layer) ran the full
+analysis, 36–49 s and 4.7 GB.
+
+**The sound option, chosen**: the snapshot stores a *description* of each
+function (`snapshot::mapper::MapperRef`, in the plan's encoding, codec format
+3) from which the hit builds the very same function again before anything
+executes:
+
+* the canonical label of the `.bzl` module whose evaluation created the
+  function (its code map name);
+* a top-level function: the module's binding of that name (the binding must
+  be the function itself); any other `def` or `lambda` (a closure passed with
+  `allow_closure = True`): its code by name and identifier span in that file,
+  plus what its `def` statement evaluated when it ran — the parameter
+  defaults and the captured variables of the enclosing function — as plain
+  data: None, bool, int, string, list, tuple, dict, `File`, and other
+  functions described the same way (8 levels deep at most). The vendored
+  interpreter takes a frozen function apart and instantiates it again from
+  the `DefInfo` the module compiled at that span (docs/STARLARK_VENDOR.md,
+  "Portable def and lambda values").
+
+Why it is sound: the module's source files and everything its evaluation
+read are inputs the snapshot validates (the analysis loaded the module, and
+the save's checks load it again inside the recording window), and a `.bzl`
+module's evaluation is a deterministic function of them (no I/O, clock or
+configuration). Evaluated again from the same sources it compiles the same
+code at the same spans and binds the same globals; the function instantiated
+from the description runs that code against them with equal defaults and
+captured values — the same function, called by the same expansion code
+(crate::command_line) with the tree's files of this execution. Recording the
+*results* instead would need the trees' contents at analysis time, which do
+not exist yet (a directory expander lists them at execution); it is not an
+option. A function that cannot be described (a captured depset, struct,
+`ctx` or provider; a built-in such as `str`; type annotations) keeps the plan
+unsaved exactly as before, and EXPLAIN names the first one and why
+(`map_each of action '...' is not portable (k of n portable): ...`).
+
+**Checks before a description is recorded** (`snapshot::mapper::settle`, at
+the end of planning, inside the recording window, while the snapshot records):
+
+1. the function's globals are those of the module the invocation evaluated
+   for that label (its BUILD-phase `.bzl` cache entry);
+2. instantiated against that module, the description gives a function of the
+   same code and module with the same description (a round trip of
+   everything the instantiation takes);
+3. the module loads again — once inside a replay scope over the real
+   repository set, which pins the repository roots and mappings its loads
+   consult into the snapshot's pinned tables (`snapshot::replay`; their
+   context is now recorded even without local repository rules), and once
+   against a set pinned to those tables, exactly as a hit loads it — and the
+   description resolves there to a function with the same description.
+
+A mapper failing any check keeps no description: the plan's
+`map-each-deferred` blocker, unchanged. **On a hit** the plan thread resolves
+the descriptions after decoding (`resolve_request`, beside the validation:
+when the validation fails the resolved functions are discarded with the
+plan); the module's `print()` lines are dropped (the recorded window already
+holds what the analysis printed). Verify mode compares the plan's bytes,
+descriptions included, with the full analysis's; the round-trip switch
+(`BAZEL_RS_SNAPSHOT_ROUNDTRIP=1`) hands the planned functions to the decoded
+request. With the snapshot off nothing is described (the request stays
+unencodable, as before). `BAZEL_RS_TIMING=1` prints `PERF-SNAPSHOT map_each
+settle mappers=… portable=… modules=… ms=…` on a miss and `map_each_ms=` in
+the hit's line.
+
+Measured on ~/code (`build //src/ts/...`, 24,610 actions, 7 `js_image_layer`
+write actions with the `map_entry` closure; release binary, private cache,
+update-mode recipe; the machine shared): the miss's checks take 17 ms
+(7 mappers, 1 module); the hit resolves the 7 functions in ~10 ms and the
+whole hit attempt takes 0.31–0.33 s; the warm build goes from 37–49 s and
+4.73 GB (full analysis, not saved) to **7.5–8.7 s and 1.30–1.34 GB** — the
+rest is the execution tail's 24,608 action-cache checks.
+
+Tests: `tests/snapshot.rs::map_each_plans_save_and_hit` (and its verify-mode
+twin): a top-level function, closures and lambdas capturing strings, ints,
+lists, tuples, dicts, a `File` and another closure, a parameter default, in
+a spawn's arguments and an `actions.write`: saved, hit, a source edit that
+changes the tree's files is a hit whose expansion maps the new files, an
+edit of a module the functions read misses; a captured depset keeps the plan
+unsaved. The mutation fuzz builds the same rule (`//mapped:m`, command 11)
+under four more mutations (the tree's files, a global of the functions, the
+functions moved in their file, a captured value). Unit tests
+(`snapshot::mapper::tests`) resolve descriptions in another evaluation of the
+same source and refuse unportable captures, functions of another evaluation
+and moved code; tests/planned_request.rs round-trips the encoded request.
 
 ## The file
 
@@ -994,7 +1096,8 @@ mismatch (exit 70), the next run re-saves. L2-W6 also adds
 fixtures for the W4 review: a failing `--workspace_status_command` on a hit
 of `build`, `test` and `run` (the failure layout of the decoded request);
 post-planning warnings printed by a hit; plans with analysis errors and
-`map_each` plans never saved; and `test` writing the lockfile, so its next
+`map_each` plans never saved (P1: saved and hit since, see "Args map_each
+functions"); and `test` writing the lockfile, so its next
 run saves (genuine Bazel 9.3 writes MODULE.bazel.lock for `test`, `run` and
 a failing `query` too; the native commands that end the process
 themselves now write it first).

@@ -18,6 +18,8 @@
 // Modified for native Bazel 9.3 argument-binding error texts
 // (net/starlark/java/eval/StarlarkFunction.java:385-523 for `def`,
 // BuiltinFunction.java:150-160,320-490 for builtins); see vendor provenance.
+// Modified (bazel-rs): `def` parameter lists taken apart and rebuilt
+// (ParametersSpec::portable_parts, crate::eval::PortableDef); see vendor provenance.
 
 use std::cmp;
 use std::collections::HashMap;
@@ -572,6 +574,89 @@ impl<V> ParametersSpec<V> {
                 .collect(),
             kwargs: self.indices.kwargs.map(|a| a as usize).map(&mut dp),
         }
+    }
+}
+
+/// Modified (bazel-rs): a `def`'s parameter list taken apart and rebuilt
+/// exactly as the `def` instruction builds it (InstrDefImpl), for
+/// crate::eval::PortableDef.
+impl<V: Copy> ParametersSpec<V> {
+    /// The function name, the parameters (name and kind, in order), the
+    /// parameter indices and whether binding errors use the `def` texts.
+    pub(crate) fn portable_parts(
+        &self,
+    ) -> (String, Vec<(String, ParameterKind<V>)>, DefParamIndices, bool) {
+        (
+            self.function_name.clone(),
+            self.param_names
+                .iter()
+                .cloned()
+                .zip(self.param_kinds.iter().copied())
+                .collect(),
+            self.indices,
+            self.def_style,
+        )
+    }
+
+    /// The parameter list [`Self::portable_parts`] describes, built as the
+    /// `def` instruction builds one; an error for a list no `def` has.
+    pub(crate) fn from_portable_parts(
+        function_name: String,
+        params: Vec<(String, ParameterKind<V>)>,
+        indices: DefParamIndices,
+        def_style: bool,
+    ) -> Result<ParametersSpec<V>, String> {
+        let malformed = || format!("malformed parameter list of `{function_name}`");
+        let mut builder = ParametersSpec::with_capacity(function_name.clone(), params.len());
+        if def_style {
+            builder.def_style();
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (i, (name, kind)) in params.into_iter().enumerate() {
+            let i = i as u32;
+            let star = matches!(kind, ParameterKind::Args | ParameterKind::KWargs);
+            if builder.kwargs.is_some() {
+                return Err(malformed());
+            }
+            if i == indices.num_positional_only && !star {
+                if builder.current_style != CurrentParameterStyle::PosOnly {
+                    return Err(malformed());
+                }
+                builder.no_more_positional_only_args();
+            }
+            if i == indices.num_positional && !star {
+                if builder.args.is_some()
+                    || builder.current_style >= CurrentParameterStyle::NamedOnly
+                {
+                    return Err(malformed());
+                }
+                builder.no_more_positional_args();
+            }
+            match kind {
+                ParameterKind::Args => {
+                    if builder.args.is_some()
+                        || builder.current_style >= CurrentParameterStyle::NamedOnly
+                    {
+                        return Err(malformed());
+                    }
+                    builder.args();
+                }
+                ParameterKind::KWargs => builder.kwargs(),
+                kind => {
+                    if builder.current_style >= CurrentParameterStyle::NoMore
+                        || !seen.insert(name.clone())
+                    {
+                        return Err(malformed());
+                    }
+                    builder.add(&name, kind);
+                }
+            }
+        }
+        let spec = builder.finish();
+        if spec.indices != indices {
+            return Err(malformed());
+        }
+        Ok(spec)
     }
 }
 

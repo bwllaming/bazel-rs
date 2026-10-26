@@ -98,6 +98,9 @@ pub struct Timings {
     pub local_trees: Duration,
     /// Reading, checking and decoding the PLAN section.
     pub decode: Duration,
+    /// Resolving the plan's portable `map_each` functions after the decode
+    /// (crate::snapshot::mapper).
+    pub mappers: Duration,
     pub status: Duration,
     pub total: Duration,
 }
@@ -173,6 +176,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         Err(_) => None,
     };
     let tables = inputs.tables.clone();
+    let tables_for_mappers = inputs.tables.clone();
     let keep_plan = attempt.verify;
     // The first failure cancels what the others have not started yet (the
     // replay's definition loads and executions, the plan's chunks; L2-W5f
@@ -193,7 +197,24 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
                 let decoded = reader.section(Section::Plan).and_then(|bytes| {
                     let size = bytes.len();
                     let request = crate::snapshot::codec::decode_cancellable(&bytes, &cancel)?;
-                    Ok((request, size, keep_plan.then_some(bytes), started.elapsed()))
+                    let decoded_at = started.elapsed();
+                    // The plan's portable `map_each` functions, from their
+                    // modules loaded against the pinned tables
+                    // (crate::snapshot::mapper): beside the validation,
+                    // whose failure discards them with the plan.
+                    let mappers = crate::snapshot::mapper::resolve_request(
+                        &request,
+                        tables_for_mappers.as_ref(),
+                        &attempt.replay,
+                    )
+                    .map_err(|error| format!("{MAPPERS_MISS}{error}"))?;
+                    Ok((
+                        request,
+                        size,
+                        keep_plan.then_some(bytes),
+                        decoded_at,
+                        mappers,
+                    ))
                 });
                 failed(decoded.is_err());
                 decoded
@@ -284,8 +305,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     // plan failed, and its error is the reason.
     for cancelled in [&replay, &local] {
         if let Some(Err(cancelled)) = cancelled {
-            plan.as_ref()
-                .map_err(|error| format!("unreadable plan: {error}"))?;
+            plan.as_ref().map_err(|error| plan_miss(error.clone()))?;
             return miss(cancelled.clone());
         }
     }
@@ -299,9 +319,9 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     if let Some(Ok((_, wall))) = local {
         timings.local_trees = wall;
     }
-    let (request, plan_bytes, kept_plan, decode) =
-        plan.map_err(|error| format!("unreadable plan: {error}"))?;
+    let (request, plan_bytes, kept_plan, decode, mappers) = plan.map_err(plan_miss)?;
     timings.decode = decode;
+    timings.mappers = mappers.elapsed;
     // The workspace status of the plan's status placeholders — or of a plan
     // whose planning computed it without any (`--nobuild` with a consumer
     // of `ctx.info_file`: the command still ran; L2-W5f review F2): computed
@@ -346,7 +366,7 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
     reader.touch();
     timings.total = started.elapsed();
     let summary = format!(
-        "hit {}: {} checks validated ({} content checks, {} trees verified) in {} ms on {} thread(s); {} local repositories replayed in {} ms, their published trees checked in {} ms; {} actions ({} bytes) decoded in {} ms; window stderr {} bytes{}; total {} ms",
+        "hit {}: {} checks validated ({} content checks, {} trees verified) in {} ms on {} thread(s); {} local repositories replayed in {} ms, their published trees checked in {} ms; {} actions ({} bytes) decoded in {} ms, their {} map_each function(s) ({} distinct, {} module(s) loaded) resolved in {} ms; window stderr {} bytes{}; total {} ms",
         attempt.key.short(),
         validated.checks,
         validated.content_checks,
@@ -359,6 +379,10 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         request.nodes.len(),
         plan_bytes,
         millis(timings.decode),
+        mappers.mappers,
+        mappers.functions,
+        mappers.modules,
+        millis(timings.mappers),
         window_stderr.len(),
         captured
             .as_ref()
@@ -409,6 +433,18 @@ pub fn attempt(attempt: Attempt<'_>) -> Result<Box<Hit>, Miss> {
         timings,
         evidence,
     }))
+}
+
+/// The prefix of a miss whose plan's `map_each` functions did not resolve.
+const MAPPERS_MISS: &str = "the plan's map_each functions do not resolve: ";
+
+/// The miss reason of a failed plan thread.
+fn plan_miss(error: String) -> String {
+    if error.starts_with(MAPPERS_MISS) {
+        error
+    } else {
+        format!("unreadable plan: {error}")
+    }
 }
 
 fn millis(duration: Duration) -> String {

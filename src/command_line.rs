@@ -71,21 +71,88 @@ pub(crate) enum Item {
 /// frozen top-level function, or any other callable (a closure with
 /// `allow_closure = True`, a built-in such as `str`) retained by the
 /// analysis module and set when that module freezes
-/// (crate::analysis_runtime::Context::retain_mapper).
+/// (crate::analysis_runtime::Context::retain_mapper) — or, decoded from an
+/// analysis snapshot, the function its portable description names,
+/// resolved by the hit before anything executes (crate::snapshot::mapper).
 #[derive(Clone, Debug)]
-pub(crate) enum Mapper {
+pub(crate) struct Mapper {
+    function: MapperFunction,
+    /// The function's portable description (crate::snapshot::mapper::
+    /// MapperRef): set by planning once the analysis snapshot checked that
+    /// it names this very function (crate::snapshot::mapper::settle), or
+    /// decoded. A mapper without one keeps its request from being encoded.
+    portable: Arc<std::sync::OnceLock<Arc<crate::snapshot::mapper::MapperRef>>>,
+}
+
+#[derive(Clone, Debug)]
+enum MapperFunction {
     Frozen(OwnedFrozenValue),
+    /// Filled when the analysis module freezes, or (a decoded mapper) when
+    /// the snapshot hit resolves the description.
     Retained(Arc<std::sync::OnceLock<OwnedFrozenValue>>),
 }
 
 impl Mapper {
-    fn function(&self) -> Result<&OwnedFrozenValue, String> {
-        match self {
-            Self::Frozen(function) => Ok(function),
-            Self::Retained(cell) => cell.get().ok_or_else(|| {
-                "internal error: a deferred map_each was not retained by its analysis module"
-                    .to_owned()
+    /// A frozen top-level function.
+    pub(crate) fn frozen(function: OwnedFrozenValue) -> Self {
+        Self {
+            function: MapperFunction::Frozen(function),
+            portable: Arc::default(),
+        }
+    }
+
+    /// A callable its analysis module retains (filled at its freeze).
+    pub(crate) fn retained(cell: Arc<std::sync::OnceLock<OwnedFrozenValue>>) -> Self {
+        Self {
+            function: MapperFunction::Retained(cell),
+            portable: Arc::default(),
+        }
+    }
+
+    /// A mapper decoded from its description: [`Self::resolve`] sets its
+    /// function.
+    pub(crate) fn decoded(reference: crate::snapshot::mapper::MapperRef) -> Self {
+        let portable = std::sync::OnceLock::new();
+        let _ = portable.set(Arc::new(reference));
+        Self {
+            function: MapperFunction::Retained(Arc::default()),
+            portable: Arc::new(portable),
+        }
+    }
+
+    pub(crate) fn function(&self) -> Result<&OwnedFrozenValue, String> {
+        match &self.function {
+            MapperFunction::Frozen(function) => Ok(function),
+            MapperFunction::Retained(cell) => cell.get().ok_or_else(|| {
+                if self.portable.get().is_some() {
+                    "internal error: a deferred map_each decoded from the analysis snapshot was not resolved"
+                        .to_owned()
+                } else {
+                    "internal error: a deferred map_each was not retained by its analysis module"
+                        .to_owned()
+                }
             }),
+        }
+    }
+
+    /// The portable description, once checked or decoded.
+    pub(crate) fn portable(&self) -> Option<&Arc<crate::snapshot::mapper::MapperRef>> {
+        self.portable.get()
+    }
+
+    /// Record the checked portable description (the first one wins).
+    pub(crate) fn set_portable(&self, reference: Arc<crate::snapshot::mapper::MapperRef>) {
+        let _ = self.portable.set(reference);
+    }
+
+    /// Set the function a decoded mapper's description names (once).
+    pub(crate) fn resolve(&self, function: OwnedFrozenValue) -> Result<(), String> {
+        match &self.function {
+            MapperFunction::Retained(cell) if self.portable.get().is_some() => {
+                let _ = cell.set(function);
+                Ok(())
+            }
+            _ => Err("internal error: only a decoded map_each is resolved".to_owned()),
         }
     }
 }
@@ -439,6 +506,14 @@ pub(crate) fn has_deferred_map_each(groups: &[Group]) -> bool {
         .any(|group| matches!(group, Group::Deferred(vector) if vector.map_each.is_some()))
 }
 
+/// Every deferred `map_each` of `groups`, in order.
+pub(crate) fn deferred_mappers<'a>(groups: &'a [Group]) -> impl Iterator<Item = &'a Mapper> + 'a {
+    groups.iter().filter_map(|group| match group {
+        Group::Deferred(vector) => vector.map_each.as_ref(),
+        Group::Strings(_) => None,
+    })
+}
+
 /// ShellEscaper (ShellEscaper.java:57-110): only ASCII letters/digits and
 /// `@%-_+:,./` are safe; `~` is safe except at the start.
 pub(crate) fn shell_quote_required(text: &str) -> bool {
@@ -503,6 +578,13 @@ impl CommandLineSpec {
         self.parts
             .iter()
             .any(|part| has_deferred_map_each(&part.groups))
+    }
+
+    /// [`deferred_mappers`] over every part.
+    pub(crate) fn deferred_mappers(&self) -> impl Iterator<Item = &Mapper> + '_ {
+        self.parts
+            .iter()
+            .flat_map(|part| deferred_mappers(&part.groups))
     }
 
     /// CommandLines.expand (actions/CommandLines.java:89-153).

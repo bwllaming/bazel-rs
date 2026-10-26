@@ -13,7 +13,9 @@
 //!   actions sharing their tool's runfiles tree, which holds the stable
 //!   status file (one shared input group, PA-1: encoded once, and
 //!   redirected by a failing status command). A request with a Starlark
-//!   `map_each` is handed over unencoded.
+//!   `map_each` encodes it by reference while the analysis snapshot
+//!   records (crate::snapshot::mapper); with the snapshot off it is handed
+//!   over unencoded.
 //! * The determinism gate (PLAN-L2 §1b layer 4): the encoded request
 //!   (`BAZEL_RS_SNAPSHOT_PLAN_OUT`) is identical across
 //!   `--loading_phase_threads` 1/8/32 and loading-order jitter seeds.
@@ -443,12 +445,14 @@ def _mapped(ctx):
 mapped = rule(implementation = _mapped)
 "#;
 
-/// W4 review: a request whose Args expand a tree artifact through a
-/// Starlark `map_each` (an in-memory value) cannot be encoded: the round
-/// trip hands it over as it is, and the build is byte-identical with and
-/// without the round trip (the expansion ran at execution time).
+/// W4 review, P1: a request whose Args expand a tree artifact through a
+/// Starlark `map_each` encodes it by its portable description once the
+/// analysis snapshot checked it (crate::snapshot::mapper, the default): the
+/// round trip executes the decoded request and the build is byte-identical
+/// with and without it. With the snapshot off nothing checks the function:
+/// the request is handed over unencoded, again byte-identical.
 #[test]
-fn a_map_each_request_round_trips_unencoded() {
+fn a_map_each_request_round_trips() {
     let ws = Workspace::new(&[
         ("MODULE.bazel", "module(name = \"planned_map_each\")\n"),
         (
@@ -458,37 +462,51 @@ fn a_map_each_request_round_trips_unencoded() {
         ("rules/BUILD.bazel", ""),
         ("rules/defs.bzl", MAPPED_DEFS),
     ]);
-    let mut runs = Vec::new();
-    for roundtrip in [false, true] {
-        ws.wipe_cache();
-        let mut env = vec![("BAZEL_RS_DUMP_ACTIONS", "1")];
-        if roundtrip {
-            env.push(("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"));
+    for snapshot in ["on", "off"] {
+        let mut runs = Vec::new();
+        for roundtrip in [false, true] {
+            ws.wipe_cache();
+            let mut env = vec![
+                ("BAZEL_RS_DUMP_ACTIONS", "1"),
+                ("BAZEL_RS_SNAPSHOT", snapshot),
+            ];
+            if roundtrip {
+                env.push(("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"));
+            }
+            runs.push(observed(&ws.run(&["build", "//:m"], &env)));
         }
-        runs.push(observed(&ws.run(&["build", "//:m"], &env)));
+        assert_eq!(runs[0], runs[1]);
+        let (code, stdout, stderr) = &runs[1];
+        assert_eq!(*code, Some(0), "{stderr}");
+        let listed = stdout
+            .lines()
+            .find_map(|line| line.split_once('\t').map(|(_, path)| path.to_owned()))
+            .unwrap();
+        assert_eq!(fs::read_to_string(listed).unwrap(), "a.txt b.txt\n");
+        // The hand-over encodes it, or says why it did not.
+        ws.wipe_cache();
+        let timed = ws.run(
+            &["build", "//:m"],
+            &[
+                ("BAZEL_RS_SNAPSHOT", snapshot),
+                ("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"),
+                ("BAZEL_RS_TIMING", "1"),
+            ],
+        );
+        let stderr = String::from_utf8_lossy(&timed.stderr);
+        if snapshot == "on" {
+            assert!(
+                stderr.contains("PERF-PLAN nodes=") && stderr.contains(" roundtrip=1"),
+                "{stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains("PERF-PLAN not encoded (not serializable: action '")
+                    && stderr.contains("map_each"),
+                "{stderr}"
+            );
+        }
     }
-    assert_eq!(runs[0], runs[1]);
-    let (code, stdout, stderr) = &runs[1];
-    assert_eq!(*code, Some(0), "{stderr}");
-    let listed = stdout
-        .lines()
-        .find_map(|line| line.split_once('\t').map(|(_, path)| path.to_owned()))
-        .unwrap();
-    assert_eq!(fs::read_to_string(listed).unwrap(), "a.txt b.txt\n");
-    // The hand-over says why it did not encode.
-    let timed = ws.run(
-        &["build", "//:m"],
-        &[
-            ("BAZEL_RS_SNAPSHOT_ROUNDTRIP", "1"),
-            ("BAZEL_RS_TIMING", "1"),
-        ],
-    );
-    let stderr = String::from_utf8_lossy(&timed.stderr);
-    assert!(
-        stderr.contains("PERF-PLAN not encoded (not serializable: action '")
-            && stderr.contains("map_each"),
-        "{stderr}"
-    );
 }
 
 /// PLAN-L2 §1b layer 4: the encoded request does not depend on the

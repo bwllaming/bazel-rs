@@ -90,7 +90,8 @@ impl Deferred {
     }
 
     /// Whether the expansion calls a Starlark `map_each` (an in-memory
-    /// value: the request cannot be encoded, PLAN-L2 §1b).
+    /// value, PLAN-L2 §1b: encodable only with a portable description,
+    /// crate::snapshot::mapper).
     pub fn uses_map_each(&self) -> bool {
         match &*self.0 {
             DeferredSpec::CommandLine { spec, .. } => spec.deferred_map_each(),
@@ -98,6 +99,25 @@ impl Deferred {
                 crate::command_line::has_deferred_map_each(&snapshot.groups)
             }
         }
+    }
+
+    /// Every Starlark `map_each` the expansion calls, in order.
+    pub(crate) fn mappers(&self) -> Vec<&crate::command_line::Mapper> {
+        match &*self.0 {
+            DeferredSpec::CommandLine { spec, .. } => spec.deferred_mappers().collect(),
+            DeferredSpec::WriteArgs { snapshot, .. } => {
+                crate::command_line::deferred_mappers(&snapshot.groups).collect()
+            }
+        }
+    }
+
+    /// Whether the expansion calls a `map_each` without a portable
+    /// description: the request cannot be encoded (the snapshot blocker
+    /// `map-each-deferred`).
+    pub fn uses_unportable_map_each(&self) -> bool {
+        self.mappers()
+            .into_iter()
+            .any(|mapper| mapper.portable().is_none())
     }
 
     /// Complete `action` with the tree listings of its generated inputs.

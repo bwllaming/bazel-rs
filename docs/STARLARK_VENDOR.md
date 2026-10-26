@@ -339,6 +339,39 @@ Bazel's symbolic macro instantiation recursion check (`macro 'x_x' is a direct
 recursive call of 'x'`) is not implemented. Binding errors keep their call-site
 location (N33).
 
+### Portable `def` and `lambda` values (analysis snapshot, P1)
+
+The analysis snapshot saves a plan whose Args `map_each` functions run at
+execution time (docs/ANALYSIS_SNAPSHOT.md, "Args map_each functions") by
+describing each function and building it again in the process that hits the
+snapshot. Four vendored files carry the support (each with a header notice):
+
+* `src/environment/modules.rs`: every `Module` keeps the `DefInfo` of each
+  `def` and `lambda` it compiled (`ModuleDefInfos`, in compilation order;
+  `FrozenModuleData::def_infos` after the freeze, skipped by the pagable
+  serialization), and `FrozenModule::data()` gives the module data a frozen
+  `def` refers back to.
+* `src/eval/compiler/def.rs`: `Compiler::function` registers the `DefInfo` it
+  allocates; `PortableDef::of(value)` takes a frozen `def`/`lambda` apart —
+  its name, file and identifier span, the parameter list with its default
+  values, and the captured variables of a nested function (functions with
+  type annotations are refused) — and `PortableDef::instantiate(defining,
+  module)` builds the function again from the `DefInfo` the `defining` module
+  compiled at that name, file and span, with the given defaults and captured
+  values (fresh captured cells), its globals those of `defining` (the
+  module back-reference a `def` instruction would set; the body is optimized
+  on freeze as for any frozen `def`). `def_same_code(a, b)` (same `DefInfo`
+  and module) and `def_module_is(value, module)` support the embedder's
+  checks.
+* `src/eval/runtime/params/spec.rs`: `ParametersSpec::portable_parts` and
+  `from_portable_parts`, the parameter list taken apart and rebuilt exactly
+  as the `def` instruction (`InstrDefImpl`) builds it; a list no `def` has
+  is an error, never a panic of the builder's assertions.
+* `src/eval.rs`: the public re-exports.
+
+Nothing changes for evaluation itself: the registry is one pointer per
+compiled function, and no existing code path reads it.
+
 ## Original published contents
 
 The source archive is

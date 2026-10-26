@@ -40,6 +40,11 @@ pub use runtime::file_loader::ReturnFileLoader;
 pub use runtime::params::parser::ParametersParser;
 pub use runtime::params::spec::ParametersSpec;
 pub use runtime::params::spec::ParametersSpecParam;
+// Modified (bazel-rs): portable `def` and `lambda` values (compiler::def).
+pub use compiler::def::PortableDef;
+pub use compiler::def::PortableParamKind;
+pub use compiler::def::def_module_is;
+pub use compiler::def::def_same_code;
 pub use runtime::profile::data::ProfileData;
 pub use runtime::profile::mode::ProfileMode;
 pub use soft_error::SoftErrorHandler;

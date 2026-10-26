@@ -76,14 +76,18 @@ snapshot, extra_param_files }` (an `actions.write` of such Args); `Deferred::app
 tree listings of the action's generated inputs, exactly as the two closures of analysis_runtime.rs and the
 engine's wrapper (which kept a tool runfiles tree's empty files, now `extra_param_files`) did.
 
-An Args `map_each` is a Starlark function: it stays an in-memory `OwnedFrozenValue`, and a request with a
-planned action that still needs one cannot be encoded (`EncodeError::NotSerializable`, with the action id).
-W7 may store it by reference.
+An Args `map_each` is a Starlark function: it stays an in-memory `OwnedFrozenValue`. While the analysis
+snapshot records, planning gives it a checked portable description (`crate::snapshot::mapper`: its defining
+module, its code location, its defaults and captured values; docs/ANALYSIS_SNAPSHOT.md "Args map_each
+functions"), which the encoding holds (codec format 3) and a hit resolves before execution; a request with a
+planned action whose `map_each` has none cannot be encoded (`EncodeError::NotSerializable`, with the action
+id).
 
 ## Snapshot blockers decided on the plan (update 1 §(c)4)
 
 `PlannedRequest::blockers()` lists the planned actions that keep a request from being saved: build-info
-callbacks (their substitutions are this run's workspace status) and `map_each` expansions. Analysis records
+callbacks (their substitutions are this run's workspace status) and `map_each` expansions without a portable
+description. Analysis records
 these taints when it *registers* the action; `plan_request` settles them on the plan
 (`observed_fs::settle_plan_taints`): the registrations move to the recording's `plan_registered`, and only the
 actions the plan kept taint the run. The record mode reports
@@ -136,7 +140,8 @@ compares the groups by value (once per pair of groups).
 
 * An action's resolved client environment values (finalize re-resolves them on every run; they are never
   written to disk) and the workspace status (placeholders, expanded by finalize).
-* An Args `map_each` function (an in-memory Starlark value: the request is not encodable, below).
+* An Args `map_each` function itself (an in-memory Starlark value): its portable description stands in for
+  it, or the request is not encodable (above).
 * A shared input group's `valid` flag (recomputed on decode, above).
 * Everything PA-1 keeps in process, keyed by per-process identities that a restoring process would reuse
   for other values: the tool runfiles trees (`analysis_runtime::ToolRunfilesTree` and its memo), the

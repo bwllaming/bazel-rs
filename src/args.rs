@@ -498,8 +498,8 @@ fn vector_group<'v>(
             // is retained by the analysis module until it freezes.
             Some(
                 match crate::analysis_runtime::owned_top_level_function(eval, map_each) {
-                    Some(function) => crate::command_line::Mapper::Frozen(function),
-                    None => crate::command_line::Mapper::Retained(
+                    Some(function) => crate::command_line::Mapper::frozen(function),
+                    None => crate::command_line::Mapper::retained(
                         crate::analysis_runtime::retain_mapper(eval, map_each)?,
                     ),
                 },

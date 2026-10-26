@@ -48,6 +48,7 @@ pub mod exe_id;
 pub mod format;
 pub mod hit;
 pub mod key;
+pub(crate) mod mapper;
 pub mod record;
 pub mod replay;
 pub mod save;
@@ -295,13 +296,14 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
                 &key.short(),
                 wall,
                 &format!(
-                    "key:{:.1},inputs:{:.1},validate:{:.1},replay:{:.1},local:{:.1},decode:{:.1},status:{:.1}",
+                    "key:{:.1},inputs:{:.1},validate:{:.1},replay:{:.1},local:{:.1},decode:{:.1},map_each:{:.1},status:{:.1}",
                     ms(key_time),
                     ms(hit.timings.inputs),
                     ms(hit.timings.validation),
                     ms(hit.timings.replay),
                     ms(hit.timings.local_trees),
                     ms(hit.timings.decode),
+                    ms(hit.timings.mappers),
                     ms(hit.timings.status),
                 ),
             );
@@ -310,13 +312,14 @@ pub fn check(inputs: CheckInputs<'_>) -> Checked {
             }
             if timing {
                 diag::line_fmt(format_args!(
-                    "PERF-SNAPSHOT hit key_ms={:.3} inputs_ms={:.3} validate_ms={:.3} replay_ms={:.3} local_ms={:.3} decode_ms={:.3} status_ms={:.3} attempt_ms={:.3}",
+                    "PERF-SNAPSHOT hit key_ms={:.3} inputs_ms={:.3} validate_ms={:.3} replay_ms={:.3} local_ms={:.3} decode_ms={:.3} map_each_ms={:.3} status_ms={:.3} attempt_ms={:.3}",
                     ms(key_time),
                     ms(hit.timings.inputs),
                     ms(hit.timings.validation),
                     ms(hit.timings.replay),
                     ms(hit.timings.local_trees),
                     ms(hit.timings.decode),
+                    ms(hit.timings.mappers),
                     ms(hit.timings.status),
                     ms(hit.timings.total),
                 ));

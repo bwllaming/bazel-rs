@@ -757,7 +757,7 @@ pub(crate) fn is_top_level_mapper(eval: &Evaluator<'_, '_, '_>, value: Value<'_>
 /// The frozen top-level function a map_each value is, usable after analysis
 /// (execution-time expansion of tree artifacts).
 /// Retain a deferred map_each that is not a frozen top-level function
-/// (Args with tree artifacts, crate::command_line::Mapper::Retained): set in
+/// (Args with tree artifacts, crate::command_line::Mapper::retained): set in
 /// the analysis module (the evaluator's module, frozen with the providers)
 /// under a private slot; the returned cell is filled by
 /// [`Context::fill_retained_mappers`] after the freeze.
