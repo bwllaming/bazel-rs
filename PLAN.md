@@ -44,16 +44,15 @@ Done since the last increment recorded under "History", one line each:
 ### In progress
 
 - [x] Interactive progress display, TTY only (docs/PROGRESS.md).
-- [ ] Startup option `--quiet` (branch `startup-quiet`).
+- [x] Startup option `--quiet` (docs/STARTUP_QUIET.md).
 - [x] `print()` is a no-op in registry MODULE.bazel files, which removes the
       gazelle/rules_go "highly experimental" warnings (done).
 
 ### Commands that are rejected today
 
-- [ ] `clean` (incl. `--expunge`/`--async`) and `shutdown` (a no-op without a
-      server, but scripts call it).
-- [ ] `cquery` and `aquery` (the milestone 2 gate in docs/ROADMAP.md).
-- [ ] `fetch`, `sync`, `vendor`.
+- [x] `clean` (incl. `--expunge`/`--async`) and `shutdown` (docs/COMMANDS.md).
+- [ ] `cquery` (in progress in another session: branches `cquery-*`) and `aquery`.
+- [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly, still open).
 - [ ] `coverage` (docs/COVERAGE.md).
 - [ ] `mod` beyond `graph --output=json`: text graph, `deps`, `explain`,
       `show_repo`, `show_extension`, `tidy`; `mod graph` with built-in modules.
@@ -76,7 +75,7 @@ Done since the last increment recorded under "History", one line each:
 
 ### Disk usage
 
-- [ ] Garbage collection of the cache: `cas/`, `actions/`, repository trees and
+- [x] Garbage collection of the cache (docs/CACHE_GC.md, `bazel-rs gc`): `cas/`, `actions/`, repository trees and
       slots, distinct-inode copies, state dirs of deleted worktrees, stale
       `.tmp-*` staging. It only grows today (~/code/bazel-rs-out is 30 GB). Model
       Bazel 9.3's `--experimental_disk_cache_gc_max_size/_max_age/_idle_delay`.
@@ -99,8 +98,7 @@ Done since the last increment recorded under "History", one line each:
 - [ ] Console text: `INFO: Analyzed …` / `INFO: Found …` lines, `DEBUG:` prefix on
       transition prints, exclusive-test order, `-k` error ordering.
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
-- [ ] Children inherit an ignored SIGINT (minimal `unsafe` approved; branch
-      `sigint-reset`).
+- [x] Children no longer inherit ignored SIGINT/SIGQUIT/SIGHUP (src/signals.rs).
 - [ ] Five network-dependent tests: serve their archives from a checksum-verified
       local cache.
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces); Linux x86_64 only.
