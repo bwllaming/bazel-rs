@@ -1776,16 +1776,18 @@ mod tests {
     }
 
     /// Actions and leaves in flight together never exceed `jobs`, and leaves
-    /// never exceed their cap (`--local_test_jobs`).
+    /// never exceed their cap (`--local_test_jobs`). The test releases the
+    /// held jobs one at a time, oldest first, and waits for the start the
+    /// scheduler must make next (a leaf before an action, none when the
+    /// only work left is leaves above the cap) — no timing assumption.
     #[test]
     fn leaves_share_the_jobs_and_respect_their_cap() {
         let active = AtomicUsize::new(0);
         let active_leaves = AtomicUsize::new(0);
         let maximum = AtomicUsize::new(0);
         let maximum_leaves = AtomicUsize::new(0);
-        let (started_tx, started_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel::<()>();
-        let release_rx = Mutex::new(release_rx);
+        // Each start sends whether it is a leaf and its own release.
+        let (started_tx, started_rx) = mpsc::channel::<(bool, mpsc::Sender<()>)>();
         let hold = |leaf: bool| {
             let count = active.fetch_add(1, Ordering::SeqCst) + 1;
             maximum.fetch_max(count, Ordering::SeqCst);
@@ -1793,8 +1795,9 @@ mod tests {
                 let count = active_leaves.fetch_add(1, Ordering::SeqCst) + 1;
                 maximum_leaves.fetch_max(count, Ordering::SeqCst);
             }
-            started_tx.send(leaf).unwrap();
-            release_rx.lock().unwrap().recv_timeout(TIMEOUT).unwrap();
+            let (release_tx, release_rx) = mpsc::channel();
+            started_tx.send((leaf, release_tx)).unwrap();
+            release_rx.recv_timeout(TIMEOUT).unwrap();
             if leaf {
                 active_leaves.fetch_sub(1, Ordering::SeqCst);
             }
@@ -1816,19 +1819,39 @@ mod tests {
                 execute_with_leaves(Path::new("unused"), graph, 3, &worker, Some(&leaves))
             });
             // Saturated at once: two leaves (the cap) and one action.
-            let first: Vec<bool> = (0..3)
+            let mut held: std::collections::VecDeque<(bool, mpsc::Sender<()>)> = (0..3)
                 .map(|_| started_rx.recv_timeout(TIMEOUT).unwrap())
                 .collect();
-            assert_eq!(first.iter().filter(|leaf| **leaf).count(), 2);
+            assert_eq!(held.iter().filter(|(leaf, _)| *leaf).count(), 2);
             assert_eq!(active.load(Ordering::SeqCst), 3);
-            for _ in 0..7 {
-                release_tx.send(()).unwrap();
-                started_rx.recv_timeout(TIMEOUT).unwrap();
-            }
-            for _ in 0..3 {
-                release_tx.send(()).unwrap();
+            let (mut leaves_left, mut actions_left) = (3, 4);
+            let mut starts = 3;
+            while let Some((leaf, release)) = held.pop_front() {
+                release.send(()).unwrap();
+                let leaves_held = held.iter().filter(|(leaf, _)| *leaf).count();
+                // The freed job goes to a ready leaf under the cap first,
+                // then to an action; nothing starts when neither fits.
+                let next = if leaves_left > 0 && leaves_held < 2 {
+                    Some(true)
+                } else if actions_left > 0 {
+                    Some(false)
+                } else {
+                    None
+                };
+                let Some(expected) = next else { continue };
+                let (started, release) = started_rx.recv_timeout(TIMEOUT).unwrap();
+                assert_eq!(started, expected, "after releasing a leaf: {leaf}");
+                if started {
+                    leaves_left -= 1;
+                } else {
+                    actions_left -= 1;
+                }
+                starts += 1;
+                held.push_back((started, release));
             }
             assert_eq!(handle.join().unwrap().unwrap().len(), 5);
+            assert_eq!((starts, leaves_left, actions_left), (10, 0, 0));
+            assert!(started_rx.try_recv().is_err());
         });
         assert_eq!(maximum.load(Ordering::SeqCst), 3);
         assert_eq!(maximum_leaves.load(Ordering::SeqCst), 2);
