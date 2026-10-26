@@ -536,6 +536,18 @@ pub(crate) fn current_surface<'v>(value: Value<'v>) -> anyhow::Result<&'v Arc<Ru
     Ok(&ctx.surface)
 }
 
+pub(crate) fn split_attributes<'v>(value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+    let ctx = rule_ctx(value)?;
+    ctx.scope.check_current()?;
+    if value.downcast_ref::<AspectCtx>().is_some() {
+        bail!("'split_attr' is available only in rule implementations");
+    }
+    ctx.backing
+        .get_attr("split_attr", heap)
+        .map_err(|e| anyhow!(e.to_string()))?
+        .ok_or_else(|| anyhow!("rule context lacks split attributes"))
+}
+
 #[starlark_module]
 fn setting_properties(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
@@ -813,6 +825,10 @@ mod tests {
                 let heap = module.heap();
                 let owner = ScopeState::new("rule".into(), BTreeSet::from(["S".into()]));
                 let backing = heap.alloc(AllocStruct([
+                    (
+                        "split_attr",
+                        heap.alloc(AllocStruct(Vec::<(&str, Value)>::new())),
+                    ),
                     (
                         "attr",
                         heap.alloc(AllocStruct([("name", heap.alloc("target"))])),

@@ -2,6 +2,7 @@
 // Starlark's fixed attribute signatures also generate module-level helpers.
 #![allow(clippy::too_many_arguments)]
 
+use crate::label::Label;
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use starlark::environment::GlobalsBuilder;
@@ -15,7 +16,7 @@ use starlark::values::tuple::TupleRef;
 use starlark::values::{OwnedFrozenValue, Value, ValueLike};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::build_settings::{BuildSetting, BuildSettingKind};
 use crate::providers::ProviderRequirement;
@@ -535,6 +536,9 @@ impl CppConfigurationView {
 
 #[derive(Clone, Debug)]
 pub struct CustomInvocation {
+    /// Only named/list split attributes. Patch transitions keep the single-edge
+    /// fast path; rule/aspect compute snapshots share this small metadata table.
+    pub(crate) split_dependencies: Arc<BTreeMap<String, SplitAttribute>>,
     pub build_setting: Option<BuildSetting>,
     /// The configured value of a build setting (`ctx.build_setting_value`),
     /// set by crate::engine for the analysis configuration; `None` means
@@ -575,6 +579,22 @@ pub struct CustomInvocation {
     /// The rule class's schema, shared with its definition (MEM2).
     pub schema: SharedSchema,
     pub declaration: InvocationDeclaration,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SplitPrerequisite {
+    pub label: Label,
+    /// Requested configuration; provider lookup still applies rule transitions.
+    pub config: crate::configuration::ConfigId,
+    pub map_key: String,
+    /// All branch names converging on this configured identity, in result order.
+    pub transition_keys: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SplitAttribute {
+    /// Label-major, then configuration mnemonic/checksum order. No providers.
+    pub prerequisites: Vec<SplitPrerequisite>,
 }
 
 /// Attribute sequences accept only lists and tuples, without copying their elements.

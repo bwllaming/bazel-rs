@@ -2339,6 +2339,7 @@ fn evaluate_at(
             .get_any_visibility(&pending.slot)
             .map_err(|e| e.to_string())?;
         declared_rules[pending.index].custom = Some(CustomInvocation {
+            split_dependencies: Default::default(),
             implementation,
             subrules: pending
                 .subrule_slots

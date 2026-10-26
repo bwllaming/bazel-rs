@@ -4,8 +4,8 @@
 //! settings and the modelled native options, their output roots,
 //! default-valued outputs, label settings, `select()` in the rule
 //! transition's `attr`, idempotency, the function transition allowlist,
-//! every evaluation/validation error and the explicit gaps (split results,
-//! unmodelled native options), and a shape of rules_go's transitions with
+//! every evaluation/validation error and unmodelled native options,
+//! and a shape of rules_go's transitions with
 //! the genuine `transition.bzl`.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 use std::fs;
@@ -848,8 +848,8 @@ bool_for_int(name = "bool_for_int")
 }
 
 /// Attribute transition failures are reported as dependency edge errors
-/// (DependencyProducer.getMessageWithEdgeTransitionInfo); split results are
-/// N18d and fail explicitly.
+/// (DependencyProducer.getMessageWithEdgeTransitionInfo); named and list split
+/// results now carry all configured prerequisites.
 #[test]
 fn attribute_transition_errors_name_the_edge() {
     let ws = Workspace::new(&[
@@ -889,15 +889,10 @@ show(name = "dep")
             "bazel-rs: WS/BUILD.bazel:3:9: on dependency edge //:i ({top}) -|deps|-> //:dep: expected value of type 'string' for //f:color, but got 1 (int)\n"
         )
     );
-    for (target, line, count) in [("s", 4, 2), ("o", 5, 1)] {
-        let column = if target == "s" { 11 } else { 15 };
-        assert_eq!(
-            ws.rejected(&[&format!("//:{target}")]),
-            format!(
-                "bazel-rs: WS/BUILD.bazel:{line}:{column}: on dependency edge //:{target} ({top}) -|deps|-> //:dep: a Starlark transition that returns {count} configurations (a split transition) is not implemented in the native profile (N18d)\n"
-            )
-        );
-    }
+    let (_, named, _) = ws.built(&["//:s"]);
+    assert_eq!(named.matches("/bin/dep.txt").count(), 2, "{named}");
+    let (_, listed, _) = ws.built(&["//:o"]);
+    assert_eq!(listed.matches("/bin/dep.txt").count(), 1, "{listed}");
 }
 
 /// The function transition allowlist: a declared allowlist package_group is

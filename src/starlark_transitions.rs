@@ -573,7 +573,7 @@ enum Outcome {
 // Application.
 
 /// FunctionTransitionUtil.applyAndValidate with StarlarkTransitionCache and
-/// StarlarkTransition.validate for a 1:1 result.
+/// StarlarkTransition.validate for every returned branch.
 pub(crate) fn apply(
     def: &TransitionDef,
     application: &Application<'_>,

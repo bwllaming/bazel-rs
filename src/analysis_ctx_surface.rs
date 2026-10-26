@@ -324,16 +324,10 @@ pub(crate) fn surface_properties(builder: &mut MethodsBuilder) {
         )
     }
     /// StarlarkRuleContext.splitAttr (:683-689): the attributes with split
-    /// transitions; Starlark transitions on attributes are not modelled here.
+    /// transitions; values are frozen alongside ctx.attr by crate::analysis.
     #[starlark(attribute)]
     fn split_attr<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
-        let rule = current_surface(this)?;
-        if rule.split_transition_attribute {
-            bail!(
-                "ctx.split_attr of an attribute with a Starlark transition is not implemented by the native profile"
-            );
-        }
-        Ok(surface::empty_struct(heap))
+        crate::analysis_ctx::split_attributes(this, heap)
     }
     /// StarlarkRuleContext.createdActions (:667-675): None unless
     /// `_skylark_testable` (not analyzed natively).

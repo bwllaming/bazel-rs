@@ -33,6 +33,7 @@ pub mod cquery;
 mod keep_going;
 pub mod query;
 mod query_attrs;
+mod split;
 
 /// A planned artifact. Its data is shared by its copies (MEM4): the
 /// planner holds one artifact in many places — a target's files to build
@@ -1671,6 +1672,23 @@ enum SettingTarget {
 /// instance encapsulates the target's attributes).
 type TransitionCacheKey = (u64, ConfigId, [u8; 32]);
 
+type TransitionConfigurations = Arc<[(String, ConfigId)]>;
+
+enum EdgeConfigurations {
+    One(ConfigId),
+    Transition(TransitionConfigurations),
+}
+
+impl EdgeConfigurations {
+    fn ids(&self) -> impl Iterator<Item = ConfigId> + '_ {
+        let (one, branches): (Option<ConfigId>, &[(String, ConfigId)]) = match self {
+            Self::One(id) => (Some(*id), &[]),
+            Self::Transition(branches) => (None, branches),
+        };
+        one.into_iter().chain(branches.iter().map(|(_, id)| *id))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct BuildSummary {
     pub outputs: Vec<(Label, PathBuf)>,
@@ -1881,12 +1899,12 @@ pub struct Engine {
     exec_transitions: HashMap<(ConfigId, Label), ConfigId>,
     /// Applied Starlark transitions: the resulting configuration
     /// (StarlarkTransitionCache; failures are not cached).
-    transition_cache: BTreeMap<TransitionCacheKey, (ConfigId, Vec<String>)>,
+    transition_cache: BTreeMap<TransitionCacheKey, (TransitionConfigurations, Vec<String>)>,
     /// StarlarkBuildSettingsDetailsValue per referenced setting label.
     transition_details: BTreeMap<Vec<Label>, Result<TransitionDetails, String>>,
     /// The configuration of each Starlark-transition attribute of each
     /// analyzed target (read by the build loop).
-    edge_configs: BTreeMap<ConfiguredTargetKey, BTreeMap<String, ConfigId>>,
+    edge_configs: BTreeMap<ConfiguredTargetKey, BTreeMap<String, TransitionConfigurations>>,
     /// A target requested with a rule transition that changed its
     /// configuration delegates to the key it was analyzed under
     /// (RuleTransitionApplier, analysis/producers/RuleTransitionApplier.java:69-110,
@@ -1946,7 +1964,7 @@ pub struct Engine {
     /// when phase 1 analyzes the application's own attribute dependencies
     /// (Self::aspect_attribute_configurations) and read by its planning.
     aspect_attribute_configs:
-        BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, ConfigId>>>,
+        BTreeMap<(ConfiguredTargetKey, String), Arc<BTreeMap<String, TransitionConfigurations>>>,
     /// The aspect's own toolchain contexts per (configuration, aspect
     /// identity) (Self::aspect_toolchain_contexts), resolved by phase 1
     /// and read by the application's planning.
@@ -3926,7 +3944,7 @@ impl Engine {
         // The configuration of each Starlark-transition attribute, computed
         // at its first edge (an error names that edge, DependencyProducer
         // getMessageWithEdgeTransitionInfo, analysis/producers/DependencyProducer.java:258-266).
-        let mut attribute_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
+        let mut attribute_configs: BTreeMap<String, TransitionConfigurations> = BTreeMap::new();
         let exec_config =
             if uses_toolchains && edges.iter().any(|edge| edge.cfg == EdgeCfg::Exec(None)) {
                 let exec_config = self.exec_configuration(
@@ -3947,10 +3965,12 @@ impl Engine {
         // (config.exec(exec_group = NAME)): the group's execution platform.
         let mut group_configs: BTreeMap<String, ConfigId> = BTreeMap::new();
         for edge in edges {
-            let dep_config = match &edge.cfg {
-                EdgeCfg::Target => config,
-                EdgeCfg::Exec(None) => exec_config,
-                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
+            let dep_configs = match &edge.cfg {
+                EdgeCfg::Target => EdgeConfigurations::One(config),
+                EdgeCfg::Exec(None) => EdgeConfigurations::One(exec_config),
+                EdgeCfg::NoConfig => {
+                    EdgeConfigurations::One(self.configurations.intern_no_config())
+                }
                 // DependencyResolutionHelpers.getExecutionPlatformLabel
                 // (analysis/DependencyResolutionHelpers.java:223-253): a
                 // group of the ToolchainCollection gives its execution
@@ -3959,7 +3979,7 @@ impl Engine {
                 // without them there is no execution platform and the
                 // transition is a no-op.
                 EdgeCfg::Exec(Some(group)) if uses_toolchains => {
-                    if let Some(group_config) = group_configs.get(group) {
+                    EdgeConfigurations::One(if let Some(group_config) = group_configs.get(group) {
                         *group_config
                     } else {
                         let Some(resolved) =
@@ -3985,157 +4005,162 @@ impl Engine {
                             .insert((key.clone(), group.clone()), group_config);
                         group_configs.insert(group.clone(), group_config);
                         group_config
-                    }
+                    })
                 }
-                EdgeCfg::Exec(Some(_)) => config,
+                EdgeCfg::Exec(Some(_)) => EdgeConfigurations::One(config),
                 // Applied per dependency edge (DependencyProducer), so
                 // print() output repeats per edge; the result is per
                 // attribute (its values do not depend on the edge).
                 EdgeCfg::Starlark(attribute) => {
                     let dependency = self.resolve_rule_src(&rule, &edge.label)?;
                     let id = self.attribute_transition(&rule, config, attribute, &dependency)?;
-                    attribute_configs.insert(attribute.clone(), id);
-                    id
+                    attribute_configs.insert(attribute.clone(), Arc::clone(&id));
+                    EdgeConfigurations::Transition(id)
                 }
             };
-            let src = edge.label;
-            let late_bound = late_bound_rule || analysis_dependent.contains(&src);
-            let dependency = self.resolve_rule_src(&rule, &src)?;
-            if self.cquery_capture.is_some() {
-                self.capture_cquery_edge(
-                    &key,
-                    dependency.clone(),
-                    dep_config,
-                    if forwards(&rule) {
-                        if late_bound_rule { ":alias" } else { "actual" }
+            for dep_config in dep_configs.ids() {
+                let src = &edge.label;
+                let late_bound = late_bound_rule || analysis_dependent.contains(src);
+                let dependency = self.resolve_rule_src(&rule, src)?;
+                if self.cquery_capture.is_some() {
+                    self.capture_cquery_edge(
+                        &key,
+                        dependency.clone(),
+                        dep_config,
+                        if forwards(&rule) {
+                            if late_bound_rule { ":alias" } else { "actual" }
+                        } else {
+                            &edge.attribute
+                        },
+                        matches!(edge.cfg, EdgeCfg::Exec(_)),
+                        false,
+                    );
+                }
+                // The allowlist Bazel adds to rules with a Starlark transition
+                // lives in @bazel_tools, which the explicit-module profile
+                // (--experimental-builtin-modules=false) does not provide.
+                if edge.attribute == crate::custom_rule::FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE
+                    && dependency.repository == "bazel_tools"
+                    && self.repositories.root("bazel_tools").is_err()
+                {
+                    return Err(located(
+                        rule.location.as_deref(),
+                        format!(
+                            "the Starlark transition allowlist {} of {} needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide; drop --experimental-builtin-modules=false, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name",
+                            crate::rule_declarations::canonical_form(&dependency),
+                            crate::rule_declarations::canonical_form(&rule.label)
+                        ),
+                    ));
+                }
+                let target = self.target(&dependency).map_err(|error| {
+                    let error = self.missing_edge_error(&rule, &dependency, error);
+                    if analysis_dependent.contains(src) {
+                        // Name the gap: the edge is a resolved late-bound default
+                        // (crate::late_bound), e.g. apple.xcode_config_label's
+                        // @bazel_tools//tools/cpp:host_xcodes.
+                        crate::late_bound::edge_error(&rule.label, &dependency, error)
                     } else {
-                        &edge.attribute
-                    },
-                    matches!(edge.cfg, EdgeCfg::Exec(_)),
-                    false,
-                );
-            }
-            // The allowlist Bazel adds to rules with a Starlark transition
-            // lives in @bazel_tools, which the explicit-module profile
-            // (--experimental-builtin-modules=false) does not provide.
-            if edge.attribute == crate::custom_rule::FUNCTION_TRANSITION_ALLOWLIST_ATTRIBUTE
-                && dependency.repository == "bazel_tools"
-                && self.repositories.root("bazel_tools").is_err()
-            {
-                return Err(located(
-                    rule.location.as_deref(),
-                    format!(
-                        "the Starlark transition allowlist {} of {} needs the built-in @bazel_tools repository, which the explicit-module profile (--experimental-builtin-modules=false) does not provide; drop --experimental-builtin-modules=false, or declare `_allowlist_function_transition = attr.label(default = \"//tools/allowlists/function_transition_allowlist\")` with a package_group of that name",
-                        crate::rule_declarations::canonical_form(&dependency),
-                        crate::rule_declarations::canonical_form(&rule.label)
-                    ),
-                ));
-            }
-            let target = self.target(&dependency).map_err(|error| {
-                let error = self.missing_edge_error(&rule, &dependency, error);
-                if analysis_dependent.contains(&src) {
-                    // Name the gap: the edge is a resolved late-bound default
-                    // (crate::late_bound), e.g. apple.xcode_config_label's
-                    // @bazel_tools//tools/cpp:host_xcodes.
-                    crate::late_bound::edge_error(&rule.label, &dependency, error)
-                } else {
-                    error
-                }
-            })?;
-            let is_source = matches!(target, Target::Source(_));
-            let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
-            // CommonPrerequisiteValidator.validateDirectPrerequisiteVisibility
-            // (analysis/CommonPrerequisiteValidator.java:181-221): an implicit
-            // (private, `_x`) attribute of a Starlark rule - subrule-lifted
-            // attributes included - is checked against the package of the
-            // `.bzl` that defines the rule class first, then against the
-            // consumer; a failure names that `.bzl` (:384-386). That `.bzl`
-            // is the rule class's definition environment label
-            // (getOwnerDefinitionBzl, :133-143): the module being initialized
-            // when rule() ran, not a helper `.bzl` that called rule().
-            let implicit_owner = rule
-                .custom
-                .as_ref()
-                .filter(|_| edge.attribute.starts_with('_') && !late_bound)
-                .and_then(|custom| {
-                    Label::parse_canonical(&custom.declaration.definition_environment_label).ok()
-                });
-            let (dep_visibility, dep_declaring) = match &target {
-                Target::Rule(dep) | Target::Output(dep, _) => {
-                    (dep.visibility.clone(), rule_authority(dep))
-                }
-                Target::Source(_) => (self.source_visibility(&dependency), dependency.package_id()),
-            };
-            let owner_visible = match &implicit_owner {
-                Some(owner) => {
-                    self.visible(&dep_visibility, &dep_declaring, Some(&owner.package_id()))?
-                }
-                None => false,
-            };
-            let visible_from = implicit_owner.as_ref();
-            let visible = owner_visible
-                || match target {
+                        error
+                    }
+                })?;
+                let is_source = matches!(target, Target::Source(_));
+                let forwarding = matches!(&target, Target::Rule(dep) if forwards(dep));
+                // CommonPrerequisiteValidator.validateDirectPrerequisiteVisibility
+                // (analysis/CommonPrerequisiteValidator.java:181-221): an implicit
+                // (private, `_x`) attribute of a Starlark rule - subrule-lifted
+                // attributes included - is checked against the package of the
+                // `.bzl` that defines the rule class first, then against the
+                // consumer; a failure names that `.bzl` (:384-386). That `.bzl`
+                // is the rule class's definition environment label
+                // (getOwnerDefinitionBzl, :133-143): the module being initialized
+                // when rule() ran, not a helper `.bzl` that called rule().
+                let implicit_owner = rule
+                    .custom
+                    .as_ref()
+                    .filter(|_| edge.attribute.starts_with('_') && !late_bound)
+                    .and_then(|custom| {
+                        Label::parse_canonical(&custom.declaration.definition_environment_label)
+                            .ok()
+                    });
+                let (dep_visibility, dep_declaring) = match &target {
                     Target::Rule(dep) | Target::Output(dep, _) => {
-                        check_macro_namespace(&dep, &dependency)?;
-                        check_macro_namespace(&dep, &dep.label)?;
-                        if matches!(dep.kind, RuleKind::PackageGroup(_))
-                            && !matches!(rule.kind, RuleKind::Custom)
-                        {
-                            return Err(format!(
-                                "{}: package group '{dependency}' is misplaced in {}",
-                                rule.label, edge.attribute
-                            ));
-                        }
-                        late_bound
-                            || self.visible(
-                                &dep.visibility,
-                                &rule_authority(&dep),
-                                Some(&requesting_package),
-                            )?
+                        (dep.visibility.clone(), rule_authority(dep))
                     }
                     Target::Source(_) => {
-                        late_bound
-                            || self.visible(
-                                &self.source_visibility(&dependency),
-                                &dependency.package_id(),
-                                Some(&requesting_package),
-                            )?
+                        (self.source_visibility(&dependency), dependency.package_id())
                     }
                 };
-            if !forwarding {
+                let owner_visible = match &implicit_owner {
+                    Some(owner) => {
+                        self.visible(&dep_visibility, &dep_declaring, Some(&owner.package_id()))?
+                    }
+                    None => false,
+                };
+                let visible_from = implicit_owner.as_ref();
+                let visible = owner_visible
+                    || match target {
+                        Target::Rule(dep) | Target::Output(dep, _) => {
+                            check_macro_namespace(&dep, &dependency)?;
+                            check_macro_namespace(&dep, &dep.label)?;
+                            if matches!(dep.kind, RuleKind::PackageGroup(_))
+                                && !matches!(rule.kind, RuleKind::Custom)
+                            {
+                                return Err(format!(
+                                    "{}: package group '{dependency}' is misplaced in {}",
+                                    rule.label, edge.attribute
+                                ));
+                            }
+                            late_bound
+                                || self.visible(
+                                    &dep.visibility,
+                                    &rule_authority(&dep),
+                                    Some(&requesting_package),
+                                )?
+                        }
+                        Target::Source(_) => {
+                            late_bound
+                                || self.visible(
+                                    &self.source_visibility(&dependency),
+                                    &dependency.package_id(),
+                                    Some(&requesting_package),
+                                )?
+                        }
+                    };
+                if !forwarding {
+                    if !visible {
+                        return Err(visibility_error(
+                            &rule,
+                            &describe_with_aliases(&[], &dependency, "target"),
+                            is_source,
+                            visible_from,
+                        ));
+                    }
+                    self.validate_prerequisite(
+                        &rule,
+                        &dependency,
+                        &|| describe_with_aliases(&[], &dependency, "target"),
+                        skip_testonly,
+                    )?;
+                    self.analyze(&dependency, dep_config, active, configured, plan)?;
+                    continue;
+                }
+                // The configured alias (its actual's label and kind) is needed to
+                // describe and validate the edge (AliasProvider.describeTargetWithAliases).
+                self.analyze(&dependency, dep_config, active, configured, plan)?;
+                let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
+                // Formatted only for a reported error.
+                let description = || describe_with_aliases(&chain, &actual, "target");
                 if !visible {
+                    let is_source = matches!(self.target(&actual)?, Target::Source(_));
                     return Err(visibility_error(
                         &rule,
-                        &describe_with_aliases(&[], &dependency, "target"),
+                        &description(),
                         is_source,
                         visible_from,
                     ));
                 }
-                self.validate_prerequisite(
-                    &rule,
-                    &dependency,
-                    &|| describe_with_aliases(&[], &dependency, "target"),
-                    skip_testonly,
-                )?;
-                self.analyze(&dependency, dep_config, active, configured, plan)?;
-                continue;
+                self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
             }
-            // The configured alias (its actual's label and kind) is needed to
-            // describe and validate the edge (AliasProvider.describeTargetWithAliases).
-            self.analyze(&dependency, dep_config, active, configured, plan)?;
-            let (chain, actual) = self.alias_chain(configured, dep_config, &dependency);
-            // Formatted only for a reported error.
-            let description = || describe_with_aliases(&chain, &actual, "target");
-            if !visible {
-                let is_source = matches!(self.target(&actual)?, Target::Source(_));
-                return Err(visibility_error(
-                    &rule,
-                    &description(),
-                    is_source,
-                    visible_from,
-                ));
-            }
-            self.validate_prerequisite(&rule, &actual, &description, skip_testonly)?;
         }
         // The resolved toolchain implementations are dependencies after the
         // attribute dependencies (DependencyResolutionHelpers.java:358-373),
@@ -4186,6 +4211,10 @@ impl Engine {
             ));
         }
         if !attribute_configs.is_empty() {
+            let splits = self.split_attribute_dependencies(&rule, &attribute_configs)?;
+            if let Some(custom) = &mut rule.custom {
+                custom.split_dependencies = Arc::new(splits);
+            }
             self.edge_configs.insert(key.clone(), attribute_configs);
         }
         // config_setting flag_values/constraint_values and the platform rules'
@@ -4329,7 +4358,7 @@ impl Engine {
                 feature_flag,
             },
         );
-        self.analyze_aspect_edges(&rule, &key, config, active, configured, plan)?;
+        self.analyze_aspect_edges(&rule, &key, active, configured, plan)?;
         let rule = Arc::new(rule);
         if let Some(capture) = &mut self.cquery_capture {
             capture.rules.insert(key.clone(), Arc::clone(&rule));
@@ -4349,7 +4378,6 @@ impl Engine {
         &mut self,
         rule: &Rule,
         key: &ConfiguredTargetKey,
-        config: ConfigId,
         active: &mut Vec<ConfiguredTargetKey>,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
@@ -4381,28 +4409,19 @@ impl Engine {
                     .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
                 aspects.push(definition);
             }
-            let exec_config = self.exec_configurations.get(key).copied().unwrap_or(config);
-            let edge_config = match &edge.cfg {
-                EdgeCfg::Target => config,
-                EdgeCfg::Exec(None) => exec_config,
-                EdgeCfg::Exec(Some(group)) => self
-                    .group_exec_configurations
-                    .get(&(key.clone(), group.clone()))
-                    .copied()
-                    .unwrap_or(config),
-                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
-                EdgeCfg::Starlark(_) => continue,
-            };
+            let edge_configs = self.analyzed_edge_configurations(key, &edge.cfg)?;
             let dependency = self.resolve_rule_src(rule, &edge.label)?;
-            self.analyze_aspect_applications(
-                &dependency,
-                edge_config,
-                aspects,
-                active,
-                configured,
-                plan,
-                &mut seen,
-            )?;
+            for edge_config in edge_configs.ids() {
+                self.analyze_aspect_applications(
+                    &dependency,
+                    edge_config,
+                    aspects.clone(),
+                    active,
+                    configured,
+                    plan,
+                    &mut seen,
+                )?;
+            }
         }
         Ok(())
     }
@@ -4514,7 +4533,7 @@ impl Engine {
                 plan,
             )?;
             for (name, spec) in &aspect.declaration.attrs {
-                let Some(&attribute_config) = attribute_configs.get(name) else {
+                let Some(branches) = attribute_configs.get(name) else {
                     continue;
                 };
                 for text in aspect_attribute_labels(spec) {
@@ -4526,38 +4545,41 @@ impl Engine {
                         &aspect.definition_label.repository,
                         &aspect.definition_label.package,
                     )?;
-                    self.analyze(&dependency, attribute_config, active, configured, plan)
-                        .map_err(|error| {
-                            format!(
-                                "in {} aspect on {} rule {}: {error}",
+                    for (_, attribute_config) in branches.iter() {
+                        let attribute_config = *attribute_config;
+                        self.analyze(&dependency, attribute_config, active, configured, plan)
+                            .map_err(|error| {
+                                format!(
+                                    "in {} aspect on {} rule {}: {error}",
+                                    aspect.identity,
+                                    base_rule.rule_class_name(),
+                                    crate::rule_declarations::canonical_form(&base_label)
+                                )
+                            })?;
+                        if self.cquery_capture.is_some() {
+                            self.capture_cquery_edge(
+                                &base_key,
+                                dependency.clone(),
+                                attribute_config,
+                                name,
+                                attribute_config != config,
+                                true,
+                            );
+                        }
+                        let dep_rule = match self.target(&dependency)? {
+                            Target::Rule(dep_rule) => dep_rule,
+                            Target::Output(generating, _) => generating,
+                            _ => continue,
+                        };
+                        if let Err(error) = self.visible(&dep_rule.visibility, &authority, None) {
+                            return Err(format!(
+                                "in {} aspect on {} rule {}: {}",
                                 aspect.identity,
                                 base_rule.rule_class_name(),
-                                crate::rule_declarations::canonical_form(&base_label)
-                            )
-                        })?;
-                    if self.cquery_capture.is_some() {
-                        self.capture_cquery_edge(
-                            &base_key,
-                            dependency.clone(),
-                            attribute_config,
-                            name,
-                            attribute_config != config,
-                            true,
-                        );
-                    }
-                    let dep_rule = match self.target(&dependency)? {
-                        Target::Rule(dep_rule) => dep_rule,
-                        Target::Output(generating, _) => generating,
-                        _ => continue,
-                    };
-                    if let Err(error) = self.visible(&dep_rule.visibility, &authority, None) {
-                        return Err(format!(
-                            "in {} aspect on {} rule {}: {}",
-                            aspect.identity,
-                            base_rule.rule_class_name(),
-                            crate::rule_declarations::canonical_form(&base_label),
-                            error
-                        ));
+                                crate::rule_declarations::canonical_form(&base_label),
+                                error
+                            ));
+                        }
                     }
                 }
             }
@@ -4583,44 +4605,22 @@ impl Engine {
             if propagating.is_empty() {
                 continue;
             }
-            let exec_config = self
-                .exec_configurations
-                .get(&base_key)
-                .copied()
-                .unwrap_or(config);
-            let edge_config = match &edge.cfg {
-                EdgeCfg::Target => config,
-                EdgeCfg::Exec(None) => exec_config,
-                EdgeCfg::Exec(Some(group)) => self
-                    .group_exec_configurations
-                    .get(&(base_key.clone(), group.clone()))
-                    .copied()
-                    .unwrap_or(config),
-                // Aspects never apply in the no-config configuration
-                // (AspectFunction.java:296-305: NonApplicableAspect).
-                EdgeCfg::NoConfig => continue,
-                // The attribute's Starlark-transitioned configuration (N28c).
-                EdgeCfg::Starlark(attribute) => {
-                    match self
-                        .edge_configs
-                        .get(&base_key)
-                        .and_then(|configs| configs.get(attribute))
-                    {
-                        Some(&transitioned) => transitioned,
-                        None => continue,
-                    }
-                }
-            };
+            if edge.cfg == EdgeCfg::NoConfig {
+                continue;
+            }
+            let edge_configs = self.analyzed_edge_configurations(&base_key, &edge.cfg)?;
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
-            self.analyze_aspect_applications(
-                &dependency,
-                edge_config,
-                propagating,
-                active,
-                configured,
-                plan,
-                seen,
-            )?;
+            for edge_config in edge_configs.ids() {
+                self.analyze_aspect_applications(
+                    &dependency,
+                    edge_config,
+                    propagating.clone(),
+                    active,
+                    configured,
+                    plan,
+                    seen,
+                )?;
+            }
         }
         Ok(())
     }
@@ -4827,7 +4827,7 @@ impl Engine {
         toolchains: &AspectToolchains,
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
-    ) -> Result<Arc<BTreeMap<String, ConfigId>>, String> {
+    ) -> Result<Arc<BTreeMap<String, TransitionConfigurations>>, String> {
         use crate::rule_declarations::Cfg;
         let memo = (base_key.clone(), aspect.identity.clone());
         if let Some(configs) = self.aspect_attribute_configs.get(&memo) {
@@ -4923,26 +4923,29 @@ impl Engine {
                         })
                         .map(|label| crate::rule_declarations::canonical_form(&label))
                         .unwrap_or_default();
-                    self.apply_transition(
-                        &def,
-                        crate::starlark_transitions::Kind::Attribute,
-                        &base_rule.label,
-                        config,
-                        &attributes,
-                    )
-                    .map_err(|failure| {
-                        let mut lines = failure.events;
-                        lines.push(located(
-                            base_rule.location.as_deref(),
-                            format!(
-                                "on dependency edge {} ({}) -|{attribute}|-> {dependency}: {}",
-                                crate::rule_declarations::canonical_form(&base_rule.label),
-                                &config.to_string()[..7],
-                                failure.message
-                            ),
-                        ));
-                        lines.join("\n")
-                    })?
+                    let branches = self
+                        .apply_transition(
+                            &def,
+                            crate::starlark_transitions::Kind::Attribute,
+                            &base_rule.label,
+                            config,
+                            &attributes,
+                        )
+                        .map_err(|failure| {
+                            let mut lines = failure.events;
+                            lines.push(located(
+                                base_rule.location.as_deref(),
+                                format!(
+                                    "on dependency edge {} ({}) -|{attribute}|-> {dependency}: {}",
+                                    crate::rule_declarations::canonical_form(&base_rule.label),
+                                    &config.to_string()[..7],
+                                    failure.message
+                                ),
+                            ));
+                            lines.join("\n")
+                        })?;
+                    configs.insert(name.clone(), branches);
+                    continue;
                 }
                 other => {
                     return Err(format!(
@@ -4953,7 +4956,7 @@ impl Engine {
                     ));
                 }
             };
-            configs.insert(name.clone(), edge_config);
+            configs.insert(name.clone(), Arc::from([(String::new(), edge_config)]));
         }
         let configs = Arc::new(configs);
         self.aspect_attribute_configs.insert(memo, configs.clone());
@@ -5373,7 +5376,7 @@ impl Engine {
         target: &Label,
         from: ConfigId,
         attributes: &crate::starlark_transitions::AttributeValues,
-    ) -> Result<ConfigId, crate::starlark_transitions::Failure> {
+    ) -> Result<TransitionConfigurations, crate::starlark_transitions::Failure> {
         use sha2::Digest;
         let failure = |message: String| crate::starlark_transitions::Failure {
             events: Vec::new(),
@@ -5397,7 +5400,7 @@ impl Engine {
             for line in printed {
                 crate::ui::note(line);
             }
-            return Ok(*id);
+            return Ok(Arc::clone(id));
         }
         let details = self.transition_details(def).map_err(failure)?;
         let configuration = self.configurations.get(from).clone();
@@ -5416,28 +5419,19 @@ impl Engine {
             crate::ui::note(line);
         }
         let target_scoped = self.target_scoped_flags(from).map_err(failure)?;
-        // The evaluator now retains each named/list branch. Configured-edge
-        // plumbing follows separately; never silently pick one split result.
-        if applied.configurations.len() != 1 || !applied.configurations[0].0.is_empty() {
-            return Err(failure(format!(
-                "a Starlark transition that returns {} configurations (a split transition) is not implemented in the native profile (N18d)",
-                applied.configurations.len()
-            )));
-        }
-        let id = self
+        let id: TransitionConfigurations = applied
             .configurations
-            .intern_derived(
-                applied
-                    .configurations
-                    .into_iter()
-                    .next()
-                    .expect("one configuration")
-                    .1,
-                &target_scoped,
-            )
-            .map_err(failure)?;
+            .into_iter()
+            .map(|(key, config)| {
+                self.configurations
+                    .intern_derived(config, &target_scoped)
+                    .map(|id| (key, id))
+                    .map_err(failure)
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into();
         self.transition_cache
-            .insert(cache_key, (id, applied.printed));
+            .insert(cache_key, (Arc::clone(&id), applied.printed));
         Ok(id)
     }
 
@@ -5487,13 +5481,15 @@ impl Engine {
         let kind = crate::starlark_transitions::Kind::Rule;
         let post = self
             .apply_transition(&def, kind, &rule.label, config, &attributes)
-            .map_err(report)?;
+            .map_err(report)?[0]
+            .1;
         if post == config {
             return Ok(None);
         }
         let again = self
             .apply_transition(&def, kind, &rule.label, post, &attributes)
-            .map_err(report)?;
+            .map_err(report)?[0]
+            .1;
         Ok(Some(if again == post {
             ConfiguredTargetKey::new(rule.label.clone(), post)
         } else {
@@ -5514,7 +5510,7 @@ impl Engine {
         config: ConfigId,
         attribute: &str,
         dependency: &Label,
-    ) -> Result<ConfigId, String> {
+    ) -> Result<TransitionConfigurations, String> {
         let def = Self::transition_def(rule, attribute)?.ok_or_else(|| {
             format!(
                 "{}: attribute '{attribute}' declares a Starlark transition that the native profile did not retain (a lifted subrule attribute); {}",
@@ -5585,58 +5581,53 @@ impl Engine {
             ));
         };
         let label = self.resolve_rule_src(rule, text)?;
-        let edge_config = match custom.schema.get(name).map(|spec| &spec.declaration.cfg) {
-            Some(crate::rule_declarations::Cfg::Exec(Some(group)))
-                if group != crate::exec_groups::DEFAULT_EXEC_GROUP_NAME =>
-            {
-                self.group_exec_configurations
-                    .get(&(key.clone(), group.clone()))
-                    .copied()
-                    .unwrap_or(key.config)
-            }
-            Some(crate::rule_declarations::Cfg::Exec(_)) => self
-                .exec_configurations
-                .get(key)
-                .copied()
-                .unwrap_or(key.config),
-            Some(crate::rule_declarations::Cfg::Starlark { .. }) => self
-                .edge_configs
-                .get(key)
-                .and_then(|configs| configs.get(name))
-                .copied()
-                .unwrap_or(key.config),
-            _ => key.config,
-        };
-        let actual = self
-            .forwarded_actual(
-                configured,
-                &ConfiguredTargetKey::new(label.clone(), edge_config),
-            )
-            .unwrap_or(label);
-        let group = match self.target(&actual)? {
-            Target::Rule(group) if matches!(group.kind, RuleKind::PackageGroup(_)) => {
-                self.resolve_group(&actual, &mut Vec::new())?
-            }
-            _ => {
-                return Err(format!(
-                    "{}: the function transition allowlist {} is not a package_group (a PackageSpecificationProvider that is not a package_group is not modelled natively)",
-                    rule.label,
-                    crate::rule_declarations::canonical_form(&actual)
-                ));
-            }
-        };
-        let definition = Label::parse_canonical(&custom.declaration.definition_environment_label)?;
-        if group.contains(&rule.label.package_id()) || group.contains(&definition.package_id()) {
-            return Ok(());
-        }
-        Err(located(
-            rule.location.as_deref(),
-            format!(
-                "in {} rule {}: Non-allowlisted use of Starlark transition",
-                rule.rule_class_name(),
-                crate::rule_declarations::canonical_form(&rule.label)
+        let edge_cfg = match custom.schema.get(name).map(|spec| &spec.declaration.cfg) {
+            Some(crate::rule_declarations::Cfg::Exec(group)) => EdgeCfg::Exec(
+                group
+                    .clone()
+                    .filter(|g| g != crate::exec_groups::DEFAULT_EXEC_GROUP_NAME),
             ),
-        ))
+            Some(crate::rule_declarations::Cfg::Starlark { .. }) => {
+                EdgeCfg::Starlark(name.to_owned())
+            }
+            _ => EdgeCfg::Target,
+        };
+        let edge_configs = self.analyzed_edge_configurations(key, &edge_cfg)?;
+        for edge_config in edge_configs.ids() {
+            let actual = self
+                .forwarded_actual(
+                    configured,
+                    &ConfiguredTargetKey::new(label.clone(), edge_config),
+                )
+                .unwrap_or_else(|| label.clone());
+            let group = match self.target(&actual)? {
+                Target::Rule(group) if matches!(group.kind, RuleKind::PackageGroup(_)) => {
+                    self.resolve_group(&actual, &mut Vec::new())?
+                }
+                _ => {
+                    return Err(format!(
+                        "{}: the function transition allowlist {} is not a package_group (a PackageSpecificationProvider that is not a package_group is not modelled natively)",
+                        rule.label,
+                        crate::rule_declarations::canonical_form(&actual)
+                    ));
+                }
+            };
+            let definition =
+                Label::parse_canonical(&custom.declaration.definition_environment_label)?;
+            if group.contains(&rule.label.package_id()) || group.contains(&definition.package_id())
+            {
+                continue;
+            }
+            return Err(located(
+                rule.location.as_deref(),
+                format!(
+                    "in {} rule {}: Non-allowlisted use of Starlark transition",
+                    rule.rule_class_name(),
+                    crate::rule_declarations::canonical_form(&rule.label)
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// A missing dependency edge (missing_edge), preceded by the target
@@ -6204,7 +6195,7 @@ impl Engine {
                     .edge_configs
                     .get(key)
                     .and_then(|configs| configs.get(name))
-                    .copied()
+                    .map(|branches| branches[0].1)
                     .ok_or_else(|| {
                         format!(
                             "internal error: no transitioned configuration for {shown} attribute {name}"
@@ -6212,15 +6203,29 @@ impl Engine {
                     })?,
                 _ => config,
             };
-            for text in labels {
-                let dependency = self.resolve_rule_src(rule, &text)?;
+            let prerequisites = if let Some(split) = custom.split_dependencies.get(name) {
+                split
+                    .prerequisites
+                    .iter()
+                    .map(|p| (p.label.clone(), p.config, p.map_key.clone()))
+                    .collect::<Vec<_>>()
+            } else {
+                labels
+                    .iter()
+                    .map(|text| {
+                        let label = self.resolve_rule_src(rule, text)?;
+                        let map_key =
+                            analysis::attribute_dependency_key(&label.to_string(), name, spec);
+                        Ok((label, edge_config, map_key))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?
+            };
+            for (dependency, edge_config, map_key) in prerequisites {
                 let (chain, actual) = self.alias_chain(configured, edge_config, &dependency);
                 let found = match self.target(&actual)? {
                     Target::Rule(_) => {
                         // Every prerequisite was analyzed before this point;
                         // a missing entry must never skip validation.
-                        let map_key =
-                            analysis::attribute_dependency_key(&dependency.to_string(), name, spec);
                         let target = targets.get(&map_key).ok_or_else(|| {
                             format!(
                                 "internal error: prerequisite {map_key} of {shown} (attribute {name}) has no analyzed dependency entry"
@@ -10396,27 +10401,46 @@ impl Engine {
                 )
             })?;
         let mut aspect_dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
+        let mut aspect_split_dependencies = BTreeMap::new();
         for (name, spec) in &aspect.declaration.attrs {
-            let Some(&attribute_config) = attribute_configs.get(name) else {
+            let Some(branches) = attribute_configs.get(name) else {
                 continue;
             };
+            let split = branches.len() != 1 || !branches[0].0.is_empty();
+            let mut labels = Vec::new();
             for text in aspect_attribute_labels(spec) {
                 let dependency = self.repositories.parse(
                     &text,
                     &aspect.definition_label.repository,
                     &aspect.definition_label.package,
                 )?;
-                let (view, _) = self.plan_aspect_dependency(
-                    state,
-                    configured,
-                    &dependency,
-                    attribute_config,
-                    Vec::new(),
-                )?;
-                aspect_dependencies.insert(
-                    analysis::attribute_dependency_key(&dependency.to_string(), name, spec),
-                    view,
-                );
+                labels.push(dependency.clone());
+                for (_, attribute_config) in branches.iter() {
+                    let attribute_config = *attribute_config;
+                    let (view, _) = self.plan_aspect_dependency(
+                        state,
+                        configured,
+                        &dependency,
+                        attribute_config,
+                        Vec::new(),
+                    )?;
+                    aspect_dependencies.insert(
+                        if split {
+                            analysis::split_dependency_key(
+                                &dependency.to_string(),
+                                name,
+                                attribute_config,
+                            )
+                        } else {
+                            analysis::attribute_dependency_key(&dependency.to_string(), name, spec)
+                        },
+                        view,
+                    );
+                }
+            }
+            if split {
+                aspect_split_dependencies
+                    .insert(name.clone(), self.split_attribute(name, labels, branches)?);
             }
         }
         let mut dependencies: BTreeMap<String, DependencyTarget> = BTreeMap::new();
@@ -10425,11 +10449,6 @@ impl Engine {
             .iter()
             .map(|(used, _)| used.clone())
             .collect();
-        let exec_config = self
-            .exec_configurations
-            .get(base_key)
-            .copied()
-            .unwrap_or(base_key.config);
         for edge in self.rule_edges(&base_rule) {
             let attribute_aspects = base_rule
                 .custom
@@ -10443,32 +10462,7 @@ impl Engine {
                 &incoming,
                 &edge.attribute,
             );
-            let edge_config = match &edge.cfg {
-                EdgeCfg::Target => base_key.config,
-                EdgeCfg::Exec(None) => exec_config,
-                EdgeCfg::Exec(Some(group)) => self
-                    .group_exec_configurations
-                    .get(&(base_key.clone(), group.clone()))
-                    .copied()
-                    .unwrap_or(base_key.config),
-                // The attribute's Starlark-transitioned configuration, like
-                // the base rule's own planning (N28c): a transitioned
-                // prerequisite is a dependency of the aspect application
-                // too (AspectFunction over TransitionedConfiguredTarget
-                // keys; rules_go's go_library srcs transition).
-                EdgeCfg::Starlark(attribute) => self
-                    .edge_configs
-                    .get(base_key)
-                    .and_then(|configs| configs.get(attribute))
-                    .copied()
-                    .ok_or_else(|| {
-                        format!(
-                            "internal error: no transitioned configuration for {} attribute {attribute}",
-                            base_key.label
-                        )
-                    })?,
-                EdgeCfg::NoConfig => self.configurations.intern_no_config(),
-            };
+            let edge_configs = self.analyzed_edge_configurations(base_key, &edge.cfg)?;
             // Aspects never apply in the no-config configuration
             // (AspectFunction.java:296-305: NonApplicableAspect).
             let propagating = if edge.cfg == EdgeCfg::NoConfig {
@@ -10477,35 +10471,49 @@ impl Engine {
                 propagating
             };
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
-            let (view, _) = self.plan_aspect_dependency(
-                state,
-                configured,
-                &dependency,
-                edge_config,
-                propagating,
-            )?;
-            let spec = base_rule
-                .custom
-                .as_ref()
-                .and_then(|custom| custom.schema.get(&edge.attribute));
-            let map_key = match &edge.cfg {
-                EdgeCfg::Exec(_) => analysis::dependency_key(&dependency.to_string(), true),
-                EdgeCfg::Starlark(attribute) => {
-                    analysis::transition_dependency_key(&dependency.to_string(), attribute)
-                }
-                EdgeCfg::NoConfig => analysis::metadata_dependency_key(&dependency.to_string()),
-                _ => match spec {
-                    Some(spec) if analysis::implicit_attribute(&edge.attribute, spec) => {
-                        analysis::attribute_dependency_key(
-                            &dependency.to_string(),
-                            &edge.attribute,
-                            spec,
-                        )
+            for edge_config in edge_configs.ids() {
+                let (view, _) = self.plan_aspect_dependency(
+                    state,
+                    configured,
+                    &dependency,
+                    edge_config,
+                    propagating.clone(),
+                )?;
+                let spec = base_rule
+                    .custom
+                    .as_ref()
+                    .and_then(|custom| custom.schema.get(&edge.attribute));
+                let map_key = match &edge.cfg {
+                    EdgeCfg::Exec(_) => analysis::dependency_key(&dependency.to_string(), true),
+                    EdgeCfg::Starlark(attribute) => {
+                        if base_rule
+                            .custom
+                            .as_ref()
+                            .is_some_and(|custom| custom.split_dependencies.contains_key(attribute))
+                        {
+                            analysis::split_dependency_key(
+                                &dependency.to_string(),
+                                attribute,
+                                edge_config,
+                            )
+                        } else {
+                            analysis::transition_dependency_key(&dependency.to_string(), attribute)
+                        }
                     }
-                    _ => analysis::dependency_key(&dependency.to_string(), false),
-                },
-            };
-            dependencies.insert(map_key, view);
+                    EdgeCfg::NoConfig => analysis::metadata_dependency_key(&dependency.to_string()),
+                    _ => match spec {
+                        Some(spec) if analysis::implicit_attribute(&edge.attribute, spec) => {
+                            analysis::attribute_dependency_key(
+                                &dependency.to_string(),
+                                &edge.attribute,
+                                spec,
+                            )
+                        }
+                        _ => analysis::dependency_key(&dependency.to_string(), false),
+                    },
+                };
+                dependencies.insert(map_key, view);
+            }
         }
         // Run the implementation.
         let output_root = self.configurations.output_root(base_key.config);
@@ -10697,6 +10705,7 @@ impl Engine {
             }
         }
         let application = analysis::AspectApplication {
+            aspect_split_dependencies,
             aspect: aspect.clone(),
             aspect_ids: collection.path_descriptions(&aspect.identity),
             aspect_path: collection.path_descriptions(&aspect.identity),
@@ -11103,11 +11112,9 @@ impl Engine {
                             .unwrap_or(key.config),
                     ),
                     EdgeCfg::NoConfig => None,
-                    EdgeCfg::Starlark(attribute) => self
-                        .edge_configs
-                        .get(key)
-                        .and_then(|configs| configs.get(attribute))
-                        .copied(),
+                    EdgeCfg::Starlark(_) => {
+                        unreachable!("native rules have no Starlark attribute transitions")
+                    }
                 };
                 transitive.extend(self.dependency_repositories(repositories, label, edge_config));
             }
@@ -11148,7 +11155,7 @@ impl Engine {
             // Each dependency with the configuration of its edge and its
             // key in the implementation's dependency map
             // (analysis::dependency_key).
-            let mut dependency_labels: Vec<(Label, ConfigId, String)> = Vec::new();
+            let mut dependency_labels: Vec<(Label, ConfigId, String, &str)> = Vec::new();
             // N58: attribute aspects of the rule's edges, by resolved label
             // (attr(aspects = [...]) propagation; an aspect list resolves to
             // its definitions once).
@@ -11163,7 +11170,6 @@ impl Engine {
                     .as_ref()
                     .and_then(|custom| custom.schema.get(&edge.attribute))
                     && !spec.declaration.aspects.is_empty()
-                    && matches!(edge.cfg, EdgeCfg::Target | EdgeCfg::Exec(_))
                 {
                     let mut aspects = Vec::new();
                     for identity in &spec.declaration.aspects {
@@ -11172,7 +11178,7 @@ impl Engine {
                             .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
                         aspects.push(definition);
                     }
-                    let entry = edge_aspects.entry(label.to_string()).or_default();
+                    let entry = edge_aspects.entry(edge.attribute.clone()).or_default();
                     for aspect in aspects {
                         if !entry.iter().any(
                             |known: &std::sync::Arc<crate::aspects::AspectDefinition>| {
@@ -11182,6 +11188,13 @@ impl Engine {
                             entry.push(aspect);
                         }
                     }
+                }
+                if rule
+                    .custom
+                    .as_ref()
+                    .is_some_and(|custom| custom.split_dependencies.contains_key(&edge.attribute))
+                {
+                    continue;
                 }
                 let (edge_config, map_key) = match &edge.cfg {
                     EdgeCfg::Target => {
@@ -11208,7 +11221,8 @@ impl Engine {
                         self.edge_configs
                             .get(&key)
                             .and_then(|configs| configs.get(attribute))
-                            .copied()
+                            .filter(|branches| branches.len() == 1 && branches[0].0.is_empty())
+                            .map(|branches| branches[0].1)
                             .ok_or_else(|| {
                                 format!(
                                     "internal error: no transitioned configuration for {} attribute {attribute}",
@@ -11218,15 +11232,25 @@ impl Engine {
                         analysis::transition_dependency_key(&label.to_string(), attribute),
                     ),
                 };
-                dependency_labels.push((label, edge_config, map_key));
+                dependency_labels.push((label, edge_config, map_key, &edge.attribute));
+            }
+            if let Some(custom) = &rule.custom {
+                for (name, split) in custom.split_dependencies.iter() {
+                    dependency_labels.extend(
+                        split
+                            .prerequisites
+                            .iter()
+                            .map(|p| (p.label.clone(), p.config, p.map_key.clone(), name.as_str())),
+                    );
+                }
             }
             let mut add_target = |label: Label| {
                 let map_key = label.to_string();
                 if !dependency_labels
                     .iter()
-                    .any(|(_, _, seen)| *seen == map_key)
+                    .any(|(_, _, seen, _)| *seen == map_key)
                 {
-                    dependency_labels.push((label, config, map_key));
+                    dependency_labels.push((label, config, map_key, ""));
                 }
             };
             let target_exec_groups = self.exec_group_contexts.get(&key).cloned();
@@ -11254,18 +11278,15 @@ impl Engine {
                 }
             }
             let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
-            for (label, edge_config, _) in &dependency_labels {
+            for (label, edge_config, _, _) in &dependency_labels {
                 transitive.extend(self.dependency_repositories(
                     repositories,
                     label.clone(),
                     Some(*edge_config),
                 ));
             }
-            for (label, edge_config, map_key) in dependency_labels {
-                let aspects = edge_aspects
-                    .get(&label.to_string())
-                    .cloned()
-                    .unwrap_or_default();
+            for (label, edge_config, map_key, attribute) in dependency_labels {
+                let aspects = edge_aspects.get(attribute).cloned().unwrap_or_default();
                 let view = if aspects.is_empty() {
                     self.plan_dependency_view(
                         configured,

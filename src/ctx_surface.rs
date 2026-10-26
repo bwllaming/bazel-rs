@@ -2060,12 +2060,6 @@ pub(crate) fn frozen_string_dict<'v>(heap: Heap<'v>, entries: &[(String, String)
     frozen_dict(heap, entries)
 }
 
-pub(crate) fn empty_struct<'v>(heap: Heap<'v>) -> Value<'v> {
-    frozen(heap, |h| {
-        h.alloc(AllocStruct(std::iter::empty::<(&str, FrozenValue)>()))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

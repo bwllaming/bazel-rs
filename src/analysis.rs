@@ -17,6 +17,7 @@ use crate::custom_rule::{AttrKind, AttrSpec, AttrValue};
 use crate::package::Rule;
 use crate::repository::RepositorySet;
 use crate::starlark_types::{File, Target, alloc_file, alloc_shared_target, alloc_target};
+mod split;
 
 /// What a consumer sees of one dependency edge's configured target.
 #[derive(Clone, Debug)]
@@ -211,6 +212,32 @@ pub(crate) fn transition_dependency_key(label: &str, attribute: &str) -> String 
     format!("{label} (transition {attribute})")
 }
 
+pub(crate) fn split_dependency_key(
+    label: &str,
+    attribute: &str,
+    config: crate::configuration::ConfigId,
+) -> String {
+    format!("{label} (transition {attribute} {config})")
+}
+
+pub(crate) fn dependency_labels(value: &AttrValue) -> Vec<&str> {
+    match value {
+        AttrValue::Label(Some(label)) => vec![label.as_str()],
+        AttrValue::Labels(labels) => labels.iter().map(String::as_str).collect(),
+        AttrValue::LabelKeyedStringDict(entries) => {
+            entries.iter().map(|(label, _)| label.as_str()).collect()
+        }
+        AttrValue::StringKeyedLabelDict(entries) => {
+            entries.iter().map(|(_, label)| label.as_str()).collect()
+        }
+        AttrValue::LabelListDict(entries) => entries
+            .iter()
+            .flat_map(|(_, labels)| labels.iter().map(String::as_str))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The key of `label` in the dependency map through attribute `name`: its
 /// edge configuration (target, exec or the attribute's Starlark transition).
 pub(crate) fn attribute_dependency_key(label: &str, name: &str, spec: &AttrSpec) -> String {
@@ -327,6 +354,14 @@ fn transitive_validation(
         let Some(values) = invocation.attrs.get(name) else {
             continue;
         };
+        if let Some(split) = invocation.split_dependencies.get(name) {
+            for p in &split.prerequisites {
+                if let Some(target) = dependencies.get(&p.map_key) {
+                    collect(target);
+                }
+            }
+            continue;
+        }
         // Type.getLabelClass() == LabelClass.DEPENDENCY (BuildType): label,
         // label_list, label_keyed_string_dict, string_keyed_label_dict and
         // label_list_dict; outputs are not dependency attributes.
@@ -564,6 +599,17 @@ fn dependency<'a>(
     let target = dependencies
         .get(&attribute_dependency_key(label, name, spec))
         .ok_or_else(|| anyhow!("attribute {name}: dependency {label} was not resolved"))?;
+    checked_dependency(label, name, spec, target, prefix, consumer)
+}
+
+fn checked_dependency<'a>(
+    label: &str,
+    name: &str,
+    spec: &AttrSpec,
+    target: &'a DependencyTarget,
+    prefix: &str,
+    consumer: Consumer<'_>,
+) -> anyhow::Result<&'a DependencyTarget> {
     ensure!(
         !target.is_source || spec.allow_files || spec.allow_single_file,
         "attribute {name}: source file {label} is not allowed (allow_files=False)"
@@ -667,13 +713,25 @@ fn make_ctx<'v>(
     // Dict.immutableCopyOf, analysis/starlark/StarlarkAttributesCollection.java:300-390):
     // mutating one fails with `trying to mutate a frozen list value`. Build
     // them on a private heap and freeze it.
-    const NAMES: [&str; 6] = ["attr", "files", "file", "outputs", "executable", "lifted"];
+    const NAMES: [&str; 7] = [
+        "attr",
+        "files",
+        "file",
+        "outputs",
+        "executable",
+        "lifted",
+        "split_attr",
+    ];
     let owned = Module::with_temp_heap(|module| -> anyhow::Result<_> {
         let structs =
             ctx_attribute_structs(rule, invocation, context, dependencies, module.heap())?;
         for (name, value) in NAMES.into_iter().zip(structs) {
             module.set(name, value);
         }
+        module.set(
+            "split_attr",
+            split::split_attr(invocation, dependencies, module.heap())?,
+        );
         let frozen = module
             .freeze_named(FrozenHeapName::User(Box::new(
                 "rule context attributes".to_owned(),
@@ -684,8 +742,9 @@ fn make_ctx<'v>(
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()
     })?;
-    let [attr, files, file, outputs, executable, lifted] = <[OwnedFrozenValue; 6]>::try_from(owned)
-        .map_err(|_| anyhow!("internal error: rule context attribute structs"))?;
+    let [attr, files, file, outputs, executable, lifted, split_attr] =
+        <[OwnedFrozenValue; 7]>::try_from(owned)
+            .map_err(|_| anyhow!("internal error: rule context attribute structs"))?;
     // Lifted subrule attributes are read by subrule invocations only.
     context.subrule.lifted.replace(Some(lifted));
     // ctx.outputs (the Outputs object of every rule, docs/REPR.md) carries
@@ -711,6 +770,7 @@ fn make_ctx<'v>(
         crate::analysis_ctx::rule_context_repr(&rule.label.to_string()),
     );
     let backing = heap.alloc(AllocStruct([
+        ("split_attr", heap.access_owned_frozen_value(&split_attr)),
         ("attr", attr),
         ("files", files),
         ("file", file),
@@ -789,6 +849,22 @@ fn with_attribute_template_variables(
             continue;
         };
         if spec.declaration.late_bound != late_bound {
+            continue;
+        }
+        if let Some(split) = invocation.split_dependencies.get(name) {
+            for p in &split.prerequisites {
+                if let Some(variables) = dependencies
+                    .get(&p.map_key)
+                    .and_then(|target| {
+                        target
+                            .providers
+                            .get(crate::template_variable_info::PROVIDER_ID)
+                    })
+                    .and_then(|provider| crate::template_variable_info::variables(provider.value()))
+                {
+                    from_attributes.push(variables);
+                }
+            }
             continue;
         }
         let labels = match invocation.attrs.get(name) {
@@ -903,6 +979,20 @@ fn attribute_locations(
     if spec.kind != crate::custom_rule::AttrKind::LabelList {
         return;
     }
+    if let Some(split) = invocation.split_dependencies.get(name) {
+        for p in &split.prerequisites {
+            let Some(target) = dependencies.get(&p.map_key) else {
+                continue;
+            };
+            let files = match target.runfiles.files_to_run(&target.files).executable() {
+                Some(file) if name != "srcs" => vec![file.clone()],
+                _ => target.files.clone(),
+            };
+            add(&p.label.to_string(), files.clone());
+            add(&target.label, files);
+        }
+        return;
+    }
     for label in labels {
         let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec)) else {
             continue;
@@ -985,6 +1075,26 @@ fn collected_runfiles(
 ) -> anyhow::Result<(crate::runfiles::Runfiles, crate::runfiles::Runfiles)> {
     use crate::runfiles::{Mapping, Prerequisite, collect};
     let prerequisites = |name: &str| -> anyhow::Result<Vec<Prerequisite<'_>>> {
+        if invocation
+            .schema
+            .get(name)
+            .is_some_and(|s| s.kind == AttrKind::LabelList)
+            && let Some(split) = invocation.split_dependencies.get(name)
+        {
+            return split
+                .prerequisites
+                .iter()
+                .map(|p| {
+                    let target = dependencies.get(&p.map_key).ok_or_else(|| {
+                        anyhow!("split dependency {} was not resolved", p.map_key)
+                    })?;
+                    Ok(Prerequisite {
+                        files: &target.files,
+                        runfiles: &target.runfiles,
+                    })
+                })
+                .collect();
+        }
         match (invocation.schema.get(name), invocation.attrs.get(name)) {
             (Some(spec), Some(AttrValue::Labels(labels)))
                 if spec.kind == crate::custom_rule::AttrKind::LabelList =>
@@ -1057,6 +1167,28 @@ fn ctx_attribute_structs<'v>(
             .schema
             .get(name)
             .ok_or_else(|| anyhow!("attribute {name} has no schema"))?;
+        if let Some(metadata) = invocation.split_dependencies.get(name) {
+            let values = split::allocate(
+                name,
+                value,
+                spec,
+                metadata,
+                dependencies,
+                context,
+                &attribute_prefix(name),
+                consumer,
+                heap,
+            )?;
+            attrs.insert(name.clone(), values.attr);
+            files.insert(name.clone(), values.files);
+            if let Some(value) = values.file {
+                single_files.insert(name.clone(), value);
+            }
+            if let Some(value) = values.executable {
+                executables.insert(name.clone(), value);
+            }
+            continue;
+        }
         let attr = match value {
             AttrValue::String(value) => heap.alloc(value.as_str()),
             AttrValue::Strings(value) => heap.alloc(value.clone()),
@@ -1655,6 +1787,7 @@ pub fn analyze_in(
 /// [`analyze_aspect_buffered`] needs (AspectFunction's AspectValue inputs,
 /// skyframe/AspectFunction.java:292-542).
 pub(crate) struct AspectApplication {
+    pub aspect_split_dependencies: BTreeMap<String, crate::custom_rule::SplitAttribute>,
     /// The applied aspect.
     pub aspect: std::sync::Arc<crate::aspects::AspectDefinition>,
     /// The descriptions of the application's aspect path: its base aspects
@@ -1944,6 +2077,28 @@ fn make_aspect_ctx<'v>(
                 label: &shown_label,
             }
             .attribute_message(&crate::custom_rule::attribute_message_name(name, spec), "");
+            if let Some(metadata) = application.aspect_split_dependencies.get(name) {
+                let values = split::allocate(
+                    name,
+                    value,
+                    spec,
+                    metadata,
+                    &application.aspect_dependencies,
+                    context,
+                    &prefix,
+                    consumer,
+                    heap,
+                )?;
+                attrs.insert(name.clone(), values.attr);
+                files.insert(name.clone(), values.files);
+                if let Some(file) = values.file {
+                    single_files.insert(name.clone(), file);
+                }
+                if let Some(executable) = values.executable {
+                    executables.insert(name.clone(), executable);
+                }
+                continue;
+            }
             let resolve = |label: &str| {
                 dependency(
                     label,
