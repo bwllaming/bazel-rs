@@ -52,6 +52,21 @@ it is configured, at build time. A binary that may run on an aarch64 kernel with
 it is built on such a host; otherwise it aborts at start-up. x86_64 is not
 affected.
 
+## Releases and license
+
+Linux x86_64 binaries are published as GitHub releases of `bwllaming/bazel-rs`
+(`gh release download v<version> --repo bwllaming/bazel-rs`; each release's
+notes give the checksum, glibc requirement and install steps). Install the
+`bazel-rs` binary anywhere on PATH and run it from a workspace like Bazel
+(`bazel-rs build //...`); it does not replace `bazel` or Bazelisk. Releases are
+cut with `scripts/release.py` and the version is bumped with
+`scripts/bump_version.py` (docs/RELEASING.md).
+
+bazel-rs is licensed under the Apache License 2.0 (`LICENSE`); `NOTICE` names
+the bundled third-party code (the vendored starlark-rust, Bazel 9.3.0's
+embedded tools incl. its JDK), and each release archive carries a generated
+`THIRD_PARTY_LICENSES.md` for all Rust crates.
+
 ## Try the native subset
 
 ```sh

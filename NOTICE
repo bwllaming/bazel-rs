@@ -1,0 +1,30 @@
+bazel-rs
+Copyright 2026 The bazel-rs Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes third-party software:
+
+* starlark-rust 0.14.2 (vendored in vendor/starlark-0.14.2, compiled into the
+  bazel-rs binary).
+  Copyright 2018 The Starlark in Rust Authors.
+  Copyright (c) Facebook, Inc. (now Meta Platforms, Inc.) and its affiliates.
+  Licensed under the Apache License, Version 2.0. Modified by bazel-rs; the
+  modifications are listed in vendor/starlark-0.14.2/BAZEL_RS_MODIFICATIONS.md.
+
+* The embedded tools of Bazel 9.3.0 for Linux x86-64
+  (resources/bazel_tools/embedded_tools.tar.gz, embedded in the bazel-rs binary
+  and materialized as the @bazel_tools repository).
+  Copyright The Bazel Authors. Licensed under the Apache License, Version 2.0,
+  with the additional notice for src/main/cpp/util/md5.cc ("derived from the
+  RSA Data Security, Inc. MD5 Message-Digest Algorithm"); the complete text is
+  resources/bazel_tools/LICENSE. The bundle contains Bazel's minimal OpenJDK 25
+  runtime, which is licensed under the GNU General Public License, version 2,
+  with the Classpath Exception; its legal notices are part of the bundle
+  (jdk/ASSEMBLY_EXCEPTION, jdk/DISCLAIMER and jdk/legal/) and are reproduced in
+  THIRD_PARTY_LICENSES.md of each binary release.
+
+* Rust crates from crates.io (statically linked), including jemalloc through
+  tikv-jemalloc-sys (BSD-2-Clause). Each crate's license and license files are
+  listed in THIRD_PARTY_LICENSES.md of each binary release, generated from
+  Cargo.lock by scripts/release.py.
