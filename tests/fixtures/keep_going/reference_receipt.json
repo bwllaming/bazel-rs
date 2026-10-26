@@ -9,13 +9,13 @@
   "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
  },
  "native": {
-  "binary": "/tmp/opencode/bazel-keep-going-target/debug/bazel-rs",
-  "sha256": "a48365ac96720dd3795b1a896c37d97bab367e11f713885de3bb88baff48f160",
+  "binary": "/tmp/opencode/bazel-keep-going-target/release/bazel-rs",
+  "sha256": "ecb74fed5635c9e084d3011b520cc8b795e5764f88836a6d15d6fc40ef7babc8",
   "flags": "--ignore_all_rc_files --cache-dir=<private> --experimental-builtin-modules=false --show_result=100 (not query)"
  },
  "script": "/tmp/opencode/perf-research/keep-going-capture.py",
  "script_sha256": "530271f448054f3297abafcdff772a25d2cc53f6ca2771878add4cd211a323e8",
- "fixture_sha256": "1a1e9c3534b8a9f58a6a05d77f2be41c0df8bdd0dde827ba59e4f2ef731f7c56",
+ "fixture_sha256": "bdc8b26138fd6f09565ca12f026ae48e4a61e4807721600a1b9096b4732c3378",
  "distdir_seeded_count": 19,
  "comparison": "exit code; key stderr lines (sorted: Bazel prints the analysis warnings in its error map hash order; warnings with their `Analysis failed` continuation joined by \" / \", FAIL: cut after the label, Skipping lines first line only, workspace path <WS>); test summary lines (sorted, timings T, (cached) dropped); requested targets reported built. Rows without -k: exit code and built targets only.",
  "scratch_removed": true,
@@ -39,8 +39,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.96,
-   "native_seconds": 1.31,
+   "reference_seconds": 4.05,
+   "native_seconds": 1.05,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "INFO: Build succeeded for only 5 of 13 top-level targets",
@@ -71,8 +71,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 2.78,
-   "native_seconds": 0.31,
+   "reference_seconds": 2.42,
+   "native_seconds": 0.04,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "ERROR: Skipping '//...': Error evaluating '//...': error loading package 'loaderr': Package 'loaderr' contains errors",
@@ -100,8 +100,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 4.22,
-   "native_seconds": 1.31,
+   "reference_seconds": 4.09,
+   "native_seconds": 1.06,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "INFO: Build succeeded for only 4 of 10 top-level targets",
@@ -132,8 +132,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.23,
-   "native_seconds": 0.26,
+   "reference_seconds": 3.35,
+   "native_seconds": 0.04,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully"
    ],
@@ -157,8 +157,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 4.38,
-   "native_seconds": 3.8,
+   "reference_seconds": 4.21,
+   "native_seconds": 1.43,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "FAIL: //tests:fails_test",
@@ -196,14 +196,15 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 2.2,
-   "native_seconds": 0.28,
+   "reference_seconds": 2.73,
+   "native_seconds": 0.04,
    "stderr_key": [
-    "ERROR: Build did NOT complete successfully"
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Skipping '//...': Error evaluating '//...': error loading package 'loaderr': Package 'loaderr' contains errors"
    ],
    "summary": [],
    "built": [],
-   "native_format_note": "--nokeep_going: native keeps its `bazel-rs: <error>` failure format; genuine key lines [\"ERROR: Build did NOT complete successfully\"]"
+   "native_format_note": "--nokeep_going: native keeps its `bazel-rs: <error>` failure format; genuine key lines [\"ERROR: Build did NOT complete successfully\", \"ERROR: Skipping '//...': Error evaluating '//...': error loading package 'loaderr': Package 'loaderr' contains errors\"]"
   },
   {
    "scenario": "test_keep_going_no_loading_error",
@@ -222,8 +223,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.83,
-   "native_seconds": 3.78,
+   "reference_seconds": 4.19,
+   "native_seconds": 1.43,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "FAIL: //tests:fails_test",
@@ -260,8 +261,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.84,
-   "native_seconds": 1.31,
+   "reference_seconds": 4.49,
+   "native_seconds": 1.05,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "ERROR: Skipping '//acterr:nonexist': no such target '//acterr:nonexist': target 'nonexist' not declared in package 'acterr' defined by <WS>/acterr/BUILD",
@@ -290,8 +291,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 2.96,
-   "native_seconds": 0.31,
+   "reference_seconds": 3.39,
+   "native_seconds": 0.04,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "ERROR: command succeeded, but not all targets were analyzed",
@@ -320,8 +321,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.0,
-   "native_seconds": 0.27,
+   "reference_seconds": 3.07,
+   "native_seconds": 0.04,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "ERROR: Build failed. Not running target",
@@ -348,8 +349,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.21,
-   "native_seconds": 0.29,
+   "reference_seconds": 3.16,
+   "native_seconds": 0.05,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "ERROR: Build failed. Not running target",
@@ -374,8 +375,8 @@
    ],
    "reference_exit": 3,
    "native_exit": 3,
-   "reference_seconds": 2.54,
-   "native_seconds": 0.06,
+   "reference_seconds": 2.53,
+   "native_seconds": 0.02,
    "stderr_key": [
     "WARNING: --keep_going specified, ignoring errors. Results may be inaccurate"
    ],
@@ -399,8 +400,8 @@
    ],
    "reference_exit": 1,
    "native_exit": 1,
-   "reference_seconds": 3.1,
-   "native_seconds": 2.89,
+   "reference_seconds": 3.12,
+   "native_seconds": 0.51,
    "stderr_key": [
     "ERROR: Build did NOT complete successfully",
     "INFO: Build succeeded for only 2 of 4 top-level targets"
