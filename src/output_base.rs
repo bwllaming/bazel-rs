@@ -52,6 +52,10 @@ impl Drop for Lock {
         if self.mode == LockMode::Exclusive {
             let _ = self.file.set_len(0);
         }
+        // A concurrent fork can briefly retain this open-file description
+        // until exec closes it. Dropping our File alone then leaves flock
+        // held after the guard's lifetime. Release it explicitly instead.
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
@@ -468,6 +472,27 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o555);
+    }
+
+    #[test]
+    fn dropping_a_guard_releases_its_lock_even_with_a_duplicated_descriptor() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("ws-duplicated");
+        for mode in [LockMode::Shared, LockMode::Exclusive] {
+            let guard = acquire(&state, mode, "command", false, &mut |_| {}).unwrap();
+            // try_clone shares the open-file description just as fork does,
+            // making the release test deterministic without racing a child.
+            let inherited = guard.file.try_clone().unwrap();
+            assert!(matches!(
+                acquire(&state, LockMode::Exclusive, "clean", false, &mut |_| {}),
+                Err(LockError::Held)
+            ));
+            drop(guard);
+            let next = acquire(&state, LockMode::Exclusive, "clean", false, &mut |_| {})
+                .expect("dropping the guard must release its lock before inherited FDs close");
+            drop(next);
+            drop(inherited);
+        }
     }
 
     #[test]
