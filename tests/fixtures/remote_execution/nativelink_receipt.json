@@ -1,0 +1,53 @@
+{
+  "server": "NativeLink /tmp/opencode/nativelink/nativelink (loopback, CAS + AC + scheduler + local worker)",
+  "genuine_keys": [
+    "012663966fab2b0ac64055d93ae49d9d2d100a79f364c5109a23012db44d254c",
+    "03bfcb0cb09284db48ccb243f1fd218456021135bd17ead7885b5d2f4b3c7329",
+    "0ca64c3b4f7e4c8561fb2e77babb52f995f45900394d8c0911e520f82a9c3c9a",
+    "17b7beceb443a7c4961fb9b5a5032f50d8ebcd805ed4fcbca19d32e28cc5dee9",
+    "1b76f9fca2a4ee207ae16e9ae5f87b592e04ec49d9c9e6f47d50ecd093b6f25c",
+    "1e559da65d120f850e80098ef404e90c97eb3c8d6c93cd6abbc867ddc227eaad",
+    "3a84b348bc9a0e34ea4ea9b610ac4ec2cbe5e1ad3cf60eec670d780ec0e60353",
+    "5855a0254b5a540050e46ff74818ea2ed97077c8bd0c623fcdb1e6dd2897f64f",
+    "59e622c7a95d76bdf64e3e2cbf8cf39633efff579adae61517fc743c789f1296",
+    "99fd02724ffe64832f839519bdee8ee931d7ff58835a272ff5cf351da4571a69",
+    "d86c4fe2b957feb7468842f7b3108897eefcbf853ec8a1d415e838889d3d8901",
+    "ef926d65ccd5ae101177406b6049f6cb1e65d12d02979c92df0707e488a790dd"
+  ],
+  "native_keys": [
+    "012663966fab2b0ac64055d93ae49d9d2d100a79f364c5109a23012db44d254c",
+    "03bfcb0cb09284db48ccb243f1fd218456021135bd17ead7885b5d2f4b3c7329",
+    "0ca64c3b4f7e4c8561fb2e77babb52f995f45900394d8c0911e520f82a9c3c9a",
+    "17b7beceb443a7c4961fb9b5a5032f50d8ebcd805ed4fcbca19d32e28cc5dee9",
+    "1b76f9fca2a4ee207ae16e9ae5f87b592e04ec49d9c9e6f47d50ecd093b6f25c",
+    "1e559da65d120f850e80098ef404e90c97eb3c8d6c93cd6abbc867ddc227eaad",
+    "3a84b348bc9a0e34ea4ea9b610ac4ec2cbe5e1ad3cf60eec670d780ec0e60353",
+    "5855a0254b5a540050e46ff74818ea2ed97077c8bd0c623fcdb1e6dd2897f64f",
+    "59e622c7a95d76bdf64e3e2cbf8cf39633efff579adae61517fc743c789f1296",
+    "99fd02724ffe64832f839519bdee8ee931d7ff58835a272ff5cf351da4571a69",
+    "d86c4fe2b957feb7468842f7b3108897eefcbf853ec8a1d415e838889d3d8901",
+    "ef926d65ccd5ae101177406b6049f6cb1e65d12d02979c92df0707e488a790dd"
+  ],
+  "native_read_summary": "bazel-rs: 1 actions executed, 0 cache hits, 11 remote cache hits (experimental local execution; 1 executed remotely, local spawns not sandboxed)",
+  "genuine_read_summary": "INFO: 13 processes: 11 remote cache hit, 1 internal, 1 remote.",
+  "genuine_outputs": {
+    "chain.txt": "HELLO\nDONE\n",
+    "gen.txt": "hello\ndone\n",
+    "nc.txt": "nc\n",
+    "props.txt": "props\n",
+    "run.out": "hello\n",
+    "sh.out": "HELLO\n",
+    "tree.txt": ".\n./a.txt\n./link\n./sub\n./sub/b.txt\na\nb\n0\n",
+    "use.txt": "made\n"
+  },
+  "native_outputs": {
+    "chain.txt": "HELLO\nDONE\n",
+    "gen.txt": "hello\ndone\n",
+    "nc.txt": "nc\n",
+    "props.txt": "props\n",
+    "run.out": "hello\n",
+    "sh.out": "HELLO\n",
+    "tree.txt": ".\n./a.txt\n./link\n./sub\n./sub/b.txt\na\nb\n0\n",
+    "use.txt": "made\n"
+  }
+}

@@ -603,15 +603,22 @@ fn capabilities_strategies_and_options() {
     }
 }
 
-// --- The paired check with genuine Bazel 9.3 (ignored; run explicitly) ---
+// --- The paired checks with genuine Bazel 9.3 (ignored; run explicitly) ---
 //
-// BAZEL_RS_GENUINE_BAZEL=<genuine 9.3.0 ELF> [BAZEL_RS_REAPI_SERVER=<grpc://host:port of a
-// local REAPI server>] [BAZEL_RS_REMOTE_EXEC_RECEIPT=<out.json>]
-// cargo test --test remote_execution -- --ignored
+// BAZEL_RS_GENUINE_BAZEL=<genuine 9.3.0 ELF> [BAZEL_RS_REMOTE_EXEC_RECEIPT=<out.json>]
+// cargo test --test remote_execution genuine_bazel_sends -- --ignored
 //
 // Genuine Bazel and native build the same fixture with --remote_executor
 // against fresh in-process servers; the Execute requests' Action digests,
 // Commands and input roots must be identical.
+//
+// BAZEL_RS_GENUINE_BAZEL=<ELF> BAZEL_RS_NATIVELINK=<nativelink 1.8.2 binary>
+// [BAZEL_RS_NATIVELINK_RECEIPT=<out.json>]
+// cargo test --test remote_execution genuine_bazel_and_native_share -- --ignored
+//
+// The same fixture against a real open-source REAPI server (NativeLink, its
+// GitHub release binary, scheduler and worker in one process on loopback):
+// both write the same Action Cache keys, and each reads the other's.
 
 const PAIRED_BUILD: &str = r#"load(":defs.bzl", "runner", "shell", "tree")
 genrule(name = "gen", srcs = ["in.txt"], outs = ["gen.txt"], cmd = "cat $< > $@; echo done >> $@")
@@ -792,4 +799,180 @@ fn genuine_bazel_sends_identical_execute_requests() {
     assert_eq!(native_outputs, genuine_outputs);
     // Only the no-remote-cache genrule executes again (do_not_cache).
     assert_eq!(read_log.get("Execution/Execute"), Some(&1), "{read_log:?}");
+}
+
+/// A NativeLink server (CAS, AC, scheduler and one local worker) on two
+/// free loopback ports with private directories.
+struct NativeLink {
+    child: std::process::Child,
+    port: u16,
+    dir: PathBuf,
+}
+
+impl NativeLink {
+    fn start(binary: &str, dir: PathBuf) -> Self {
+        let free = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let (port, worker) = (free(), free());
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let d = dir.display();
+        let config = format!(
+            r#"{{
+  stores: [
+    {{ name: "AC", filesystem: {{ content_path: "{d}/ac", temp_path: "{d}/ac-tmp", eviction_policy: {{ max_bytes: 1000000000 }} }} }},
+    {{ name: "CAS", fast_slow: {{ fast: {{ filesystem: {{ content_path: "{d}/cas", temp_path: "{d}/cas-tmp", eviction_policy: {{ max_bytes: 10000000000 }} }} }}, slow: {{ noop: {{}} }} }} }},
+  ],
+  schedulers: [ {{ name: "S", simple: {{ supported_platform_properties: {{ OSFamily: "priority", pool: "priority" }} }} }} ],
+  workers: [ {{ local: {{ worker_api_endpoint: {{ uri: "grpc://127.0.0.1:{worker}" }}, cas_fast_slow_store: "CAS", upload_action_result: {{ ac_store: "AC" }}, work_directory: "{d}/work", platform_properties: {{ OSFamily: {{ values: [""] }}, pool: {{ values: [""] }} }} }} }} ],
+  servers: [
+    {{ name: "public", listener: {{ http: {{ socket_address: "127.0.0.1:{port}" }} }}, services: {{
+        cas: [ {{ instance_name: "", cas_store: "CAS" }} ],
+        ac: [ {{ instance_name: "", ac_store: "AC" }} ],
+        execution: [ {{ instance_name: "", cas_store: "CAS", scheduler: "S" }} ],
+        capabilities: [ {{ instance_name: "", remote_execution: {{ scheduler: "S" }} }} ],
+        bytestream: [ {{ instance_name: "", cas_store: "CAS" }} ] }} }},
+    {{ name: "workers", listener: {{ http: {{ socket_address: "127.0.0.1:{worker}" }} }}, services: {{ worker_api: {{ scheduler: "S" }}, health: {{}} }} }},
+  ],
+}}
+"#
+        );
+        let path = dir.join("config.json5");
+        fs::write(&path, config).unwrap();
+        let child = Command::new(binary)
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(fs::File::create(dir.join("nativelink.log")).unwrap())
+            .spawn()
+            .unwrap();
+        for _ in 0..200 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        // The local worker registers with the scheduler.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        Self { child, port, dir }
+    }
+
+    fn url(&self) -> String {
+        format!("grpc://127.0.0.1:{}", self.port)
+    }
+
+    /// The Action Cache keys (the AC store's `HASH-SIZE` file names).
+    fn ac_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        let mut pending = vec![self.dir.join("ac")];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let name = name.rsplit('/').next().unwrap().to_owned();
+                    let hash = name
+                        .split(['-', '_'])
+                        .find(|part| part.len() == 64)
+                        .unwrap_or(&name)
+                        .to_owned();
+                    keys.push(hash);
+                }
+            }
+        }
+        keys.sort();
+        keys
+    }
+}
+
+impl Drop for NativeLink {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+#[ignore = "needs genuine Bazel 9.3 (BAZEL_RS_GENUINE_BAZEL) and NativeLink (BAZEL_RS_NATIVELINK)"]
+fn genuine_bazel_and_native_share_a_nativelink_executor() {
+    let binary = std::env::var("BAZEL_RS_GENUINE_BAZEL").expect("BAZEL_RS_GENUINE_BAZEL");
+    let nativelink = std::env::var("BAZEL_RS_NATIVELINK").expect("BAZEL_RS_NATIVELINK");
+    let registry = format!(
+        "file://{}",
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/builtin_modules/registry")
+            .display()
+    );
+    let ws = Workspace::new();
+    ws.file("pkg/BUILD.bazel", PAIRED_BUILD);
+    // Genuine executes on a fresh server.
+    let first = NativeLink::start(&nativelink, ws.0.join("nativelink-genuine"));
+    let built = genuine(&binary, &ws, "our-1", &registry, &first.url());
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    let genuine_outputs = bazel_bin(&ws);
+    let genuine_keys = first.ac_keys();
+    // Native reads every cacheable result genuine's spawns left.
+    let read = native(&ws, "ncache-1", &registry, &first.url());
+    assert!(read.status.success(), "{}", stderr(&read));
+    let native_read_summary = stderr(&read)
+        .lines()
+        .filter(|line| line.contains("actions executed"))
+        .collect::<String>();
+    drop(first);
+    // Native executes on a fresh server; genuine reads its results.
+    let second = NativeLink::start(&nativelink, ws.0.join("nativelink-native"));
+    let built = native(&ws, "ncache-2", &registry, &second.url());
+    assert!(built.status.success(), "{}", stderr(&built));
+    let native_outputs = output_paths(&built)
+        .into_iter()
+        .filter(|(name, _)| genuine_outputs.contains_key(name))
+        .map(|(name, path)| (name, fs::read_to_string(path).unwrap_or_default()))
+        .collect::<BTreeMap<_, _>>();
+    let native_keys = second.ac_keys();
+    let _ = fs::remove_dir_all(ws.0.join("our-1"));
+    let read_back = genuine(&binary, &ws, "our-2", &registry, &second.url());
+    assert!(
+        read_back.status.success(),
+        "{}",
+        String::from_utf8_lossy(&read_back.stderr)
+    );
+    let genuine_read_summary = String::from_utf8_lossy(&read_back.stderr)
+        .lines()
+        .filter(|line| line.contains(" processes: "))
+        .collect::<String>();
+    let receipt = serde_json::json!({
+        "server": format!("NativeLink {nativelink} (loopback, CAS + AC + scheduler + local worker)"),
+        "genuine_keys": genuine_keys,
+        "native_keys": native_keys,
+        "native_read_summary": native_read_summary,
+        "genuine_read_summary": genuine_read_summary,
+        "genuine_outputs": genuine_outputs,
+        "native_outputs": native_outputs,
+    });
+    if let Ok(path) = std::env::var("BAZEL_RS_NATIVELINK_RECEIPT") {
+        fs::write(path, serde_json::to_string_pretty(&receipt).unwrap() + "\n").unwrap();
+    }
+    // 12 spawns: NativeLink also stores the do_not_cache result of the
+    // no-remote-cache genrule, which neither client reads back.
+    assert_eq!(genuine_keys.len(), 12, "{genuine_keys:?}");
+    assert_eq!(native_keys, genuine_keys);
+    assert_eq!(native_outputs, genuine_outputs);
+    assert!(
+        native_read_summary.contains("11 remote cache hits"),
+        "{native_read_summary}"
+    );
+    assert!(
+        genuine_read_summary.contains("11 remote cache hit"),
+        "{genuine_read_summary}"
+    );
 }
