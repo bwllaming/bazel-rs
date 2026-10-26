@@ -1,0 +1,130 @@
+{
+  "commandArgs": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt \u003e bazel-out/k8-fastbuild/bin/pkg/a.txt"],
+  "environmentVariables": [{
+    "name": "PATH",
+    "value": "/bin:/usr/bin:/usr/local/bin"
+  }],
+  "inputs": [{
+    "path": "external/bazel_tools/tools/genrule/genrule-setup.sh",
+    "digest": {
+      "hash": "2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f",
+      "sizeBytes": "866",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }, {
+    "path": "pkg/in.txt",
+    "digest": {
+      "hash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "sizeBytes": "6",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "listedOutputs": ["bazel-out/k8-fastbuild/bin/pkg/a.txt"],
+  "remotable": true,
+  "cacheable": true,
+  "timeoutMillis": "0",
+  "mnemonic": "Genrule",
+  "actualOutputs": [{
+    "path": "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+    "digest": {
+      "hash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "sizeBytes": "6",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "runner": "processwrapper-sandbox",
+  "cacheHit": false,
+  "status": "",
+  "exitCode": 0,
+  "remoteCacheable": true,
+  "targetLabel": "//pkg:a",
+  "metrics": {
+    "totalTime": "0.005s",
+    "executionWallTime": "0.005s",
+    "inputBytes": "0",
+    "inputFiles": "0",
+    "memoryEstimateBytes": "0",
+    "inputBytesLimit": "0",
+    "inputFilesLimit": "0",
+    "outputBytesLimit": "0",
+    "outputFilesLimit": "0",
+    "memoryBytesLimit": "0",
+    "startTime": "2026-10-26T15:47:52.532Z",
+    "measuredMemoryPeakBytes": "3145728"
+  }
+}{
+  "commandArgs": ["/bin/bash", "-c", "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/k8-fastbuild/bin/pkg/a.txt \u003e bazel-out/k8-fastbuild/bin/pkg/b.txt; echo x \u003e bazel-out/k8-fastbuild/bin/pkg/b2.txt"],
+  "environmentVariables": [{
+    "name": "PATH",
+    "value": "/bin:/usr/bin:/usr/local/bin"
+  }],
+  "inputs": [{
+    "path": "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+    "digest": {
+      "hash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "sizeBytes": "6",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }, {
+    "path": "external/bazel_tools/tools/genrule/genrule-setup.sh",
+    "digest": {
+      "hash": "2138ccc4608e0a41291680587baced12bb80379b6924c3c4c2d9ef272f99139f",
+      "sizeBytes": "866",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "listedOutputs": ["bazel-out/k8-fastbuild/bin/pkg/b.txt", "bazel-out/k8-fastbuild/bin/pkg/b2.txt"],
+  "remotable": true,
+  "cacheable": true,
+  "timeoutMillis": "0",
+  "mnemonic": "Genrule",
+  "actualOutputs": [{
+    "path": "bazel-out/k8-fastbuild/bin/pkg/b.txt",
+    "digest": {
+      "hash": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "sizeBytes": "6",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }, {
+    "path": "bazel-out/k8-fastbuild/bin/pkg/b2.txt",
+    "digest": {
+      "hash": "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac",
+      "sizeBytes": "2",
+      "hashFunctionName": "SHA-256"
+    },
+    "isTool": false,
+    "symlinkTargetPath": ""
+  }],
+  "runner": "processwrapper-sandbox",
+  "cacheHit": false,
+  "status": "",
+  "exitCode": 0,
+  "remoteCacheable": true,
+  "targetLabel": "//pkg:b",
+  "metrics": {
+    "totalTime": "0.004s",
+    "executionWallTime": "0.004s",
+    "inputBytes": "0",
+    "inputFiles": "0",
+    "memoryEstimateBytes": "0",
+    "inputBytesLimit": "0",
+    "inputFilesLimit": "0",
+    "outputBytesLimit": "0",
+    "outputFilesLimit": "0",
+    "memoryBytesLimit": "0",
+    "startTime": "2026-10-26T15:47:52.558Z",
+    "measuredMemoryPeakBytes": "3145728"
+  }
+}

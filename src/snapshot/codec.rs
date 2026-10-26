@@ -75,8 +75,9 @@ pub const MAGIC: &[u8; 8] = b"BZRSPLN1";
 /// The container format version (bumped with any layout change; the store
 /// also keys snapshots by the binary's identity). 2: the GROUPS section
 /// (PA-1's shared input groups, integration-21). 3: portable Args
-/// `map_each` functions (crate::snapshot::mapper).
-pub const FORMAT: u32 = 3;
+/// `map_each` functions (crate::snapshot::mapper). 4: META carries the
+/// build event plan (crate::bep::plan).
+pub const FORMAT: u32 = 4;
 /// Actions per NODES section (fixed: the encoding must not depend on the
 /// machine).
 pub const CHUNK: usize = 1024;
@@ -136,6 +137,7 @@ struct Meta<'a> {
     warnings: &'a [String],
     errors: &'a [String],
     build_info: &'a [String],
+    bep: &'a crate::bep::plan::BepPlan,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +153,7 @@ struct MetaOwned {
     warnings: Vec<String>,
     errors: Vec<String>,
     build_info: Vec<String>,
+    bep: crate::bep::plan::BepPlan,
 }
 
 fn postcard_error(error: postcard::Error, what: &str) -> EncodeError {
@@ -180,6 +183,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
         warnings,
         errors,
         build_info,
+        bep,
     } = request;
     Meta {
         command,
@@ -193,6 +197,7 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
         warnings,
         errors,
         build_info,
+        bep,
     }
 }
 
@@ -710,6 +715,7 @@ pub fn decode_cancellable(bytes: &[u8], cancel: &AtomicBool) -> Result<PlannedRe
         warnings: meta.warnings,
         errors: meta.errors,
         build_info: meta.build_info,
+        bep: meta.bep,
     })
 }
 
@@ -1476,6 +1482,25 @@ mod tests {
             warnings: vec!["w \u{1}".into()],
             errors: vec!["e".into()],
             build_info: vec!["keyed".into()],
+            bep: crate::bep::plan::BepPlan {
+                configurations: vec![crate::bep::plan::BepConfiguration {
+                    id: "abc".into(),
+                    mnemonic: "k8-fastbuild".into(),
+                    platform_name: "k8".into(),
+                    cpu: "k8".into(),
+                    make_variables: vec![("BINDIR".into(), "bazel-out/k8-fastbuild/bin".into())],
+                    is_tool: false,
+                }],
+                targets: vec![crate::bep::plan::BepTarget {
+                    label: "//pkg:t".into(),
+                    kind: "sh_test rule".into(),
+                    tags: vec!["unit".into()],
+                    completion_tags: vec!["small".into(), "unit".into()],
+                    test: Some(("SMALL".into(), 60)),
+                    configuration: 0,
+                    groups: vec![("default".into(), vec![0])],
+                }],
+            },
         }
     }
 
@@ -1539,6 +1564,7 @@ mod tests {
         assert_eq!(decoded.warnings, request.warnings);
         assert_eq!(decoded.errors, request.errors);
         assert_eq!(decoded.build_info, request.build_info);
+        assert_eq!(decoded.bep, request.bep);
         assert_eq!(decoded.non_empty_targets, 1);
         assert!(decoded.execute);
         // The decoded completions expand exactly like the planned ones.

@@ -262,6 +262,9 @@ fn run() -> Result<(), String> {
     let mut test_options = bazel_rs::test_command::TestOptions::default();
     let mut deferred = None;
     let mut ui_options = bazel_rs::progress::UiOptions::default();
+    let mut bep_options = bazel_rs::bep::Options::default();
+    let mut profile_options = bazel_rs::profile::Options::default();
+    let mut exec_log_options = bazel_rs::exec_log::Options::default();
     let rc_options;
     let rest = if command == "mod" && !dump_repo_mapping {
         let (rest, rc) = mod_arguments(&options, &mut credential_options, &mut remote_options)?;
@@ -350,6 +353,9 @@ fn run() -> Result<(), String> {
         workspace_status = native.workspace_status;
         no_build = native.no_build;
         ui_options = native.ui;
+        bep_options = native.bep;
+        profile_options = native.profile;
+        exec_log_options = native.exec_log;
         output_selection = native.output.clone();
         aspects = native.aspects;
         aspects_parameters = native.aspects_parameters;
@@ -488,6 +494,23 @@ fn run() -> Result<(), String> {
     bazel_rs::worktree::install(&root);
     if !explicit_cache && let Some(note) = layout.legacy_cache_note(&cache) {
         bazel_rs::note!("{note}");
+    }
+    // The build event files, the profile and the execution log (all off by
+    // default; docs/BEP.md, docs/PROFILE.md).
+    if builds(&command) {
+        install_reports(
+            ReportContext {
+                command: &command,
+                line: &line,
+                options: &options,
+                cwd: &cwd,
+                root: &root,
+                cache: &cache,
+            },
+            &bep_options,
+            &profile_options,
+            &exec_log_options,
+        );
     }
     // The output base lock, shared (docs/COMMANDS.md): a running `clean`
     // of this workspace is waited for, and `clean` waits for this command.
@@ -2282,6 +2305,18 @@ fn run_tail(
     }
     process.envs(&line.environment);
     process.current_dir(&line.working_directory);
+    // The build event files end before the target runs, with the command
+    // the client executes (ExecRequestConstructed), like Bazel's.
+    bazel_rs::bep::exec_request(bazel_rs::bep::ExecRequest {
+        working_directory: PathBuf::from(&line.working_directory),
+        argv: argv.iter().map(std::ffi::OsString::from).collect(),
+        environment: line
+            .environment
+            .iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect(),
+    });
+    finish_reports(0, None);
     write_lockfile();
     bazel_rs::digest_memo::finish();
     // The target runs in this process's place: the last uses are recorded,
@@ -2603,6 +2638,25 @@ fn test_tail(
         if unbuilt.contains(&test.label) && summary.test_times.is_empty() {
             summary.status = bazel_rs::test_command::TestStatus::FailedToBuild;
         }
+    }
+    if bazel_rs::bep::active() {
+        bazel_rs::bep::test_summaries(
+            outcome
+                .summaries
+                .iter()
+                .zip(&planned_tests)
+                .map(|(summary, test)| bazel_rs::bep::TestSummaryRecord {
+                    label: summary.label.clone(),
+                    status: summary.status,
+                    total_run_count: (test.info.shard_count.max(1)
+                        * options.runs_per_test.max(1) as i32),
+                    shard_count: test.info.shard_count.max(0),
+                    num_cached: summary.num_cached as i32,
+                    passed: summary.passed_logs.clone(),
+                    failed: summary.failed_logs.clone(),
+                })
+                .collect(),
+        );
     }
     let mut sorted: Vec<&bazel_rs::test_command::TestSummary> = outcome.summaries.iter().collect();
     sorted.sort_by(|a, b| a.compare(b));
@@ -3003,6 +3057,18 @@ fn run_test(context: RunTest<'_>) -> Result<(), String> {
     }
     process.envs(&environment);
     process.current_dir(&execroot);
+    bazel_rs::bep::exec_request(bazel_rs::bep::ExecRequest {
+        working_directory: execroot.clone(),
+        argv: [options.shell.clone(), "-c".to_owned(), command.clone()]
+            .into_iter()
+            .map(std::ffi::OsString::from)
+            .collect(),
+        environment: environment
+            .iter()
+            .map(|(name, value)| (name.into(), value.into()))
+            .collect(),
+    });
+    finish_reports(0, None);
     write_lockfile();
     bazel_rs::digest_memo::finish();
     // The target runs in this process's place: the last uses are recorded,
@@ -3216,6 +3282,12 @@ struct NativeOptions {
     /// The UI options of the interactive progress display (UiOptions,
     /// crate::progress).
     ui: bazel_rs::progress::UiOptions,
+    /// The build event files of build/test/run (crate::bep, docs/BEP.md).
+    bep: bazel_rs::bep::Options,
+    /// `--profile` (crate::profile, docs/PROFILE.md).
+    profile: bazel_rs::profile::Options,
+    /// The spawn execution log (crate::exec_log).
+    exec_log: bazel_rs::exec_log::Options,
 }
 
 impl NativeOptions {
@@ -3253,6 +3325,9 @@ impl NativeOptions {
             workspace_status: bazel_rs::workspace_status::WorkspaceStatusOptions::default(),
             no_build: false,
             ui: bazel_rs::progress::UiOptions::default(),
+            bep: bazel_rs::bep::Options::default(),
+            profile: bazel_rs::profile::Options::default(),
+            exec_log: bazel_rs::exec_log::Options::default(),
             configuration: if command == "query" {
                 // query is configuration-independent; it accepts (and validates)
                 // the modelled CoreOptions (runtime/commands/QueryCommand.java:59-67).
@@ -3289,6 +3364,9 @@ impl NativeOptions {
         } else {
             None
         };
+        // The build event files, the profile and the execution log of the
+        // commands that build (crate::bep, crate::profile, crate::exec_log).
+        let reports = builds(command);
         // Cquery inherits TestCommand options, but only the explicit
         // analysis dispatch above decides whether anything executes.
         let command = if command == "cquery" { "test" } else { command };
@@ -3689,6 +3767,12 @@ impl NativeOptions {
             .flatten()
         {
             used
+        } else if let Some(used) = reports.then(|| self.bep.parse(arg, next)).flatten() {
+            used?
+        } else if let Some(used) = reports.then(|| self.profile.parse(arg, next)).flatten() {
+            used?
+        } else if let Some(used) = reports.then(|| self.exec_log.parse(arg, next)).flatten() {
+            used?
         } else if let Some(used) = self.credentials.parse(arg, next) {
             used?
         } else if let Some(used) = self.remote.parse(arg, next) {
@@ -4740,9 +4824,11 @@ fn main() {
         } else {
             1
         };
+        finish_reports(code, Some(&error));
         exit(code);
     }
     bazel_rs::progress::finish(0);
+    finish_reports(0, None);
     finish_cache();
 }
 
@@ -4751,8 +4837,99 @@ fn main() {
 fn exit(code: i32) -> ! {
     bazel_rs::worker::shutdown();
     bazel_rs::progress::finish(code);
+    finish_reports(code, None);
     finish_cache();
     std::process::exit(code)
+}
+
+/// Write the build event files, the profile and the execution log (each a
+/// no-op unless requested) as the command ends with `code`.
+fn finish_reports(code: i32, failure: Option<&str>) {
+    bazel_rs::exec_log::finish();
+    bazel_rs::profile::finish();
+    bazel_rs::bep::finish(code, failure);
+}
+
+/// What the build event files' command line events read.
+struct ReportContext<'a> {
+    command: &'a str,
+    line: &'a bazelrc::CommandLine,
+    options: &'a bazelrc::Expanded,
+    cwd: &'a Path,
+    root: &'a Path,
+    cache: &'a Path,
+}
+
+/// Start the requested build event files, profile and execution log
+/// (crate::bep, crate::profile, crate::exec_log); an invalid combination
+/// fails the command like Bazel's option checks (exit 2).
+fn install_reports(
+    context: ReportContext<'_>,
+    bep: &bazel_rs::bep::Options,
+    profile: &bazel_rs::profile::Options,
+    exec_log: &bazel_rs::exec_log::Options,
+) {
+    if let Err(error) = exec_log.validate().and_then(|()| bep.validate()) {
+        fail_with(2, &error);
+    }
+    let output_base = bazel_rs::worktree::state_directory(context.cache);
+    let profile_file = profile.file(context.cwd, &output_base);
+    if let Some(path) = &profile_file {
+        bazel_rs::profile::install(path.clone(), output_base.clone(), profile);
+    }
+    bazel_rs::exec_log::install(exec_log, context.cwd);
+    if !bep.enabled() {
+        return;
+    }
+    bazel_rs::profile::enable_recording();
+    let options = context
+        .options
+        .priority
+        .iter()
+        .map(|unit| {
+            let combined = match &unit.value {
+                Some(value) => format!("{}={}", unit.option.text, value.text),
+                None => unit.option.text.clone(),
+            };
+            let (name, value) = bazel_rs::bep::split_option(&combined);
+            bazel_rs::bep::OptionEntry {
+                combined,
+                name,
+                value,
+                source: match &unit.option.origin {
+                    bazelrc::Origin::CommandLine => "command line options".to_owned(),
+                    bazelrc::Origin::Rc { file, .. } => file.clone(),
+                },
+                explicit: !unit.option.from_rc(),
+            }
+        })
+        .collect();
+    let residue: Vec<String> = context
+        .options
+        .residue
+        .iter()
+        .map(|arg| arg.text.clone())
+        .collect();
+    let patterns = if context.command == "run" {
+        residue.iter().take(1).cloned().collect()
+    } else {
+        residue.clone()
+    };
+    let header = bazel_rs::bep::Header {
+        command: context.command.to_owned(),
+        working_directory: context.cwd.to_path_buf(),
+        workspace_directory: context.root.to_path_buf(),
+        startup: context.line.startup_args.clone(),
+        arguments: context.line.command_args.clone(),
+        options,
+        residue,
+        patterns,
+        execution_root: bazel_rs::output_tree::execution_root(context.cache),
+        profile: profile_file,
+    };
+    if let Err(error) = bazel_rs::bep::install(bep, header) {
+        fail_with(2, &error);
+    }
 }
 
 /// The end of the command for the cache: record the last uses of its

@@ -455,7 +455,44 @@ impl<'a> Session<'a> {
             run: key.run,
             runs: key.runs,
         };
-        match self.runner.run_unit(&action, &self.printer, interrupt) {
+        let traced = (crate::bep::active() || crate::profile::active())
+            .then(|| (std::time::Instant::now(), std::time::SystemTime::now()));
+        let outcome = self.runner.run_unit(&action, &self.printer, interrupt);
+        if let (Some((started, start_time)), Ok(Some(UnitOutcome::Result(result)))) =
+            (traced, &outcome)
+        {
+            let label = label_print(&planned.label);
+            crate::profile::span(
+                "action processing",
+                format!("Testing {label}"),
+                started,
+                vec![("mnemonic", "TestRunner".to_owned())],
+            );
+            let log = result
+                .passed_log
+                .clone()
+                .or_else(|| result.failed_logs.first().cloned());
+            let xml = log
+                .as_ref()
+                .map(|log| log.with_file_name("test.xml"))
+                .filter(|xml| xml.exists());
+            crate::bep::test_result(
+                &label,
+                key.run,
+                key.shard,
+                result,
+                start_time,
+                started.elapsed(),
+                log,
+                xml,
+                if crate::sandbox::all_sandboxed() {
+                    "linux-sandbox"
+                } else {
+                    "local"
+                },
+            );
+        }
+        match outcome {
             Ok(Some(outcome)) => self.record(key.test, outcome),
             // Interrupted: the build failed while it ran (no result).
             Ok(None) => {}

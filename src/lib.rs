@@ -19,6 +19,7 @@ pub mod bazel_bytes;
 mod bazel_label;
 mod bazel_options;
 pub mod bazelrc;
+pub mod bep;
 mod build_setting_ctx;
 pub mod build_settings;
 pub mod builtin_tools;
@@ -46,6 +47,7 @@ pub mod dir_stamps;
 pub mod download_proxy;
 pub mod engine;
 mod exec_groups;
+pub mod exec_log;
 mod execution_info;
 pub mod extension_calls;
 pub mod extension_ctx;
@@ -91,6 +93,7 @@ mod platform_providers;
 pub mod platforms;
 mod prefetch;
 pub mod process_wrapper;
+pub mod profile;
 pub mod progress;
 pub mod providers;
 pub mod query_language;
@@ -160,8 +163,15 @@ pub mod worktree;
 /// Line shape: `PERF <t>s rss=<kB>kB <mark> hwm=<kB>kB`. The peak is
 /// appended after the mark name so parsers of the original
 /// `PERF <t>s rss=<kB>kB <mark>` prefix keep working unchanged.
+/// The process's start (`main.start`): the monotonic clock and the wall
+/// clock of one instant, the origin of the build event and profile times.
+pub fn process_clock() -> (std::time::Instant, std::time::SystemTime) {
+    static START: std::sync::OnceLock<(std::time::Instant, std::time::SystemTime)> =
+        std::sync::OnceLock::new();
+    *START.get_or_init(|| (std::time::Instant::now(), std::time::SystemTime::now()))
+}
+
 pub fn perf_mark(name: &str) {
-    use std::sync::OnceLock;
     // The end of planning (build, test and run all mark it right after
     // `plan_build`) closes the analysis-snapshot recording window
     // (crate::observed_fs, BAZEL_RS_SNAPSHOT=record); a no-op otherwise.
@@ -170,8 +180,9 @@ pub fn perf_mark(name: &str) {
     }
     // The interactive progress display's phases (a no-op when it is off).
     progress::mark(name);
-    static START: OnceLock<std::time::Instant> = OnceLock::new();
-    let start = START.get_or_init(std::time::Instant::now);
+    let (start, _) = process_clock();
+    // The profile's phase markers (a no-op without --profile).
+    profile::mark(name);
     if diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING")) {
         let status = proc_self_status();
         let (rss, hwm) = (

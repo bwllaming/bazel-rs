@@ -1,0 +1,448 @@
+{
+ "schema": "bep-profile-reference-receipt/v1",
+ "purpose": "Paired genuine Bazel 9.3.0 vs native bazel-rs capture of the Build Event Protocol file outputs (--build_event_json_file/_binary_file/_text_file, --build_event_publish_all_actions), --profile and the execution logs (docs/BEP.md, docs/PROFILE.md). Fixture: tests/bep.rs. Evidence only; the native tests compare against the scrubbed genuine streams in this directory.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private> --output_base=<private> --host_jvm_args=-Xmx512m",
+  "flags": "--registry=file://<private copy of tests/fixtures/builtin_modules/registry> --incompatible_autoload_externally= --lockfile_mode=off --noshow_progress --color=no --curses=no --repository_cache=<private> --distdir=<seeded from verified local CAS>",
+  "env": "env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8, private HOME/TMPDIR, umask 022"
+ },
+ "native": {
+  "binary": "/tmp/opencode/bazel-bep-profile-target/debug/bazel-rs",
+  "sha256": "39a971bbe00f4ea2a077b1317ba4b13e5fa3a04bf2c45421309e782a000f4bac",
+  "flags": "--ignore_all_rc_files --cache-dir=<private> --experimental-builtin-modules=false"
+ },
+ "script": "/tmp/opencode/perf-research/bep-capture.py",
+ "script_sha256": "f8d45654e5e7ac7cf7c3bbd8d925f2a7263c3cb4ebd77b9335f659340184f123",
+ "fixture_sha256": "e3668e48cf6f94f702e4c3adf5adc9f841a1ab9603b6032cdb29b3a8d87ded51",
+ "distdir_seeded_count": 19,
+ "comparison": "exit code; BEP: the normalized event multiset (configuration checksums renamed by first appearance, named sets by their file names, children sorted, progress links as a set, payloads reduced to structural fields: kinds/tags/sizes, file names/prefixes/digests/lengths, statuses, exit codes, aborted reasons), progress event count, last_message only on the last event and every event announced before it posts; binary/text streams hold as many events as the JSON one; profile: otherData keys, thread metadata, critical path present; execution log: per spawn mnemonic, argv, outputs and digests, exit code, label, metrics keys.",
+ "scratch_removed": true,
+ "counts": {
+  "STRUCTURAL": 7
+ },
+ "rows": [
+  {
+   "scenario": "build",
+   "argv": [
+    "build",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/build/cap/bep.json",
+    "--build_event_text_file=/tmp/opencode/bepcap-isdqpj0t/reference/build/cap/bep.txt",
+    "--build_event_binary_file=/tmp/opencode/bepcap-isdqpj0t/reference/build/cap/bep.bin",
+    "--profile=/tmp/opencode/bepcap-isdqpj0t/reference/build/cap/profile.gz",
+    "--execution_log_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/build/cap/exec.json",
+    "//pkg:a",
+    "//pkg:b",
+    "//pkg:passes_test"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.82,
+   "native_seconds": 0.32,
+   "reference_events": 33,
+   "native_events": 33,
+   "reference_progress_events": 8,
+   "native_progress_events": 8,
+   "reference_profile": {
+    "otherData": [
+     "bazel_version",
+     "build_id",
+     "date",
+     "output_base",
+     "profile_start_ts"
+    ],
+    "phases": [
+     "Launch Blaze",
+     "Extracting Bazel binary",
+     "Initialize command",
+     "Evaluate target patterns",
+     "Load, analyze dependencies and build artifacts",
+     "Complete build"
+    ],
+    "action_spans": [
+     "BazelWorkspaceStatusAction",
+     "FileWrite",
+     "Genrule",
+     "RepoMappingManifest",
+     "RunfilesTree",
+     "SourceSymlinkManifest",
+     "SymlinkTree"
+    ],
+    "critical_path": 2,
+    "thread_metadata": true
+   },
+   "native_profile": {
+    "otherData": [
+     "bazel_version",
+     "build_id",
+     "date",
+     "output_base",
+     "profile_start_ts"
+    ],
+    "phases": [
+     "Launch Blaze",
+     "Initialize command",
+     "Evaluate target patterns",
+     "Load and analyze dependencies",
+     "Prepare for build",
+     "Build artifacts",
+     "Complete build"
+    ],
+    "action_spans": [
+     "BazelWorkspaceStatusAction",
+     "FileWrite",
+     "Genrule",
+     "RepoMappingManifest",
+     "SourceSymlinkManifest",
+     "SymlinkTree"
+    ],
+    "critical_path": 2,
+    "thread_metadata": true
+   },
+   "reference_exec_log": [
+    {
+     "keys": [
+      "commandArgs",
+      "environmentVariables",
+      "inputs",
+      "listedOutputs",
+      "remotable",
+      "cacheable",
+      "timeoutMillis",
+      "mnemonic",
+      "actualOutputs",
+      "runner",
+      "cacheHit",
+      "status",
+      "exitCode",
+      "remoteCacheable",
+      "targetLabel",
+      "metrics"
+     ],
+     "mnemonic": "Genrule",
+     "commandArgs": [
+      "/bin/bash",
+      "-c",
+      "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/a.txt"
+     ],
+     "inputs": [
+      "external/bazel_tools/tools/genrule/genrule-setup.sh",
+      "pkg/in.txt"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/a.txt"
+     ],
+     "actualOutputs": [
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+       "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+      ]
+     ],
+     "exitCode": 0,
+     "targetLabel": "//pkg:a",
+     "metrics": [
+      "executionWallTime",
+      "inputBytes",
+      "inputBytesLimit",
+      "inputFiles",
+      "inputFilesLimit",
+      "measuredMemoryPeakBytes",
+      "memoryBytesLimit",
+      "memoryEstimateBytes",
+      "outputBytesLimit",
+      "outputFilesLimit",
+      "startTime",
+      "totalTime"
+     ]
+    },
+    {
+     "keys": [
+      "commandArgs",
+      "environmentVariables",
+      "inputs",
+      "listedOutputs",
+      "remotable",
+      "cacheable",
+      "timeoutMillis",
+      "mnemonic",
+      "actualOutputs",
+      "runner",
+      "cacheHit",
+      "status",
+      "exitCode",
+      "remoteCacheable",
+      "targetLabel",
+      "metrics"
+     ],
+     "mnemonic": "Genrule",
+     "commandArgs": [
+      "/bin/bash",
+      "-c",
+      "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/k8-fastbuild/bin/pkg/a.txt > bazel-out/k8-fastbuild/bin/pkg/b.txt; echo x > bazel-out/k8-fastbuild/bin/pkg/b2.txt"
+     ],
+     "inputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+      "external/bazel_tools/tools/genrule/genrule-setup.sh"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/b.txt",
+      "bazel-out/k8-fastbuild/bin/pkg/b2.txt"
+     ],
+     "actualOutputs": [
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/b.txt",
+       "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+      ],
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/b2.txt",
+       "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+      ]
+     ],
+     "exitCode": 0,
+     "targetLabel": "//pkg:b",
+     "metrics": [
+      "executionWallTime",
+      "inputBytes",
+      "inputBytesLimit",
+      "inputFiles",
+      "inputFilesLimit",
+      "measuredMemoryPeakBytes",
+      "memoryBytesLimit",
+      "memoryEstimateBytes",
+      "outputBytesLimit",
+      "outputFilesLimit",
+      "startTime",
+      "totalTime"
+     ]
+    }
+   ],
+   "native_exec_log": [
+    {
+     "keys": [
+      "commandArgs",
+      "environmentVariables",
+      "inputs",
+      "listedOutputs",
+      "remotable",
+      "cacheable",
+      "timeoutMillis",
+      "mnemonic",
+      "actualOutputs",
+      "runner",
+      "cacheHit",
+      "status",
+      "exitCode",
+      "remoteCacheable",
+      "targetLabel",
+      "metrics"
+     ],
+     "mnemonic": "Genrule",
+     "commandArgs": [
+      "/bin/bash",
+      "-c",
+      "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat pkg/in.txt > bazel-out/k8-fastbuild/bin/pkg/a.txt"
+     ],
+     "inputs": [
+      "external/bazel_tools/tools/genrule/genrule-setup.sh",
+      "pkg/in.txt"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/a.txt"
+     ],
+     "actualOutputs": [
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+       "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+      ]
+     ],
+     "exitCode": 0,
+     "targetLabel": "//pkg:a",
+     "metrics": [
+      "executionWallTime",
+      "inputBytes",
+      "inputBytesLimit",
+      "inputFiles",
+      "inputFilesLimit",
+      "measuredMemoryPeakBytes",
+      "memoryBytesLimit",
+      "memoryEstimateBytes",
+      "outputBytesLimit",
+      "outputFilesLimit",
+      "startTime",
+      "totalTime"
+     ]
+    },
+    {
+     "keys": [
+      "commandArgs",
+      "environmentVariables",
+      "inputs",
+      "listedOutputs",
+      "remotable",
+      "cacheable",
+      "timeoutMillis",
+      "mnemonic",
+      "actualOutputs",
+      "runner",
+      "cacheHit",
+      "status",
+      "exitCode",
+      "remoteCacheable",
+      "targetLabel",
+      "metrics"
+     ],
+     "mnemonic": "Genrule",
+     "commandArgs": [
+      "/bin/bash",
+      "-c",
+      "source external/bazel_tools/tools/genrule/genrule-setup.sh; cat bazel-out/k8-fastbuild/bin/pkg/a.txt > bazel-out/k8-fastbuild/bin/pkg/b.txt; echo x > bazel-out/k8-fastbuild/bin/pkg/b2.txt"
+     ],
+     "inputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/a.txt",
+      "external/bazel_tools/tools/genrule/genrule-setup.sh"
+     ],
+     "listedOutputs": [
+      "bazel-out/k8-fastbuild/bin/pkg/b.txt",
+      "bazel-out/k8-fastbuild/bin/pkg/b2.txt"
+     ],
+     "actualOutputs": [
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/b.txt",
+       "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
+      ],
+      [
+       "bazel-out/k8-fastbuild/bin/pkg/b2.txt",
+       "73cb3858a687a8494ca3323053016282f3dad39d42cf62ca4e79dda2aac7d9ac"
+      ]
+     ],
+     "exitCode": 0,
+     "targetLabel": "//pkg:b",
+     "metrics": [
+      "executionWallTime",
+      "inputBytes",
+      "inputBytesLimit",
+      "inputFiles",
+      "inputFilesLimit",
+      "measuredMemoryPeakBytes",
+      "memoryBytesLimit",
+      "memoryEstimateBytes",
+      "outputBytesLimit",
+      "outputFilesLimit",
+      "startTime",
+      "totalTime"
+     ]
+    }
+   ]
+  },
+  {
+   "scenario": "test",
+   "argv": [
+    "test",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/test/cap/bep.json",
+    "//pkg:passes_test",
+    "//pkg:fails_test"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 3,
+   "native_exit": 3,
+   "reference_seconds": 3.21,
+   "native_seconds": 2.83,
+   "reference_events": 31,
+   "native_events": 31,
+   "reference_progress_events": 6,
+   "native_progress_events": 6
+  },
+  {
+   "scenario": "action_failure",
+   "argv": [
+    "build",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/action_failure/cap/bep.json",
+    "//pkg:broken",
+    "//pkg:a"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 2.8,
+   "native_seconds": 0.31,
+   "reference_events": 29,
+   "native_events": 29,
+   "reference_progress_events": 7,
+   "native_progress_events": 7
+  },
+  {
+   "scenario": "keep_going_all_actions",
+   "argv": [
+    "build",
+    "-k",
+    "--build_event_publish_all_actions",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/keep_going_all_actions/cap/bep.json",
+    "//pkg:broken",
+    "//pkg:a"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 1,
+   "native_exit": 1,
+   "reference_seconds": 2.94,
+   "native_seconds": 0.29,
+   "reference_events": 35,
+   "native_events": 35,
+   "reference_progress_events": 10,
+   "native_progress_events": 10
+  },
+  {
+   "scenario": "nobuild",
+   "argv": [
+    "build",
+    "--nobuild",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/nobuild/cap/bep.json",
+    "//pkg:a"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.6,
+   "native_seconds": 0.27,
+   "reference_events": 21,
+   "native_events": 21,
+   "reference_progress_events": 4,
+   "native_progress_events": 4
+  },
+  {
+   "scenario": "run",
+   "argv": [
+    "run",
+    "--build_event_json_file=/tmp/opencode/bepcap-isdqpj0t/reference/run/cap/bep.json",
+    "//pkg:passes_test"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.98,
+   "native_seconds": 2.86,
+   "reference_events": 24,
+   "native_events": 24,
+   "reference_progress_events": 5,
+   "native_progress_events": 5
+  },
+  {
+   "scenario": "compact_log",
+   "argv": [
+    "build",
+    "--execution_log_compact_file=/tmp/opencode/bepcap-isdqpj0t/reference/compact_log/cap/exec.compact",
+    "//pkg:b"
+   ],
+   "verdict": "STRUCTURAL",
+   "reference_exit": 0,
+   "native_exit": 0,
+   "reference_seconds": 2.72,
+   "native_seconds": 0.29,
+   "reference_events": 0,
+   "native_events": 0,
+   "reference_progress_events": null,
+   "native_progress_events": null
+  }
+ ]
+}

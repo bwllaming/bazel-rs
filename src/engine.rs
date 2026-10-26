@@ -1977,6 +1977,9 @@ pub struct Engine {
     /// Whether the building command runs tests (BuildRequest.shouldRunTests
     /// keeps the `default` group for failure reporting).
     tests_requested: bool,
+    /// The last planned build's reported output groups (label, group,
+    /// range of its `requested` artifacts), for the build event plan.
+    bep_groups: Vec<(Label, String, usize, usize)>,
     /// The target of a `run` build and what it runs (Self::build_for_run).
     run_requests: BTreeSet<Label>,
     /// Whether the run requests need their runfiles tree (`run`), or only
@@ -2082,6 +2085,7 @@ impl Engine {
             aspect_toolchains: BTreeMap::new(),
             resolving_aspect_toolchains: false,
             tests_requested: false,
+            bep_groups: Vec::new(),
             run_requests: BTreeSet::new(),
             run_trees: true,
             run_plans: BTreeMap::new(),
@@ -9185,6 +9189,7 @@ impl Engine {
             .filter(|id| planned_ids.contains(id.as_str()))
             .collect();
         drop(planned_ids);
+        let bep = self.bep_plan(&requested);
         let request = PlannedRequest {
             command,
             keep_going,
@@ -9210,6 +9215,7 @@ impl Engine {
             warnings: std::mem::take(&mut self.warnings),
             errors: std::mem::take(&mut self.errors),
             build_info,
+            bep,
         };
         // The link policy's canonical forms, once (W6R).
         self.repositories.record_link_anchors();
@@ -9228,6 +9234,118 @@ impl Engine {
         );
         crate::perf_mark("plan.end");
         Ok(request)
+    }
+
+    /// The build event plan (crate::bep::plan, docs/BEP.md) of the last
+    /// planned build: each requested target's TargetConfigured data, its
+    /// reported output groups (indices into `requested`) and the
+    /// configurations named. The first configuration is the top-level one
+    /// as requested (with the test options; BuildConfigurationEvent of the
+    /// analysis), a non-test target's the trimmed one
+    /// (TestTrimmingTransition).
+    fn bep_plan(
+        &mut self,
+        requested: &[(ConfiguredTargetKey, Artifact)],
+    ) -> crate::bep::plan::BepPlan {
+        use crate::bep::plan::{BepConfiguration, BepPlan, BepTarget};
+        let groups = std::mem::take(&mut self.bep_groups);
+        let top = self.configurations.top();
+        let configuration = |engine: &Self, id: String| {
+            let native = &engine.configurations.get(top).native;
+            let mnemonic = engine.configurations.mnemonic(top).to_owned();
+            let cpu = native
+                .cpu
+                .clone()
+                .unwrap_or_else(|| crate::configuration::host_cpu().to_owned());
+            BepConfiguration {
+                id,
+                platform_name: cpu.clone(),
+                make_variables: vec![
+                    ("TARGET_CPU".to_owned(), std::env::consts::ARCH.to_owned()),
+                    (
+                        "COMPILATION_MODE".to_owned(),
+                        native.compilation_mode.to_owned(),
+                    ),
+                    (
+                        "BINDIR".to_owned(),
+                        crate::config_registry::output_root(&mnemonic),
+                    ),
+                    (
+                        "GENDIR".to_owned(),
+                        crate::config_registry::output_root(&mnemonic),
+                    ),
+                ],
+                cpu,
+                mnemonic,
+                is_tool: native.is_exec,
+            }
+        };
+        let untrimmed = self
+            .configurations
+            .top_configuration()
+            .untrimmed_id()
+            .to_string();
+        let mut configurations = vec![configuration(self, untrimmed.clone())];
+        let mut targets: Vec<BepTarget> = Vec::new();
+        let mut index: HashMap<Label, usize> = HashMap::new();
+        for (label, group, start, end) in groups {
+            let position = match index.get(&label) {
+                Some(position) => *position,
+                None => {
+                    let (kind, tags, completion_tags, test) = match self.target(&label) {
+                        Ok(Target::Rule(rule)) => {
+                            let kind = format!("{} rule", rule.rule_class_name());
+                            let tags = rule.tags().to_vec();
+                            match test_rule_properties(&rule) {
+                                Some(info) => (
+                                    kind,
+                                    tags,
+                                    info.rule_tags().into_iter().collect(),
+                                    Some((
+                                        info.size.name().to_ascii_uppercase(),
+                                        info.timeout.seconds(),
+                                    )),
+                                ),
+                                None => (kind, tags.clone(), tags, None),
+                            }
+                        }
+                        Ok(Target::Output(..)) => {
+                            ("generated file".to_owned(), Vec::new(), Vec::new(), None)
+                        }
+                        _ => ("source file".to_owned(), Vec::new(), Vec::new(), None),
+                    };
+                    // A test target keeps the test options; any other is
+                    // trimmed (the modelled top-level configuration).
+                    let configuration_index = if test.is_some() {
+                        0
+                    } else {
+                        if configurations.len() == 1 {
+                            configurations.push(configuration(self, top.to_string()));
+                        }
+                        1
+                    };
+                    targets.push(BepTarget {
+                        label: crate::test_runner::label_print(&label),
+                        kind,
+                        tags,
+                        completion_tags,
+                        test,
+                        configuration: configuration_index,
+                        groups: Vec::new(),
+                    });
+                    index.insert(label.clone(), targets.len() - 1);
+                    targets.len() - 1
+                }
+            };
+            let files: Vec<usize> = (start..end.min(requested.len())).collect();
+            if !files.is_empty() || group == crate::output_group_info::DEFAULT {
+                targets[position].groups.push((group, files));
+            }
+        }
+        BepPlan {
+            configurations,
+            targets,
+        }
     }
 
     /// Record the canonical forms the link policy took unrecorded (W6R,
@@ -12855,6 +12973,8 @@ impl Engine {
         index: u64,
     ) -> Result<(), String> {
         use crate::plan_timings::{PlanStage, StageTimer};
+        // --profile (crate::profile): the target's analysis on this thread.
+        let profiled = crate::profile::active().then(std::time::Instant::now);
         {
             // The P1 split of plan_target (review §3): prepare builds the
             // coordinator context and the owned snapshot, compute runs the
@@ -12903,6 +13023,14 @@ impl Engine {
             let committed = self.commit_target(state, configured, rule, prepared, computed);
             timer.finish();
             committed?;
+        }
+        if let Some(started) = profiled {
+            crate::profile::span(
+                "configured target",
+                key.label.to_string(),
+                started,
+                vec![("rule", rule.rule_class_name().to_owned())],
+            );
         }
         Ok(())
     }
@@ -13492,10 +13620,14 @@ impl Engine {
         // the `--show_result` budget counts these and the aspects with
         // artifacts (BuildResultPrinter.outputTargetsAndAspects).
         let mut target_result_labels: BTreeSet<Label> = BTreeSet::new();
+        // The build event plan's output groups (crate::bep::plan): per
+        // requested label, each reported group's indices into `requested`.
+        let mut bep_groups: Vec<(Label, String, usize, usize)> = Vec::new();
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let merged = top_level_aspects.get(label);
             let merged_view = merged.map(|(view, _)| view);
+            let before_default = requested.len();
             if selected.contains(crate::output_group_info::DEFAULT) {
                 match merged_view {
                     // The merged files to build: the base target's plus every
@@ -13519,6 +13651,12 @@ impl Engine {
                     }
                 }
             }
+            bep_groups.push((
+                label.clone(),
+                crate::output_group_info::DEFAULT.to_owned(),
+                before_default,
+                requested.len(),
+            ));
             let group_key = self.output_group_key(label, top)?;
             for group in &selected {
                 if matches!(
@@ -13552,6 +13690,7 @@ impl Engine {
                 if !base_files.is_empty() {
                     target_result_labels.insert(label.clone());
                 }
+                let before_group = requested.len();
                 group_artifacts(
                     &key,
                     label,
@@ -13561,6 +13700,9 @@ impl Engine {
                     &mut unreported,
                     &mut |file: &File| resolve(self, file),
                 )?;
+                if reports(group) {
+                    bep_groups.push((label.clone(), group.clone(), before_group, requested.len()));
+                }
             }
             // Per-aspect reports: each aspect's own artifacts in the
             // requested (reportable) groups, plus its DefaultInfo.files for
@@ -14185,6 +14327,7 @@ impl Engine {
                     .collect(),
             });
         }
+        self.bep_groups = bep_groups;
         let built = (nodes, requested, aspect_reports, target_result_labels.len());
         if self.skip_teardown && !self.execute_build {
             // W7: the process exits right after this --nobuild command

@@ -108,6 +108,17 @@ impl Rule {
                 .is_some_and(|custom| custom.declaration.builtin.target.is_manual())
     }
 
+    /// The rule's `tags` (the native or Starlark rule's attribute).
+    pub fn tags(&self) -> &[String] {
+        if let Some(custom) = &self.custom {
+            &custom.declaration.builtin.target.tags
+        } else if let Some(native) = &self.native {
+            &native.tags
+        } else {
+            &[]
+        }
+    }
+
     /// Rule.isTestOnly (packages/Rule.java:794-800): the effective `testonly`
     /// value, falling back to the class override (`test_suite`, Starlark test
     /// rules) or the package default (BaseRuleClasses.java:68-74).
@@ -2119,7 +2130,17 @@ pub(crate) fn evaluate_load_unit(
     .then(crate::observed_fs::unit_scope);
     let prints = crate::loading::LoadPrints::default();
     let roots = crate::repository::UnitRoots::record();
+    // --profile (crate::profile): the package's evaluation on this thread.
+    let started = crate::profile::active().then(std::time::Instant::now);
     let result = evaluate_in_with_prints(repositories, package, &prints);
+    if let Some(started) = started {
+        let name = if package.repository.is_empty() {
+            format!("//{}", package.package)
+        } else {
+            format!("@@{}//{}", package.repository, package.package)
+        };
+        crate::profile::span("package creation", name, started, Vec::new());
+    }
     let roots = roots.finish();
     LoadUnit {
         result,

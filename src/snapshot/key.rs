@@ -65,6 +65,10 @@ pub const FORMAT: u32 = 3;
 ///   credential helpers (read by downloads — network, which a saved run
 ///   never used — and the remote cache).
 /// * `native-action-dump`: written from the planned request on every run.
+/// * the build event files, the profile and the execution log
+///   (crate::bep, crate::profile, crate::exec_log): written after or beside
+///   planning from the planned request (which always carries the build
+///   event plan); `bes_backend` is rejected before the check point.
 /// * the UI options (crate::progress: `curses`, `color`, `show_progress`,
 ///   `show_progress_rate_limit`, `progress_in_terminal_title`,
 ///   `ui_actions_shown` and its old name): read by the progress display
@@ -142,6 +146,49 @@ pub const EXCLUDED: &[&str] = &[
     "progress_in_terminal_title",
     "ui_actions_shown",
     "experimental_ui_actions_shown",
+    "build_event_json_file",
+    "build_event_binary_file",
+    "build_event_text_file",
+    "build_event_json_file_path_conversion",
+    "experimental_build_event_json_file_path_conversion",
+    "build_event_binary_file_path_conversion",
+    "experimental_build_event_binary_file_path_conversion",
+    "build_event_text_file_path_conversion",
+    "experimental_build_event_text_file_path_conversion",
+    "build_event_json_file_upload_mode",
+    "build_event_binary_file_upload_mode",
+    "build_event_text_file_upload_mode",
+    "build_event_max_named_set_of_file_entries",
+    "build_event_publish_all_actions",
+    "build_metadata",
+    "bes_backend",
+    "profile",
+    "generate_json_trace_profile",
+    "experimental_generate_json_trace_profile",
+    "experimental_profile_include_target_label",
+    "experimental_profile_include_primary_output",
+    "slim_profile",
+    "experimental_slim_json_profile",
+    "record_full_profiler_data",
+    "experimental_announce_profile_path",
+    "experimental_profile_additional_tasks",
+    "experimental_collect_load_average_in_profiler",
+    "experimental_collect_system_network_usage",
+    "experimental_collect_resource_estimation",
+    "experimental_collect_pressure_stall_indicators",
+    "experimental_collect_skyframe_counts_in_profiler",
+    "experimental_collect_worker_data_in_profiler",
+    "experimental_profile_include_target_configuration",
+    "experimental_run_bep_event_include_residue",
+    "experimental_command_profile",
+    "memory_profile",
+    "memory_profile_stable_heap_parameters",
+    "experimental_profile_cpu_usage",
+    "execution_log_json_file",
+    "execution_log_binary_file",
+    "execution_log_compact_file",
+    "experimental_execution_log_compact_file",
+    "execution_log_sort",
 ];
 
 /// The option name of an option argument: `--name=value` / `--name` /

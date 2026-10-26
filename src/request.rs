@@ -202,6 +202,9 @@ pub struct PlannedRequest {
     /// callback (actions.transform_{version,info}_file): their
     /// substitutions belong to this run's workspace status.
     pub build_info: Vec<String>,
+    /// What the build event files report of the requested targets
+    /// (crate::bep::plan, docs/BEP.md); its output groups index `requested`.
+    pub bep: crate::bep::plan::BepPlan,
 }
 
 /// Why a planned request must not be saved as a snapshot (PLAN-L2 §1b's
@@ -349,6 +352,7 @@ impl PlannedRequest {
     fn expand_status(&mut self, computed: &ComputedWorkspaceStatus) {
         match computed {
             ComputedWorkspaceStatus::Ok(status) => {
+                crate::bep::workspace_status(status);
                 for node in &mut self.nodes {
                     if let Some(Transform::WorkspaceStatus { volatile }) =
                         node.action.extra.transform
@@ -756,6 +760,9 @@ pub fn execute_with_tests(
     tests: Option<&crate::test_runner::Session<'_>>,
 ) -> Result<Executed, String> {
     request.finalize(status)?;
+    // The build event files' analysis events (crate::bep), from the plan:
+    // a snapshot hit streams what its full analysis did.
+    crate::bep::planned(&request);
     if let Some(path) = options.action_dump
         && let Err(error) = dump_actions(&request.nodes, path)
     {
@@ -783,6 +790,7 @@ pub fn execute_with_tests(
     let symlink_outputs = symlink_outputs(&nodes, &run_plans);
     let mut action_errors: Vec<(String, String)> = Vec::new();
     let results = if execute {
+        crate::perf_mark("execute.start");
         // The runfiles trees link as whole directories in the output tree.
         let runfiles_trees = nodes
             .iter()
@@ -1145,6 +1153,7 @@ mod tests {
             warnings: Vec::new(),
             errors: Vec::new(),
             build_info: Vec::new(),
+            bep: Default::default(),
         }
     }
 

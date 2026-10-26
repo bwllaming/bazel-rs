@@ -804,6 +804,25 @@ where
             .first()
             .map_or(Path::new(""), PathBuf::as_path),
     );
+    // --profile / the build event files (crate::profile, crate::bep): the
+    // action's span, dependencies (critical path) and outcome.
+    let traced = (crate::profile::recording() || crate::bep::active()).then(|| {
+        let dependencies: Vec<String> = node
+            .dependencies
+            .iter()
+            .chain(
+                node.groups
+                    .iter()
+                    .flat_map(|group| group.dependencies.iter()),
+            )
+            .map(|dependency| dependency.action_id.clone())
+            .collect();
+        (
+            std::time::Instant::now(),
+            std::time::SystemTime::now(),
+            dependencies,
+        )
+    });
     let result = catch_unwind(AssertUnwindSafe(|| {
         // The groups' inputs are listed in the action now, for this one
         // execution (PA-1): their sources after the action's own, their
@@ -839,6 +858,16 @@ where
         Ok(result)
     }))
     .unwrap_or_else(|payload| Err(format!("worker panicked: {}", panic_message(&*payload))));
+    if let Some((started, start_time, dependencies)) = traced {
+        let cache_hit = result.as_ref().is_ok_and(|result| result.cache_hit);
+        crate::profile::action_done(&node.action, dependencies, started, cache_hit);
+        crate::bep::action_done(
+            &node.action,
+            &result,
+            start_time,
+            std::time::SystemTime::now(),
+        );
+    }
     drop(running);
     crate::progress::action_done();
     if result.is_err() && !keep_going {

@@ -5729,6 +5729,112 @@ pub fn execute(cache_root: &Path, action: &Action) -> Result<ActionResult, Strin
     execute_with_remote(cache_root, action, crate::remote_cache::active())
 }
 
+/// Log one executed spawn (crate::exec_log): its argv, environment, staged
+/// inputs (sorted by exec path, directories expanded), declared and actual
+/// outputs (read from the execution root before publication), runner and
+/// exit code.
+fn log_spawn(
+    action: &Action,
+    prepared: &PreparedAction,
+    execroot: &Path,
+    runner: &str,
+    exit_code: i32,
+    cache_hit: bool,
+    (start, wall): (SystemTime, std::time::Duration),
+) {
+    use crate::exec_log::LogFile;
+    let text = |path: &Path| path.display().to_string();
+    // The inputs in the action's declaration order (the compact log's input
+    // set order; the expanded log sorts them).
+    let mut inputs: Vec<LogFile> = Vec::new();
+    let file = |path: String, input: &Input, directory: Option<String>| LogFile {
+        path,
+        digest: Some((input.digest.hex(), input.size)),
+        symlink_target: None,
+        directory,
+    };
+    let mut seen: BTreeSet<&Path> = BTreeSet::new();
+    let declared = action
+        .inputs
+        .iter()
+        .map(|(_, destination)| destination.as_path())
+        .chain(prepared.inputs.keys().map(PathBuf::as_path));
+    for path in declared {
+        let Some(staged) = prepared.inputs.get(path) else {
+            continue;
+        };
+        if !seen.insert(path) {
+            continue;
+        }
+        let exec = text(path);
+        match staged {
+            Staged::File(input) => inputs.push(file(exec, input, None)),
+            Staged::Tree(tree) => {
+                for (name, input) in &tree.files {
+                    inputs.push(file(text(&path.join(name)), input, Some(exec.clone())));
+                }
+            }
+            Staged::SourceDirectory(directory) => {
+                for (name, input) in &directory.files {
+                    inputs.push(file(text(&path.join(name)), input, Some(exec.clone())));
+                }
+            }
+            Staged::Symlink(target) => inputs.push(LogFile {
+                path: exec,
+                digest: None,
+                symlink_target: Some(text(target)),
+                directory: None,
+            }),
+        }
+    }
+    for (path, content) in &action.extra.param_files {
+        let digest = digest(content);
+        inputs.push(LogFile {
+            path: text(path),
+            digest: Some((digest.hex(), content.len() as u64)),
+            symlink_target: None,
+            directory: None,
+        });
+    }
+    let has = |key: &str| {
+        action.execution_info.contains(key) || action.extra.execution_info.contains_key(key)
+    };
+    let (remote_cacheable, remotable) = remote_policy(action);
+    crate::exec_log::log(crate::exec_log::Spawn {
+        args: arguments(action),
+        environment: resolved_environment(action)
+            .into_iter()
+            .map(|(name, value)| (name, value.to_string_lossy().into_owned()))
+            .collect(),
+        inputs,
+        listed_outputs: action.outputs.iter().map(|path| text(path)).collect(),
+        actual_outputs: action
+            .outputs
+            .iter()
+            .map(|name| {
+                let exec = text(name);
+                let files = crate::exec_log::output_files(&exec, &execroot.join(name));
+                (exec, files)
+            })
+            .collect(),
+        remotable,
+        cacheable: !has("no-cache") && !has("local"),
+        remote_cacheable,
+        mnemonic: action.extra.mnemonic.clone(),
+        runner: runner.to_owned(),
+        cache_hit,
+        status: if exit_code == 0 {
+            String::new()
+        } else {
+            "NON_ZERO_EXIT".to_owned()
+        },
+        exit_code,
+        target_label: action.id.split('#').next().unwrap_or(&action.id).to_owned(),
+        start,
+        wall,
+    });
+}
+
 /// The store blob of compiled-in `bytes` (mode 0444 plus `executable`),
 /// created on first use like [`ensure_blob`]'s verified copy.
 fn store_bytes(cas: &Path, bytes: &[u8], executable: u32) -> Result<PathBuf, String> {
@@ -6207,6 +6313,17 @@ pub fn execute_with_remote(
             &String::from_utf8_lossy(&hit.stdout),
             &String::from_utf8_lossy(&hit.stderr),
         );
+        if crate::exec_log::active() {
+            log_spawn(
+                action,
+                &prepared,
+                &execroot,
+                "remote cache hit",
+                0,
+                true,
+                (started, clock.elapsed()),
+            );
+        }
     } else if let Some((lease, flag_files)) = worker.as_mut() {
         // A persistent worker (crate::worker, WorkerSpawnRunner.exec): the
         // flag files expanded into a WorkRequest, the response's output is
@@ -6223,6 +6340,17 @@ pub fn execute_with_remote(
         let response =
             response.map_err(|error| format!("action '{}' failed: {error}", action.id))?;
         check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
+        if crate::exec_log::active() {
+            log_spawn(
+                action,
+                &prepared,
+                &execroot,
+                "worker",
+                response.exit_code,
+                false,
+                (started, clock.elapsed()),
+            );
+        }
         if response.exit_code != 0 {
             return Err(format!(
                 "action '{}' failed (exit status: {}):\nstdout:\n\nstderr:\n{}",
@@ -6341,6 +6469,21 @@ pub fn execute_with_remote(
             return Err(message);
         }
         check_staged(&staged, &execroot).map_err(|e| format!("action '{}': {e}", action.id))?;
+        if crate::exec_log::active() {
+            log_spawn(
+                action,
+                &prepared,
+                &execroot,
+                match strategy {
+                    crate::sandbox::Strategy::Sandboxed => "linux-sandbox",
+                    crate::sandbox::Strategy::ProcessWrapper => "processwrapper-sandbox",
+                    _ => "local",
+                },
+                status.code().unwrap_or(1),
+                false,
+                (started, clock.elapsed()),
+            );
+        }
         if !status.success() {
             // The sandbox strategy's failure message appends Bazel's
             // suggestion unless --sandbox_debug itself is on (makeFailureMessage,

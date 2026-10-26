@@ -642,6 +642,7 @@ fn outline(request: &PlannedRequest) -> Vec<(&'static str, String)> {
         warnings,
         errors,
         build_info,
+        bep,
     } = request;
     vec![
         ("command", format!("{command:?}")),
@@ -656,6 +657,7 @@ fn outline(request: &PlannedRequest) -> Vec<(&'static str, String)> {
         ("warnings", format!("{warnings:?}")),
         ("errors", format!("{errors:?}")),
         ("build_info", format!("{build_info:?}")),
+        ("bep", format!("{bep:?}")),
     ]
 }
 
