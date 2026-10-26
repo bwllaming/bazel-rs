@@ -1,0 +1,50 @@
+{
+ "schema": "module-print-reference-receipt/v1",
+ "fixture": "module_print",
+ "purpose": "MODULE.bazel print() (ModuleFileFunction.java:244-246, 376-378, 670-674): a no-op for a module from a registry (printdep 1.0 in the fixture registry, as the old gazelle 0.27.0 / rules_go 0.33.0 registry MODULE files whose \"still highly experimental\" WARNING prints every ~/code run); the root module and a local_path_override module print through Event.makeDebugPrintHandler: `DEBUG: FILE:LINE:COL: TEXT` at the call's left parenthesis, the override module's file as @@NAME+//:MODULE.bazel, every --batch invocation.",
+ "reference": {
+  "binary": "bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "startup": "--batch --ignore_all_rc_files --output_user_root=<private scratch, removed> --host_jvm_args=-Xmx512m",
+  "argv": "build --nobuild --noshow_progress --color=no --curses=no --repository_disable_download --registry=file://<REPO>/tests/fixtures/builtin_modules/registry --registry=file://<REPO>/tests/fixtures/module_print/registry //:all",
+  "environment": "env -i PATH=/usr/bin:/bin HOME/TMPDIR private LANG=C.UTF-8 LC_ALL=C.UTF-8; one fresh copy of the fixture workspace (the genuine platforms 1.0.0 module extracted into `platforms` from tests/fixtures/label_repo_name/platforms_archive.json), both runs on it"
+ },
+ "native": {
+  "argv": "--ignore_all_rc_files --cache-dir=<private> build --nobuild --experimental-builtin-modules --registry=<same two> --repository_disable_download //:all"
+ },
+ "script": {
+  "path": "/tmp/opencode/perf-research/module-print-capture.py (not committed)",
+  "sha256": "adae3d9e5e63a473bcb9e3178f7bb7083aa994ab46fb66ac9e913ca8e85b352b"
+ },
+ "fixture_files_sha256": {
+  "workspace/BUILD.bazel": "6fc7e6281c7ac6fb66010deefe29e41cc7f7d1f8ab117d84ec6d99abf7e11d1c",
+  "workspace/MODULE.bazel": "de686027fff1b40f479591f28ff2445f4f04ee06615a7565c4610c1a9c20cdda",
+  "workspace/localdep/BUILD.bazel": "f68d54cf0c9499371c89aec55725ad6a5d3d2098e499179bc2531e9a392f7710",
+  "workspace/localdep/MODULE.bazel": "808d5fd3ef2bc6e67d2757bee13a53405efbdf21597dd99b5728ca7ff04c34e0",
+  "workspace/localdep/data.txt": "efb83f2a277e9f49b38efd505f5cbb93885e721b6bd16b788937c9396174c006",
+  "registry/bazel_registry.json": "a308f9d70f1ee18718fea890c0ddef97719ab346d6e38068266c5bfe9460194d",
+  "registry/sources/printdep/BUILD.bazel": "f68d54cf0c9499371c89aec55725ad6a5d3d2098e499179bc2531e9a392f7710",
+  "registry/sources/printdep/MODULE.bazel": "ba853691d76e89cd3deffbb728c6dc799f03d6ef142a42898b044ca4f51bb48c",
+  "registry/sources/printdep/data.txt": "a2782aa6fc01988c16bb63c7cd88d694790db18dd7ae101967ce118bd7d701e4",
+  "registry/modules/printdep/1.0/MODULE.bazel": "ba853691d76e89cd3deffbb728c6dc799f03d6ef142a42898b044ca4f51bb48c",
+  "registry/modules/printdep/1.0/source.json": "4ad7a0d6f876926847b0c742ab5cf186968a136a06d1ac31e5fec8c916847f7e"
+ },
+ "normalization": "<WS> = the workspace copy, <REPO> = the bazel-rs checkout; the JVM startup lines dropped; elapsed times <T>.",
+ "comparison (tests/module_print.rs, live)": "MATCH: exit equal; the DEBUG lines equal in order, in both runs; no line of the registry module's print. Native prints its own result lines and no INFO lines.",
+ "known_divergences": [
+  "bazel-rs resolves the dependency modules lazily: `query //:all` (no external label demanded) evaluates only the root MODULE.bazel natively, so the local_path_override module's DEBUG line is missing there; this fixture uses `build --nobuild //:all`, which demands both dependency repositories."
+ ],
+ "scratch_removed": true,
+ "runs": [
+  {
+   "exit": 0,
+   "stdout": "",
+   "stderr": "DEBUG: <WS>/MODULE.bazel:7:6: root print|1|[\"a\"]\nDEBUG: <WS>/MODULE.bazel:21:6: root after deps\nDEBUG: @@localdep+//:MODULE.bazel:3:6: local override print {\"a\": 1}\nINFO: Analyzed target //:all_files (7 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
+  },
+  {
+   "exit": 0,
+   "stdout": "",
+   "stderr": "DEBUG: <WS>/MODULE.bazel:7:6: root print|1|[\"a\"]\nDEBUG: <WS>/MODULE.bazel:21:6: root after deps\nDEBUG: @@localdep+//:MODULE.bazel:3:6: local override print {\"a\": 1}\nINFO: Analyzed target //:all_files (7 packages loaded, 9 targets configured).\nINFO: Found 1 target...\nINFO: Elapsed time: <T>s, Critical Path: <T>s\nINFO: 0 processes.\nINFO: Build completed successfully, 0 total actions\n"
+  }
+ ]
+}

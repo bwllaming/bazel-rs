@@ -295,6 +295,7 @@ pub(crate) fn read_root_module(
             role: ModuleRole::Root,
             ignore_dev_dependencies: options.ignore_dev_dependencies,
             isolated_extension_usages: options.isolated_extension_usages,
+            print_is_noop: false,
         },
         options.builtin_profile.injection(&Key::Root),
     )?;
@@ -904,6 +905,8 @@ impl Discovery<'_> {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                     isolated_extension_usages: self.options.isolated_extension_usages,
+                    // A built-in module (a NonRegistryOverride) prints.
+                    print_is_noop: false,
                 },
                 injection,
             )?;
@@ -953,6 +956,7 @@ impl Discovery<'_> {
                                 role: ModuleRole::Dependency,
                                 ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                                 isolated_extension_usages: self.options.isolated_extension_usages,
+                                print_is_noop: false,
                             },
                             injection,
                         )?;
@@ -992,6 +996,7 @@ impl Discovery<'_> {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                     isolated_extension_usages: self.options.isolated_extension_usages,
+                    print_is_noop: false,
                 },
                 injection,
             )?;
@@ -1058,6 +1063,8 @@ impl Discovery<'_> {
                     role: ModuleRole::Dependency,
                     ignore_dev_dependencies: self.options.ignore_dev_dependencies,
                     isolated_extension_usages: self.options.isolated_extension_usages,
+                    // ModuleFileFunction.java:244-246: print is a no-op for registry modules.
+                    print_is_noop: true,
                 },
                 injection,
             )?;

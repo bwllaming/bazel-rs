@@ -1,0 +1,7 @@
+filegroup(
+    name = "all_files",
+    srcs = [
+        "@localdep//:data.txt",
+        "@printdep//:data.txt",
+    ],
+)

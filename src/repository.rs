@@ -4475,6 +4475,7 @@ mod tests {
                     role: crate::bzlmod::ModuleRole::Root,
                     ignore_dev_dependencies: true,
                     isolated_extension_usages: false,
+                    print_is_noop: false,
                 },
             )
             .unwrap();

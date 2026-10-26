@@ -1,0 +1,3 @@
+module(name = "localdep")
+
+print("local override print", {"a": 1})

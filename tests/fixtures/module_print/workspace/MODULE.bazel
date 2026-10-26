@@ -1,0 +1,21 @@
+module(name = "main")
+
+# Genuine Bazel 9.3 calls print() of the root module and of modules with a
+# non-registry override (local_path_override) through its DEBUG print handler
+# and makes print() a no-op for modules from registries
+# (ModuleFileFunction.java:244-246, 376-378, 670-674).
+print("root print", 1, ["a"], sep = "|")
+
+# The genuine platforms 1.0.0 module, extracted into `platforms` from
+# tests/fixtures/label_repo_name/platforms_archive.json before each run.
+bazel_dep(name = "platforms", version = "1.0.0")
+local_path_override(module_name = "platforms", path = "platforms")
+
+bazel_dep(name = "printdep", version = "1.0")
+bazel_dep(name = "localdep", version = "")
+local_path_override(
+    module_name = "localdep",
+    path = "localdep",
+)
+
+print("root after deps")

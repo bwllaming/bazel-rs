@@ -1,0 +1,3 @@
+module(name = "printdep", version = "1.0")
+
+print("WARNING: The printdep Bazel module is still highly experimental. Only use it to try out bzlmod for now.")

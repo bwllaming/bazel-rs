@@ -7,18 +7,22 @@
 use allocative::Allocative;
 use anyhow::{anyhow, bail};
 use serde_json::Value as Json;
-use starlark::environment::{GlobalsBuilder, LibraryExtension, Module};
+use starlark::environment::{Globals, GlobalsBuilder, LibraryExtension, Module};
 use starlark::eval::{Arguments, Evaluator};
+use starlark::starlark_module;
 use starlark::syntax::ast::{Argument, AstExpr, AstStmt, Expr, Stmt};
 use starlark::syntax::{AstModule, Dialect};
 use starlark::values::dict::{AllocDict, DictRef};
 use starlark::values::list::ListRef;
+use starlark::values::none::NoneType;
 use starlark::values::tuple::TupleRef;
-use starlark::values::{Heap, Value, ValueLike};
+use starlark::values::tuple::UnpackTuple;
+use starlark::values::{FrozenValue, Heap, Value, ValueLike};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use crate::repository_budget::HostBudget;
 
@@ -71,6 +75,12 @@ pub struct EvaluationContext {
     pub ignore_dev_dependencies: bool,
     /// `--experimental_isolated_extension_usages` (crate::module_graph::ResolverOptions).
     pub isolated_extension_usages: bool,
+    /// `print()` is a no-op: a module from a registry (ModuleFileFunction.java:244-246,
+    /// "We don't want them to be able to spam the console during resolution").
+    /// The root module, its include()d segments, built-in modules and modules
+    /// with a non-registry override print `DEBUG: FILE:LINE:COL: TEXT`
+    /// (:376-378 and :670-674, Event.makeDebugPrintHandler).
+    pub print_is_noop: bool,
 }
 impl EvaluationContext {
     /// Bazel 9.3 uses this same predicate for ignoring overrides.
@@ -277,6 +287,20 @@ mod values {
     pub(super) struct Collector {
         pub state: RefCell<State>,
         pub evaluation_context: EvaluationContext,
+        /// The caller location [`super::module_print`] records for the
+        /// standard `print` it delegates to (this collector is its handler).
+        pub print_location: RefCell<Option<String>>,
+    }
+
+    /// Event.makeDebugPrintHandler (Event.java): `DEBUG: LOCATION: TEXT`.
+    impl starlark::PrintHandler for Collector {
+        fn println(&self, text: &str) -> starlark::Result<()> {
+            match self.print_location.borrow_mut().take() {
+                Some(location) if !location.is_empty() => eprintln!("DEBUG: {location}: {text}"),
+                _ => eprintln!("DEBUG: {text}"),
+            }
+            Ok(())
+        }
     }
 
     #[derive(Clone, Debug, ProvidesStaticType, NoSerialize, Allocative, StarlarkPagablePanic)]
@@ -438,6 +462,7 @@ pub fn evaluate_for_resolution(
             role: ModuleRole::Root,
             ignore_dev_dependencies,
             isolated_extension_usages: false,
+            print_is_noop: false,
         },
     )
 }
@@ -477,6 +502,7 @@ pub fn evaluate_source_for_resolution(
             role: ModuleRole::Root,
             ignore_dev_dependencies,
             isolated_extension_usages: false,
+            print_is_noop: false,
         },
     )
 }
@@ -514,8 +540,9 @@ pub(crate) fn evaluate_source_with_builtins(
     crate::repository_text::validate_source(&ast)?;
     crate::guarded_globals::check_universe(&ast)?;
     let source_profile_error = crate::repository_text::validate_execution_source(&ast).err();
-    let mut globals =
-        GlobalsBuilder::extended_by(&[LibraryExtension::Print, LibraryExtension::SetType]);
+    // `print` is [`module_print`]: the standard one (Bazel's debugPrint
+    // texts) behind ModuleFileFunction's per-module print handler.
+    let mut globals = GlobalsBuilder::extended_by(&[LibraryExtension::SetType]).with(module_print);
     for name in [
         "module",
         "bazel_dep",
@@ -545,6 +572,7 @@ pub(crate) fn evaluate_source_with_builtins(
     Module::with_temp_heap(|module| {
         let mut eval = Evaluator::new(&module);
         eval.extra = Some(&collector);
+        eval.set_print_handler(&collector);
         eval.set_max_callstack_size(128)
             .map_err(|e| e.to_string())?;
         // MODULE strings flow into repository attributes (Latin-1 chars).
@@ -569,6 +597,42 @@ pub(crate) fn evaluate_source_with_builtins(
     let mut file = state.file;
     file.source_profile_error = source_profile_error;
     Ok(file)
+}
+
+/// MODULE.bazel `print` (ModuleFileFunction.execModuleFile, :670-674): a
+/// no-op for a module from a registry ([`EvaluationContext::print_is_noop`]),
+/// else the standard `print` (same parameters, so the same binding errors;
+/// MethodLibrary.print's debugPrint texts) with Event.makeDebugPrintHandler's
+/// `DEBUG: FILE:LINE:COL: ` prefix, the call's left parenthesis as for every
+/// MODULE builtin ([`caller_location`]).
+#[starlark_module]
+fn module_print(builder: &mut GlobalsBuilder) {
+    fn print<'v>(
+        #[starlark(args)] args: UnpackTuple<Value<'v>>,
+        #[starlark(require = named, default = " ")] sep: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<NoneType> {
+        let collector = context(eval).map_err(starlark::Error::new_other)?;
+        if collector.evaluation_context.print_is_noop {
+            return Ok(NoneType);
+        }
+        collector
+            .print_location
+            .replace(Some(caller_location(eval)));
+        let sep = eval.heap().alloc_str(sep).to_value();
+        eval.eval_function(standard_print().to_value(), &args.items, &[("sep", sep)])?;
+        Ok(NoneType)
+    }
+}
+
+/// The interpreter's own `print` ([`LibraryExtension::Print`]).
+fn standard_print() -> FrozenValue {
+    static GLOBALS: LazyLock<Globals> =
+        LazyLock::new(|| GlobalsBuilder::extended_by(&[LibraryExtension::Print]).build());
+    GLOBALS
+        .iter()
+        .find_map(|(name, value)| (name == "print").then_some(value))
+        .unwrap_or_else(|| unreachable!("LibraryExtension::Print defines print"))
 }
 
 /// Bazel's DotBazelFileSyntaxChecker restricts call syntax even in unreachable
@@ -1672,6 +1736,7 @@ e.tag(names=list(names))
             role: ModuleRole::Dependency,
             ignore_dev_dependencies: false,
             isolated_extension_usages: false,
+            print_is_noop: false,
         };
         let actual = evaluate_source_with_builtins(
             "@bazel_tools//:MODULE.bazel",
@@ -2361,22 +2426,42 @@ r(name="second",x=x,y=y,module=module,ys=ys,zs=zs,ws=[str(v) for v in ws],count=
                 role: ModuleRole::Root,
                 ignore_dev_dependencies: true,
                 isolated_extension_usages: false,
+                print_is_noop: false,
             },
             EvaluationContext {
                 role: ModuleRole::Dependency,
                 ignore_dev_dependencies: false,
                 isolated_extension_usages: false,
+                print_is_noop: false,
             },
             EvaluationContext {
                 role: ModuleRole::Dependency,
                 ignore_dev_dependencies: true,
                 isolated_extension_usages: false,
+                print_is_noop: false,
             },
         ]
     }
 
     fn in_context(source: &str, context: EvaluationContext) -> Result<ModuleFile, String> {
         evaluate_source_with_context("MODULE.bazel", source.to_owned(), context)
+    }
+
+    #[test]
+    fn module_print_binds_like_print_in_every_context() {
+        for print_is_noop in [false, true] {
+            let context = EvaluationContext {
+                print_is_noop,
+                ..EvaluationContext::default()
+            };
+            in_context("print('a', 1, [2], sep = '|')\nprint()", context).unwrap();
+            let error = in_context("print('a', end = '')", context).unwrap_err();
+            assert!(error.contains("end"), "{error}");
+            let error = in_context("print('a', sep = 1)", context).unwrap_err();
+            assert!(error.contains("sep"), "{error}");
+            let error = in_context("x = type(print)\nprint(x)\nprint(x.foo)", context).unwrap_err();
+            assert!(error.contains("foo"), "{error}");
+        }
     }
 
     #[test]

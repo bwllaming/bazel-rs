@@ -776,6 +776,7 @@ mod tests {
                 role,
                 ignore_dev_dependencies,
                 isolated_extension_usages: true,
+                print_is_noop: false,
             },
         )
         .unwrap()
