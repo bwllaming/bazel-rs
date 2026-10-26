@@ -38,6 +38,12 @@ Done since the last increment recorded under "History", one line each:
       external files staged as links, distinct inodes for distinct artifacts.
 - [x] Memory: MEM2/MEM3/MEM4 and TS analysis (docs/MEMORY.md); cache-hit path
       (directory stamps, O(changed) output tree).
+- [x] Configured `cquery` with label/proto/streamed_proto output, analysis-only
+      execution and binary graph reuse; `config --output=json --dump_all`,
+      explicit output bases and root `mod dump_repo_mapping` (docs/CQUERY.md).
+      Real target-determinator v0.34.0 matches 11 genuine-Bazel scratch mutation
+      cases with incompatible-target filtering disabled. Whole-repo support is
+      still blocked as noted below; this is not full cquery parity.
 
 ## Remaining work
 
@@ -47,11 +53,16 @@ Done since the last increment recorded under "History", one line each:
 - [x] Startup option `--quiet` (docs/STARTUP_QUIET.md).
 - [x] `print()` is a no-op in registry MODULE.bazel files, which removes the
       gazelle/rules_go "highly experimental" warnings (done).
+- [ ] Split transitions: the bounded `cquery 'deps(//src/...)'` probe fails on
+      appscanner's `image_push_index` -> `image_image` two-configuration edge.
+      Needed before target-determinator can scan the complete repository.
 
 ### Commands that are rejected today
 
 - [x] `clean` (incl. `--expunge`/`--async`) and `shutdown` (docs/COMMANDS.md).
-- [ ] `cquery` (in progress in another session: branches `cquery-*`) and `aquery`.
+- [ ] `aquery`. The supported `cquery` subset is listed in docs/CQUERY.md;
+      Starlark formatting/default TD compatibility filtering, full transition
+      output and several query functions remain explicit errors.
 - [x] `fetch` (`sync` is not a 9.3 command; `vendor` fails explicitly, still open).
 - [ ] `coverage` (docs/COVERAGE.md).
 - [ ] `mod` beyond `graph --output=json`: text graph, `deps`, `explain`,
@@ -71,14 +82,15 @@ Done since the last increment recorded under "History", one line each:
 - [ ] Warm `run` latency of internal tools: no-op `bazel-rs run //tool` end to end.
 - [ ] `.bazeliskrc` pins 9.1.1, which rewrites the lockfile as v26 and makes
       bazel-rs (v28) miss its snapshot after each genuine run (user's decision).
-- [ ] One `test //src/...` invocation (so far tree by tree).
+- [ ] Complete remaining test coverage in subsets, as required by the user;
+      do not run the whole repository's tests in one invocation.
 
 ### Disk usage
 
 - [x] Garbage collection of the cache (docs/CACHE_GC.md, `bazel-rs gc`): `cas/`, `actions/`, repository trees and
       slots, distinct-inode copies, state dirs of deleted worktrees, stale
-      `.tmp-*` staging. It only grows today (~/code/bazel-rs-out is 30 GB). Model
-      Bazel 9.3's `--experimental_disk_cache_gc_max_size/_max_age/_idle_delay`.
+      `.tmp-*` staging. The collector models Bazel 9.3's
+      `--experimental_disk_cache_gc_max_size/_max_age/_idle_delay`.
 
 ### Performance
 

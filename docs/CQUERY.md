@@ -111,7 +111,16 @@ lockfile, no rc/remote cache/wrappers, Linux x86-64 (shared host; indicative):
 the first P run's aggregate child RSS included an earlier sibling invocation.
 All measured analyses were below 1 GiB. Counters reported zero action-input
 bytes hashed and zero scheduler nodes. These are not timings of a full
-`deps(//src/...)` universe, which was not attempted without a safe bound.
+`deps(//src/...)` universe.
+
+A subsequent integration probe of `deps(//src/...)`, capped at 8 GiB and 15 minutes,
+stopped with an explicit unsupported split-transition error on
+`//src/beyondwork.ai/appscanner/cmd:image_push_index`'s `images` edge to
+`image_image`. It took 248.9 s (including further repository initialization), with
+3,453 MiB peak child RSS; no graph output was published. Thus the scratch TD matrix
+and subset timings do **not** establish whole-repository TD support. Split
+transitions are the next analysis prerequisite. The checkout HEAD and lockfile
+were unchanged throughout this probe.
 
 A 200-way scratch fanout measured 69 ms cold, 9 ms repeated deps, 7 ms for P,
 8 ms after source-content edit (valid graph hit; TD reads the changed content),
