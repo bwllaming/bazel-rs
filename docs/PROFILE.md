@@ -62,8 +62,9 @@ actions) in 315 KB gzipped.
 `--[no]execution_log_sort` (default on) orders the expanded logs producers
 first (StableSort). Logged: every spawn the executor ran (failures included)
 and remote cache hits (`runner: remote cache hit`); native writes, transforms
-and action cache hits are not spawns, as in Bazel. Runners: `linux-sandbox`
-(the Landlock sandbox), `processwrapper-sandbox`, `local`. Not modelled: tool
+and action cache hits are not spawns, as in Bazel. Runners: `worker` (a persistent
+worker, crate::worker), `linux-sandbox` (the Landlock sandbox),
+`processwrapper-sandbox`, `local`. Not modelled: tool
 input sets (`tool_set_id` 0, `is_tool` false), runfiles tree entries (the
 staged files are logged as inputs), timeouts, measured memory; the compact
 log's input sets are flat (no shared transitive sets).

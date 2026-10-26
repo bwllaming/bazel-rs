@@ -508,3 +508,65 @@ fn crashed_worker_is_replaced() {
         assert_eq!(order[crash + 1], "start", "{order:?}");
     }
 }
+
+/// Worker spawns feed the build event files, the profile and the execution
+/// log like any spawn (docs/BEP.md, docs/PROFILE.md): an ActionExecuted per
+/// executed worker action (`--build_event_publish_all_actions`), an
+/// `action processing` span with its mnemonic, a SpawnExec with runner
+/// `worker`.
+#[test]
+fn worker_spawns_reach_the_build_events_the_profile_and_the_execution_log() {
+    let ws = Workspace::new();
+    let trace = ws.trace("reports");
+    let capture = ws.path().join("cap");
+    fs::create_dir_all(&capture).unwrap();
+    let args: Vec<String> = vec![
+        "--build_event_publish_all_actions".to_owned(),
+        format!("--build_event_json_file={}/bep.json", capture.display()),
+        format!("--profile={}/profile.json", capture.display()),
+        format!("--execution_log_json_file={}/exec.json", capture.display()),
+        "//pkg:json_a".to_owned(),
+    ];
+    let output = ws.build("cache", &trace, &args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let spawns: Vec<Value> =
+        serde_json::Deserializer::from_str(&fs::read_to_string(capture.join("exec.json")).unwrap())
+            .into_iter::<Value>()
+            .map(Result::unwrap)
+            .collect();
+    let worker: Vec<&Value> = spawns
+        .iter()
+        .filter(|spawn| spawn["runner"] == "worker")
+        .collect();
+    assert_eq!(worker.len(), 1, "{spawns:#?}");
+    let mnemonic = worker[0]["mnemonic"].as_str().unwrap().to_owned();
+    assert_eq!(worker[0]["exitCode"], 0);
+    assert!(!worker[0]["actualOutputs"].as_array().unwrap().is_empty());
+    let events: Vec<Value> = fs::read_to_string(capture.join("bep.json"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert!(
+        events
+            .iter()
+            .any(|event| event["action"]["type"] == mnemonic.as_str()
+                && event["action"]["success"] == true),
+        "{events:#?}"
+    );
+    let profile: Value =
+        serde_json::from_str(&fs::read_to_string(capture.join("profile.json")).unwrap()).unwrap();
+    assert!(
+        profile["traceEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["cat"] == "action processing"
+                && event["args"]["mnemonic"] == mnemonic.as_str()),
+        "{profile:#}"
+    );
+}
