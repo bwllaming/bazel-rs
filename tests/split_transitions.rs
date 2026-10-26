@@ -212,3 +212,34 @@ fn invalid_later_branch_and_multi_output_rule_transition_fail_closed() {
         )
     );
 }
+
+#[test]
+fn empty_returns_are_noops_single_named_results_keep_keys_and_views_are_frozen() {
+    for result in ["None", "{}"] {
+        let ws = Workspace::new();
+        ws.edit(
+            "def _empty(settings, attr):\n    return []",
+            &format!("def _empty(settings, attr):\n    return {result}"),
+        );
+        let out = ws.ok("cquery", &["//:use"]);
+        assert_eq!(summary(&out)["empty_keys"], serde_json::json!([null]));
+        assert_eq!(summary(&out)["empty"], serde_json::json!(["base"]));
+    }
+    let ws = Workspace::new();
+    ws.edit("return {\"z\": {\"//:flag\": \"opt\"}, \"a\": {\"//:flag\": \"dbg\"}, \"m\": {\"//:flag\": \"opt\"}}", "return ({\"//:flag\": \"opt\"},)");
+    let out = ws.ok("cquery", &["//:use"]);
+    assert_eq!(summary(&out)["one_keys"], serde_json::json!(["0"]));
+    assert_eq!(summary(&out)["one"], serde_json::json!(["opt"]));
+    let ws = Workspace::new();
+    ws.edit(
+        "def _consumer(ctx):",
+        "def _consumer(ctx):\n    ctx.split_attr.one[\"z\"] = ctx.split_attr.one[\"a\"]",
+    );
+    let out = ws.command("cquery", &["//:use"]).output().unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains("frozen") || error.contains("immutable"),
+        "{error}"
+    );
+}

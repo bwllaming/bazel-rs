@@ -48,7 +48,8 @@ fail explicitly. In particular: Starlark formatting and incompatible-target
 filtering, keep-going partial results, transitions=full, full aspect metadata
 formatting, relative path-as-target literals outside the recorded patterns,
 and attr() over License values are not implemented. Existing native analysis
-limitations (including incompatible targets and split transitions) still fail.
+limitations (including incompatible targets) still fail. Attribute split
+transitions now analyze every branch; see [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md).
 There is no genuine-Bazel fallback and no special-case TD output rewriting.
 
 Configuration checksums are the **existing full native ConfigIds**, not Bazel's
@@ -119,8 +120,20 @@ stopped with an explicit unsupported split-transition error on
 `image_image`. It took 248.9 s (including further repository initialization), with
 3,453 MiB peak child RSS; no graph output was published. Thus the scratch TD matrix
 and subset timings do **not** establish whole-repository TD support. Split
-transitions are the next analysis prerequisite. The checkout HEAD and lockfile
-were unchanged throughout this probe.
+transitions were the next analysis prerequisite. The checkout HEAD and lockfile
+were unchanged throughout this probe. The split-transition follow-up now passes
+that appscanner target: first/second/third deps queries took 28.15/11.05/0.40 s,
+and roots sharing the universe took 0.36 s. The first run initialized another OCI
+repository and could not save; the second saved and the remaining calls hit.
+Deps output was 30,424,420 bytes; peak analysis RSS was 1,314 MiB, hit RSS 269 MiB.
+
+The follow-up full `deps(//src/...)` probe reached a **new** analysis blocker after
+430.09 s at 4,875 MiB (still within 8 GiB/15 minutes), with no output published:
+`//src/python/sandbox-extension:policy`, `get_link_args()` parameter
+`parameter_file_type` received `NoneType`, but the native API requires `string`.
+Genuine CcStarlarkInternal.getArgs accepts None. A focused default-configuration
+query of this target succeeds; the failure is in a configuration reached by the
+whole-source graph. Whole-repository TD support is therefore **still not established**.
 
 A 200-way scratch fanout measured 69 ms cold, 9 ms repeated deps, 7 ms for P,
 8 ms after source-content edit (valid graph hit; TD reads the changed content),

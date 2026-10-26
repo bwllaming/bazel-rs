@@ -57,3 +57,10 @@ match except the explicitly preserved converged keys above.
 later branches, invalid multi-output rule transitions, configured graph identity,
 graph reuse/invalidation and verification, and normal-build snapshot reuse.
 The broader 1:1 transition, aspect and cquery tests remain in place.
+
+Official TD v0.34.0 with cache disabled and before-query errors fatal was also run
+on a scratch extension of the existing eleven-case matrix. Separate `dbg`/`opt`
+branches select different source files and different exec tools. Editing either
+branch's source changes both split consumers and their parent, with **11/11 exact
+affected-label sets matching genuine 9.3**; the original eleven-case matrix also
+continues to pass unchanged. No result rewriting or branch pruning is involved.
