@@ -240,6 +240,39 @@ fn times(text: &str) -> String {
         .collect()
 }
 
+/// Parallel tests finish in either order in both engines. Keep each complete
+/// log block and the ordered final summary exact, but not the arrival order of
+/// the blocks (which the genuine capture only observed once).
+fn test_output(mut text: &str) -> (Vec<&str>, &str) {
+    const END: &str =
+        "\n================================================================================\n";
+    let mut blocks = Vec::new();
+    while text.starts_with("==================== Test output for ") {
+        let end = text.find(END).expect("unterminated test output block") + END.len();
+        blocks.push(&text[..end]);
+        text = &text[end..];
+    }
+    blocks.sort_unstable();
+    (blocks, text)
+}
+
+#[test]
+fn test_output_comparison_preserves_contents_counts_and_summary() {
+    let first = "==================== Test output for //:first:\nfirst log\n================================================================================\n";
+    let second = "==================== Test output for //:second:\nsecond log\n================================================================================\n";
+    let forward = format!("{first}{second}summary\n");
+    let reverse = format!("{second}{first}summary\n");
+    assert_eq!(test_output(&forward), test_output(&reverse));
+    for changed in [
+        format!("{first}summary\n"),
+        format!("{first}{second}{second}summary\n"),
+        forward.replace("first log", "different log"),
+        forward.replace("summary", "different summary"),
+    ] {
+        assert_ne!(test_output(&forward), test_output(&changed));
+    }
+}
+
 fn argv(case: &Value) -> Vec<String> {
     case["argv"]
         .as_array()
@@ -306,8 +339,8 @@ fn check(name: &str, case: &Value) {
             "{name}: {stderr}"
         ),
         "test" => assert_eq!(
-            times(&stdout),
-            case["expected_stdout"].as_str().unwrap(),
+            test_output(&times(&stdout)),
+            test_output(case["expected_stdout"].as_str().unwrap()),
             "{name}: {stderr}"
         ),
         command => panic!("{name}: unexpected command {command}"),
