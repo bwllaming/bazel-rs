@@ -29,9 +29,13 @@ Measured on `~/code` with private caches (see `artifacts/RELEASES.log` for each 
 - First release: v0.1.0 (pre-release) on github.com/bwllaming/bazel-rs
   (scripts/release.py, docs/RELEASING.md).
 - `cquery 'deps(//src/...)' --output=streamed_proto --transitions=lite` succeeds:
-  143–145 s / 8,001 MiB peak analysis, then 2.04 s / 1,514 MiB on a graph hit.
-  The roots query shares the graph (1.74 s). All runs retained an 8 GiB cap.
+  after capture interning, 139 s / 7,548 MiB peak analysis (previously 8,001 MiB),
+  then 2.23 s / 1,517 MiB on a graph hit. Roots share the graph (1.68 s).
+  All runs retained an 8 GiB cap and emitted byte-identical results.
   This verifies native full-source queries, not a TD revision switch on `~/code`.
+  The broader `//...` universe currently fails loading a pandas BUILD under the
+  root `venv/`, which is not listed in `.bazelignore`; traversal/autoload parity
+  needs distinguishing from checkout hygiene before changing behavior.
 
 Done since the last increment recorded under "History", one line each:
 
@@ -87,9 +91,12 @@ Done since the last increment recorded under "History", one line each:
       omits execution-only repository closures (docs/CQUERY_ARTIFACTS.md).
       The bounded full-source query passes and its outputs decode with upstream
       schemas; ordinary build and `--nobuild` validation remain strict.
-- [ ] Reduce uncached cquery memory below the current 8,001 MiB peak (~191 MiB
-      headroom under the 8 GiB test cap), and check TD's default `//...` universe
-      separately from the measured `//src/...` universe.
+- [x] Intern cquery capture endpoints/attribute names and bound snapshot encoding
+      to 4 MiB buffers: peak 8,001 -> 7,548 MiB, headroom 191 -> 644 MiB, outputs
+      unchanged (docs/CQUERY_MEMORY.md). The <=6 GiB stretch goal is not met.
+- [ ] Resolve the default `//...` loading failure under root `venv/`, separately
+      from the successful `//src/...` query, without silently excluding packages
+      or skipping unsupported analysis.
 - [x] Cquery aspect dependency projection places implicit aspect edges on
       requesting rules, matching 8 genuine-schema edge matrices and 9 actual
       target-determinator mutation cases. First-instance selection across all
