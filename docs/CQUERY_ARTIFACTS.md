@@ -31,3 +31,19 @@ failures, identical-writer build success and unequal-writer build/nobuild errors
 `tests/cquery_artifacts.rs` checks that contract, graph hit/verify/BUILD/.bzl
 invalidation, and action/workspace-status sentinels. Native configuration identity
 and existing action keys are not rekeyed.
+
+## Semantic support and output-target identities
+
+Cquery registers actual validated action-output Files (including root-relative
+shareable outputs), without lowering actions. Only **predeclared** outputs enter
+the path lookup used by package-level generated-file targets. Runtime declarations
+at the same path cannot replace the predeclared generating owner; normal provider
+consumers resolve through the owner-aware File index.
+
+Executable FilesToRunProvider exposes runfiles and repository-mapping manifest
+Files during analysis. Their existing Option values are registered as semantic
+identities, honoring manifest options/None. Cquery never calls runfiles execution
+planning, mapping rendering, input expansion or manifest/tree staging to create
+these identities. The captured support-file cases include default options,
+`--enable_runfiles=no`, and `--nobuild_runfile_manifests`; hit/verify tests retain
+their exact provider metadata.

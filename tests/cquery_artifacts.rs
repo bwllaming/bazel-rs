@@ -226,3 +226,50 @@ fn cquery_runs_neither_actions_nor_workspace_status_when_collecting_conflicting_
     assert!(!ws.path().join("ACTION_RAN").exists());
     assert!(!ws.path().join("STATUS_RAN").exists());
 }
+
+#[test]
+fn runfiles_support_files_are_semantic_identities_without_manifest_or_tree_lowering() {
+    let ws = Workspace::new();
+    let genuine: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/cquery_artifacts/genuine.json")).unwrap();
+    for (name, flags) in [
+        ("default", vec![]),
+        ("no-tree", vec!["--enable_runfiles=no"]),
+        ("no-manifests", vec!["--nobuild_runfile_manifests"]),
+    ] {
+        let mut args = flags;
+        args.push("//:p_support");
+        let output = ws.ok("cquery", &args);
+        assert_eq!(observations(&output), genuine["support_probes"][name]);
+        let warm = ws.ok("cquery", &args);
+        assert!(String::from_utf8_lossy(&warm.stderr).contains("cquery-snapshot: hit"));
+        assert_eq!(observations(&warm), genuine["support_probes"][name]);
+        let verify = ws
+            .command("cquery", &args)
+            .env("BAZEL_RS_SNAPSHOT", "verify")
+            .output()
+            .unwrap();
+        assert!(
+            verify.status.success(),
+            "{}",
+            String::from_utf8_lossy(&verify.stderr)
+        );
+    }
+    assert!(!ws.path().join("cache/actions").exists());
+}
+
+#[test]
+fn predeclared_output_targets_keep_their_generating_owner_despite_dynamic_path_overlap() {
+    let genuine: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/cquery_artifacts/genuine.json")).unwrap();
+    // Separate analyses are intentional: combining roots can mask the bug by
+    // making the predeclared owner happen to register after the runtime writer.
+    for name in ["p_predeclared", "p_pre_reverse"] {
+        let ws = Workspace::new();
+        let output = ws.ok("cquery", &[&format!("//:{name}")]);
+        assert_eq!(
+            observations(&output)[name],
+            genuine["predeclared_probes"][name]
+        );
+    }
+}

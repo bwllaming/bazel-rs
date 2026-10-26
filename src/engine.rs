@@ -92,6 +92,21 @@ struct ArtifactData {
 }
 
 impl Artifact {
+    /// An already-validated analysis File without an execution producer. Reuse
+    /// its identity instead of computing and discarding a second File value.
+    fn semantic(file: &File) -> Self {
+        let exec = SharedPath::from(file.path.as_str());
+        Self(Arc::new(ArtifactData {
+            real: exec.clone(),
+            exec,
+            producer: None,
+            owner: file.owner.clone(),
+            directory: file.is_directory,
+            constant_metadata: false,
+            file: file.clone(),
+        }))
+    }
+
     fn new(
         real: PathBuf,
         exec: PathBuf,
@@ -11031,10 +11046,11 @@ impl Engine {
         let analyzed = analyzed?;
         if self.cquery_capture.is_some() {
             cquery::register_outputs(
-                &analyzed.declared,
+                analyzed.actions.iter().flat_map(|action| &action.outputs),
                 base_key.config,
                 state.artifact_index,
                 state.declared,
+                |_| false,
             );
             return Ok(analyzed.providers);
         }
@@ -12098,7 +12114,33 @@ impl Engine {
         // needs providers, file identities and runfiles, but never action keys,
         // status commands, input digests, runfiles manifests or scheduler nodes.
         if self.cquery_capture.is_some() {
-            cquery::register_outputs(&analyzed.declared, config, artifact_index, declared);
+            let package_output = PathBuf::from(&output_root).join(rule.label.package_exec_path());
+            cquery::register_outputs(
+                analyzed.actions.iter().flat_map(|action| &action.outputs),
+                config,
+                artifact_index,
+                declared,
+                |file| {
+                    Path::new(&file.path)
+                        .strip_prefix(&package_output)
+                        .is_ok_and(|name| rule.outs.iter().any(|out| Path::new(out) == name))
+                },
+            );
+            // FilesToRunProvider exposes these semantic Files even though no
+            // manifest/tree/mapping action is lowered or executed by cquery.
+            // Their actual Option values already honor the runfiles options.
+            if let Some(support) = &analyzed.runfiles.files_to_run {
+                cquery::register_outputs(
+                    support
+                        .runfiles_manifest()
+                        .into_iter()
+                        .chain(support.repo_mapping_manifest()),
+                    config,
+                    artifact_index,
+                    declared,
+                    |_| false,
+                );
+            }
             for file in &analyzed.files {
                 if crate::analysis_runtime::is_workspace_status_file(file) {
                     self.indexed_artifact(

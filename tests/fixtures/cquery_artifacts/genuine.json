@@ -11,6 +11,15 @@
     "p_cross_kind": {"executable_owner":null,"files":[["cross","@@//:cross_file",false,false],["cross","@@//:cross_tree",true,false]]}
   },
   "negative_exit_codes": {"tree_file":1,"orphan":1,"duplicate":1,"bad_provider":1,"bad_executable":1},
+  "predeclared_probes": {
+    "p_predeclared": {"executable_owner":null,"files":[["predeclared.txt","@@//:pre",false,false],["predeclared.txt","@@//:over",false,false]]},
+    "p_pre_reverse": {"executable_owner":null,"files":[["predeclared.txt","@@//:over",false,false],["predeclared.txt","@@//:pre",false,false]]}
+  },
+  "support_probes": {
+    "default": {"p_support":{"executable_owner":null,"files":[["exe.sh.runfiles/MANIFEST","@@//:exe",false,false],["exe.sh.repo_mapping","@@//:exe",false,false]]}},
+    "no-tree": {"p_support":{"executable_owner":null,"files":[["exe.sh.runfiles/MANIFEST","@@//:exe",false,false],["exe.sh.repo_mapping","@@//:exe",false,false]]}},
+    "no-manifests": {"p_support":{"executable_owner":"@@//:exe","files":[["exe.sh.repo_mapping","@@//:exe",false,false]]}}
+  },
   "build_equal_exit": 0,
   "build_unequal_exit": 1,
   "nobuild_unequal_exit": 1,

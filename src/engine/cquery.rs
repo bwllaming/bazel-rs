@@ -686,25 +686,22 @@ impl Node {
 
 /// Register only the identities needed by subsequent provider analysis. No
 /// shared-action fingerprint, action conflict scan or action input digesting.
-pub(super) fn register_outputs(
-    files: &[File],
+pub(super) fn register_outputs<'a>(
+    files: impl IntoIterator<Item = &'a File>,
     config: ConfigId,
     index: &mut BTreeMap<File, Artifact>,
     declared: &mut Declared,
+    predeclared: impl Fn(&File) -> bool,
 ) {
     for file in files {
-        let path = PathBuf::from(&file.path);
-        let mut artifact = Artifact::new(
-            path.clone(),
-            path.clone(),
-            None,
-            file.owner.clone(),
-            file.is_directory,
-            false,
-        );
-        artifact.make_mut().file = file.clone();
+        let artifact = Artifact::semantic(file);
         register_artifact(index, file, &artifact);
-        declared.insert((config, path), artifact);
+        // Only predeclared outputs have package-level output-file targets.
+        // Runtime declarations with the same path must not overwrite their
+        // generating-rule identity. Other consumers resolve through `index`.
+        if predeclared(file) {
+            declared.insert((config, PathBuf::from(&file.path)), artifact);
+        }
     }
 }
 

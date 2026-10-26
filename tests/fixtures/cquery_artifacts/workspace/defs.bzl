@@ -53,3 +53,24 @@ def _sentinel(ctx):
     return [DefaultInfo(files = depset([out]))]
 
 sentinel = rule(implementation = _sentinel, attrs = {"sentinel": attr.string()})
+
+def _executable(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\nexit 0\n", is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = [ctx.file.data]))]
+
+executable = rule(implementation = _executable, executable = True, attrs = {"data": attr.label(allow_single_file = True)})
+
+def _support(ctx):
+    info = ctx.attr.dep[DefaultInfo].files_to_run
+    files = [f for f in [info.runfiles_manifest, info.repo_mapping_manifest] if f != None]
+    print("SUPPORT:" + json.encode([(f.short_path, str(f.owner), f.is_source) for f in files]))
+    return [DefaultInfo(files = depset(files))]
+
+support = rule(implementation = _support, attrs = {"dep": attr.label()})
+
+def _predeclared(ctx):
+    ctx.actions.write(ctx.outputs.out, "predeclared")
+    return [DefaultInfo(files = depset([]))]
+
+predeclared = rule(implementation = _predeclared, attrs = {"out": attr.output(mandatory = True)})
