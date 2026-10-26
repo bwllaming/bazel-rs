@@ -58,10 +58,14 @@ Done since the last increment recorded under "History", one line each:
       (docs/SPLIT_TRANSITIONS.md). Appscanner's image query now succeeds.
 - [x] rules_cc `get_link_args(parameter_file_type=None)` is accepted without
       parameter-file metadata, matching Bazel's nullable API.
-- [ ] Whole-source cquery: fix the analysis-order error for rules_rust's
-      `rustfmt_srcs_aspect` on the external fastrand crate. The bounded query
-      now reaches this later error at 6,230 MiB; whole-repository
+- [x] Configured aspect dependency discovery uses phase-one select-resolved
+      declarations; the Rustfmt/fastrand analysis-order failure is fixed.
+- [ ] Whole-source cquery: separate semantic File identity from execution-path
+      uniqueness in native input collection. The current query reaches a shared
+      TypeScript `node_modules` artifact collision at 7,770 MiB; whole-repository
       target-determinator remains blocked.
+- [ ] Cquery aspect dependency projection: match genuine ownership of implicit
+      aspect edges on requesting rules rather than their base targets.
 
 ### Commands that are rejected today
 
