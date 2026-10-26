@@ -1,0 +1,85 @@
+load(":defs.bzl", "arg_test", "argbin", "gen", "vars_rule")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["data.txt", "with space.txt"])
+
+filegroup(name = "two", srcs = ["a.txt", "b.txt"])
+
+gen(name = "gen", names = ["g1.txt"])
+
+gen(name = "gens", names = ["g2.txt", "g3.txt"])
+
+vars_rule(name = "vars")
+
+alias(name = "al", actual = ":data.txt")
+
+argbin(name = "tool", srcs = ["a.txt"])
+
+ARGS = [
+    "$(location data.txt)",
+    "$(locations :two)",
+    "$(rootpath :gen)",
+    "$(rootpaths :gens)",
+    "$(execpath :gen)",
+    "$(execpaths :gens)",
+    "$(rlocationpath :data.txt)",
+    "$(rlocationpaths :two)",
+    "$(location :al)",
+    "$(location :tool)",
+    "$(execpath :tool)",
+    "$(location src.txt)",
+    "$(location //pkg:with space.txt)",
+    "x=$(location data.txt),y",
+    "'single quoted' \"double \\\"quoted\\\"\" back\\ slash",
+    "  spaced   out\ttabs  ",
+    "''",
+    "",
+    "$$HOME $$(echo)",
+    "$(COMPILATION_MODE) $(TARGET_CPU) $(BINDIR) $(GENDIR)",
+    "$(MY_DEFINE)",
+    "$(MY_TOOLCHAIN_VAR)",
+]
+
+arg_test(
+    name = "t",
+    args = ARGS,
+    data = [
+        "data.txt",
+        ":two",
+        ":gen",
+        ":gens",
+        ":al",
+        ":tool",
+        "with space.txt",
+    ],
+    srcs = ["src.txt"],
+    toolchains = [":vars"],
+)
+
+argbin(
+    name = "b",
+    args = ARGS,
+    data = [
+        "data.txt",
+        ":two",
+        ":gen",
+        ":gens",
+        ":al",
+        ":tool",
+        "with space.txt",
+    ],
+    srcs = ["src.txt"],
+    toolchains = [":vars"],
+)
+
+argbin(
+    name = "exec_tool",
+    args = ["$(location :tool)", "$(execpath :tool)"],
+    tools = [":tool"],
+)
+
+argbin(
+    name = "nodata_data",
+    args = ["$(location data.txt)"],
+)

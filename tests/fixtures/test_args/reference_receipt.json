@@ -1,0 +1,101 @@
+{
+ "base_commit": "ba7565d19ed7b3e1a449f21107048164d04dd881",
+ "capture_script_sha256": "023c2e028a1e53aa6a108410b515bb4df2857222c0d2a481328359ff24beb0f8",
+ "flags": {
+  "reference": "--batch --ignore_all_rc_files --output_user_root=<private> --repository_cache=<private> --lockfile_mode=off --noshow_progress --color=no --curses=no --define=MY_DEFINE=defined_value"
+ },
+ "notes": [
+  "Run 1 is the only run.",
+  "errors keep Bazel's located `in args attribute` lines without the `ERROR: ` prefix; <ws> is the workspace."
+ ],
+ "reference_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "rows": {
+  "build --nobuild //bad:backslash": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:7:9: in args attribute of arg_test rule //bad:backslash: backslash at end of string"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:badlabel": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:11:7: in args attribute of argbin rule //bad:badlabel: invalid label in $(location) expression: invalid target name 'a:b': target names may not contain ':'"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:braces": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:8:9: in args attribute of arg_test rule //bad:braces: '${HOME}' syntax is not supported; use '$(HOME)' instead for \"Make\" variables, or escape the '$' as '$$' if you intended this for the shell"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:dollar": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:9:9: in args attribute of arg_test rule //bad:dollar: '$HOME' syntax is not supported; use '$(HOME)' instead for \"Make\" variables, or escape the '$' as '$$' if you intended this for the shell"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:multiple": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:5:9: in args attribute of arg_test rule //bad:multiple: label '//pkg:two' in $(location) expression expands to more than one file, please use $(locations //pkg:two) instead.  Files (at most 5 shown) are: [pkg/a.txt, pkg/b.txt]"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:quote": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:6:9: in args attribute of arg_test rule //bad:quote: unterminated quotation"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:two_errors": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:10:9: in args attribute of arg_test rule //bad:two_errors: $(NOPE) not defined",
+    "<ws>/bad/BUILD.bazel:10:9: in args attribute of arg_test rule //bad:two_errors: unterminated quotation",
+    "<ws>/bad/BUILD.bazel:10:9: in args attribute of arg_test rule //bad:two_errors: $(location) not defined"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:undeclared": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:4:9: in args attribute of arg_test rule //bad:undeclared: label '//pkg:data.txt' in $(location) expression is not a declared prerequisite of this rule"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:undefined": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:3:9: in args attribute of arg_test rule //bad:undefined: $(UNDEFINED_VAR) not defined"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //bad:unterminated": {
+   "errors": [
+    "<ws>/bad/BUILD.bazel:12:7: in args attribute of argbin rule //bad:unterminated: unterminated variable reference"
+   ],
+   "exit": 1
+  },
+  "build --nobuild //pkg:nodata_data": {
+   "errors": [
+    "<ws>/pkg/BUILD.bazel:82:7: in args attribute of argbin rule //pkg:nodata_data: label '//pkg:data.txt' in $(location) expression is not a declared prerequisite of this rule"
+   ],
+   "exit": 1
+  },
+  "run //pkg:b": {
+   "command_line": [
+    "pkg/data.txt pkg/a.txt pkg/b.txt pkg/g1.txt pkg/g2.txt pkg/g3.txt bazel-out/k8-fastbuild/bin/pkg/g1.txt bazel-out/k8-fastbuild/bin/pkg/g2.txt bazel-out/k8-fastbuild/bin/pkg/g3.txt _main/pkg/data.txt _main/pkg/a.txt _main/pkg/b.txt pkg/data.txt pkg/tool.sh bazel-out/k8-fastbuild/bin/pkg/tool.sh pkg/src.txt 'pkg/with space.txt' 'x=pkg/data.txt,y' 'single quoted' 'double \"quoted\"' 'back slash' spaced out tabs '' '$HOME' '$(echo)' fastbuild x86_64 bazel-out/k8-fastbuild/bin bazel-out/k8-fastbuild/bin defined_value from toolchain"
+   ],
+   "exit": 0,
+   "stdout": "[pkg/data.txt]\n[pkg/a.txt]\n[pkg/b.txt]\n[pkg/g1.txt]\n[pkg/g2.txt]\n[pkg/g3.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g1.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g2.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g3.txt]\n[_main/pkg/data.txt]\n[_main/pkg/a.txt]\n[_main/pkg/b.txt]\n[pkg/data.txt]\n[pkg/tool.sh]\n[bazel-out/k8-fastbuild/bin/pkg/tool.sh]\n[pkg/src.txt]\n[pkg/with space.txt]\n[x=pkg/data.txt,y]\n[single quoted]\n[double \"quoted\"]\n[back slash]\n[spaced]\n[out]\n[tabs]\n[]\n[$HOME]\n[$(echo)]\n[fastbuild]\n[x86_64]\n[bazel-out/k8-fastbuild/bin]\n[bazel-out/k8-fastbuild/bin]\n[defined_value]\n[from]\n[toolchain]\n"
+  },
+  "run //pkg:exec_tool": {
+   "command_line": [
+    "pkg/tool.sh bazel-out/k8-opt-exec/bin/pkg/tool.sh"
+   ],
+   "exit": 0,
+   "stdout": "[pkg/tool.sh]\n[bazel-out/k8-opt-exec/bin/pkg/tool.sh]\n"
+  },
+  "test //pkg:t": {
+   "exit": 0,
+   "test_output": "[pkg/data.txt]\n[pkg/a.txt]\n[pkg/b.txt]\n[pkg/g1.txt]\n[pkg/g2.txt]\n[pkg/g3.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g1.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g2.txt]\n[bazel-out/k8-fastbuild/bin/pkg/g3.txt]\n[_main/pkg/data.txt]\n[_main/pkg/a.txt]\n[_main/pkg/b.txt]\n[pkg/data.txt]\n[pkg/tool.sh]\n[bazel-out/k8-fastbuild/bin/pkg/tool.sh]\n[pkg/src.txt]\n[pkg/with space.txt]\n[x=pkg/data.txt,y]\n[single quoted]\n[double \"quoted\"]\n[back slash]\n[spaced]\n[out]\n[tabs]\n[]\n[$HOME]\n[$(echo)]\n[fastbuild]\n[x86_64]\n[bazel-out/k8-fastbuild/bin]\n[bazel-out/k8-fastbuild/bin]\n[defined_value]\n[from]\n[toolchain]\n"
+  }
+ },
+ "what": "RunfilesSupport.computeArgs: `args` of executable/test rules through Expander.withDataLocations().tokenized (location functions with runfiles paths and data, Make variables, ShellUtils.tokenize)"
+}

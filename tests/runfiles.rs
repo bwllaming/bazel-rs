@@ -689,16 +689,15 @@ outexe = rule(_out, executable = True, attrs = {"executable": attr.output()})
     write_executable_script(&tool, fs::read(&tool).unwrap(), 0o755);
     let built = outputs(&ws.run(&["build", "//pkg:run_source"]));
     assert_eq!(built.len(), 1);
-    // Unsupported executable `args` expansion fails explicitly (Bazel rejects
-    // this one because :group is not a prerequisite; with a data dependency
-    // Bazel expands it). Shell tokenization of `args` is N23g.
+    // `args` expansion (RunfilesSupport.computeArgs, tests/test_args.rs):
+    // Bazel rejects this one because :group is not a prerequisite.
     ws.file(
         "pkg/BUILD.bazel",
         &format!("{build}lazy(name = 'args', args = ['$(location :group)'])\nlazy(name = 'plain_args', args = ['a', 'b c'])\n"),
     );
     rejected(
         &ws.run(&["build", "//pkg:args"]),
-        "needs Make-variable/location expansion or shell tokenization, which is not supported by the native profile",
+        "in args attribute of lazy rule //pkg:args: label '//pkg:group' in $(location) expression is not a declared prerequisite of this rule",
     );
     success(&ws.run(&["build", "//pkg:plain_args"]));
 }

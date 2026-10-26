@@ -296,7 +296,6 @@ targets matches the recorded genuine runfiles trees, MANIFEST paths,
 `--run_under` labels (`bazel test` and test targets under `run` are N23g,
 docs/TEST_COMMAND.md); Bazel's
 convenience symlinks and relative pretty paths; `--portable_paths` and
-`--emit_script_path_in_exec_request`; `args` needing Make/location expansion or
-quote/escape tokenization (docs/RUNFILES.md); fileset trees, unresolved
+`--emit_script_path_in_exec_request`; fileset trees, unresolved
 symlink artifacts in runfiles, output services; Windows (no runfiles trees,
 manifest-only runfiles).

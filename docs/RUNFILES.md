@@ -157,11 +157,23 @@ every access, so the same comparison is `False` (FileConfiguredTarget.java:85-10
   rule output with this name.` (so `ctx.outputs.executable` of a non-executable
   rule fails like Bazel; StarlarkRuleContext.java:402-408).
 * Test rule names must end in `_test` (unchanged). The built-in `args` attribute
-  is accepted when its values need no Make-variable/location expansion or shell
-  tokenization (no `$`, quotes or backslashes); otherwise analysis fails
-  explicitly (RunfilesSupport.computeArgs, :602-610). Shell tokenization of
-  `args` (ShellUtils.tokenize) remains; `run` and `test` (N23g,
-  docs/TEST_COMMAND.md) use the whitespace-separated values.
+  follows RunfilesSupport.computeArgs (:602-610), called when the target gets
+  its runfiles support: `Expander.withDataLocations().tokenized("args")`
+  (crate::ctx_surface::expand_args). Each value is expanded by
+  TemplateExpander over a LocationTemplateContext — the location functions
+  with runfiles paths for `$(location)`/`$(locations)` (execPaths false) over
+  the rule's location map (outputs, `srcs`, `deps`, `implementation_deps`,
+  `tools`) plus `data` (allowData), each path ShellEscaper-quoted — whose
+  variables are the configuration's Make variables (`--define`, the
+  `toolchains` TemplateVariableInfo, the global Make environment; `$$` is
+  `$`), then split by ShellUtils.tokenize (only space and tab separate;
+  quotes and backslashes; `''` is an empty token, an empty value none).
+  Every failure is an attribute error (`in args attribute of R rule L: ...`)
+  at the rule's location, one per failure (a value that fails to expand is
+  tokenized unchanged, so it may report a tokenization error too), and fails
+  the target. `run` and `test` (N23g, docs/TEST_COMMAND.md) use the tokens.
+  Verified against genuine Bazel 9.3 by tests/test_args.rs (receipt
+  tests/fixtures/test_args/reference_receipt.json).
 * The implicit test attributes `$test_wrapper`, `$xml_writer`, `$test_runtime`,
   `$test_setup_script`, `$xml_generator_script`, `$collect_coverage_script` and
   the coverage/run-under attributes (StarlarkRuleClassFunctions.java:258-378) use
@@ -241,7 +253,7 @@ DefaultInfo target view.
 
 ## Not covered (explicit or documented)
 
-`args` tokenization beyond whitespace separation, the nested-set depth-limit message. The
+The nested-set depth-limit message. The
 native CLI also lists source files among a target's outputs, which Bazel's
 `--show_result` omits (pre-existing). Runfiles trees, manifests, tool
 runfiles and `run` are N23f (docs/RUNFILES_TREES.md).

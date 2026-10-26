@@ -1916,10 +1916,65 @@ pub(crate) fn expand_location(
     }
 }
 
+/// RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
+/// `Expander.withDataLocations().tokenized(attribute)` (analysis/Expander.java).
+/// Each value goes through TemplateExpander over a LocationTemplateContext
+/// (analysis/LocationTemplateContext.java) with runfiles paths for
+/// `$(location)` (execPaths false) and the `data` prerequisites (`data`,
+/// added to the rule's location map; allowData), delegating variables to
+/// the configuration's Make variables (ConfigurationMakeVariableContext),
+/// then ShellUtils.tokenize. Every failure is an attribute error; a value
+/// that fails to expand is tokenized unchanged (Expander.expand returns the
+/// expression), and a value that fails to tokenize adds the tokens before
+/// the failure (ShellUtils.tokenize appends while scanning).
+pub(crate) fn expand_args(
+    rule: &RuleSurface,
+    attribute: &str,
+    values: &[String],
+    data: &[(String, Vec<crate::starlark_types::File>)],
+) -> anyhow::Result<Vec<String>> {
+    let parse = |arg: &str| {
+        Label::parse_in(
+            arg,
+            &rule.label.repository,
+            &rule.label.package,
+            &rule.mapping,
+        )
+    };
+    let lookup = |name: &str| lookup_variable(&rule.config, &[], name);
+    let function = |name: &str, param: &str| -> anyhow::Result<Result<String, String>> {
+        Ok(
+            crate::location_expander::apply_with(name, param, false, &parse, &rule.locations, data)
+                .unwrap_or_else(|| Err(format!("$({name}) not defined"))),
+        )
+    };
+    let mut tokens = Vec::new();
+    for value in values {
+        let expanded = match expand_template_with(value, &lookup, &function, 0)? {
+            Ok(expanded) => expanded,
+            Err(message) => {
+                rule.attribute_error(attribute, &message);
+                value.clone()
+            }
+        };
+        if let Err(message) = tokenize_into(&mut tokens, &expanded) {
+            rule.attribute_error(attribute, &message);
+        }
+    }
+    Ok(tokens)
+}
+
 /// ShellUtils.tokenize (util/ShellUtils.java:90-143).
 pub(crate) fn tokenize(input: &str) -> Result<Vec<String>, String> {
-    let chars = input.chars().collect::<Vec<_>>();
     let mut options = Vec::new();
+    tokenize_into(&mut options, input)?;
+    Ok(options)
+}
+
+/// ShellUtils.tokenize(List, String): the tokens are appended to `options`
+/// as they are scanned, so a failure keeps the ones before it.
+fn tokenize_into(options: &mut Vec<String>, input: &str) -> Result<(), String> {
+    let chars = input.chars().collect::<Vec<_>>();
     let mut token = String::new();
     let mut force = false;
     let mut quotation = None;
@@ -1971,7 +2026,7 @@ pub(crate) fn tokenize(input: &str) -> Result<Vec<String>, String> {
     if force || !token.is_empty() {
         options.push(token);
     }
-    Ok(options)
+    Ok(())
 }
 
 /// ImplicitOutputsFunction.createPlaceholderSubstitutionFormatString

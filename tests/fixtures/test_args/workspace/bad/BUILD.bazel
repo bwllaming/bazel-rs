@@ -1,0 +1,12 @@
+load("//pkg:defs.bzl", "argbin", "arg_test")
+
+arg_test(name = "undefined", args = ["ok", "$(UNDEFINED_VAR)"])
+arg_test(name = "undeclared", args = ["$(location //pkg:data.txt)"])
+arg_test(name = "multiple", args = ["$(location //pkg:two)"], data = ["//pkg:two"])
+arg_test(name = "quote", args = ["'unterminated"])
+arg_test(name = "backslash", args = ["end\\"])
+arg_test(name = "braces", args = ["${HOME}"])
+arg_test(name = "dollar", args = ["$HOME"])
+arg_test(name = "two_errors", args = ["$(NOPE) 'x", "$(location)"])
+argbin(name = "badlabel", args = ["$(location //pkg:a:b)"])
+argbin(name = "unterminated", args = ["$(location :x"])

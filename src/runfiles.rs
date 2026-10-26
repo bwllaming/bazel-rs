@@ -1775,8 +1775,11 @@ pub(crate) struct RuleClassification<'a> {
     pub executable: bool,
     /// TargetUtils.isTestRuleName of the rule class.
     pub test: bool,
-    /// The built-in `args` attribute (binaryBaseRule/getTestBaseRule).
-    pub args: Vec<String>,
+    /// RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
+    /// the built-in `args` attribute (binaryBaseRule/getTestBaseRule)
+    /// expanded and tokenized (crate::ctx_surface::expand_args), called
+    /// when the target gets its runfiles support.
+    pub args: &'a dyn Fn() -> anyhow::Result<Vec<String>>,
 }
 
 /// Root-relative path of a generated artifact (Artifact.getRootRelativePathString):
@@ -1858,6 +1861,7 @@ pub(crate) fn configure_target(
         stateless = Some(Runfiles::empty());
     }
     let executable_or_test = executable.is_some() || rule.test;
+    let mut args = Vec::new();
     let provider = match stateless {
         Some(runfiles) => {
             let merged = merge_executable(runfiles, executable.as_ref())?;
@@ -1887,18 +1891,8 @@ pub(crate) fn configure_target(
             let file = executable
                 .as_ref()
                 .ok_or_else(|| anyhow!("executable must not be null"))?;
-            // RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
-            // location/Make expansion and shell tokenization are not modelled.
-            if let Some(arg) = rule
-                .args
-                .iter()
-                .find(|arg| arg.contains(['$', '\'', '"', '\\']))
-            {
-                bail!(
-                    "in args attribute of {rule_class} rule {}: {arg:?} needs Make-variable/location expansion or shell tokenization, which is not supported by the native profile (docs/RUNFILES.md)",
-                    rule.label
-                );
-            }
+            // RunfilesSupport.withExecutable: computeArgs (:602-610).
+            args = (rule.args)()?;
             // RunfilesSupport.create (analysis/RunfilesSupport.java:305-325):
             // the MANIFEST in the tree with --build_runfile_links, the input
             // manifest without, none with --nobuild_runfile_manifests.
@@ -1926,17 +1920,6 @@ pub(crate) fn configure_target(
     } else {
         FilesToRun::create(&files, false, None, None)
     };
-    // ShellUtils.tokenize of each `args` value: the analysis gate above
-    // leaves only whitespace separation (no quotes, escapes or `$`).
-    let args = rule
-        .args
-        .iter()
-        .flat_map(|arg| {
-            arg.split([' ', '\t', '\n', '\r'])
-                .filter(|token| !token.is_empty())
-        })
-        .map(str::to_owned)
-        .collect();
     Ok((
         files,
         TargetRunfiles {
@@ -1972,7 +1955,7 @@ mod tests {
             rule_class: "r",
             executable: true,
             test,
-            args: Vec::new(),
+            args: &|| Ok(Vec::new()),
         }
     }
 

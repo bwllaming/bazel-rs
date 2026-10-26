@@ -877,31 +877,75 @@ fn location_map(
         );
     }
     for name in ["srcs", "deps", "implementation_deps", "tools"] {
-        let (Some(spec), Some(AttrValue::Labels(labels))) =
-            (invocation.schema.get(name), invocation.attrs.get(name))
-        else {
-            continue;
-        };
-        if spec.kind != crate::custom_rule::AttrKind::LabelList {
-            continue;
-        }
-        for label in labels {
-            let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec))
-            else {
-                continue;
-            };
-            let files = match target.runfiles.files_to_run(&target.files).executable() {
-                Some(executable) if name != "srcs" => vec![executable.clone()],
-                _ => target.files.clone(),
-            };
-            let written = crate::label::Label::parse_canonical(label)
-                .map(|label| label.to_string())
-                .unwrap_or_else(|_| label.clone());
-            map.add(&written, files.iter().cloned());
-            map.add(&target.label, files);
-        }
+        attribute_locations(invocation, dependencies, name, &mut |label, files| {
+            map.add(label, files)
+        });
     }
     Ok(map)
+}
+
+/// The location map entries of one label-list attribute
+/// (LocationExpander.buildLocationMap, analysis/LocationExpander.java:428-485):
+/// per dependency, its executable (FilesToRunProvider.getExecutable) or
+/// else its files to build (`srcs` always the files to build), under both
+/// the written and the actual label (AliasProvider.getDependencyLabels).
+fn attribute_locations(
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    name: &str,
+    add: &mut dyn FnMut(&str, Vec<File>),
+) {
+    let (Some(spec), Some(AttrValue::Labels(labels))) =
+        (invocation.schema.get(name), invocation.attrs.get(name))
+    else {
+        return;
+    };
+    if spec.kind != crate::custom_rule::AttrKind::LabelList {
+        return;
+    }
+    for label in labels {
+        let Some(target) = dependencies.get(&attribute_dependency_key(label, name, spec)) else {
+            continue;
+        };
+        let files = match target.runfiles.files_to_run(&target.files).executable() {
+            Some(executable) if name != "srcs" => vec![executable.clone()],
+            _ => target.files.clone(),
+        };
+        let written = crate::label::Label::parse_canonical(label)
+            .map(|label| label.to_string())
+            .unwrap_or_else(|_| label.clone());
+        add(&written, files.clone());
+        add(&target.label, files);
+    }
+}
+
+/// RunfilesSupport.computeArgs (analysis/RunfilesSupport.java:602-610):
+/// the `args` attribute through `Expander.withDataLocations().tokenized`
+/// (crate::ctx_surface::expand_args), whose location map adds `data`
+/// (allowData) to the rule's. Its attribute errors fail the target at the
+/// rule's location.
+fn computed_args(
+    rule: &Rule,
+    invocation: &crate::custom_rule::CustomInvocation,
+    dependencies: &BTreeMap<String, DependencyTarget>,
+    surface: &crate::ctx_surface::RuleSurface,
+) -> anyhow::Result<Vec<String>> {
+    let values = invocation.declaration.builtin.target.strings("args");
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut data = Vec::new();
+    attribute_locations(invocation, dependencies, "data", &mut |label, files| {
+        data.push((label.to_owned(), files))
+    });
+    let tokens = crate::ctx_surface::expand_args(surface, "args", &values, &data)?;
+    let reported = surface.take_errors();
+    if !reported.is_empty() {
+        return Err(anyhow::Error::new(crate::rule_errors::ReportedErrors(
+            crate::rule_errors::located_events(rule.location.as_deref(), reported),
+        )));
+    }
+    Ok(tokens)
 }
 
 /// The implementation's return value shape
@@ -2346,7 +2390,7 @@ fn analyze_inner(
                     rule_class: &invocation.declaration.rule_class,
                     executable: executable_rule,
                     test: kind.test,
-                    args: invocation.declaration.builtin.target.strings("args"),
+                    args: &|| computed_args(rule, invocation, dependencies, &surface),
                 },
                 predeclared,
                 context.runfiles.default_executable.as_ref(),
