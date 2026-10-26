@@ -127,7 +127,9 @@ an executable attribute whose provider has runfiles
 Like a sandboxed spawn (SpawnInputExpander.addSingleRunfilesTreeToInputs,
 exec/SpawnInputExpander.java:87-135) every mapping entry is staged at
 `<tool>.runfiles/<path>` (`_repo_mapping` included, never `MANIFEST`, :212):
-files as N36 hardlinks, empty files as empty files. Inside the action the
+files as N36 hardlinks (a file of an external repository as a symlink into
+its repository tree, docs/HARDLINK_STAGING.md "Repository files: links into
+their tree"), empty files as empty files. Inside the action the other
 entries are regular files where Bazel's sandboxes show symlinks (and
 `--spawn_strategy=local` shows the execroot symlink farm with `MANIFEST`,
 capture B3L). `input_manifests` is accepted and ignored ("Legacy argument.

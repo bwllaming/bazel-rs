@@ -1,0 +1,33 @@
+{
+ "reference": "bazel 9.3.0",
+ "process_summaries": {
+  "standalone": [
+   "INFO: 19 processes: 16 internal, 4 local."
+  ],
+  "sandboxed": [
+   "INFO: 19 processes: 16 internal, 4 processwrapper-sandbox."
+  ]
+ },
+ "rows": [
+  {
+   "strategy": "standalone",
+   "lines": [
+    "test_runfile_is_symlink=yes",
+    "test_runfile_ran=real-tool-ran",
+    "input_ran=real-tool-ran",
+    "tool_runfile_is_symlink=yes",
+    "tool_runfile_ran=real-tool-ran"
+   ]
+  },
+  {
+   "strategy": "sandboxed",
+   "lines": [
+    "test_runfile_is_symlink=yes",
+    "test_runfile_ran=real-tool-ran",
+    "input_ran=real-tool-ran",
+    "tool_runfile_is_symlink=yes",
+    "tool_runfile_ran=real-tool-ran"
+   ]
+  }
+ ]
+}

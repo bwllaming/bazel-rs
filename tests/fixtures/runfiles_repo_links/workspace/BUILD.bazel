@@ -1,0 +1,28 @@
+load(":defs.bzl", "runner", "wrapper_test")
+
+# A test runfile of an external repository (rules_nodejs @nodejs//:node).
+wrapper_test(
+    name = "wrapper_test",
+    tool = "@ext//:bin/tool",
+)
+
+# An action input of an external repository run at its execution path.
+genrule(
+    name = "input",
+    srcs = ["@ext//:bin/tool"],
+    outs = ["input.txt"],
+    cmd = "echo \"input_ran=$$($(execpath @ext//:bin/tool) 2>&1 || echo exit $$?)\" > $@",
+)
+
+# A tool's runfile of an external repository in an action.
+runner(
+    name = "runner",
+    tool = "@ext//:bin/tool",
+)
+
+genrule(
+    name = "tool_runfiles",
+    outs = ["tool_runfiles.txt"],
+    cmd = "$(execpath :runner) > $@",
+    tools = [":runner"],
+)

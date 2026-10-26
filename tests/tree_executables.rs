@@ -1,7 +1,7 @@
 //! A generated File executable that is an `actions.symlink` alias of a file
 //! of an external repository runs through a symlink into that repository's
-//! published tree (docs/HARDLINK_STAGING.md, "Executables aliasing
-//! repository files"): a program that locates its installation from its own
+//! published tree (docs/HARDLINK_STAGING.md, "Repository files: links into
+//! their tree"): a program that locates its installation from its own
 //! resolved path — CPython's prefix search from `realpath(argv[0])`, here
 //! `readlink -f "$0"` — finds the repository beside it, as it does through
 //! Bazel's symlinked sandbox and execroot, under both strategies.
@@ -12,10 +12,16 @@
 //! (py_exec_tools_toolchain.bzl `current_interpreter_executable`). Staged as
 //! a hardlinked blob, it resolved to itself and failed with `Could not find
 //! platform independent libraries <prefix>` / `No module named 'encodings'`.
+//!
+//! Every other file of an external repository a process sees — an input at
+//! its own path, a tool's runfile, a test's runfile — is such a link as well
+//! (`runfiles_and_inputs_of_repository_files_link_into_their_repository`,
+//! pinned by a genuine capture): rules_nodejs's `bin/node` wrapper follows
+//! its own links to run the undeclared `nodejs/bin/node` beside it.
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 include!("support/executable_script.rs");
@@ -90,8 +96,8 @@ const BUILD: &str = r##"load(":defs.bzl", "aliased", "direct")
 
 aliased(name = "aliased", tool = "@tools//:bin/tool")
 
-# At its own execution path the executable keeps hardlink staging: its
-# declared installation mirrors the repository around it.
+# At its own execution path the executable is a link into the repository
+# too, like any file of the repository a process sees.
 direct(name = "direct", tool = "@tools//:bin/tool", data = ["@tools//:lib/landmark"])
 
 # Only an alias of a repository file runs through a link: aliases of a
@@ -216,4 +222,90 @@ fn aliased_repository_executables_resolve_into_their_repository() {
             );
         }
     }
+}
+
+/// How a spawn sees a file of an external repository, pinned by a genuine
+/// capture (tests/fixtures/runfiles_repo_links: capture.py,
+/// reference_receipt.json): a test's runfile, an input run at its execution
+/// path and a tool's runfile in an action, each rules_nodejs's
+/// readlink-resolving `bin/node` wrapper that runs its undeclared sibling
+/// `bin/real/tool`, standalone and sandboxed. The runfiles are symlinks and
+/// every wrapper finds its sibling in the repository tree (bazel-rs staged
+/// hardlinked blobs: exit 127, `.../bin/real/tool: No such file or
+/// directory`). Genuine's `sandboxed` ran as processwrapper-sandbox on this
+/// host.
+#[test]
+fn runfiles_and_inputs_of_repository_files_link_into_their_repository() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/runfiles_repo_links");
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture.join("reference_receipt.json")).unwrap())
+            .unwrap();
+    let ws = Workspace(
+        tempfile::Builder::new()
+            .prefix("runfiles-repo-links-cli-")
+            .tempdir_in("/tmp/opencode")
+            .unwrap(),
+    );
+    for name in ["MODULE.bazel", "BUILD.bazel", "defs.bzl", "repo.bzl"] {
+        fs::copy(fixture.join("workspace").join(name), ws.path().join(name)).unwrap();
+    }
+    write_executable_script(
+        &ws.path().join("tool.sh"),
+        fs::read_to_string(fixture.join("workspace/tool.sh")).unwrap(),
+        0o755,
+    );
+    let mut rows = Vec::new();
+    for strategy in ["standalone", "sandboxed"] {
+        seed_module_archives(&ws.path().join(strategy), &["platforms@1.0.0"]);
+        let args = [
+            "test".to_owned(),
+            builtin_registry_flag(),
+            format!("--spawn_strategy={strategy}"),
+            "--test_output=all".to_owned(),
+            "//:all".to_owned(),
+        ];
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = ws.run(strategy, &args);
+        let mut text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "{strategy}: {text}");
+        for name in ["input.txt", "tool_runfiles.txt"] {
+            text.push_str(&find_output(
+                &ws.path().join(strategy).join("actions"),
+                name,
+            ));
+        }
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| {
+                ["test_runfile_", "input_", "tool_runfile_"]
+                    .iter()
+                    .any(|key| line.starts_with(key))
+            })
+            .collect();
+        rows.push(serde_json::json!({"strategy": strategy, "lines": lines}));
+    }
+    assert_eq!(serde_json::Value::Array(rows), receipt["rows"]);
+}
+
+/// The content of the published output file `name` below `directory`.
+fn find_output(directory: &Path, name: &str) -> String {
+    let mut pending: Vec<PathBuf> = vec![directory.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if entry.file_name() == name {
+                return fs::read_to_string(path).unwrap();
+            }
+        }
+    }
+    panic!(
+        "no published output named {name} under {}",
+        directory.display()
+    )
 }

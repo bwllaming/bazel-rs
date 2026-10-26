@@ -258,24 +258,50 @@ never trusted, so every cache executes its actions once more; the keys stay
   command verifies only the trees it materializes (docs/DIGEST_MEMO.md,
   "Trust").
 
-## Executables aliasing repository files
+## Repository files: links into their tree
 
-A process's File executable that is a generated artifact (staged below
-`bazel-out/`, run by its execution path) and resolves — through published
-symlink outputs — to a file of a published repository tree is staged as an
+Every input file of a process that is — or resolves through published
+symlink outputs to — a file of a published repository tree is staged as an
 absolute symlink to that tree file instead of a hardlinked blob
-(`stage_tree_link`). A program that finds its installation through its own
-resolved path then finds it complete in the repository tree, as Bazel's
-symlinked sandboxes and execroot resolve such an alias into
-`<output_base>/external/<repo>`: CPython searches `lib/python3.X/` upwards
-from `realpath(argv[0])` (`Modules/getpath.py`). rules_python's PyCompile
-action runs `bazel-out/<exec>/bin/external/rules_python+/python/private/python3`,
-an `actions.symlink` of the hermetic interpreter
-(`py_exec_tools_toolchain.bzl` `current_interpreter_executable`); staged as a
-blob it resolved to itself and failed with `Could not find platform
-independent libraries <prefix>` / `No module named 'encodings'`, sandboxed or
-standalone. Genuine Bazel 9.3.0 builds the same fixture (worker, local and
-processwrapper-sandbox strategies).
+(`stage_tree_link`, `stage_input_file`): at its own execution path
+(`external/<repo>/...`), as an `actions.symlink` alias below `bazel-out/`, as
+a tool's runfile (`<tool>.runfiles/<repo>/...`) and as a test's runfile
+(`stage_content_inputs`, crate::test_runner), files of tree and source
+directory inputs included. Genuine Bazel 9.3 presents such a file as a
+symlink into `<output_base>/external/<repo>` everywhere: its runfiles trees
+are symlinks (SymlinkTreeHelper), its symlinked sandboxes link every input
+(`SymlinkedSandboxedSpawn`) and its execroot reaches `external/<repo>` through
+a directory symlink (`SymlinkForest`). A program that finds its installation
+through its own resolved path then finds it complete in the repository tree:
+
+* rules_nodejs's `bin/node` is a wrapper that follows `readlink` of its own
+  path and runs the undeclared `nodejs/bin/node` beside it. As a staged blob
+  it resolved to the runfiles directory and failed with exit 127
+  (`.../bin/nodejs/bin/node: No such file or directory`; ~/code's
+  `//src/beyondwork.ai/crossplane/testing/valuehunterlivedata:valuehunterlivedata_test`,
+  data `@nodejs//:node`).
+* CPython searches `lib/python3.X/` upwards from `realpath(argv[0])`
+  (`Modules/getpath.py`). rules_python's PyCompile action runs
+  `bazel-out/<exec>/bin/external/rules_python+/python/private/python3`, an
+  `actions.symlink` of the hermetic interpreter (`py_exec_tools_toolchain.bzl`
+  `current_interpreter_executable`); staged as a blob it resolved to itself
+  and failed with `Could not find platform independent libraries <prefix>` /
+  `No module named 'encodings'`.
+
+The genuine capture `tests/fixtures/runfiles_repo_links` (capture.py,
+reference_receipt.json; test
+`runfiles_and_inputs_of_repository_files_link_into_their_repository`) pins a
+test's runfile, an input run at its execution path and a tool's runfile, each
+such a wrapper, under the standalone and sandboxed strategies (genuine:
+local and processwrapper-sandbox): the runfiles are symlinks and every
+wrapper runs its sibling.
+
+Blob staging stays for everything else, where the digest guarantee needs a
+copy of the keyed bytes: workspace sources (live files a symlink would
+expose to edits during the build; genuine links them too — a declared
+difference since N36), published outputs (already store inodes) and every
+other path outside the repository tree stores (`REPOSITORY_TREE_STORES`; a
+repository rule's working area, a symlinked-in source directory).
 
 The key is unchanged (staging only). When it is linked, the tree file must
 still be exactly the keyed input — size, mode and digest — or the action
@@ -297,19 +323,21 @@ unless the path holds a regular file with the keyed content and mode
 inode by identical bytes and modes; test
 `tree_links_count_replaced_tree_files_as_modified_unless_identical`). The
 tree's file is never removed (the executor removes only `cas/` blobs).
-Executables at their own path (`external/<repo>/...`) keep hardlink staging:
-their declared installation is staged around them, mirroring the repository.
 Through the link a process can write to the tree file or, if the repository
 left them writable, next to it (a Python without rules_python's read-only
 `lib/` writes `__pycache__` there, as it does into Bazel's `external/`); the
 store's verification then makes the repository re-execute on the next
-command. Only repository tree files take this path: an alias of a workspace
-source, of a published regular output or of a file in a repository rule's
-working area keeps blob staging. Tests:
-`generated_executables_aliasing_tree_files_resolve_into_the_tree` (unit,
-standalone), `aliases_of_sources_and_outputs_keep_blob_staging` (unit),
+command. Tests:
+`generated_executables_aliasing_tree_files_resolve_into_the_tree` (unit:
+alias, own path, runfile and plain input),
+`aliases_of_sources_and_outputs_keep_blob_staging` (unit),
 `tests/tree_executables.rs` (CLI, sandboxed and standalone; aliases of a
-repository file, a workspace source and a generated file).
+repository file, a workspace source and a generated file; the genuine
+capture above).
+
+`PERF-STAGE staging <s> calls=<n> tree_links=<n> blobs=<n>` (after
+`execute.end`, under `BAZEL_RS_TIMING`) reports the summed wall time of input
+staging over all workers and how many files took each path.
 
 ## Benchmark
 

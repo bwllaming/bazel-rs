@@ -110,7 +110,9 @@ execution root `<cache>/tests/work/<key>-<pid>/execroot`:
 * inputs: the genuine `@bazel_tools` `test-setup.sh` and `generate-xml.sh`
   (bytes of the embedded bundle) at `external/bazel_tools/tools/test/...`, and
   the test's runfiles mapping (N23f, `_repo_mapping` included) staged **by
-  content** at `<executable>.runfiles/<path>` (N36 read-only store hardlinks,
+  content** at `<executable>.runfiles/<path>` (N36 read-only store hardlinks; a file of
+  an external repository is a symlink into its repository tree like
+  genuine's runfiles link, docs/HARDLINK_STAGING.md;
   empty files as empty files, a tree artifact as its files at
   `<path>/<file>` and an empty tree as its directory like
   SpawnInputExpander.addSingleRunfilesTreeToInputs, docs/TREE_SYMLINKS.md,
@@ -321,8 +323,8 @@ Coverage; `--run_under` for tests and labels; remote caching/execution of test
 actions (local-only, see above); `--test_strategy` values beyond
 `standalone`/`local`/`exclusive` and worker test strategies (test actions
 themselves run through the spawn strategy selection and are sandboxed by
-default, docs/SANDBOX.md; runfiles are hardlinks where
-Bazel's sandbox shows symlinks); `--keep_going` with build failures; Bazel's
+default, docs/SANDBOX.md; runfiles other than external repository files
+are hardlinks where Bazel's sandbox shows symlinks); `--keep_going` with build failures; Bazel's
 convenience symlinks (`bazel-testlogs`) and relative log paths; the
 test.cache_status proto (native `status.json`); `test.err` splitting beyond
 appending; BEP/test result events; Windows (`tw.exe`, `xml.exe`).

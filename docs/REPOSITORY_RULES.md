@@ -617,7 +617,7 @@ tree is swapped with the finished repository directory (the stage of the
 publication) in one step (`renameat2` with
 `RENAME_EXCHANGE`) and then moved from the stage path into that quarantine, so a
 reader in another process — an action running through a link into the tree
-(docs/HARDLINK_STAGING.md, "Executables aliasing repository files"), a command
+(docs/HARDLINK_STAGING.md, "Repository files: links into their tree"), a command
 reading the repository — never finds the tree's path empty; quarantining the
 tree first and renaming the stage after it left a window without any tree
 between the two renames, which remains only as the fallback for a filesystem

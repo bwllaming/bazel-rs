@@ -1,0 +1,5 @@
+module(name = "runfiles_repo_links")
+
+ext_repo = use_repo_rule("//:repo.bzl", "ext_repo")
+
+ext_repo(name = "ext")

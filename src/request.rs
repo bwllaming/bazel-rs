@@ -726,6 +726,7 @@ pub fn execute_with_tests(
         BTreeMap::new()
     };
     crate::perf_mark("execute.end");
+    crate::action::report_staging();
     let mut summary = BuildSummary::default();
     // `build` counts remote cache hits apart; the build part of `test` and
     // `run` counts them as executed (as before the split).
