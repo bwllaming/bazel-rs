@@ -15,6 +15,7 @@ use crate::repository::RepositorySet;
 use crate::repository_budget::HostBudget;
 use crate::request::PlannedRequest;
 use crate::scheduler::{self, Dependency, PlannedAction};
+use crate::shared_path::SharedPath;
 use crate::starlark_options::{BuildSettingInfo, LoadedTarget, SettingType};
 use crate::starlark_types::{File, FileData};
 use crate::toolchains::{
@@ -67,8 +68,8 @@ impl std::fmt::Debug for Artifact {
 /// The fields of an [`Artifact`].
 #[derive(Clone)]
 struct ArtifactData {
-    real: PathBuf,
-    exec: PathBuf,
+    real: SharedPath,
+    exec: SharedPath,
     producer: Option<(String, usize)>,
     owner: String,
     /// A tree artifact (declared directory).
@@ -99,8 +100,8 @@ impl Artifact {
     ) -> Self {
         let file = Self::compute_file(&exec, producer.is_some(), &owner, directory);
         Self(Arc::new(ArtifactData {
-            real,
-            exec,
+            real: real.into(),
+            exec: exec.into(),
             producer,
             owner,
             directory,
@@ -130,7 +131,7 @@ impl Artifact {
         // W0-A work counter: one File per Artifact, as Artifact::new.
         crate::plan_timings::note_artifact_file();
         let file = crate::analysis_runtime::workspace_status_file(name);
-        let exec = PathBuf::from(&file.path);
+        let exec = SharedPath::from(file.path.as_str());
         Self(Arc::new(ArtifactData {
             real: exec.clone(),
             exec,
@@ -8823,16 +8824,19 @@ impl Engine {
     ) -> Result<ResolvedInputs, String> {
         let mut inputs = Vec::new();
         // Lookups only: `inputs` keeps the declaration order.
-        let mut seen: HashMap<PathBuf, Artifact> = HashMap::new();
+        let mut seen: HashMap<SharedPath, Artifact> = HashMap::new();
         let mut locations = BTreeMap::new();
         for src in &rule.srcs {
             let label = self.resolve_rule_src(rule, src)?;
             let artifacts = self.artifacts(&label, config, built, declared)?;
-            let paths = artifacts.iter().map(|a| a.exec.clone()).collect::<Vec<_>>();
+            let paths = artifacts
+                .iter()
+                .map(|a| a.exec.to_path_buf())
+                .collect::<Vec<_>>();
             locations.insert(label.to_string(), paths.clone());
             locations.insert(src.clone(), paths);
             for artifact in artifacts {
-                if let Some(previous) = seen.get(&artifact.exec) {
+                if let Some(previous) = seen.get(artifact.exec.as_path()) {
                     // One artifact without its owner: a generated one is
                     // identified by its producer (two targets' Artifacts of
                     // a shared action's output are one input).
@@ -8968,7 +8972,7 @@ impl Engine {
             tests.retain(|test| !failed.contains(&test.label));
         }
         let produced = |artifact: &Artifact| crate::request::Produced {
-            real: artifact.real.clone(),
+            real: artifact.real.to_path_buf(),
             producer: artifact.producer.clone(),
         };
         // What the run targets read from their configurations, once per
@@ -8998,12 +9002,12 @@ impl Engine {
                 label,
                 crate::request::PlannedRun {
                     executable: produced(executable),
-                    executable_exec: executable.exec.clone(),
+                    executable_exec: executable.exec.to_path_buf(),
                     executable_short_path: executable.file.short_path.clone(),
                     tree: plan.tree.as_ref().map(|tree| {
                         (
                             produced(tree),
-                            crate::request::PlannedPath(tree.exec.clone()),
+                            crate::request::PlannedPath(tree.exec.to_path_buf()),
                         )
                     }),
                     entries: plan.entries.as_ref().map(|entries| {
@@ -12144,7 +12148,10 @@ impl Engine {
                 },
                 template_variables,
             );
-            let srcs = inputs.iter().map(|a| a.exec.clone()).collect::<Vec<_>>();
+            let srcs = inputs
+                .iter()
+                .map(|a| a.exec.to_path_buf())
+                .collect::<Vec<_>>();
             // RuleContext.getPackageDirectory below the output root
             // (GenRuleBase.java:353-355), without a trailing separator.
             let package_directory = rule.label.package_exec_path();
@@ -12287,7 +12294,7 @@ impl Engine {
                 .collect::<Vec<_>>();
             for artifact in &artifacts {
                 register_artifact(artifact_index, &artifact.file, artifact);
-                declared.insert((config, artifact.exec.clone()), artifact.clone());
+                declared.insert((config, artifact.exec.to_path_buf()), artifact.clone());
             }
             runfiles_info.insert(
                 key.clone(),
@@ -13624,7 +13631,7 @@ impl Engine {
                 .inputs
                 .iter()
                 .filter(|(real, _)| is_directory(real))
-                .map(|(_, exec)| exec.clone())
+                .map(|(_, exec)| exec.to_path_buf())
                 .collect();
             node.action.extra.source_directories.extend(marked);
         }
@@ -13688,7 +13695,7 @@ impl Engine {
             node: &'a PlannedAction,
             source_inputs: &'a BTreeMap<String, SourceInputs>,
             flagged_groups: &HashSet<*const scheduler::InputGroup>,
-        ) -> Vec<&'a PathBuf> {
+        ) -> Vec<&'a Path> {
             match source_inputs.get(&node.action.id) {
                 None => Vec::new(),
                 Some(sources)
@@ -14546,7 +14553,7 @@ fn source_paths(inputs: &[Artifact]) -> Vec<PathBuf> {
     inputs
         .iter()
         .filter(|artifact| artifact.producer.is_none() && seen.insert(&artifact.real))
-        .map(|artifact| artifact.real.clone())
+        .map(|artifact| artifact.real.to_path_buf())
         .collect()
 }
 
@@ -14618,17 +14625,17 @@ impl SourceInputs {
     }
 
     /// [`source_paths`] of the action's own inputs.
-    fn own<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a PathBuf> {
+    fn own<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a Path> {
         match &self.own {
-            Some(own) => own.iter().collect(),
+            Some(own) => own.iter().map(PathBuf::as_path).collect(),
             None => {
                 let mut seen: HashSet<&Path> = HashSet::new();
                 planned
                     .action
                     .inputs
                     .iter()
-                    .map(|(real, _)| real)
-                    .filter(|real| seen.insert(real.as_path()))
+                    .map(|(real, _)| real.as_path())
+                    .filter(|real| seen.insert(real))
                     .collect()
             }
         }
@@ -14636,12 +14643,12 @@ impl SourceInputs {
 
     /// Every source path of the action's listed inputs, deduplicated in
     /// order: [`source_paths`] over the own inputs followed by the groups'.
-    fn listed<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a PathBuf> {
+    fn listed<'a>(&'a self, planned: &'a PlannedAction) -> Vec<&'a Path> {
         let mut paths = self.own(planned);
         if self.groups.is_empty() {
             return paths;
         }
-        let mut seen: HashSet<&Path> = paths.iter().map(|path| path.as_path()).collect();
+        let mut seen: HashSet<&Path> = paths.iter().copied().collect();
         for group in &self.groups {
             for path in &group.sources {
                 if seen.insert(path) {
@@ -14689,7 +14696,7 @@ fn runfiles_tree_entries(
                         file.path
                     )
                 })?;
-                artifact.make_mut().exec = destination;
+                artifact.make_mut().exec = destination.into();
                 artifacts.push(artifact);
             }
             None => empty_files.push(destination),
@@ -14714,12 +14721,12 @@ fn runfiles_input_group(
     let tree_inputs: Vec<PathBuf> = artifacts
         .iter()
         .filter(|artifact| artifact.directory)
-        .map(|artifact| artifact.exec.clone())
+        .map(|artifact| artifact.exec.to_path_buf())
         .collect();
     let symlink_inputs: Vec<PathBuf> = artifacts
         .iter()
         .filter(|artifact| artifact.file.is_symlink)
-        .map(|artifact| artifact.exec.clone())
+        .map(|artifact| artifact.exec.to_path_buf())
         .collect();
     let namespace = scheduler::group_namespace_valid(
         root,
@@ -14735,7 +14742,7 @@ fn runfiles_input_group(
     let mut constant_metadata = Vec::new();
     for artifact in artifacts {
         if artifact.constant_metadata {
-            constant_metadata.push(artifact.exec.clone());
+            constant_metadata.push(artifact.exec.to_path_buf());
         }
         if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {
@@ -14949,7 +14956,7 @@ impl Engine {
                     } else {
                         lookup(&mut planning, file)?
                     };
-                    entries.push((path.clone(), Some(artifact.exec.clone())));
+                    entries.push((path.clone(), Some(artifact.exec.to_path_buf())));
                     mapped.push((path.clone(), Some(artifact.clone())));
                     inputs.push(artifact);
                 }
@@ -15018,8 +15025,8 @@ impl Engine {
                         vec![PathBuf::from(&tree_file.path)],
                         crate::action::Transform::RunfilesTree {
                             entries,
-                            manifest: manifest.exec.clone(),
-                            executable: Some(executable_artifact.exec.clone()),
+                            manifest: manifest.exec.to_path_buf(),
+                            executable: Some(executable_artifact.exec.to_path_buf()),
                             create: options.enable_runfiles,
                         },
                     ),
@@ -15400,14 +15407,14 @@ fn list_artifacts(action: &mut Action, inputs: &[Artifact]) {
     action.extra.tree_inputs = inputs
         .iter()
         .filter(|artifact| artifact.directory)
-        .map(|artifact| artifact.exec.clone())
+        .map(|artifact| artifact.exec.to_path_buf())
         .collect();
     // Unresolved symlink artifacts are read and staged as symlinks
     // (crate::action::ActionExtra::symlink_inputs).
     action.extra.symlink_inputs = inputs
         .iter()
         .filter(|artifact| artifact.file.is_symlink)
-        .map(|artifact| artifact.exec.clone())
+        .map(|artifact| artifact.exec.to_path_buf())
         .collect();
 }
 
@@ -15481,7 +15488,10 @@ fn plan_action(
         // Constant-metadata inputs (N63) key without their digest
         // (crate::action::prepare).
         if artifact.constant_metadata {
-            action.extra.constant_metadata.push(artifact.exec.clone());
+            action
+                .extra
+                .constant_metadata
+                .push(artifact.exec.to_path_buf());
         }
         if let Some((action_id, output_index)) = &artifact.producer {
             dependencies.push(Dependency {

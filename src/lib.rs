@@ -118,6 +118,7 @@ pub mod runfiles_tree;
 pub mod sandbox;
 pub mod scheduler;
 mod shared_actions;
+pub mod shared_path;
 pub mod snapshot;
 mod source_directories;
 pub mod source_links;

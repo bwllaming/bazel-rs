@@ -16,6 +16,7 @@
 //! actions on a --nokeep_going error (AbstractQueueVisitor.awaitTermination).
 
 use crate::action::{self, Action, ActionResult};
+use crate::shared_path::SharedPath;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ pub struct Dependency {
     /// Index in the producer's declared outputs, not sorted output order.
     pub output_index: usize,
     #[serde(with = "crate::snapshot::codec::path")]
-    pub destination: PathBuf,
+    pub destination: SharedPath,
 }
 
 /// Tree listings of an action's generated tree inputs, by input destination:
@@ -214,7 +215,7 @@ pub struct InputGroup {
     /// The directory every destination lies below (the runfiles tree).
     pub root: PathBuf,
     /// Source inputs (path, destination), in order.
-    pub inputs: Vec<(PathBuf, PathBuf)>,
+    pub inputs: Vec<(SharedPath, SharedPath)>,
     /// Generated inputs, in order.
     pub dependencies: Vec<Dependency>,
     /// Destinations of tree artifacts (crate::action::ActionExtra::tree_inputs).
@@ -286,7 +287,7 @@ pub fn group_namespace_valid(root: &Path, mut paths: Vec<&Path>) -> bool {
 /// listed input (a source input or a generated one), as validate_structure
 /// requires of the executed action.
 pub fn tree_inputs_listed(
-    inputs: &[(PathBuf, PathBuf)],
+    inputs: &[(SharedPath, SharedPath)],
     dependencies: &[Dependency],
     tree_inputs: &[PathBuf],
 ) -> bool {
@@ -325,15 +326,21 @@ pub fn groups_apart(action: &Action, groups: &[Arc<InputGroup>]) -> bool {
     let own = action
         .inputs
         .iter()
-        .map(|(_, destination)| destination)
+        .map(|(_, destination)| destination.as_path())
         .chain(
             action
                 .embedded_inputs
                 .iter()
-                .map(|(destination, _)| destination),
+                .map(|(destination, _)| destination.as_path()),
         )
-        .chain(&action.outputs)
-        .chain(action.extra.param_files.iter().map(|(path, _)| path));
+        .chain(action.outputs.iter().map(PathBuf::as_path))
+        .chain(
+            action
+                .extra
+                .param_files
+                .iter()
+                .map(|(path, _)| path.as_path()),
+        );
     for path in own {
         if groups.iter().any(|group| related(path, &group.root)) {
             return false;
@@ -354,7 +361,7 @@ impl PlannedAction {
     }
 
     /// The node's source inputs: its action's, then each group's.
-    pub fn inputs(&self) -> impl Iterator<Item = &(PathBuf, PathBuf)> {
+    pub fn inputs(&self) -> impl Iterator<Item = &(SharedPath, SharedPath)> {
         self.action
             .inputs
             .iter()
@@ -499,11 +506,10 @@ fn validate_listed(node: &PlannedAction) -> Result<(), String> {
 }
 
 /// A generated input in [`validate_node`]'s synthetic actions.
-fn generated_input(dependency: &Dependency) -> (PathBuf, PathBuf) {
-    (
-        PathBuf::from(GENERATED_SOURCE),
-        dependency.destination.clone(),
-    )
+fn generated_input(dependency: &Dependency) -> (SharedPath, SharedPath) {
+    static SOURCE: std::sync::LazyLock<SharedPath> =
+        std::sync::LazyLock::new(|| SharedPath::from(GENERATED_SOURCE));
+    (SharedPath::clone(&SOURCE), dependency.destination.clone())
 }
 
 struct Graph {
@@ -799,10 +805,10 @@ where
         let shared = groups.iter().flat_map(|group| group.dependencies.iter());
         for (dependency, producer) in dependencies.iter().chain(shared).zip(&producers) {
             if let Some(listing) = producer.trees.get(&dependency.output_index) {
-                listings.insert(dependency.destination.clone(), listing.clone());
+                listings.insert(dependency.destination.to_path_buf(), listing.clone());
             }
             node.action.inputs.push((
-                producer.outputs[dependency.output_index].clone(),
+                producer.outputs[dependency.output_index].clone().into(),
                 dependency.destination.clone(),
             ));
         }
@@ -1328,7 +1334,7 @@ mod tests {
         let source = fixture.0.join("source");
         fs::write(&source, "hello").unwrap();
         let mut root = node("root");
-        root.action.inputs.push((source, "src".into()));
+        root.action.inputs.push((source.into(), "src".into()));
         // Deliberately reverse lexical order to test declaration-order indices.
         root.action.outputs = vec!["z".into(), "a".into()];
         root.action.command = "cat src > z; printf second > a".into();
@@ -1936,7 +1942,10 @@ mod tests {
         Arc::new(InputGroup {
             root: root.into(),
             sources: inputs.iter().map(|(path, _)| path.clone()).collect(),
-            inputs,
+            inputs: inputs
+                .into_iter()
+                .map(|(path, destination)| (path.into(), destination.into()))
+                .collect(),
             dependencies,
             tree_inputs: Vec::new(),
             symlink_inputs: Vec::new(),
@@ -1953,7 +1962,7 @@ mod tests {
         let mut synthetic = listed.action.clone();
         for dependency in &listed.dependencies {
             synthetic.inputs.push((
-                PathBuf::from(GENERATED_SOURCE),
+                PathBuf::from(GENERATED_SOURCE).into(),
                 dependency.destination.clone(),
             ));
         }

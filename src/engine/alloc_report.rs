@@ -744,6 +744,17 @@ impl Footprint for PathBuf {
     }
 }
 
+// MEM4: a shared path's bytes, once per allocation.
+impl Footprint for crate::shared_path::SharedPath {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        let bytes = self.as_os_str().as_encoded_bytes();
+        walker.shared(bytes.as_ptr().cast(), |walker| {
+            walker.alloc(ARC_HEADER + bytes.len())
+        });
+        0
+    }
+}
+
 impl Footprint for std::ffi::OsString {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(self.capacity())

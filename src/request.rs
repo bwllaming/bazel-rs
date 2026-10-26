@@ -1098,7 +1098,7 @@ mod tests {
                 .map(|id| Dependency {
                     action_id: (*id).to_owned(),
                     output_index: 0,
-                    destination: PathBuf::from("bazel-out/stable-status.txt"),
+                    destination: PathBuf::from("bazel-out/stable-status.txt").into(),
                 })
                 .collect(),
             deferred: None,
@@ -1319,7 +1319,9 @@ mod tests {
             dependencies: vec![Dependency {
                 action_id: producer.to_owned(),
                 output_index: 0,
-                destination: PathBuf::from("bazel-out/tool.runfiles").join(destination),
+                destination: PathBuf::from("bazel-out/tool.runfiles")
+                    .join(destination)
+                    .into(),
             }],
             tree_inputs: Vec::new(),
             symlink_inputs: Vec::new(),

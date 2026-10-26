@@ -58,6 +58,7 @@
 
 use crate::request::PlannedRequest;
 use crate::scheduler::{Dependency, InputGroup, PlannedAction};
+use crate::shared_path::SharedPath;
 use serde::de::{Deserializer, Visitor};
 use serde::ser::{Error as _, Serializer};
 use serde::{Deserialize, Serialize};
@@ -326,7 +327,7 @@ struct GroupOut<'a> {
     #[serde(with = "path")]
     root: &'a Path,
     #[serde(with = "path_pairs")]
-    inputs: &'a [(PathBuf, PathBuf)],
+    inputs: &'a [(SharedPath, SharedPath)],
     dependencies: &'a [Dependency],
     #[serde(with = "paths")]
     tree_inputs: &'a [PathBuf],
@@ -373,7 +374,7 @@ struct GroupIn {
     #[serde(with = "path")]
     root: PathBuf,
     #[serde(with = "path_pairs")]
-    inputs: Vec<(PathBuf, PathBuf)>,
+    inputs: Vec<(SharedPath, SharedPath)>,
     dependencies: Vec<Dependency>,
     #[serde(with = "paths")]
     tree_inputs: Vec<PathBuf>,
@@ -847,14 +848,17 @@ impl Bytes {
 pub(crate) mod path {
     use super::*;
 
-    pub(crate) fn serialize<S: Serializer>(value: &Path, serializer: S) -> Result<S::Ok, S::Error> {
-        PathRef(value).serialize(serializer)
+    pub(crate) fn serialize<S: Serializer, P: AsRef<Path> + ?Sized>(
+        value: &P,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        PathRef(value.as_ref()).serialize(serializer)
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: From<PathBuf>>(
         deserializer: D,
-    ) -> Result<PathBuf, D::Error> {
-        Bytes::deserialize(deserializer).map(Bytes::path)
+    ) -> Result<P, D::Error> {
+        Bytes::deserialize(deserializer).map(|bytes| P::from(bytes.path()))
     }
 }
 
@@ -919,20 +923,24 @@ pub(crate) mod path_set {
 pub(crate) mod path_pairs {
     use super::*;
 
-    pub(crate) fn serialize<S: Serializer>(
-        value: &[(PathBuf, PathBuf)],
+    pub(crate) fn serialize<S: Serializer, P: AsRef<Path>>(
+        value: &[(P, P)],
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(value.iter().map(|(a, b)| (PathRef(a), PathRef(b))))
+        serializer.collect_seq(
+            value
+                .iter()
+                .map(|(a, b)| (PathRef(a.as_ref()), PathRef(b.as_ref()))),
+        )
     }
 
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>, P: From<PathBuf>>(
         deserializer: D,
-    ) -> Result<Vec<(PathBuf, PathBuf)>, D::Error> {
+    ) -> Result<Vec<(P, P)>, D::Error> {
         Vec::<(Bytes, Bytes)>::deserialize(deserializer).map(|value| {
             value
                 .into_iter()
-                .map(|(a, b)| (a.path(), b.path()))
+                .map(|(a, b)| (P::from(a.path()), P::from(b.path())))
                 .collect()
         })
     }
@@ -1232,7 +1240,7 @@ mod tests {
             id: "//pkg:gen".into(),
             command: "source x; echo hi > $@".into(),
             inputs: vec![
-                (raw(b"/ws/pkg/\xffin"), raw(b"pkg/\xffin")),
+                ((raw(b"/ws/pkg/\xffin")).into(), (raw(b"pkg/\xffin")).into()),
                 ("/ws/pkg/b".into(), "pkg/b".into()),
             ],
             outputs: vec![raw(b"bazel-out/k8-fastbuild/bin/pkg/\xfeout")],
@@ -1277,7 +1285,7 @@ mod tests {
             dependencies: vec![Dependency {
                 action_id: "//pkg:gen".into(),
                 output_index: 0,
-                destination: raw(b"bazel-out/k8-fastbuild/bin/pkg/\xfeout"),
+                destination: (raw(b"bazel-out/k8-fastbuild/bin/pkg/\xfeout")).into(),
             }],
             deferred: None,
             groups: Vec::new(),
@@ -1478,7 +1486,7 @@ mod tests {
         let process = &decoded.nodes[0].action;
         assert_eq!(
             process.inputs[0],
-            (raw(b"/ws/pkg/\xffin"), raw(b"pkg/\xffin"))
+            (raw(b"/ws/pkg/\xffin").into(), raw(b"pkg/\xffin").into())
         );
         assert_eq!(
             process.outputs,
@@ -1800,16 +1808,19 @@ mod tests {
         let mut group = InputGroup {
             root: root.into(),
             inputs: vec![
-                (raw(b"/ws/tools/\xffdata"), below(b"_main/tools/\xffdata")),
                 (
-                    PathBuf::from(format!("/ws/tools/{tag}")),
-                    below(format!("_main/tools/{tag}").as_bytes()),
+                    (raw(b"/ws/tools/\xffdata")).into(),
+                    (below(b"_main/tools/\xffdata")).into(),
+                ),
+                (
+                    (PathBuf::from(format!("/ws/tools/{tag}"))).into(),
+                    (below(format!("_main/tools/{tag}").as_bytes())).into(),
                 ),
             ],
             dependencies: vec![Dependency {
                 action_id: "//pkg:gen".into(),
                 output_index: 0,
-                destination: below(b"_main/pkg/dir"),
+                destination: below(b"_main/pkg/dir").into(),
             }],
             tree_inputs: vec![below(b"_main/pkg/dir")],
             symlink_inputs: Vec::new(),

@@ -92,8 +92,8 @@ pub fn platform_action(action: &crate::action::Action) -> Cow<'_, crate::action:
         .iter()
         .map(|(source, destination)| {
             (
-                internal_path(source).into_owned(),
-                internal_path(destination).into_owned(),
+                internal_path(source).into_owned().into(),
+                internal_path(destination).into_owned().into(),
             )
         })
         .collect();
@@ -157,7 +157,10 @@ mod tests {
         bytes.arguments = vec![format!("a{ff}")];
         bytes.environment = [(format!("K{ff}"), format!("v{ff}"))].into();
         bytes.outputs = vec![PathBuf::from(format!("bazel-out/bin/{ff}.txt"))];
-        bytes.inputs = vec![(PathBuf::from(format!("p/{ff}")), PathBuf::from("p/x"))];
+        bytes.inputs = vec![(
+            (PathBuf::from(format!("p/{ff}"))).into(),
+            PathBuf::from("p/x").into(),
+        )];
         let converted = platform_action(&bytes);
         use std::os::unix::ffi::OsStrExt;
         assert_eq!(

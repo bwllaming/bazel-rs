@@ -89,6 +89,7 @@
 //! of as many threads as cores), reporting the error a sequential read
 //! reports.
 
+use crate::shared_path::SharedPath;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -176,8 +177,10 @@ static NEXT_WORK: AtomicU64 = AtomicU64::new(0);
 pub struct Action {
     pub id: String,
     pub command: String,
+    /// Source inputs (path, destination), shared with the artifacts they
+    /// list (crate::shared_path).
     #[serde(with = "crate::snapshot::codec::path_pairs")]
-    pub inputs: Vec<(PathBuf, PathBuf)>,
+    pub inputs: Vec<(SharedPath, SharedPath)>,
     #[serde(with = "crate::snapshot::codec::paths")]
     pub outputs: Vec<PathBuf>,
     /// Native write, mutually exclusive with `program` and shell commands.
@@ -2967,7 +2970,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
             || action
                 .inputs
                 .iter()
-                .any(|(_, name)| !action.extra.tree_inputs.contains(name))
+                .any(|(_, name)| !action.extra.tree_inputs.contains(name.as_path()))
             || !action.extra.param_files.is_empty()
             || !action.embedded_inputs.is_empty()
             || action.extra.transform.is_some()
@@ -3156,15 +3159,21 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     for path in action
         .inputs
         .iter()
-        .map(|(_, destination)| destination)
+        .map(|(_, destination)| destination.as_path())
         .chain(
             action
                 .embedded_inputs
                 .iter()
-                .map(|(destination, _)| destination),
+                .map(|(destination, _)| destination.as_path()),
         )
-        .chain(&action.outputs)
-        .chain(action.extra.param_files.iter().map(|(path, _)| path))
+        .chain(action.outputs.iter().map(PathBuf::as_path))
+        .chain(
+            action
+                .extra
+                .param_files
+                .iter()
+                .map(|(path, _)| path.as_path()),
+        )
     {
         validate_relative(path)?;
     }
@@ -3176,12 +3185,12 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
     for destination in action
         .inputs
         .iter()
-        .map(|(_, destination)| destination)
+        .map(|(_, destination)| destination.as_path())
         .chain(
             action
                 .embedded_inputs
                 .iter()
-                .map(|(destination, _)| destination),
+                .map(|(destination, _)| destination.as_path()),
         )
     {
         validate_relative(destination)?;
@@ -3194,7 +3203,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
                 destination.display()
             ));
         }
-        input_names.push(destination.clone());
+        input_names.push(destination.to_path_buf());
     }
     let mut outputs: Vec<PathBuf> = Vec::new();
     for output in &action.outputs {
@@ -3343,14 +3352,14 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // and the link text of unresolved symlinks, which they reproduce
     // (SourceManifestAction.writeFile, SymlinkTreeHelper
     // .createRunfilesSymlinks).
-    let read = |destination: &PathBuf| match paths_only {
+    let read = |destination: &Path| match paths_only {
         None => true,
         Some(_) if action.extra.symlink_inputs.contains(destination) => true,
         Some(Transform::RunfilesTree {
             manifest,
             executable,
             ..
-        }) => manifest == destination || executable.as_ref() == Some(destination),
+        }) => manifest == destination || executable.as_deref() == Some(destination),
         Some(_) => false,
     };
     let reads: Vec<(&Path, InputKind)> = action
@@ -3358,11 +3367,15 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
         .iter()
         .filter(|(_, destination)| read(destination))
         .map(|(source, destination)| {
-            let kind = if action.extra.tree_inputs.contains(destination) {
+            let kind = if action.extra.tree_inputs.contains(destination.as_path()) {
                 InputKind::Tree
-            } else if action.extra.source_directories.contains(destination) {
+            } else if action
+                .extra
+                .source_directories
+                .contains(destination.as_path())
+            {
                 InputKind::SourceDirectory
-            } else if action.extra.symlink_inputs.contains(destination) {
+            } else if action.extra.symlink_inputs.contains(destination.as_path()) {
                 InputKind::Symlink
             } else {
                 InputKind::File
@@ -3408,14 +3421,14 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
     // component-wise search per input (6,000-input actions).
     let mut staged = staged.into_iter();
     let mut first_origins: HashSet<&[u8]> = HashSet::with_capacity(action.inputs.len());
-    let mut origin_entries: Vec<(&PathBuf, PathBuf)> = Vec::with_capacity(action.inputs.len());
+    let mut origin_entries: Vec<(&Path, PathBuf)> = Vec::with_capacity(action.inputs.len());
     let mut input_slots: HashMap<&[u8], usize> = HashMap::with_capacity(reads.len());
-    let mut input_entries: Vec<(&PathBuf, Staged)> = Vec::with_capacity(reads.len());
+    let mut input_entries: Vec<(&Path, Staged)> = Vec::with_capacity(reads.len());
     for (source, destination) in &action.inputs {
         let name = destination.as_os_str().as_bytes();
         if first_origins.insert(name) {
             origin_entries.push((
-                destination,
+                destination.as_path(),
                 absolute_input(source).map_err(|e| io_error("cannot resolve input", source, e))?,
             ));
         }
@@ -3444,23 +3457,22 @@ fn prepare(action: &Action, root: Option<&Path>) -> Result<PreparedAction, Strin
             }
             hash_map::Entry::Vacant(slot) => {
                 slot.insert(input_entries.len());
-                input_entries.push((destination, input));
+                input_entries.push((destination.as_path(), input));
             }
         }
     }
-    let by_destination = |a: &PathBuf, b: &PathBuf| {
-        compare_relative(a.as_os_str().as_bytes(), b.as_os_str().as_bytes())
-    };
+    let by_destination =
+        |a: &Path, b: &Path| compare_relative(a.as_os_str().as_bytes(), b.as_os_str().as_bytes());
     origin_entries.sort_unstable_by(|a, b| by_destination(a.0, b.0));
     input_entries.sort_unstable_by(|a, b| by_destination(a.0, b.0));
     // Sorted and unique: collecting checks the order in one pass.
     let origins: BTreeMap<PathBuf, PathBuf> = origin_entries
         .into_iter()
-        .map(|(destination, origin)| (destination.clone(), origin))
+        .map(|(destination, origin)| (destination.to_path_buf(), origin))
         .collect();
     let inputs: BTreeMap<PathBuf, Staged> = input_entries
         .into_iter()
-        .map(|(destination, input)| (destination.clone(), input))
+        .map(|(destination, input)| (destination.to_path_buf(), input))
         .collect();
     let mut hash = Sha256::new();
     for value in [FORMAT, std::env::consts::OS, std::env::consts::ARCH] {
@@ -5656,7 +5668,7 @@ fn with_embedded_inputs(action: &Action, cas: &Path) -> Result<Action, String> {
     let mut action = action.clone();
     for (destination, bytes) in std::mem::take(&mut action.embedded_inputs) {
         let blob = store_bytes(cas, bytes, 0o111)?;
-        action.inputs.push((blob, destination));
+        action.inputs.push((blob.into(), destination.into()));
     }
     Ok(action)
 }
@@ -6485,7 +6497,7 @@ mod tests {
             Action {
                 id: "copy".into(),
                 command: "cat src/input > out/result".into(),
-                inputs: vec![(source, PathBuf::from("src/input"))],
+                inputs: vec![(source.into(), PathBuf::from("src/input").into())],
                 outputs: vec![PathBuf::from("out/result")],
                 write: None,
                 program: None,
@@ -6532,7 +6544,7 @@ mod tests {
             Action {
                 id: "direct".into(),
                 command: String::new(),
-                inputs: vec![(source, "tools/quoted '$ tool".into())],
+                inputs: vec![(source.into(), "tools/quoted '$ tool".into())],
                 outputs: vec!["out/result".into()],
                 write: None,
                 program: Some("./tools/quoted '$ tool".into()),
@@ -6566,9 +6578,12 @@ mod tests {
             id: "tree".into(),
             command: String::new(),
             inputs: vec![
-                (data.clone(), "pkg/data.txt".into()),
-                (manifest.clone(), "bin/pkg/b.runfiles_manifest".into()),
-                (exe.clone(), "bin/pkg/b".into()),
+                (data.clone().into(), "pkg/data.txt".into()),
+                (
+                    manifest.clone().into(),
+                    "bin/pkg/b.runfiles_manifest".into(),
+                ),
+                (exe.clone().into(), "bin/pkg/b".into()),
             ],
             outputs: vec!["bin/pkg/b.runfiles/MANIFEST".into()],
             write: None,
@@ -6704,7 +6719,7 @@ mod tests {
             let mut action = Action {
                 inputs: inputs
                     .iter()
-                    .map(|p| (PathBuf::from("src"), p.clone()))
+                    .map(|p| (PathBuf::from("src").into(), p.into()))
                     .collect(),
                 outputs: outputs.clone(),
                 ..Action::default()
@@ -6792,7 +6807,7 @@ mod tests {
                 }
                 3 => action
                     .inputs
-                    .push((fixture.0.join("missing"), "input".into())),
+                    .push((fixture.0.join("missing").into(), "input".into())),
                 4 => action.outputs.clear(),
                 5 => action.outputs.push("other".into()),
                 _ => unreachable!(),
@@ -7342,7 +7357,7 @@ mod tests {
         validate_structure(&action).unwrap();
         action
             .inputs
-            .push((fixture.0.join("also-missing"), "src/input".into()));
+            .push((fixture.0.join("also-missing").into(), "src/input".into()));
         validate_structure(&action).unwrap();
         action.outputs.clear();
         validate_structure(&action).unwrap();
@@ -7428,11 +7443,11 @@ mod tests {
         let identical = fixture.0.join("identical");
         fs::write(&identical, b"hello\n").unwrap();
         fs::set_permissions(&identical, fs::Permissions::from_mode(0o644)).unwrap();
-        action.inputs.push((identical, "src/input".into()));
+        action.inputs.push((identical.into(), "src/input".into()));
         assert!(execute(&fixture.cache(), &action).unwrap().cache_hit);
         let conflicting = fixture.0.join("different");
         fs::write(&conflicting, "different").unwrap();
-        action.inputs.push((conflicting, "src/input".into()));
+        action.inputs.push((conflicting.into(), "src/input".into()));
         assert!(
             execute(&fixture.cache(), &action)
                 .unwrap_err()
@@ -7447,7 +7462,7 @@ mod tests {
         let link = fixture.0.join("link");
         symlink(&original.inputs[0].0, &link).unwrap();
         let mut action = original.clone();
-        action.inputs[0].0 = link;
+        action.inputs[0].0 = link.into();
         assert!(
             execute(&fixture.cache(), &action)
                 .unwrap_err()
@@ -7455,11 +7470,11 @@ mod tests {
         );
         let dirlink = fixture.0.join("dirlink");
         symlink(&fixture.0, &dirlink).unwrap();
-        action.inputs[0].0 = dirlink.join("source");
+        action.inputs[0].0 = dirlink.join("source").into();
         assert!(execute(&fixture.cache(), &action).is_err());
-        action.inputs[0].0 = fixture.0.clone();
+        action.inputs[0].0 = fixture.0.clone().into();
         assert!(execute(&fixture.cache(), &action).is_err());
-        action.inputs[0].0 = fixture.0.join("missing");
+        action.inputs[0].0 = fixture.0.join("missing").into();
         assert!(execute(&fixture.cache(), &action).is_err());
         for command in [
             format!("ln -s '{}' out/result", original.inputs[0].0.display()),
@@ -7725,7 +7740,7 @@ mod tests {
         assert_eq!(fs::read(tree.join("sub/b")).unwrap(), b"b");
         // A consumer stages the tree; its key covers the tree contents.
         let mut consumer = fixture.action();
-        consumer.inputs = vec![(tree.clone(), "in/tree".into())];
+        consumer.inputs = vec![(tree.clone().into(), "in/tree".into())];
         consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
         consumer.command =
             "cat in/tree/a in/tree/sub/b > out/result; test -d in/tree/sub/empty".into();
@@ -7733,7 +7748,7 @@ mod tests {
         assert_eq!(fs::read(&consumed.outputs[0]).unwrap(), b"ab");
         producer.command = producer.command.replace("printf b", "printf c");
         let changed = execute(&fixture.cache(), &producer).unwrap();
-        consumer.inputs = vec![(changed.outputs[0].clone(), "in/tree".into())];
+        consumer.inputs = vec![(changed.outputs[0].clone().into(), "in/tree".into())];
         let reconsumed = execute(&fixture.cache(), &consumer).unwrap();
         assert!(!reconsumed.cache_hit);
         assert_eq!(fs::read(&reconsumed.outputs[0]).unwrap(), b"ac");
@@ -7858,8 +7873,8 @@ mod tests {
         fs::set_permissions(&host, fs::Permissions::from_mode(0o600)).unwrap();
         let mut producer = fixture.action();
         producer.inputs = vec![
-            (source.clone(), "pkg/data.txt".into()),
-            (tool.clone(), "pkg/tool.sh".into()),
+            (source.clone().into(), "pkg/data.txt".into()),
+            (tool.clone().into(), "pkg/tool.sh".into()),
         ];
         let tree_path = PathBuf::from("bazel-out/k8-fastbuild/bin/pkg/image");
         producer.outputs = vec![tree_path.clone()];
@@ -7958,7 +7973,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // A consumer stages the tree: the linked files at their paths.
         let mut consumer = fixture.action();
         consumer.id = "consumer".into();
-        consumer.inputs = vec![(tree.clone(), "in/image".into())];
+        consumer.inputs = vec![(tree.clone().into(), "in/image".into())];
         consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/image")]);
         consumer.command = "cd in/image; for f in blobs/sha256/layer tool alias/deeper/g host; do \
              if [ -x $f ]; then x=x; else x=-; fi; echo \"$f $x $(cat $f)\"; done > ../../out/result; \
@@ -8031,7 +8046,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut link = fixture.action();
         link.id = "tree-link".into();
         link.command.clear();
-        link.inputs = vec![(produced.outputs[0].clone(), "in/tree".into())];
+        link.inputs = vec![(produced.outputs[0].clone().into(), "in/tree".into())];
         link.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
         link.outputs = vec!["out/link".into()];
         link.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/link")]);
@@ -8154,7 +8169,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let fixture = Fixture::new();
         let dir = source_tree(&fixture.0);
         let mut action = fixture.action();
-        action.inputs = vec![(dir.clone(), "in/dir".into())];
+        action.inputs = vec![(dir.clone().into(), "in/dir".into())];
         action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
         action.command = [
             "cd in/dir",
@@ -8265,7 +8280,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let dir = source_tree(&fixture.0);
         fs::remove_file(dir.join("dangling")).unwrap();
         let mut action = fixture.action();
-        action.inputs = vec![(dir.clone(), "in/dir".into())];
+        action.inputs = vec![(dir.clone().into(), "in/dir".into())];
         action.extra.source_directories = BTreeSet::from([PathBuf::from("in/dir")]);
         let directory_key = remote_action(&action, &prepare(&action, None).unwrap())
             .unwrap()
@@ -8279,7 +8294,12 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             ("x.sh", "x.sh"),
         ]
         .iter()
-        .map(|(source, name)| (dir.join(source), Path::new("in/dir").join(name)))
+        .map(|(source, name)| {
+            (
+                dir.join(source).into(),
+                Path::new("in/dir").join(name).into(),
+            )
+        })
         .collect();
         let files_key = remote_action(&files, &prepare(&files, None).unwrap())
             .unwrap()
@@ -8452,7 +8472,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let consumer = |id: &str| {
             let mut consumer = fixture.action();
             consumer.id = id.into();
-            consumer.inputs = vec![(tree.clone(), "in/tree".into())];
+            consumer.inputs = vec![(tree.clone().into(), "in/tree".into())];
             consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
             consumer.command =
                 "cat in/tree/a in/tree/sub/b > out/result; test -d in/tree/sub/empty".into();
@@ -8640,18 +8660,20 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         action.inputs = (0..300)
             .map(|i| {
                 (
-                    tree.join(format!("f{i:03}")),
-                    PathBuf::from(format!("in/{i}")),
+                    tree.join(format!("f{i:03}")).into(),
+                    PathBuf::from(format!("in/{i}")).into(),
                 )
             })
             .collect();
-        action.inputs.push((tree.join("f001"), "in/0".into()));
-        action.inputs[100].0 = fixture.0.join("missing");
+        action
+            .inputs
+            .push((tree.join("f001").into(), "in/0".into()));
+        action.inputs[100].0 = fixture.0.join("missing").into();
         let Err(error) = prepare(&action, None) else {
             panic!("missing input");
         };
         assert!(error.starts_with("cannot inspect") && error.contains("missing"));
-        action.inputs[100].0 = tree.join("f100");
+        action.inputs[100].0 = tree.join("f100").into();
         let Err(error) = prepare(&action, None) else {
             panic!("conflicting duplicate");
         };
@@ -9288,19 +9310,19 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // A consumer stages the literal symlink and keys its text.
         let mut consumer = fixture.action();
         consumer.id = "consumer".into();
-        consumer.inputs = vec![(first.outputs[0].clone(), "pkg/link".into())];
+        consumer.inputs = vec![(first.outputs[0].clone().into(), "pkg/link".into())];
         consumer.command = "readlink pkg/link > out/result; test -L pkg/link".into();
         consumer.extra.symlink_inputs = BTreeSet::from([PathBuf::from("pkg/link")]);
         let read = execute(&fixture.cache(), &consumer).unwrap();
         assert_eq!(fs::read(&read.outputs[0]).unwrap(), b"../x\n");
         let mut retargeted = consumer.clone();
-        retargeted.inputs = vec![(normalized.outputs[0].clone(), "pkg/link".into())];
+        retargeted.inputs = vec![(normalized.outputs[0].clone().into(), "pkg/link".into())];
         assert_ne!(key(&consumer), key(&retargeted));
         let read = execute(&fixture.cache(), &retargeted).unwrap();
         assert_eq!(fs::read(&read.outputs[0]).unwrap(), b"../y\n");
         // A regular file is no unresolved symlink input.
         let mut regular = consumer.clone();
-        regular.inputs = vec![(fixture.0.join("source"), "pkg/link".into())];
+        regular.inputs = vec![(fixture.0.join("source").into(), "pkg/link".into())];
         assert!(
             execute(&fixture.cache(), &regular)
                 .unwrap_err()
@@ -9309,7 +9331,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // Runfiles transforms reproduce the link text.
         let manifest = Action {
             id: "manifest".into(),
-            inputs: vec![(first.outputs[0].clone(), "pkg/link".into())],
+            inputs: vec![(first.outputs[0].clone().into(), "pkg/link".into())],
             outputs: vec!["bin/b.runfiles_manifest".into()],
             extra: ActionExtra {
                 transform: Some(Transform::RunfilesManifest {
@@ -9465,7 +9487,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // A consumer stages the producer's inode.
         let mut consumer = fixture.action();
         consumer.id = "consumer".into();
-        consumer.inputs = vec![(a.outputs[0].clone(), "generated".into())];
+        consumer.inputs = vec![(a.outputs[0].clone().into(), "generated".into())];
         consumer.command = "stat -c %i generated > out/result".into();
         let consumed = execute(&fixture.cache(), &consumer).unwrap();
         assert_eq!(
@@ -9499,8 +9521,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         action.inputs = vec![
             (first.clone(), "a".into()),
             (first, "again/a".into()),
-            (second, "b".into()),
-            (third, "c".into()),
+            (second.into(), "b".into()),
+            (third.into(), "c".into()),
         ];
         action.command = "stat -L -c %i a again/a b c > out/result".into();
         let result = execute(&fixture.cache(), &action).unwrap();
@@ -9562,7 +9584,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut link = fixture.action();
         link.id = "virtual".into();
         link.command.clear();
-        link.inputs = vec![(header.clone(), "pkg/hdr.h".into())];
+        link.inputs = vec![(header.clone().into(), "pkg/hdr.h".into())];
         link.outputs = vec!["pkg/_virtual_includes/hdr.h".into()];
         link.extra.transform = Some(Transform::Symlink {
             target: "pkg/hdr.h".into(),
@@ -9575,7 +9597,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut chain = link.clone();
         chain.id = "chain".into();
         chain.inputs = vec![(
-            linked.outputs[0].clone(),
+            linked.outputs[0].clone().into(),
             "pkg/_virtual_includes/hdr.h".into(),
         )];
         chain.outputs = vec!["pkg/again.h".into()];
@@ -9592,12 +9614,12 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut consumer = fixture.action();
         consumer.id = "compile".into();
         consumer.inputs = vec![
-            (header.clone(), "pkg/hdr.h".into()),
+            (header.clone().into(), "pkg/hdr.h".into()),
             (
-                linked.outputs[0].clone(),
+                linked.outputs[0].clone().into(),
                 "pkg/_virtual_includes/hdr.h".into(),
             ),
-            (chained.outputs[0].clone(), "pkg/again.h".into()),
+            (chained.outputs[0].clone().into(), "pkg/again.h".into()),
         ];
         consumer.command = "stat -L -c %i pkg/hdr.h pkg/_virtual_includes/hdr.h pkg/again.h | sort -u | wc -l > out/result".into();
         let compiled = execute(&fixture.cache(), &consumer).unwrap();
@@ -9614,12 +9636,12 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         // A changed target invalidates the old entry's validity.
         fs::write(&header, b"#pragma twice\n").unwrap();
         let mut stale = link.clone();
-        stale.inputs = vec![(header.clone(), "pkg/hdr.h".into())];
+        stale.inputs = vec![(header.clone().into(), "pkg/hdr.h".into())];
         assert!(!execute(&fixture.cache(), &stale).unwrap().cache_hit);
         // Other symlinks stay rejected as inputs.
         let outside = fixture.0.join("outside-link");
         symlink(&header, &outside).unwrap();
-        consumer.inputs = vec![(outside, "pkg/hdr.h".into())];
+        consumer.inputs = vec![(outside.into(), "pkg/hdr.h".into())];
         assert!(
             execute(&fixture.cache(), &consumer)
                 .unwrap_err()
@@ -9674,7 +9696,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut action = fixture.action();
         action.id = "input".into();
         action.command = "sh external/repo/bin/tool".into();
-        action.inputs = vec![(tool.clone(), "external/repo/bin/tool".into())];
+        action.inputs = vec![(tool.clone().into(), "external/repo/bin/tool".into())];
         let ran = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(fs::read(&ran.outputs[0]).unwrap(), b"in the tree\n");
         let wrote = run(
@@ -9701,7 +9723,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         link.id = format!("alias-{name}");
         link.command.clear();
         link.inputs = vec![(
-            source.to_path_buf(),
+            source.to_path_buf().into(),
             format!("external/repo/bin/{name}").into(),
         )];
         link.outputs = vec![format!("bazel-out/bin/tools/{name}").into()];
@@ -9726,7 +9748,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         action.command.clear();
         action.program = Some(program.into());
         action.executable_file = true;
-        action.inputs = vec![(source, program.into())];
+        action.inputs = vec![(source.into(), program.into())];
         execute(&fixture.cache(), &action)
     }
 
@@ -9893,7 +9915,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         fs::write(&module, b"# stdlib\n").unwrap();
         fs::set_permissions(&module, fs::Permissions::from_mode(0o444)).unwrap();
         let mut action = fixture.action();
-        action.inputs = vec![(module.clone(), "src/input".into())];
+        action.inputs = vec![(module.clone().into(), "src/input".into())];
         let executed = execute(&fixture.cache(), &action).unwrap();
         assert_eq!(fs::read(&executed.outputs[0]).unwrap(), b"# stdlib\n");
         assert_eq!(fs::metadata(&module).unwrap().nlink(), 1);
@@ -9925,7 +9947,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             let mut link = fixture.action();
             link.id = id.into();
             link.command.clear();
-            link.inputs = vec![(source.to_path_buf(), target.into())];
+            link.inputs = vec![(source.to_path_buf().into(), target.into())];
             link.outputs = vec![format!("out/{id}").into()];
             link.extra.transform = Some(Transform::Symlink {
                 target: target.into(),
@@ -9952,8 +9974,8 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut consumer = fixture.action();
         consumer.id = "consumer".into();
         consumer.inputs = vec![
-            (linked.outputs[0].clone(), "x/hdr.h".into()),
-            (tree_linked.outputs[0].clone(), "x/dir".into()),
+            (linked.outputs[0].clone().into(), "x/hdr.h".into()),
+            (tree_linked.outputs[0].clone().into(), "x/dir".into()),
         ];
         consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("x/dir")]);
         consumer.command = "cat x/hdr.h x/dir/a x/dir/sub/b > out/result".into();
@@ -10004,7 +10026,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         let mut link = fixture.action();
         link.id = "tree-link".into();
         link.command.clear();
-        link.inputs = vec![(tree.outputs[0].clone(), "in/tree".into())];
+        link.inputs = vec![(tree.outputs[0].clone().into(), "in/tree".into())];
         link.extra.tree_inputs = BTreeSet::from([PathBuf::from("in/tree")]);
         link.outputs = vec!["out/link".into()];
         link.extra.tree_outputs = BTreeSet::from([PathBuf::from("out/link")]);
@@ -10030,7 +10052,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
         assert_eq!(hit.trees, linked.trees);
         let mut consumer = fixture.action();
         consumer.id = "tree-consumer".into();
-        consumer.inputs = vec![(linked.outputs[0].clone(), "t".into())];
+        consumer.inputs = vec![(linked.outputs[0].clone().into(), "t".into())];
         consumer.extra.tree_inputs = BTreeSet::from([PathBuf::from("t")]);
         consumer.command = "cat t/a t/sub/b > out/result; stat -c %i t/a >> out/result".into();
         let consumed = execute(&fixture.cache(), &consumer).unwrap();

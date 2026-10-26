@@ -103,7 +103,10 @@ fn staging_benchmark() {
             action: Action {
                 id: format!("consumer-{index:02}"),
                 command: "find sdk -type f | wc -l > out.txt; head -c 8 sdk/d00/f0000.bin | od -An -tx1 >> out.txt".into(),
-                inputs: inputs.clone(),
+                inputs: inputs
+                    .iter()
+                    .map(|(path, relative)| (path.into(), relative.into()))
+                    .collect(),
                 outputs: vec!["out.txt".into()],
                 write: None,
                 program: None,
