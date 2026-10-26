@@ -17,6 +17,17 @@ Measured on `~/code` with private caches (see `artifacts/RELEASES.log` for each 
   (`valuehunterlivedata_test`) and `website3:image_structure_test` are fixed since.
 - Warm no-op builds: `//src/ts/...` 1.5 s, bworker 1.4 s, oauth2token 0.3 s.
 - Peak memory: every tree is under ~8 GB; the default cap is min(16 GB, 50% RAM).
+- Re-checked after the aspect-order fix (main 2283a62): `build --nobuild //src/...`
+  rc 0, 139 s / 7.4 GB (snapshot on, lockfile-changing run), 123 s / 8.1 GB on the
+  run that saves the snapshot. Cold `--nobuild //src/python:bworker_env` 74–75 s
+  (was 456 s before parallel fetching); warm `--nobuild //src/beyondwork.ai/...`
+  51–55 s / 3.8 GB.
+- With the checkout's own `.bazelrc` (storagebox lines overridden on the command
+  line): oauth2token build, `utils/...` tests (35/35), `--config=linux_amd64` and
+  `--config=linux_arm64` builds, query, info and `run` of internal tools all pass;
+  warm `run` overhead 0.20–0.35 s.
+- First release: v0.1.0 (pre-release) on github.com/bwllaming/bazel-rs
+  (scripts/release.py, docs/RELEASING.md).
 - `cquery 'deps(//src/...)' --output=streamed_proto --transitions=lite` succeeds:
   143–145 s / 8,001 MiB peak analysis, then 2.04 s / 1,514 MiB on a graph hit.
   The roots query shares the graph (1.74 s). All runs retained an 8 GiB cap.
@@ -50,9 +61,15 @@ Done since the last increment recorded under "History", one line each:
       now pass, with additional split/aspect/shared-output TD scratch coverage;
       full-workspace revision comparisons remain unmeasured, not full cquery parity.
 
+- [x] Commands: `fetch`, `clean`, `shutdown`, `gc`, `mod` subcommands, `help`,
+      `canonicalize-flags`; startup `--quiet`; interactive progress display.
+- [x] Remote: gRPC cache and remote execution (REAPI v2); BEP files, `--profile`,
+      execution logs; persistent workers (per command; unused by ~/code).
+- [x] Cache garbage collection; children get default signal dispositions.
+
 ## Remaining work
 
-### In progress
+### Recently finished (other session's cquery track) and in progress
 
 - [x] Interactive progress display, TTY only (docs/PROGRESS.md).
 - [x] Startup option `--quiet` (docs/STARTUP_QUIET.md).
@@ -91,11 +108,22 @@ Done since the last increment recorded under "History", one line each:
 - [x] `help <command>`/`startup_options`/`target-syntax`/`info-keys`, `canonicalize-flags`
       (docs/COMMANDS.md).
 - [ ] `dump`, `print_action` (low priority).
+- [ ] `vendor` (explicit error: no vendor-directory read path, docs/COMMANDS.md).
+- [ ] `query --output=xml|proto|streamed_proto|streamed_jsonproto` and SkyQuery
+      (`--universe_scope`, `--infer_universe_scope`); `cquery --output=starlark`
+      (needed for target-determinator's default incompatible-target filtering).
+- [ ] `--target_pattern_file`, `--notest_keep_going`, `--run_under=<label>`
+      (all rejected explicitly today).
 
 ### Running ~/code the way its users do
 
-- [ ] Validate with the checkout's own `.bazelrc` (all measurements so far used
-      `--ignore_all_rc_files`), incl. `--config=linux_amd64` / `linux_arm64`.
+- [x] Validate with the checkout's own `.bazelrc`, incl. `--config=linux_amd64` /
+      `linux_arm64` (one fix: `--sandbox_add_mount_pair` identity mounts); `BAZELRC`
+      is merged after `.bazelrc` like 9.3, and `--repo_env=HTTPS_PROXY` reaches the
+      downloader (checked with a local proxy).
+- [ ] Coder's `BAZELRC=.bazelrc.coder` path through the real egress proxy, and
+      `--config=buildbarn` against the real BuildBarn: both untested (not allowed
+      to contact them; only loopback/local stand-ins were used).
 - [x] gRPC remote cache (`grpc://`, `grpcs://`, `unix:`; docs/REMOTE_CACHE.md):
       entries shared with genuine Bazel both ways (10/10, in-process server and
       bazel-remote); receipt `tests/fixtures/remote_cache/grpc_receipt.json`.
@@ -103,15 +131,24 @@ Done since the last increment recorded under "History", one line each:
       `--remote_exec_header`, `--remote_local_fallback`; docs/REMOTE_EXECUTION.md):
       identical Execute requests to genuine Bazel (12/12 build spawns, 2/2 test
       spawns) and shared results with NativeLink 1.8.2; build and test spawns.
-- [ ] Build Event Protocol (`--build_event_json_file`, `--build_event_binary_file`,
-      `--bes_backend`), `--profile` traces, `--execution_log_*_file`.
-- [ ] Persistent workers (`--strategy=...=worker`, `supports-workers`), if any
-      rule set in ~/code needs them for speed.
-- [ ] Warm `run` latency of internal tools: no-op `bazel-rs run //tool` end to end.
+- [x] Build Event Protocol files, `--profile` traces, `--execution_log_*_file`
+      (docs/BEP.md, docs/PROFILE.md).
+- [ ] `--bes_backend` (gRPC Build Event Service upload) fails explicitly.
+- [ ] Remote: `--remote_download_minimal`/`toplevel` behave like `all`;
+      `--remote_cache_compression`; Bazel's exit code 34 for remote failures;
+      capability check at first use instead of startup.
+- [x] Persistent workers (docs/PERSISTENT_WORKERS.md); no ~/code action uses them.
+      Workers live for one command only (no server).
+- [x] Warm `run` latency measured: 0.20–0.35 s overhead on a snapshot hit.
+- [ ] Lower warm `run`/no-op overhead further: replay of local repository rules
+      (rules_java's definition load alone 68 ms), per-input action-key hashing on
+      the cache-check critical path (GoStdlib ~6,000 inputs), per-action
+      filesystem checks (~120k syscalls on a warm run).
 - [ ] `.bazeliskrc` pins 9.1.1, which rewrites the lockfile as v26 and makes
       bazel-rs (v28) miss its snapshot after each genuine run (user's decision).
 - [ ] Complete remaining test coverage in subsets, as required by the user;
-      do not run the whole repository's tests in one invocation.
+      do not run the whole repository's tests in one invocation. SURVEY2 predates
+      about 40 merges: re-run the tree-by-tree survey on the current binary.
 
 ### Disk usage
 
@@ -122,11 +159,17 @@ Done since the last increment recorded under "History", one line each:
 
 ### Performance
 
-- [ ] Cold: ~80 s of sequential module-extension evaluation and interpreter
-      download in `//src/python:bworker_env`.
-- [ ] Snapshot miss: ~3.5 s stat-checking reused repository trees on bworker_env;
-      use directory stamps as the action cache now does.
-- [ ] Re-measure `//src/beyondwork.ai/...` (57 s / 8.7 GB warm `--nobuild` before MEM4).
+- [x] Cold bworker_env 124 → 75 s: overlapped `download(block=False)`, 32 fetch
+      workers with 8 download permits.
+- [ ] Cold, remaining: `zig_config` holds the coordinator 14–24 s (download,
+      xz extract, `zig build-exe`, a second extract); toolchain extensions run one
+      after another (~10 s; evaluate independent extensions in parallel like
+      Skyframe); let the prefetcher decide `select()` conditions early so wheels
+      fetch during that wait. Cold `//src/...` pattern loading (237 s) is unprofiled.
+- [x] Snapshot-miss repository-tree checks: measured ≤ 0.2 s of wall time (the
+      3.5 s is summed over threads); not worth weakening tamper detection.
+- [ ] Analysis speed on a snapshot miss: phase 1 is 46 of 51 s on
+      `//src/beyondwork.ai/...` and 95 of 138 s on `//src/...`.
 
 ### Known parity gaps (documented, not blocking ~/code)
 
@@ -146,7 +189,25 @@ Done since the last increment recorded under "History", one line each:
 - [x] Five network-dependent tests: their module archives come from a
       sha256-verified test mirror under the target dir, filled once
       (tests/fixtures/module_archives/README.md).
-- [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces); Linux x86_64 only.
+- [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces);
+      `--sandbox_add_mount_pair` with a real remount fails (genuine ignores it here).
+- [ ] Console/exit codes: build results print `label<TAB>path` on stdout where
+      genuine prints `Target //x up-to-date:` on stderr; no critical path or
+      `N processes` line; option errors exit 1 (genuine 2); `print()` inside
+      execution-time callbacks (Args.map_each) has no `DEBUG:` prefix.
+- [ ] `mod`: extensions are evaluated only when their output is printed (genuine
+      evaluates all); `show_repo` proto outputs.
+- [ ] Older bazel-rs binaries sharing a cache are only partly protected from GC.
+
+### Distribution
+
+- [x] GitHub releases: scripts/release.py, scripts/bump_version.py,
+      docs/RELEASING.md; v0.1.0 published as a pre-release.
+- [ ] Portability: the binary needs glibc ≥ 2.39 (Ubuntu 24.04+); a static musl or
+      older-glibc build for other hosts. Linux x86_64 only (no arm64, no macOS).
+- [ ] No CI on GitHub: the suite needs the genuine Bazel ELF and network fixtures;
+      at least fmt/clippy/`cargo test --lib` could run there.
+- [ ] NOTICE names "The bazel-rs Authors" as copyright holder (placeholder).
 
 ## History
 

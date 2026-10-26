@@ -1,6 +1,18 @@
 # Full-parity roadmap and acceptance gates
 
-## Current state
+## Current state (2026-10-26)
+
+bazel-rs builds, tests, runs and queries the `~/code` application: `build --nobuild
+//src/...` succeeds, `build -k //src/...` builds 1,813 of 1,816 top-level targets (the
+3 failures are a genrule that writes into its own inputs), tree-by-tree tests pass,
+and the checkout's own `.bazelrc` (incl. `--config=linux_amd64`/`linux_arm64`) works.
+Warm no-op builds take 0.2–1.5 s through the analysis snapshot; peak memory stays
+under ~8 GB. v0.1.0 is released (docs/RELEASING.md). PLAN.md "Status" has the
+measurements and "Remaining work" the open items; the milestone sections below
+carry a short status line each. Everything from here to "Why a launcher is
+insufficient" is the historical record of how the application boundary moved.
+
+## History of the application boundary
 
 This is a new native engine, not a Rust port of upstream's implementation and not
 a Rust launcher around the Java server. Only the explicitly documented subset is
@@ -83,8 +95,7 @@ at Starlark aspect propagation (`attr.aspects`) and `cc_import`/`cc_library`
 cdeps stop at `cc_common.compile` (`cc_internal` natives), both as explicit
 failures.
 
-That progression is history. The current demonstrated `~/code` application
-boundaries are: build/test of `~/code` targets succeeds with the built-in
+That progression is history. The application boundaries at that time were: build/test of `~/code` targets succeeds with the built-in
 modules (now the default; formerly `--experimental-builtin-modules`)
 (gazelle_bin, str, str_test, aws_script;
 `bazel test` passes — the last gap was the rules_go `_validation` output
@@ -219,6 +230,12 @@ main-repo filegroup smoke checks. No whole-repo speed claim.
 
 ### 1. Loading and repository graph
 
+Status: met for `~/code` (Bzlmod, lockfile byte-identical to 9.3, extensions,
+repository rules, rc files, parallel loading). Open: SkyQuery
+(`--universe_scope`), query `xml`/`proto`/`streamed_*` outputs,
+`--target_pattern_file`, `vendor`; there is no in-memory incremental graph (no
+server) — the analysis snapshot replaces it for unchanged inputs.
+
 - `.bzl` loads, module freezing, load cycles, Bazel Starlark dialect/builtins,
   `glob`, `select`, package defaults, visibility/package groups, ignore files.
 - Bzlmod resolution/lockfiles, canonical/apparent repo mappings, registry access,
@@ -244,6 +261,11 @@ cannot accidentally publish telemetry or change the checkout during testing.
 
 ### 2. Configured target and rule analysis
 
+Status: analysis of all of `//src/...` succeeds; `cquery` subset with
+target-determinator support (docs/CQUERY.md). Open: `aquery`, `cquery
+--output=starlark`, the remaining aspect features (PLAN.md), one toolchain on two
+execution platforms in one configuration.
+
 - Custom rules/attributes/providers, `depset`, aspects, `ctx.actions`, `Args`,
   executable tools, tree artifacts, runfiles and `FilesToRunProvider`.
 - Configurations, platforms, toolchain resolution, exec groups, transitions,
@@ -255,6 +277,12 @@ and multiarch image analysis. Public/private visibility tests must include
 negative cases; accepted attributes may never become silent no-ops.
 
 ### 3. Production execution
+
+Status: parallel scheduling, process supervision, Landlock sandbox, action cache
+with GC, HTTP and gRPC remote caches, remote execution (REAPI v2), per-command
+persistent workers. Open: namespace sandbox / private `/tmp`, workers that live
+across commands, `--remote_download_minimal`/`toplevel`, remote compression,
+cross-host reproducibility tests.
 
 - Parallel DAG scheduling, cancellation, process supervision and timeouts.
 - Linux sandboxing beyond N59's Landlock filesystem-write sandbox
@@ -276,14 +304,16 @@ cache corruption and concurrent-process tests; reproducibility tests across host
 - Test execution, exit codes, sharding, timeouts, test env, caching, flaky
   attempts, summaries, test_suite expansion and test targets under `run` are
   N23g (docs/TEST_COMMAND.md); runfiles trees, `run`, command `--run_under` and
-  script-path generation are N23f (docs/RUNFILES_TREES.md). Coverage,
-  `--run_under` labels (and for tests), remote test execution and
-  `--test_strategy` values beyond `standalone`/`local`/`exclusive` (test
-  actions themselves run sandboxed like any action, docs/SANDBOX.md),
-  `--notest_keep_going` and a FAILED TO BUILD summary remain.
+  script-path generation are N23f (docs/RUNFILES_TREES.md). `--keep_going`
+  with FAILED TO BUILD summaries (docs/KEEP_GOING.md) and remote test execution
+  (docs/REMOTE_EXECUTION.md) are in. Coverage, `--run_under` labels (and for
+  tests), `--test_strategy` values beyond `standalone`/`local`/`exclusive` (test
+  actions themselves run sandboxed like any action, docs/SANDBOX.md) and
+  `--notest_keep_going` remain.
 - BEP file outputs, `--profile` and the execution logs are in (docs/BEP.md,
-  docs/PROFILE.md; the gRPC Build Event Service upload remains); query output
-  formats, target-pattern files, info/clean/shutdown.
+  docs/PROFILE.md; the gRPC Build Event Service upload remains);
+  info/clean/shutdown/fetch/mod/help are in (docs/COMMANDS.md, docs/MOD_COMMAND.md);
+  query proto/xml output formats and target-pattern files remain.
 - Remaining supported OSes, upstream rule families and CLI compatibility matrix.
 
 Gate: safely selected real-repo Go/Python/Node/shell tests actually execute and
@@ -291,6 +321,12 @@ match reference; broader upstream integration/conformance suites pass. Passing
 a filegroup build is not a substitute for any of these gates.
 
 ### 5. Performance acceptance
+
+Status: bazel-rs has its own measured numbers on `~/code` (PLAN.md), but no
+like-for-like comparison against genuine Bazel on the same repository and cache
+states exists (genuine Bazel is not run on `~/code`). A comparison on a public or
+scratch benchmark repository is still open, as is a single-source-change /
+BUILD-change incremental benchmark.
 
 Measure identical inputs, configuration, outputs and cache states:
 
