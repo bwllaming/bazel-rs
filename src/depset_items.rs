@@ -52,6 +52,25 @@ pub(crate) struct StructItem {
     /// Info.getCreationLocation of a provider instance; never compared.
     #[allocative(skip)]
     pub location: Option<starlark::codemap::FileSpan>,
+    /// The element as a value, allocated once on its own frozen heap
+    /// ([`StructItem::alloc`]); never compared.
+    #[allocative(skip)]
+    pub frozen: std::sync::OnceLock<OwnedFrozenValue>,
+}
+
+impl StructItem {
+    pub(crate) fn new(
+        provider: Option<(String, String)>,
+        fields: Vec<(String, Item)>,
+        location: Option<starlark::codemap::FileSpan>,
+    ) -> Self {
+        StructItem {
+            provider,
+            fields,
+            location,
+            frozen: std::sync::OnceLock::new(),
+        }
+    }
 }
 
 impl PartialEq for StructItem {
@@ -90,11 +109,37 @@ impl fmt::Display for StructItem {
 }
 
 impl StructItem {
+    /// The element on `heap`: the one frozen value of this snapshot
+    /// ([`StructItem::frozen`]), which every `to_list()` (and every heap)
+    /// shares. Bazel returns the element object itself, immutable
+    /// (StarlarkInfo; Depset.checkElement), so a shared frozen value is the
+    /// same observable value as a fresh copy (same fields, repr, type and
+    /// equality; its frozen list/dict fields were frozen copies already,
+    /// N49b) — without a copy, and without the private frozen heaps of its
+    /// containers, per call (MEM3: rules_rust's `to_list()` over transitive
+    /// CrateInfo depsets held ~8 GB of such copies on ~/code).
     pub(crate) fn alloc<'v>(&self, heap: Heap<'v>) -> Value<'v> {
+        let frozen = self.frozen.get_or_init(|| {
+            Module::with_temp_heap(|module| {
+                let value = self.alloc_fresh(module.heap());
+                module.set("value", value);
+                module
+                    .freeze()
+                    .expect("freezing owned depset element values cannot fail")
+                    .get("value")
+                    .expect("the frozen module has the value")
+            })
+        });
+        heap.access_owned_frozen_value(frozen)
+    }
+
+    /// A new value of the element on `heap`, which is about to be frozen:
+    /// list and dict fields are allocated in place ([`alloc_freezing`]).
+    fn alloc_fresh<'v>(&self, heap: Heap<'v>) -> Value<'v> {
         let fields = self
             .fields
             .iter()
-            .map(|(name, value)| (name.clone(), value.alloc(heap)))
+            .map(|(name, value)| (name.clone(), alloc_freezing(heap, value)))
             .collect::<Vec<_>>();
         match &self.provider {
             None => heap.alloc(starlark::values::structs::AllocStruct(fields)),
@@ -154,24 +199,7 @@ impl Ord for DictItem {
 /// (Mutability.checkMutable, net/starlark/java/eval/Starlark.java:264).
 pub(crate) fn alloc_frozen_container<'v>(heap: Heap<'v>, item: &Item) -> Value<'v> {
     let owned = Module::with_temp_heap(|module| {
-        let h = module.heap();
-        let value = match item {
-            Item::List(items) => h.alloc(AllocList(items.iter().map(|item| item.alloc(h)))),
-            Item::Dict(dict) => {
-                let mut map = SmallMap::with_capacity(dict.0.len());
-                for (key, value) in &dict.0 {
-                    let key = key.alloc(h);
-                    // The snapshot of a key of a (hashable) dict re-allocates
-                    // a value of the same type and contents.
-                    let key = key
-                        .get_hashed()
-                        .expect("a snapshot of a dict key stays hashable");
-                    map.insert_hashed(key, value.alloc(h));
-                }
-                h.alloc(Dict::new(map))
-            }
-            _ => item.alloc(h),
-        };
+        let value = alloc_freezing(module.heap(), item);
         module.set("value", value);
         module
             .freeze()
@@ -180,6 +208,36 @@ pub(crate) fn alloc_frozen_container<'v>(heap: Heap<'v>, item: &Item) -> Value<'
             .expect("the frozen module has the value")
     });
     heap.access_owned_frozen_value(&owned)
+}
+
+/// `item` on `heap`, a heap that is frozen before the value is used (a
+/// temporary module's): a list or dict, frozen in Bazel, is allocated in
+/// place — the module freeze freezes it — instead of on a private frozen
+/// heap of its own ([`alloc_frozen_container`]); tuples recurse; every other
+/// kind is [`Item::alloc`].
+fn alloc_freezing<'v>(heap: Heap<'v>, item: &Item) -> Value<'v> {
+    match item {
+        Item::List(items) => heap.alloc(AllocList(
+            items.iter().map(|item| alloc_freezing(heap, item)),
+        )),
+        Item::Dict(dict) => {
+            let mut map = SmallMap::with_capacity(dict.0.len());
+            for (key, value) in &dict.0 {
+                let key = alloc_freezing(heap, key);
+                // The snapshot of a key of a (hashable) dict re-allocates
+                // a value of the same type and contents.
+                let key = key
+                    .get_hashed()
+                    .expect("a snapshot of a dict key stays hashable");
+                map.insert_hashed(key, alloc_freezing(heap, value));
+            }
+            heap.alloc(Dict::new(map))
+        }
+        Item::Tuple(items) => heap.alloc(starlark::values::tuple::AllocTuple(
+            items.iter().map(|item| alloc_freezing(heap, item)),
+        )),
+        _ => item.alloc(heap),
+    }
 }
 
 /// A depset as a value: Depset.equals delegates to NestedSet's identity
@@ -573,21 +631,17 @@ pub(crate) fn snapshot(
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         fields.sort_by(|a, b| a.0.cmp(&b.0));
-        Item::Struct(Arc::new(StructItem {
-            provider: None,
-            fields,
-            location: None,
-        }))
+        Item::Struct(Arc::new(StructItem::new(None, fields, None)))
     } else if let Some((identity, name, fields, location)) = crate::providers::instance_parts(value)
     {
-        Item::Struct(Arc::new(StructItem {
-            provider: Some((identity, name)),
-            fields: fields
+        Item::Struct(Arc::new(StructItem::new(
+            Some((identity, name)),
+            fields
                 .into_iter()
                 .map(|(name, value)| Ok((name, snapshot(value, functions, depth + 1)?)))
                 .collect::<anyhow::Result<Vec<_>>>()?,
             location,
-        }))
+        )))
     } else if let Some(list) = ListRef::from_value(value) {
         // Only a frozen list passes the element check; a frozen list's
         // contents are frozen too.
@@ -728,6 +782,32 @@ mod tests {
                 .map(|value| value.to_str())
                 .map_err(|e| e.to_string())
         })
+    }
+
+    /// MEM3: a struct element is allocated once, frozen, and shared by every
+    /// allocation (each `to_list()`), its list/dict fields on the same heap.
+    #[test]
+    fn struct_elements_are_one_shared_frozen_value() {
+        let item = super::StructItem::new(
+            None,
+            vec![
+                (
+                    "l".to_owned(),
+                    super::Item::List(vec![super::Item::Int(1)]),
+                ),
+                ("s".to_owned(), super::Item::String("x".to_owned())),
+            ],
+            None,
+        );
+        Module::with_temp_heap(|module| {
+            let first = item.alloc(module.heap());
+            let second = item.alloc(module.heap());
+            assert!(first.ptr_eq(second));
+            assert!(first.unpack_frozen().is_some());
+            assert_eq!(first.to_repr(), "struct(l = [1], s = \"x\")");
+        });
+        let frozen = item.frozen.get().expect("allocated once");
+        assert_eq!(frozen.owner().refs().count(), 0);
     }
 
     #[test]

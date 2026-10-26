@@ -49,10 +49,13 @@ struct fields and provider instances (provider key, display name, fields in
 name order, creation location) with their values — scalars, Files, Labels,
 None, tuples, nested depsets (shared node), configured targets, runfiles
 (shared nested sets) and global `def`s of loaded `.bzl` files (the build's
-function registry, `crate::analysis_runtime::LoadedFunctions`). `to_list()`
-allocates the struct or instance anew; because every element Bazel accepts
-is immutable, the snapshot is observably the same value (type, fields,
-`dir()`, repr `struct(a = ..., b = ...)`, equality).
+function registry, `crate::analysis_runtime::LoadedFunctions`). The first
+`to_list()` (or other expansion to values) allocates the struct or instance
+once, frozen on its own heap with its list/dict fields, and every later one
+returns that value (MEM3, `StructItem::frozen`), as Bazel returns the one
+element object; because every element Bazel accepts is immutable, the
+snapshot is observably the same value (type, fields, `dir()`, repr
+`struct(a = ..., b = ...)`, equality).
 
 Deduplication uses Bazel's equality (StructImpl.equals/hashCode,
 `com/google/devtools/build/lib/packages/StructImpl.java:97-132`): the same
@@ -115,7 +118,8 @@ with equal elements and never a tuple (StarlarkList.equals,
 with the same entries in any order (Dict.equals/hashCode,
 `Dict.java:203-211`), and the first one encountered is kept. `to_list()`
 re-allocates the container frozen (on a temporary module heap, frozen and
-referenced by the receiving heap — the `ctx_surface` frozen-value pattern),
+referenced by the receiving heap — the `ctx_surface` frozen-value pattern;
+inside a struct element, on the element's one frozen heap),
 so `append`, `pop`, `setdefault`, ... fail with Bazel's `trying to mutate a
 frozen list value` (`dict`) (Mutability.checkMutable,
 `net/starlark/java/eval/Starlark.java:264`), also for nested containers.

@@ -89,3 +89,21 @@ repository count dominated warm `build --nobuild //src/ts/...` (snapshot off, pr
 
 Result: `--nobuild //src/ts/...` 132 s / 8.2 GB peak -> 26 s / 4.6 GB; warm `build //src/ts/...`
 (24,608 cache hits) 139 s / 9.1 GB -> 36 s / 4.6 GB. Action dump and action keys unchanged.
+
+## Rust analysis (MEM3, ~/code `//src/rust/...`)
+
+rules_rust expands depsets of provider instances (`CrateInfo`, `DepVariantInfo`, ... in `transitive_crates`
+and friends) with `to_list()` in every rustc/clippy action of every crate. A depset element is an owned
+snapshot (docs/DEPSETS.md, N49), and each expansion allocated the instance anew; each of its frozen
+list/dict fields went to a private frozen heap of its own (N49b) that the caller's heap — and so the
+target's frozen analysis heap — kept for the rest of the build. A heap profile of `build --nobuild
+//src/rust/...` (8,692 targets, 2,001 actions) showed 8.2 GB of those copies (9.8 million frozen heaps)
+out of 9.4 GB live at the end of planning.
+
+| what | cost before | fix |
+|---|---|---|
+| a struct/provider depset element re-allocated by every `to_list()`, its list/dict fields on one private frozen heap each | ~8.2 GB, 9.8 M frozen heaps | `StructItem::frozen`: the element is allocated once, frozen on one heap with its containers, and shared by every expansion |
+
+Result (`BAZEL_RS_SNAPSHOT=off`, private caches): `--nobuild //src/rust/...` 10.1 GB peak, plan 25 s ->
+1.86 GB, plan 15 s; warm `build //src/rust/...` (2,001 cache hits) 10.1 GB / 31 s -> 1.86 GB / 18 s.
+Action dump byte-identical and action keys unchanged (the warm build hits every action).
