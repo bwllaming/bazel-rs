@@ -56,6 +56,26 @@ pub(crate) fn is_cc_actions_method(name: &str) -> bool {
     )
 }
 
+/// LinkCommandLine.getParamFileInfo: None disables splitting, independently
+/// of the linker variable filtering done by getParamCommandLine.
+fn link_param_file_info(
+    file_type: Option<crate::command_line::ParamFileType>,
+    expanded: &[String],
+) -> Option<crate::command_line::ParamFileInfo> {
+    let file_type = file_type?;
+    expanded
+        .iter()
+        .find(|flag| flag.contains("LINKER_PARAM_FILE_PLACEHOLDER"))
+        .map(|flag| crate::command_line::ParamFileInfo {
+            flag_format: flag
+                .replace('%', "%%")
+                .replace("LINKER_PARAM_FILE_PLACEHOLDER", "%s"),
+            always: true,
+            file_type,
+            flags_only: false,
+        })
+}
+
 /// `Actions.escapedPath` (actions/Actions.java:43-52).
 fn escaped_path(path: &str) -> String {
     let mut escaped = String::with_capacity(path.len());
@@ -568,12 +588,37 @@ pub(crate) fn call<'v>(
                 return Err(type_error(method, "build_variables", variables, "Variables"));
             }
             let parameter_file_type_value = bound[3].expect("required");
-            let parameter_file_type = parameter_file_type_value
-                .unpack_str()
-                .ok_or_else(|| {
-                    type_error(method, "parameter_file_type", parameter_file_type_value, "string")
-                })?
-                .to_owned();
+            // The argument is required, but None leaves splitCommandLine
+            // false (CcStarlarkInternal.java:415-435). It is NOT UNQUOTED:
+            // even an expanded placeholder must not install param-file info.
+            // Validate strings before looking for a placeholder, like Java's
+            // ParameterFileType.valueOf, including when no split flag exists.
+            let parameter_file_type = if parameter_file_type_value.is_none() {
+                None
+            } else {
+                let name = parameter_file_type_value.unpack_str().ok_or_else(|| {
+                    type_error(
+                        method,
+                        "parameter_file_type",
+                        parameter_file_type_value,
+                        "string or NoneType",
+                    )
+                })?;
+                Some(match name {
+                    "GCC_QUOTED" => crate::command_line::ParamFileType::Shell,
+                    "UNQUOTED" => crate::command_line::ParamFileType::Unquoted,
+                    "WINDOWS" | "SHELL_QUOTED" => {
+                        return Err(failure(format!(
+                            "cc_internal.get_link_args with parameter file type '{name}' is not implemented in the native profile"
+                        )));
+                    }
+                    other => {
+                        return Err(failure(format!(
+                            "cc_internal.get_link_args: invalid parameter_file_type '{other}'"
+                        )));
+                    }
+                })
+            };
             let data = Arc::clone(&configuration.data);
             let active = context.active.clone();
             let _ = context;
@@ -583,35 +628,7 @@ pub(crate) fn call<'v>(
             // containing the placeholder turns the whole command line into an
             // always-on parameter file whose reference argument is the flag
             // with the placeholder replaced by %s (% doubled first).
-            let param_info = expanded
-                .iter()
-                .find(|flag| flag.contains("LINKER_PARAM_FILE_PLACEHOLDER"))
-                .map(|flag| {
-                    let flag_format = flag
-                        .replace('%', "%%")
-                        .replace("LINKER_PARAM_FILE_PLACEHOLDER", "%s");
-                    // Bazel's ParameterFileType of finalize_link_action's
-                    // _can_split_command_line: GCC_QUOTED
-                    // (gcc_quoting_for_param_files), WINDOWS, else UNQUOTED.
-                    // Windows quoting is a Windows-toolchain path (unsupported
-                    // platform); GCC quoting is the native Shell writer.
-                    let file_type = match parameter_file_type.as_str() {
-                        "GCC_QUOTED" => crate::command_line::ParamFileType::Shell,
-                        "UNQUOTED" => crate::command_line::ParamFileType::Unquoted,
-                        other => {
-                            return Err(failure(format!(
-                                "cc_internal.get_link_args with parameter file type '{other}' is not implemented in the native profile (Windows toolchains)"
-                            )));
-                        }
-                    };
-                    Ok::<_, starlark::Error>(crate::command_line::ParamFileInfo {
-                        flag_format,
-                        always: true,
-                        file_type,
-                        flags_only: false,
-                    })
-                })
-                .transpose()?;
+            let param_info = link_param_file_info(parameter_file_type, &expanded);
             // getParamCommandLine (:92-130): filter the flags containing the
             // linker_param_file variable's value (the placeholder) out of the
             // parameter command line.
@@ -1174,6 +1191,25 @@ fn passes_filter(filter: &fancy_regex::Regex, flag: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nullable_link_args_have_no_parameter_file_metadata() {
+        use crate::command_line::ParamFileType;
+        let flags = vec![
+            "plain".to_owned(),
+            "--params=100%:@LINKER_PARAM_FILE_PLACEHOLDER".to_owned(),
+        ];
+        assert!(link_param_file_info(None, &flags).is_none());
+        assert!(link_param_file_info(None, &[]).is_none());
+        for file_type in [ParamFileType::Shell, ParamFileType::Unquoted] {
+            assert!(link_param_file_info(Some(file_type), &flags[..1]).is_none());
+            let info = link_param_file_info(Some(file_type), &flags).unwrap();
+            assert_eq!(info.flag_format, "--params=100%%:@%s");
+            assert_eq!(info.file_type, file_type);
+            assert!(info.always);
+            assert!(!info.flags_only);
+        }
+    }
 
     #[test]
     fn copts_filter_passes_only_non_full_matches() {

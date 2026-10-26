@@ -1,0 +1,21 @@
+{
+  "bazel_version": "9.3.0",
+  "bazel_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "inline_argv": ["plain", "space here", "single'quote", "double\"quote", "back\\slash", "100%", ""],
+  "literal_placeholder": "--params=100%:@LINKER_PARAM_FILE_PLACEHOLDER",
+  "parameter_flag": "--params=100%:@<OUTPUT>-0.params",
+  "parameter_bytes": {
+    "GCC_QUOTED": "plain\nspace\\ here\nsingle\\'quote\ndouble\\\"quote\nback\\\\slash\n100%\n''\n",
+    "UNQUOTED": "plain\nspace here\nsingle'quote\ndouble\"quote\nback\\slash\n100%\n\n"
+  },
+  "missing_error": "get_link_args() missing 1 required named argument: parameter_file_type",
+  "type_errors": [
+    ["INT", "in call to get_link_args(), parameter 'parameter_file_type' got value of type 'int', want 'string or NoneType'"],
+    ["BOOL", "in call to get_link_args(), parameter 'parameter_file_type' got value of type 'bool', want 'string or NoneType'"],
+    ["LIST", "in call to get_link_args(), parameter 'parameter_file_type' got value of type 'list', want 'string or NoneType'"]
+  ],
+  "invalid_text": ["invalid", "", "gcc_quoted"],
+  "invalid_text_exit": 37,
+  "invalid_text_error": "java.lang.IllegalArgumentException: No enum constant com.google.devtools.build.lib.actions.ParameterFile.ParameterFileType.",
+  "unsupported_native": ["WINDOWS", "SHELL_QUOTED"]
+}

@@ -492,6 +492,143 @@ fn every_error_path_fails_the_target_with_bazel_messages() {
     }
 }
 
+fn link_args_reference() -> serde_json::Value {
+    parse(include_str!(
+        "fixtures/cc_features/link_args_reference.json"
+    ))
+}
+
+fn link_args_workspace(cases: &[(&str, &str, &str)]) -> Workspace {
+    let ws = Workspace::new();
+    let mut build =
+        String::from("load('//tools/build_defs/cc:link_args.bzl', 'cc_link_args_probe')\n");
+    for (name, file_type, placeholder) in cases {
+        build.push_str(&format!(
+            "cc_link_args_probe(name = {name:?}, parameter_type = {file_type:?}, placeholder = {placeholder:?})\n"
+        ));
+    }
+    fs::write(ws.path().join("BUILD.bazel"), build).unwrap();
+    ws
+}
+
+#[test]
+fn nullable_link_args_preserve_inline_argv_filtering_and_existing_param_files() {
+    let reference = link_args_reference();
+    let mut names = Vec::new();
+    for file_type in ["NONE", "GCC_QUOTED", "UNQUOTED"] {
+        for placeholder in ["variable", "absent", "custom", "literal"] {
+            names.push((format!("{file_type}_{placeholder}"), file_type, placeholder));
+        }
+    }
+    let cases: Vec<_> = names
+        .iter()
+        .map(|(name, file_type, placeholder)| (name.as_str(), *file_type, *placeholder))
+        .collect();
+    let ws = link_args_workspace(&cases);
+    let targets: Vec<_> = names
+        .iter()
+        .map(|(name, _, _)| format!("//:{name}"))
+        .collect();
+    let output = ws.build(&targets.iter().map(String::as_str).collect::<Vec<_>>());
+    assert!(output.status.success(), "{}", errors(&output));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), cases.len(), "{stdout}");
+    for line in stdout.lines() {
+        let (label, path) = line.split_once('\t').unwrap();
+        let (_, file_type, placeholder) = cases
+            .iter()
+            .find(|(name, _, _)| label == format!("//:{name}"))
+            .unwrap();
+        let actual = parse(&fs::read_to_string(path).unwrap());
+        let split = *file_type != "NONE" && matches!(*placeholder, "variable" | "literal");
+        let mut argv = reference["inline_argv"].as_array().unwrap().clone();
+        if *placeholder == "literal" {
+            argv.push(reference["literal_placeholder"].clone());
+        }
+        let mut params = serde_json::Map::new();
+        if split {
+            // Preserve the existing GCC_QUOTED -> Shell writer. Genuine uses
+            // backslash quoting (captured in the receipt), not these bytes;
+            // this nullable-API fix deliberately does not change that writer.
+            let mut bytes = if *file_type == "GCC_QUOTED" {
+                "plain\n'space here'\n'single'\\''quote'\n'double\"quote'\n'back\\slash'\n100%\n''\n".to_owned()
+            } else {
+                reference["parameter_bytes"][file_type]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            };
+            if *placeholder == "literal" {
+                // Shell quotes '='; the genuine GCC writer does not.
+                let literal = reference["literal_placeholder"].as_str().unwrap();
+                if *file_type == "GCC_QUOTED" {
+                    bytes.push_str(&format!("'{literal}'\n"));
+                } else {
+                    bytes.push_str(&format!("{literal}\n"));
+                }
+            }
+            argv = vec![reference["parameter_flag"].clone()];
+            params.insert(
+                reference["parameter_flag"].as_str().unwrap().to_owned(),
+                bytes.into(),
+            );
+        }
+        assert_eq!(
+            actual,
+            serde_json::json!({"argv": argv, "params": params}),
+            "{label}"
+        );
+    }
+}
+
+#[test]
+fn link_args_require_the_nullable_argument_and_reject_invalid_types_and_text() {
+    let reference = link_args_reference();
+    let mut cases = vec![(
+        "MISSING".to_owned(),
+        reference["missing_error"].as_str().unwrap().to_owned(),
+    )];
+    for pair in reference["type_errors"].as_array().unwrap() {
+        cases.push((
+            pair[0].as_str().unwrap().to_owned(),
+            pair[1].as_str().unwrap().to_owned(),
+        ));
+    }
+    for text in reference["invalid_text"].as_array().unwrap() {
+        let text = text.as_str().unwrap();
+        cases.push((
+            text.to_owned(),
+            format!("invalid parameter_file_type '{text}'"),
+        ));
+    }
+    for text in reference["unsupported_native"].as_array().unwrap() {
+        let text = text.as_str().unwrap();
+        cases.push((
+            text.to_owned(),
+            format!("parameter file type '{text}' is not implemented in the native profile"),
+        ));
+    }
+    let names: Vec<_> = (0..cases.len()).map(|i| format!("case_{i}")).collect();
+    for placeholder in ["variable", "absent"] {
+        let specs: Vec<_> = cases
+            .iter()
+            .zip(&names)
+            .map(|((file_type, _), name)| (name.as_str(), file_type.as_str(), placeholder))
+            .collect();
+        let ws = link_args_workspace(&specs);
+        for ((_, message), name) in cases.iter().zip(&names) {
+            let output = ws.build(&[&format!("//:{name}")]);
+            assert_eq!(output.status.code(), Some(1), "{}", errors(&output));
+            assert!(output.stdout.is_empty());
+            assert!(
+                errors(&output).contains(message),
+                "{name}/{placeholder}: {}",
+                errors(&output)
+            );
+        }
+    }
+}
+
 /// `fs::copy`, except that a file with any execute bit is re-created through
 /// `write_executable_script` (bytes and mode kept).
 fn copy_file(from: &Path, to: &Path) {

@@ -44,13 +44,21 @@ noted):
   LinkCommandLine's parameter command line (the flags without the tool; the
   spawn's `executable` is the tool): `getParamCommandLine`
   (LinkCommandLine.java:92-130) including the `linker_param_file` filter, and
-  `getParamFileInfo` (:132-150): a flag containing
+  `getParamFileInfo` (:132-150): the named `parameter_file_type` argument is
+  required, but accepts **None** as well as a string. None disables splitting:
+  the Args has **no parameter-file metadata**, even if the expanded flags
+  contain a placeholder. The `linker_param_file` variable's value is still
+  filtered out of the flags; this is independent of splitting. With a
+  supported string type, a flag containing
   `LINKER_PARAM_FILE_PLACEHOLDER` (rules_cc sets the `linker_param_file`
   build variable to that string; the toolchain's legacy `linker_param_file`
   feature emits `@%{linker_param_file}`) installs an always-on
   [`ParamFileInfo`] on the Args — flag format `@%s`, the
   `parameter_file_type` quoting (GCC_QUOTED as the native Shell writer,
-  UNQUOTED as the multiline one; WINDOWS fails explicitly). The executed
+  UNQUOTED as the multiline one; WINDOWS and SHELL_QUOTED fail explicitly).
+  Types and enum text are validated even without a placeholder; missing is
+  not an implicit None default. Invalid strings fail cleanly (genuine's
+  unchecked `ParameterFileType.valueOf` exception is not reproduced). The executed
   argvs are then `ar @…libbuilt.a-0.params` / `gcc @…libbuilt.so-0.params`
   exactly like genuine (CommandLines.java:113-141's `<output>-N.params`
   naming and the always split; genuine `aquery` prints the pre-split form,
@@ -95,6 +103,24 @@ noted):
   OutputGroupInfo.
 
 ## What is verified
+
+The direct nullable-API fixture (`tests/fixtures/cc_features/tools/build_defs/cc/link_args.bzl`,
+compact genuine receipt `link_args_reference.json`, provenance in that fixture's
+`LINK_ARGS.md`) bypasses the default-config policy path that did not reproduce
+the whole-source cquery failure. It records executed argv and raw parameter-file
+bytes for None/GCC_QUOTED/UNQUOTED, with a linker-variable placeholder, no
+placeholder, a custom linker-variable value, and a literal placeholder without
+the variable. None is byte-exact genuine argv with no params, including spaces,
+quotes, backslashes, percent signs and an empty argument. A unit test separately
+asserts the absence of metadata, not merely lack of a short-command spill.
+Missing arguments and int/bool/list types match genuine diagnostics. Unsupported
+types and invalid text fail even when there is no placeholder.
+
+**Existing quoting limitation retained:** GCC_QUOTED currently uses the native
+Shell writer, whereas genuine uses `GccParamFileEscaper` backslash escaping. The
+new fixture exposes and pins these differing raw bytes rather than claiming
+byte parity or changing existing GCC_QUOTED behavior in this nullable-API fix.
+UNQUOTED bytes and param-reference percent escaping match the genuine capture.
 
 The paired capture (`artifacts/cc_compile-capture.py`, receipt
 `tests/fixtures/cc_compile/reference_receipt.json`): genuine `cc_library`
