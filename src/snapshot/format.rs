@@ -527,18 +527,8 @@ fn on_threads<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> V
 /// shrinks about 13 times (`//src/ts/...`: 230 MB to 18 MB): its actions
 /// repeat the same input paths, arguments and ids over and over.
 pub fn compress_plan(plan: &[u8]) -> Vec<u8> {
-    use std::io::Write;
     let frames: Vec<&[u8]> = plan.chunks(FRAME).collect();
-    let compressed = on_threads(&frames, |frame| {
-        let mut encoder = flate2::write::DeflateEncoder::new(
-            Vec::with_capacity(frame.len() / 8),
-            flate2::Compression::fast(),
-        );
-        encoder
-            .write_all(frame)
-            .and_then(|()| encoder.finish())
-            .expect("deflating into memory cannot fail")
-    });
+    let compressed = on_threads(&frames, |frame| deflate(frame));
     let mut stored =
         Vec::with_capacity(16 + 8 * frames.len() + compressed.iter().map(Vec::len).sum::<usize>());
     stored.extend_from_slice(COMPRESSED_MAGIC);
@@ -551,6 +541,53 @@ pub fn compress_plan(plan: &[u8]) -> Vec<u8> {
         stored.extend_from_slice(deflated);
     }
     stored
+}
+
+/// One part of a plan (crate::snapshot::codec::encode_parts_with) as
+/// compressed frames of at most [`FRAME`] bytes: (size, deflated) — what
+/// [`compress_plan`] does to a whole plan, here on the thread that encoded
+/// the part, so the uncompressed part is freed right away (MEM4).
+pub fn compress_part(part: Vec<u8>) -> Vec<(usize, Vec<u8>)> {
+    part.chunks(FRAME)
+        .map(|frame| (frame.len(), deflate(frame)))
+        .collect()
+}
+
+/// The stored PLAN section of compressed parts ([`compress_part`]), in
+/// order: [`compress_plan`]'s format, the frames following the parts (a
+/// frame never spans two), so it inflates to the concatenated plan.
+pub fn assemble_compressed(parts: Vec<Vec<(usize, Vec<u8>)>>) -> Vec<u8> {
+    let frames: Vec<(usize, Vec<u8>)> = parts.into_iter().flatten().collect();
+    let mut stored = Vec::with_capacity(
+        16 + 8 * frames.len()
+            + frames
+                .iter()
+                .map(|(_, deflated)| deflated.len())
+                .sum::<usize>(),
+    );
+    stored.extend_from_slice(COMPRESSED_MAGIC);
+    stored.extend_from_slice(&(frames.len() as u32).to_le_bytes());
+    for (size, deflated) in &frames {
+        stored.extend_from_slice(&(*size as u32).to_le_bytes());
+        stored.extend_from_slice(&(deflated.len() as u32).to_le_bytes());
+    }
+    for (_, deflated) in &frames {
+        stored.extend_from_slice(deflated);
+    }
+    stored
+}
+
+/// One frame deflated ([`compress_plan`], [`compress_part`]).
+fn deflate(frame: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::DeflateEncoder::new(
+        Vec::with_capacity(frame.len() / 8),
+        flate2::Compression::fast(),
+    );
+    encoder
+        .write_all(frame)
+        .and_then(|()| encoder.finish())
+        .expect("deflating into memory cannot fail")
 }
 
 /// The plan of a stored PLAN section: inflated when [`compress_plan`]
@@ -1381,6 +1418,19 @@ mod tests {
         assert!(stored.starts_with(COMPRESSED_MAGIC) && stored.len() < plan.len() / 4);
         assert_eq!(u32::from_le_bytes(stored[8..12].try_into().unwrap()), 3);
         assert_eq!(compress_plan(&plan), stored);
+        // MEM4: one part compresses like the whole plan; parts cut
+        // anywhere (empty ones too) inflate back to their concatenation.
+        assert_eq!(
+            assemble_compressed(vec![compress_part(plan.clone())]),
+            stored
+        );
+        let cut = [0, 1, 1, FRAME - 1, FRAME + 7, plan.len()];
+        let parts: Vec<_> = cut
+            .windows(2)
+            .map(|pair| compress_part(plan[pair[0]..pair[1]].to_vec()))
+            .collect();
+        assert_eq!(decompress_plan(assemble_compressed(parts)).unwrap(), plan);
+        assert_eq!(assemble_compressed(Vec::new()), compress_plan(b""));
         assert_eq!(decompress_plan(stored.clone()).unwrap(), plan);
         assert_eq!(decompress_plan(compress_plan(b"")).unwrap(), b"");
         assert_eq!(

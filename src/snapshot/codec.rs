@@ -198,6 +198,30 @@ fn meta_of(request: &PlannedRequest) -> Meta<'_> {
 
 /// [`encode`], with its sizes and time.
 pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), EncodeError> {
+    let (parts, stats) = encode_parts(request)?;
+    let mut bytes = Vec::with_capacity(stats.bytes);
+    for part in &parts {
+        bytes.extend_from_slice(part);
+    }
+    Ok((bytes, stats))
+}
+
+/// [`encode_with_stats`] as the parts whose concatenation is the encoding
+/// (the section table, META, GROUPS, then each NODES chunk).
+pub fn encode_parts(request: &PlannedRequest) -> Result<(Vec<Vec<u8>>, Stats), EncodeError> {
+    encode_parts_with(request, |part| part)
+}
+
+/// [`encode_parts`], each part handed to `part` as soon as it is encoded
+/// (a NODES chunk on the thread that encoded it), in the parts' order. The
+/// analysis snapshot compresses them there
+/// (crate::snapshot::format::compress_part): the plan, GBs for a large
+/// build, is never held uncompressed while the planned request is still
+/// in memory (MEM4).
+pub fn encode_parts_with<T: Send>(
+    request: &PlannedRequest,
+    part: impl Fn(Vec<u8>) -> T + Sync,
+) -> Result<(Vec<T>, Stats), EncodeError> {
     let start = Instant::now();
     let meta = postcard::to_stdvec(&meta_of(request))
         .map_err(|error| postcard_error(error, "the request outline"))?;
@@ -208,6 +232,7 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
         .map_err(|error| postcard_error(error, "the shared input groups"))?;
     let encode_chunk = |(chunk, indices): &(&[PlannedAction], &[Vec<u32>])| {
         postcard::to_stdvec(&chunk_elements(chunk, indices))
+            .map(|bytes| (bytes.len(), part(bytes)))
             .map_err(|error| EncodeError::NotSerializable(not_serializable_reason(chunk, error)))
     };
     let parts: Vec<(&[PlannedAction], &[Vec<u32>])> = request
@@ -229,9 +254,7 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
         })
         .collect::<Result<Vec<_>, _>>()?;
     let sections = 2 + chunks.len();
-    let mut bytes = Vec::with_capacity(
-        16 + 12 * sections + meta.len() + groups.len() + chunks.iter().map(Vec::len).sum::<usize>(),
-    );
+    let mut bytes = Vec::with_capacity(16 + 12 * sections);
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&FORMAT.to_le_bytes());
     bytes.extend_from_slice(&(sections as u32).to_le_bytes());
@@ -239,18 +262,16 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
     bytes.extend_from_slice(&(meta.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&SECTION_GROUPS.to_le_bytes());
     bytes.extend_from_slice(&(groups.len() as u64).to_le_bytes());
-    for chunk in &chunks {
+    for (len, _) in &chunks {
         bytes.extend_from_slice(&SECTION_NODES.to_le_bytes());
-        bytes.extend_from_slice(&(chunk.len() as u64).to_le_bytes());
-    }
-    bytes.extend_from_slice(&meta);
-    bytes.extend_from_slice(&groups);
-    for chunk in &chunks {
-        bytes.extend_from_slice(chunk);
+        bytes.extend_from_slice(&(*len as u64).to_le_bytes());
     }
     let stats = Stats {
         nodes: request.nodes.len(),
-        bytes: bytes.len(),
+        bytes: bytes.len()
+            + meta.len()
+            + groups.len()
+            + chunks.iter().map(|(len, _)| len).sum::<usize>(),
         meta_bytes: meta.len(),
         groups: table.len(),
         group_bytes: groups.len(),
@@ -258,7 +279,12 @@ pub fn encode_with_stats(request: &PlannedRequest) -> Result<(Vec<u8>, Stats), E
         encode: start.elapsed(),
         decode: None,
     };
-    Ok((bytes, stats))
+    let mut parts = Vec::with_capacity(3 + chunks.len());
+    parts.push(part(bytes));
+    parts.push(part(meta));
+    parts.push(part(groups));
+    parts.extend(chunks.into_iter().map(|(_, chunk)| chunk));
+    Ok((parts, stats))
 }
 
 /// The GROUPS table of `nodes`: every distinct shared input group (by

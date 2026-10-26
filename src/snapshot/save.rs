@@ -182,7 +182,15 @@ impl Save {
             return Err("local repository replay records without pinned tables".to_owned());
         }
         let checked_at = started.elapsed();
-        let plan = crate::snapshot::codec::encode(request).map_err(|error| error.to_string())?;
+        // The plan's parts are compressed as they are encoded, on the
+        // encoding threads: a plan of GBs is never held uncompressed while
+        // the planned request and the analysis are still in memory (MEM4).
+        let compressing = Instant::now();
+        let (plan, plan_stats) =
+            crate::snapshot::codec::encode_parts_with(request, format::compress_part)
+                .map_err(|error| error.to_string())?;
+        let plan_len = plan_stats.bytes;
+        let compressed_ms = compressing.elapsed().as_secs_f64() * 1000.0;
         let plan_at = started.elapsed();
         let events = format::encode_events(&window.bytes);
         let plan_nodes = request.nodes.len() as u64;
@@ -190,7 +198,7 @@ impl Save {
         let ms = |duration: Duration| duration.as_secs_f64() * 1000.0;
         self.saved_note = format!(
             "{plan_nodes} actions, PLAN {} bytes, window stderr {window_stderr} bytes; {:.1} ms before execution (checks {:.1}, plan {:.1})",
-            plan.len(),
+            plan_len,
             ms(started.elapsed()),
             ms(checked_at),
             ms(plan_at - checked_at),
@@ -230,18 +238,17 @@ impl Save {
                 window_stderr,
                 window_us,
                 plan_nodes,
-                plan_bytes: plan.len() as u64,
+                plan_bytes: plan_len as u64,
                 inputs_bytes: inputs.len() as u64,
                 encode_us: started.elapsed().as_micros() as u64,
                 full_validation: policy == Policy::Full,
             };
             let inputs_ms = ms(started.elapsed());
-            // P3: the plan is stored compressed, here on the writer while
-            // the actions execute.
-            let compressing = Instant::now();
-            let stored = format::compress_plan(&plan);
+            // P3: the plan is stored compressed (MEM4: its parts were
+            // compressed as they were encoded, before execution).
+            let stored = format::assemble_compressed(plan);
             let note = format!(
-                "{} observations validated of {}, {} trees, {} replayed local repositories; INPUTS {} bytes encoded in {:.1} ms on the writer; PLAN compressed to {} bytes in {:.1} ms",
+                "{} observations validated of {}, {} trees, {} replayed local repositories; INPUTS {} bytes encoded in {:.1} ms on the writer; PLAN encoded and compressed to {} bytes in {:.1} ms",
                 stats.validated,
                 stats.observations,
                 stats.trees,
@@ -249,9 +256,8 @@ impl Save {
                 stats.inputs_bytes,
                 inputs_ms,
                 stored.len(),
-                ms(compressing.elapsed()),
+                compressed_ms,
             );
-            drop(plan);
             Ok((
                 vec![
                     (Section::Inputs, inputs),
