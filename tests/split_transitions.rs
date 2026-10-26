@@ -82,13 +82,9 @@ fn summary(out: &Output) -> serde_json::Value {
 fn named_list_convergence_null_sources_and_aspects_match_genuine_contract() {
     let ws = Workspace::new();
     let out = ws.ok("build", &["//:use"]);
-    let mut actual = summary(&out);
-    assert_eq!(actual["one_keys"], serde_json::json!(["a", "z", "m"]));
-    assert_eq!(actual["many_keys"], serde_json::json!(["1", "0", "2"]));
+    let actual = summary(&out);
     let captured: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/split_transitions/genuine.json")).unwrap();
-    actual["one_keys"] = captured["summary"]["one_keys"].clone();
-    actual["many_keys"] = captured["summary"]["many_keys"].clone();
     assert_eq!(actual, captured["summary"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let proof = stdout
@@ -105,6 +101,58 @@ fn named_list_convergence_null_sources_and_aspects_match_genuine_contract() {
     );
     let warm = ws.ok("build", &["//:use"]);
     assert!(String::from_utf8_lossy(&warm.stderr).contains("0 actions executed"));
+}
+
+#[test]
+fn incoming_rule_convergence_uses_the_first_key_of_the_final_configuration() {
+    let ws = Workspace::new();
+    let out = ws.ok("build", &["//:incoming_use"]);
+    let captured: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/split_transitions/genuine.json")).unwrap();
+    assert_eq!(summary(&out), captured["incoming_summary"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let proof = stdout
+        .lines()
+        .find_map(|line| {
+            line.split_once('\t')
+                .map(|(_, path)| path)
+                .filter(|path| path.ends_with(".proof"))
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(proof).unwrap(),
+        captured["incoming_proof"].as_str().unwrap()
+    );
+
+    // The presentation drops redundant keys, not any distinct configured node.
+    // Conversely, initially different branches sharing one final identity must
+    // not create duplicate graph nodes after their incoming rule transitions.
+    let graph = ws.ok("cquery", &["deps(//:incoming_use)"]);
+    let labels = String::from_utf8_lossy(&graph.stdout);
+    assert_eq!(
+        labels
+            .lines()
+            .filter(|line| line.starts_with("//:collapsed ("))
+            .count(),
+        1,
+        "{labels}"
+    );
+    assert_eq!(
+        labels
+            .lines()
+            .filter(|line| line.starts_with("//:collapsed2 ("))
+            .count(),
+        1,
+        "{labels}"
+    );
+    assert_eq!(
+        labels
+            .lines()
+            .filter(|line| *line == "//:input.txt (null)")
+            .count(),
+        1,
+        "{labels}"
+    );
 }
 
 #[test]
@@ -179,7 +227,7 @@ fn native_option_splits_retain_native_identity_and_exec_dependencies() {
     let out = ws.ok("build", &["//:use"]);
     let s = summary(&out);
     assert_eq!(s["one"], serde_json::json!(["dbg", "opt"]));
-    assert_eq!(s["one_keys"], serde_json::json!(["a", "z", "m"]));
+    assert_eq!(s["one_keys"], serde_json::json!(["a", "z"]));
 }
 
 #[test]

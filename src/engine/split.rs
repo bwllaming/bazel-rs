@@ -76,7 +76,13 @@ impl Engine {
                 if let Some((_, existing)) =
                     prerequisites.iter_mut().find(|(id, _)| *id == identity)
                 {
-                    existing.transition_keys.push(branch.clone());
+                    // PrerequisitesProducer.cleanupValues: null-configured
+                    // targets aggregate all transition keys. For a configured
+                    // rule/output, keep only the first branch reaching the
+                    // final identity (including incoming rule transitions).
+                    if identity.is_none() {
+                        existing.transition_keys.push(branch.clone());
+                    }
                 } else {
                     prerequisites.push((
                         identity,

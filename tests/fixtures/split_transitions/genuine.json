@@ -9,6 +9,16 @@
     "unset": [], "unset_keys": []
   },
   "proof": "dbg:selected\nopt:other\n",
+  "incoming_summary": {
+    "aspects": [],
+    "empty": ["merged"], "empty_keys": [null],
+    "many": ["merged", "merged"], "many_keys": ["0"],
+    "one": ["merged"], "one_keys": ["z"],
+    "patch": ["merged"], "patch_keys": [null],
+    "source": ["source"], "source_keys": ["z", "a", "m"],
+    "unset": [], "unset_keys": []
+  },
+  "incoming_proof": "merged:other\n",
   "configuration": "Bazel 9.3.0, --platforms=//:platform --host_platform=//:platform; genuine builtins, local registry, --incompatible_autoload_externally= --lockfile_mode=off",
-  "declared_divergence": "The requested native contract preserves converged branch keys m and 2; Bazel 9.3 PrerequisitesProducer.cleanupValues drops them for rules, but retains all keys for null-configuration sources. The native graph/provider/action identity is deduplicated in both cases."
+  "convergence": "Bazel 9.3 PrerequisitesProducer.cleanupValues retains only the first branch key for each final non-null configuration, including after an incoming rule transition, and retains every key for null-configured sources."
 }

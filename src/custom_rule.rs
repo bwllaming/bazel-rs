@@ -587,7 +587,8 @@ pub(crate) struct SplitPrerequisite {
     /// Requested configuration; provider lookup still applies rule transitions.
     pub config: crate::configuration::ConfigId,
     pub map_key: String,
-    /// All branch names converging on this configured identity, in result order.
+    /// First branch name for configured targets; all names in result order for
+    /// null-configured targets (PrerequisitesProducer.cleanupValues).
     pub transition_keys: Vec<String>,
 }
 

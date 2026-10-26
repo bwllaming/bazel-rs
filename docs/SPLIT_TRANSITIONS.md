@@ -26,16 +26,17 @@ identity but retain the transition names. Aspects propagate over every split
 edge and may have their own split-configured implicit dependencies. As in Bazel,
 ctx.split_attr itself is available only in rule implementations, not aspects.
 
-## Deliberate converged-key preservation
+## Converged configurations
 
-The requested native contract preserves **all** named/positional keys even when
-branches converge on one configuration (also after an incoming rule transition).
-Those keys refer to the same shared Target/provider value; they do not create
-duplicate configured nodes or actions. Genuine Bazel 9.3
-`PrerequisitesProducer.cleanupValues` drops later keys for converged rule
-configurations but retains all source-file keys. The pinned fixture records this
-narrow divergence: native retains `m`/`2`; the genuine rule views only have `z`/`0`.
-This is not an excuse to omit branches with different configurations.
+Following Bazel 9.3 `PrerequisitesProducer.cleanupValues`, configured rule/output
+prerequisites that converge on one final configuration retain only the first
+branch's key. This includes convergence after an incoming rule transition. Null-
+configured prerequisites instead aggregate every key in transition result order.
+The retained configured prerequisites are sorted by configuration mnemonic and
+checksum. Shared Target/provider values and deduplicated nodes/actions are kept;
+all distinct configurations and inputs still undergo analysis before convergence
+is resolved. The pinned named/list fixture retains `z`/`0` and drops `m`/`2` for
+rules while retaining every source-file key, exactly like genuine Bazel.
 
 The existing native ConfigId, output mnemonic and action-owner algorithms are
 unchanged. Existing single-config transition keys and action cache keys remain
@@ -50,8 +51,9 @@ plans/edges through their existing binary formats and validation boundaries.
 of the adjacent workspace. It covers named/list splits, convergence, ordering,
 null-config sources, patch/empty/unset attributes, per-config files, exec tool
 dependencies, an aspect on a split attribute and an aspect's own split dependency.
-Both engines produce the proof bytes `dbg:selected\nopt:other\n`; context summaries
-match except the explicitly preserved converged keys above.
+Both engines produce the proof bytes `dbg:selected\nopt:other\n`; context summaries,
+including converged keys, match exactly. A second target checks incoming rule
+transitions that merge initially distinct configurations into one final identity.
 
 `tests/split_transitions.rs` additionally checks native-option splits, malformed
 later branches, invalid multi-output rule transitions, configured graph identity,

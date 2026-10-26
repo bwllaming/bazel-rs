@@ -549,8 +549,8 @@ The `transition()` object is retained with the rule (`rule()` keeps the
 attribute descriptors' and its own `cfg` transition values; each target
 instance keeps them as frozen values of its BUILD module) and evaluated at
 analysis. Attribute transitions may return a list/tuple of dicts or a named
-dict of dicts; each key and configured branch is retained. The shared views,
-ordering, snapshot behavior and converged-key preservation are described in
+dict of dicts; every branch is validated and analyzed. The shared views,
+ordering, snapshot behavior and converged-key handling are described in
 [SPLIT_TRANSITIONS.md](SPLIT_TRANSITIONS.md). A rule transition may return one
 configuration in those forms, and several are
 Bazel's `Rule transition only allowed to return a single transitioned

@@ -49,3 +49,9 @@ def _consumer(ctx):
     return [DefaultInfo(files = depset([out, proof]))]
 
 consumer = rule(implementation = _consumer, attrs = {"one": attr.label(cfg = named), "many": attr.label_list(cfg = listed), "source": attr.label(cfg = named, allow_files = True), "empty": attr.label(cfg = empty), "patch": attr.label(cfg = patch), "unset": attr.label(cfg = named), "aspected": attr.label_list(cfg = named, aspects = [probe_aspect]), "_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist")})
+
+def _collapse(settings, attr):
+    return {"//:flag": "merged"}
+
+collapse = transition(implementation = _collapse, inputs = [], outputs = ["//:flag"])
+collapsed = rule(implementation = _dep, cfg = collapse, attrs = {"_flag": attr.label(default = "//:flag"), "srcs": attr.label_list(allow_files = True), "tool": attr.label(cfg = "exec", allow_files = True), "_allowlist_function_transition": attr.label(default = "//tools/allowlists/function_transition_allowlist")})
