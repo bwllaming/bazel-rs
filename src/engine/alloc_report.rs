@@ -732,6 +732,16 @@ leaf!(
     crate::toolchains::DeclaredToolchainInfo,
 );
 
+// MEM4: a shared string's bytes, once per allocation.
+impl Footprint for Arc<str> {
+    fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
+        walker.shared(self.as_ptr().cast(), |walker| {
+            walker.alloc(ARC_HEADER + self.len())
+        });
+        0
+    }
+}
+
 impl Footprint for String {
     fn heap(&self, walker: &mut Walker<'_, '_>) -> usize {
         walker.alloc(self.capacity())

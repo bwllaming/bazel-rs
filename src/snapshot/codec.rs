@@ -970,23 +970,23 @@ pub(crate) mod entries {
     use super::*;
 
     pub(crate) fn serialize<S: Serializer>(
-        value: &[(String, Option<PathBuf>)],
+        value: &crate::action::RunfilesEntries,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.collect_seq(
             value
                 .iter()
-                .map(|(name, path)| (name, path.as_deref().map(PathRef))),
+                .map(|(name, path)| (&**name, path.as_deref().map(PathRef))),
         )
     }
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
-    ) -> Result<Vec<(String, Option<PathBuf>)>, D::Error> {
+    ) -> Result<crate::action::RunfilesEntries, D::Error> {
         Vec::<(String, Option<Bytes>)>::deserialize(deserializer).map(|value| {
             value
                 .into_iter()
-                .map(|(name, path)| (name, path.map(Bytes::path)))
+                .map(|(name, path)| (name.into(), path.map(|path| path.path().into())))
                 .collect()
         })
     }
@@ -1343,15 +1343,16 @@ mod tests {
                 "manifest",
                 Transform::RunfilesManifest {
                     entries: vec![
-                        ("_main/a".into(), Some(raw(b"pkg/\xffa"))),
+                        ("_main/a".into(), Some(raw(b"pkg/\xffa").into())),
                         ("_main/e".into(), None),
-                    ],
+                    ]
+                    .into(),
                 },
             ),
             transform(
                 "tree",
                 Transform::RunfilesTree {
-                    entries: vec![("_main/a".into(), Some("pkg/a".into()))],
+                    entries: vec![("_main/a".into(), Some("pkg/a".into()))].into(),
                     manifest: "bazel-out/x.runfiles_manifest".into(),
                     executable: Some("bazel-out/x".into()),
                     create: true,

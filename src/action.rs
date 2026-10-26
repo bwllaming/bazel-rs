@@ -343,6 +343,12 @@ pub struct ActionExtra {
     pub constant_metadata: Vec<PathBuf>,
 }
 
+/// A runfiles mapping: each runfiles path with its input's execution path
+/// (`None` for an empty file). One executable's manifest and tree actions
+/// share one list, and its paths with the planner's runfiles entries
+/// (MEM4).
+pub type RunfilesEntries = std::sync::Arc<[(std::sync::Arc<str>, Option<SharedPath>)]>;
+
 /// SymlinkTargetType (vfs/SymlinkTargetType.java): the `target_type` of an
 /// unresolved symlink, part of UnresolvedSymlinkAction's key by name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -486,7 +492,7 @@ pub enum Transform {
     /// file. Inputs are not read: like Bazel, the manifest records paths only.
     RunfilesManifest {
         #[serde(with = "crate::snapshot::codec::entries")]
-        entries: Vec<(String, Option<PathBuf>)>,
+        entries: RunfilesEntries,
     },
     /// SymlinkTreeAction + RunfilesTreeAction (analysis/actions/SymlinkTreeAction.java,
     /// exec/SymlinkTreeHelper.java): the only output is `<dir>/MANIFEST`, a
@@ -501,7 +507,7 @@ pub enum Transform {
     /// (createMinimalRunfilesDirectory: MANIFEST and `_main` only).
     RunfilesTree {
         #[serde(with = "crate::snapshot::codec::entries")]
-        entries: Vec<(String, Option<PathBuf>)>,
+        entries: RunfilesEntries,
         #[serde(with = "crate::snapshot::codec::path")]
         manifest: PathBuf,
         #[serde(with = "crate::snapshot::codec::optional_path")]
@@ -3241,10 +3247,7 @@ pub fn validate_structure(action: &Action) -> Result<(), String> {
 
 /// Runfiles entries: relative, normalized tree paths whose linked
 /// destinations are action inputs.
-fn check_runfiles_entries(
-    action: &Action,
-    entries: &[(String, Option<PathBuf>)],
-) -> Result<(), String> {
+fn check_runfiles_entries(action: &Action, entries: &RunfilesEntries) -> Result<(), String> {
     // One lookup per entry (a runfiles tree of 30,000 entries is checked in
     // linear time, not against every input).
     let inputs: HashSet<&Path> = action
@@ -3252,8 +3255,8 @@ fn check_runfiles_entries(
         .iter()
         .map(|(_, name)| name.as_path())
         .collect();
-    for (path, destination) in entries {
-        validate_relative(Path::new(path))
+    for (path, destination) in entries.iter() {
+        validate_relative(Path::new(&**path))
             .map_err(|e| format!("invalid runfiles path '{path}': {e}"))?;
         if let Some(destination) = destination
             && !inputs.contains(destination.as_path())
@@ -3270,16 +3273,16 @@ fn check_runfiles_entries(
 /// The entries of a runfiles transform with the absolute path each links to.
 fn frame_runfiles_entries(
     hash: &mut Sha256,
-    entries: &[(String, Option<PathBuf>)],
+    entries: &RunfilesEntries,
     origins: &BTreeMap<PathBuf, PathBuf>,
 ) {
     frame_count(hash, entries.len());
-    for (path, destination) in entries {
+    for (path, destination) in entries.iter() {
         frame(hash, path.as_bytes());
         match destination {
             Some(destination) => {
                 frame(hash, b"link");
-                frame(hash, origins[destination].as_os_str().as_bytes());
+                frame(hash, origins[destination.as_path()].as_os_str().as_bytes());
             }
             None => frame(hash, b"empty"),
         }
@@ -5089,7 +5092,7 @@ fn run_transform(
 ) -> Result<(), String> {
     let output = execroot.join(&action.outputs[0]);
     let inputs = &prepared.inputs;
-    let origin = |destination: &PathBuf| -> Result<&Path, String> {
+    let origin = |destination: &Path| -> Result<&Path, String> {
         prepared
             .origins
             .get(destination)
@@ -5117,14 +5120,14 @@ fn run_transform(
             )
         }),
         Transform::RunfilesManifest { entries } => {
-            let mut sorted: Vec<&(String, Option<PathBuf>)> = entries.iter().collect();
+            let mut sorted: Vec<&(std::sync::Arc<str>, Option<SharedPath>)> = entries.iter().collect();
             sorted.sort_by(|a, b| a.0.as_bytes().cmp(b.0.as_bytes()));
             let mut text = Vec::new();
             for (path, destination) in sorted {
                 let target = match destination {
                     // An unresolved symlink's line names its link text
                     // (SourceManifestAction.writeFile :301-312).
-                    Some(destination) => Some(match inputs.get(destination) {
+                    Some(destination) => Some(match inputs.get(destination.as_path()) {
                         Some(Staged::Symlink(link)) => link.as_path(),
                         _ => origin(destination)?,
                     })
@@ -5153,8 +5156,8 @@ fn run_transform(
             let directory = output.parent().expect("validated MANIFEST parent");
             ensure_directory(directory)?;
             if *create {
-                for (path, destination) in entries {
-                    if path == "MANIFEST" {
+                for (path, destination) in entries.iter() {
+                    if &**path == "MANIFEST" {
                         // linkManifest replaces it (SymlinkTreeHelper.java:167-176).
                         continue;
                     }
@@ -5163,7 +5166,7 @@ fn run_transform(
                             "runfiles entry '{path}' is below the runfiles MANIFEST"
                         ));
                     }
-                    let link = directory.join(path);
+                    let link = directory.join(&**path);
                     if let Some(parent) = link.parent() {
                         ensure_directory(parent)?;
                     }
@@ -5171,7 +5174,7 @@ fn run_transform(
                         // Unresolved symlinks are created textually
                         // (SymlinkTreeHelper.createRunfilesSymlinks).
                         Some(destination) => {
-                            let target = match inputs.get(destination) {
+                            let target = match inputs.get(destination.as_path()) {
                                 Some(Staged::Symlink(text)) => text.as_path(),
                                 _ => origin(destination)?,
                             };
@@ -6596,7 +6599,8 @@ mod tests {
                     entries: vec![
                         ("_main/pkg/d".into(), Some("pkg/data.txt".into())),
                         ("_main/pkg/__init__.py".into(), None),
-                    ],
+                    ]
+                    .into(),
                     manifest: "bin/pkg/b.runfiles_manifest".into(),
                     executable: Some("bin/pkg/b".into()),
                     create: true,
@@ -9335,7 +9339,7 @@ ln -s empty $T/empty_alias; ln -s '{}' $T/host",
             outputs: vec!["bin/b.runfiles_manifest".into()],
             extra: ActionExtra {
                 transform: Some(Transform::RunfilesManifest {
-                    entries: vec![("_main/pkg/link".into(), Some("pkg/link".into()))],
+                    entries: vec![("_main/pkg/link".into(), Some("pkg/link".into()))].into(),
                 }),
                 symlink_inputs: BTreeSet::from([PathBuf::from("pkg/link")]),
                 ..ActionExtra::default()

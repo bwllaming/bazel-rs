@@ -583,9 +583,9 @@ impl Fingerprint {
         }
     }
 
-    fn runfiles_entries(&mut self, entries: &[(String, Option<std::path::PathBuf>)]) {
+    fn runfiles_entries(&mut self, entries: &crate::action::RunfilesEntries) {
         self.count(entries.len());
-        for (path, target) in entries {
+        for (path, target) in entries.iter() {
             self.str(path);
             match target {
                 Some(target) => {

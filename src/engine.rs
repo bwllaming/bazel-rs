@@ -549,6 +549,27 @@ fn verify_declared_file(file: &File, artifact: &Artifact) {
     }
 }
 
+/// Configured target keys by index (MEM4): the planned request's hidden
+/// top-level artifacts name their target by index, one key per target.
+#[derive(Default)]
+struct KeyTable {
+    keys: Vec<ConfiguredTargetKey>,
+    index: HashMap<ConfiguredTargetKey, usize>,
+}
+
+impl KeyTable {
+    /// The index of `key`, added on first use.
+    fn index(&mut self, key: ConfiguredTargetKey) -> usize {
+        if let Some(index) = self.index.get(&key) {
+            return *index;
+        }
+        let index = self.keys.len();
+        self.keys.push(key.clone());
+        self.index.insert(key, index);
+        index
+    }
+}
+
 /// The mutable planning fields an aspect application needs (N58): the same
 /// maps [`Engine::plan_dependency_view`] takes individually, grouped so the
 /// aspect planner can recurse (an aspect application plans its own
@@ -651,7 +672,7 @@ struct RunPlan {
     /// The runfiles tree's MANIFEST (RunfilesSupport), if any.
     tree: Option<Artifact>,
     /// The runfiles mapping of the RunfilesSupport (RunfilesNodes::entries).
-    entries: Option<Vec<(String, Option<Artifact>)>>,
+    entries: Option<Vec<(Arc<str>, Option<Artifact>)>>,
     settings: crate::runfiles::RunSettings,
     /// The configuration of the target (its output directory mnemonic).
     config: ConfigId,
@@ -758,7 +779,7 @@ struct RunfilesNodes {
     /// The runfiles mapping (Runfiles.getRunfilesInputs, `_repo_mapping`
     /// included): each runfiles path with its artifact, `None` for an empty
     /// file. A test action stages these by content (N23g).
-    entries: Vec<(String, Option<Artifact>)>,
+    entries: Vec<(Arc<str>, Option<Artifact>)>,
     /// Prefix conflicts reported by the manifest action, with the rule's
     /// location and the conflict policy (ERROR when true).
     conflicts: Vec<String>,
@@ -9013,7 +9034,9 @@ impl Engine {
                     entries: plan.entries.as_ref().map(|entries| {
                         entries
                             .iter()
-                            .map(|(path, artifact)| (path.clone(), artifact.as_ref().map(produced)))
+                            .map(|(path, artifact)| {
+                                (path.to_string(), artifact.as_ref().map(produced))
+                            })
                             .collect()
                     }),
                     settings: plan.settings,
@@ -13382,28 +13405,40 @@ impl Engine {
         // An `--output_groups` override drops the group from the request
         // (determineOutputGroups), so the runfiles artifacts are not built.
         let runfiles_requested = selected.contains(crate::output_group_info::HIDDEN_TOP_LEVEL);
-        let mut hidden = unreported;
+        // A hidden artifact names its target by the index of the target's
+        // key in `owners` (MEM4): one key per target, not one copy per
+        // runfile of every requested executable.
+        let mut owners = KeyTable::default();
+        let mut hidden: Vec<(usize, Artifact)> = unreported
+            .into_iter()
+            .map(|(key, artifact)| (owners.index(key), artifact))
+            .collect();
         // The workspace status artifacts of this executing build (above):
         // built but never reported (BuildView adds them to
         // artifactsToBuild, not to the reported outputs). Only artifacts
         // with a producer participate in reachability; under --nobuild
         // this list is empty.
         if let Some(first) = labels.first() {
-            let key = self.configurations.top_key(first.clone());
+            let owner = owners.index(self.configurations.top_key(first.clone()));
             for artifact in status_artifacts {
                 if artifact.producer.is_some() {
-                    hidden.push((key.clone(), artifact));
+                    hidden.push((owner, artifact));
                 }
             }
         }
-        let mut seen: std::collections::HashSet<(ConfiguredTargetKey, File)> = requested
+        let mut seen: std::collections::HashSet<(usize, File)> = requested
             .iter()
-            .chain(&hidden)
-            .map(|(key, artifact)| (key.clone(), artifact.file()))
+            .map(|(key, artifact)| (owners.index(key.clone()), artifact.file()))
             .collect();
+        seen.extend(
+            hidden
+                .iter()
+                .map(|(owner, artifact)| (*owner, artifact.file())),
+        );
         for label in labels {
             let key = self.configurations.top_key(label.clone());
             let actual = forwarded.get(&key).unwrap_or(label);
+            let owner = owners.index(key.clone());
             if runfiles_requested
                 && let Some(runfiles) =
                     runfiles_info.get(&self.configurations.top_key(actual.clone()))
@@ -13415,8 +13450,8 @@ impl Engine {
                             file.path
                         )
                     })?;
-                    if seen.insert((key.clone(), artifact.file())) {
-                        hidden.push((key.clone(), artifact));
+                    if seen.insert((owner, artifact.file())) {
+                        hidden.push((owner, artifact));
                     }
                 }
             }
@@ -13435,8 +13470,8 @@ impl Engine {
                     artifacts.extend(support.tree.clone());
                 }
                 for artifact in artifacts {
-                    if seen.insert((key.clone(), artifact.file())) {
-                        hidden.push((key.clone(), artifact));
+                    if seen.insert((owner, artifact.file())) {
+                        hidden.push((owner, artifact));
                     }
                 }
             }
@@ -13465,9 +13500,9 @@ impl Engine {
                     },
                 };
                 if let Some(executable) = &executable
-                    && seen.insert((key.clone(), executable.file()))
+                    && seen.insert((owner, executable.file()))
                 {
-                    hidden.push((key.clone(), executable.clone()));
+                    hidden.push((owner, executable.clone()));
                 }
                 // The published runfiles entries (staged by content) are
                 // built like the runfiles tree a test action consumes
@@ -13480,8 +13515,8 @@ impl Engine {
                     .flat_map(|support| &support.entries)
                     .filter_map(|(_, artifact)| artifact.as_ref())
                 {
-                    if seen.insert((key.clone(), artifact.file())) {
-                        hidden.push((key.clone(), artifact.clone()));
+                    if seen.insert((owner, artifact.file())) {
+                        hidden.push((owner, artifact.clone()));
                     }
                 }
                 let plan = RunPlan {
@@ -13518,7 +13553,14 @@ impl Engine {
                 .keys()
                 .map(|label| (self.configurations.top_key(label.clone()), BTreeSet::new()))
                 .collect();
-            for (owner, artifact) in requested.iter().chain(&hidden) {
+            let hidden_keyed = hidden
+                .iter()
+                .map(|(owner, artifact)| (&owners.keys[*owner], artifact));
+            for (owner, artifact) in requested
+                .iter()
+                .map(|(key, a)| (key, a))
+                .chain(hidden_keyed)
+            {
                 if let Some(completion) = completions.get_mut(owner)
                     && let Some((id, _)) = &artifact.producer
                     && !id.starts_with(crate::request::STATUS_ID_PREFIX)
@@ -13541,8 +13583,9 @@ impl Engine {
             .collect();
         let mut todo = requested
             .iter()
-            .chain(&hidden)
-            .filter_map(|(_, artifact)| artifact.producer.as_ref().map(|(id, _)| id.clone()))
+            .map(|(_, artifact)| artifact)
+            .chain(hidden.iter().map(|(_, artifact)| artifact))
+            .filter_map(|artifact| artifact.producer.as_ref().map(|(id, _)| id.clone()))
             .collect::<Vec<_>>();
         // Every reported aspect artifact is built too, also one of an output
         // group the base target shares (whose `requested` files are the base
@@ -13747,9 +13790,10 @@ impl Engine {
         // tree (RunfilesSupport: the hidden group holds the tree artifact,
         // whose SymlinkTreeAction has them as inputs), so a source
         // directory among them fails that action, not the target.
-        let tree_runfiles: BTreeSet<&ConfiguredTargetKey> = hidden
-            .iter()
-            .map(|(key, _)| key)
+        let hidden_owners: BTreeSet<usize> = hidden.iter().map(|(owner, _)| *owner).collect();
+        let tree_runfiles: BTreeSet<&ConfiguredTargetKey> = hidden_owners
+            .into_iter()
+            .map(|owner| &owners.keys[owner])
             .filter(|key| {
                 let actual = forwarded.get(*key).unwrap_or(&key.label);
                 runfiles_nodes.contains_key(&self.configurations.top_key(actual.clone()))
@@ -13758,8 +13802,12 @@ impl Engine {
         let mut by_target: Vec<(Label, Vec<InputFailure>)> = Vec::new();
         let targets = requested
             .iter()
-            .map(|entry| (entry, false))
-            .chain(hidden.iter().map(|entry| (entry, true)));
+            .map(|(key, artifact)| ((key, artifact), false))
+            .chain(
+                hidden
+                    .iter()
+                    .map(|(owner, artifact)| ((&owners.keys[*owner], artifact), true)),
+            );
         for ((key, artifact), runfile) in targets {
             if artifact.producer.is_some() {
                 continue;
@@ -13889,8 +13937,12 @@ impl Engine {
                 .collect();
             let artifacts = requested
                 .iter()
-                .chain(&hidden)
                 .map(|(key, artifact)| (&key.label, artifact))
+                .chain(
+                    hidden
+                        .iter()
+                        .map(|(owner, artifact)| (&owners.keys[*owner].label, artifact)),
+                )
                 .chain(aspect_reports.iter().flat_map(|(_, label, artifacts)| {
                     artifacts.iter().map(move |artifact| (label, artifact))
                 }));
@@ -14946,26 +14998,30 @@ impl Engine {
         let mut conflicts = Vec::new();
         let mapping = runfiles.runfiles_inputs(Some(repo_mapping), Some(&mut conflicts));
         let mut inputs: Vec<Artifact> = Vec::new();
-        let mut entries: Vec<(String, Option<PathBuf>)> = Vec::new();
-        let mut mapped: Vec<(String, Option<Artifact>)> = Vec::new();
-        for (path, file) in &mapping {
+        // One copy of each runfiles path, shared by the manifest and tree
+        // actions' entries and the target's runfiles entries (MEM4).
+        let mut entries: Vec<(Arc<str>, Option<SharedPath>)> = Vec::new();
+        let mut mapped: Vec<(Arc<str>, Option<Artifact>)> = Vec::new();
+        for (path, file) in mapping {
+            let path: Arc<str> = path.into();
             match file {
                 Some(file) => {
-                    let artifact = if file == repo_mapping {
+                    let artifact = if file == *repo_mapping {
                         repo_mapping_artifact.clone()
                     } else {
-                        lookup(&mut planning, file)?
+                        lookup(&mut planning, &file)?
                     };
-                    entries.push((path.clone(), Some(artifact.exec.to_path_buf())));
-                    mapped.push((path.clone(), Some(artifact.clone())));
+                    entries.push((path.clone(), Some(artifact.exec.clone())));
+                    mapped.push((path, Some(artifact.clone())));
                     inputs.push(artifact);
                 }
                 None => {
                     entries.push((path.clone(), None));
-                    mapped.push((path.clone(), None));
+                    mapped.push((path, None));
                 }
             }
         }
+        let entries: crate::action::RunfilesEntries = entries.into();
         let action = |id: &str, outputs: Vec<PathBuf>, transform| Action {
             id: id.to_owned(),
             command: String::new(),
