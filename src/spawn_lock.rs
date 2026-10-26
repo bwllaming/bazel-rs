@@ -114,6 +114,8 @@ pub fn output(command: &mut Command) -> io::Result<Output> {
 #[allow(clippy::disallowed_methods)]
 pub fn exec(command: &mut Command) -> io::Error {
     use std::os::unix::process::CommandExt;
+    // `bazel run`: the client's exec (crate::signals::Defaults::Client).
+    crate::signals::reset_in_child(command, crate::signals::Defaults::Client);
     let _shared = LOCK.read().unwrap_or_else(|e| e.into_inner());
     command.exec()
 }

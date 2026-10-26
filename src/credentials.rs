@@ -507,6 +507,8 @@ pub fn invoke(
     if let Some(workspace) = workspace {
         command.current_dir(workspace);
     }
+    // Started by the server itself (crate::signals::Defaults::Jvm).
+    crate::signals::reset_in_child(&mut command, crate::signals::Defaults::Jvm);
     // A helper written just before may still be open for writing in another
     // concurrently forked child (ETXTBSY); retry like crate::action.
     let mut spawned = crate::spawn_lock::spawn(&mut command);

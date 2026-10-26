@@ -120,6 +120,7 @@ pub mod sandbox;
 pub mod scheduler;
 mod shared_actions;
 pub mod shared_path;
+mod signals;
 pub mod snapshot;
 mod source_directories;
 pub mod source_links;

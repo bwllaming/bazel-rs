@@ -31,6 +31,13 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   Timeouts: SIGALRM sends SIGTERM to the command's group and SIGKILL after
   `--kill_delay` (`--local_termination_grace_seconds`, default 15;
   process-tools.cc:93-111); SIGTERM/SIGINT to the wrapper SIGKILL the group.
+* Signal dispositions: the wrapper's child (process-wrapper-legacy.cc:72) and
+  linux-sandbox's pid 1 and its child (linux-sandbox-pid1.cc:567, 774) call
+  `ClearSignalMask` (process-tools.cc:151-173): an empty mask and SIG_DFL for
+  every signal, so a spawn never inherits a signal bazel was started with
+  ignored (SIGINT/SIGQUIT in a background job, SIGHUP under nohup). Captured in
+  tests/fixtures/signal_dispositions (src/signals.rs has the other starts:
+  `run`, the workspace status command).
 * linux-sandbox ends a PID namespace with its pid 1 (linux-sandbox-pid1.cc:
   811-814): the kernel SIGKILLs every remaining process of the spawn.
 * Captured (scratch fixture /tmp/opencode/fixdesc-scratch/ws, `--batch`,
@@ -62,6 +69,10 @@ PostgreSQL servers in one survey, /tmp/opencode/perf-research/TEST-SURVEY.md B1)
   wait status), then repeatedly SIGKILLs every child it still has (reparented
   descendants; a child that leads its own process group takes the group along,
   which only its descendants can be in) and reaps them until none is left.
+* The command starts with every signal this process inherited as ignored back
+  at its default action (crate::signals, `Defaults::ProcessWrapper`: a
+  `pre_exec` hook added only when such a signal exists, between fork and
+  exec); the supervisor and bazel-rs themselves keep ignoring them.
 * The control channel is one end of a Unix socket pair, the supervisor's stdin.
   Supervisor to executor: `S<pid>` once the command runs (the executor registers
   the command's group with the memory watchdog), `E<errno>` when it cannot start

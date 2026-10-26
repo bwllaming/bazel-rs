@@ -250,6 +250,10 @@ impl Launch {
         self.command.process_group(0);
         if !self.supervised {
             self.command.stdin(Stdio::null());
+            crate::signals::reset_in_child(
+                &mut self.command,
+                crate::signals::Defaults::ProcessWrapper,
+            );
             return crate::spawn_lock::spawn(&mut self.command).map(Spawned::direct);
         }
         let (ours, theirs) = UnixStream::pair()?;
@@ -501,6 +505,9 @@ fn become_subreaper() -> bool {
 /// and environment inherited.
 fn start_command(command: &mut Command) -> io::Result<Child> {
     command.stdin(Stdio::null()).process_group(0);
+    // Every signal at its default action (ClearSignalMask in the
+    // process-wrapper's child, process-wrapper-legacy.cc:72).
+    crate::signals::reset_in_child(command, crate::signals::Defaults::ProcessWrapper);
     crate::spawn_lock::spawn(command)
 }
 

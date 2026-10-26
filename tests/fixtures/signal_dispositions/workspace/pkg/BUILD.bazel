@@ -1,0 +1,20 @@
+load(":defs.bzl", "probe_bin", "probe_test")
+
+# The SigIgn line (/proc/self/status) of a repository `execute` and of an
+# action (tests/fixtures/signal_dispositions/capture.py).
+genrule(
+    name = "probe",
+    srcs = ["@probe_repo//:status.txt"],
+    outs = ["probe.txt"],
+    cmd = "{ sed 's/^/repository /' $(location @probe_repo//:status.txt); printf 'action '; grep SigIgn /proc/self/status; } > $@",
+)
+
+probe_test(
+    name = "probe_test",
+    src = "probe.sh",
+)
+
+probe_bin(
+    name = "probe_bin",
+    src = "probe.sh",
+)

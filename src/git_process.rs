@@ -171,7 +171,10 @@ impl GitRunner {
         if Instant::now() >= deadline {
             return Err("Git deadline expired before spawn".into());
         }
-        let child = crate::spawn_lock::spawn(&mut self.command(cwd, args))
+        // git_repository's `execute` runs under the process-wrapper.
+        let mut command = self.command(cwd, args);
+        crate::signals::reset_in_child(&mut command, crate::signals::Defaults::ProcessWrapper);
+        let child = crate::spawn_lock::spawn(&mut command)
             .map_err(|e| format!("cannot spawn trusted Git '{}': {e}", self.git.display()))?;
         let mut guard = GroupGuard {
             group: child.id(),

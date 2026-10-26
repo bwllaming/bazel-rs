@@ -1,0 +1,5 @@
+module(name = "signal_dispositions_fixture")
+
+probe_repo = use_repo_rule("//pkg:defs.bzl", "probe_repo")
+
+probe_repo(name = "probe_repo")

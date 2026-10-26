@@ -1,0 +1,197 @@
+{
+ "reference": "bazel 9.3.0",
+ "rows": [
+  {
+   "mode": "batch",
+   "client": "default",
+   "strategy": "standalone",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    []
+   ],
+   "run": [
+    []
+   ]
+  },
+  {
+   "mode": "batch",
+   "client": "default",
+   "strategy": "sandboxed",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    []
+   ],
+   "run": [
+    []
+   ]
+  },
+  {
+   "mode": "batch",
+   "client": "ignored",
+   "strategy": "standalone",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ],
+   "run": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ]
+  },
+  {
+   "mode": "batch",
+   "client": "ignored",
+   "strategy": "sandboxed",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ],
+   "run": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ]
+  },
+  {
+   "mode": "server",
+   "client": "default",
+   "strategy": "standalone",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP"
+    ]
+   ],
+   "run": [
+    []
+   ]
+  },
+  {
+   "mode": "server",
+   "client": "default",
+   "strategy": "sandboxed",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP"
+    ]
+   ],
+   "run": [
+    []
+   ]
+  },
+  {
+   "mode": "server",
+   "client": "ignored",
+   "strategy": "standalone",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ],
+   "run": [
+    [
+     "SIGHUP"
+    ]
+   ]
+  },
+  {
+   "mode": "server",
+   "client": "ignored",
+   "strategy": "sandboxed",
+   "repository_execute": [
+    []
+   ],
+   "action": [
+    []
+   ],
+   "test": [
+    []
+   ],
+   "workspace_status": [
+    [
+     "SIGHUP",
+     "SIGINT",
+     "SIGTERM"
+    ]
+   ],
+   "run": [
+    [
+     "SIGHUP"
+    ]
+   ]
+  }
+ ]
+}
