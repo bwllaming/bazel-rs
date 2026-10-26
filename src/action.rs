@@ -2531,11 +2531,11 @@ fn check_one_output(action: &Action, kind: &str) -> Result<(), String> {
 /// Transforms (symlink, template) require one output and their source among
 /// the input destinations; parameter files must not overlap other paths.
 /// Whether two namespace paths (distinct input destinations, outputs and
-/// parameter files) are equal or one contains the other. In component order
-/// every path sorts directly before the paths below it, so adjacent pairs
-/// suffice: O(n log n) for the large input sets of toolchains and SDKs.
+/// parameter files) are equal or one contains the other: one hashed lookup
+/// per path and proper ancestor (component-wise, like `Path::starts_with`),
+/// linear in the large input sets of toolchains, SDKs and node_modules trees.
 fn namespace_may_overlap(action: &Action) -> bool {
-    let inputs: BTreeSet<&Path> = action
+    let mut paths: HashSet<&Path> = action
         .inputs
         .iter()
         .map(|(_, destination)| destination.as_path())
@@ -2546,17 +2546,25 @@ fn namespace_may_overlap(action: &Action) -> bool {
                 .map(|(destination, _)| destination.as_path()),
         )
         .collect();
-    let mut paths: Vec<&Path> = inputs.into_iter().collect();
-    paths.extend(action.outputs.iter().map(PathBuf::as_path));
-    paths.extend(
+    let others = action.outputs.iter().map(PathBuf::as_path).chain(
         action
             .extra
             .param_files
             .iter()
             .map(|(path, _)| path.as_path()),
     );
-    paths.sort();
-    paths.windows(2).any(|pair| pair[1].starts_with(pair[0]))
+    for path in others {
+        if !paths.insert(path) {
+            return true;
+        }
+    }
+    // The empty path is a prefix of every path, absolute ones included.
+    (paths.len() > 1 && paths.contains(Path::new("")))
+        || paths.iter().any(|path| {
+            path.ancestors()
+                .skip(1)
+                .any(|ancestor| paths.contains(ancestor))
+        })
 }
 
 pub fn validate_structure(action: &Action) -> Result<(), String> {
@@ -5851,6 +5859,56 @@ mod tests {
             fs::read_dir(fixture.cache().join("work")).unwrap().count(),
             0
         );
+    }
+
+    #[test]
+    fn namespace_overlap_prefilter_finds_every_equal_or_containing_pair() {
+        let candidates = [
+            "", "a", "a/b", "a/b-x", "a/b/c", "a//b/c", "a/./b", "a/b/", "b", "/abs", "/abs/x",
+            "a/../b", "a/..",
+        ];
+        // Every small namespace (inputs, outputs, parameter files) over the
+        // candidates against the pairwise definition.
+        for mask in 0u32..(1 << 9) {
+            let pick = |offset: usize| -> Vec<PathBuf> {
+                (0..3)
+                    .filter(|bit| mask & (1 << (offset + bit)) != 0)
+                    .map(|bit| {
+                        PathBuf::from(candidates[(offset * 3 + bit * 5 + mask as usize) % 13])
+                    })
+                    .collect()
+            };
+            let inputs = pick(0);
+            let outputs = pick(3);
+            let params = pick(6);
+            let mut action = Action {
+                inputs: inputs
+                    .iter()
+                    .map(|p| (PathBuf::from("src"), p.clone()))
+                    .collect(),
+                outputs: outputs.clone(),
+                ..Action::default()
+            };
+            action.extra.param_files = params.iter().map(|p| (p.clone(), Vec::new())).collect();
+            let mut distinct: Vec<&Path> = Vec::new();
+            for input in &inputs {
+                if !distinct.contains(&input.as_path()) {
+                    distinct.push(input);
+                }
+            }
+            distinct.extend(outputs.iter().chain(&params).map(PathBuf::as_path));
+            let expected = distinct.iter().enumerate().any(|(i, a)| {
+                distinct
+                    .iter()
+                    .enumerate()
+                    .any(|(j, b)| i != j && (a.starts_with(b) || b.starts_with(a)))
+            });
+            assert_eq!(
+                namespace_may_overlap(&action),
+                expected,
+                "{inputs:?} {outputs:?} {params:?}"
+            );
+        }
     }
 
     #[test]
