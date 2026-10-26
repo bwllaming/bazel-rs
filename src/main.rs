@@ -1338,6 +1338,9 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
     }
     if fetch {
         write_lockfile();
+        // Genuine prints the build's summary first (the progress display's,
+        // when it is on), then the fetch result.
+        bazel_rs::progress::finish(0);
         eprintln!(
             "INFO: All external dependencies for the requested targets fetched successfully."
         );
