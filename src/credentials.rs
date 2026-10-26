@@ -845,6 +845,12 @@ pub fn global() -> Option<&'static Credentials> {
     GLOBAL.get()
 }
 
+/// Whether a credential helper applies to `url` (its headers are formed by
+/// running it, whose failure is a warning: [`download_credentials`]).
+pub(crate) fn helper_applies(url: &str) -> bool {
+    global().is_some_and(|credentials| credentials.helper_for(url).is_some())
+}
+
 /// The downloader's per-URL headers (HttpConnectorMultiplexer.getHeaderFunction,
 /// :133-151): helper headers; a helper failure is a warning and the request
 /// continues without credentials. Empty when no helper applies.

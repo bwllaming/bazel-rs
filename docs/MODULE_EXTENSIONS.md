@@ -92,6 +92,55 @@ publish no partial repository from the failing group. Prerequisite repositories
 successfully fetched while loading another group are not rolled back. Each fresh
 runtime reevaluates the extension and demanded repository callback before reuse.
 
+## Non-blocking downloads
+
+`download(block = False)` (module and repository contexts) overlaps its
+transfer with the callback, as Bazel's downloader executor does
+(StarlarkBaseExternalContext.java:585-697, bounded by
+`--http_max_parallel_downloads`, default 8). rules_python's `pip` extension
+with `experimental_index_url` issues one non-blocking Simple-API request per
+package and then waits for them all: on ~/code (371 requests) the sequential
+transfer cost the extension ~13 s of round trips, the cold
+`build --nobuild //src/python:bworker_env` pattern loading 30 s → 15 s.
+Implementation: `src/repository_ctx/pending_downloads.rs`.
+
+Only the network transfer and the copy into the download cache run on a pool
+of eight threads, into a private file next to the output. Everything the
+callback can observe stays where the sequential transfer shows it: a pending
+download is *committed* — its mirror-failure warnings written, the file
+renamed onto the output (a failed mirror's bytes too, as before), the execute
+bits set, its result or error fixed — in call order, before the callback
+observes anything else: before every other context method (`path(string)`,
+`getenv`, and `read`/`path.exists`/`path.is_dir` of paths no pending output
+is, contains or lies in excepted), every `print()`, `wait()` (which commits
+through its own download), and when the callback returns or fails (the
+warnings precede its error). A non-blocking download whose output is, contains
+or lies in a pending output, or that expects a pending download's checksum
+(the download cache could serve it), commits the pending ones first. Hence
+stdout, stderr, errors, lockfile, recorded inputs and published trees are the
+sequential transfer's (tests/parallel_download.rs compares cold builds
+byte for byte against `BAZEL_RS_DEBUG_NO_ASYNC_DOWNLOAD=1`, the sequential
+reference, at `--loading_phase_threads` 1/8/32, and a failing extension).
+A download a credential helper applies to (its warnings print while the
+request is formed), with downloads disabled, or onto an existing directory
+transfers at the call. Residual: a credential helper that applies only to a
+redirect target prints its warning from the transfer thread. A speculative
+repository fetch's cancellation reaches its transfers.
+`PERF-REPO non-blocking downloads overlapped=N` counts them.
+
+## Profiling
+
+`BAZEL_RS_TIMING_TIMELINE=1` prints one `PERF-TL <start>s <end>s <seconds>
+<thread> <kind> <name>` line per module extension evaluation (`extension`,
+by group), repository materialization (`executed`, `reused`), `execute()`
+subprocess and download (`download`, `download-nonblocking`: the call, not
+the transfer), on the diagnostics stream, relative to the process start (`main.start`).
+On ~/code's cold bworker_env build it showed the pattern-loading span
+(module extensions) to be rules_python's `pip` (24 of 30 s: 13 s sequential
+Simple-API round trips, 3 s interpreter download, the rest Starlark), and
+phase 1 to wait 14 s for `zig_config` (hermetic_cc_toolchain) before the
+wheel repositories' select() conditions are decided.
+
 ## Explicit boundaries
 
 Module/tag projections and their nested attribute lists are immutable. ASCII

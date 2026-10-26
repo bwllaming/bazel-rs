@@ -188,7 +188,11 @@ pub struct NotePrints;
 
 impl starlark::PrintHandler for NotePrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        note(&crate::debug_print::line(text));
+        let line = crate::debug_print::line(text);
+        // A module extension's print follows the warnings of the downloads
+        // it issued before (crate::repository_ctx's pending downloads).
+        crate::repository_ctx::flush_pending_downloads();
+        note(&line);
         Ok(())
     }
 }

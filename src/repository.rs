@@ -2986,6 +2986,7 @@ impl RepositorySet {
             .get(id)
             .ok_or_else(|| format!("missing ordinary extension preparation slot {id:?}"))?;
         slot.get_or_try_init(self.state.runtime_id, &format!("prepare:ordinary:{id}"), || {
+            let _span = crate::timeline::span("extension", || id.to_owned());
             for participant in &group.participants {
                 if let Some(error) = &participant.source_profile_error {
                     return Err(error.clone());

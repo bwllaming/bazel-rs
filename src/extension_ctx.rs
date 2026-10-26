@@ -1283,6 +1283,9 @@ pub fn execute(
                 let _model = starlark::values::string::enter_latin1_char_model(true);
                 eval.eval_function(implementation, &[ctx], &[])
             };
+            // The callback's non-blocking downloads finish within it, also
+            // when it fails (their warnings precede its error).
+            crate::repository_ctx::flush_pending_downloads();
             let returned = evaluated.map_err(crate::repository_ctx::callback_error)?;
             // RegularRunnableExtension.java:298-318: None is DEFAULT metadata.
             ensure!(

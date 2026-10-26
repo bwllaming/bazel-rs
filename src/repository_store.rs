@@ -387,6 +387,10 @@ pub mod timing {
     }
 
     pub fn record_root(stage_key: &str, secs: f64, outcome: &'static str) {
+        if crate::timeline::enabled() {
+            let start = std::time::Instant::now() - std::time::Duration::from_secs_f64(secs);
+            crate::timeline::record(outcome, stage_key, start);
+        }
         if enabled()
             && let Ok(mut roots) = PHASES.roots.lock()
         {
@@ -440,6 +444,10 @@ pub mod timing {
         eprintln!(
             "PERF-REPO files_hashed_during_verify={}",
             p.files_hashed.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "PERF-REPO non-blocking downloads overlapped={}",
+            crate::repository_ctx::overlapped_downloads(),
         );
         eprintln!(
             "PERF-REPO recorded-input file digests: hashed={} ({} bytes) memo_hits={} ({} bytes not re-hashed)",
@@ -1455,7 +1463,8 @@ where
     // either the old or the new publication, never a partial one. The warm
     // check is the shared `try_reuse` probe (worker-safe); a local rule
     // never reuses.
-    let call_start = timing::enabled().then(std::time::Instant::now);
+    let call_start =
+        (timing::enabled() || crate::timeline::enabled()).then(std::time::Instant::now);
     if let Probe::Warm {
         validate,
         workspace,

@@ -201,6 +201,56 @@ pub fn perf_mark(name: &str) {
     }
 }
 
+/// Timeline spans of the external-repository phase (`BAZEL_RS_TIMING_TIMELINE=1`,
+/// docs/MODULE_EXTENSIONS.md "Profiling"): one `PERF-TL <start>s <end>s
+/// <seconds> <thread> <kind> <name>` line per module extension evaluation
+/// (`extension`), repository materialization (`executed`, `reused`),
+/// `execute()` subprocess and download, relative to the first PERF mark —
+/// which runs where, and what waits for what.
+pub mod timeline {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    /// Whether spans are recorded.
+    pub fn enabled() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED
+            .get_or_init(|| crate::diagnostic_switch(std::env::var_os("BAZEL_RS_TIMING_TIMELINE")))
+    }
+
+    /// A span from `start` until now.
+    pub fn record(kind: &str, name: &str, start: Instant) {
+        if !enabled() {
+            return;
+        }
+        let (origin, _) = super::process_clock();
+        let begin = start.saturating_duration_since(origin).as_secs_f64();
+        let end = origin.elapsed().as_secs_f64();
+        let thread = std::thread::current();
+        crate::snapshot::diag::line_fmt(format_args!(
+            "PERF-TL {begin:9.3}s {end:9.3}s {:8.3} {} {kind} {name}",
+            end - begin,
+            thread.name().unwrap_or("-")
+        ));
+    }
+
+    /// A span that ends when it is dropped (`name` is formed only when
+    /// spans are recorded).
+    pub struct Span(Option<(Instant, &'static str, String)>);
+
+    pub fn span(kind: &'static str, name: impl FnOnce() -> String) -> Span {
+        Span(enabled().then(|| (Instant::now(), kind, name())))
+    }
+
+    impl Drop for Span {
+        fn drop(&mut self) {
+            if let Some((start, kind, name)) = self.0.take() {
+                record(kind, &name, start);
+            }
+        }
+    }
+}
+
 /// Whether a diagnostics switch the caller read (`BAZEL_RS_TIMING`,
 /// `BAZEL_RS_TIMING_ALLOC`) is on: set to anything but empty or `0`, so
 /// `=0` turns a switch off (integration-20: `BAZEL_RS_TIMING` used to count

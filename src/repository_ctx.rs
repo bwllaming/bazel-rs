@@ -379,7 +379,7 @@ mod values {
     pub(crate) struct PendingDownload {
         pub output: Vec<u8>,
         #[allocative(skip)]
-        pub outcome: Result<super::DownloadOutcome, String>,
+        pub outcome: super::PendingOutcome,
     }
     starlark::starlark_simple_value!(PendingDownload);
 
@@ -541,6 +541,27 @@ use values::{
     WorkspaceObservation,
 };
 
+/// A `download(block = False)`'s result: known at the call, or committed
+/// by pending_downloads.
+#[derive(Debug)]
+pub(crate) enum PendingOutcome {
+    Ready(Result<DownloadOutcome, String>),
+    Queued(Arc<pending_downloads::Slot>),
+}
+
+mod pending_downloads;
+
+/// Commit this thread's pending non-blocking downloads (pending_downloads):
+/// before a callback observes anything they could change, and when it ends.
+pub(crate) fn flush_pending_downloads() {
+    pending_downloads::flush();
+}
+
+/// Non-blocking downloads transferred on the pending-download pool so far.
+pub(crate) fn overlapped_downloads() -> u64 {
+    pending_downloads::submitted()
+}
+
 /// The repository-rule callback's own context (not a module extension's).
 fn own_context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
     eval.extra.and_then(|extra| extra.downcast_ref::<Context>())
@@ -549,6 +570,15 @@ fn own_context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> Option<&'a Context> {
 /// The StarlarkBaseExternalContext of the running callback: a repository
 /// rule's, or the one embedded in a module extension's context.
 fn context<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
+    // Every context method observes what the sequential engine shows once
+    // the earlier non-blocking downloads finished.
+    pending_downloads::flush();
+    context_unflushed(eval)
+}
+
+/// [`context`] without committing pending downloads (a non-blocking
+/// download decides itself which pending ones it could observe).
+fn context_unflushed<'a>(eval: &'a Evaluator<'_, '_, '_>) -> anyhow::Result<&'a Context> {
     own_context(eval)
         .or_else(|| crate::extension_ctx::base_context(eval))
         .ok_or_else(|| anyhow!("repository_ctx is only available during repository execution"))
@@ -2243,7 +2273,8 @@ impl Context {
         executable: bool,
         allow_fail: bool,
         canonical_id: &str,
-    ) -> anyhow::Result<DownloadOutcome> {
+        block: bool,
+    ) -> anyhow::Result<Started> {
         self.facility("download");
         let urls = &request.urls;
         // makeDirectories(outputPath) (java:862): parents are real directories.
@@ -2265,7 +2296,7 @@ impl Context {
             // `success = False` under allow_fail.
             match self.output_parents(relative) {
                 Ok(target) => target,
-                Err(_) if allow_fail => return Ok(DownloadOutcome::Failed),
+                Err(_) if allow_fail => return Ok(Started::Done(DownloadOutcome::Failed)),
                 Err(error) => return Err(error),
             }
         };
@@ -2289,6 +2320,20 @@ impl Context {
                 .map(|size| (expected.clone(), size)),
             _ => None,
         };
+        if reused.is_none()
+            && cached.is_none()
+            && !block
+            && let Some(slot) = self.submit_download(
+                request,
+                output,
+                &target,
+                executable,
+                allow_fail,
+                canonical_id,
+            )
+        {
+            return Ok(Started::Pending(slot));
+        }
         let (checksum, size) = match reused.or(cached) {
             Some(found) => found,
             None => match self.fetch_to(
@@ -2301,7 +2346,7 @@ impl Context {
                 Ok((fetched, _)) => {
                     match self.cache_put(&fetched.checksum, &target, canonical_id) {
                         Ok(()) => {}
-                        Err(_) if allow_fail => return Ok(DownloadOutcome::Failed),
+                        Err(_) if allow_fail => return Ok(Started::Done(DownloadOutcome::Failed)),
                         Err(error) => return Err(error),
                     }
                     (fetched.checksum, fetched.size)
@@ -2309,7 +2354,7 @@ impl Context {
                 Err(failure)
                     if allow_fail && matches!(failure.error, TypedIoError::Completion(_)) =>
                 {
-                    return Ok(DownloadOutcome::Failed);
+                    return Ok(Started::Done(DownloadOutcome::Failed));
                 }
                 Err(failure) => return Err(failure.into_error(urls, output)),
             },
@@ -2325,7 +2370,56 @@ impl Context {
         if let Some(error) = &request.deferred {
             bail!("Checksum error in {}: {error}", self.identifying());
         }
-        Ok(DownloadOutcome::Done(checksum, size))
+        Ok(Started::Done(DownloadOutcome::Done(checksum, size)))
+    }
+
+    /// The transfer of a `download(block = False)` on the pending-download
+    /// pool (pending_downloads), when it may overlap the callback; `None`:
+    /// transfer at the call, as a blocking download does.
+    fn submit_download(
+        &self,
+        request: &DownloadRequest,
+        output: &[u8],
+        target: &Path,
+        executable: bool,
+        allow_fail: bool,
+        canonical_id: &str,
+    ) -> Option<Arc<pending_downloads::Slot>> {
+        if !pending_downloads::enabled()
+            || !self.repositories.repository_downloads_enabled()
+            // A credential helper's failure is a warning printed while the
+            // request is formed (crate::credentials::download_credentials).
+            || request
+                .urls
+                .iter()
+                .any(|url| crate::credentials::helper_applies(url.as_str()))
+            || fs::symlink_metadata(target).is_ok_and(|metadata| metadata.is_dir())
+        {
+            return None;
+        }
+        let client = self.client().ok()?;
+        let deferred = request
+            .deferred
+            .as_ref()
+            .map(|error| format!("Checksum error in {}: {error}", self.identifying()));
+        Some(pending_downloads::submit(pending_downloads::Request {
+            client,
+            urls: &request.urls,
+            expected: request.expected.as_ref(),
+            sri: request.sri,
+            headers: &request.headers,
+            deferred: deferred.as_deref(),
+            target,
+            output,
+            allow_fail,
+            executable,
+            cache: self
+                .repositories
+                .source_cache_path()
+                .ok()
+                .map(Path::to_path_buf),
+            canonical_id,
+        }))
     }
 
     /// The repository download cache (DownloadCache.java, `--repository_cache`):
@@ -2333,17 +2427,7 @@ impl Context {
     /// (shared with registry archives), canonical ids as marker files.
     fn cache_paths(&self, checksum: &Checksum, canonical_id: &str) -> Option<(PathBuf, PathBuf)> {
         let root = self.repositories.source_cache_path().ok()?;
-        let algorithm = checksum.algorithm.name();
-        let key = transport::hex(&checksum.bytes);
-        let marker = root
-            .join("download_ids")
-            .join(algorithm)
-            .join(&key)
-            .join(format!("id-{}", transport::sha256(canonical_id.as_bytes())));
-        Some((
-            crate::materializer::download_cache_blob(root, algorithm, &key),
-            marker,
-        ))
+        Some(cache_paths_at(root, checksum, canonical_id))
     }
 
     /// DownloadManager.java:264-277 + DownloadCache.get (java:146-221): a
@@ -2399,39 +2483,12 @@ impl Context {
         source: &Path,
         canonical_id: &str,
     ) -> anyhow::Result<()> {
-        let Some((blob, marker)) = self.cache_paths(checksum, canonical_id) else {
-            return Ok(());
-        };
-        let store = || -> std::io::Result<()> {
-            let directory = blob.parent().expect("cache blob parent");
-            fs::create_dir_all(directory)?;
-            let present = fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file())
-                && checksum
-                    .algorithm
-                    .hash_file(&blob)
-                    .is_ok_and(|(digest, _)| digest == checksum.bytes);
-            if !present {
-                let mut temp = tempfile::NamedTempFile::new_in(directory)?;
-                std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
-                temp.persist(&blob).map_err(|error| error.error)?;
-            }
-            if !canonical_id.is_empty() {
-                fs::create_dir_all(marker.parent().expect("marker parent"))?;
-                OpenOptions::new()
-                    .create(true)
-                    .truncate(false)
-                    .write(true)
-                    .open(&marker)?;
-            }
-            Ok(())
-        };
-        store().map_err(|error| {
-            anyhow!(
-                "java.io.IOException: {} ({})",
-                blob.display(),
-                io_reason(&error)
-            )
-        })
+        cache_put_at(
+            self.repositories.source_cache_path().ok(),
+            checksum,
+            source,
+            canonical_id,
+        )
     }
 
     /// Stream-extract the archive file into `output` (stage-relative),
@@ -2626,6 +2683,71 @@ enum DownloadTarget<'a> {
 
 /// A failed download: the typed error and, when mirrors were tried, Bazel's
 /// description of the last mirror's failure.
+/// The repository download cache's blob and canonical-id marker paths under
+/// `root` (DownloadCache.java, `--repository_cache`): blobs keyed by checksum
+/// under `<root>/downloads/<algorithm>/<hex>` (shared with registry
+/// archives), canonical ids as marker files.
+fn cache_paths_at(root: &Path, checksum: &Checksum, canonical_id: &str) -> (PathBuf, PathBuf) {
+    let algorithm = checksum.algorithm.name();
+    let key = transport::hex(&checksum.bytes);
+    let marker = root
+        .join("download_ids")
+        .join(algorithm)
+        .join(&key)
+        .join(format!("id-{}", transport::sha256(canonical_id.as_bytes())));
+    (
+        crate::materializer::download_cache_blob(root, algorithm, &key),
+        marker,
+    )
+}
+
+/// DownloadManager.java:381-386: every completed download enters the cache
+/// under `root` (none: no cache), keyed by the given checksum or by its
+/// SHA-256. A failing store is not caught there: it is an IOException of the
+/// download itself (`success = False` under allow_fail, else the download's
+/// error). Only the distdir path (not modelled) downgrades it to a warning
+/// (java:310-315).
+fn cache_put_at(
+    root: Option<&Path>,
+    checksum: &Checksum,
+    source: &Path,
+    canonical_id: &str,
+) -> anyhow::Result<()> {
+    let Some((blob, marker)) = root.map(|root| cache_paths_at(root, checksum, canonical_id)) else {
+        return Ok(());
+    };
+    let store = || -> std::io::Result<()> {
+        let directory = blob.parent().expect("cache blob parent");
+        fs::create_dir_all(directory)?;
+        let present = fs::symlink_metadata(&blob).is_ok_and(|metadata| metadata.is_file())
+            && checksum
+                .algorithm
+                .hash_file(&blob)
+                .is_ok_and(|(digest, _)| digest == checksum.bytes);
+        if !present {
+            let mut temp = tempfile::NamedTempFile::new_in(directory)?;
+            std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
+            temp.persist(&blob).map_err(|error| error.error)?;
+        }
+        if !canonical_id.is_empty() {
+            fs::create_dir_all(marker.parent().expect("marker parent"))?;
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&marker)?;
+        }
+        Ok(())
+    };
+    store().map_err(|error| {
+        anyhow!(
+            "java.io.IOException: {} ({})",
+            blob.display(),
+            io_reason(&error)
+        )
+    })
+}
+
 struct DownloadFailure {
     error: TypedIoError,
     last: Option<transport::BazelFailure>,
@@ -2811,9 +2933,13 @@ fn pending_download_methods(builder: &mut MethodsBuilder) {
         let pending = this
             .downcast_ref::<PendingDownload>()
             .ok_or_else(|| anyhow!("expected PendingDownload"))?;
-        match &pending.outcome {
+        let outcome = match &pending.outcome {
+            PendingOutcome::Ready(outcome) => outcome.clone(),
+            PendingOutcome::Queued(slot) => pending_downloads::wait(slot),
+        };
+        match outcome {
             Ok(outcome) => Ok(outcome.alloc(heap)),
-            Err(message) => Err(anyhow::Error::msg(message.clone())),
+            Err(message) => Err(anyhow::Error::msg(message)),
         }
     }
 }
@@ -2858,7 +2984,8 @@ fn getenv_impl<'v>(
     if !external_receiver(this) {
         return Err(GetenvError::Receiver);
     }
-    let context = context(eval).map_err(|_| GetenvError::Phase)?;
+    // The environment: nothing a pending download changes.
+    let context = context_unflushed(eval).map_err(|_| GetenvError::Phase)?;
     let mut observed = None;
     let value = getenv_observed(
         &context.environment,
@@ -3154,6 +3281,13 @@ fn download_error(urls: &[reqwest::Url], path: &[u8], message: &str) -> anyhow::
     )
 }
 
+/// A download() call: finished, or (`block = False`) transferring on the
+/// pending-download pool.
+pub(crate) enum Started {
+    Done(DownloadOutcome),
+    Pending(Arc<pending_downloads::Slot>),
+}
+
 /// A finished download(): `success = False` under allow_fail, or the digest.
 #[derive(Debug, Clone)]
 pub(crate) enum DownloadOutcome {
@@ -3253,7 +3387,20 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<String> {
         let _ = this;
-        let context = context(eval)?;
+        // Reading a file observes only the pending downloads to it or into
+        // it (a label may fetch its repository first: commit them all).
+        let context = if unpack_label(path).is_some() {
+            context(eval)?
+        } else {
+            let context = context_unflushed(eval)?;
+            if path.downcast_ref::<RepositoryPath>().is_none() && path.unpack_str().is_none() {
+                pending_downloads::flush();
+            } else {
+                let bytes = context.path_of(path, "read", "path")?;
+                pending_downloads::flush_conflicting(&path_buf(&bytes), None);
+            }
+            context
+        };
         let watch = ShouldWatch::parse(watch)?;
         let (_, bytes) = context.read_input(
             path,
@@ -3275,7 +3422,14 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         if path.downcast_ref::<RepositoryPath>().is_some() {
             return Ok(path);
         }
-        let bytes = context(eval)?.path_of(path, "path", "path")?;
+        // A string names a path without touching it; a label may fetch its
+        // repository (which observes what the earlier downloads changed).
+        let context = if unpack_label(path).is_some() {
+            context(eval)?
+        } else {
+            context_unflushed(eval)?
+        };
+        let bytes = context.path_of(path, "path", "path")?;
         Ok(eval.heap().alloc(RepositoryPath { bytes }))
     }
 
@@ -3335,6 +3489,9 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<ExecResult> {
         exec_receiver(this)?;
+        let _span = crate::timeline::span("execute", || {
+            format!("{arguments}").chars().take(200).collect()
+        });
         let context = context(eval)?;
         let items = if let Some(list) = ListRef::from_value(arguments) {
             list.content().to_vec()
@@ -3705,7 +3862,21 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let _ = this;
-        let context = context(eval)?;
+        let _span = crate::timeline::span(
+            if block {
+                "download"
+            } else {
+                "download-nonblocking"
+            },
+            || format!("{url}").chars().take(200).collect(),
+        );
+        // A blocking download commits every pending one first (`context`);
+        // a non-blocking one only those it could observe (below).
+        let context = if block {
+            context(eval)?
+        } else {
+            context_unflushed(eval)?
+        };
         let request = DownloadRequest::new(
             "download", url, sha256, integrity, allow_fail, auth, headers,
         )?;
@@ -3713,22 +3884,35 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
             Some(output) => context.path_of(output, "download", "output")?,
             None => context.stage_bytes().to_vec(),
         };
+        if !block {
+            pending_downloads::flush_conflicting(&path_buf(&output), request.expected.as_ref());
+        }
         // checkInOutputDirectory("write", outputPath) (java:861).
         let relative = context.output(&output)?;
-        let outcome = context.download(
+        let started = context.download(
             &request,
             &output,
             &relative,
             executable,
             allow_fail,
             canonical_id,
+            block,
         );
+        let outcome = match started {
+            Ok(Started::Pending(slot)) => PendingOutcome::Queued(slot),
+            Ok(Started::Done(outcome)) => PendingOutcome::Ready(Ok(outcome)),
+            Err(error) if !block => PendingOutcome::Ready(Err(format!("{error:#}"))),
+            Err(error) => return Err(error),
+        };
         if block {
-            return Ok(outcome?.alloc(eval.heap()));
+            let PendingOutcome::Ready(Ok(outcome)) = outcome else {
+                unreachable!("a blocking download finishes at the call")
+            };
+            return Ok(outcome.alloc(eval.heap()));
         }
         Ok(eval.heap().alloc(PendingDownload {
             output: output.clone(),
-            outcome: outcome.map_err(|error| format!("{error:#}")),
+            outcome,
         }))
     }
 }
@@ -4084,16 +4268,21 @@ fn path_methods(builder: &mut MethodsBuilder) {
 
     #[starlark(attribute)]
     fn exists<'v>(this: Value<'v>) -> anyhow::Result<bool> {
-        Ok(fs::metadata(path_buf(&path_receiver(this)?.bytes)).is_ok())
+        let path = path_buf(&path_receiver(this)?.bytes);
+        pending_downloads::flush_conflicting(&path, None);
+        Ok(fs::metadata(path).is_ok())
     }
 
     #[starlark(attribute)]
     fn is_dir<'v>(this: Value<'v>) -> anyhow::Result<bool> {
-        Ok(fs::metadata(path_buf(&path_receiver(this)?.bytes)).is_ok_and(|m| m.is_dir()))
+        let path = path_buf(&path_receiver(this)?.bytes);
+        pending_downloads::flush_conflicting(&path, None);
+        Ok(fs::metadata(path).is_ok_and(|m| m.is_dir()))
     }
 
     #[starlark(attribute)]
     fn realpath<'v>(this: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
+        pending_downloads::flush();
         let path = path_receiver(this)?;
         Ok(heap.alloc(RepositoryPath {
             bytes: resolve_symbolic_links(&path.bytes)?,
@@ -4492,7 +4681,10 @@ struct CollectedPrints<'a>(&'a Context);
 
 impl starlark::PrintHandler for CollectedPrints<'_> {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.print_line(&crate::debug_print::line(text));
+        let line = crate::debug_print::line(text);
+        // A print follows the warnings of the downloads issued before it.
+        pending_downloads::flush();
+        self.0.print_line(&line);
         Ok(())
     }
 }
@@ -4646,9 +4838,11 @@ fn execute_with(
                     .observe(context.repositories.environment(), name)?;
             }
             let _model = starlark::values::string::enter_latin1_char_model(true);
-            let returned = eval
-                .eval_function(implementation, &[ctx], &[])
-                .map_err(callback_error)?;
+            let returned = eval.eval_function(implementation, &[ctx], &[]);
+            // The callback's non-blocking downloads finish within it, also
+            // when it fails (their warnings precede its error).
+            pending_downloads::flush();
+            let returned = returned.map_err(callback_error)?;
             // RepositoryFetchFunction.java:681-695: a dict must have string
             // keys ("return value"), repo_metadata is taken as is, and every
             // other value (None, ints, ...) means NONREPRODUCIBLE under the

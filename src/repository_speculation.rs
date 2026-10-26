@@ -87,7 +87,37 @@ pub(crate) fn cancelled() -> bool {
             .borrow()
             .as_ref()
             .is_some_and(|current| current.cancel.load(Ordering::Relaxed))
+    }) || ADOPTED.with(|adopted| {
+        adopted
+            .borrow()
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     })
+}
+
+thread_local! {
+    /// The cancellation of a speculation this thread works for without
+    /// executing it: a non-blocking download's transfer
+    /// (crate::repository_ctx's pending downloads).
+    static ADOPTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+/// The cancellation of the speculation running on this thread, if any.
+pub(crate) fn cancel_token() -> Option<Arc<AtomicBool>> {
+    CURRENT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(|current| current.cancel.clone())
+    })
+}
+
+/// Run `work` on this thread honouring `cancel` ([`cancelled`]).
+pub(crate) fn with_cancel<R>(cancel: Option<Arc<AtomicBool>>, work: impl FnOnce() -> R) -> R {
+    let previous = ADOPTED.with(|adopted| adopted.replace(cancel));
+    let result = work();
+    ADOPTED.with(|adopted| adopted.replace(previous));
+    result
 }
 
 /// Bytes a repository rule writes to stderr as it executes: kept in the

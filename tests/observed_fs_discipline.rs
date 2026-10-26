@@ -95,6 +95,8 @@ const ALLOWED_PREFIXES: &[&str] = &[
     // The build event files (docs/BEP.md): opened before the recording
     // window, the built outputs' digests read after execution.
     "bep/",
+    // repository_ctx's submodules (its non-blocking downloads' transfers).
+    "repository_ctx/",
 ];
 
 /// Diagnostics switches and test hooks: never inputs of planning (runs with
