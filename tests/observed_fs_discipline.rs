@@ -78,6 +78,12 @@ const ALLOWED_MODULES: &[&str] = &[
     // The cache's garbage collection (docs/CACHE_GC.md): the lock and the
     // last-use records around the command, the collection after it.
     "cache_gc",
+    // The execution log (docs/PROFILE.md): digests of spawn outputs, read
+    // by the executor after the spawn.
+    "exec_log",
+    // The profile (docs/PROFILE.md): this process's CPU times and the
+    // profile file, written when the command ends.
+    "profile",
 ];
 const ALLOWED_PREFIXES: &[&str] = &[
     "test_",
@@ -86,6 +92,9 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "snapshot/",
     "action/",
     "cache_gc/",
+    // The build event files (docs/BEP.md): opened before the recording
+    // window, the built outputs' digests read after execution.
+    "bep/",
 ];
 
 /// Diagnostics switches and test hooks: never inputs of planning (runs with
