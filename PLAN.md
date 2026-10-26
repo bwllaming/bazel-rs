@@ -56,9 +56,12 @@ Done since the last increment recorded under "History", one line each:
 - [x] Attribute split transitions in ordinary builds and cquery, including
       `ctx.split_attr`, aspects and converged-configuration cleanup matching 9.3
       (docs/SPLIT_TRANSITIONS.md). Appscanner's image query now succeeds.
-- [ ] Whole-source cquery: the next blocker is rules_cc `get_link_args` accepting
-      `parameter_file_type=None`, reached by `sandbox-extension:policy` in another
-      configuration. Whole-repository target-determinator remains blocked.
+- [x] rules_cc `get_link_args(parameter_file_type=None)` is accepted without
+      parameter-file metadata, matching Bazel's nullable API.
+- [ ] Whole-source cquery: fix the analysis-order error for rules_rust's
+      `rustfmt_srcs_aspect` on the external fastrand crate. The bounded query
+      now reaches this later error at 6,230 MiB; whole-repository
+      target-determinator remains blocked.
 
 ### Commands that are rejected today
 

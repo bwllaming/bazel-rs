@@ -133,7 +133,16 @@ The follow-up full `deps(//src/...)` probe reached a **new** analysis blocker af
 `parameter_file_type` received `NoneType`, but the native API requires `string`.
 Genuine CcStarlarkInternal.getArgs accepts None. A focused default-configuration
 query of this target succeeds; the failure is in a configuration reached by the
-whole-source graph. Whole-repository TD support is therefore **still not established**.
+whole-source graph. The nullable API follow-up fixes this without adding parameter-
+file metadata for None.
+
+With that correction and genuine converged-split cleanup, the next bounded
+whole-source query failed after 464.69 s at 6,230 MiB with an analysis-order error:
+`rustfmt_srcs_aspect` on the external `crates__fastrand-2.5.0//:fastrand` target
+"was not analyzed" (reported while analyzing `//src/rust/graphlake/core`). No query
+output was published; the 8 GiB cap and 15-minute timeout were retained and the
+checkout canaries were unchanged. Whole-repository TD support is therefore
+**still not established**.
 
 A 200-way scratch fanout measured 69 ms cold, 9 ms repeated deps, 7 ms for P,
 8 ms after source-content edit (valid graph hit; TD reads the changed content),
