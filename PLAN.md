@@ -116,8 +116,11 @@ Done since the last increment recorded under "History", one line each:
       `attr_aspects`, `toolchains_aspects`, subrules on aspects.
 - [ ] One toolchain needed on two execution platforms in one configuration;
       `register_execution_platforms` from non-root modules.
-- [ ] Console text: `INFO: Analyzed …` / `INFO: Found …` lines, `DEBUG:` prefix on
-      transition prints, exclusive-test order, `-k` error ordering.
+- [x] Console text: `INFO: Analyzed …` / `Found …` / `Elapsed time` / `Build
+      completed …` in every UI mode, `DEBUG: FILE:LINE:COL:` on every `print()`
+      (docs/PROGRESS.md; no critical path, `N processes` or `Target … up-to-date`).
+- [ ] Console text: exclusive-test order, `-k` error ordering, analysis warnings
+      printed after execution.
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
 - [x] Children no longer inherit ignored SIGINT/SIGQUIT/SIGHUP (src/signals.rs).
 - [ ] Five network-dependent tests: serve their archives from a checksum-verified

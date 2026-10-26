@@ -11,6 +11,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -58,7 +59,7 @@ impl Fixture {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&without_elapsed(&String::from_utf8_lossy(&output.stderr)))
 }
 
 /// Lines of `text` that are neither diagnostics nor the build summary.
@@ -230,10 +231,18 @@ outer = repository_rule(_outer, local = True)
                 .collect();
             // "outer before\nouter echo\nouter after\n" and
             // "inner print\ninner echo\n", each print() a marked note
-            // (crate::ui: 17 + 16 bytes of marks around it).
+            // (crate::ui: 17 + 16 bytes of marks around it) with its
+            // `DEBUG: <workspace>/repo.bzl:L:C: ` lead (crate::debug_print;
+            // the outer prints are at 10:10 and 13:10, the inner one at 2:10).
+            let lead = "DEBUG: ".len()
+                + f.0.path().display().to_string().len()
+                + "/repo.bzl:".len()
+                + ": ".len();
+            let outer = format!("output:{}", 102 + 2 * (lead + "10:10".len()));
+            let inner = format!("output:{}", 56 + lead + "2:10".len());
             assert_eq!(outputs.len(), 2, "{dump}");
-            assert!(outputs.contains(&"output:102"), "{dump}");
-            assert!(outputs.contains(&"output:56"), "{dump}");
+            assert!(outputs.contains(&outer.as_str()), "{dump}");
+            assert!(outputs.contains(&inner.as_str()), "{dump}");
         }
     }
 }
@@ -321,7 +330,8 @@ r = repository_rule(_gen)
             );
             if args != ["@dep//:d", "@gen//:g"] {
                 assert_eq!(
-                    run.stderr, expected.stderr,
+                    stderr(&run),
+                    stderr(expected),
                     "threads={threads} jitter={jitter} {args:?}"
                 );
                 assert_eq!(run.stdout, expected.stdout);

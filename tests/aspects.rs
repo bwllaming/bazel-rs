@@ -13,6 +13,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 include!("support/module_archives.rs");
 
 struct Workspace(tempfile::TempDir);
@@ -220,7 +221,7 @@ fn collect(bin: &Path, names: &mut Vec<String>) {
 
 #[allow(clippy::needless_borrow)]
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&String::from_utf8_lossy(&output.stderr))
 }
 
 #[allow(clippy::needless_borrow)]

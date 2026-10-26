@@ -1,0 +1,4 @@
+module(name = "console_text")
+
+ext = use_extension("//:ext.bzl", "ext")
+use_repo(ext, "r")

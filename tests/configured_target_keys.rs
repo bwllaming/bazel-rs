@@ -89,10 +89,11 @@ impl Workspace {
     }
 }
 
+/// The native `bazel-rs: N actions executed, …` summary line.
 fn summary(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr)
         .lines()
-        .last()
+        .rfind(|line| line.starts_with("bazel-rs: "))
         .unwrap_or_default()
         .to_owned()
 }

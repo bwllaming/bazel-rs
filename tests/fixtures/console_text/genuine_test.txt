@@ -1,0 +1,6 @@
+rc=0
+INFO: Analyzed 2 targets (75 packages loaded, 829 targets configured).
+INFO: Found 1 target and 1 test target...
+INFO: Elapsed time: 1.993s, Critical Path: 0.09s
+INFO: 8 processes: 6 internal, 3 processwrapper-sandbox.
+INFO: Build completed successfully, 8 total actions

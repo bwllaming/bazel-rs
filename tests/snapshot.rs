@@ -24,6 +24,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 
 const ON: &str = "on";
 const OFF: &str = "off";
@@ -371,6 +372,8 @@ fn program_stderr(output: &Output) -> String {
 
 /// ` in <digits>.<digits>s` -> ` in <T>s`.
 fn without_durations(text: &str) -> String {
+    let text = without_elapsed(text);
+    let text = text.as_str();
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(" in ") {

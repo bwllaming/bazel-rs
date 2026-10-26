@@ -70,6 +70,8 @@ WORKSPACE = Path('/home/coder/code')
 # Normalisation of per-run noise in outputs.
 TREES = re.compile(r'repositories/direct/trees/[0-9a-f]{8,}')
 LOCKSIDE = re.compile(r'/lock-[ab]\b')
+# The build summary's wall time (docs/PROGRESS.md), different on every run.
+ELAPSED = re.compile(r'INFO: Elapsed time: [0-9.]+s')
 
 # PERF output shapes (src/lib.rs perf_mark, src/plan_timings.rs report,
 # src/engine/alloc_report.rs). `hwm=` is absent from older binaries.
@@ -92,7 +94,9 @@ def canary(workspace):
 
 def norm(text, cache):
     """Replace per-side and per-run noise: the cache prefix, the side's
-    private lockfile name and content-addressed repository tree paths."""
+    private lockfile name, content-addressed repository tree paths and the
+    build summary's elapsed time."""
+    text = ELAPSED.sub('INFO: Elapsed time: <T>s', text)
     text = text.replace(str(cache), '<CACHE>')
     text = LOCKSIDE.sub('/lock-<SIDE>', text)
     return TREES.sub('repositories/direct/trees/<RUN>', text)

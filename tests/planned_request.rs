@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 include!("support/snapshot_off.rs");
+include!("support/console.rs");
 include!("support/explicit_modules.rs");
 
 const DEFS: &str = r##"def _tree_impl(ctx):
@@ -248,6 +249,8 @@ fn observed(output: &Output) -> (Option<i32>, String, String) {
 
 /// ` in <digits>.<digits>s` -> ` in <T>s`.
 fn without_durations(text: &str) -> String {
+    let text = without_elapsed(text);
+    let text = text.as_str();
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(" in ") {

@@ -188,7 +188,7 @@ pub struct NotePrints;
 
 impl starlark::PrintHandler for NotePrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        note(text);
+        note(&crate::debug_print::line(text));
         Ok(())
     }
 }

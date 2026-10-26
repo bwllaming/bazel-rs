@@ -12,6 +12,7 @@ use std::path::Path;
 use std::process::Command;
 
 include!("support/pty_terminal.rs");
+include!("support/console.rs");
 
 const DEFS: &str = r#"
 print("hello from loading")
@@ -87,11 +88,14 @@ impl Workspace {
     /// cache below it).
     fn normalized(&self, text: &str, cache: &str) -> Vec<String> {
         let root = self.path().to_str().unwrap();
-        text.replace(&format!("{root}/{cache}"), "<cache>")
-            .replace(root, "<workspace>")
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        without_elapsed(
+            &text
+                .replace(&format!("{root}/{cache}"), "<cache>")
+                .replace(root, "<workspace>"),
+        )
+        .lines()
+        .map(str::to_owned)
+        .collect()
     }
 }
 
@@ -104,12 +108,26 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
     let ws = Workspace::new();
     let build = ["build", "//:top"];
 
-    // No terminal: no escape sequence, no interactive line.
+    // No terminal: no escape sequence; Bazel's `INFO:` lines of the
+    // analysis and the build summary like in every UI mode.
     let (plain, code) = ws.plain(ws.command("plain", &build));
     assert_eq!(code, 0, "{}", text(&plain));
     assert!(!plain.contains(&0x1b), "{}", text(&plain));
-    assert!(!text(&plain).contains("INFO: "), "{}", text(&plain));
     let expected = ws.normalized(&text(&plain), "plain");
+    let info: Vec<&String> = expected
+        .iter()
+        .filter(|line| line.starts_with("INFO: "))
+        .collect();
+    assert_eq!(
+        info,
+        [
+            "INFO: Analyzed target //:top (1 packages loaded, 2 targets configured).",
+            "INFO: Found 1 target...",
+            "INFO: Elapsed time: <T>s",
+            "INFO: Build completed successfully, 4 total actions",
+        ],
+        "{expected:#?}"
+    );
     assert!(
         expected
             .iter()
@@ -190,34 +208,11 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
             assert!(visible.chars().count() <= 99, "{visible:?}");
         }
     }
-    // ...and what is left on the screen is the plain output, in order, with
-    // the interactive lines: the analysis summary before the results, the
-    // elapsed time and the outcome last. No status line is left.
+    // ...and what is left on the screen is the plain output, in order (the
+    // analysis summary before the results, the elapsed time and the outcome
+    // last). No status line is left.
     let screen = ws.normalized(&Screen::render(&on.bytes).join("\n"), "on");
-    let (info, rest): (Vec<&String>, Vec<&String>) =
-        screen.iter().partition(|line| line.starts_with("INFO: "));
-    assert_eq!(rest.into_iter().cloned().collect::<Vec<_>>(), expected);
-    assert_eq!(info.len(), 3, "{screen:#?}");
-    assert_eq!(
-        info[0],
-        "INFO: Analyzed 1 target (1 package loaded, 2 targets configured)."
-    );
-    assert!(info[1].starts_with("INFO: Elapsed time: "), "{screen:#?}");
-    assert!(
-        info[2].starts_with("INFO: Build completed successfully, ")
-            && info[2].ends_with(" total actions"),
-        "{screen:#?}"
-    );
-    let analyzed = screen.iter().position(|line| line == info[0]).unwrap();
-    let result = screen
-        .iter()
-        .position(|line| line.starts_with("//:top\t"))
-        .unwrap();
-    assert!(analyzed < result, "{screen:#?}");
-    assert_eq!(
-        &screen[screen.len() - 2..],
-        [info[1].clone(), info[2].clone()]
-    );
+    assert_eq!(screen, expected);
 
     // The same build again: an analysis snapshot hit, said once.
     let hit = on_pty(&ws.command("on", &build), 100, None);

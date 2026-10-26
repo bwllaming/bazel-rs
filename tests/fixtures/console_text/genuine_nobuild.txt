@@ -1,0 +1,6 @@
+rc=0
+INFO: Analyzed target //:gen (1 packages loaded, 2 targets configured).
+INFO: Found 1 target...
+INFO: Elapsed time: 0.198s, Critical Path: 0.00s
+INFO: 0 processes.
+INFO: Build completed successfully, 0 total actions

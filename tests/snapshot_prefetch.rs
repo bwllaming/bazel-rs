@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -95,7 +96,7 @@ impl Drop for Workspace {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_elapsed(&String::from_utf8_lossy(&output.stderr))
 }
 
 /// What a command printed without the diagnostics (PERF lines, the

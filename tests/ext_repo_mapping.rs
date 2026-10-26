@@ -5,6 +5,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/console.rs");
 
 use std::fs;
 use std::path::Path;
@@ -137,7 +138,7 @@ impl Fixture {
 }
 
 fn errors(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&String::from_utf8_lossy(&output.stderr))
 }
 
 fn prints(output: &Output) -> Vec<String> {

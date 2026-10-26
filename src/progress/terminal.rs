@@ -152,8 +152,13 @@ pub fn abandon() {
 
 fn end(exit_code: Option<i32>) {
     let Some(session) = session().take() else {
+        if let Some(code) = exit_code {
+            super::plain_summary(code);
+        }
         return;
     };
+    // The display prints its own summary (below), once.
+    super::take_summary();
     let _ = io::stdout().flush();
     let _ = rustix::stdio::dup2_stderr(&*session.terminal);
     if let Some(original) = &session.stdout {

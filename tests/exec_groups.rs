@@ -11,6 +11,7 @@
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 
 include!("support/executable_script.rs");
+include!("support/console.rs");
 include!("support/module_archives.rs");
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -119,7 +120,7 @@ impl Fixture {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&String::from_utf8_lossy(&output.stderr))
 }
 
 fn ok(output: &Output) -> String {

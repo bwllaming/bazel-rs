@@ -4492,7 +4492,7 @@ struct CollectedPrints<'a>(&'a Context);
 
 impl starlark::PrintHandler for CollectedPrints<'_> {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.print_line(text);
+        self.0.print_line(&crate::debug_print::line(text));
         Ok(())
     }
 }
@@ -5137,7 +5137,7 @@ mod tests {
             .output
         };
         // The print is a marked note (crate::ui), the echo is not.
-        let mut printed = crate::ui::marked("printed");
+        let mut printed = crate::ui::marked("DEBUG: //:defs.bzl:2:10: printed");
         printed.extend_from_slice(b"echoed\n");
         assert_eq!(run(&fixture.repositories, true), b"");
         assert_eq!(run(&capturing, true), printed);

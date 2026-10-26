@@ -1,0 +1,26 @@
+rc=0
+DEBUG: <WS>/defs.bzl:1:6: bzl top
+DEBUG: <WS>/BUILD:3:6: build top
+DEBUG: <WS>/defs.bzl:23:10: in macro
+DEBUG: <WS>/ext.bzl:8:10: in extension
+DEBUG: <WS>/ext.bzl:2:10: in repo rule +ext+r
+DEBUG: <WS>/defs.bzl:16:10: in rule|//:leaf2|two
+DEBUG: <WS>/defs.bzl:16:10: in rule|//:m|two
+DEBUG: <WS>/defs.bzl:17:10: multi
+line
+DEBUG: <WS>/defs.bzl:16:10: in rule|//:leaf|two
+DEBUG: <WS>/defs.bzl:17:10: multi
+line
+DEBUG: <WS>/defs.bzl:17:10: multi
+line
+DEBUG: <WS>/defs.bzl:10:10: in aspect //:leaf
+DEBUG: <WS>/defs.bzl:4:10: in transition
+DEBUG: <WS>/defs.bzl:4:10: in transition
+DEBUG: <WS>/defs.bzl:16:10: in rule|//:top|two
+DEBUG: <WS>/defs.bzl:17:10: multi
+line
+INFO: Analyzed 2 targets (7 packages loaded, 12 targets configured, 1 aspect application).
+INFO: Found 2 targets...
+INFO: Elapsed time: 9.695s, Critical Path: 0.02s
+INFO: 1 process: 1 internal.
+INFO: Build completed successfully, 1 total action

@@ -177,16 +177,50 @@ pub(crate) fn short_output(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-/// `INFO: Analyzed N targets (P packages loaded, T targets configured).`
-/// (AnalysisPhaseRunner.reportTargets' sibling in BuildTool), without the
-/// `INFO: ` prefix.
-pub(crate) fn analyzed(targets: usize, packages: usize, configured: usize) -> String {
+/// `Analyzed target //x (P packages loaded, T targets configured).` or
+/// `Analyzed N targets (…).` (UiStateTracker.loadingComplete and
+/// analysisComplete), without the `INFO: ` prefix; `what` is `target //x`
+/// or `N targets`. PackageProgressReceiver.progressState says `packages`
+/// whatever the count (`1 packages loaded`).
+pub(crate) fn analyzed(what: &str, packages: usize, configured: usize) -> String {
     format!(
-        "Analyzed {} ({} loaded, {} configured).",
-        plural(targets, "target"),
-        plural(packages, "package"),
+        "Analyzed {what} ({packages} packages loaded, {} configured).",
         plural(configured, "target"),
     )
+}
+
+/// `Found N targets...` (AnalysisPhaseRunner.reportTargets) or, for `test`
+/// (`tests` = the test targets among the `targets`), `Found N test
+/// targets...` / `Found N targets and M test targets...`
+/// (reportTargetsWithTests), without the `INFO: ` prefix.
+pub(crate) fn found(targets: usize, tests: Option<usize>) -> String {
+    let Some(tests) = tests else {
+        return format!(
+            "Found {targets} {}",
+            if targets == 1 {
+                "target..."
+            } else {
+                "targets..."
+            }
+        );
+    };
+    let others = targets.saturating_sub(tests);
+    let tests = format!(
+        "{tests} {}",
+        if tests == 1 {
+            "test target..."
+        } else {
+            "test targets..."
+        }
+    );
+    if others == 0 {
+        format!("Found {tests}")
+    } else {
+        format!(
+            "Found {others} {} and {tests}",
+            if others == 1 { "target" } else { "targets" }
+        )
+    }
 }
 
 /// An `INFO: ` line (green lead when `color`).
@@ -212,9 +246,9 @@ pub(crate) fn summary(
         &format!("Elapsed time: {:.3}s", elapsed.as_secs_f64()),
         color,
     )];
+    // UiStateTracker.buildComplete appends the int as it is (no grouping).
     let actions = format!(
-        "{} total action{}",
-        grouped(actions),
+        "{actions} total action{}",
         if actions == 1 { "" } else { "s" }
     );
     if exit_code == 0 {
@@ -263,7 +297,9 @@ pub(crate) fn lines(view: &View, shown: usize) -> Vec<Line> {
         Phase::Loading => lines.push(Line::led(
             Tone::Ok,
             "Loading:",
-            format!(" {} loaded", plural(view.packages, "package")),
+            // PackageProgressReceiver.progressState: `packages` whatever the
+            // count.
+            format!(" {} packages loaded", view.packages),
         )),
         Phase::Analyzing => {
             // AnalysisProgressReceiver: "N targets configured"; once phase 1
@@ -278,9 +314,9 @@ pub(crate) fn lines(view: &View, shown: usize) -> Vec<Line> {
                 Tone::Ok,
                 "Analyzing:",
                 format!(
-                    " {} ({} loaded, {configured})",
+                    " {} ({} packages loaded, {configured})",
                     plural(view.targets, "target"),
-                    plural(view.packages, "package")
+                    view.packages
                 ),
             ));
         }
@@ -469,7 +505,7 @@ mod tests {
         planned.packages = 1;
         assert_eq!(
             text(&lines(&planned, 3)),
-            ["Analyzing: 1 target (1 package loaded, 4521 / 18968 targets configured)"]
+            ["Analyzing: 1 target (1 packages loaded, 4521 / 18968 targets configured)"]
         );
         assert_eq!(
             text(&lines(&view(Phase::SnapshotHit), 3)),
@@ -588,9 +624,19 @@ mod tests {
         assert_eq!(short_output("bazel-out/x"), "bazel-out/x");
         assert_eq!(short_output("external/x"), "external/x");
         assert_eq!(
-            analyzed(1, 0, 1),
-            "Analyzed 1 target (0 packages loaded, 1 target configured)."
+            analyzed("target //:b", 1, 1),
+            "Analyzed target //:b (1 packages loaded, 1 target configured)."
         );
+        assert_eq!(
+            analyzed("2 targets", 2, 3),
+            "Analyzed 2 targets (2 packages loaded, 3 targets configured)."
+        );
+        assert_eq!(found(1, None), "Found 1 target...");
+        assert_eq!(found(2, None), "Found 2 targets...");
+        assert_eq!(found(1, Some(1)), "Found 1 test target...");
+        assert_eq!(found(2, Some(2)), "Found 2 test targets...");
+        assert_eq!(found(2, Some(1)), "Found 1 target and 1 test target...");
+        assert_eq!(found(5, Some(2)), "Found 3 targets and 2 test targets...");
         assert_eq!(
             summary(Duration::from_millis(1500), 0, 1, 0, false),
             [
@@ -599,10 +645,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            summary(Duration::from_secs(2), 3, 689, 2, false),
+            summary(Duration::from_secs(2), 3, 1234, 2, false),
             [
                 "INFO: Elapsed time: 2.000s",
-                "INFO: Build completed, 2 tests FAILED, 689 total actions"
+                "INFO: Build completed, 2 tests FAILED, 1234 total actions"
             ]
         );
         assert_eq!(

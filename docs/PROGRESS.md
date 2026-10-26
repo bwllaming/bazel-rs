@@ -10,7 +10,7 @@ that owns the terminal).
 ## What it shows
 
 ```
-INFO: Analyzed 1 target (1 package loaded, 2 targets configured).
+INFO: Analyzed target //:top (1 packages loaded, 2 targets configured).
 [2 / 4] Genrule slow.txt; 1s linux-sandbox
 ```
 
@@ -30,13 +30,41 @@ terminal's width (TIOCGWINSZ, re-read at every refresh; `$COLUMNS`/80 when
 there is none). The leads are green (red with failed tests) unless
 `--color=no` or `NO_COLOR` is set.
 
-Interactive-only lines (never printed without the display):
-`INFO: Analyzed N targets (P packages loaded, T targets configured).` at the
-end of analysis, `INFO: Analysis snapshot hit: loading and analysis skipped.`
-on a hit, and at the end `INFO: Elapsed time: X.XXXs` plus
-`INFO: Build completed successfully, N total actions` (exit 0) or
-`INFO: Build completed, K tests FAILED, N total actions` (exit 3). There is no
-critical path.
+Bazel's console lines, printed in every UI mode (also without the display,
+`--curses=no` or stderr not a terminal), dropped under the startup option
+`--quiet` (crate::ui notes; genuine captures in tests/fixtures/console_text,
+tests/console_text.rs):
+* at the end of a successful `build`/`test`/`run` analysis (also
+  `--nobuild`, `fetch TARGET…`): `INFO: Analyzed target //x (P packages
+  loaded, T targets configured).` (`Analyzed N targets (…)` for several;
+  `packages` whatever P, PackageProgressReceiver) and `INFO: Found N
+  targets...` (`test`: `Found N test targets...` / `Found N targets and M
+  test targets...`). They are written while planning's stderr is captured,
+  so an analysis snapshot hit replays them byte for byte (the counts of the
+  analysis it saved; a warm genuine server says `0 packages loaded` on a
+  no-op instead). P counts the packages committed, T the targets planning
+  configured; genuine's `, N aspect applications` is not counted.
+* at the end of a command that analyzed (or hit): `INFO: Elapsed time:
+  X.XXXs` and `INFO: Build completed successfully, N total actions` (exit 0)
+  or `INFO: Build completed, K tests FAILED, N total actions` (exit 3); N is
+  the size of the execution graph (no thousands separator, like
+  UiStateTracker). Without the display they are printed for exits 0 and 3
+  only (a failure ends with its own `ERROR:` lines); the display prints the
+  elapsed time for every exit. Not printed: genuine's `, Critical Path: …`
+  and `INFO: N processes: …` (the native `bazel-rs: N actions executed, M
+  cache hits …` line stays) and the `Target //x up-to-date:` lines (the
+  native result lines are `LABEL<TAB>PATH` on stdout).
+* `print()` everywhere but MODULE.bazel files (crate::bzlmod's own) goes
+  through crate::debug_print: `DEBUG: FILE:LINE:COL: TEXT` at the call's
+  left parenthesis, FILE a BUILD file's path or a main-repository `.bzl`
+  file's path (another repository's `.bzl` file is named by its label).
+  Covered: BUILD files, `.bzl` top levels and macros, rule, aspect and
+  transition implementations, repository rules, module extensions. A
+  `print` evaluated under the interpreter's default handler (e.g. an
+  `Args.map_each` callback during execution) prints the bare text.
+
+Interactive-only: `INFO: Analysis snapshot hit: loading and analysis
+skipped.` on a hit. There is no critical path.
 
 ## When it runs
 
@@ -48,10 +76,12 @@ critical path.
   (UiVerbosity.QUIET: UiEventHandler.addProgressBar shows no progress bar), or
   `BAZEL_RS_PROGRESS=0`/`off` — these win over `--curses=yes`.
 
-Off, nothing of it runs: every engine hook is one relaxed atomic load, and
-the output is byte for byte what it was before the display existed (the
-CLI tests and the A/B comparisons rely on that; tests/progress_ui.rs checks
-it on a pseudo-terminal with `--curses=no`, `--noshow_progress` and `CI`).
+Off, nothing of the display runs: the engine hooks only bump relaxed atomic
+counters (for the `INFO:` lines above), and the output is byte for byte the
+plain one (tests/progress_ui.rs checks it on a pseudo-terminal with
+`--curses=no`, `--noshow_progress` and `CI`). Tests and A/B comparisons that
+compare whole stderr streams normalize the `INFO: Elapsed time:` value
+(tests/support/console.rs).
 
 UI options (UiOptions.java; before, they were rejected as unsupported):
 `--curses=yes|no|auto`, `--color=yes|no|auto`, `--[no]show_progress`,

@@ -642,8 +642,8 @@ configuration.` (`:247-262`).
    ones are `None` except `_config_dependencies` (the select() keys). The
    vendored interpreter's `unknown_attribute_message` hook (shared with
    N23a) gives these texts (docs/STARLARK_VENDOR.md).
-   `print()` output is written like a rule implementation's (no `DEBUG:`
-   prefix natively) on **every application**: a StarlarkTransitionCache
+   `print()` output is written like a rule implementation's (`DEBUG:
+   FILE:LINE:COL: TEXT`, docs/PROGRESS.md) on **every application**: a StarlarkTransitionCache
    hit replays the stored non-error events (`:128-140`), so an idempotent
    rule transition prints three times (the transition, the
    IdempotencyChecker's re-application and the transitioned key's own
@@ -812,7 +812,7 @@ explicit `allowed file types` gap of its `srcs` extension list.
 the native option set (the N18c capture showed equal hashes wherever the
 transitioned values are equal except rules_go's `go_transition`
 configurations: raw lists, modelled since N47, whose capture has equal hash
-values in every row); `print()` has no `DEBUG:` prefix and tracebacks use the
+values in every row); tracebacks use the
 interpreter's layout (as elsewhere); private built-in `attr` values are
 `None`; the frozen `settings` dict; the transition identity is the
 `transition()` call (Bazel compares inputs, outputs and implementation),

@@ -41,6 +41,7 @@ pub mod cquery_state;
 pub mod credentials;
 pub mod ctx_surface;
 pub mod custom_rule;
+pub mod debug_print;
 mod depset_items;
 pub mod digest_memo;
 pub mod dir_stamps;

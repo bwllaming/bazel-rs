@@ -5,6 +5,7 @@
 #![cfg(unix)]
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/console.rs");
 include!("support/racy_window.rs");
 
 use std::collections::BTreeMap;
@@ -207,7 +208,7 @@ impl Built {
 }
 
 fn errors(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&String::from_utf8_lossy(&output.stderr))
 }
 
 fn inventory(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32)> {

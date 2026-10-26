@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 
 /// A loopback HTTP server answering `GET /<name>` with `payload <name>`
 /// after `delay` (a `/trickle/<name>` body arrives one byte per 100 ms),
@@ -207,7 +208,7 @@ struct Run {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_elapsed(&String::from_utf8_lossy(&output.stderr))
 }
 
 /// The published repository trees under `root` (identity -> files).

@@ -465,7 +465,7 @@ struct Prints(std::cell::RefCell<Vec<String>>);
 
 impl starlark::PrintHandler for Prints {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.borrow_mut().push(text.to_owned());
+        self.0.borrow_mut().push(crate::debug_print::line(text));
         Ok(())
     }
 }

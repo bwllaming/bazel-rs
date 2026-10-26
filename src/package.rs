@@ -1973,6 +1973,7 @@ pub(crate) fn build_file_globals() -> Globals {
     install_build_native_methods(&mut globals);
     crate::json::install(&mut globals);
     crate::rule_declarations::install_build(&mut globals);
+    crate::debug_print::install(&mut globals);
     globals.build()
 }
 
@@ -2056,6 +2057,7 @@ fn bzl_globals_for(phase: BzlPhase) -> Globals {
     // BazelBuildApiGlobals (Environment.BZL): every .bzl context, never BUILD.
     crate::bzl_visibility::globals(&mut bzl);
     crate::language_modules::install(&mut bzl);
+    crate::debug_print::install(&mut bzl);
     bzl.build()
 }
 
@@ -2901,7 +2903,8 @@ filegroup(name='json', srcs=json.decode('["a.txt","b.txt"]'))
             ["//pkg:a.txt", "//pkg:b.txt"]
         );
         rejected("x = struct()", "struct");
-        rejected("print('x')", "print");
+        // print() is a BUILD builtin too (a DEBUG event, crate::debug_print).
+        eval("print('x')").unwrap();
         rejected("x = native.json", "native");
         let error = crate::bzlmod::evaluate_source("MODULE.bazel", "x = json.decode('{}')".into())
             .unwrap_err();
@@ -2970,7 +2973,8 @@ def callback():
         );
         // Enabling sets must not expose the unrelated .bzl extensions in BUILD.
         rejected("x = struct()", "struct");
-        rejected("print('x')", "print");
+        // print() is a BUILD builtin too (a DEBUG event, crate::debug_print).
+        eval("print('x')").unwrap();
         let error = custom_fixture(
             "def impl(ctx):\n    pass\nr = rule(implementation=impl, attrs={'dep': attr.label(providers=[set])})",
             "load(':defs.bzl', 'r')",

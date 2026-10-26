@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 include!("support/explicit_modules.rs");
+include!("support/console.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -66,7 +67,7 @@ impl Drop for Workspace {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&without_elapsed(&String::from_utf8_lossy(&output.stderr)))
 }
 
 /// A shared `.bzl` graph with top-level prints, loaded by many packages,
@@ -123,8 +124,8 @@ fn loading_is_byte_identical_across_thread_counts_and_jitter() {
             "threads={threads}: stdout differs"
         );
         assert_eq!(
-            run.stderr,
-            reference.stderr,
+            stderr(&run),
+            stderr(&reference),
             "threads={threads}: stderr differs\n--\n{}",
             stderr(&run)
         );
@@ -255,15 +256,15 @@ fn mid_pattern_fetch_needing_package_falls_back_inline() {
         ]);
         assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
         match &reference {
-            None => reference = Some((run.stdout.clone(), run.stderr.clone())),
+            None => reference = Some((run.stdout.clone(), stderr(&run))),
             Some((stdout, error)) => {
                 assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
-                assert_eq!(&run.stderr, error, "threads={threads}: stderr");
+                assert_eq!(&stderr(&run), error, "threads={threads}: stderr");
             }
         }
     }
     let (_, error) = reference.unwrap();
-    let error = String::from_utf8_lossy(&error);
+    let error = error.as_str();
     // The external module's prints: once, in the first loading package's
     // DFS order.
     assert_eq!(error.matches("ext module top-level").count(), 1);
@@ -308,7 +309,7 @@ fn deep_starlark_recursion_on_workers() {
         ]);
         assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
         assert_eq!(run.stdout, sequential.stdout, "threads={threads}");
-        assert_eq!(run.stderr, sequential.stderr, "threads={threads}");
+        assert_eq!(stderr(&run), stderr(&sequential), "threads={threads}");
     }
     // Every generated output carries the recursion depth.
     for line in String::from_utf8_lossy(&sequential.stdout).lines() {
@@ -339,10 +340,10 @@ fn query_output_is_identical_across_thread_counts() {
         ]);
         assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
         match &reference {
-            None => reference = Some((run.stdout.clone(), run.stderr.clone())),
+            None => reference = Some((run.stdout.clone(), stderr(&run))),
             Some((stdout, error)) => {
                 assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
-                assert_eq!(&run.stderr, error, "threads={threads}: stderr");
+                assert_eq!(&stderr(&run), error, "threads={threads}: stderr");
             }
         }
     }
@@ -633,15 +634,15 @@ fn sentinel_aborted_module_prints_fully_on_the_inline_rerun() {
         );
         assert!(run.status.success(), "threads={threads}: {}", stderr(&run));
         match &reference {
-            None => reference = Some((run.stdout.clone(), run.stderr.clone())),
+            None => reference = Some((run.stdout.clone(), stderr(&run))),
             Some((stdout, error)) => {
                 assert_eq!(&run.stdout, stdout, "threads={threads}: stdout");
-                assert_eq!(&run.stderr, error, "threads={threads}: stderr");
+                assert_eq!(&stderr(&run), error, "threads={threads}: stderr");
             }
         }
     }
     let (_, error) = reference.unwrap();
-    let error = String::from_utf8_lossy(&error);
+    let error = error.as_str();
     assert_eq!(error.matches("M before the demand").count(), 1);
     assert_eq!(error.matches("M after the demand").count(), 1);
 }

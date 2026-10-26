@@ -12,6 +12,7 @@
 //! each later edge and compared).
 #![allow(clippy::disallowed_methods)] // test harness: starts processes directly (clippy.toml)
 include!("support/verify_env.rs");
+include!("support/console.rs");
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -78,7 +79,7 @@ impl Workspace {
 }
 
 fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
+    without_print_locations(&String::from_utf8_lossy(&output.stderr))
 }
 
 /// The reported outputs of a successful build: (label, root-relative path,

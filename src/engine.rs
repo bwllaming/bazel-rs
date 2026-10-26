@@ -9129,6 +9129,10 @@ impl Engine {
             build.retain(|label| !failed.contains(label));
             tests.retain(|test| !failed.contains(&test.label));
         }
+        let test_count = match &command {
+            crate::request::RequestCommand::Test { tests, .. } => Some(tests.len()),
+            _ => None,
+        };
         let produced = |artifact: &Artifact| crate::request::Produced {
             real: artifact.real.to_path_buf(),
             producer: artifact.producer.clone(),
@@ -9232,6 +9236,7 @@ impl Engine {
                 .into_iter()
                 .map(|blocker| (blocker.taint, blocker.detail)),
         );
+        crate::progress::analysis_report(spec.build, test_count);
         crate::perf_mark("plan.end");
         Ok(request)
     }

@@ -528,6 +528,8 @@ fn run() -> Result<(), String> {
     bazel_rs::cache_gc::install(&cache);
     bazel_rs::cache_gc::record_workspace(&root);
     bazel_rs::cache_gc::set_options(&rc_options.gc);
+    // print()'s DEBUG lines name main-repository `.bzl` files by path.
+    bazel_rs::debug_print::set_workspace(&root);
     // --attempt_to_print_relative_paths (LocationPrinter, crate::location_printer).
     let _ = PRINTER.set(bazel_rs::location_printer::LocationPrinter::new(
         rc_options.attempt_to_print_relative_paths,

@@ -1078,7 +1078,7 @@ impl LoadPrints {
 
 impl starlark::PrintHandler for LoadPrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        self.push_build(text.to_owned());
+        self.push_build(crate::debug_print::line(text));
         Ok(())
     }
 }
@@ -1096,10 +1096,11 @@ struct ModulePrints {
 
 impl starlark::PrintHandler for ModulePrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
+        let text = crate::debug_print::line(text);
         if self.echo {
-            crate::ui::note(text);
+            crate::ui::note(&text);
         }
-        self.lines.borrow_mut().push(text.to_owned());
+        self.lines.borrow_mut().push(text);
         Ok(())
     }
 }
@@ -3774,7 +3775,7 @@ lambda_mapper = lambda value: value
         let label = Label::parse_canonical("//tools:lint.bzl").unwrap();
         let line = || LoadPrintEvent::Module {
             label: label.clone(),
-            line: "len 1".to_owned(),
+            line: "DEBUG: //tools:lint.bzl:2:6: len 1".to_owned(),
         };
 
         // The aspect load evaluates the module.
@@ -3785,7 +3786,10 @@ lambda_mapper = lambda value: value
         assert_eq!(loaded.value.value().unpack_i32(), Some(1));
         assert!(loaded.sources.is_empty() && loaded.repo_mappings.is_empty());
         assert_eq!(prints.take(), vec![line()]);
-        assert_eq!(first.build_bzl_cache().prints(&label), vec!["len 1"]);
+        assert_eq!(
+            first.build_bzl_cache().prints(&label),
+            vec!["DEBUG: //tools:lint.bzl:2:6: len 1"]
+        );
 
         // A BUILD unit (a worker's) evaluates and publishes it first.
         let second = Arc::new(RepositorySet::new(temp.0.clone()));
@@ -3804,6 +3808,9 @@ lambda_mapper = lambda value: value
             load_shared_definition_in(second.clone(), &label, "length", &globals, &prints).unwrap();
         assert_eq!(loaded.value.value().unpack_i32(), Some(1));
         assert_eq!(prints.take(), vec![LoadPrintEvent::Cached(label.clone())]);
-        assert_eq!(second.build_bzl_cache().prints(&label), vec!["len 1"]);
+        assert_eq!(
+            second.build_bzl_cache().prints(&label),
+            vec!["DEBUG: //tools:lint.bzl:2:6: len 1"]
+        );
     }
 }

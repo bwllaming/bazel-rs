@@ -2331,7 +2331,7 @@ struct BufferedPrints(RefCell<Vec<String>>);
 
 impl starlark::PrintHandler for BufferedPrints {
     fn println(&self, text: &str) -> starlark::Result<()> {
-        self.0.borrow_mut().push(text.to_owned());
+        self.0.borrow_mut().push(crate::debug_print::line(text));
         Ok(())
     }
 }

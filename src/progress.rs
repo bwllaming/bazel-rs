@@ -138,8 +138,13 @@ fn advance(phase: Phase) {
 }
 
 /// A crate::perf_mark: the phase transitions, and the interactive-only
-/// `INFO:` lines at the end of analysis.
+/// `INFO:` line of an analysis snapshot hit.
 pub(crate) fn mark(name: &str) {
+    if name == "snapshot.hit" {
+        // The hit replays the `INFO: Analyzed …` lines of the analysis it
+        // saved; the build summary follows at the end like after one.
+        SUMMARY.store(true, Ordering::Relaxed);
+    }
     if !enabled() {
         return;
     }
@@ -147,21 +152,65 @@ pub(crate) fn mark(name: &str) {
         "select.start" => advance(Phase::Loading),
         "plan.start" => advance(Phase::Analyzing),
         "plan.phase1_analysis_done" => COUNTERS.phase1_done.store(true, Ordering::Relaxed),
-        "plan.end" => {
-            if Phase::from_u8(COUNTERS.phase.load(Ordering::Relaxed)) == Phase::Analyzing {
-                let targets = COUNTERS.targets.load(Ordering::Relaxed);
-                info_line(&render::analyzed(
-                    targets,
-                    COUNTERS.packages.load(Ordering::Relaxed),
-                    COUNTERS.configured.load(Ordering::Relaxed),
-                ));
-            }
-        }
         "snapshot.hit" if COUNTERS.phase.load(Ordering::Relaxed) < Phase::SnapshotHit as u8 => {
             advance(Phase::SnapshotHit);
             info_line("Analysis snapshot hit: loading and analysis skipped.");
         }
         _ => {}
+    }
+}
+
+/// Whether the command prints Bazel's build summary at its end
+/// ([`terminal::finish`]): armed once a `build`, `test` or `run` analysis
+/// reported its targets ([`analysis_report`]) or a snapshot hit replayed
+/// that report; disarmed when printed (once per command).
+static SUMMARY: AtomicBool = AtomicBool::new(false);
+
+/// The end of a successful `build`/`test`/`run` analysis (also with
+/// `--nobuild`, `fetch TARGET…`): Bazel's `INFO: Analyzed target //x (P
+/// packages loaded, T targets configured).` (UiStateTracker
+/// .analysisComplete) and `INFO: Found N targets...` (AnalysisPhaseRunner
+/// .reportTargets, or reportTargetsWithTests with the `tests` of `test`),
+/// printed in every UI mode. Notes written while planning's stderr is
+/// captured: an analysis snapshot hit replays them as they were.
+pub(crate) fn analysis_report(labels: &[crate::label::Label], tests: Option<usize>) {
+    let what = match labels {
+        [label] => format!("target {}", crate::test_runner::label_print(label)),
+        _ => format!("{} targets", labels.len()),
+    };
+    crate::note!(
+        "INFO: {}",
+        render::analyzed(
+            &what,
+            COUNTERS.packages.load(Ordering::Relaxed),
+            COUNTERS.configured.load(Ordering::Relaxed),
+        )
+    );
+    crate::note!("INFO: {}", render::found(labels.len(), tests));
+    SUMMARY.store(true, Ordering::Relaxed);
+}
+
+/// Whether the build summary is due (and now taken: printed once).
+fn take_summary() -> bool {
+    SUMMARY.swap(false, Ordering::Relaxed)
+}
+
+/// The build summary without the display (`--curses=no`, not a terminal):
+/// Bazel prints `INFO: Elapsed time: …` and `INFO: Build completed …` in
+/// every UI mode. Printed for a successful command (exit 0) and one whose
+/// tests failed (3); a failure's own `ERROR:` lines end the others.
+fn plain_summary(exit_code: i32) {
+    if !take_summary() || !matches!(exit_code, 0 | 3) {
+        return;
+    }
+    for line in render::summary(
+        start_instant().elapsed(),
+        exit_code,
+        COUNTERS.actions_total.load(Ordering::Relaxed),
+        COUNTERS.tests_failed.load(Ordering::Relaxed),
+        false,
+    ) {
+        crate::ui::note(&line);
     }
 }
 
@@ -176,17 +225,13 @@ fn info_line(text: &str) {
 /// A package was loaded (committed).
 #[inline]
 pub(crate) fn package_loaded() {
-    if enabled() {
-        COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
-    }
+    COUNTERS.packages.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Analysis of `count` requested targets starts.
 #[inline]
 pub(crate) fn analysis_targets(count: usize) {
-    if enabled() {
-        COUNTERS.targets.store(count, Ordering::Relaxed);
-    }
+    COUNTERS.targets.store(count, Ordering::Relaxed);
 }
 
 /// Phase 1 of analysis has found `count` targets to configure.
@@ -200,19 +245,15 @@ pub(crate) fn analysis_planned(count: usize) {
 /// `count` targets are configured (their implementations ran).
 #[inline]
 pub(crate) fn analysis_configured(count: usize) {
-    if enabled() {
-        COUNTERS.configured.store(count, Ordering::Relaxed);
-    }
+    COUNTERS.configured.store(count, Ordering::Relaxed);
 }
 
 /// An execution graph of `actions` actions starts (`test` adds its test
 /// actions through [`tests_planned`]).
 #[inline]
 pub(crate) fn execution_started(actions: usize) {
-    if enabled() {
-        COUNTERS.actions_total.fetch_add(actions, Ordering::Relaxed);
-        advance(Phase::Executing);
-    }
+    COUNTERS.actions_total.fetch_add(actions, Ordering::Relaxed);
+    advance(Phase::Executing);
 }
 
 /// One action of the execution graph finished (or was skipped).
@@ -226,19 +267,15 @@ pub(crate) fn action_done() {
 /// `count` tests will run.
 #[inline]
 pub(crate) fn tests_planned(count: usize) {
-    if enabled() {
-        COUNTERS.tests_total.fetch_add(count, Ordering::Relaxed);
-    }
+    COUNTERS.tests_total.fetch_add(count, Ordering::Relaxed);
 }
 
 /// A test finished (all its runs and shards).
 #[inline]
 pub(crate) fn test_finished(passed: bool) {
-    if enabled() {
-        COUNTERS.tests_done.fetch_add(1, Ordering::Relaxed);
-        if !passed {
-            COUNTERS.tests_failed.fetch_add(1, Ordering::Relaxed);
-        }
+    COUNTERS.tests_done.fetch_add(1, Ordering::Relaxed);
+    if !passed {
+        COUNTERS.tests_failed.fetch_add(1, Ordering::Relaxed);
     }
 }
 

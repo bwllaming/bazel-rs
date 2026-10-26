@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 include!("support/snapshot_off.rs");
+include!("support/console.rs");
 include!("support/explicit_modules.rs");
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -47,7 +48,7 @@ impl Drop for Workspace {
     }
 }
 fn stderr(o: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+    let stderr = without_print_locations(&String::from_utf8_lossy(&o.stderr));
     // Startup notice, not a diagnostic (crate::memory_limit).
     let stderr = stderr
         .lines()
@@ -291,7 +292,8 @@ def bundle(name, srcs):
         let result = ws.run(&argv.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(result.status.success(), "{}", stderr(&result));
         let normalize = |bytes: &[u8]| {
-            String::from_utf8_lossy(bytes).replace(&cache.display().to_string(), "CACHE")
+            without_elapsed(&String::from_utf8_lossy(bytes))
+                .replace(&cache.display().to_string(), "CACHE")
         };
         // Cache entries' key names; the workspace status actions are
         // excluded (their keys embed the volatile timestamp, which two

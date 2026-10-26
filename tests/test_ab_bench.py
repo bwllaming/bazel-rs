@@ -45,6 +45,12 @@ class NormalisationTests(unittest.TestCase):
             "<CACHE>/repositories/direct/trees/<RUN>/BUILD /x/lock-<SIDE> /x/lock-bb",
         )
 
+    def test_norm_replaces_the_elapsed_time(self):
+        self.assertEqual(
+            ab.norm("INFO: Elapsed time: 12.345s", CACHE),
+            "INFO: Elapsed time: <T>s",
+        )
+
     def test_split_err_separates_dump_rest_and_perf(self):
         dump, rest, perf = ab.split_err(ERR, CACHE)
         self.assertEqual(dump, [
