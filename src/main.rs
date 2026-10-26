@@ -3657,6 +3657,13 @@ impl NativeOptions {
             self.parse_sandbox_path(arg, path)?;
             true
         } else if builds(command)
+            && let Some(parsed) =
+                bazel_rs::rc_options::value_option(arg, next, "sandbox_add_mount_pair")
+        {
+            let (form, value, used) = parsed?;
+            self.parse_mount_pair(&form, value, &unit.option.origin_suffix())?;
+            used
+        } else if builds(command)
             && let Some(value) = arg
                 .strip_prefix("--sandbox_writable_path=")
                 .or_else(|| arg.strip_prefix("--sandbox_block_path="))
@@ -3916,6 +3923,26 @@ impl NativeOptions {
             }
         }
         Ok(Some(consumed))
+    }
+
+    /// One `--sandbox_add_mount_pair` value (SandboxOptions.java:173-180,
+    /// MountPairConverter): converter errors are Bazel's; an identity mount
+    /// of an absolute path (`/tmp`, `/tmp:/tmp` — ~/code's `build:linux_*`
+    /// line) is recorded with no further effect (crate::sandbox::SpawnOptions
+    /// ::sandbox_add_mount_pair); any other pair would need a remount the
+    /// Landlock sandbox cannot make and fails explicitly.
+    fn parse_mount_pair(&mut self, form: &str, value: &str, origin: &str) -> Result<(), String> {
+        let (source, target) = bazel_rs::sandbox::mount_pair(value)
+            .map_err(|error| format!("While parsing option {form}: {error}"))?;
+        if source != target || !Path::new(&source).is_absolute() {
+            return Err(format!(
+                "unsupported option --sandbox_add_mount_pair{origin}: only identity mounts of an absolute path (PATH or PATH:PATH) are modelled; the native sandbox cannot remount a path (docs/SANDBOX.md)"
+            ));
+        }
+        self.spawn
+            .sandbox_add_mount_pair
+            .push(PathBuf::from(source));
+        Ok(())
     }
 
     /// One `--sandbox_{writable,block,tmpfs}_path` value (SandboxOptions;

@@ -171,8 +171,9 @@ linux-sandbox mounts a private, empty hermetic /tmp per sandbox when no
 explicit /tmp mount exists — LinuxSandboxedSpawnRunner.useHermeticTmp:218-296
 with known-path remounts — so cross-action /tmp side channels exist here
 that Bazel's sandbox prevents; a workspace under ~/code that needs the host
-/tmp visible uses Bazel's own answer, `--sandbox_add_mount_pair`, which is
-not modelled). TMPDIR has genuine's value under every strategy — the
+/tmp visible uses Bazel's own answer, `--sandbox_add_mount_pair=/tmp`,
+which is accepted: identity mounts of absolute paths change nothing here,
+other remounts fail explicitly — see the flag table). TMPDIR has genuine's value under every strategy — the
 client's `TMPDIR`, or `/tmp` (PosixLocalEnvProvider.rewriteLocalEnv;
 docs/ACTION_ENV.md, `tests/fixtures/action_tmpdir`) — and is the shared
 host directory too, not a per-action directory: a per-action directory below
@@ -228,6 +229,7 @@ Use --sandbox_debug to see verbose messages from the sandbox and retain the sand
 | `--sandbox_writable_path=<path>` | keep an existing path writable (with its symlink target) |
 | `--sandbox_block_path=<path>` | make the path's subtree unreadable |
 | `--sandbox_tmpfs_path=<path>` | keep the path writable (no empty tmpfs is mounted) |
+| `--sandbox_add_mount_pair=<path>[:<path>]` | identity mounts (`/tmp`, `/tmp:/tmp`) accepted with no effect (host paths are visible at their own path; a bind mount is not writable unless already a writable dir); other pairs fail explicitly; converter errors are Bazel's. A mount source that does not exist is not reported (linux-sandbox fails such spawns with "Mount source '…' does not exist."; processwrapper-sandbox, genuine's strategy on this host, ignores mounts) |
 | `--[no]sandbox_default_allow_network` | default true: sandboxed actions reach the network; `--nosandbox_...` denies TCP unless the spawn tags `requires-network` |
 
 Paired receipt: `tests/fixtures/sandbox/reference_receipt.json` (genuine

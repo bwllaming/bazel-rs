@@ -131,11 +131,16 @@ fn code_rc_options_reach_query_and_build() {
         "plain\n"
     );
     let rc = f.ws().join(".bazelrc").display().to_string();
-    rejected(
-        &f.run(&["build", "--config=linux_amd64", "//:plain"]),
-        &format!(
-            "unsupported option --sandbox_add_mount_pair from rc file {rc}:11 (config definition 'build:linux_amd64'): sandboxed execution is not implemented"
-        ),
+    // ~/code's `build:linux_* --sandbox_add_mount_pair=/tmp` is an identity
+    // mount: accepted with genuine's (here: no observable) effect
+    // (tests/fixtures/sandbox_mount_pair). The fixture's //platforms
+    // package does not exist, so only the option parsing is exercised here:
+    // the build fails on the platform label, not on the rc option.
+    let cross = f.run(&["build", "--config=linux_amd64", "//:plain"]);
+    assert!(
+        !stderr(&cross).contains("sandbox_add_mount_pair"),
+        "{}",
+        stderr(&cross)
     );
     let buildbarn = f.run(&["build", "--config=buildbarn", "//:plain"]);
     rejected(
@@ -656,4 +661,58 @@ fn proxies_are_chosen_again_for_every_redirect_target() {
     assert!(!output.status.success());
     assert!(!to_localhost.requests().is_empty());
     assert!(target.requests().is_empty(), "{:?}", target.requests());
+}
+
+/// `--sandbox_add_mount_pair` against genuine 9.3.0
+/// (tests/fixtures/sandbox_mount_pair/reference_receipt.json): identity
+/// mounts build (from the command line and an rc `--config`), the building
+/// commands and `info` take the option, `query` does not, converter errors
+/// are Bazel's; a real remount fails explicitly (genuine on this host runs
+/// processwrapper-sandbox, which ignores mounts; EXPECTED_NATIVE_UNSUPPORTED).
+#[test]
+fn sandbox_add_mount_pair_follows_genuine() {
+    let f = Fixture::new();
+    f.file("ws/.bazelrc", "build:cross --sandbox_add_mount_pair=/tmp\n");
+    for args in [
+        &["build", "--sandbox_add_mount_pair=/tmp", "//:plain"][..],
+        &["build", "--sandbox_add_mount_pair=/tmp:/tmp", "//:plain"][..],
+        &["build", "--config=cross", "//:plain"][..],
+    ] {
+        assert_eq!(built(&f.run(args)), "plain\n", "{args:?}");
+    }
+    assert_eq!(
+        ok(&f.run(&["info", "--sandbox_add_mount_pair=/tmp", "release"])),
+        format!("release 9.3.0+bazel-rs.{}\n", env!("CARGO_PKG_VERSION"))
+    );
+    let form = "Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'";
+    for (args, marker) in [
+        (
+            &["query", "--sandbox_add_mount_pair=/tmp", "//:plain"][..],
+            "--sandbox_add_mount_pair=/tmp :: Unrecognized option: --sandbox_add_mount_pair=/tmp"
+                .to_owned(),
+        ),
+        (
+            &["build", "--sandbox_add_mount_pair=/a::/b", "//:plain"][..],
+            format!(
+                "While parsing option --sandbox_add_mount_pair=/a::/b: Input /a::/b contains one or more empty paths. {form}"
+            ),
+        ),
+        (
+            &["build", "--sandbox_add_mount_pair=/a:/b:/c", "//:plain"][..],
+            format!("While parsing option --sandbox_add_mount_pair=/a:/b:/c: {form}"),
+        ),
+        (
+            &["build", "--sandbox_add_mount_pair= ", "//:plain"][..],
+            format!(
+                "While parsing option --sandbox_add_mount_pair= : Input   contains one or more empty paths. {form}"
+            ),
+        ),
+        (
+            &["build", "--sandbox_add_mount_pair=/usr:/opt/mp", "//:plain"][..],
+            "unsupported option --sandbox_add_mount_pair: only identity mounts of an absolute path"
+                .to_owned(),
+        ),
+    ] {
+        rejected(&f.run(args), &marker);
+    }
 }

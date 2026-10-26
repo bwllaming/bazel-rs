@@ -36,7 +36,7 @@ fn invalid_argument(arg: &str, message: String) -> String {
 
 /// An option that takes a value: `--NAME=VALUE` or `--NAME VALUE`; the
 /// `no` prefix is illegal. `(form, value, used_next)`.
-fn value_option<'a>(
+pub fn value_option<'a>(
     arg: &'a str,
     next: Option<&'a str>,
     name: &str,
@@ -157,16 +157,14 @@ impl RcOptions {
                 return Ok(None);
             }
         }
-        if let Some(parsed) = value_option(arg, next, "sandbox_add_mount_pair") {
+        // `--sandbox_add_mount_pair` (SandboxOptions.java:173-180) is a
+        // SandboxModule option of the building commands only; their native
+        // parser models it with the other sandbox options (crate::sandbox).
+        if value_option(arg, next, "sandbox_add_mount_pair").is_some() {
             if !build {
                 return Err(unrecognized());
             }
-            parsed?;
-            // SandboxOptions.java:173-180; linux-sandbox bind mounts. Bazel's
-            // default Linux strategy sandboxes, so this is not a no-op there.
-            return Err(format!(
-                "unsupported option --sandbox_add_mount_pair{origin}: sandboxed execution is not implemented (native actions run unsandboxed in a private execroot)"
-            ));
+            return Ok(None);
         }
         for name in REMOTE_EXECUTION {
             if let Some(parsed) = value_option(arg, next, name) {
@@ -272,6 +270,18 @@ mod tests {
             error("build", &["--norepo_env"]),
             "--norepo_env :: Illegal use of 'no' prefix on non-boolean option: --norepo_env"
         );
+        // The building commands' native parser owns --sandbox_add_mount_pair
+        // (crate::sandbox::mount_pair); other commands do not have it.
+        assert_eq!(
+            RcOptions::default()
+                .parse("build", "--sandbox_add_mount_pair=/tmp", None, "")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            error("query", &["--sandbox_add_mount_pair=/tmp"]),
+            "--sandbox_add_mount_pair=/tmp :: Unrecognized option: --sandbox_add_mount_pair=/tmp"
+        );
         assert_eq!(
             error("query", &["--test_output=errors"]),
             "--test_output=errors :: Unrecognized option: --test_output=errors"
@@ -297,10 +307,6 @@ mod tests {
             (
                 &["--incompatible_enable_proto_toolchain_resolution=false"][..],
                 "legacy --proto_compiler",
-            ),
-            (
-                &["--sandbox_add_mount_pair=/tmp"][..],
-                "sandboxed execution is not implemented",
             ),
             (
                 &["--remote_executor=grpc://h:1"][..],

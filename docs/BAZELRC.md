@@ -88,7 +88,7 @@ After expansion every option goes through the existing native parsers
 Options those parsers do not model fail explicitly, for example:
 
     unsupported option "--disk_cache=…" from rc file /ws/.bazelrc:3 ('build' options); options are never silently ignored
-    unsupported option --sandbox_add_mount_pair from rc file /ws/.bazelrc:1 (config definition 'build:cross'): sandboxed execution is not implemented …
+    unsupported option --sandbox_add_mount_pair from rc file /ws/.bazelrc:1 (config definition 'build:cross'): only identity mounts of an absolute path (PATH or PATH:PATH) are modelled …
 
 The options of real rc files (`--repo_env`, `--attempt_to_print_relative_paths`,
 `--incompatible_strict_action_env`, the Apple SDK versions, test, remote and

@@ -1,0 +1,226 @@
+{
+ "schema": "sandbox-mount-pair-receipt-v1",
+ "reference": {
+  "path": "/home/coder/bazel/.direnv/reference/bazel-9.3.0-linux-x86_64",
+  "sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+  "version": "9.3.0"
+ },
+ "method": "capture.py in this directory (one genrule workspace per case, private HOME, PATH=/usr/bin:/bin, --nosystem_rc --nohome_rc; genuine --batch with a scratch --output_user_root)",
+ "classification_notes": {
+  "EXACT_MESSAGE": "same text; native exits 1 for option errors where genuine exits 2 (pre-existing native convention)",
+  "EXACT_ROUTE": "both accept the option; release strings differ by the native suffix",
+  "EXPECTED_NATIVE_UNSUPPORTED": "genuine on this host resolves sandboxed to processwrapper-sandbox, which ignores mounts; native cannot remount under Landlock and fails explicitly"
+ },
+ "rows": [
+  {
+   "id": "identity-single",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/tmp",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   },
+   "native": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   }
+  },
+  {
+   "id": "identity-pair",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/tmp:/tmp",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   },
+   "native": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   }
+  },
+  {
+   "id": "rc-config",
+   "args": [
+    "build",
+    "--config=cross",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   },
+   "native": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   }
+  },
+  {
+   "id": "test-inherits",
+   "args": [
+    "test",
+    "--sandbox_add_mount_pair=/tmp",
+    "//:ok"
+   ],
+   "classification": "EXACT",
+   "genuine": {
+    "exit": 4,
+    "error": "No test targets were found, yet testing was requested",
+    "output": null,
+    "stdout": null
+   },
+   "native": {
+    "exit": 4,
+    "error": "No test targets were found, yet testing was requested",
+    "output": null,
+    "stdout": null
+   }
+  },
+  {
+   "id": "info-inherits",
+   "args": [
+    "info",
+    "--sandbox_add_mount_pair=/tmp",
+    "release"
+   ],
+   "classification": "EXACT_ROUTE",
+   "genuine": {
+    "exit": 0,
+    "error": null,
+    "output": null,
+    "stdout": "release 9.3.0\n"
+   },
+   "native": {
+    "exit": 0,
+    "error": null,
+    "output": null,
+    "stdout": "release 9.3.0+bazel-rs.0.1.0\n"
+   }
+  },
+  {
+   "id": "query-unrecognized",
+   "args": [
+    "query",
+    "--sandbox_add_mount_pair=/tmp",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "exit": 2,
+    "error": "--sandbox_add_mount_pair=/tmp :: Unrecognized option: --sandbox_add_mount_pair=/tmp",
+    "output": null,
+    "stdout": ""
+   },
+   "native": {
+    "exit": 1,
+    "error": "--sandbox_add_mount_pair=/tmp :: Unrecognized option: --sandbox_add_mount_pair=/tmp",
+    "output": null,
+    "stdout": ""
+   }
+  },
+  {
+   "id": "empty-path",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/a::/b",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "exit": 2,
+    "error": "While parsing option --sandbox_add_mount_pair=/a::/b: Input /a::/b contains one or more empty paths. Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   },
+   "native": {
+    "exit": 1,
+    "error": "While parsing option --sandbox_add_mount_pair=/a::/b: Input /a::/b contains one or more empty paths. Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   }
+  },
+  {
+   "id": "three-paths",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/a:/b:/c",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "exit": 2,
+    "error": "While parsing option --sandbox_add_mount_pair=/a:/b:/c: Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   },
+   "native": {
+    "exit": 1,
+    "error": "While parsing option --sandbox_add_mount_pair=/a:/b:/c: Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   }
+  },
+  {
+   "id": "blank",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair= ",
+    "//:ok"
+   ],
+   "classification": "EXACT_MESSAGE",
+   "genuine": {
+    "exit": 2,
+    "error": "While parsing option --sandbox_add_mount_pair= : Input   contains one or more empty paths. Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   },
+   "native": {
+    "exit": 1,
+    "error": "While parsing option --sandbox_add_mount_pair= : Input   contains one or more empty paths. Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'",
+    "output": null,
+    "stdout": null
+   }
+  },
+  {
+   "id": "remount",
+   "args": [
+    "build",
+    "--sandbox_add_mount_pair=/usr:/opt/mp",
+    "//:ok"
+   ],
+   "classification": "EXPECTED_NATIVE_UNSUPPORTED",
+   "genuine": {
+    "exit": 0,
+    "error": null,
+    "output": "ok\n",
+    "stdout": null
+   },
+   "native": {
+    "exit": 1,
+    "error": "unsupported option --sandbox_add_mount_pair: only identity mounts of an absolute path (PATH or PATH:PATH) are modelled; the native sandbox cannot remount a path (docs/SANDBOX.md)",
+    "output": null,
+    "stdout": null
+   }
+  }
+ ]
+}

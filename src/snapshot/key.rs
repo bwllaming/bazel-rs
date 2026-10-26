@@ -123,6 +123,7 @@ pub const EXCLUDED: &[&str] = &[
     "experimental_worker_multiplex_sandboxing",
     "experimental_worker_strict_flagfiles",
     "experimental_worker_allowlist",
+    "sandbox_add_mount_pair",
     "remote_cache",
     "remote_executor",
     "remote_header",

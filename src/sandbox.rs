@@ -142,6 +142,14 @@ pub struct SpawnOptions {
     pub sandbox_block_path: Vec<PathBuf>,
     /// `--sandbox_tmpfs_path` (SandboxOptions.java:149-159).
     pub sandbox_tmpfs_path: Vec<PathBuf>,
+    /// `--sandbox_add_mount_pair` identity mounts (SandboxOptions.java:
+    /// 173-180; [`mount_pair`]). Recorded only: every host path is already
+    /// visible at its own path in the Landlock sandbox and a bind mount does
+    /// not make its target writable (linux-sandbox remounts everything
+    /// outside the writable dirs read-only), so an identity mount changes
+    /// nothing a spawn observes here. Non-identity remounts are rejected at
+    /// option parsing (docs/SANDBOX.md).
+    pub sandbox_add_mount_pair: Vec<PathBuf>,
     /// `--sandbox_debug` (SandboxOptions.java:87-97).
     pub sandbox_debug: bool,
     /// `--sandbox_default_allow_network`, default true (SandboxOptions.java:
@@ -160,6 +168,7 @@ impl Default for SpawnOptions {
             sandbox_writable_path: Vec::new(),
             sandbox_block_path: Vec::new(),
             sandbox_tmpfs_path: Vec::new(),
+            sandbox_add_mount_pair: Vec::new(),
             sandbox_debug: false,
             sandbox_default_allow_network: true,
         }
@@ -181,6 +190,50 @@ fn options() -> &'static SpawnOptions {
 /// executor reads it directly).
 pub fn debug() -> bool {
     options().sandbox_debug
+}
+
+/// SandboxOptions.MountPairConverter (:50-80): `source[:target]`, split on
+/// every `:` not preceded by `\` with Java's String.split (trailing empty
+/// pieces dropped), `\:` unescaped; a blank piece or more than two pieces
+/// fail with the converter's text. Returns `(source, target)`.
+pub fn mount_pair(input: &str) -> Result<(String, String), String> {
+    let mut pieces = Vec::new();
+    let mut current = String::new();
+    let mut previous = None;
+    for character in input.chars() {
+        if character == ':' && previous != Some('\\') {
+            pieces.push(std::mem::take(&mut current));
+        } else {
+            current.push(character);
+        }
+        previous = Some(character);
+    }
+    pieces.push(current);
+    // String.split(regex) with limit 0 drops trailing empty strings, except
+    // that an input without any match yields itself.
+    if pieces.len() > 1 {
+        while pieces.last().is_some_and(String::is_empty) {
+            pieces.pop();
+        }
+    }
+    const FORM: &str = "Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'";
+    let mut paths = Vec::new();
+    for piece in pieces {
+        // String.trim strips every char <= U+0020.
+        if piece.trim_matches(|c: char| c <= ' ').is_empty() {
+            return Err(format!(
+                "Input {input} contains one or more empty paths. {FORM}"
+            ));
+        }
+        paths.push(piece.replace("\\:", ":"));
+    }
+    match <[String; 1]>::try_from(paths) {
+        Ok([path]) => Ok((path.clone(), path)),
+        Err(paths) => match <[String; 2]>::try_from(paths) {
+            Ok([source, target]) => Ok((source, target)),
+            Err(_) => Err(FORM.to_owned()),
+        },
+    }
 }
 
 /// Rejects unknown strategy identifiers once at startup with Bazel's
@@ -888,6 +941,39 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    /// MountPairConverter texts captured from genuine 9.3.0
+    /// (tests/fixtures/sandbox_mount_pair/reference_receipt.json) plus
+    /// Java String.split edge cases.
+    #[test]
+    fn mount_pair_follows_the_converter() {
+        let pair = |a: &str, b: &str| Ok((a.to_owned(), b.to_owned()));
+        assert_eq!(mount_pair("/tmp"), pair("/tmp", "/tmp"));
+        assert_eq!(mount_pair("/tmp:/tmp"), pair("/tmp", "/tmp"));
+        assert_eq!(mount_pair("/usr:/opt/mp"), pair("/usr", "/opt/mp"));
+        // Trailing empty pieces are dropped by String.split.
+        assert_eq!(mount_pair("/a:"), pair("/a", "/a"));
+        assert_eq!(mount_pair("/a\\:b:/c"), pair("/a:b", "/c"));
+        let form = "Input must be a single path to mount inside the sandbox or a mounting pair in the form of 'source:target'";
+        assert_eq!(
+            mount_pair("/a::/b"),
+            Err(format!(
+                "Input /a::/b contains one or more empty paths. {form}"
+            ))
+        );
+        assert_eq!(
+            mount_pair(" "),
+            Err(format!("Input   contains one or more empty paths. {form}"))
+        );
+        assert_eq!(
+            mount_pair(":/a"),
+            Err(format!(
+                "Input :/a contains one or more empty paths. {form}"
+            ))
+        );
+        assert_eq!(mount_pair("/a:/b:/c"), Err(form.to_owned()));
+        assert_eq!(mount_pair("::"), Err(form.to_owned()));
     }
 
     #[test]
