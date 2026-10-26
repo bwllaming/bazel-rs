@@ -21,6 +21,23 @@ use std::sync::{Arc, OnceLock};
 /// [`RepositorySet::shared_mapping`]'s copy of a mapping table entry.
 type SharedMapping = Arc<BTreeMap<String, String>>;
 
+/// A canonical root list of [`RepositorySet::link_policy`] and the roots
+/// (name, path) it was made of.
+#[derive(Debug)]
+struct LinkOthers {
+    roots: Vec<(String, PathBuf)>,
+    others: Arc<Vec<(String, PathBuf)>>,
+}
+
+/// Byte-equal root lists (stricter than component-wise path equality).
+fn same_roots(known: &[(String, PathBuf)], roots: &[(String, PathBuf)]) -> bool {
+    known.len() == roots.len()
+        && known
+            .iter()
+            .zip(roots)
+            .all(|((a, p), (b, q))| a == b && p.as_os_str() == q.as_os_str())
+}
+
 /// The canonical form of a root, the repository store or a blocked prefix
 /// as the link policy and the recorded-input keys take it (W6R): not
 /// recorded where taken — [`RepositorySet::record_link_anchors`] records
@@ -155,6 +172,9 @@ struct RepositoryState {
     /// [`RepositorySet::shared_mapping`]: one shared copy per mapping table
     /// entry, by the entry's address.
     shared_mappings: std::sync::Mutex<std::collections::HashMap<usize, SharedMapping>>,
+    /// The last canonical `others` of [`RepositorySet::link_policy`] per
+    /// root view (materialized, sequential) with the roots it was made of.
+    link_others: std::sync::Mutex<[Option<LinkOthers>; 2]>,
     /// BUILD-phase `.bzl` modules evaluated in this invocation, shared by
     /// every package that loads them (BzlLoadValue; crate::loading).
     build_bzl: crate::loading::BzlCache,
@@ -775,6 +795,7 @@ impl RepositorySet {
                 ignored: std::sync::Mutex::default(),
                 link_canonical: std::sync::Mutex::default(),
                 shared_mappings: std::sync::Mutex::default(),
+                link_others: std::sync::Mutex::default(),
                 build_bzl: crate::loading::BzlCache::default(),
                 definition_bzl: crate::loading::DefinitionBzlCache::default(),
                 module_globals: OnceLock::new(),
@@ -2122,9 +2143,9 @@ impl RepositorySet {
     /// on when a worker's unit asks); [`Self::record_link_anchors`]
     /// records them once.
     pub fn link_policy(&self, repository: &str) -> crate::source_links::LinkPolicy {
-        let roots = if crate::observed_fs::recording()
-            && crate::observed_fs::hook(crate::observed_fs::Hook::Link)
-        {
+        let sequential = crate::observed_fs::recording()
+            && crate::observed_fs::hook(crate::observed_fs::Hook::Link);
+        let roots = if sequential {
             self.sequential_roots()
         } else {
             self.materialized_roots()
@@ -2144,10 +2165,33 @@ impl RepositorySet {
             memo.insert(path, canonical.clone());
             Some(canonical)
         };
-        let others = roots
-            .into_iter()
-            .filter_map(|(name, path)| canonical(path).map(|path| (name, path)))
-            .collect();
+        // The same roots as last time share the canonical list (a root
+        // that does not exist yet is retried: such a list is not kept).
+        let mut last = self
+            .state
+            .link_others
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slot = &mut last[usize::from(sequential)];
+        let others = match slot.as_ref() {
+            Some(known) if same_roots(&known.roots, &roots) => Arc::clone(&known.others),
+            _ => {
+                let count = roots.len();
+                let others: Vec<(String, PathBuf)> = roots
+                    .iter()
+                    .filter_map(|(name, path)| {
+                        canonical(path.clone()).map(|path| (name.clone(), path))
+                    })
+                    .collect();
+                let others = Arc::new(others);
+                *slot = (others.len() == count).then(|| LinkOthers {
+                    roots,
+                    others: Arc::clone(&others),
+                });
+                others
+            }
+        };
+        drop(last);
         let blocked = self
             .link_blocked_prefixes()
             .into_iter()

@@ -1605,7 +1605,7 @@ mod tests {
         assert_eq!(run(&["bin/**"], &generated).unwrap(), ["bin/java"]);
         // A materialized root admits the same link without host reads.
         let materialized = LinkPolicy {
-            others: vec![("jdk+".to_owned(), outside_root.join("jdk"))],
+            others: vec![("jdk+".to_owned(), outside_root.join("jdk"))].into(),
             ..LinkPolicy::default()
         };
         assert_eq!(run(&["bin/*"], &materialized).unwrap(), ["bin/java"]);

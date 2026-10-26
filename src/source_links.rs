@@ -183,7 +183,9 @@ impl std::hash::Hash for StoreTrees {
 /// path, archive, registry or Git trees, and never for writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct LinkPolicy {
-    pub others: Vec<(String, PathBuf)>,
+    /// Shared: the same materialized roots back every policy of a phase
+    /// (thousands of npm package repositories).
+    pub others: Arc<Vec<(String, PathBuf)>>,
     pub blocked: Vec<PathBuf>,
     pub host_reads: bool,
     pub store: Option<StoreTrees>,
@@ -325,12 +327,26 @@ pub fn resolve_across(
     others: &[(String, PathBuf)],
     blocked: &[PathBuf],
 ) -> Result<Resolution, String> {
+    // A policy's roots and blocked prefixes are canonical
+    // (RepositorySet::link_policy); these are taken as given.
+    let others = others
+        .iter()
+        .filter_map(|(name, path)| {
+            crate::repository::link_canonical_form(path)
+                .ok()
+                .map(|path| (name.clone(), path))
+        })
+        .collect();
+    let blocked = blocked
+        .iter()
+        .map(|path| crate::repository::link_canonical_form(path).unwrap_or_else(|_| path.clone()))
+        .collect();
     resolve_across_inner(
         root,
         relative,
         &LinkPolicy {
-            others: others.to_vec(),
-            blocked: blocked.to_vec(),
+            others: Arc::new(others),
+            blocked,
             ..LinkPolicy::default()
         },
     )
@@ -357,24 +373,17 @@ fn resolve_across_inner(
     {
         return Err(format!("unsafe source path {shown}"));
     }
-    // The policy's roots and blocked prefixes: recorded once at the end of
-    // planning (RepositorySet::record_link_anchors, W6R).
-    let mut candidates: Vec<PathBuf> = others
-        .iter()
-        .filter_map(|(_, path)| crate::repository::link_canonical_form(path).ok())
-        .collect();
-    if !others.is_empty() {
-        // The starting repository is materialized too.
-        candidates.push(start_root.clone());
-    }
-    let blocked: Vec<PathBuf> = blocked
-        .iter()
-        .map(|path| crate::repository::link_canonical_form(path).unwrap_or_else(|_| path.clone()))
-        .collect();
+    // The policy's roots and blocked prefixes are canonical (recorded once
+    // at the end of planning, RepositorySet::record_link_anchors, W6R).
     // A hop into another live repository root taints the analysis
     // snapshot: whether it is materialized depends on the run (PLAN-L2
     // §1b, update 1 §(c); `LinkPolicy::hop_taint`).
     let origin = start_root.clone();
+    let mut candidates: Vec<&Path> = others.iter().map(|(_, path)| path.as_path()).collect();
+    if !others.is_empty() {
+        // The starting repository is materialized too.
+        candidates.push(origin.as_path());
+    }
     // Longest-prefix root containing `path` (lexically absolute); a
     // published store tree anchors in any order (`StoreTrees`).
     let owner = |path: &Path| -> Option<PathBuf> {
@@ -385,10 +394,10 @@ fn resolve_across_inner(
         if let Some(store) = store
             && let Some(tree) = store.anchor(
                 path,
-                found.map(PathBuf::as_path),
+                found.copied(),
                 candidates
                     .iter()
-                    .map(PathBuf::as_path)
+                    .copied()
                     .chain(std::iter::once(origin.as_path())),
             )
         {
@@ -402,7 +411,7 @@ fn resolve_across_inner(
         {
             return None;
         }
-        Some(found.clone())
+        Some(found.to_path_buf())
     };
     let mut root = start_root;
     let mut pending = VecDeque::new();
@@ -1122,7 +1131,7 @@ mod tests {
         let gen_root = base.join("gen");
         let policy = |host_reads: bool| LinkPolicy {
             // The workspace contains the store (the default cache layout).
-            others: vec![(String::new(), base.clone())],
+            others: Arc::new(vec![(String::new(), base.clone())]),
             blocked: vec![store.clone(), base.join("cache")],
             host_reads,
             store: Some(StoreTrees::new(store.clone(), Arc::default())),
@@ -1177,7 +1186,7 @@ mod tests {
         assert!(resolve_with_policy(&gen_root, Path::new("linked.bzl"), &fresh).is_err());
         // ... unless this invocation materialized (and so verified) it.
         let mut materialized = fresh.clone();
-        materialized.others.push(("dep+".to_owned(), tree.clone()));
+        Arc::make_mut(&mut materialized.others).push(("dep+".to_owned(), tree.clone()));
         assert_eq!(
             resolve_with_policy(&gen_root, Path::new("linked.bzl"), &materialized).unwrap(),
             Resolution::Resolved(tree.join("defs.bzl"))
