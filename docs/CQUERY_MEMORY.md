@@ -41,9 +41,37 @@ the temporary snapshot-profiling environment exception was removed.
 The diagnostic optimized run retained byte-identical full-source output and
 reduced peak to 7,728,752 KiB. Export took 8.89 s instead of 23.06 s in the two
 phase runs; save encoding no longer adds the 370 MiB buffer. Plain final-binary
-measurements and the separate actual TD default universe (`//...`) acceptance
-are recorded in the worker report. The <=6 GiB aspiration is not established by
-this scoped reduction; provider analysis is still the peak.
+measurements, using the same private cache and 8192 MiB / 900 s bounds:
+
+| query | baseline | optimized | peak RSS baseline / optimized |
+|---|---:|---:|---:|
+| `deps(//src/...)`, analysis + save | 144.74 s | 139.17 s | 8,001 / 7,549 MiB |
+| `deps(//src/...)`, hit | 2.21 s | 2.23 s | 1,514 / 1,517 MiB |
+| `//src/...`, shared-universe hit | 1.76 s | 1.68 s | 1,514 / 1,515 MiB |
+
+The baseline save is the preceding exact-ELF receipt; baseline hits were repeated
+in this series. Shared-machine timings are individual observations, not a claimed
+statistical speedup. All deps output is byte identical (464,264,083 bytes,
+SHA256 `51c095b091244146ba10c86fbd2bd5ae099864a6f93b3d1f551cbd4d0c7429ad`).
+Roots output is also byte identical (139,599,392 bytes). Headroom grows from about
+191 to 643 MiB, a 452 MiB reduction. The <=6 GiB aspiration is **not met** by this
+scoped reduction; provider analysis is still the peak.
+
+## Actual default TD universe: blocked separately
+
+Both `deps(//...)` and `//...` fail loading
+`venv/lib/python3.12/site-packages/pandas/BUILD.bazel:1:1`:
+`name 'py_library' is not defined (did you mean 'cc_library'?)`.
+The calls exit 1 after 9.01 s / 6.12 s, at 875 / 877 MiB, publishing no output.
+No package is excluded and no unconfigured fallback is substituted. The default
+universe is therefore **not supported yet**, despite full-source success.
+
+Scratch real TD v0.34 comparisons remain exact against genuine: original 11/11,
+split 11/11, shared-output 2/2 and aspect 9/9. Snapshot tests cover hit, verification,
+format/query reuse and BUILD/.bzl/environment/source-presence invalidation. An
+independent upstream-schema streaming decode validates 261,196 targets, 31
+configurations and 1,104,178 configured inputs. Ordinary scratch build output and
+action keys/dumps remain identical to the baseline.
 
 Native full-graph query success is **not** a whole-repository target-determinator
 before/after revision comparison. Actual TD comparisons are confined to scratch
