@@ -57,3 +57,27 @@ mapping/runfiles manifests, not provider data. Cquery now omits constructing and
 retaining those sets; it keeps the real RepositorySet and the actual semantic
 support Files. Build and --nobuild still compute them unchanged. No configured
 node, provider, action declaration or validation is dropped.
+
+The unoptimized full-source attempt exited 33 at the unchanged 8192 MiB ceiling.
+A temporary checkpoint used the existing retained-memory profiler at about
+5.5 GiB, then stopped explicitly; that diagnostic code was removed. With the
+execution-only closures omitted (and current main's independent aspect projection
+fix integrated), the bounded full query succeeds:
+
+| query | wall | peak child RSS | output bytes | snapshot |
+|---|---:|---:|---:|---|
+| first deps(//src/...) | 142.79 s | 7,997 MiB | 464,264,083 | initialization left lockfile write pending |
+| second deps(//src/...) | 144.74 s | 8,001 MiB | 464,264,083 | saved |
+| third deps(//src/...) | 2.04 s | 1,514 MiB | 464,264,083 | hit |
+| //src/..., same universe | 1.74 s | 1,516 MiB | 139,599,392 | hit |
+
+All three deps outputs have identical SHA256. Independent upstream-schema decoding
+reads 261,196 targets, 31 configurations and 1,104,178 configured inputs. Peak
+analysis RSS remains close to the ceiling; this is bounded success, not unlimited
+memory headroom. No native daemon is involved.
+
+The official target-determinator v0.34.0 original and split matrices still match
+genuine 9.3 (11/11 each). A new shared-output mutation changes only writer b's
+content, making its action conflict globally with a; cquery succeeds and both
+engines return exactly b, its filegroup, consumer and transitive parent. Actual TD
+was run only in scratch git repositories, never on the read-only monorepo.

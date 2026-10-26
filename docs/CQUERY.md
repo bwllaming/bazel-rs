@@ -1,5 +1,11 @@
 # Configured query (`cquery`)
 
+Full-source follow-up: semantic artifact collection now preserves owner-distinct
+Files sharing an execution path without lowering actions. The bounded native
+`deps(//src/...)` probe succeeds under 8 GiB/15 minutes, with a repeated graph hit
+in 2.04 seconds. See [CQUERY_ARTIFACTS.md](CQUERY_ARTIFACTS.md) for exact measurements,
+remaining memory headroom, support-file identities and validation boundaries.
+
 The native `cquery` analyzes configured targets and executes Starlark rule and
 aspect implementations to produce their providers. It **does not execute build
 actions, tests, workspace-status commands, action-input digesting, runfiles-tree
