@@ -848,6 +848,9 @@ pub fn try_reuse_in<V>(
 where
     V: Fn(&Path, &[u8]) -> Result<bool, String>,
 {
+    if FORCE_FETCH.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(None);
+    }
     let direct = cache.join("direct");
     let shared = direct.join("specs").join(spec_key);
     let found = reuse_through(cache, &shared, stage_key, spec_key, &validate)?;
@@ -2169,6 +2172,18 @@ fn safe_relative(name: &str) -> Result<(), String> {
 pub enum VerifyMode {
     Stat,
     Full,
+}
+
+/// `fetch --force` (FetchOptions.force, RepositoryDirectoryValue.FORCE_FETCH):
+/// no warm publication is reused in this process, so every repository rule
+/// the command materializes executes again ([`try_reuse_in`] finds
+/// nothing). The new publication replaces the specification pointer like
+/// any execution; an identical result keeps its identity.
+static FORCE_FETCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn on [`FORCE_FETCH`] for the rest of the process.
+pub fn set_force_fetch() {
+    FORCE_FETCH.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 static VERIFY_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);

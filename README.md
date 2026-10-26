@@ -97,6 +97,13 @@ first time while another worktree builds; repositories watching files that
 differ between branches re-run on each switch; no garbage collection yet —
 are in docs/WORKTREES.md.
 
+`bazel-rs fetch` (target patterns, `--repo`, `--all`, `--configure`,
+`--force`) materializes repositories without building; `bazel-rs clean`
+empties the workspace's output tree and state (`--expunge`: its whole state
+directory) but keeps the shared action cache and repositories, so the next
+build relinks cache hits; `shutdown` does nothing (no server); `vendor` is
+not implemented (docs/COMMANDS.md).
+
 The analysis snapshot is on by default: a `build`, `test` or `run` saves its
 analysis in the workspace's `<cache>/worktrees/<name>-<hash>/snapshots/`, and
 a re-run whose recorded inputs are all unchanged skips loading and analysis.

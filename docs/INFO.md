@@ -111,6 +111,9 @@ cache never relink each other's (docs/WORKTREES.md):
 * a test's results link `bazel-out/<cfg>/testlogs/<pkg>/<name>` to the
   published testlogs below `<cache>/tests/<key>/` (test.log, test.xml, ...).
 
+`bazel-rs clean` empties the output tree (docs/COMMANDS.md); the next build
+links it again from the shared action cache.
+
 An entry that already links the same output costs one `lstat`/`readlink`;
 anything else at the path is replaced by renaming a temporary link over it;
 a directory link of an earlier build is never written through. Entries of

@@ -69,9 +69,12 @@ impl Workspace {
     /// and nothing was saved: the commands whose cache this lists run with
     /// the analysis snapshot off (on by default, a `--nobuild` run saves its
     /// snapshot in the workspace's state directory, `cache/worktrees/`).
+    /// The output base lock every command holds (`cache/worktrees/<ws>/lock`,
+    /// docs/COMMANDS.md) is no output.
     fn cache_files(&self) -> Vec<String> {
         let mut names = Vec::new();
         collect(&self.path().join("cache"), &mut names);
+        names.retain(|name| !(name.contains("/worktrees/") && name.ends_with("/lock")));
         names.sort();
         names
     }

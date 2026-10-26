@@ -17,8 +17,11 @@ Usage:
   bazel-rs [STARTUP...] [--cache-dir=PATH] run [BUILD OPTIONS...] [RUN OPTIONS...] TARGET [-- ARGS...]
   bazel-rs [STARTUP...] [--cache-dir=PATH] test [BUILD OPTIONS...] [TEST OPTIONS...] TARGET...
   bazel-rs [STARTUP...] [--cache-dir=PATH] info [BUILD OPTIONS...] [--show_make_env] [KEY...]
+  bazel-rs [STARTUP...] [--cache-dir=PATH] fetch [BUILD OPTIONS...] [TARGET... | --repo=@NAME... | --all | --configure] [--force]
+  bazel-rs [STARTUP...] [--cache-dir=PATH] clean [--expunge] [--async | --expunge_async]
+  bazel-rs [STARTUP...] shutdown [--iff_heap_size_greater_than=N]
   bazel-rs [STARTUP...] mod graph --output=json [--registry=URL]
-  bazel-rs version | --version | capabilities
+  bazel-rs version | --version | capabilities | help [COMMAND]
 
 Startup: --[no]system_rc --[no]workspace_rc --[no]home_rc --[no]ignore_all_rc_files
   --[no]quiet (only errors and command output; docs/STARTUP_QUIET.md)
@@ -33,6 +36,14 @@ Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filt
 Info: the Bazel 9.3 items (bazel-bin, execution_root, output_base, ...) mapped to the
   native layout; built outputs are linked below <state>/execroot/_main, <state> the
   workspace's state directory (the output base, see Cache below; docs/INFO.md).
+Fetch: materializes repositories like a build would (docs/COMMANDS.md): the repositories
+  the targets' loading and analysis need (build --nobuild), the named --repo=@apparent /
+  @@canonical ones, or every repository (--all, the default) / every configure=True one
+  (--configure); --force executes their repository rules again.
+Clean: deletes this workspace's output tree and per-workspace state below
+  <cache>/worktrees/<name>-<hash>/ (not the hidden lockfile); --expunge deletes that whole
+  directory. The shared store (repositories, action cache, test results) is never touched.
+  Shutdown: no server exists, so it does nothing (docs/COMMANDS.md).
 Build options: --jobs=N or --jobs N (positive integer; default: available CPUs, max 32)
 Memory ceiling: --memory-limit=<MB> (build/run/test/query) or BAZEL_RS_MAX_MEMORY_MB
   caps bazel-rs's own RSS (watchdog only, exit 33 = Bazel's OOM; no RLIMIT_AS, so
@@ -142,7 +153,21 @@ fn run() -> Result<(), String> {
             println!("{}", include_str!("../docs/capabilities.json"));
             return Ok(());
         }
-        "query" | "build" | "mod" | "run" | "test" | "info" => {}
+        "help" => return help_command(&rest),
+        "shutdown" => return shutdown_command(&line, &path_to_binary),
+        "query" | "build" | "mod" | "run" | "test" | "info" | "clean" | "fetch" => {}
+        "vendor" => {
+            return Err(
+                "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
+                    .to_owned(),
+            );
+        }
+        // BlazeCommandDispatcher: a name that is no Bazel command at all
+        // (`sync` was removed with WORKSPACE support) — exit 2.
+        _ if !command.starts_with('-') && !bazelrc::is_bazel_command(&command) => {
+            eprintln!("Command '{command}' not found. Try 'bazel-rs help'.");
+            std::process::exit(2);
+        }
         _ => {
             return Err(format!(
                 "unsupported command or startup option {command:?}; run --help for the native subset"
@@ -155,6 +180,16 @@ fn run() -> Result<(), String> {
     if command == "info" {
         return info_command(&line, &options, &cwd, root);
     }
+    if command == "clean" {
+        return clean_command(&line, &options, &cwd, root);
+    }
+    // FetchCommand inherits the test (and so the build) options.
+    let option_command = if command == "fetch" {
+        "test"
+    } else {
+        command.as_str()
+    };
+    let mut fetch = FetchOptions::default();
     // --jobs default: available CPUs, max 32 (the "N26" bound — the
     // action worker pool never exceeds 32 however many CPUs the host
     // has; explicit --jobs=N is kept exactly). Memory-wise the action
@@ -204,11 +239,16 @@ fn run() -> Result<(), String> {
         // unrecognized options in its first parsing round and reports them
         // when it reparses with the main repository mapping, after the rc
         // notes (OptionsParserImpl.java:811-815, BlazeCommandDispatcher.java:738-755, 1022).
-        let second_round = builds(&command) && root.join("MODULE.bazel").exists();
+        let second_round = builds(option_command) && root.join("MODULE.bazel").exists();
         for (step, position) in &options.steps {
             let result = match step {
                 bazelrc::Step::Fail(error) => Err(error.clone()),
-                bazelrc::Step::Unit(unit) => NativeOptions::new(&command).parse(&command, unit),
+                bazelrc::Step::Unit(unit) => parse_command_option(
+                    &mut NativeOptions::new(option_command),
+                    &mut FetchOptions::default(),
+                    &command,
+                    unit,
+                ),
             };
             match result {
                 Err(error) if second_round && error.contains(" :: Unrecognized option: ") => {
@@ -218,10 +258,10 @@ fn run() -> Result<(), String> {
                 Ok(()) => {}
             }
         }
-        let mut native = NativeOptions::new(&command);
+        let mut native = NativeOptions::new(option_command);
         if deferred.is_none() {
             for unit in &options.priority {
-                native.parse(&command, unit)?;
+                parse_command_option(&mut native, &mut fetch, &command, unit)?;
             }
         }
         if native.resolver.registries.is_empty() {
@@ -280,10 +320,46 @@ fn run() -> Result<(), String> {
         test_options = native.test;
         options.residue.iter().map(|arg| arg.text.clone()).collect()
     };
+    // FetchCommand.validateOptions, then the request: target patterns are
+    // a `build --nobuild` (TargetFetcher), anything else fetches
+    // repositories once the repository set exists (below).
+    let fetch_mode = if command == "fetch" {
+        if !fetch.fetch {
+            fail_with(2, "You cannot run fetch with --nofetch");
+        }
+        let requested = [
+            fetch.all,
+            fetch.configure,
+            !fetch.repos.is_empty(),
+            !rest.is_empty(),
+        ];
+        if requested.iter().filter(|given| **given).count() > 1 {
+            fail_with(2, "Only one fetch option can be provided for fetch command");
+        }
+        if fetch.force {
+            bazel_rs::repository_store::set_force_fetch();
+        }
+        if rest.is_empty() {
+            Some(FetchMode::Repositories)
+        } else {
+            no_build = true;
+            FETCH_TARGETS.store(true, std::sync::atomic::Ordering::Relaxed);
+            Some(FetchMode::Targets)
+        }
+    } else {
+        None
+    };
+    let command = if fetch_mode == Some(FetchMode::Targets) {
+        "build".to_owned()
+    } else {
+        command
+    };
     // The interactive progress display (crate::progress, docs/PROGRESS.md):
     // `build`, `test` and `run` on a terminal (Bazel's curses mode), never
-    // otherwise. Everything printed from here on reaches the terminal
-    // through its thread; every exit path below ends it ([`exit`]).
+    // otherwise; `fetch TARGET...` is a `build` here (TargetFetcher), the
+    // other `fetch` forms, `clean` and `shutdown` show none. Everything
+    // printed from here on reaches the terminal through its thread; every
+    // exit path below ends it ([`exit`]).
     if let Some(config) = bazel_rs::progress::decide(
         &command,
         &ui_options,
@@ -374,6 +450,12 @@ fn run() -> Result<(), String> {
     bazel_rs::worktree::install(&root);
     if !explicit_cache && let Some(note) = layout.legacy_cache_note(&cache) {
         bazel_rs::note!("{note}");
+    }
+    // The output base lock, shared (docs/COMMANDS.md): a running `clean`
+    // of this workspace is waited for, and `clean` waits for this command.
+    // `mod graph` uses the shared repository store only.
+    if command != "mod" {
+        hold_output_base_lock(&cache, &root, &command);
     }
     // The persistent file-digest memo of this cache (crate::digest_memo),
     // saved by `digest_memo::finish` when the command ends.
@@ -476,7 +558,14 @@ fn run() -> Result<(), String> {
     // plan_request compares with the hit before the hit executes
     // (crate::snapshot::verify).
     let mut snapshot = bazel_rs::snapshot::Scope::default();
-    match bazel_rs::snapshot::Mode::from_env() {
+    // `fetch` neither looks up nor saves an analysis snapshot: it must
+    // materialize the repositories (a hit would skip them).
+    let snapshot_mode = if fetch_mode.is_some() {
+        bazel_rs::snapshot::Mode::Off
+    } else {
+        bazel_rs::snapshot::Mode::from_env()
+    };
+    match snapshot_mode {
         bazel_rs::snapshot::Mode::Record => {
             snapshot.record = bazel_rs::snapshot::record::start(
                 &command,
@@ -697,6 +786,9 @@ fn run() -> Result<(), String> {
         session: _lockfile_writer.0.clone(),
         repositories: repositories.clone(),
     };
+    if fetch_mode == Some(FetchMode::Repositories) {
+        return fetch_repositories(&repositories, &fetch, &lockfile_gate);
+    }
     // --embed_label is validated by its converter before anything runs
     // (WorkspaceStatusAction.OneLineStringConverter :216-233).
     bazel_rs::workspace_status::validate_embed_label(&workspace_status.embed_label)?;
@@ -1058,16 +1150,7 @@ fn info_command(
     // The cache of `run` (crate::worktree: a linked git worktree's default
     // is its main checkout's) and the workspace's state directory in it, the
     // output base (docs/WORKTREES.md); read only, nothing is created.
-    let cache = line
-        .cache_dir
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| bazel_rs::worktree::detect(&root).default_cache());
-    let cache = if cache.is_absolute() {
-        cache
-    } else {
-        cwd.join(cache)
-    };
+    let cache = command_cache(line, cwd, &root);
     let output_base = bazel_rs::worktree::state_directory_for(&cache, &root);
     let context = bazel_rs::info::Context {
         workspace: root,
@@ -1163,7 +1246,10 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         }
     };
     let non_empty_targets = summary.non_empty_targets;
-    for (label, output) in &summary.outputs {
+    // `fetch TARGET...` (TargetFetcher): a no-build build that reports only
+    // that the repositories are fetched.
+    let fetch = FETCH_TARGETS.load(std::sync::atomic::Ordering::Relaxed);
+    for (label, output) in summary.outputs.iter().filter(|_| !fetch) {
         // `run` reports its built targets on stderr (its stdout is the
         // program's).
         if run {
@@ -1190,7 +1276,7 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
             .iter()
             .filter(|(_, _, artifacts)| !artifacts.is_empty())
             .count();
-        if non_empty_targets + non_empty_aspects <= show_result {
+        if !fetch && non_empty_targets + non_empty_aspects <= show_result {
             for (aspect, label, artifacts) in &summary.aspects {
                 // outputAspects (:312-332): an aspect line is printed only
                 // when the aspect has artifacts in a requested, reportable
@@ -1204,7 +1290,9 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
             }
         }
     }
-    if remote_enabled {
+    if fetch {
+        // No native summary: fetch reports the fetched repositories only.
+    } else if remote_enabled {
         bazel_rs::note!(
             "bazel-rs: {} actions executed, {} cache hits, {} remote cache hits (experimental local execution; {})",
             summary.executed,
@@ -1247,6 +1335,12 @@ fn build_tail(planned: Planned, tail: BuildTail<'_>) -> Result<(), String> {
         write_lockfile();
         bazel_rs::digest_memo::finish();
         exit(1);
+    }
+    if fetch {
+        write_lockfile();
+        eprintln!(
+            "INFO: All external dependencies for the requested targets fetched successfully."
+        );
     }
     Ok(())
 }
@@ -3742,6 +3836,442 @@ fn warn(warning: &str) {
     bazel_rs::note!("WARNING: {}", located(warning));
 }
 
+/// FetchCommand's own options (FetchOptions, PackageOptions.fetch).
+#[derive(Debug)]
+struct FetchOptions {
+    all: bool,
+    configure: bool,
+    repos: Vec<String>,
+    force: bool,
+    /// `--[no]fetch` (PackageOptions): fetch refuses `--nofetch`.
+    fetch: bool,
+}
+
+impl Default for FetchOptions {
+    fn default() -> Self {
+        Self {
+            all: false,
+            configure: false,
+            repos: Vec::new(),
+            force: false,
+            fetch: true,
+        }
+    }
+}
+
+impl FetchOptions {
+    /// One fetch option: `Some(used_next)` when it is one.
+    fn parse(&mut self, arg: &str, next: Option<&str>) -> Result<Option<bool>, String> {
+        for (name, slot) in [
+            ("all", &mut self.all),
+            ("configure", &mut self.configure),
+            ("force", &mut self.force),
+            ("fetch", &mut self.fetch),
+        ] {
+            if let Some(value) = bazel_rs::configuration::boolean_option(arg, name) {
+                *slot = value?;
+                return Ok(Some(false));
+            }
+        }
+        if arg == "--repo" {
+            let value = next.ok_or("Expected value after --repo")?;
+            self.repos.push(value.to_owned());
+            return Ok(Some(true));
+        }
+        if let Some(value) = arg.strip_prefix("--repo=") {
+            self.repos.push(value.to_owned());
+            return Ok(Some(false));
+        }
+        Ok(None)
+    }
+}
+
+/// What `fetch` fetches (FetchCommand.exec).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FetchMode {
+    /// Target patterns: `build --nobuild` (TargetFetcher.fetchTargets).
+    Targets,
+    /// `--repo`, `--all`/no argument, `--configure`.
+    Repositories,
+}
+
+/// This command is `fetch TARGET...` (a `build --nobuild` that reports
+/// fetching only; a failure is `Fetching some target dependencies failed
+/// with errors: ...`, exit 2).
+static FETCH_TARGETS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One option unit of a pipeline command: `fetch`'s own options first,
+/// then the native options (of `test` for `fetch`, which inherits them).
+fn parse_command_option(
+    native: &mut NativeOptions,
+    fetch: &mut FetchOptions,
+    command: &str,
+    unit: &bazelrc::Unit,
+) -> Result<(), String> {
+    if command == "fetch" {
+        let arg = unit.option.text.as_str();
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        if let Some(used) = fetch.parse(arg, next)? {
+            if let (Some(value), false) = (next, used) {
+                return Err(format!(
+                    "internal error: {arg} took the separate value {value:?} but its native parser did not consume it"
+                ));
+            }
+            return Ok(());
+        }
+        return native.parse("test", unit);
+    }
+    native.parse(command, unit)
+}
+
+/// An `ERROR: message` failure with Bazel's exit code (the digest memo
+/// saved first, like every exit).
+fn fail_with(code: i32, message: &str) -> ! {
+    eprintln!("ERROR: {message}");
+    bazel_rs::digest_memo::finish();
+    exit(code);
+}
+
+/// `fetch --repo=...`, `fetch --all` and `fetch --configure`
+/// (FetchCommand.fetchRepos/fetchAll, docs/COMMANDS.md): the repositories
+/// materialized exactly as a build demands them (warm publications reused
+/// unless `--force`). Failures exit 8 like Bazel (an interrupted-class
+/// detailed exit code).
+fn fetch_repositories(
+    repositories: &bazel_rs::repository::RepositorySet,
+    fetch: &FetchOptions,
+    lockfile_gate: &LockfileGate,
+) -> Result<(), String> {
+    if !fetch.repos.is_empty() {
+        // RepositoryFetcher.collectRepositoryNames: every name first.
+        let mut names = Vec::new();
+        for repo in &fetch.repos {
+            match repositories.fetch_repository_name(repo) {
+                Ok(name) => names.push(name),
+                Err(detail) => fail_with(8, &format!("Invalid repo name: {detail}")),
+            }
+        }
+        let mut failures = Vec::new();
+        for name in names {
+            let canonical = match name {
+                Ok(canonical) => canonical,
+                Err(failure) => {
+                    failures.push(failure);
+                    continue;
+                }
+            };
+            match repositories.repository_defined(&canonical) {
+                Ok(true) if canonical.is_empty() => {}
+                Ok(true) => {
+                    if let Err(error) = repositories.root(&canonical) {
+                        fail_with(8, &error);
+                    }
+                }
+                Ok(false) => failures.push(format!("Repository '@@{canonical}' is not defined")),
+                Err(error) => fail_with(8, &error),
+            }
+        }
+        if !failures.is_empty() {
+            fail_with(
+                8,
+                &format!(
+                    "Fetching some repos failed with errors: {}",
+                    failures.join("; ")
+                ),
+            );
+        }
+        lockfile_gate.open();
+        write_lockfile();
+        eprintln!("INFO: All requested repos fetched successfully.");
+        return Ok(());
+    }
+    let names = match repositories.all_repository_names(fetch.configure) {
+        Ok(names) => names,
+        Err(error) => fail_with(8, &error),
+    };
+    for name in &names {
+        if let Err(error) = repositories.root(name) {
+            fail_with(8, &error);
+        }
+    }
+    lockfile_gate.open();
+    write_lockfile();
+    eprintln!("INFO: All external dependencies fetched successfully.");
+    Ok(())
+}
+
+/// The output base lock of this process (bazel_rs::output_base), held
+/// until the process exits.
+static OUTPUT_BASE_LOCK: std::sync::OnceLock<bazel_rs::output_base::Lock> =
+    std::sync::OnceLock::new();
+
+/// Hold the output base lock of `root`'s state directory in `cache`
+/// shared for the rest of the process. Best effort: a state directory
+/// that cannot hold a lock file (a read-only cache) runs unlocked.
+fn hold_output_base_lock(cache: &Path, root: &Path, command: &str) {
+    let state = bazel_rs::worktree::state_directory_for(cache, root);
+    if let Ok(lock) = bazel_rs::output_base::acquire(
+        &state,
+        bazel_rs::output_base::LockMode::Shared,
+        command,
+        true,
+        &mut |line| eprintln!("{line}"),
+    ) {
+        let _ = OUTPUT_BASE_LOCK.set(lock);
+    }
+}
+
+/// The cache of a command that does not run the pipeline (`info`,
+/// `clean`): `--cache-dir`, else the workspace's default (crate::worktree).
+fn command_cache(line: &bazelrc::CommandLine, cwd: &Path, root: &Path) -> PathBuf {
+    let cache = line
+        .cache_dir
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bazel_rs::worktree::detect(root).default_cache());
+    if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    }
+}
+
+/// `bazel-rs clean [--expunge] [--async]` (CleanCommand, docs/COMMANDS.md):
+/// the workspace's output tree and per-workspace state, or with
+/// `--expunge` its whole state directory (the native output base); the
+/// shared store is never touched. Inherits the build options.
+fn clean_command(
+    line: &bazelrc::CommandLine,
+    options: &bazelrc::Expanded,
+    cwd: &Path,
+    root: PathBuf,
+) -> Result<(), String> {
+    fn parse(
+        native: &mut NativeOptions,
+        clean: &mut bazel_rs::output_base::CleanOptions,
+        unit: &bazelrc::Unit,
+    ) -> Result<(), String> {
+        let arg = unit.option.text.as_str();
+        for (name, slot) in [
+            ("expunge", &mut clean.expunge),
+            ("async", &mut clean.asynchronous),
+        ] {
+            if let Some(value) = bazel_rs::configuration::boolean_option(arg, name) {
+                *slot = value?;
+                return Ok(());
+            }
+        }
+        // --expunge_async expands to --expunge --async.
+        if arg == "--expunge_async" {
+            clean.expunge = true;
+            clean.asynchronous = true;
+            return Ok(());
+        }
+        native.parse("build", unit)
+    }
+    for (step, position) in &options.steps {
+        let result = match step {
+            bazelrc::Step::Fail(error) => Err(error.clone()),
+            bazelrc::Step::Unit(unit) => parse(
+                &mut NativeOptions::new("build"),
+                &mut Default::default(),
+                unit,
+            ),
+        };
+        if let Err(error) = result {
+            return Err(early_exit(options, &error, *position));
+        }
+    }
+    let mut native = NativeOptions::new("build");
+    let mut clean = bazel_rs::output_base::CleanOptions::default();
+    for unit in &options.priority {
+        parse(&mut native, &mut clean, unit)?;
+    }
+    announce(options);
+    // CleanCommand.exec: residue (Starlark options aside) is an error,
+    // ARGUMENTS_NOT_RECOGNIZED (exit 2).
+    if !options.residue.is_empty() {
+        let residue: Vec<&str> = options
+            .residue
+            .iter()
+            .map(|arg| arg.text.as_str())
+            .collect();
+        fail_with(2, &format!("Unrecognized arguments: {}", residue.join(" ")));
+    }
+    // canUseAsync.
+    eprintln!(
+        "INFO: {}",
+        if clean.asynchronous {
+            "Starting clean."
+        } else {
+            "Starting clean (this may take a while). Use --async if the clean takes more than several minutes."
+        }
+    );
+    // Like every Bazel command, clean has an output base (it creates the
+    // state directory if needed, to hold its lock).
+    let cache = command_cache(line, cwd, &root);
+    let state = bazel_rs::worktree::state_directory_for(&cache, &root);
+    let lock = match bazel_rs::output_base::acquire(
+        &state,
+        bazel_rs::output_base::LockMode::Exclusive,
+        "clean",
+        true,
+        &mut |line| eprintln!("{line}"),
+    ) {
+        Ok(lock) => lock,
+        Err(bazel_rs::output_base::LockError::Io(error)) => fail_with(36, &error),
+        Err(bazel_rs::output_base::LockError::Held) => fail_with(
+            9,
+            "Exiting because the output base lock is held and --noblock_for_lock was given.",
+        ),
+    };
+    let result = bazel_rs::output_base::clean(&state, clean, &mut |line| eprintln!("INFO: {line}"));
+    drop(lock);
+    if let Err(error) = result {
+        fail_with(error.exit_code, &error.message);
+    }
+    Ok(())
+}
+
+/// `bazel-rs shutdown [--iff_heap_size_greater_than=N]` (ShutdownCommand):
+/// bazel-rs has no server, so there is nothing to stop — exit 0 and print
+/// nothing, like genuine Bazel when no server runs. The options are
+/// validated like Bazel (mustRunInWorkspace = false, allowResidue = false).
+fn shutdown_command(line: &bazelrc::CommandLine, path_to_binary: &str) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let root = workspace::workspace_root(&cwd).unwrap_or_default();
+    let options = evaluate_rc(line, "shutdown", &cwd, &root, path_to_binary)?;
+    for (step, position) in &options.steps {
+        let unit = match step {
+            bazelrc::Step::Fail(error) => return Err(early_exit(&options, error, *position)),
+            bazelrc::Step::Unit(unit) => unit,
+        };
+        let arg = unit.option.text.as_str();
+        let value = if arg == "--iff_heap_size_greater_than" {
+            unit.value.as_ref().map(|value| value.text.as_str())
+        } else {
+            arg.strip_prefix("--iff_heap_size_greater_than=")
+        };
+        if let Some(value) = value {
+            if value.trim().parse::<i32>().is_err() {
+                fail_with(
+                    2,
+                    &format!(
+                        "While parsing option --iff_heap_size_greater_than={value}: '{value}' is not an int"
+                    ),
+                );
+            }
+            continue;
+        }
+        // rc `common` lines apply to every command; shutdown has no other
+        // option that changes anything. The UI options (`--curses`,
+        // `--color`, ...) are common options of every command: validated,
+        // without effect (shutdown shows no progress display).
+        if unit.option.from_rc() {
+            continue;
+        }
+        let next = unit.value.as_ref().map(|value| value.text.as_str());
+        match bazel_rs::progress::UiOptions::default().parse(arg, next) {
+            Some(Ok(_)) => continue,
+            Some(Err(error)) => fail_with(2, &error),
+            None => {}
+        }
+        fail_with(2, &format!("{arg} :: Unrecognized option: {arg}"));
+    }
+    announce(&options);
+    if !options.residue.is_empty() {
+        let residue: Vec<&str> = options
+            .residue
+            .iter()
+            .map(|arg| arg.text.as_str())
+            .collect();
+        fail_with(2, &format!("Unrecognized arguments: {}", residue.join(" ")));
+    }
+    Ok(())
+}
+
+/// The commands `help` lists: name, summary (HelpCommand's short
+/// descriptions), native notes.
+const COMMAND_HELP: &[(&str, &str, &str)] = &[
+    (
+        "build",
+        "Builds the specified targets.",
+        "Local execution with the shared action cache; docs/INFO.md for the output tree.",
+    ),
+    (
+        "clean",
+        "Removes output files and optionally stops the server.",
+        "Deletes this workspace's output tree and state (snapshots, test index, execroot) below <cache>/worktrees/<name>-<hash>/, keeping the hidden lockfile; --expunge deletes that directory; the shared repositories, action cache and test results stay; --async and --expunge_async move first, then delete in the foreground (docs/COMMANDS.md).",
+    ),
+    (
+        "fetch",
+        "Fetches external repositories that are prerequisites to the targets.",
+        "fetch TARGET... (build --nobuild), --repo=@apparent|@@canonical (repeatable), --all (the default), --configure, --force (docs/COMMANDS.md).",
+    ),
+    (
+        "help",
+        "Prints help for commands, or the index.",
+        "help [COMMAND].",
+    ),
+    (
+        "info",
+        "Displays runtime info about the bazel server.",
+        "Bazel 9.3 items mapped to the native layout (docs/INFO.md).",
+    ),
+    (
+        "mod",
+        "Queries the Bzlmod external dependency graph",
+        "mod graph --output=json only.",
+    ),
+    (
+        "query",
+        "Executes a dependency graph query.",
+        "The Bazel 9.3 query language (docs/QUERY.md).",
+    ),
+    (
+        "run",
+        "Runs the specified target.",
+        "One executable or test target (docs/RUNFILES_TREES.md).",
+    ),
+    (
+        "shutdown",
+        "Stops the bazel server.",
+        "bazel-rs has no server: accepts --iff_heap_size_greater_than and does nothing.",
+    ),
+    (
+        "test",
+        "Builds and runs the specified test targets.",
+        "Local TestRunnerAction semantics (docs/TEST_COMMAND.md).",
+    ),
+    (
+        "vendor",
+        "Fetches external repositories into a folder specified by the flag --vendor_dir.",
+        "Not implemented natively (fails explicitly).",
+    ),
+    (
+        "version",
+        "Prints version information for bazel.",
+        "The bazel-rs version and its compatibility target.",
+    ),
+];
+
+/// `bazel-rs help [COMMAND]` (minimal: no option listings).
+fn help_command(rest: &[String]) -> Result<(), String> {
+    let [topic] = rest else {
+        return Err("help takes at most one command name".to_owned());
+    };
+    let Some((name, summary, notes)) = COMMAND_HELP.iter().find(|(name, ..)| name == topic) else {
+        let mut message = format!("'{topic}' is not a known command. Available commands:\n");
+        for (name, summary, _) in COMMAND_HELP {
+            message.push_str(&format!("  {name:<10}  {summary}\n"));
+        }
+        eprint!("{message}");
+        std::process::exit(2);
+    };
+    println!("Usage: bazel-rs {name} <options> ...\n\n{summary}\n\nNative profile: {notes}");
+    Ok(())
+}
+
 fn main() {
     // The process-wrapper (crate::process_wrapper): the executor starts this
     // binary with the hidden `__process-wrapper` subcommand where Bazel
@@ -3780,6 +4310,11 @@ fn main() {
         // the hit trusted heals (crate::snapshot::hit).
         bazel_rs::snapshot::hit::heal_after_failure(Some(&error));
         let error = located(&error);
+        // FetchCommand.fetchTarget: QUERY_EVALUATION_ERROR, exit 2.
+        if FETCH_TARGETS.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("ERROR: Fetching some target dependencies failed with errors: {error}");
+            exit(2);
+        }
         eprintln!("bazel-rs: {error}");
         // A sandbox setup failure is an environmental failure of the
         // strategy (Bazel's EnvironmentalExecException class): exit code 36.

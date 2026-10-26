@@ -54,6 +54,12 @@ of its canonical path, hex), whatever chose the cache:
 | `MODULE.bazel.lock` — the hidden lockfile (docs/REGISTRY_LOCKFILE.md) | Bazel's `<output_base>/MODULE.bazel.lock`; seeded from the main checkout's |
 | `execroot/_main/` — the output tree (docs/INFO.md) | `bazel-rs info bazel-bin`, `execution_root`, `output_path`, `bazel-testlogs` name the workspace's own builds: another worktree's build of another commit never relinks them (the linked outputs themselves are the shared action cache's) |
 
+`bazel-rs clean` deletes the workspace's own state except the hidden
+lockfile, `clean --expunge` its whole state directory; neither touches the
+shared store or another workspace's state, and every command of the
+workspace holds the output base lock `<state>/lock` shared while `clean`
+holds it exclusive (docs/COMMANDS.md).
+
 `bazel-rs info output_base` is the state directory — like Bazel's
 `<output_user_root>/<md5 of the workspace>`, one per workspace — while the
 store is shared like Bazel's output user root (`info repository_cache` is

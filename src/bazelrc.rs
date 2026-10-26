@@ -206,6 +206,11 @@ fn unary_option<'a>(arg: &'a str, next: Option<&'a str>, key: &str) -> Option<&'
     }
 }
 
+/// Whether `name` is a Bazel 9.3 command (BlazeRuntime.getCommandMap).
+pub fn is_bazel_command(name: &str) -> bool {
+    COMMANDS.contains(&name)
+}
+
 /// SearchNullaryOption (blaze_util.cc:116-132); `--name=value` was already
 /// rejected by [`split_command_line`].
 pub fn search_nullary(args: &[String], name: &str, default: bool) -> bool {
@@ -1806,11 +1811,13 @@ pub fn expand(
     // getCommandNamesToParse (:607-621): build/query/mod inherit nothing;
     // `run` inherits `build` (RunCommand @Command inheritsOptionsFrom).
     // `test` inherits `build` too (TestCommand @Command inheritsOptionsFrom),
-    // and so does `info` (InfoCommand @Command inheritsOptionsFrom).
-    let groups: Vec<&str> = if command == "run" || command == "test" || command == "info" {
-        vec!["always", "common", "build", command]
-    } else {
-        vec!["always", "common", command]
+    // and so do `info` and `clean` (InfoCommand, CleanCommand @Command
+    // inheritsOptionsFrom); `fetch` inherits `test` (FetchCommand), which
+    // inherits `build`.
+    let groups: Vec<&str> = match command {
+        "run" | "test" | "info" | "clean" => vec!["always", "common", "build", command],
+        "fetch" => vec!["always", "common", "build", "test", command],
+        _ => vec!["always", "common", command],
     };
     let mut items: Vec<Item> = Vec::new();
     // parseRcOptions (:199-251).

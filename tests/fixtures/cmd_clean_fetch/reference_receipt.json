@@ -1,0 +1,562 @@
+{
+ "about": "Genuine Bazel 9.3.0 shutdown/clean/fetch captures (tests/fixtures/cmd_clean_fetch/capture.py, docs/COMMANDS.md): --batch --ignore_all_rc_files --output_user_root=<private>, env -i PATH=/usr/bin:/bin HOME=<private>; the cases run in order against one output base. `stderr` keeps the lines matching KEPT, `stderr_full` everything but the JVM warning; <OUTPUT_BASE> is the output base (native: the workspace's state directory); `output_exists` = <OUTPUT_BASE>/execroot/_main/bazel-out/k8-fastbuild/bin/pkg/g.txt after the case; `downloads` = HTTP requests for the archive.",
+ "genuine_sha256": "d302d22ed77ee5658b87857249baa579db84300ecebe0a1e9a357b5b20f80eb8",
+ "kept_stderr": "^(ERROR: |INFO: All |INFO: Starting clean|INFO: Output |Command ')",
+ "module": "module(name = \"scratch\")\nhttp_archive = use_repo_rule(\"@bazel_tools//tools/build_defs/repo:http.bzl\", \"http_archive\")\nhttp_archive(name = \"remote\", urls = [\"http://127.0.0.1:{PORT}/remote.tar.gz\"], sha256 = \"6322c0df89f30a6feb0ff9aae3fe3bc709fc3be945cea1be7fc3e5858126ec58\", strip_prefix = \"remote-1\")\n",
+ "build": "genrule(name = \"g\", srcs = [\"@remote//:data.txt\"], outs = [\"g.txt\"], cmd = \"cp $< $@\")\n",
+ "archive_sha256": "6322c0df89f30a6feb0ff9aae3fe3bc709fc3be945cea1be7fc3e5858126ec58",
+ "cases": [
+  {
+   "name": "shutdown",
+   "args": [
+    "shutdown"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "Extracting Bazel installation...",
+    "WARNING: Running command \"shutdown\" in batch mode.  Batch mode is triggered",
+    "when not running Bazel within a workspace. If you intend to shutdown an",
+    "existing Bazel server, run \"bazel shutdown\" from the directory where",
+    "it was started."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "shutdown_iff",
+   "args": [
+    "shutdown",
+    "--iff_heap_size_greater_than=10"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "WARNING: Running command \"shutdown\" in batch mode.  Batch mode is triggered",
+    "when not running Bazel within a workspace. If you intend to shutdown an",
+    "existing Bazel server, run \"bazel shutdown\" from the directory where",
+    "it was started."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "shutdown_residue",
+   "args": [
+    "shutdown",
+    "x"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "stderr_full": [
+    "WARNING: Running command \"shutdown\" in batch mode.  Batch mode is triggered",
+    "when not running Bazel within a workspace. If you intend to shutdown an",
+    "existing Bazel server, run \"bazel shutdown\" from the directory where",
+    "it was started.",
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "shutdown_unknown_option",
+   "args": [
+    "shutdown",
+    "--foo"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: --foo :: Unrecognized option: --foo"
+   ],
+   "stderr_full": [
+    "WARNING: Running command \"shutdown\" in batch mode.  Batch mode is triggered",
+    "when not running Bazel within a workspace. If you intend to shutdown an",
+    "existing Bazel server, run \"bazel shutdown\" from the directory where",
+    "it was started.",
+    "ERROR: --foo :: Unrecognized option: --foo"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "sync",
+   "args": [
+    "sync"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "Command 'sync' not found. Try 'bazel help'."
+   ],
+   "stderr_full": [
+    "Command 'sync' not found. Try 'bazel help'."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_targets",
+   "args": [
+    "fetch",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All external dependencies for the requested targets fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Loading: ",
+    "Loading: 0 packages loaded",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "INFO: Analyzed target //pkg:g (7 packages loaded, 9 targets configured).",
+    "INFO: Found 1 target...",
+    "INFO: Elapsed time: 7.885s, Critical Path: 0.00s",
+    "INFO: 0 processes.",
+    "INFO: Build completed successfully, 0 total actions",
+    "INFO: All external dependencies for the requested targets fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 1
+  },
+  {
+   "name": "fetch_repo",
+   "args": [
+    "fetch",
+    "--repo=@remote"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All requested repos fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "INFO: All requested repos fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_canonical",
+   "args": [
+    "fetch",
+    "--repo=@@+http_archive+remote"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All requested repos fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "INFO: All requested repos fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_two",
+   "args": [
+    "fetch",
+    "--repo=@remote",
+    "--repo=@bazel_tools"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All requested repos fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "INFO: All requested repos fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_not_visible",
+   "args": [
+    "fetch",
+    "--repo=@nope"
+   ],
+   "exit": 8,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_invalid",
+   "args": [
+    "fetch",
+    "--repo=remote"
+   ],
+   "exit": 8,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Invalid repo name: The repo value has to be either apparent '@repo' or canonical '@@repo' repo name"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: Invalid repo name: The repo value has to be either apparent '@repo' or canonical '@@repo' repo name"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_undefined",
+   "args": [
+    "fetch",
+    "--repo=@@nope+"
+   ],
+   "exit": 8,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Fetching some repos failed with errors: Repository '@@nope+' is not defined"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: Fetching some repos failed with errors: Repository '@@nope+' is not defined"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_repo_failures",
+   "args": [
+    "fetch",
+    "--repo=@nope",
+    "--repo=@@nope+"
+   ],
+   "exit": 8,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository; Repository '@@nope+' is not defined"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: Fetching some repos failed with errors: No repository visible as '@nope' from main repository; Repository '@@nope+' is not defined"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_force",
+   "args": [
+    "fetch",
+    "--force",
+    "--repo=@remote"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All requested repos fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "INFO: All requested repos fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_conflict",
+   "args": [
+    "fetch",
+    "--all",
+    "//pkg:g"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Only one fetch option can be provided for fetch command"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: Only one fetch option can be provided for fetch command"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_nofetch",
+   "args": [
+    "fetch",
+    "--nofetch"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: You cannot run fetch with --nofetch"
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "ERROR: You cannot run fetch with --nofetch"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_configure",
+   "args": [
+    "fetch",
+    "--configure"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: All external dependencies fetched successfully."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "Computing main repo mapping: ",
+    "INFO: All external dependencies fetched successfully."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "fetch_missing_package",
+   "args": [
+    "fetch",
+    "//nope:x"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Fetching some target dependencies failed with errors: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package."
+   ],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Loading: ",
+    "Loading: 0 packages loaded",
+    "WARNING: Target pattern parsing failed.",
+    "ERROR: Skipping '//nope:x': no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    " - nope",
+    "ERROR: no such package 'nope': BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    " - nope",
+    "INFO: Elapsed time: 0.788s",
+    "INFO: 0 processes.",
+    "ERROR: Build did NOT complete successfully",
+    "ERROR: Fetching some target dependencies failed with errors: BUILD file not found in any of the following directories. Add a BUILD file to a directory to mark it as a package.",
+    " - nope"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "build",
+   "args": [
+    "build",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Loading: ",
+    "Loading: 0 packages loaded",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "",
+    "INFO: Analyzed target //pkg:g (7 packages loaded, 9 targets configured).",
+    "INFO: Found 1 target...",
+    "Target //pkg:g up-to-date:",
+    "  bazel-bin/pkg/g.txt",
+    "INFO: Elapsed time: 1.521s, Critical Path: 0.03s",
+    "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
+    "INFO: Build completed successfully, 2 total actions"
+   ],
+   "output_exists": true,
+   "downloads": 0
+  },
+  {
+   "name": "clean",
+   "args": [
+    "clean"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: Starting clean (this may take a while). Use --async if the clean takes more than several minutes."
+   ],
+   "stderr_full": [
+    "INFO: Starting clean (this may take a while). Use --async if the clean takes more than several minutes."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "clean_residue",
+   "args": [
+    "clean",
+    "x"
+   ],
+   "exit": 2,
+   "stdout": "",
+   "stderr": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "stderr_full": [
+    "ERROR: Unrecognized arguments: x"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "clean_async",
+   "args": [
+    "clean",
+    "--async"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: Starting clean.",
+    "INFO: Output tree moved to <OUTPUT_BASE>/execroot_tmp_<PID>_<UUID> for deletion"
+   ],
+   "stderr_full": [
+    "INFO: Starting clean.",
+    "INFO: Output tree moved to <OUTPUT_BASE>/execroot_tmp_<PID>_<UUID> for deletion"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "build_after_clean",
+   "args": [
+    "build",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Loading: ",
+    "Loading: 0 packages loaded",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "",
+    "INFO: Analyzed target //pkg:g (7 packages loaded, 9 targets configured).",
+    "INFO: Found 1 target...",
+    "Target //pkg:g up-to-date:",
+    "  bazel-bin/pkg/g.txt",
+    "INFO: Elapsed time: 1.585s, Critical Path: 0.03s",
+    "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
+    "INFO: Build completed successfully, 2 total actions"
+   ],
+   "output_exists": true,
+   "downloads": 0
+  },
+  {
+   "name": "clean_expunge",
+   "args": [
+    "clean",
+    "--expunge"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: Starting clean (this may take a while). Use --async if the clean takes more than several minutes."
+   ],
+   "stderr_full": [
+    "INFO: Starting clean (this may take a while). Use --async if the clean takes more than several minutes."
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "clean_expunge_async",
+   "args": [
+    "clean",
+    "--expunge_async"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: Starting clean.",
+    "INFO: Output base moved to <OUTPUT_BASE>_tmp_<PID>_<UUID> for deletion"
+   ],
+   "stderr_full": [
+    "INFO: Starting clean.",
+    "INFO: Output base moved to <OUTPUT_BASE>_tmp_<PID>_<UUID> for deletion"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  },
+  {
+   "name": "build_after_expunge",
+   "args": [
+    "build",
+    "//pkg:g"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [],
+   "stderr_full": [
+    "Computing main repo mapping: ",
+    "Loading: ",
+    "Loading: 0 packages loaded",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "Analyzing: target //pkg:g (5 packages loaded, 6 targets configured)",
+    "",
+    "INFO: Analyzed target //pkg:g (7 packages loaded, 9 targets configured).",
+    "INFO: Found 1 target...",
+    "Target //pkg:g up-to-date:",
+    "  bazel-bin/pkg/g.txt",
+    "INFO: Elapsed time: 1.473s, Critical Path: 0.03s",
+    "INFO: 2 processes: 1 internal, 1 processwrapper-sandbox.",
+    "INFO: Build completed successfully, 2 total actions"
+   ],
+   "output_exists": true,
+   "downloads": 0
+  },
+  {
+   "name": "clean_expunge_and_async",
+   "args": [
+    "clean",
+    "--expunge",
+    "--async"
+   ],
+   "exit": 0,
+   "stdout": "",
+   "stderr": [
+    "INFO: Starting clean.",
+    "INFO: Output base moved to <OUTPUT_BASE>_tmp_<PID>_<UUID> for deletion"
+   ],
+   "stderr_full": [
+    "INFO: Starting clean.",
+    "INFO: Output base moved to <OUTPUT_BASE>_tmp_<PID>_<UUID> for deletion"
+   ],
+   "output_exists": false,
+   "downloads": 0
+  }
+ ]
+}
