@@ -3675,6 +3675,7 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let _ = this;
+        let _span = crate::timeline::span("extract", || format!("{archive}"));
         let context = context(eval)?;
         let strip_prefix = renamed_strip_prefix("extract", strip_prefix, stripPrefix)?;
         validate_stripping("extract", strip_prefix, strip_components)?;
@@ -3738,6 +3739,9 @@ pub(crate) fn base_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let _ = this;
+        let _span = crate::timeline::span("download_and_extract", || {
+            format!("{url}").chars().take(200).collect()
+        });
         let context = context(eval)?;
         let strip_prefix = renamed_strip_prefix("download_and_extract", strip_prefix, stripPrefix)?;
         validate_stripping("download_and_extract", strip_prefix, strip_components)?;

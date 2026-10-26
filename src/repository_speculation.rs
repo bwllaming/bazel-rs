@@ -42,12 +42,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-/// At most this many repositories execute speculatively at once: genuine
-/// Bazel bounds parallel downloads by `--http_max_parallel_downloads`
-/// (default 8, CommonCommandOptions.java), and downloading and extracting
-/// is most of what a repository rule does. The pool is also bounded by
-/// `--loading_phase_threads` (the prefetcher's width).
-pub(crate) const MAX_WORKERS: usize = 8;
+/// At most this many repositories execute speculatively at once (also at
+/// most `--loading_phase_threads`, the prefetcher's width). Genuine Bazel
+/// fetches as many repositories at once as Skyframe evaluates (up to
+/// `--loading_phase_threads`) and bounds only their HTTP transfers, by
+/// `--http_max_parallel_downloads` (default 8): the transfers share
+/// crate::extension_download's permits, while extraction and `execute()`
+/// (a wheel's installer, `go mod download`) run beside them.
+pub(crate) const MAX_WORKERS: usize = 32;
 
 /// The worker stack size (as the loading workers': Starlark evaluation).
 const WORKER_STACK: usize = 16 << 20;

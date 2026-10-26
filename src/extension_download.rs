@@ -706,6 +706,52 @@ pub(crate) fn checksum_mismatch(actual: &Checksum, expected: &Checksum, sri: boo
     )
 }
 
+/// Concurrent transfers of the downloader (`--http_max_parallel_downloads`,
+/// default 8, CommonCommandOptions.java; the option itself is accepted and
+/// ignored): HttpDownloader's process-wide semaphore (java:60-69), held for
+/// one mirror attempt. Repository fetches and module extensions run
+/// concurrently (crate::repository_speculation, non-blocking downloads);
+/// their transfers share these permits.
+pub(crate) const MAX_PARALLEL_DOWNLOADS: usize = 8;
+
+static PERMITS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+/// One of the [`MAX_PARALLEL_DOWNLOADS`] permits, released on drop.
+struct DownloadPermit;
+
+impl DownloadPermit {
+    /// Wait for a permit; `None` once the speculation this thread works for
+    /// is cancelled while waiting.
+    fn acquire() -> Option<Self> {
+        let (taken, freed) = &PERMITS;
+        let mut count = taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *count >= MAX_PARALLEL_DOWNLOADS {
+            if crate::repository_speculation::cancelled() {
+                return None;
+            }
+            count = freed
+                .wait_timeout(count, std::time::Duration::from_millis(50))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        *count += 1;
+        Some(Self)
+    }
+}
+
+impl Drop for DownloadPermit {
+    fn drop(&mut self) {
+        let (taken, freed) = &PERMITS;
+        *taken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
+        freed.notify_one();
+    }
+}
+
 /// A completed streaming download.
 #[derive(Debug)]
 pub(crate) struct Fetched {
@@ -745,6 +791,13 @@ pub(crate) fn fetch_to_file(
     let algorithm = expected.map_or(Algorithm::Sha256, |checksum| checksum.algorithm);
     let mut last = TypedIoError::Completion("no mirror succeeded".into());
     for url in urls {
+        // HttpDownloader.downloadFromUrls (java:184-209): one of
+        // `--http_max_parallel_downloads` permits per mirror attempt.
+        let Some(_permit) = DownloadPermit::acquire() else {
+            return Err(TypedIoError::Completion(
+                crate::repository_speculation::CANCELLED.into(),
+            ));
+        };
         let path = destination(url);
         let mut opened = false;
         let attempt = (|| -> Result<Fetched, OpenFailure> {
@@ -829,6 +882,33 @@ pub(crate) fn trusted_client(pem: &[u8]) -> Client {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// HttpDownloader's semaphore: at most MAX_PARALLEL_DOWNLOADS transfers
+    /// at once, process-wide; a waiting one proceeds when one ends.
+    #[test]
+    fn transfers_share_a_bounded_number_of_permits() {
+        // Other tests transfer concurrently: wait until this one holds all.
+        let held: Vec<DownloadPermit> = (0..MAX_PARALLEL_DOWNLOADS)
+            .map(|_| DownloadPermit::acquire().unwrap())
+            .collect();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let permit = DownloadPermit::acquire();
+            sender.send(()).unwrap();
+            drop(permit);
+        });
+        assert!(
+            receiver
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "a permit beyond the bound was granted"
+        );
+        drop(held);
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a released permit is granted");
+        waiter.join().unwrap();
+    }
     use crate::extension_io::tests::{Server, response};
     use std::cell::RefCell;
     use std::rc::Rc;

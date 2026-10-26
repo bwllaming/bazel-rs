@@ -1537,7 +1537,10 @@ where
     // hashed: a self-referencing repository keeps a mutable slot.
     let mut embedded =
         crate::repository_slots::EmbeddedPaths::new(&canonical_store(cache), stage_key);
-    let (files, encoded_snapshot) = stage_content(&slot, Some(&mut embedded))?;
+    let (files, encoded_snapshot) = {
+        let _span = crate::timeline::span("hash-tree", || stage_key.to_owned());
+        stage_content(&slot, Some(&mut embedded))?
+    };
     let embedded = embedded.finish();
     let class = if embedded.self_referencing {
         crate::repository_slots::SlotClass::SelfReferencing

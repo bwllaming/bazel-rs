@@ -948,8 +948,8 @@ CommonCommandOptions.java). The native engine now does too, in the
 scheduling layer only — who executes which repository when — while what it
 shows stays the sequential engine's.
 
-**Who.** A pool of at most 8 fetch workers (the genuine download bound;
-also at most `--loading_phase_threads`; 16 MiB stacks) lives exactly as
+**Who.** A pool of at most 32 fetch workers (also at most
+`--loading_phase_threads`; 16 MiB stacks; 8 before perf-cold-ext) lives exactly as
 long as the phase-1 prefetcher (`--loading_phase_threads=1` runs no pool
 and is the sequential engine; `BAZEL_RS_DEBUG_NO_SPECULATION` switches the
 pool off alone; never for a pinned set).
@@ -1023,6 +1023,15 @@ when it still names that publication): the next invocation executes the
 rule — and prints — again. Ctrl-C ends the process as before (the store is
 crash-safe; `execute()` children run in their own process group, as on the
 sequential path).
+
+**Downloads.** Like HttpDownloader's semaphore (java:60-69, 184-209), every
+mirror attempt of the downloader holds one of 8 process-wide permits
+(`--http_max_parallel_downloads`' default; the option is accepted and
+ignored), so the fetch workers' transfers — and module extensions'
+non-blocking downloads (docs/MODULE_EXTENSIONS.md) — never exceed it, while
+their extraction and `execute()` calls (a wheel's installer) run beside them.
+Measured (cold `build --nobuild //src/python:bworker_env`, shared host): the
+284 wheel repositories took ~22 s with 8 workers, ~16 s with 32.
 
 **Intended differences.** Repositories the build needed but did not reach
 because of an earlier failure may be published (as genuine Bazel's
