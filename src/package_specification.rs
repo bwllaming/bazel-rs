@@ -65,6 +65,38 @@ pub(crate) struct GroupContents {
 }
 
 impl GroupContents {
+    pub(crate) fn query_patterns(&self) -> Vec<String> {
+        let render = |spec: &Specification| match spec {
+            Specification::Public => "public".to_owned(),
+            Specification::Private => "private".to_owned(),
+            Specification::Package {
+                repository,
+                package,
+                subtree,
+            } => {
+                let repo = if repository.is_empty() {
+                    String::new()
+                } else {
+                    format!("@@{repository}")
+                };
+                let suffix = if *subtree {
+                    if package.is_empty() { "..." } else { "/..." }
+                } else {
+                    ""
+                };
+                format!("{repo}//{package}{suffix}")
+            }
+        };
+        self.positives
+            .iter()
+            .map(&render)
+            .chain(
+                self.negatives
+                    .iter()
+                    .map(|spec| format!("-{}", render(spec))),
+            )
+            .collect()
+    }
     /// Reserve retained copies in the graph owner's cumulative allocation budget.
     pub(crate) fn charge(&self, budget: &mut HostBudget) -> Result<(), String> {
         budget.node()?;

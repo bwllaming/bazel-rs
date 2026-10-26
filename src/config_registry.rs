@@ -128,6 +128,12 @@ impl Configurations {
         self.top
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (ConfigId, &Configuration)> {
+        self.by_id
+            .iter()
+            .map(|(id, configuration)| (*id, configuration.as_ref()))
+    }
+
     /// The top-level configuration.
     pub fn top_configuration(&self) -> &Arc<Configuration> {
         &self.by_id[&self.top]
@@ -509,7 +515,7 @@ const EXPLICIT_IN_OUTPUT_PATH: &[&str] = &["compilation_mode", "platform_suffix"
 /// The native options in their `//command_line_option:NAME=VALUE` hash form
 /// (hashChosenOptions, OutputPathMnemonicComputer.java:368-410): Java
 /// `toString` of each value, `@null` for null values.
-fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, String> {
+pub(crate) fn native_option_strings(native: &NativeOptions) -> BTreeMap<&'static str, String> {
     let mut options = BTreeMap::new();
     // The typed and the table-driven options (`collect_code_coverage` is a
     // table row read from its typed field).

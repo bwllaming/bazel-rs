@@ -1823,7 +1823,7 @@ pub fn expand(
     // inherits `build`.
     let groups: Vec<&str> = match command {
         "run" | "test" | "info" | "clean" => vec!["always", "common", "build", command],
-        "fetch" => vec!["always", "common", "build", "test", command],
+        "fetch" | "cquery" => vec!["always", "common", "build", "test", command],
         _ => vec!["always", "common", command],
     };
     let mut items: Vec<Item> = Vec::new();

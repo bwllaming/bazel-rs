@@ -1441,6 +1441,7 @@ impl Env<'_> {
         context: &mut Vec<(String, Set)>,
     ) -> Eval<Set> {
         match function {
+            Function::Config => unreachable!("config is only parsed for cquery"),
             // DepsFunction / GraphlessBlazeQueryEnvironment.deps (:250-300).
             Function::Deps => {
                 let from = self.eval(Self::expression_arg(args, 0), context)?;

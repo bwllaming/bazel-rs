@@ -189,6 +189,7 @@ pub enum ArgumentType {
 /// therefore unknown functions here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Function {
+    Config,
     AllPaths,
     Attr,
     BuildFiles,
@@ -229,6 +230,7 @@ impl Function {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Config => "config",
             Self::AllPaths => "allpaths",
             Self::Attr => "attr",
             Self::BuildFiles => "buildfiles",
@@ -258,7 +260,7 @@ impl Function {
     fn mandatory_arguments(self) -> usize {
         match self {
             Self::Attr => 3,
-            Self::Rdeps => 2,
+            Self::Rdeps | Self::Config => 2,
             Self::AllPaths
             | Self::SomePath
             | Self::Filter
@@ -273,6 +275,7 @@ impl Function {
     fn argument_types(self) -> &'static [ArgumentType] {
         use ArgumentType::{Expression as E, Integer as I, Word as W};
         match self {
+            Self::Config => &[E, W],
             Self::AllPaths | Self::SomePath | Self::Visible => &[E, E],
             Self::Attr => &[W, W, E],
             Self::Deps | Self::Some => &[E, I],
@@ -504,13 +507,24 @@ impl fmt::Display for Expr {
 struct Parser {
     tokens: Vec<Token>,
     index: usize,
+    configured: bool,
 }
 
 /// QueryParser.parse (QueryParser.java:68-80).
 pub fn parse(query: &str) -> Result<Expr, SyntaxError> {
+    parse_with_mode(query, false)
+}
+
+/// Cquery adds config(expr, target|null|checksum-prefix) to the language.
+pub fn parse_cquery(query: &str) -> Result<Expr, SyntaxError> {
+    parse_with_mode(query, true)
+}
+
+fn parse_with_mode(query: &str, configured: bool) -> Result<Expr, SyntaxError> {
     let mut parser = Parser {
         tokens: scan(query)?,
         index: 0,
+        configured,
     };
     let expr = parser.expression()?;
     if parser.kind() != TokenKind::Eof {
@@ -609,7 +623,12 @@ impl Parser {
                 if self.kind() != TokenKind::LParen {
                     return validate_target_literal(word).map(Expr::Target);
                 }
-                let Some(function) = Function::lookup(&word) else {
+                let function = if self.configured && word == "config" {
+                    Some(Function::Config)
+                } else {
+                    Function::lookup(&word)
+                };
+                let Some(function) = function else {
                     let mut names = Function::ALL.map(Function::name).to_vec();
                     names.sort_unstable();
                     return Err(SyntaxError(format!(

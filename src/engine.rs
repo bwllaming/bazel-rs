@@ -29,6 +29,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 mod alloc_report;
+pub mod cquery;
 mod keep_going;
 pub mod query;
 mod query_attrs;
@@ -1786,6 +1787,8 @@ pub struct Engine {
     /// state a finished command never reads again is left to the OS
     /// instead of being torn down (`set_skip_teardown`).
     skip_teardown: bool,
+    /// Opt-in configured-query capture. Ordinary builds retain no query graph.
+    cquery_capture: Option<cquery::Capture>,
     /// `.bzl` labels whose buffered top-level print lines the coordinator
     /// already emitted (one emission per evaluated module, review §1.4);
     /// lookups only, never iterated.
@@ -2014,6 +2017,7 @@ impl Engine {
             prefetch_followed: HashSet::new(),
             prefetch_platforms: None,
             skip_teardown: false,
+            cquery_capture: None,
             declared_inputs: HashMap::new(),
             source_targets: HashMap::new(),
             analyzed_sources: HashSet::new(),
@@ -3683,6 +3687,14 @@ impl Engine {
         let configuration = self.configurations.get(config).clone();
         let no_config = configuration.native.no_config;
         active.push(key.clone());
+        if self.cquery_capture.is_some()
+            && let RuleKind::PackageGroup(group) = &rule.kind
+        {
+            for include in &group.includes {
+                self.analyze(include, config, active, configured, plan)?;
+                self.capture_cquery_edge(&key, include.clone(), config, "includes", false, false);
+            }
+        }
         // constraint_setting and constraint_value are analyzed under
         // NoConfigTransition (rules/platform/ConstraintSettingRule.java:42,
         // ConstraintValueRule.java:41): select() in their configurable
@@ -3724,6 +3736,12 @@ impl Engine {
             self.empty_configuration_rules.insert(key.clone());
         }
         let uses_toolchains = uses_toolchain_resolution(&rule) && !in_empty_configuration;
+        if self.cquery_capture.is_some() && uses_toolchains {
+            let platform = configuration.native.target_platform().clone();
+            self.platform_info(&platform, config, configured, plan)
+                .map_err(|e| e.target_text())?;
+            self.capture_cquery_edge(&key, platform, config, "$target_platform", true, false);
+        }
         // The exec groups (ToolchainContextUtil.getUnloadedToolchainContextsInputs,
         // RuleTransitionApplier): before the target platform.
         let (use_auto_exec_groups, processed_groups) =
@@ -3736,6 +3754,19 @@ impl Engine {
         // select() conditions, then toolchain resolution, then dependency
         // resolution (attribute validation, dependencies), then the factory.
         let ordered = self.config_conditions(&rule, config, active, configured, plan)?;
+        if self.cquery_capture.is_some() {
+            for (condition, _) in &ordered {
+                let dependency = self.resolve_rule_src(&rule, condition)?;
+                self.capture_cquery_edge(
+                    &key,
+                    dependency,
+                    config,
+                    "$config_dependencies",
+                    false,
+                    false,
+                );
+            }
+        }
         // Platform compatibility after the target platform and the select()
         // conditions, before toolchain resolution and every other dependency
         // (DependencyContextProducerWithCompatibilityCheck.java:159-189).
@@ -3848,6 +3879,17 @@ impl Engine {
         // transition needs the parent's execution platform, which toolchain
         // resolution chose before any dependency (ExecutionTransitionFactory).
         let edges = self.rule_edges(&rule);
+        // The native genrule embeds this real built-in source in its action
+        // instead of requesting a provider view. Configured querying retains
+        // its source-file dependency when the built-in repository is enabled.
+        if self.cquery_capture.is_some()
+            && matches!(rule.kind, RuleKind::Genrule)
+            && self.repositories.root("bazel_tools").is_ok()
+        {
+            let setup = Label::parse_canonical("@@bazel_tools//tools/genrule:genrule-setup.sh")?;
+            self.analyze(&setup, config, active, configured, plan)?;
+            self.capture_cquery_edge(&key, setup, config, "$genrule_setup", true, false);
+        }
         // ExecutionTransitionFactory.create (analysis/config/ExecutionTransitionFactory.java:76-114):
         // in the no-config (and a platform's empty) configuration
         // CommonOptions.EMPTY_OPTIONS has no Starlark exec transition
@@ -3959,6 +4001,18 @@ impl Engine {
             let src = edge.label;
             let late_bound = late_bound_rule || analysis_dependent.contains(&src);
             let dependency = self.resolve_rule_src(&rule, &src)?;
+            self.capture_cquery_edge(
+                &key,
+                dependency.clone(),
+                dep_config,
+                if forwards(&rule) {
+                    if late_bound_rule { ":alias" } else { "actual" }
+                } else {
+                    &edge.attribute
+                },
+                matches!(edge.cfg, EdgeCfg::Exec(_)),
+                false,
+            );
             // The allowlist Bazel adds to rules with a Starlark transition
             // lives in @bazel_tools, which the explicit-module profile
             // (--experimental-builtin-modules=false) does not provide.
@@ -4101,6 +4155,7 @@ impl Engine {
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(&rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
+                self.capture_cquery_edge(&key, implementation, config, "$toolchains", true, false);
             }
         }
         // Starlark rules: prerequisite errors need the analyzed prerequisites'
@@ -4273,7 +4328,11 @@ impl Engine {
             },
         );
         self.analyze_aspect_edges(&rule, &key, config, active, configured, plan)?;
-        plan.push((key, Arc::new(rule)));
+        let rule = Arc::new(rule);
+        if let Some(capture) = &mut self.cquery_capture {
+            capture.rules.insert(key.clone(), Arc::clone(&rule));
+        }
+        plan.push((key, rule));
         Ok(())
     }
 
@@ -4474,6 +4533,14 @@ impl Engine {
                                 crate::rule_declarations::canonical_form(&base_label)
                             )
                         })?;
+                    self.capture_cquery_edge(
+                        &base_key,
+                        dependency.clone(),
+                        attribute_config,
+                        name,
+                        attribute_config != config,
+                        true,
+                    );
                     let dep_rule = match self.target(&dependency)? {
                         Target::Rule(dep_rule) => dep_rule,
                         Target::Output(generating, _) => generating,
@@ -6241,6 +6308,16 @@ impl Engine {
         let mut flags = Vec::new();
         let mut constraints = Vec::new();
         for (attribute, dependency, value) in keys {
+            if self.cquery_capture.is_some() {
+                self.capture_cquery_edge(
+                    &ConfiguredTargetKey::new(rule.label.clone(), config),
+                    dependency.clone(),
+                    config,
+                    attribute,
+                    false,
+                    false,
+                );
+            }
             let (chain, actual) = self.alias_chain(configured, config, &dependency);
             let is_source = matches!(self.target(&actual)?, Target::Source(_));
             if let Some(error) = self.no_files_error(&chain, &actual)? {
@@ -6341,6 +6418,16 @@ impl Engine {
                 self.target(&dependency)
                     .map_err(|error| self.missing_edge_error(rule, &dependency, error))?;
                 self.analyze(&dependency, config, active, configured, plan)?;
+                if self.cquery_capture.is_some() {
+                    self.capture_cquery_edge(
+                        &ConfiguredTargetKey::new(rule.label.clone(), config),
+                        dependency.clone(),
+                        config,
+                        attribute.name,
+                        false,
+                        false,
+                    );
+                }
                 labels.push(dependency);
             }
             resolved.push(labels);
@@ -10585,6 +10672,15 @@ impl Engine {
             crate::ui::note(&line);
         }
         let analyzed = analyzed?;
+        if self.cquery_capture.is_some() {
+            cquery::register_outputs(
+                &analyzed.declared,
+                base_key.config,
+                state.artifact_index,
+                state.declared,
+            );
+            return Ok(analyzed.providers);
+        }
         // Register the application's declared outputs and actions under the
         // application's own owner, so they never collide with the base
         // target's or another aspect's (AspectKey as ActionLookupKey).
@@ -11634,6 +11730,40 @@ impl Engine {
                 &ignored,
             )?;
         }
+        // Semantic commit is distinct from execution-plan lowering. Cquery
+        // needs providers, file identities and runfiles, but never action keys,
+        // status commands, input digests, runfiles manifests or scheduler nodes.
+        if self.cquery_capture.is_some() {
+            cquery::register_outputs(&analyzed.declared, config, artifact_index, declared);
+            for file in &analyzed.files {
+                if crate::analysis_runtime::is_workspace_status_file(file) {
+                    self.indexed_artifact(
+                        file,
+                        artifact_index,
+                        workspace_status,
+                        nodes,
+                        producers,
+                        client_environment,
+                        status_client_environment,
+                    )?;
+                }
+            }
+            let defaults = analyzed
+                .files
+                .iter()
+                .map(|file| {
+                    artifact_index.get(file).cloned().ok_or_else(|| {
+                        format!(
+                            "{}: DefaultInfo file has no artifact: {}",
+                            rule.label, file.path
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            dry.insert(key.clone(), Arc::new(defaults));
+            runfiles_info.insert(key, Arc::new(analyzed.runfiles));
+            return Ok(());
+        }
         // N63: plan the workspace status system nodes before indexing this
         // target's outputs, so actions consuming bazel-out/{stable,volatile}
         // -status.txt (or a transform_{version,info}_file registration)
@@ -11800,6 +11930,9 @@ impl Engine {
         main_ignored: &IgnoredSubdirectories,
         commit: &mut ActionCommit<'_>,
     ) -> Result<(), String> {
+        if self.cquery_capture.is_some() {
+            return Ok(());
+        }
         let mut groups: Vec<Arc<scheduler::InputGroup>> = Vec::new();
         for tree in runfiles_trees {
             let group = match commit.input_groups.get(&tree.identity()) {
@@ -13179,6 +13312,12 @@ impl Engine {
             report_input_groups(&state.nodes, state.listed_tree_actions);
         }
         crate::perf_mark("plan.phase2_actions_done");
+        if self.cquery_capture.is_some() {
+            // Full provider analysis (including top-level aspects) succeeded.
+            // Nothing below this boundary is part of configured querying.
+            crate::perf_mark("cquery.analysis_done");
+            return Ok((Vec::new(), Vec::new(), Vec::new(), 0));
+        }
         // N63 follow-up (BLOCKER 1): Bazel adds the workspace status
         // artifacts to artifactsToBuild UNCONDITIONALLY on every build
         // that executes (BuildView.createResult :647-650,675), so plan
@@ -15168,6 +15307,16 @@ impl Engine {
         status_client_environment: &std::cell::OnceCell<BTreeMap<String, std::ffi::OsString>>,
         artifact_index: &mut BTreeMap<File, Artifact>,
     ) -> Result<[Artifact; 2], String> {
+        if self.cquery_capture.is_some() {
+            let artifacts = [
+                Artifact::workspace_status("stable-status.txt", None, false),
+                Artifact::workspace_status("volatile-status.txt", None, true),
+            ];
+            for artifact in &artifacts {
+                register_artifact(artifact_index, &artifact.file, artifact);
+            }
+            return Ok(artifacts);
+        }
         if !self.execute_build {
             // --nobuild: no execution phase, no status action. Consumers
             // of the status files still resolve their artifacts below

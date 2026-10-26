@@ -463,7 +463,7 @@ fn millis(duration: Duration) -> String {
 /// command's options and environment; every record must reproduce its
 /// identity, print nothing and still have its published tree. Returns the
 /// number replayed and the replay's wall time.
-fn replay_records(
+pub(crate) fn replay_records(
     tables: Option<crate::snapshot::replay::PinnedTables>,
     inputs: &ReplayInputs,
     records: &[crate::snapshot::replay::ReplayRecord],
@@ -541,7 +541,7 @@ const LOCAL_TREE_THREADS: usize = 4;
 /// and only a failure it caused healed. Stops at the first mismatch (or
 /// when `cancel` is set) unless `explain`, which names every mismatch.
 /// Returns the number of trees checked and the wall time.
-fn check_local_trees(
+pub(crate) fn check_local_trees(
     records: &[crate::snapshot::replay::ReplayRecord],
     cancel: &AtomicBool,
     explain: bool,

@@ -163,7 +163,8 @@ fn run() -> Result<(), String> {
         }
         "help" => return help_command(&rest),
         "shutdown" => return shutdown_command(&line, &path_to_binary),
-        "query" | "build" | "mod" | "run" | "test" | "info" | "clean" | "fetch" | "gc" => {}
+        "query" | "cquery" | "config" | "build" | "mod" | "run" | "test" | "info" | "clean"
+        | "fetch" | "gc" => {}
         "vendor" => {
             return Err(
                 "the vendor command is not implemented in the native profile (Bazel 9.3 `vendor --vendor_dir=DIR` copies the fetched repositories into DIR for later builds to read); `bazel-rs fetch` materializes repositories into the shared repository store"
@@ -197,6 +198,9 @@ fn run() -> Result<(), String> {
             .residue
             .first()
             .is_some_and(|arg| arg.text == "dump_repo_mapping");
+    if command == "config" {
+        return config_command(&line, &options, &cwd, &root);
+    }
     if command == "info" {
         return info_command(&line, &options, &cwd, root);
     }
@@ -230,6 +234,7 @@ fn run() -> Result<(), String> {
     let mut repository_downloads_enabled = true;
     let mut configuration_options = bazel_rs::configuration::CommandLineOptions::default();
     let mut query_options = bazel_rs::engine::query::QueryOptions::default();
+    let mut cquery_options = bazel_rs::engine::cquery::Options::default();
     let mut lockfile_mode = bazel_rs::lockfile::LockfileMode::default();
     let mut lockfile_target = bazel_rs::registry_session::LockfileTarget::Workspace;
     let mut action_dump: Option<PathBuf> = None;
@@ -262,7 +267,7 @@ fn run() -> Result<(), String> {
         // unrecognized options in its first parsing round and reports them
         // when it reparses with the main repository mapping, after the rc
         // notes (OptionsParserImpl.java:811-815, BlazeCommandDispatcher.java:738-755, 1022).
-        let second_round = builds(option_command) && root.join("MODULE.bazel").exists();
+        let second_round = analyzes(option_command) && root.join("MODULE.bazel").exists();
         for (step, position) in &options.steps {
             let result = match step {
                 bazelrc::Step::Fail(error) => Err(error.clone()),
@@ -327,6 +332,7 @@ fn run() -> Result<(), String> {
         repository_downloads_enabled = native.downloads;
         configuration_options = native.configuration;
         query_options = native.query;
+        cquery_options = native.cquery;
         rc_options = native.rc;
         credential_options = native.credentials;
         remote_options = native.remote;
@@ -525,8 +531,13 @@ fn run() -> Result<(), String> {
     // expression. Type 'bazel help query' for syntax and help", ...) are the
     // command's failure detail without an event: exit 2, silent, like
     // genuine Bazel 9.3 (tests/fixtures/query_language, error.no_expression).
-    let rest = if command == "query" {
-        match bazel_rs::engine::query::read_query(&rest, &query_options) {
+    let rest = if command == "query" || command == "cquery" {
+        let query = if command == "cquery" {
+            &cquery_options.common
+        } else {
+            &query_options
+        };
+        match bazel_rs::engine::query::read_query(&rest, query) {
             Some(query) => vec![query],
             None => exit(2),
         }
@@ -560,7 +571,7 @@ fn run() -> Result<(), String> {
     }
     // Bazel reads a workspace-root `platform_mappings` file by default
     // (PlatformOptions.java:172-187); platform mappings are not modelled.
-    if builds(&command) && root.join("platform_mappings").exists() {
+    if analyzes(&command) && root.join("platform_mappings").exists() {
         return Err(format!(
             "platform mappings are not implemented in the native profile (found {})",
             root.join("platform_mappings").display()
@@ -595,6 +606,42 @@ fn run() -> Result<(), String> {
     } else {
         bazel_rs::snapshot::Mode::from_env()
     };
+    let cquery_expression = if command == "cquery" {
+        Some(cquery_options.expression(&rest[0])?)
+    } else {
+        None
+    };
+    let mut cquery_session = None;
+    if let Some(expression) = &cquery_expression {
+        let patterns = cquery_options.universe(expression);
+        let relative = relative_directory(&root, &cwd)?;
+        let allow_yanked = std::env::var("BZLMOD_ALLOW_YANKED_VERSIONS").ok();
+        let started = bazel_rs::cquery_state::start(
+            bazel_rs::snapshot::key::Inputs {
+                command: "cquery",
+                workspace: &root,
+                cache: &cache,
+                cwd: &cwd,
+                relative_directory: &relative,
+                current_package: &current_package,
+                startup: &line.startup_args,
+                options: &options.priority,
+                targets: &patterns,
+                allow_yanked: allow_yanked.as_deref(),
+                full_validation: bazel_rs::repository_store::verify_mode()
+                    == bazel_rs::repository_store::VerifyMode::Full,
+            },
+            bazel_rs::snapshot::hit::ReplayInputs {
+                options: resolver_options.clone(),
+                environment: repository_environment.clone(),
+                downloads_enabled: repository_downloads_enabled,
+            },
+        );
+        cquery_session = started.session;
+        if let Some(graph) = started.hit {
+            return cquery_output(&graph, expression, &cquery_options, &relative, &cache);
+        }
+    }
     match snapshot_mode {
         bazel_rs::snapshot::Mode::Record => {
             snapshot.record = bazel_rs::snapshot::record::start(
@@ -838,8 +885,8 @@ fn run() -> Result<(), String> {
     engine.set_skip_teardown(true);
     engine.set_runfiles_options(runfiles_options);
     engine.set_workspace_status(workspace_status);
-    engine.set_execute_build(!no_build);
-    engine.set_keep_going(test_options.keep_going && builds(&command));
+    engine.set_execute_build(!no_build && command != "cquery");
+    engine.set_keep_going(test_options.keep_going && analyzes(&command));
     // --loading_phase_threads (LoadingPhaseThreadsOption.java, P2 of the
     // parallel-analysis program): both loaders' pattern expansion uses it
     // (Engine::expand_pattern; query resolves patterns through it too).
@@ -866,7 +913,7 @@ fn run() -> Result<(), String> {
         let resolved = resolve_aspects(&engine, &aspects)?;
         engine.set_requested_aspects(resolved, aspects_parameters.into_iter().collect());
     }
-    if builds(&command) {
+    if analyzes(&command) {
         // Label-typed options convert with the main repository mapping
         // (CoreOptionConverters.convertOptionsLabel, :351-357).
         let labels = |text: &str| {
@@ -907,6 +954,27 @@ fn run() -> Result<(), String> {
     // the workspace root, whether or not it is a package
     // (cmdline/TargetPattern.java:783-789).
     let relative_directory = relative_directory(&root, &cwd)?;
+    if let Some(expression) = cquery_expression {
+        let graph =
+            engine.cquery_graph(&cquery_options.universe(&expression), &relative_directory)?;
+        for warning in engine.take_warnings() {
+            warn(&warning);
+        }
+        lockfile_gate.open();
+        if let Some(session) = cquery_session {
+            session.finish(&graph, &_lockfile_writer.0)?;
+        }
+        bazel_rs::observed_fs::close_window();
+        cquery_output(
+            &graph,
+            &expression,
+            &cquery_options,
+            &relative_directory,
+            &cache,
+        )?;
+        snapshot.finish();
+        return Ok(());
+    }
     if command == "query" {
         bazel_rs::perf_mark("select.start");
         let outcome = engine.query(&rest[0], &query_options, &relative_directory);
@@ -1755,6 +1823,68 @@ fn write_lockfile() {
 /// Commands that build (`run` and `test` inherit the build options).
 fn builds(command: &str) -> bool {
     command == "build" || command == "run" || command == "test"
+}
+
+/// Configuration and provider analysis does not imply an execution phase.
+fn analyzes(command: &str) -> bool {
+    builds(command) || command == "cquery"
+}
+
+fn cquery_output(
+    graph: &bazel_rs::engine::cquery::Graph,
+    expression: &bazel_rs::query_language::Expr,
+    options: &bazel_rs::engine::cquery::Options,
+    relative: &str,
+    cache: &Path,
+) -> Result<(), String> {
+    if options.common.output_file.is_empty() {
+        graph.write(expression, options, relative, std::io::stdout().lock())?;
+    } else {
+        let path = Path::new(&options.common.output_file);
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        graph.write(expression, options, relative, &mut file)?;
+        file.persist(path).map_err(|e| e.to_string())?;
+    }
+    bazel_rs::cquery_state::save_configurations(cache, graph)
+}
+
+fn config_command(
+    line: &bazelrc::CommandLine,
+    options: &bazelrc::Expanded,
+    cwd: &Path,
+    root: &Path,
+) -> Result<(), String> {
+    let mut json = false;
+    let mut dump = false;
+    for unit in &options.priority {
+        match unit.option.text.as_str() {
+            "--output=json" => json = true,
+            "--output" if unit.value.as_ref().is_some_and(|v| v.text == "json") => json = true,
+            "--dump_all" | "--dump_all=true" => dump = true,
+            other => return Err(format!("config option {other:?} is not implemented")),
+        }
+    }
+    if !json || !dump || !options.residue.is_empty() {
+        return Err(
+            "native config supports --output=json --dump_all of the last successful cquery".into(),
+        );
+    }
+    bazel_rs::worktree::install(root);
+    let cache = line
+        .cache_dir
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bazel_rs::worktree::detect(root).default_cache());
+    let cache = if cache.is_absolute() {
+        cache
+    } else {
+        cwd.join(cache)
+    };
+    bazel_rs::cquery_state::dump_configurations(&cache)
 }
 
 struct RunContext<'a> {
@@ -3019,6 +3149,7 @@ struct NativeOptions {
     configuration: bazel_rs::configuration::CommandLineOptions,
     /// QueryCommand's own options (QueryOptions/CommonQueryOptions).
     query: bazel_rs::engine::query::QueryOptions,
+    cquery: bazel_rs::engine::cquery::Options,
     /// --lockfile_mode (N37, docs/REGISTRY_LOCKFILE.md).
     lockfile_mode: bazel_rs::lockfile::LockfileMode,
     /// Native-only --native-lockfile.
@@ -3073,7 +3204,7 @@ impl NativeOptions {
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
-                allow_remote: matches!(command, "build" | "query" | "run" | "test" | "mod"),
+                allow_remote: matches!(command, "build" | "query" | "cquery" | "run" | "test" | "mod"),
                 // Bazel 9.3 always injects @bazel_tools and its MODULE
                 // closure (ModuleFileFunction, BazelRepositoryModule); the
                 // native explicit-module profile is an opt-out
@@ -3103,6 +3234,7 @@ impl NativeOptions {
                 bazel_rs::configuration::CommandLineOptions::default()
             },
             query: bazel_rs::engine::query::QueryOptions::default(),
+            cquery: bazel_rs::engine::cquery::Options::default(),
             lockfile_mode: bazel_rs::lockfile::LockfileMode::default(),
             lockfile_target: bazel_rs::registry_session::LockfileTarget::Workspace,
             action_dump: None,
@@ -3125,15 +3257,22 @@ impl NativeOptions {
         }
         let query = if command == "query" {
             self.query.parse(arg, next)?
+        } else if command == "cquery" {
+            self.cquery.parse(arg, next)?
         } else {
             None
         };
+        // Cquery inherits TestCommand options, but only the explicit
+        // analysis dispatch above decides whether anything executes.
+        let command = if command == "cquery" { "test" } else { command };
         let used_next = if let Some(used) = query {
             used
-        } else if let Some(used) =
-            self.rc
-                .parse(command, arg, next, &unit.option.origin_suffix())?
-        {
+        } else if let Some(used) = self.rc.parse(
+            if command == "cquery" { "test" } else { command },
+            arg,
+            next,
+            &unit.option.origin_suffix(),
+        )? {
             used
         } else if let Some(used) = self.ui.parse(arg, next) {
             // UiOptions (every command): the progress display's.
