@@ -1525,6 +1525,9 @@ struct AspectToolchains {
     /// configuration resolves no toolchains (a platform's tree).
     default: Option<UnloadedToolchainContext>,
     groups: crate::exec_groups::TargetExecGroups,
+    /// Query-only IDs of ToolchainResolution's direct configured deps. Shared
+    /// by applications that reuse this context, never provider/graph copies.
+    cquery_dependencies: Vec<u32>,
 }
 
 /// The provider map one aspect application returned (AspectValue's
@@ -4453,7 +4456,7 @@ impl Engine {
             let edge_configs = self.analyzed_edge_configurations(key, &edge.cfg)?;
             let dependency = self.resolve_rule_src(rule, &edge.label)?;
             for edge_config in edge_configs.ids() {
-                self.analyze_aspect_applications(
+                let applications = self.analyze_aspect_applications(
                     &dependency,
                     edge_config,
                     aspects.clone(),
@@ -4462,6 +4465,9 @@ impl Engine {
                     plan,
                     &mut seen,
                 )?;
+                if let Some(capture) = &mut self.cquery_capture {
+                    capture.request(key, applications);
+                }
             }
         }
         Ok(())
@@ -4482,7 +4488,7 @@ impl Engine {
         configured: &mut ConfiguredNodes,
         plan: &mut Plan,
         seen: &mut BTreeSet<(ConfiguredTargetKey, Vec<String>)>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<u32>, String> {
         let key = ConfiguredTargetKey::new(label.clone(), config);
         // The application's configuration is the base configured target's,
         // after a rule transition's delegation (AspectKeyCreator over the
@@ -4491,7 +4497,7 @@ impl Engine {
         // Aspects never apply in the no-config configuration
         // (AspectFunction.java:296-305: NonApplicableAspect).
         if self.configurations.get(config).native.no_config {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let key = self.rule_delegations.get(&key).cloned().unwrap_or(key);
         // Aspects do not apply to source files or package groups
@@ -4506,16 +4512,16 @@ impl Engine {
                     || aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
             });
             if !applies {
-                return Ok(());
+                return Ok(Vec::new());
             }
             base_label = generating.label.clone();
             target = self.target(&base_label)?;
         }
         let Target::Rule(base_rule) = target else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         if matches!(base_rule.kind, RuleKind::PackageGroup(_)) {
-            return Ok(());
+            return Ok(Vec::new());
         }
         // Alias edges resolve to the actual target's aspect application
         // (createAspectsKeys, ToplevelStarlarkAspectFunction.java:140-157).
@@ -4537,22 +4543,27 @@ impl Engine {
                 .get(&base_key)
                 .cloned()
                 .unwrap_or(rule),
-            _ => return Ok(()),
+            _ => return Ok(Vec::new()),
         };
         let collection = crate::aspects::aspect_collection(aspects, &base_rule)?;
         if collection.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
+        let applications = self
+            .cquery_capture
+            .as_mut()
+            .map(|capture| capture.applications(&base_key, &collection, &base_rule))
+            .unwrap_or_default();
         let memo = (base_key.clone(), collection.descriptors());
         if !seen.insert(memo) {
-            return Ok(());
+            return Ok(applications);
         }
         let incoming: Vec<std::sync::Arc<crate::aspects::AspectDefinition>> = collection
             .used
             .iter()
             .map(|(aspect, _)| aspect.clone())
             .collect();
-        for (aspect, _) in &collection.used {
+        for (index, (aspect, _)) in collection.used.iter().enumerate() {
             // A NonApplicableAspect (AspectFunction.java:332-339) resolves
             // no dependencies of its own.
             if aspect.identity == crate::aspects::VALIDATION_ASPECT_IDENTITY
@@ -4574,6 +4585,25 @@ impl Engine {
             // error as is (AspectFunction.java:510-515).
             let toolchains = self
                 .aspect_toolchain_contexts(&base_rule, config, aspect, active, configured, plan)?;
+            if let Some(capture) = &mut self.cquery_capture {
+                // Record per application, including memoized toolchain contexts.
+                // The resolution memo is not an edge owner.
+                capture.aspect_targets(applications[index], &toolchains.cquery_dependencies);
+                for context in std::iter::once(toolchains.default.as_ref())
+                    .chain(
+                        toolchains
+                            .groups
+                            .groups
+                            .iter()
+                            .map(|group| group.context.as_ref()),
+                    )
+                    .flatten()
+                {
+                    for label in context.resolved_labels() {
+                        capture.aspect_target(applications[index], label, config);
+                    }
+                }
+            }
             let attribute_configs = self.aspect_attribute_configurations(
                 &base_rule,
                 &base_key,
@@ -4606,14 +4636,11 @@ impl Engine {
                                     crate::rule_declarations::canonical_form(&base_label)
                                 )
                             })?;
-                        if self.cquery_capture.is_some() {
-                            self.capture_cquery_edge(
-                                &base_key,
+                        if let Some(capture) = &mut self.cquery_capture {
+                            capture.aspect_target(
+                                applications[index],
                                 dependency.clone(),
                                 attribute_config,
-                                name,
-                                attribute_config != config,
-                                true,
                             );
                         }
                         let dep_rule = match self.target(&dependency)? {
@@ -4658,7 +4685,7 @@ impl Engine {
             let edge_configs = self.analyzed_edge_configurations(&base_key, &edge.cfg)?;
             let dependency = self.resolve_rule_src(&base_rule, &edge.label)?;
             for edge_config in edge_configs.ids() {
-                self.analyze_aspect_applications(
+                let children = self.analyze_aspect_applications(
                     &dependency,
                     edge_config,
                     propagating.clone(),
@@ -4667,9 +4694,18 @@ impl Engine {
                     plan,
                     seen,
                 )?;
+                if let Some(capture) = &mut self.cquery_capture {
+                    capture.propagated(
+                        &applications,
+                        &collection,
+                        &children,
+                        &edge.attribute,
+                        &attribute_aspects,
+                    );
+                }
             }
         }
-        Ok(())
+        Ok(applications)
     }
 
     /// The aspect's OWN ToolchainCollection in configuration `config`
@@ -4732,6 +4768,7 @@ impl Engine {
         }
         let mut toolchains = AspectToolchains {
             default: None,
+            cquery_dependencies: Vec::new(),
             groups: crate::exec_groups::TargetExecGroups {
                 use_auto_exec_groups: use_auto,
                 groups: Vec::new(),
@@ -4776,6 +4813,7 @@ impl Engine {
             };
             self.resolving_aspect_toolchains = true;
             let resolved = (|| -> Result<(), String> {
+                let cquery_key = self.cquery_capture.as_ref().map(|_| default_key.clone());
                 toolchains.default = self.resolve_toolchains(
                     base_rule,
                     config,
@@ -4784,14 +4822,25 @@ impl Engine {
                     configured,
                     plan,
                 )?;
+                if let Some(key) = cquery_key {
+                    toolchains
+                        .cquery_dependencies
+                        .extend(self.capture_cquery_aspect_toolchain_context(config, &key));
+                }
                 for (name, key) in processed {
                     let group_types = key
                         .types
                         .iter()
                         .map(|requirement| requirement.label.clone())
                         .collect();
+                    let cquery_key = self.cquery_capture.as_ref().map(|_| key.clone());
                     let context =
                         self.resolve_toolchains(base_rule, config, key, active, configured, plan)?;
+                    if let Some(key) = cquery_key {
+                        toolchains
+                            .cquery_dependencies
+                            .extend(self.capture_cquery_aspect_toolchain_context(config, &key));
+                    }
                     toolchains
                         .groups
                         .groups
@@ -4830,16 +4879,6 @@ impl Engine {
                 self.target(&implementation)
                     .map_err(|error| self.missing_edge_error(base_rule, &implementation, error))?;
                 self.analyze(&implementation, config, active, configured, plan)?;
-                if self.cquery_capture.is_some() {
-                    self.capture_cquery_edge(
-                        &ConfiguredTargetKey::new(base_rule.label.clone(), config),
-                        implementation,
-                        config,
-                        "$aspect_toolchains",
-                        true,
-                        true,
-                    );
-                }
             }
         }
         let toolchains = Arc::new(toolchains);
@@ -13298,7 +13337,9 @@ impl Engine {
                         .failed_targets
                         .insert(label.clone(), true);
                 }
-                analyzed => analyzed?,
+                analyzed => {
+                    analyzed?;
+                }
             }
         }
         Ok(())

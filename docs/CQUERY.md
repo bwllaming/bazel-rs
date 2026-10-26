@@ -31,6 +31,15 @@ bazel-rs cquery --universe_scope=//app:all 'config(//app:tool, target)'
 * `--noimplicit_deps`, `--notool_deps`, `--noinclude_aspects` filter recorded
   configured edges. Source files have null configurations; aliases remain
   distinct; predeclared generated-file targets retain their generating rule.
+  Aspect inputs are projected onto the requesting rule, not the aspect's base
+  target: required/propagated applications retain sparse provenance during
+  analysis, then follow Bazel 9.3's per-request aspect-class traversal. Plain
+  consumers of the same base do not inherit aspect-private inputs. Top-level
+  aspects do not add forward edges to their bases in non-explicit cquery.
+  Config conditions survive `--noimplicit_deps` on their own base rules, but
+  conditions flattened through an aspect are implicit on the requester.
+  `--notool_deps` compares endpoint configurations, not attribute transitions
+  (in particular a null-config source on an exec attr remains a target dep).
 * Resolved native/Starlark attrs and modeled defaults, `$rule_implementation_hash`
   over the defining `.bzl` and its transitive loads, real source locations,
   configured attribute/exec/toolchain/condition/platform/aspect dependencies.
@@ -72,6 +81,9 @@ Graph capture is opt-in. Ordinary builds incur no full graph copy. During
 analysis it holds shared rule Arcs and configured edges; the final binary graph
 has compact node/configuration indices and no provider, runfiles or Starlark heap
 copies. The writer buffers one record, not an entire output stream.
+Aspect capture interns application and target identities; application links are
+compact IDs, and shared toolchain context dependencies are captured even on
+resolution memo hits. No provider or base-graph copies are made per aspect edge.
 
 Graph snapshots reuse the sectioned binary snapshot store, binary identity,
 observed_fs input validator, recorded repository replay and local publication

@@ -10,6 +10,152 @@ use std::io::Write;
 pub(super) struct Capture {
     pub rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
     edges: Vec<CapturedEdge>,
+    aspect_targets: BTreeMap<Arc<ConfiguredTargetKey>, u32>,
+    target_keys: Vec<Arc<ConfiguredTargetKey>>,
+    application_ids: BTreeMap<(u32, Arc<str>, Vec<u32>), u32>,
+    aspect_strings: BTreeSet<Arc<str>>,
+    applications: Vec<CapturedAspect>,
+    requests: BTreeMap<u32, Vec<u32>>,
+}
+
+/// Sparse Skyframe-like provenance, not copies of providers or base rule edges.
+/// Targets and applications are interned once; every dependency is a u32.
+struct CapturedAspect {
+    base: u32,
+    class: Arc<str>,
+    descriptor: Arc<str>,
+    applicable: bool,
+    targets: Vec<u32>,
+    aspects: Vec<u32>,
+}
+
+impl Capture {
+    fn aspect_string(&mut self, text: &str) -> Arc<str> {
+        if let Some(text) = self.aspect_strings.get(text) {
+            return text.clone();
+        }
+        let text: Arc<str> = Arc::from(text);
+        self.aspect_strings.insert(text.clone());
+        text
+    }
+
+    fn target(&mut self, key: ConfiguredTargetKey) -> u32 {
+        if let Some(id) = self.aspect_targets.get(&key) {
+            return *id;
+        }
+        let id = self.target_keys.len() as u32;
+        let key = Arc::new(key);
+        self.aspect_targets.insert(key.clone(), id);
+        self.target_keys.push(key);
+        id
+    }
+
+    pub(super) fn applications(
+        &mut self,
+        base: &ConfiguredTargetKey,
+        collection: &crate::aspects::AspectCollection,
+        rule: &Rule,
+    ) -> Vec<u32> {
+        let base_id = self.target(base.clone());
+        let mut ids = Vec::with_capacity(collection.used.len());
+        for (aspect, bases) in &collection.used {
+            let descriptor = self.aspect_string(&aspect.descriptor);
+            // The collection is topological. Refer to the exact preceding
+            // applications, including their own base paths, not just names.
+            let required: Vec<_> = collection
+                .used
+                .iter()
+                .take(ids.len())
+                .enumerate()
+                .filter(|(_, (aspect, _))| bases.contains(&aspect.descriptor))
+                .map(|(index, _)| ids[index])
+                .collect();
+            let key = (base_id, descriptor.clone(), required.clone());
+            let id = if let Some(id) = self.application_ids.get(&key) {
+                *id
+            } else {
+                let id = self.applications.len() as u32;
+                self.application_ids.insert(key, id);
+                let class = self.aspect_string(&aspect.identity);
+                self.applications.push(CapturedAspect {
+                    base: base_id,
+                    class,
+                    descriptor,
+                    applicable: aspect.applies_to_rule(rule),
+                    targets: Vec::new(),
+                    aspects: required,
+                });
+                id
+            };
+            ids.push(id);
+        }
+        ids
+    }
+
+    fn application_dependencies(&mut self, id: u32, dependencies: impl IntoIterator<Item = u32>) {
+        let app = &mut self.applications[id as usize];
+        for dependency in dependencies {
+            if !app.aspects.contains(&dependency) {
+                app.aspects.push(dependency);
+            }
+        }
+    }
+
+    pub(super) fn request(&mut self, requester: &ConfiguredTargetKey, ids: Vec<u32>) {
+        let requester = self.target(requester.clone());
+        let requests = self.requests.entry(requester).or_default();
+        for id in ids {
+            if !requests.contains(&id) {
+                requests.push(id);
+            }
+        }
+    }
+
+    pub(super) fn aspect_target(&mut self, id: u32, label: Label, config: ConfigId) {
+        let target = self.target(ConfiguredTargetKey::new(label, config));
+        self.aspect_targets(id, &[target]);
+    }
+
+    pub(super) fn aspect_targets(&mut self, id: u32, dependencies: &[u32]) {
+        let targets = &mut self.applications[id as usize].targets;
+        for target in dependencies {
+            if !targets.contains(target) {
+                targets.push(*target);
+            }
+        }
+    }
+
+    pub(super) fn propagated(
+        &mut self,
+        ids: &[u32],
+        collection: &crate::aspects::AspectCollection,
+        children: &[u32],
+        attribute: &str,
+        attached: &[Arc<crate::aspects::AspectDefinition>],
+    ) {
+        for (index, (aspect, _)) in collection.used.iter().enumerate() {
+            // AspectFunction computes dependencies over THIS aspect's path,
+            // not every aspect that happened to be applied to the same base.
+            let path = collection.path_descriptions(&aspect.descriptor);
+            let incoming: Vec<_> = collection
+                .used
+                .iter()
+                .filter(|(a, _)| path.contains(&a.descriptor))
+                .map(|(a, _)| a.clone())
+                .collect();
+            let propagated = crate::aspects::propagating_aspects(attached, &incoming, attribute);
+            let children: Vec<_> = children
+                .iter()
+                .copied()
+                .filter(|id| {
+                    propagated.iter().any(|a| {
+                        a.descriptor.as_str() == self.applications[*id as usize].descriptor.as_ref()
+                    })
+                })
+                .collect();
+            self.application_dependencies(ids[index], children);
+        }
+    }
 }
 
 struct CapturedEdge {
@@ -563,6 +709,46 @@ pub(super) fn register_outputs(
 }
 
 impl Engine {
+    /// ToolchainResolutionFunction's direct CT requests (PlatformKeys,
+    /// ConstraintValueLookupUtil, ToolchainTypeLookupUtil), NOT registered
+    /// toolchain implementations that weren't selected. Resolution has already
+    /// analyzed these; the lazy native default platform may have no real node.
+    pub(super) fn capture_cquery_aspect_toolchain_context(
+        &mut self,
+        config: ConfigId,
+        context: &ToolchainContextKey,
+    ) -> Vec<u32> {
+        let Some(capture) = &mut self.cquery_capture else {
+            return Vec::new();
+        };
+        let configuration = self.configurations.get(config);
+        let platforms = self
+            .registered_execution_platforms
+            .get(&config)
+            .and_then(|result| result.as_ref().ok())
+            .into_iter()
+            .flat_map(|platforms| platforms.iter().map(|platform| &platform.label));
+        let labels = [
+            configuration.native.target_platform(),
+            &configuration.native.host_platform,
+        ]
+        .into_iter()
+        .chain(platforms)
+        .chain(context.exec_constraints.iter())
+        .chain(context.types.iter().map(|requirement| &requirement.label));
+        let mut ids = Vec::new();
+        for label in labels {
+            let key = ConfiguredTargetKey::new(label.clone(), config);
+            if capture.rules.contains_key(&key) {
+                let id = capture.target(key);
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        ids
+    }
+
     pub(super) fn capture_cquery_edge(
         &mut self,
         from: &ConfiguredTargetKey,
@@ -653,6 +839,9 @@ impl Engine {
         }
         for edge in &capture.edges {
             intern(self.cquery_key(&edge.to)?)?;
+        }
+        for key in &capture.target_keys {
+            intern(self.cquery_key(key)?)?;
         }
         for label in roots {
             intern(self.cquery_key(&self.configurations.top_key(label.clone()))?)?;
@@ -896,28 +1085,95 @@ impl Engine {
                 edges: Vec::new(),
             });
         }
-        for edge in capture.edges {
+        for edge in &capture.edges {
             let from_key = self.cquery_key(&edge.from)?;
             let to_key = self.cquery_key(&edge.to)?;
             let (Some(&from), Some(&to)) = (ids.get(&from_key), ids.get(&to_key)) else {
                 return Err("cquery edge has no analyzed endpoint".into());
             };
             let implicit = match &nodes[from as usize].target {
-                wire::Target::Rule(rule) => !rule.attributes.iter().any(|a| {
-                    (a.name == edge.attribute
-                        || a.name.strip_prefix('$').map(|s| format!("_{s}"))
-                            == Some(edge.attribute.clone()))
-                        && a.explicitly_specified == Some(true)
-                }),
+                // Config conditions are loaded by DependencyContextProducer,
+                // not rule prerequisites enumerated by Util.findImplicitDeps.
+                // They remain explicit on the base, but implicit when reached
+                // through targetifyValues(null, aspectDeps, ...).
+                wire::Target::Rule(rule) => {
+                    edge.attribute != "$config_dependencies"
+                        && !rule.attributes.iter().any(|a| {
+                            (a.name == edge.attribute
+                                || a.name.strip_prefix('$').map(|s| format!("_{s}"))
+                                    == Some(edge.attribute.clone()))
+                                && a.explicitly_specified == Some(true)
+                        })
+                }
                 _ => false,
             };
             nodes[from as usize].edges.push(GraphEdge {
                 to,
-                attribute: edge.attribute,
+                attribute: edge.attribute.clone(),
                 implicit,
                 tool: edge.tool,
                 aspect: edge.aspect,
             });
+        }
+        let aspect_targets = capture
+            .target_keys
+            .iter()
+            .map(|key| self.cquery_key(key).map(|key| ids[&key]))
+            .collect::<Result<Vec<_>, _>>()?;
+        // Only the condition/platform dependencies are Skyframe CT deps of an
+        // aspect's base context. Ordinary prerequisites come from the base's
+        // already computed prerequisites supplier, not fresh CT dependencies.
+        // Keep a sparse index so traversal never copies or scans whole graphs.
+        let mut context_deps: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for (id, node) in nodes.iter().enumerate() {
+            for edge in &node.edges {
+                if matches!(
+                    edge.attribute.as_str(),
+                    "$config_dependencies" | "$target_platform"
+                ) {
+                    context_deps.entry(id as u32).or_default().push(edge.to);
+                }
+            }
+        }
+        for (requester, applications) in &capture.requests {
+            let from = aspect_targets[*requester as usize];
+            let mut known: BTreeSet<_> = nodes[from as usize].edges.iter().map(|e| e.to).collect();
+            let mut classes = BTreeSet::new();
+            let mut pending: Vec<_> = applications.iter().rev().copied().collect();
+            while let Some(id) = pending.pop() {
+                let application = &capture.applications[id as usize];
+                // PostAnalysisQueryEnvironment.targetifyValues resolves each
+                // class once PER REQUESTER, before following propagation. Never
+                // union the private deps of every application onto its base.
+                if !classes.insert(application.class.as_ref()) {
+                    continue;
+                }
+                let base = aspect_targets[application.base as usize];
+                let context = context_deps
+                    .get(&base)
+                    .into_iter()
+                    .flatten()
+                    .copied()
+                    .filter(|_| application.applicable);
+                let targets = application
+                    .targets
+                    .iter()
+                    .map(|id| aspect_targets[*id as usize]);
+                for to in std::iter::once(base).chain(context).chain(targets) {
+                    if known.insert(to) {
+                        nodes[from as usize].edges.push(GraphEdge {
+                            to,
+                            attribute: String::new(),
+                            implicit: true,
+                            tool: false,
+                            aspect: true,
+                        });
+                    }
+                }
+                if application.applicable {
+                    pending.extend(application.aspects.iter().rev().copied());
+                }
+            }
         }
         // An output file points to its generating rule in the same configured
         // identity. It never impersonates that rule or drops its owner edge.
@@ -933,6 +1189,26 @@ impl Engine {
                     tool: false,
                     aspect: false,
                 });
+            }
+        }
+        // ONLY_TARGET_DEPS compares endpoint configurations, not transition
+        // kinds. In particular exec-labelled source files remain visible from
+        // target-config parents, and exec parents retain only exec children.
+        let mut tools = vec![false; nodes.len()];
+        for ((label, config), id) in &ids {
+            tools[*id as usize] = config.is_some_and(|config| {
+                // Platforms and their prerequisites are analyzed in the empty
+                // configuration. Native preserves their incoming ConfigIds;
+                // that identity difference must not make them exec query deps.
+                !self
+                    .empty_configuration_rules
+                    .contains(&ConfiguredTargetKey::new(label.clone(), config))
+                    && self.configurations.get(config).native.is_exec
+            });
+        }
+        for (id, node) in nodes.iter_mut().enumerate() {
+            for edge in &mut node.edges {
+                edge.tool = tools[id] != tools[edge.to as usize];
             }
         }
         let mut graph_patterns = BTreeMap::new();

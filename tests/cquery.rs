@@ -151,7 +151,7 @@ fn configured_sets_keep_exec_identity_and_filter_edges() {
     let out = ws.ok(&["--notool_deps", "deps(//:top)"]);
     assert!(!labels(&out).contains(&"//:tool".to_owned()));
     let out = ws.ok(&["--noimplicit_deps", "deps(//:top)"]);
-    assert!(!labels(&out).contains(&"//:chosen".to_owned()));
+    assert!(labels(&out).contains(&"//:chosen".to_owned()));
     let out = ws.ok(&["kind(alias, deps(//:consumer))"]);
     assert_eq!(labels(&out), ["//:alias"]);
     let out = ws.query(&["--output=starlark", "//:top"]);
