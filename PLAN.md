@@ -111,9 +111,10 @@ Done since the last increment recorded under "History", one line each:
 
 ### Known parity gaps (documented, not blocking ~/code)
 
-- [ ] Aspects: parameters from rule attributes; the same aspect from `--aspects`
-      and an attribute; `ctx.rule.attr` of required aspects; function
-      `attr_aspects`, `toolchains_aspects`, subrules on aspects.
+- [x] Aspects: parameters from rule attributes; the same aspect from `--aspects`
+      and an attribute (descriptor identity).
+- [ ] Aspects: `ctx.rule.attr` of base aspects; function `attr_aspects`,
+      `toolchains_aspects`, subrules on aspects; the rule-side parameter check.
 - [ ] One toolchain needed on two execution platforms in one configuration.
 - [x] `register_execution_platforms` from root and non-root modules.
 - [x] Console text: `INFO: Analyzed …` / `Found …` / `Elapsed time` / `Build

@@ -858,3 +858,47 @@ fn required_aspects_expand_like_aspects_list() {
         rejected(&ws.build_with(&flags, &[targets]), message);
     }
 }
+
+/// StarlarkDefinedAspect.getDefaultParametersExtractor and AspectDescriptor
+/// identity, against the genuine capture tests/fixtures/aspect_parameters:
+/// an attribute's aspect takes the parameters of its rule's same-named
+/// attributes (and its descriptor shows them), so two rules with different
+/// values apply it twice to their shared dependencies, and the same aspect
+/// from `--aspects` and an attribute is two applications when the
+/// parameters differ, one when they are equal.
+#[test]
+fn attribute_aspects_take_their_rules_parameters() {
+    let genuine = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/aspect_parameters/genuine.txt"),
+    )
+    .unwrap();
+    let mut sections: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    for line in genuine
+        .lines()
+        .filter(|line| !line.starts_with('#') || line.starts_with("###"))
+    {
+        if let Some(command) = line.strip_prefix("### build ") {
+            sections.push((command.split(' ').map(str::to_owned).collect(), Vec::new()));
+        } else {
+            sections.last_mut().unwrap().1.push(line.to_owned());
+        }
+    }
+    assert_eq!(sections.len(), 4);
+    for (arguments, expected) in sections {
+        // A fresh workspace per command, like the genuine fresh server.
+        let ws = Workspace::fixture("aspect_parameters");
+        let (flags, targets): (Vec<&str>, Vec<&str>) = arguments
+            .iter()
+            .map(String::as_str)
+            .partition(|argument| argument.starts_with("--"));
+        let text = ok(&ws.build_with(&flags, &targets));
+        let mut printed: Vec<String> = text
+            .lines()
+            .map(print_text)
+            .filter(|line| line.starts_with("A //"))
+            .map(str::to_owned)
+            .collect();
+        printed.sort();
+        assert_eq!(printed, expected, "{arguments:?}: {text}");
+    }
+}

@@ -2244,6 +2244,44 @@ impl Engine {
         aspects
     }
 
+    /// The aspects of an `attr.*(aspects = [...])` list of `rule`, loaded,
+    /// each with the parameters `rule` gives it
+    /// (crate::aspects::AspectDefinition::for_attribute_of).
+    fn attribute_aspects(
+        &mut self,
+        rule: &Rule,
+        identities: &[String],
+    ) -> Result<Vec<std::sync::Arc<crate::aspects::AspectDefinition>>, String> {
+        let mut aspects = Vec::with_capacity(identities.len());
+        for identity in identities {
+            let definition = self
+                .aspect_definition(identity, true)?
+                .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
+            aspects.push(match definition.for_attribute_of(rule) {
+                Some(parameterized) => std::sync::Arc::new(parameterized),
+                None => definition,
+            });
+        }
+        Ok(aspects)
+    }
+
+    /// [`Self::attribute_aspects`] over the definitions loaded already (an
+    /// unloaded one is skipped, as the registry lookup always did).
+    fn loaded_attribute_aspects(
+        &self,
+        rule: &Rule,
+        identities: &[String],
+    ) -> Vec<std::sync::Arc<crate::aspects::AspectDefinition>> {
+        identities
+            .iter()
+            .filter_map(|identity| self.aspects.get(identity))
+            .map(|definition| match definition.for_attribute_of(rule) {
+                Some(parameterized) => std::sync::Arc::new(parameterized),
+                None => definition,
+            })
+            .collect()
+    }
+
     /// The top-level aspects as LoadAspectsFunction.getTopLevelAspects
     /// builds them (skyframe/LoadAspectsFunction.java:82-126): an
     /// AspectsList over the `--aspects` classes in order, each Starlark
@@ -2282,6 +2320,7 @@ impl Engine {
             let mut top_level = (*definition).clone();
             top_level.parameters = self.top_level_aspect_parameters(&definition)?;
             top_level.top_level = true;
+            top_level.refresh_descriptor();
             definitions.push(std::sync::Arc::new(top_level));
         }
         Ok(definitions)
@@ -2393,6 +2432,7 @@ impl Engine {
                 }),
                 parameters: BTreeMap::new(),
                 top_level: false,
+                descriptor: identity.to_owned(),
             });
             return Ok(self.aspects.get(identity));
         }
@@ -2436,6 +2476,7 @@ impl Engine {
             value: loaded.value,
             parameters: BTreeMap::new(),
             top_level: false,
+            descriptor: identity.to_owned(),
         };
         self.aspects.insert(definition);
         Ok(self.aspects.get(identity))
@@ -4405,13 +4446,7 @@ impl Engine {
             if spec.declaration.aspects.is_empty() {
                 continue;
             }
-            let mut aspects = Vec::new();
-            for identity in &spec.declaration.aspects {
-                let definition = self
-                    .aspect_definition(identity, true)?
-                    .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
-                aspects.push(definition);
-            }
+            let aspects = self.attribute_aspects(rule, &spec.declaration.aspects)?;
             let edge_configs = self.analyzed_edge_configurations(key, &edge.cfg)?;
             let dependency = self.resolve_rule_src(rule, &edge.label)?;
             for edge_config in edge_configs.ids() {
@@ -4496,7 +4531,7 @@ impl Engine {
         if collection.is_empty() {
             return Ok(());
         }
-        let memo = (base_key.clone(), collection.identities());
+        let memo = (base_key.clone(), collection.descriptors());
         if !seen.insert(memo) {
             return Ok(());
         }
@@ -4599,12 +4634,9 @@ impl Engine {
                 .and_then(|custom| custom.schema.get(&edge.attribute))
                 .map(|spec| spec.declaration.aspects.clone())
                 .unwrap_or_default();
-            let propagating = crate::aspects::propagating_aspects(
-                &self.aspects,
-                &attribute_aspects,
-                &incoming,
-                &edge.attribute,
-            );
+            let attribute_aspects = self.loaded_attribute_aspects(&base_rule, &attribute_aspects);
+            let propagating =
+                crate::aspects::propagating_aspects(&attribute_aspects, &incoming, &edge.attribute);
             if propagating.is_empty() {
                 continue;
             }
@@ -10377,7 +10409,7 @@ impl Engine {
         for (aspect, bases) in &collection.used {
             let key = crate::aspects::AspectApplicationKey {
                 base: base_key.clone(),
-                aspect: aspect.identity.clone(),
+                aspect: aspect.descriptor.clone(),
                 bases: bases.clone(),
             };
             if state.aspect_providers.contains_key(&key) {
@@ -10408,7 +10440,7 @@ impl Engine {
             .entry((
                 base_label.clone(),
                 Some(base_key.config),
-                collection.identities(),
+                collection.descriptors(),
             ))
             .or_insert_with(|| {
                 std::sync::Arc::new(analysis::dependency_target_data(
@@ -10447,7 +10479,7 @@ impl Engine {
         let top = self.configurations.top();
         let key = crate::aspects::AspectApplicationKey {
             base: base_key.clone(),
-            aspect: aspect.identity.clone(),
+            aspect: aspect.descriptor.clone(),
             bases: bases.to_vec(),
         };
         let fallback;
@@ -10481,7 +10513,7 @@ impl Engine {
                 bases: collection
                     .used
                     .iter()
-                    .find(|(used, _)| used.identity == *base_aspect)
+                    .find(|(used, _)| used.descriptor == *base_aspect)
                     .map(|(_, used_bases)| used_bases.clone())
                     .unwrap_or_default(),
             };
@@ -10599,12 +10631,9 @@ impl Engine {
                 .and_then(|custom| custom.schema.get(&edge.attribute))
                 .map(|spec| spec.declaration.aspects.clone())
                 .unwrap_or_default();
-            let propagating = crate::aspects::propagating_aspects(
-                &self.aspects,
-                &attribute_aspects,
-                &incoming,
-                &edge.attribute,
-            );
+            let attribute_aspects = self.loaded_attribute_aspects(&base_rule, &attribute_aspects);
+            let propagating =
+                crate::aspects::propagating_aspects(&attribute_aspects, &incoming, &edge.attribute);
             let edge_configs = self.analyzed_edge_configurations(base_key, &edge.cfg)?;
             // Aspects never apply in the no-config configuration
             // (AspectFunction.java:296-305: NonApplicableAspect).
@@ -10850,8 +10879,8 @@ impl Engine {
         let application = analysis::AspectApplication {
             aspect_split_dependencies,
             aspect: aspect.clone(),
-            aspect_ids: collection.path_descriptions(&aspect.identity),
-            aspect_path: collection.path_descriptions(&aspect.identity),
+            aspect_ids: collection.path_descriptions(&aspect.descriptor),
+            aspect_path: collection.path_descriptions(&aspect.descriptor),
             target: merged_target,
             rule: analyzed_rule,
             dependencies: dependencies.clone(),
@@ -11314,18 +11343,12 @@ impl Engine {
                     .and_then(|custom| custom.schema.get(&edge.attribute))
                     && !spec.declaration.aspects.is_empty()
                 {
-                    let mut aspects = Vec::new();
-                    for identity in &spec.declaration.aspects {
-                        let definition = self
-                            .aspect_definition(identity, true)?
-                            .ok_or_else(|| format!("Aspect '{identity}' is unknown"))?;
-                        aspects.push(definition);
-                    }
+                    let aspects = self.attribute_aspects(rule, &spec.declaration.aspects)?;
                     let entry = edge_aspects.entry(edge.attribute.clone()).or_default();
                     for aspect in aspects {
                         if !entry.iter().any(
                             |known: &std::sync::Arc<crate::aspects::AspectDefinition>| {
-                                known.identity == aspect.identity
+                                known.descriptor == aspect.descriptor
                             },
                         ) {
                             entry.push(aspect);
@@ -13770,7 +13793,16 @@ impl Engine {
                             }
                         }
                     }
-                    aspect_reports.push((application.aspect.clone(), label.clone(), artifacts));
+                    // BuildResultPrinter.outputAspects names the aspect
+                    // class (the descriptor without its parameters).
+                    let class = aspect_defs
+                        .iter()
+                        .find(|aspect| aspect.descriptor == application.aspect)
+                        .map_or_else(
+                            || application.aspect.clone(),
+                            |aspect| aspect.identity.clone(),
+                        );
+                    aspect_reports.push((class, label.clone(), artifacts));
                 }
             }
         }

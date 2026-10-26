@@ -1,0 +1,22 @@
+# Genuine Bazel 9.3.0, a fresh server per command (`--curses=no --color=no`),
+# the sorted `print()` texts of the aspect implementation (DEBUG lines
+# without their `DEBUG: <WS>/defs.bzl:2:10: ` lead).
+### build //:top //:top_defaults
+A //:leaf p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:leaf p=y n=1 ["//:defs.bzl%a[p=\"y\",n=\"1\"]"]
+A //:mid p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:mid p=y n=1 ["//:defs.bzl%a[p=\"y\",n=\"1\"]"]
+### build //:top --aspects=//:defs.bzl%a
+A //:leaf p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+A //:leaf p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:mid p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+A //:mid p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:top p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+### build //:top_d --aspects=//:defs.bzl%a
+A //:leaf p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+A //:mid p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+A //:top_d p=d n=0 ["//:defs.bzl%a[p=\"d\",n=\"0\"]"]
+### build //:top --aspects=//:defs.bzl%a --aspects_parameters=p=x --aspects_parameters=n=2
+A //:leaf p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:mid p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]
+A //:top p=x n=2 ["//:defs.bzl%a[p=\"x\",n=\"2\"]"]

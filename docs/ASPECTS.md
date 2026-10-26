@@ -86,8 +86,19 @@ aspect //:gaps.bzl%toolchains_aspect declares toolchains_aspects: not analyzed b
   `apply_to_generating_rules` (the native ValidateTarget applies to files);
   aliases apply at the alias chain's end; aspects never apply to source
   files or package groups (`AspectFunction.java:327-341`).
+- An attribute's aspect takes its parameters from the rule declaring the
+  attribute: the values of its same-named, same-typed attributes
+  (StarlarkDefinedAspect.getDefaultParametersExtractor), shown in its
+  descriptor (`//:defs.bzl%a[p="x",n="2"]`, `ctx.aspect_ids`). Applications
+  are identified by descriptor (class + parameters, AspectCollection over
+  AspectDescriptor): two rules with different values apply the aspect twice to
+  shared dependencies, and the same aspect from `--aspects` (every parameter,
+  given or default) and from an attribute is two applications when the
+  parameters differ, one when they are equal (paired capture
+  tests/fixtures/aspect_parameters). The `Aspect X of L up-to-date:` lines
+  name the class.
 - Applications are keyed per aspect like Bazel's `AspectKey`
-  (base configured target key + aspect + directly required aspects);
+  (base configured target key + aspect descriptor + directly required aspects);
   aspect actions register under the application's own action owner
   (`label[config]%aspect`), so the base target's and several aspects'
   actions never collide (duplicate declared output paths still fail, the
@@ -341,11 +352,11 @@ identity unchanged, and depset snapshots taken from either agree.
   typed by the attribute (AspectParameters); other types are rejected at
   aspect() load (N33). They apply to the top-level aspects (and the
   aspects those require) only;
-- an attribute's aspect takes no parameters from the propagating rule's
-  same-named attributes (StarlarkDefinedAspect.getDefaultParametersExtractor
-  is not modelled: its parameter attributes keep their defaults), and an
-  aspect applied both top-level and through an attribute on one target is
-  one application (Bazel's two descriptors differ by parameters).
+- the rule-instantiation check that a rule propagating an aspect declares
+  its required (`values`-restricted) parameter attributes (`Aspect X requires
+  rule R to specify attribute 'p' with type int.`,
+  AspectsList.validateRulePropagatedAspectsParameters) is not made: such a
+  rule's aspect keeps the parameter's default.
 
 ## Divergences
 

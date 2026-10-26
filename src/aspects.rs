@@ -49,6 +49,11 @@ pub(crate) struct AspectDefinition {
     /// (StarlarkDefinedAspect.extractTopLevelParameters), which its
     /// description shows.
     pub top_level: bool,
+    /// The AspectDescriptor ([`Self::description`]): the identity of an
+    /// application, so one aspect with two parameter sets on one target is
+    /// two applications (an attribute's aspect with its rule's parameters
+    /// and the same aspect from `--aspects`), equal descriptors one.
+    pub descriptor: String,
 }
 
 /// Whether `name`/`spec` is one of the aspect's parameter attributes: a
@@ -67,21 +72,67 @@ pub(crate) fn is_parameter_attribute(name: &str, spec: &crate::custom_rule::Attr
 }
 
 impl AspectDefinition {
+    /// [`Self::description`] into [`Self::descriptor`] (after the
+    /// parameters changed).
+    pub fn refresh_descriptor(&mut self) {
+        self.descriptor = self.description();
+    }
+
+    /// This aspect attached to an attribute of `rule` (the rule declaring
+    /// `attr.*(aspects = [...])`): its AspectParameters are the values of
+    /// `rule`'s same-named, same-typed, non-configurable attributes
+    /// (StarlarkDefinedAspect.getDefaultParametersExtractor, :300-343).
+    /// `None` when that gives no parameter (the shared definition applies).
+    pub fn for_attribute_of(&self, rule: &Rule) -> Option<AspectDefinition> {
+        let invocation = rule.custom.as_ref()?;
+        let mut parameters = BTreeMap::new();
+        for (name, spec) in &self.declaration.attrs {
+            if !is_parameter_attribute(name, spec) {
+                continue;
+            }
+            let Some(rule_spec) = invocation.schema.get(name) else {
+                continue;
+            };
+            if rule_spec.kind != spec.kind {
+                continue;
+            }
+            let value = invocation
+                .attrs
+                .get(name)
+                .unwrap_or(&rule_spec.default)
+                .clone();
+            parameters.insert(name.clone(), value);
+        }
+        if parameters.is_empty() {
+            return None;
+        }
+        let mut definition = self.clone();
+        definition.parameters = parameters;
+        definition.top_level = false;
+        definition.refresh_descriptor();
+        Some(definition)
+    }
+
     /// AspectDescriptor.getDescription (packages/AspectDescriptor.java:
     /// 92-114): the class name, then `[name="value",...]` when the aspect
-    /// has parameters. A top-level aspect has every parameter attribute's
-    /// value; an attribute's aspect none (rule-derived parameters are not
-    /// modelled).
+    /// has parameters, in the aspect's attribute order. A top-level aspect
+    /// has every parameter attribute's value; an attribute's aspect those
+    /// its rule gave ([`Self::for_attribute_of`]).
     pub fn description(&self) -> String {
-        if !self.top_level {
-            return self.identity.clone();
-        }
         let mut entries = Vec::new();
         for (name, spec) in &self.declaration.attrs {
             if !is_parameter_attribute(name, spec) {
                 continue;
             }
-            let value = match self.parameters.get(name).unwrap_or(&spec.default) {
+            let value = if self.top_level {
+                self.parameters.get(name).unwrap_or(&spec.default)
+            } else {
+                match self.parameters.get(name) {
+                    Some(value) => value,
+                    None => continue,
+                }
+            };
+            let value = match value {
                 AttrValue::String(text) => text.clone(),
                 AttrValue::Bool(value) => value.to_string(),
                 AttrValue::Int(value) => value.to_string(),
@@ -237,11 +288,11 @@ impl AspectCollection {
         self.used.is_empty()
     }
 
-    /// The aspects' identities in application order.
-    pub fn identities(&self) -> Vec<String> {
+    /// The aspects' descriptors in application order.
+    pub fn descriptors(&self) -> Vec<String> {
         self.used
             .iter()
-            .map(|(aspect, _)| aspect.identity.clone())
+            .map(|(aspect, _)| aspect.descriptor.clone())
             .collect()
     }
 
@@ -250,30 +301,33 @@ impl AspectCollection {
     /// required aspects, AspectFunction.collectAspectKeysInTopologicalOrder
     /// :851-866), then itself — RuleContext.getAspectDescriptors, read by
     /// `ctx.aspect_ids` and the `ASPECTS aspect on KIND` messages.
-    pub fn path_descriptions(&self, identity: &str) -> Vec<String> {
+    pub fn path_descriptions(&self, descriptor: &str) -> Vec<String> {
         fn visit<'a>(
             collection: &'a AspectCollection,
-            identity: &str,
+            descriptor: &str,
             ordered: &mut Vec<&'a AspectDefinition>,
         ) {
             let Some((aspect, bases)) = collection
                 .used
                 .iter()
-                .find(|(aspect, _)| aspect.identity == identity)
+                .find(|(aspect, _)| aspect.descriptor == descriptor)
             else {
                 return;
             };
             for base in bases {
-                if !ordered.iter().any(|seen| seen.identity == *base) {
+                if !ordered.iter().any(|seen| seen.descriptor == *base) {
                     visit(collection, base, ordered);
                 }
             }
-            if !ordered.iter().any(|seen| seen.identity == aspect.identity) {
+            if !ordered
+                .iter()
+                .any(|seen| seen.descriptor == aspect.descriptor)
+            {
                 ordered.push(aspect);
             }
         }
         let mut ordered = Vec::new();
-        visit(self, identity, &mut ordered);
+        visit(self, descriptor, &mut ordered);
         ordered.iter().map(|aspect| aspect.description()).collect()
     }
 }
@@ -284,19 +338,17 @@ impl AspectCollection {
 /// that propagate along the attribute name (or are required by one already
 /// kept), top-down (collectPropagatingAspects:219-243).
 pub(crate) fn propagating_aspects(
-    registry: &AspectRegistry,
-    attribute_aspects: &[String],
+    attribute_aspects: &[Arc<AspectDefinition>],
     incoming: &[Arc<AspectDefinition>],
     attribute: &str,
 ) -> Vec<Arc<AspectDefinition>> {
-    let mut result = Vec::new();
-    for identity in attribute_aspects {
-        if let Some(aspect) = registry.get(identity)
-            && !result
-                .iter()
-                .any(|kept: &Arc<AspectDefinition>| kept.identity == *identity)
+    let mut result: Vec<Arc<AspectDefinition>> = Vec::new();
+    for aspect in attribute_aspects {
+        if !result
+            .iter()
+            .any(|kept| kept.descriptor == aspect.descriptor)
         {
-            result.push(aspect);
+            result.push(aspect.clone());
         }
     }
     // Iterating the path backwards is top-down: an aspect joins when it
@@ -312,7 +364,7 @@ pub(crate) fn propagating_aspects(
     for aspect in kept {
         if !result
             .iter()
-            .any(|existing| existing.identity == aspect.identity)
+            .any(|existing| existing.descriptor == aspect.descriptor)
         {
             result.push(aspect);
         }
@@ -353,7 +405,7 @@ pub(crate) fn aspect_collection(
     for aspect in &aspects {
         if let Some(first) = order
             .iter()
-            .position(|seen| seen.identity == aspect.identity)
+            .position(|seen| seen.descriptor == aspect.descriptor)
         {
             // validateDuplicateAspect (:349-371): a repeated aspect whose
             // second occurrence would see an aspect after its first one (a
@@ -362,8 +414,8 @@ pub(crate) fn aspect_collection(
                 if aspect.sees(between) {
                     return Err(format!(
                         "Aspect {} is applied twice, both before and after aspect {} (when propagating to {})",
-                        aspect.identity,
-                        between.identity,
+                        aspect.descriptor,
+                        between.descriptor,
                         crate::rule_declarations::canonical_form(&rule.label)
                     ));
                 }
@@ -380,8 +432,8 @@ pub(crate) fn aspect_collection(
         let mut bases = Vec::new();
         for earlier in &order[..index] {
             let visible = aspect.sees(earlier) || aspect.identity == VALIDATION_ASPECT_IDENTITY;
-            if visible && !bases.contains(&earlier.identity) {
-                bases.push(earlier.identity.clone());
+            if visible && !bases.contains(&earlier.descriptor) {
+                bases.push(earlier.descriptor.clone());
             }
         }
         used.push((aspect.clone(), bases));
