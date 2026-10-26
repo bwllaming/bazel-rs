@@ -50,9 +50,29 @@ const MODULE_ARCHIVES: &[(&str, &str)] = &[
     ),
 ];
 
+/// The source archives a build that resolves every registered toolchain of
+/// the builtin closure materializes (the offline registry's pins; the large
+/// ones come from the test archive mirror).
+#[allow(dead_code)]
+const TOOLCHAIN_CLOSURE_ARCHIVES: &[&str] = &[
+    "apple_support@2.5.2",
+    "bazel_features@1.42.1",
+    "bazel_skylib@1.8.2",
+    "platforms@1.0.0",
+    "protobuf@33.4",
+    "rules_cc@0.2.17",
+    "rules_java@9.1.0",
+    "rules_kotlin@1.9.6",
+    "rules_license@1.0.0",
+    "rules_python@1.7.0",
+    "rules_shell@0.6.1",
+    "rules_swift@3.1.2",
+];
+
 /// Seed the repository download cache of `cache_dir` (a `--cache-dir`)
 /// with the source archives of `modules` (`name@version` of the builtin
-/// fixture registry, vendored in [`MODULE_ARCHIVES`]). Idempotent.
+/// fixture registry): vendored in [`MODULE_ARCHIVES`], or else from the
+/// shared test mirror ([`mirrored_archive`]). Idempotent.
 #[allow(dead_code)]
 fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
     use base64::Engine as _;
@@ -78,10 +98,24 @@ fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
             .decode(integrity)
             .unwrap();
         let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        let (_, relative) = MODULE_ARCHIVES
+        let blob = downloads.join(&hex);
+        let Some((_, relative)) = MODULE_ARCHIVES
             .iter()
             .find(|(vendored, _)| vendored == module)
-            .unwrap_or_else(|| panic!("{module} ({url}) is not vendored"));
+        else {
+            // Too large to vendor: from the shared test mirror.
+            let mirrored = mirrored_archive(module, url, &digest, &hex);
+            if !blob.exists() && std::fs::hard_link(&mirrored, &blob).is_err() {
+                let mut staged = tempfile::NamedTempFile::new_in(&downloads).unwrap();
+                std::io::copy(
+                    &mut std::fs::File::open(&mirrored).unwrap(),
+                    staged.as_file_mut(),
+                )
+                .unwrap();
+                staged.persist(&blob).unwrap();
+            }
+            continue;
+        };
         let archive = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
         let bytes = std::fs::read(&archive)
             .unwrap_or_else(|error| panic!("{}: {error}", archive.display()));
@@ -91,7 +125,6 @@ fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
             "{} is not the archive {module}'s source.json pins",
             archive.display()
         );
-        let blob = downloads.join(&hex);
         if !blob.exists() {
             // Published like a download: a private temporary file renamed
             // into place.
@@ -99,5 +132,56 @@ fn seed_module_archives(cache_dir: &std::path::Path, modules: &[&str]) {
             std::io::Write::write_all(&mut staged, &bytes).unwrap();
             staged.persist(&blob).unwrap();
         }
+    }
+}
+
+/// The test archive mirror: the module archives too large to vendor (31 MB
+/// of rules_kotlin, rules_swift, protobuf, ...; README of
+/// tests/fixtures/module_archives), downloaded once per target directory and
+/// shared by every test run after it. `BAZEL_RS_TEST_ARCHIVE_MIRROR` names
+/// another directory (e.g. one filled on a machine with network access).
+#[allow(dead_code)]
+fn archive_mirror() -> std::path::PathBuf {
+    std::env::var_os("BAZEL_RS_TEST_ARCHIVE_MIRROR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("module-archive-mirror")
+        })
+}
+
+/// The mirror's blob of `module` (`<mirror>/<sha256 hex>`): downloaded from
+/// its source.json `url` with curl when missing, verified against the pinned
+/// digest before it is published (renamed into place, so concurrent tests
+/// never see a partial blob) and before every use. Offline with an empty
+/// mirror this fails with what to do, never with a bazel-rs download error.
+#[allow(dead_code)]
+fn mirrored_archive(module: &str, url: &str, digest: &[u8], hex: &str) -> std::path::PathBuf {
+    use sha2::Digest as _;
+    let mirror = archive_mirror();
+    std::fs::create_dir_all(&mirror).unwrap();
+    let blob = mirror.join(hex);
+    let verified = |path: &std::path::Path| {
+        std::fs::read(path).is_ok_and(|bytes| sha2::Sha256::digest(&bytes).as_slice() == digest)
+    };
+    if verified(&blob) {
+        return blob;
+    }
+    let staged = tempfile::NamedTempFile::new_in(&mirror).unwrap();
+    let fetched = std::process::Command::new("curl")
+        .args(["-fsSL", "--retry", "2", "--connect-timeout", "30", "-o"])
+        .arg(staged.path())
+        .arg(url)
+        .status();
+    match fetched {
+        Ok(status) if status.success() && verified(staged.path()) => {
+            staged.persist(&blob).unwrap();
+            blob
+        }
+        outcome => panic!(
+            "the module archive {module} is not in the test archive mirror {} and fetching it once failed \
+             ({outcome:?}; {url} must have the sha256 {hex}): run this test once with network access, \
+             or put the verified file there as {hex} (BAZEL_RS_TEST_ARCHIVE_MIRROR names another mirror)",
+            mirror.display()
+        ),
     }
 }

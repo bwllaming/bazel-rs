@@ -306,6 +306,9 @@ fn invalid_option_values_fail_like_bazel() {
 #[test]
 fn coverage_instrumentation_is_an_explicit_gap() {
     let ws = fixture();
+    // Offline: the test rule's toolchain resolution materializes the full
+    // builtin closure (the large archives: the test mirror).
+    seed_module_archives(&ws.path().join("private-cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
     let profile = profile();
     for (target, what) in [
         ("cov_inst", "ctx.coverage_instrumented()"),

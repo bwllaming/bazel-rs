@@ -24,8 +24,23 @@ bazel_skylib 1.8.2 is the already vendored
 registry's pin as well).
 
 Acquisition: copied from existing bazel-rs repository-cache blobs on the
-development host whose SHA-256 equals the registry SRI (no download). The
-other modules of the builtin closure are not vendored; the tests that still
-materialize them (they resolve every registered toolchain of the full
-closure, which needs rules_kotlin 1.9.6 at 23 MB and protobuf 33.4 at 6.9 MB
-among others) are listed in the deflake report.
+development host whose SHA-256 equals the registry SRI (no download).
+
+## The test archive mirror (not vendored)
+
+The tests that resolve every registered toolchain of the full closure
+(attr_dicts_computed_defaults::skylib_unittest_loads_with_analysis_test_transition_and_fails_analysis_explicitly,
+execution_info's three, go_transitions::coverage_instrumentation_is_an_explicit_gap)
+also materialize apple_support 2.5.2, protobuf 33.4, rules_cc 0.2.17,
+rules_java 9.1.0, rules_kotlin 1.9.6 (23 MB), rules_shell 0.6.1 and
+rules_swift 3.1.2: about 30 MB, not vendored. `seed_module_archives` takes
+them from a shared mirror instead, `<target dir>/tmp/module-archive-mirror/<sha256>`
+(`CARGO_TARGET_TMPDIR`; `BAZEL_RS_TEST_ARCHIVE_MIRROR` names another
+directory): a missing blob is downloaded ONCE with curl from its source.json
+URL, verified against the pinned integrity and renamed into place; every use
+verifies it again and hard-links (or copies) it into the test's download
+cache, so bazel-rs never reaches the network in these tests. Offline with an
+empty mirror the test fails before bazel-rs runs, naming the archive, URL and
+sha256 to put there. Each new target directory (a worker's
+`CARGO_TARGET_DIR`) fills its mirror on its first full suite run (~30 MB);
+copy a filled mirror directory to skip that.

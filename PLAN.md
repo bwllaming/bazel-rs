@@ -123,8 +123,9 @@ Done since the last increment recorded under "History", one line each:
       printed after execution.
 - [ ] Identical outputs share one inode in `bazel-bin` (not inside actions).
 - [x] Children no longer inherit ignored SIGINT/SIGQUIT/SIGHUP (src/signals.rs).
-- [ ] Five network-dependent tests: serve their archives from a checksum-verified
-      local cache.
+- [x] Five network-dependent tests: their module archives come from a
+      sha256-verified test mirror under the target dir, filled once
+      (tests/fixtures/module_archives/README.md).
 - [ ] Sandbox is Landlock-only (no private `/tmp`, no namespaces); Linux x86_64 only.
 
 ## History

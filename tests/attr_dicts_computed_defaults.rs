@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 include!("support/explicit_modules.rs");
+include!("support/module_archives.rs");
 
 struct Fixture(tempfile::TempDir);
 
@@ -444,6 +445,9 @@ filegroup(name = "subject")
 opt_test(name = "check", target_under_test = ":subject")
 "#,
     );
+    // Offline: the analysis test's toolchain resolution materializes the
+    // full builtin closure (the large archives: the test mirror).
+    seed_module_archives(&f.0.path().join("cache"), TOOLCHAIN_CLOSURE_ARCHIVES);
     let output = f.run_builtin("build", &["//:subject"]);
     assert!(
         output.status.success(),
