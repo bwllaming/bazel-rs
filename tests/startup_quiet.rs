@@ -124,7 +124,7 @@ const SCENARIOS: &[(&str, &[&str])] = &[
 
 /// The genuine exit code of each scenario (loud and quiet alike) and the
 /// native quiet stdout and stderr, normalized (workspace `<WS>`, 64-hex
-/// digests `<H>`).
+/// digests `<H>`, test times `<T>`).
 fn expected(name: &str) -> (i32, &'static str, &'static str) {
     match name {
         "build_ok" => (
@@ -149,7 +149,7 @@ fn expected(name: &str) -> (i32, &'static str, &'static str) {
         ),
         "test" | "test_output_errors" => (
             3,
-            "//:passes_test                                                           PASSED in 0.0s\n//:fails_test                                                            FAILED in 0.0s\n  <WS>/cache/tests/<H>/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
+            "//:passes_test                                                           PASSED in <T>s\n//:fails_test                                                            FAILED in <T>s\n  <WS>/cache/tests/<H>/bazel-out/k8-fastbuild/testlogs/fails_test/test.log\n\nExecuted 2 out of 2 tests: 1 test passes and 1 fails locally.\nThere were tests whose specified size is too big. Use the --test_verbose_timeout_warnings command line option to see which ones these are.\n",
             "//:fails_test\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/fails_test.sh\n//:passes_test\t<WS>/cache/actions/<H>/outputs/bazel-out/k8-fastbuild/bin/passes_test.sh\n",
         ),
         "run" => (
@@ -270,7 +270,8 @@ impl Workspace {
         }
     }
 
-    /// `text` with the workspace path `<WS>` and 64-hex digests `<H>`.
+    /// `text` with the workspace path `<WS>`, 64-hex digests `<H>` and test
+    /// times `<T>` ([`test_times`]).
     fn normalize(&self, text: &[u8]) -> String {
         let text =
             String::from_utf8_lossy(text).replace(&self.path().display().to_string(), "<WS>");
@@ -286,8 +287,33 @@ impl Workspace {
             out.push(c);
         }
         out.push_str(if run.len() == 64 { "<H>" } else { &run });
-        out
+        test_times(&out)
     }
+}
+
+/// `text` with the test summary's run times (` in 0.1s` at a line's end,
+/// which vary with the load) as ` in <T>s`.
+fn test_times(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        match body.rsplit_once(" in ") {
+            Some((head, time))
+                if time
+                    .strip_suffix('s')
+                    .is_some_and(|seconds| seconds.parse::<f64>().is_ok()) =>
+            {
+                out.push_str(head);
+                out.push_str(" in <T>s");
+                out.push_str(newline);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
 }
 
 /// What planning printed: the lines before execution's first report (an
