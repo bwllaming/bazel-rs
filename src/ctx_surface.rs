@@ -212,7 +212,7 @@ pub struct RuleSurface {
     pub split_transition_attribute: bool,
     /// The repository mapping of the rule's repository
     /// (`ctx.package_relative_label`).
-    pub mapping: std::collections::BTreeMap<String, String>,
+    pub mapping: Arc<std::collections::BTreeMap<String, String>>,
     /// The location map of `ctx.expand_location` without `targets`
     /// (LocationExpander.buildLocationMap with collectSrcs, analysis/LocationExpander.java:393-485).
     pub(crate) locations: crate::location_expander::LocationMap,
@@ -1888,10 +1888,6 @@ pub(crate) fn expand_location(
     targets: &[(String, Vec<crate::starlark_types::File>)],
     short_paths: bool,
 ) -> anyhow::Result<String> {
-    let mut map = rule.locations.clone();
-    for (label, files) in targets {
-        map.add(label, files.iter().cloned());
-    }
     let parse = |arg: &str| {
         Label::parse_in(
             arg,
@@ -1901,8 +1897,15 @@ pub(crate) fn expand_location(
         )
     };
     let resolve = |name: &str, arg: &str| {
-        crate::location_expander::apply(name, arg, !short_paths, &parse, &map)
-            .unwrap_or_else(|| Err(format!("$({name}) not defined")))
+        crate::location_expander::apply_with(
+            name,
+            arg,
+            !short_paths,
+            &parse,
+            &rule.locations,
+            targets,
+        )
+        .unwrap_or_else(|| Err(format!("$({name}) not defined")))
     };
     match crate::location_expander::expand(value, &resolve) {
         Ok(expanded) => Ok(expanded),

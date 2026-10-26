@@ -115,6 +115,20 @@ pub(crate) fn apply(
     parse: &dyn Fn(&str) -> Result<Label, String>,
     map: &LocationMap,
 ) -> Option<Result<String, String>> {
+    apply_with(name, arg, exec_paths, parse, map, &[])
+}
+
+/// [`apply`] on `map` with `extra` added in order ([`LocationMap::add`] of
+/// each `(label, files)`), without copying `map`: an entry is the map's
+/// files followed by those of every `extra` entry of the same label.
+pub(crate) fn apply_with(
+    name: &str,
+    arg: &str,
+    exec_paths: bool,
+    parse: &dyn Fn(&str) -> Result<Label, String>,
+    map: &LocationMap,
+    extra: &[(String, Vec<File>)],
+) -> Option<Result<String, String>> {
     let (path_type, multiple) = function(name, exec_paths)?;
     let function_name = if multiple {
         "$(locations)"
@@ -129,15 +143,21 @@ pub(crate) fn apply(
             )));
         }
     };
-    let Some(files) = map.0.get(&label.to_string()) else {
+    let key = label.to_string();
+    let base = map.0.get(&key);
+    let mut added = extra.iter().filter(|(label, _)| *label == key).peekable();
+    if base.is_none() && added.peek().is_none() {
         return Some(Err(format!(
             "label '{label}' in {function_name} expression is not a declared prerequisite of this rule"
         )));
-    };
+    }
+    let files = base
+        .into_iter()
+        .flatten()
+        .chain(added.flat_map(|(_, files)| files));
     // The set of the label's files: the first file per exec path.
     let mut seen = std::collections::HashSet::new();
     let paths = files
-        .iter()
         .filter(|file| seen.insert(file.path.as_str()))
         .map(|file| callable(&path(file, path_type)))
         .collect::<BTreeSet<_>>();
