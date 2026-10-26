@@ -47,3 +47,13 @@ planning, mapping rendering, input expansion or manifest/tree staging to create
 these identities. The captured support-file cases include default options,
 `--enable_runfiles=no`, and `--nobuild_runfile_manifests`; hit/verify tests retain
 their exact provider metadata.
+
+## Retention boundary
+
+A bounded full-source memory profile found 133,488,492 bytes retained in
+`ActionPlanning.repositories` before the 8 GiB ceiling. These per-target
+transitive repository-name sets are execution-plan inputs for rendering repository
+mapping/runfiles manifests, not provider data. Cquery now omits constructing and
+retaining those sets; it keeps the real RepositorySet and the actual semantic
+support Files. Build and --nobuild still compute them unchanged. No configured
+node, provider, action declaration or validation is dropped.

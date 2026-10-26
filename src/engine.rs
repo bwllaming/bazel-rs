@@ -11390,6 +11390,10 @@ impl Engine {
         rule: &Rule,
         configured: &mut ConfiguredNodes,
     ) -> Result<PreparedTarget, String> {
+        // Repository closures are inputs to execution-time manifest content,
+        // not provider analysis. Cquery retains the real RepositorySet and
+        // semantic support Files but never renders those manifests.
+        let execution_plan = self.cquery_capture.is_none();
         let top = self.configurations.top();
         let main_ignored = self.ignored("")?;
         let ActionPlanning {
@@ -11424,8 +11428,12 @@ impl Engine {
         // computes them from its resolved dependencies and toolchains below
         // instead; this loop only reads planning state, so it is skipped
         // there (W1a).
-        let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
-        if !custom_rule {
+        let mut transitive: BTreeSet<String> = if execution_plan {
+            BTreeSet::from([rule.label.repository.clone()])
+        } else {
+            BTreeSet::new()
+        };
+        if !custom_rule && execution_plan {
             let edge_exec = self.exec_configurations.get(key).copied();
             for edge in &edges {
                 let Ok(label) = self.resolve_rule_src(rule, &edge.label) else {
@@ -11600,13 +11608,16 @@ impl Engine {
                     }
                 }
             }
-            let mut transitive: BTreeSet<String> = BTreeSet::from([rule.label.repository.clone()]);
-            for (label, edge_config, _, _) in &dependency_labels {
-                transitive.extend(self.dependency_repositories(
-                    repositories,
-                    label.clone(),
-                    Some(*edge_config),
-                ));
+            let mut transitive: BTreeSet<String> = BTreeSet::new();
+            if execution_plan {
+                transitive.insert(rule.label.repository.clone());
+                for (label, edge_config, _, _) in &dependency_labels {
+                    transitive.extend(self.dependency_repositories(
+                        repositories,
+                        label.clone(),
+                        Some(*edge_config),
+                    ));
+                }
             }
             for (label, edge_config, map_key, attribute) in dependency_labels {
                 let aspects = edge_aspects.get(attribute).cloned().unwrap_or_default();
@@ -11933,9 +11944,11 @@ impl Engine {
         // The transitive repositories of the configured target (Starlark
         // rules' refined closure; both sequential inserts collapse to
         // this final value, and only later targets read it).
-        state
-            .repositories
-            .insert(key.clone(), Arc::new(transitive.clone()));
+        if self.cquery_capture.is_none() {
+            state
+                .repositories
+                .insert(key.clone(), Arc::new(transitive.clone()));
+        }
         match kind {
             PreparedKind::PackageGroup => {
                 let ActionPlanning {
