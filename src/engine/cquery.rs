@@ -10,16 +10,17 @@ use std::io::Write;
 pub(super) struct Capture {
     pub rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
     edges: Vec<CapturedEdge>,
-    aspect_targets: BTreeMap<Arc<ConfiguredTargetKey>, u32>,
+    target_ids: BTreeMap<Arc<ConfiguredTargetKey>, u32>,
     target_keys: Vec<Arc<ConfiguredTargetKey>>,
     application_ids: BTreeMap<(u32, Arc<str>, Vec<u32>), u32>,
-    aspect_strings: BTreeSet<Arc<str>>,
+    strings: BTreeSet<Arc<str>>,
     applications: Vec<CapturedAspect>,
     requests: BTreeMap<u32, Vec<u32>>,
 }
 
 /// Sparse Skyframe-like provenance, not copies of providers or base rule edges.
-/// Targets and applications are interned once; every dependency is a u32.
+/// Targets, attribute names and applications are interned once, including
+/// ordinary edges. No edge owns copies of its two configured labels.
 struct CapturedAspect {
     base: u32,
     class: Arc<str>,
@@ -30,22 +31,22 @@ struct CapturedAspect {
 }
 
 impl Capture {
-    fn aspect_string(&mut self, text: &str) -> Arc<str> {
-        if let Some(text) = self.aspect_strings.get(text) {
+    fn string(&mut self, text: &str) -> Arc<str> {
+        if let Some(text) = self.strings.get(text) {
             return text.clone();
         }
         let text: Arc<str> = Arc::from(text);
-        self.aspect_strings.insert(text.clone());
+        self.strings.insert(text.clone());
         text
     }
 
     fn target(&mut self, key: ConfiguredTargetKey) -> u32 {
-        if let Some(id) = self.aspect_targets.get(&key) {
+        if let Some(id) = self.target_ids.get(&key) {
             return *id;
         }
         let id = self.target_keys.len() as u32;
         let key = Arc::new(key);
-        self.aspect_targets.insert(key.clone(), id);
+        self.target_ids.insert(key.clone(), id);
         self.target_keys.push(key);
         id
     }
@@ -59,7 +60,7 @@ impl Capture {
         let base_id = self.target(base.clone());
         let mut ids = Vec::with_capacity(collection.used.len());
         for (aspect, bases) in &collection.used {
-            let descriptor = self.aspect_string(&aspect.descriptor);
+            let descriptor = self.string(&aspect.descriptor);
             // The collection is topological. Refer to the exact preceding
             // applications, including their own base paths, not just names.
             let required: Vec<_> = collection
@@ -76,7 +77,7 @@ impl Capture {
             } else {
                 let id = self.applications.len() as u32;
                 self.application_ids.insert(key, id);
-                let class = self.aspect_string(&aspect.identity);
+                let class = self.string(&aspect.identity);
                 self.applications.push(CapturedAspect {
                     base: base_id,
                     class,
@@ -159,9 +160,9 @@ impl Capture {
 }
 
 struct CapturedEdge {
-    from: ConfiguredTargetKey,
-    to: ConfiguredTargetKey,
-    attribute: String,
+    from: u32,
+    to: u32,
+    attribute: Arc<str>,
     tool: bool,
     aspect: bool,
 }
@@ -756,10 +757,16 @@ impl Engine {
         aspect: bool,
     ) {
         if let Some(capture) = &mut self.cquery_capture {
+            let from = match capture.target_ids.get(from) {
+                Some(id) => *id,
+                None => capture.target(from.clone()),
+            };
+            let to = capture.target(ConfiguredTargetKey::new(label, config));
+            let attribute = capture.string(attribute);
             capture.edges.push(CapturedEdge {
-                from: from.clone(),
-                to: ConfiguredTargetKey::new(label, config),
-                attribute: attribute.to_owned(),
+                from,
+                to,
+                attribute,
                 tool,
                 aspect,
             });
@@ -795,7 +802,10 @@ impl Engine {
         self.execute_build = execute;
         let capture = self.cquery_capture.take().expect("capture installed");
         analyzed?;
+        crate::perf_mark("cquery.analysis_state_dropped");
+        crate::perf_mark("cquery.graph_begin");
         let graph = self.finish_cquery_graph(capture, &roots, expanded)?;
+        crate::perf_mark("cquery.graph_ready");
         self.record_link_anchors();
         Ok(graph)
     }
@@ -818,28 +828,48 @@ impl Engine {
 
     fn finish_cquery_graph(
         &mut self,
-        capture: Capture,
+        mut capture: Capture,
         roots: &[Label],
         patterns: BTreeMap<String, Vec<Label>>,
     ) -> Result<Graph, String> {
+        // Analysis is complete: only the indexed data is read from here on.
+        // Release construction indexes before the independent graph grows.
+        capture.target_ids.clear();
+        capture.application_ids.clear();
+        capture.strings.clear();
         let mut ids: BTreeMap<(Label, Option<ConfigId>), u32> = BTreeMap::new();
-        let mut intern = |key| -> Result<(), String> {
-            if !ids.contains_key(&key) {
-                let id = u32::try_from(ids.len())
-                    .map_err(|_| "cquery graph exceeds u32 node capacity")?;
-                ids.insert(key, id);
+        let mut intern = |key| -> Result<u32, String> {
+            let next = ids.len();
+            match ids.entry(key) {
+                std::collections::btree_map::Entry::Occupied(entry) => Ok(*entry.get()),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    // The assigned IDs retain the original rule / edge / aspect
+                    // discovery order, independently of the interner's ordering.
+                    let id = u32::try_from(next)
+                        .map_err(|_| "cquery graph exceeds u32 node capacity")?;
+                    entry.insert(id);
+                    Ok(id)
+                }
             }
-            Ok(())
         };
         for key in capture.rules.keys() {
             intern(self.cquery_key(key)?)?;
         }
+        let mut mapped = vec![None; capture.target_keys.len()];
         for edge in &capture.edges {
-            intern(self.cquery_key(&edge.to)?)?;
+            let slot = &mut mapped[edge.to as usize];
+            if slot.is_none() {
+                *slot = Some(intern(
+                    self.cquery_key(&capture.target_keys[edge.to as usize])?,
+                )?);
+            }
         }
-        for key in &capture.target_keys {
-            intern(self.cquery_key(key)?)?;
+        for (slot, key) in mapped.iter_mut().zip(&capture.target_keys) {
+            if slot.is_none() {
+                *slot = Some(intern(self.cquery_key(key)?)?);
+            }
         }
+        let mapped: Vec<u32> = mapped.into_iter().map(Option::unwrap).collect();
         for label in roots {
             intern(self.cquery_key(&self.configurations.top_key(label.clone()))?)?;
         }
@@ -946,11 +976,11 @@ impl Engine {
         let mut hashes = HashMap::new();
         let mut conditions: BTreeMap<&ConfiguredTargetKey, Vec<String>> = BTreeMap::new();
         for edge in &capture.edges {
-            if edge.attribute == "$config_dependencies" {
+            if edge.attribute.as_ref() == "$config_dependencies" {
                 conditions
-                    .entry(&edge.from)
+                    .entry(&capture.target_keys[edge.from as usize])
                     .or_default()
-                    .push(edge.to.label.to_string());
+                    .push(capture.target_keys[edge.to as usize].label.to_string());
             }
         }
         for ((label, config), _) in ordered {
@@ -1082,23 +1112,21 @@ impl Engine {
                 edges: Vec::new(),
             });
         }
+        crate::perf_mark("cquery.graph_vertices_ready");
         for edge in &capture.edges {
-            let from_key = self.cquery_key(&edge.from)?;
-            let to_key = self.cquery_key(&edge.to)?;
-            let (Some(&from), Some(&to)) = (ids.get(&from_key), ids.get(&to_key)) else {
-                return Err("cquery edge has no analyzed endpoint".into());
-            };
+            let from = mapped[edge.from as usize];
+            let to = mapped[edge.to as usize];
             let implicit = match &nodes[from as usize].target {
                 // Config conditions are loaded by DependencyContextProducer,
                 // not rule prerequisites enumerated by Util.findImplicitDeps.
                 // They remain explicit on the base, but implicit when reached
                 // through targetifyValues(null, aspectDeps, ...).
                 wire::Target::Rule(rule) => {
-                    edge.attribute != "$config_dependencies"
+                    edge.attribute.as_ref() != "$config_dependencies"
                         && !rule.attributes.iter().any(|a| {
-                            (a.name == edge.attribute
-                                || a.name.strip_prefix('$').map(|s| format!("_{s}"))
-                                    == Some(edge.attribute.clone()))
+                            (a.name == edge.attribute.as_ref()
+                                || a.name.strip_prefix('$').map(|s| format!("_{s}")).as_deref()
+                                    == Some(edge.attribute.as_ref()))
                                 && a.explicitly_specified == Some(true)
                         })
                 }
@@ -1106,17 +1134,13 @@ impl Engine {
             };
             nodes[from as usize].edges.push(GraphEdge {
                 to,
-                attribute: edge.attribute.clone(),
+                attribute: edge.attribute.to_string(),
                 implicit,
                 tool: edge.tool,
                 aspect: edge.aspect,
             });
         }
-        let aspect_targets = capture
-            .target_keys
-            .iter()
-            .map(|key| self.cquery_key(key).map(|key| ids[&key]))
-            .collect::<Result<Vec<_>, _>>()?;
+        let aspect_targets = mapped;
         // Only the condition/platform dependencies are Skyframe CT deps of an
         // aspect's base context. Ordinary prerequisites come from the base's
         // already computed prerequisites supplier, not fresh CT dependencies.
@@ -1219,6 +1243,7 @@ impl Engine {
                     .collect(),
             );
         }
+        crate::perf_mark("cquery.graph_edges_ready");
         Ok(Graph {
             nodes,
             configurations,
@@ -1381,4 +1406,35 @@ fn configured_attribute(
         result.nodep = Some(true);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_shares_keys_and_names_but_keeps_transition_identity() {
+        let label = Label::parse_canonical("//pkg:target").unwrap();
+        let configuration = crate::configuration::Configuration::default();
+        let key = ConfiguredTargetKey::new(label.clone(), configuration.id);
+        let incoming =
+            ConfiguredTargetKey::without_rule_transition(label.clone(), configuration.id);
+        let mut capture = Capture::default();
+        let id = capture.target(key.clone());
+        for _ in 0..1000 {
+            assert_eq!(id, capture.target(key.clone()));
+        }
+        assert_ne!(id, capture.target(incoming));
+        let mut native = configuration.native;
+        native.cpu = Some("other".into());
+        let other = crate::configuration::Configuration::new(native, BTreeMap::new());
+        assert_ne!(
+            id,
+            capture.target(ConfiguredTargetKey::new(label, other.id))
+        );
+        assert_eq!(capture.target_keys.len(), 3);
+        let attr = capture.string("deps");
+        assert!(Arc::ptr_eq(&attr, &capture.string("deps")));
+        assert!(!Arc::ptr_eq(&attr, &capture.string("tools")));
+    }
 }

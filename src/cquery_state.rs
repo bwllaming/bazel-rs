@@ -178,12 +178,12 @@ impl Session {
                 return Err("repository replay lacks pinned tables".into());
             }
             let recording = snapshot::validate::Policy::current().select_owned(recorder.take());
+            crate::perf_mark("cquery.snapshot_inputs_begin");
             let inputs = format::encode_inputs(&recording, &records, tables.as_ref(), false);
-            // Once, not a round-trip or a JSON intermediate. Compression drops
-            // its uncompressed buffer before the atomic store hand-off.
-            let bytes = postcard::to_allocvec(graph).map_err(|e| e.to_string())?;
-            let plan = format::compress_plan(&bytes);
-            drop(bytes);
+            crate::perf_mark("cquery.snapshot_encode_begin");
+            // A bounded frame buffer, never a second full uncompressed graph.
+            let plan = encode_graph(graph)?;
+            crate::perf_mark("cquery.snapshot_compressed");
             store::write_in_background(
                 &self.cache,
                 &self.key,
@@ -197,6 +197,7 @@ impl Session {
                 ],
             )
             .commit()?;
+            crate::perf_mark("cquery.snapshot_saved");
             explain("saved");
             Ok(())
         };
@@ -205,6 +206,54 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// Incremental postcard -> existing compressed PLAN framing. Fixed boundaries
+/// preserve the exact decompressed representation (and compression bytes), so
+/// readers and validators need no special streaming format or migration.
+fn encode_graph(value: &impl serde::Serialize) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    const FRAME: usize = 4 << 20;
+    struct Frames {
+        pending: Vec<u8>,
+        parts: Vec<Vec<(usize, Vec<u8>)>>,
+    }
+    impl Frames {
+        fn emit(&mut self) {
+            if !self.pending.is_empty() {
+                let part = std::mem::replace(&mut self.pending, Vec::with_capacity(FRAME));
+                self.parts.push(format::compress_part(part));
+            }
+        }
+    }
+    impl Write for Frames {
+        fn write(&mut self, mut bytes: &[u8]) -> std::io::Result<usize> {
+            let length = bytes.len();
+            while !bytes.is_empty() {
+                let count = bytes.len().min(FRAME - self.pending.len());
+                self.pending.extend_from_slice(&bytes[..count]);
+                bytes = &bytes[count..];
+                if self.pending.len() == FRAME {
+                    self.emit();
+                }
+            }
+            Ok(length)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut frames = Frames {
+        pending: Vec::with_capacity(FRAME),
+        parts: Vec::new(),
+    };
+    // Buffer postcard's scalar writes without adding a graph-sized allocation.
+    let mut writer = std::io::BufWriter::with_capacity(64 << 10, &mut frames);
+    postcard::to_io(value, &mut writer).map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())?;
+    drop(writer);
+    frames.emit();
+    Ok(format::assemble_compressed(frames.parts))
 }
 
 impl Drop for Session {
@@ -269,4 +318,21 @@ pub fn dump_configurations(cache: &Path) -> Result<(), String> {
     serde_json::to_writer(std::io::stdout().lock(), &values).map_err(|e| e.to_string())?;
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn incremental_graph_encoding_has_identical_frames_and_roundtrips() {
+        // Scalar writes, large writes and boundaries inside one string are all
+        // exercised, including a final partial frame and the empty sequence.
+        for text in [String::new(), "abc".repeat((4 << 20) + 1)] {
+            let value = vec![(text, 19u64, Some(vec![1u32, 2, 99]))];
+            let raw = postcard::to_allocvec(&value).unwrap();
+            let streamed = encode_graph(&value).unwrap();
+            assert_eq!(streamed, format::compress_plan(&raw));
+            assert_eq!(format::decompress_plan(streamed).unwrap(), raw);
+        }
+    }
 }

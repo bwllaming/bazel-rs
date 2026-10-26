@@ -1021,6 +1021,11 @@ fn run() -> Result<(), String> {
         for warning in engine.take_warnings() {
             warn(&warning);
         }
+        // The query graph owns no provider/analysis heaps. Unlike the CLI's
+        // exit-only build path, encoding/export still has substantial work to
+        // do; release the dead engine before allocating the snapshot buffers.
+        drop(std::mem::ManuallyDrop::into_inner(engine));
+        bazel_rs::perf_mark("cquery.engine_released");
         lockfile_gate.open();
         if let Some(session) = cquery_session {
             session.finish(&graph, &_lockfile_writer.0)?;
@@ -1905,6 +1910,7 @@ fn cquery_output(
     relative: &str,
     cache: &Path,
 ) -> Result<(), String> {
+    bazel_rs::perf_mark("cquery.output_begin");
     if options.common.output_file.is_empty() {
         graph.write(expression, options, relative, std::io::stdout().lock())?;
     } else {
@@ -1917,7 +1923,9 @@ fn cquery_output(
         graph.write(expression, options, relative, &mut file)?;
         file.persist(path).map_err(|e| e.to_string())?;
     }
-    bazel_rs::cquery_state::save_configurations(cache, graph)
+    bazel_rs::cquery_state::save_configurations(cache, graph)?;
+    bazel_rs::perf_mark("cquery.output_end");
+    Ok(())
 }
 
 fn config_command(
