@@ -3657,8 +3657,6 @@ fn evaluate_rc(
     for warning in warnings {
         warn(&warning);
     }
-    // `--quiet` (UiVerbosity.QUIET): never a progress display.
-    bazel_rs::progress::set_quiet(bazelrc::startup_nullary(&rc_files, line, "quiet"));
     let blazerc = bazelrc::blazerc_options(&env, &rc_files);
     Ok(bazelrc::expand(
         command,

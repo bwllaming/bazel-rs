@@ -223,28 +223,6 @@ pub fn search_nullary(args: &[String], name: &str, default: bool) -> bool {
     result
 }
 
-/// The value of the nullary startup flag `name` over the rc `startup` and
-/// `startup:linux` options and the command line, the last one winning (the
-/// order [`process_startup_options`] processes them in); `false` when none
-/// sets it. The progress display reads `--quiet` this way
-/// (crate::progress: UiEventHandler.addProgressBar shows no progress bar
-/// under UiVerbosity.QUIET).
-pub fn startup_nullary(rc_files: &[RcFile], line: &CommandLine, name: &str) -> bool {
-    let mut flags: Vec<String> = Vec::new();
-    for key in ["startup", "startup:linux"] {
-        for rc in rc_files {
-            flags.extend(
-                rc.options
-                    .iter()
-                    .filter(|option| option.command == key)
-                    .map(|option| option.option.clone()),
-            );
-        }
-    }
-    flags.extend(line.startup_args.iter().cloned());
-    search_nullary(&flags, name, false)
-}
-
 /// GetAllUnaryOptionValues (blaze_util.cc:82-114).
 fn all_unary_values(args: &[String], key: &str, ignore_after: &str) -> Vec<String> {
     let mut values = Vec::new();
@@ -2002,31 +1980,6 @@ pub fn expand(
 mod tests {
     use super::*;
 
-    #[test]
-    fn startup_nullary_reads_rc_startup_lines_then_the_command_line() {
-        let option = |command: &str, option: &str| RcOption {
-            command: command.to_owned(),
-            option: option.to_owned(),
-            source: "/rc".to_owned(),
-            line: 1,
-        };
-        let rc = RcFile {
-            canonical_source_paths: vec!["/rc".to_owned()],
-            options: vec![option("startup", "--quiet"), option("build", "--noquiet")],
-        };
-        let line = |args: &[&str]| CommandLine {
-            startup_args: args.iter().map(|arg| (*arg).to_owned()).collect(),
-            cache_dir: None,
-            command: Some("build".to_owned()),
-            command_args: Vec::new(),
-        };
-        let rc_files = std::slice::from_ref(&rc);
-        assert!(startup_nullary(rc_files, &line(&[]), "quiet"));
-        assert!(!startup_nullary(rc_files, &line(&["--noquiet"]), "quiet"));
-        assert!(startup_nullary(&[], &line(&["--quiet"]), "quiet"));
-        assert!(!startup_nullary(&[], &line(&[]), "quiet"));
-    }
-
     fn words(line: &str) -> Vec<String> {
         tokenize(line.as_bytes())
             .into_iter()
@@ -2140,12 +2093,21 @@ mod tests {
     fn quiet_is_a_startup_option_of_rc_files_and_the_command_line() {
         let rc = RcFile {
             canonical_source_paths: vec!["/w/.bazelrc".into()],
-            options: vec![RcOption {
-                command: "startup".into(),
-                option: "--quiet".into(),
-                source: "/w/.bazelrc".into(),
-                line: 1,
-            }],
+            options: vec![
+                RcOption {
+                    command: "startup".into(),
+                    option: "--quiet".into(),
+                    source: "/w/.bazelrc".into(),
+                    line: 1,
+                },
+                // Not a startup line.
+                RcOption {
+                    command: "build".into(),
+                    option: "--noquiet".into(),
+                    source: "/w/.bazelrc".into(),
+                    line: 2,
+                },
+            ],
         };
         let state = |startup: &[&str]| {
             let line = CommandLine {

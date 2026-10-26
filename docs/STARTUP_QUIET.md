@@ -32,7 +32,8 @@ tests/startup_quiet.rs.
 ## Implementation
 
 `crate::ui` holds the verbosity (`ui::quiet()`, the accessor every console
-display — a progress area too — honours) and the one check: every
+display honours: the interactive progress display of docs/PROGRESS.md never
+runs under it) and the one check: every
 informational line goes through `ui::note` (`note!`). Bytes that are stored
 before they reach the console — what planning printed, which the analysis
 snapshot keeps and a hit replays, a repository speculation's deferred output

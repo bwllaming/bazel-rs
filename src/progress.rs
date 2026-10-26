@@ -699,15 +699,6 @@ impl UiOptions {
     }
 }
 
-/// The startup option `--quiet` ([`set_quiet`]).
-static QUIET: AtomicBool = AtomicBool::new(false);
-
-/// Record the startup option `--quiet` (the client's rc evaluation): the
-/// display never runs under it.
-pub fn set_quiet(quiet: bool) {
-    QUIET.store(quiet, Ordering::Relaxed);
-}
-
 /// The environment the display decision reads ([`decide`]).
 #[derive(Clone, Debug, Default)]
 pub struct TerminalEnvironment {
@@ -745,7 +736,7 @@ impl TerminalEnvironment {
             ci: set("CI").is_some_and(|value| !off(&value)),
             no_color: set("NO_COLOR").is_some(),
             disabled: set("BAZEL_RS_PROGRESS").is_some_and(|value| off(&value)),
-            quiet: QUIET.load(Ordering::Relaxed),
+            quiet: crate::ui::quiet(),
             columns,
         }
     }

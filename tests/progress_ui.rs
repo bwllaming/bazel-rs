@@ -145,6 +145,30 @@ fn the_status_area_shows_on_a_terminal_and_nowhere_else() {
         ws.normalized(&text(&ci.bytes).replace("\r\n", "\n"), "ci"),
         expected
     );
+    // The startup option --quiet (crate::ui): no status area, and of the
+    // plain output only the result lines.
+    let startup_quiet = on_pty(
+        &ws.command("startup-quiet", &[&["--quiet"][..], &build[..]].concat()),
+        100,
+        None,
+    );
+    assert_eq!(startup_quiet.status, 0, "{}", text(&startup_quiet.bytes));
+    assert!(
+        !startup_quiet.bytes.contains(&0x1b),
+        "{}",
+        text(&startup_quiet.bytes)
+    );
+    assert_eq!(
+        ws.normalized(
+            &text(&startup_quiet.bytes).replace("\r\n", "\n"),
+            "startup-quiet"
+        ),
+        expected
+            .iter()
+            .filter(|line| line.starts_with("//:"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
 
     // A terminal: the status area while the slow action runs...
     let on = on_pty(&ws.command("on", &build), 100, None);
