@@ -99,7 +99,7 @@ and `mod`:
 | --- | --- |
 | `--remote_cache=http(s)://[user@]host[:port][/path]` (old `--remote_http_cache`) | HTTP cache |
 | `--remote_cache=grpc://…`, `grpcs://…`, `unix:…`, no scheme (TLS) | gRPC cache (below) |
-| `--remote_executor` | explicit failure (remote execution) |
+| `--remote_executor`, `--remote_exec_header`, `--remote_default_exec_properties`, `--remote_local_fallback` | remote execution (docs/REMOTE_EXECUTION.md) |
 | `--[no]remote_accept_cached`, `--[no]remote_upload_local_results` | modelled |
 | `--remote_timeout` (default 60s; unitless means seconds) | connect and read timeout |
 | `--remote_header`, `--remote_cache_header` (`NAME=VALUE`) | sent with every request |
@@ -211,12 +211,14 @@ the spawns (the paired capture confirms every point):
   `tests/remote_cache.rs::unresolved_symlinks_enter_the_remote_cache` pins
   genuine's keys).
 * Execution properties (a target's `exec_properties`, an action's combined
-  exec-group properties (N35), or an execution platform with
-  `exec_properties`/`remote_execution_properties`) enter
-  Bazel's key as a `Platform` message, which is not modelled: such spawns
-  never use the remote cache (`WARNING: Remote Cache: not used for …`). A
-  non-default `--host_platform` that analysis did not resolve counts as
-  unknown and is gated the same way.
+  exec-group properties (N35), an execution platform with
+  `exec_properties`/`remote_execution_properties`, and
+  `--remote_default_exec_properties`) enter the key as the Command's and
+  the Action's `Platform` (PlatformUtils.getPlatformProto,
+  docs/REMOTE_EXECUTION.md). An execution platform that analysis did not
+  resolve counts as unknown: such spawns never use the remote cache
+  (`WARNING: Remote Cache: not used for …`). A spawn's `timeout`
+  requirement is the Action's `timeout`.
 * Output roots are Bazel's `k8-<mode>` (D1 closed, below).
 * Execution-requirement tags (`packages/TargetUtils.java:53-63, 241-301`):
   `no-cache`, `no-remote-cache`, `no-remote` and `local` (also genrule
@@ -344,11 +346,10 @@ file the cache fails explicitly, as for HTTP. Responses are single-flight
 per URI (Caffeine's `Cache.get(key, loader)`), for HTTP caches and the
 downloader too.
 
-**Remote execution** stays an explicit failure. The channel is shared
-code: `Execution.Execute`/`WaitExecution` are server-streaming
-`Operation` calls (`grpc_channel::Channel::server_streaming`, the call
-ByteStream.Read uses), and Bazel shares one channel when
-`--remote_executor` and `--remote_cache` are equal.
+**Remote execution** (docs/REMOTE_EXECUTION.md) uses the same client:
+`Execution.Execute`/`WaitExecution` are server-streaming `Operation` calls
+(`grpc_channel::Channel::server_streaming`), and one endpoint serves both
+when `--remote_executor` and `--remote_cache` are equal.
 
 ## D1: output roots
 
@@ -391,7 +392,7 @@ both roots. Tracked receipts of earlier captures keep their `rust-*` paths.
 * The credential cache lives for one native invocation.
 * Gson leniency in helper output (comments, single quotes, unquoted names) is
   not reproduced; such output is `error parsing output`.
-* Remote execution, the disk cache, the remote downloader,
+* The disk cache, the remote downloader,
   remote output services, build without the bytes, `.netrc` for the cache and
   helper scopes needing Punycode remain explicit failures.
 

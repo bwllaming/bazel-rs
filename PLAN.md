@@ -88,8 +88,10 @@ Done since the last increment recorded under "History", one line each:
 - [x] gRPC remote cache (`grpc://`, `grpcs://`, `unix:`; docs/REMOTE_CACHE.md):
       entries shared with genuine Bazel both ways (10/10, in-process server and
       bazel-remote); receipt `tests/fixtures/remote_cache/grpc_receipt.json`.
-- [ ] Remote execution: `--config=buildbarn` also sets `--remote_executor` and
-      `--remote_default_exec_properties`, which still fail explicitly.
+- [x] Remote execution (`--remote_executor`, `--remote_default_exec_properties`,
+      `--remote_exec_header`, `--remote_local_fallback`; docs/REMOTE_EXECUTION.md):
+      identical Execute requests to genuine Bazel (12/12 build spawns, 2/2 test
+      spawns) and shared results with NativeLink 1.8.2; build and test spawns.
 - [ ] Build Event Protocol (`--build_event_json_file`, `--build_event_binary_file`,
       `--bes_backend`), `--profile` traces, `--execution_log_*_file`.
 - [ ] Persistent workers (`--strategy=...=worker`, `supports-workers`), if any
@@ -316,8 +318,8 @@ checkout is unchanged; no application query/build/test success is claimed.
 - [x] Divergence D1 closed (`k8-<mode>` output roots), needed for shared keys.
 - [x] Paired capture: entries shared both ways (8/8), identical AC/CAS
       contents and cold-build requests, exact helper error texts; receipt
-      `tests/fixtures/remote_cache/reference_receipt.json`. Remote execution
-      remains an explicit failure; gRPC caches are implemented (docs/REMOTE_CACHE.md).
+      `tests/fixtures/remote_cache/reference_receipt.json`. gRPC caches and
+      remote execution are implemented (docs/REMOTE_CACHE.md, docs/REMOTE_EXECUTION.md).
 
 ## Remaining compatibility gates
 

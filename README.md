@@ -225,6 +225,10 @@ Implemented:
   with Bazel's action keys (entries are shared with genuine Bazel both ways) and Bazel's credential helpers for the cache and the
   downloader ([`docs/REMOTE_CACHE.md`](docs/REMOTE_CACHE.md)); uploads need
   the explicit opt-in `BAZEL_RS_ALLOW_REMOTE_UPLOAD=1` (safety divergence).
+- Remote execution with `--remote_executor` (build and test spawns, Bazel's
+  Action digests, platforms from `exec_properties` and
+  `--remote_default_exec_properties`, `--remote_local_fallback`;
+  [`docs/REMOTE_EXECUTION.md`](docs/REMOTE_EXECUTION.md)).
 
 Unknown attributes, options, rules, and unsupported commands fail rather than
 being silently ignored. rc files are evaluated like Bazel 9.3 (system, workspace,
