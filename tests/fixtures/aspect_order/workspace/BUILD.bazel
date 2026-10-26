@@ -1,0 +1,24 @@
+load(":defs.bzl", "collect", "flag", "multi_collect", "node", "transitioned_node")
+
+platform(name = "platform")
+flag(name = "switch", build_setting_default = True)
+config_setting(name = "on", flag_values = {":switch": "true"})
+node(name = "chosen", srcs = ["selected.txt"])
+node(name = "ignored", srcs = ["unselected.txt"])
+node(name = "branch", deps = select({":on": [":chosen"], "//conditions:default": [":ignored"]}))
+collect(name = "early", target = ":branch")
+collect(name = "twin", target = ":branch")
+collect(name = "direct", target = ":chosen")
+
+# This second setting flushes phase-2 providers while phase 1 still has roots
+# left to analyze. Aspect propagation must not depend on a base rule having
+# happened to commit before the aspect dependency walk.
+flag(name = "late_flag", build_setting_default = False)
+config_setting(name = "late", flag_values = {":late_flag": "false"})
+node(name = "z_late", deps = select({":late": [":branch"], "//conditions:default": []}))
+exports_files(["witness.txt", "alternative.txt"])
+config_setting(name = "debug", values = {"compilation_mode": "dbg"})
+node(name = "configured", deps = select({":debug": [":chosen"], "//conditions:default": [":ignored"]}))
+multi_collect(name = "multi", targets = [":configured"], exec_target = ":configured")
+transitioned_node(name = "incoming_branch", deps = select({":debug": [":chosen"], "//conditions:default": [":ignored"]}))
+collect(name = "incoming", target = ":incoming_branch")

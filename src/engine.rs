@@ -1957,9 +1957,9 @@ pub struct Engine {
     requested_aspects: Vec<String>,
     /// `--aspects_parameters` values (AspectParameters).
     aspect_parameters: BTreeMap<String, String>,
-    /// The select()-configured rules action planning saw, by configured
-    /// target key (aspect applications read the base target's configured
-    /// attribute values for `ctx.rule`, N58).
+    /// The select()-configured custom rules produced by phase 1, shared with
+    /// the plan. Both aspect dependency analysis and implementation planning
+    /// must walk these same resolved attributes, regardless of pending flushes.
     configured_rules: BTreeMap<ConfiguredTargetKey, Arc<Rule>>,
     /// The configuration of each label attribute of each aspect
     /// application (base configured target key, aspect identity), computed
@@ -4402,8 +4402,11 @@ impl Engine {
                 feature_flag,
             },
         );
-        self.analyze_aspect_edges(&rule, &key, active, configured, plan)?;
         let rule = Arc::new(rule);
+        if rule.custom.is_some() {
+            self.configured_rules.insert(key.clone(), Arc::clone(&rule));
+        }
+        self.analyze_aspect_edges(&rule, &key, active, configured, plan)?;
         if let Some(capture) = &mut self.cquery_capture {
             capture.rules.insert(key.clone(), Arc::clone(&rule));
         }
@@ -4524,7 +4527,16 @@ impl Engine {
         }
         let base_key = ConfiguredTargetKey::new(base_label.clone(), config);
         let base_rule = match self.target(&base_label)? {
-            Target::Rule(rule) => rule,
+            // Loading declarations still contain select() placeholders. Using
+            // them here omits selected deps, whereas phase 2 later walks the
+            // configured rule and demands aspect applications never analyzed.
+            // Publish/read the shared resolved declaration in phase 1, not as
+            // a side effect of whichever targets plan_pending committed first.
+            Target::Rule(rule) => self
+                .configured_rules
+                .get(&base_key)
+                .cloned()
+                .unwrap_or(rule),
             _ => return Ok(()),
         };
         let collection = crate::aspects::aspect_collection(aspects, &base_rule)?;
@@ -11762,10 +11774,6 @@ impl Engine {
         prepared: PreparedTarget,
         computed: Option<ComputeOutcome>,
     ) -> Result<(), String> {
-        if rule.custom.is_some() {
-            self.configured_rules
-                .insert(prepared.key.clone(), Arc::clone(rule));
-        }
         let PreparedTarget {
             key,
             config,

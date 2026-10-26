@@ -1,0 +1,9 @@
+{
+  "reference": "Bazel 9.3.0, --batch, private output_base, local registry, --lockfile_mode=off --incompatible_autoload_externally= --platforms=//:platform --host_platform=//:platform",
+  "targets": ["//:early", "//:twin", "//:z_late"],
+  "outputs": {"branch.mark": "branch:witness\n", "chosen.mark": "chosen:witness\n"},
+  "implementation_counts": {"RULE:chosen": 1, "RULE:branch": 1, "RULE:z_late": 1, "BASE:chosen": 1, "BASE:branch": 1, "MIDDLE:chosen": 1, "MIDDLE:branch": 1, "CLOSURE:chosen": 1, "CLOSURE:branch": 1},
+  "configured_targets": 12,
+  "aspect_applications": 6,
+  "note": "Native baseline 8047ae62 fails with missing base aspect on chosen while z_late's custom config_setting flushes pending providers. Native rule printing occurs in plan order, not Skyframe completion order; counts and produced bytes are the contract."
+}
