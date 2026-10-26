@@ -695,7 +695,7 @@ impl RegistrySession {
 /// the workspace's state directory, `<cache>/worktrees/<name>-<hash>/`
 /// (crate::worktree).
 pub fn hidden_lockfile_path(cache_dir: &Path, workspace: &Path) -> PathBuf {
-    crate::worktree::state_directory_for(cache_dir, workspace).join(lockfile::LOCKFILE_NAME)
+    crate::worktree::output_base_for(cache_dir, workspace).join(lockfile::LOCKFILE_NAME)
 }
 
 /// Where the hidden lockfile of `workspace` was before per-worktree state

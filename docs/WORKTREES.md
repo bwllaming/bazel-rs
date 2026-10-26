@@ -66,6 +66,18 @@ store is shared like Bazel's output user root (`info repository_cache` is
 `<cache>/repositories/downloads`). The state directory of a deleted worktree
 stays until removed by hand (no garbage collection yet).
 
+Startup `--output_base=PATH` (also `--output_base PATH`, or `startup` in an rc
+file) replaces that per-workspace state directory, **not the shared cache**.
+The last startup value wins; command-line values override rc values. Relative
+paths resolve against the invocation's cwd, existing symlink ancestors resolve
+canonically, and `info` reports the effective path without creating it. Analysis
+snapshots, configuration tables, hidden lockfiles, test indices/run directories
+and output-tree links use this base. Commands with the same explicit base share
+that state; different bases cannot overwrite it. As with Bazel, callers should
+not concurrently use one explicit base for unrelated workspaces. Repository and
+action content remains shared through the usual default cache or `--cache-dir`;
+changing or clearing an output base does not move/delete the common cache.
+
 A cache of the flat layout before per-worktree state is not migrated: its
 `snapshots/`, `hidden-lockfiles/`, `test-run/`, `tests/index/` and
 `execroot/` are no longer used (an older binary sharing the cache still uses

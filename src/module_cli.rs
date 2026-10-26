@@ -14,6 +14,45 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
+/// Bazel 9.3 `mod dump_repo_mapping ""`: the real main-repository mapping,
+/// including module aliases and extension imports. Empty is the canonical root
+/// name, not `_main`. Unlike `mod graph`, this uses the caller's normal loading
+/// resolver/session and built-in profile. JSON is an output format, not a store.
+pub fn dump_repo_mapping(
+    repositories: &crate::repository::RepositorySet,
+    names: &[String],
+) -> Result<String, String> {
+    use serde::ser::{SerializeMap, Serializer as _};
+    if names != [""] {
+        return Err("native mod dump_repo_mapping currently requires exactly one canonical repository name: the empty string for the main repository".to_owned());
+    }
+    let mapping = repositories.mapping("")?;
+    let mut bytes = Vec::new();
+    let mut serializer = serde_json::Serializer::new(&mut bytes);
+    let mut object = serializer
+        .serialize_map(Some(mapping.len()))
+        .map_err(|e| e.to_string())?;
+    let mut emitted = BTreeSet::new();
+    // Preserve genuine's insertion order (extension imports, root aliases,
+    // dependencies); the underlying shared lookup map is sorted by name.
+    for name in repositories
+        .main_mapping_order()
+        .iter()
+        .chain(mapping.keys())
+    {
+        if let Some(canonical) = mapping.get(name)
+            && emitted.insert(name.clone())
+        {
+            object
+                .serialize_entry(name, canonical)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    object.end().map_err(|e| e.to_string())?;
+    bytes.push(b'\n');
+    String::from_utf8(bytes).map_err(|e| e.to_string())
+}
+
 /// Run a native module subcommand. `args` begins with `graph`, not `mod`.
 /// Only explicit registries and the documented JSON profile work.
 pub fn run(root: &Path, args: &[String]) -> Result<String, String> {

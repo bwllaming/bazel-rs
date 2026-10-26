@@ -953,11 +953,13 @@ pub struct StartupState {
     pub ignore_all_rc_files: bool,
     /// `--[no]quiet` (crate::ui; the last value wins, rc files included).
     pub quiet: bool,
+    /// Last rc/command-line value, resolved against the client cwd by the CLI.
+    pub output_base: Option<String>,
 }
 
 /// StartupOptions::ProcessArgs (startup_options.cc:419-445) over the rc
 /// `startup` and `startup:linux` options (option_processor.cc:603-656) and
-/// the command line. Only the rc-file flags are modelled; every other valid
+/// the command line. The rc-file flags, quiet mode and output base are modelled; every other valid
 /// startup option is an explicit failure naming where it came from. On a
 /// failure, `provenance` receives the client's
 /// PrintStartupOptionsProvenanceMessage lines for the flags processed so far
@@ -1041,7 +1043,7 @@ fn process_startup_flags(
                 "unsupported startup option {arg:?} from rc file {file}:{line}; startup options are never silently ignored"
             ),
             None => format!(
-                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet and --bazelrc"
+                "unsupported startup option {arg:?}; the native client models only --[no]system_rc, --[no]workspace_rc, --[no]home_rc, --ignore_all_rc_files, --[no]quiet, --bazelrc and --output_base"
             ),
         };
         if check_valid_nullary(arg)? {
@@ -1087,6 +1089,11 @@ fn process_startup_flags(
                 return Err("Can't specify --bazelrc in the RC file.".to_owned());
             }
             user_bazelrc = value.to_owned();
+        } else if name == "output_base" {
+            if value.is_empty() {
+                return Err("--output_base requires a nonempty path".to_owned());
+            }
+            state.output_base = Some(value.to_owned());
         } else {
             let form = if from_next {
                 format!("{arg}={value}")
@@ -2147,7 +2154,7 @@ mod tests {
         let rc = RcFile {
             canonical_source_paths: vec!["/w/.bazelrc".into()],
             options: vec![
-                option("--output_base", 1),
+                option("--install_base", 1),
                 option("/x", 1),
                 option("--nohome_rc", 2),
             ],
@@ -2162,11 +2169,11 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error,
-            "unsupported startup option \"--output_base=/x\" from rc file /w/.bazelrc:1; startup options are never silently ignored"
+            "unsupported startup option \"--install_base=/x\" from rc file /w/.bazelrc:1; startup options are never silently ignored"
         );
         assert_eq!(
             provenance,
-            ["Reading 'startup' options from /w/.bazelrc: --output_base=/x"]
+            ["Reading 'startup' options from /w/.bazelrc: --install_base=/x"]
         );
         let (mut warnings, mut provenance) = (Vec::new(), Vec::new());
         let line = CommandLine {

@@ -378,11 +378,11 @@ fn startup_options_in_rc_files() {
         ws.failed(&[], &["build", ":ok"])
             .contains("Can't specify --bazelrc in the RC file.")
     );
-    ws.file(".bazelrc", "\nstartup --output_base=/tmp/x\n");
+    ws.file(".bazelrc", "\nstartup --install_base=/tmp/x\n");
     let error = ws.failed(&[], &["build", ":ok"]);
     assert!(
         error.contains(&format!(
-            "unsupported startup option \"--output_base=/tmp/x\" from rc file {}:2",
+            "unsupported startup option \"--install_base=/tmp/x\" from rc file {}:2",
             rc_path(&ws, ".bazelrc")
         )),
         "{error}"

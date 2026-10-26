@@ -25,7 +25,7 @@ Usage:
 
 Startup: --[no]system_rc --[no]workspace_rc --[no]home_rc --[no]ignore_all_rc_files
   --[no]quiet (only errors and command output; docs/STARTUP_QUIET.md)
-  --bazelrc=FILE; rc files are evaluated like Bazel 9.3 (--config, common/always,
+  --bazelrc=FILE --output_base=PATH; rc files are evaluated like Bazel 9.3 (--config, common/always,
   --announce_rc; docs/BAZELRC.md); unmodelled rc options fail naming file:line.
 Patterns: //..., //package/..., //package:all, //package:*, //package:target, :target
 Query: the Bazel 9.3 query language (deps, rdeps, allpaths, somepath, attr, filter,
@@ -57,7 +57,7 @@ Cache: --cache-dir=PATH, else <workspace>/bazel-rs-out; in a linked git worktree
   the main checkout's (<main>/bazel-rs-out: repositories, actions, test results
   are shared). Each workspace's own state (analysis snapshots, test result index,
   hidden lockfile, `run` of tests) is <cache>/worktrees/<name>-<hash>/
-  (docs/WORKTREES.md).
+  (docs/WORKTREES.md). --output_base replaces this state directory, not the shared cache.
 Digest memo: settled files' SHA-256 by path and stat key persist in
   <cache>/digests/v2.dmemo across commands; BAZEL_RS_DIGEST_MEMO=off bypasses
   it while set (its records stay); deleting <cache>/digests/ drops them
@@ -177,6 +177,11 @@ fn run() -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let root = workspace::workspace_root(&cwd)?;
     let options = evaluate_rc(&line, &command, &cwd, &root, &path_to_binary)?;
+    let dump_repo_mapping = command == "mod"
+        && options
+            .residue
+            .first()
+            .is_some_and(|arg| arg.text == "dump_repo_mapping");
     if command == "info" {
         return info_command(&line, &options, &cwd, root);
     }
@@ -227,7 +232,7 @@ fn run() -> Result<(), String> {
     let mut deferred = None;
     let mut ui_options = bazel_rs::progress::UiOptions::default();
     let rc_options;
-    let rest = if command == "mod" {
+    let rest = if command == "mod" && !dump_repo_mapping {
         let (rest, rc) = mod_arguments(&options, &mut credential_options, &mut remote_options)?;
         rc_options = rc;
         rest
@@ -519,7 +524,7 @@ fn run() -> Result<(), String> {
     // The command's arguments, for the Starlark options' `Did you mean` hint
     // (runtime/BlazeOptionHandler.java:428-440).
     let command_args = line.command_args.clone();
-    if command == "mod" {
+    if command == "mod" && !dump_repo_mapping {
         let output =
             bazel_rs::module_cli::run_with_source_cache(&root, &rest, &cache.join("repositories"))?;
         print!("{output}");
@@ -788,6 +793,12 @@ fn run() -> Result<(), String> {
     };
     if fetch_mode == Some(FetchMode::Repositories) {
         return fetch_repositories(&repositories, &fetch, &lockfile_gate);
+    }
+    if dump_repo_mapping {
+        let output = bazel_rs::module_cli::dump_repo_mapping(&repositories, &rest[1..])?;
+        lockfile_gate.open();
+        print!("{output}");
+        return Ok(());
     }
     // --embed_label is validated by its converter before anything runs
     // (WorkspaceStatusAction.OneLineStringConverter :216-233).
@@ -1151,7 +1162,7 @@ fn info_command(
     // is its main checkout's) and the workspace's state directory in it, the
     // output base (docs/WORKTREES.md); read only, nothing is created.
     let cache = command_cache(line, cwd, &root);
-    let output_base = bazel_rs::worktree::state_directory_for(&cache, &root);
+    let output_base = bazel_rs::worktree::output_base_for(&cache, &root);
     let context = bazel_rs::info::Context {
         workspace: root,
         cache,
@@ -2942,7 +2953,7 @@ impl NativeOptions {
             rc: bazel_rs::rc_options::RcOptions::default(),
             resolver: bazel_rs::module_graph::ResolverOptions {
                 // Every lockfile mode supports remote registries (N37).
-                allow_remote: matches!(command, "build" | "query" | "run" | "test"),
+                allow_remote: matches!(command, "build" | "query" | "run" | "test" | "mod"),
                 // Bazel 9.3 always injects @bazel_tools and its MODULE
                 // closure (ModuleFileFunction, BazelRepositoryModule); the
                 // native explicit-module profile is an opt-out
@@ -3742,14 +3753,19 @@ fn evaluate_rc(
         read?
     };
     let mut provenance = Vec::new();
-    match bazelrc::process_startup_options(&rc_files, line, &mut warnings, &mut provenance) {
-        Ok(state) => bazel_rs::ui::set_quiet(state.quiet),
-        Err(error) => {
-            for note in provenance {
-                bazel_rs::note!("INFO: {note}");
+    let startup =
+        match bazelrc::process_startup_options(&rc_files, line, &mut warnings, &mut provenance) {
+            Ok(startup) => startup,
+            Err(error) => {
+                for note in provenance {
+                    bazel_rs::note!("INFO: {note}");
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
+    bazel_rs::ui::set_quiet(startup.quiet);
+    if let Some(path) = startup.output_base {
+        bazel_rs::worktree::install_output_base(cwd, &path)?;
     }
     for warning in warnings {
         warn(&warning);
@@ -4015,10 +4031,10 @@ static OUTPUT_BASE_LOCK: std::sync::OnceLock<bazel_rs::output_base::Lock> =
 /// nothing when it fails before writing (a `clean` meanwhile finds nothing
 /// to delete).
 fn hold_output_base_lock(cache: &Path, root: &Path, command: &str) {
-    if !cache.is_dir() {
+    let state = bazel_rs::worktree::output_base_for(cache, root);
+    if !cache.is_dir() && !state.is_dir() {
         return;
     }
-    let state = bazel_rs::worktree::state_directory_for(cache, root);
     if let Ok(lock) = bazel_rs::output_base::acquire(
         &state,
         bazel_rs::output_base::LockMode::Shared,
@@ -4119,7 +4135,7 @@ fn clean_command(
     // Like every Bazel command, clean has an output base (it creates the
     // state directory if needed, to hold its lock).
     let cache = command_cache(line, cwd, &root);
-    let state = bazel_rs::worktree::state_directory_for(&cache, &root);
+    let state = bazel_rs::worktree::output_base_for(&cache, &root);
     let lock = match bazel_rs::output_base::acquire(
         &state,
         bazel_rs::output_base::LockMode::Exclusive,

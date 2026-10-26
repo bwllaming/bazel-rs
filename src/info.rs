@@ -375,9 +375,9 @@ fn value(context: &Context, kind: &Kind) -> Result<Vec<u8>, String> {
         Kind::OutputPath => path_line(&output_path),
         Kind::PeakHeapSize => line("unknown"),
         Kind::Release => line(format!(
-            "release bazel-rs {} (compatibility target Bazel {})",
-            env!("CARGO_PKG_VERSION"),
-            crate::COMPATIBILITY_VERSION
+            "release {}+bazel-rs.{}",
+            crate::COMPATIBILITY_VERSION,
+            env!("CARGO_PKG_VERSION")
         )),
         Kind::RepositoryCache => path_line(&context.cache.join("repositories").join("downloads")),
         // DebugLoggerConfigurator.getServerLogPath().orElse(""): no log file.

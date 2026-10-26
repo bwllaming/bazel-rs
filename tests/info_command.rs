@@ -204,10 +204,7 @@ fn all_items_in_genuine_order_with_mapped_values() {
     );
     assert_eq!(
         native["release"],
-        format!(
-            "release bazel-rs {} (compatibility target Bazel 9.3.0)",
-            env!("CARGO_PKG_VERSION")
-        )
+        format!("release 9.3.0+bazel-rs.{}", env!("CARGO_PKG_VERSION"))
     );
     assert_eq!(native["server_log"], "");
     // info neither creates the cache nor writes a lockfile.

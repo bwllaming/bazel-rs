@@ -356,6 +356,64 @@ pub fn state_directory_for(cache: &Path, workspace: &Path) -> PathBuf {
 
 /// The workspace of this process ([`install`]): its state directory name.
 static CURRENT: OnceLock<String> = OnceLock::new();
+/// An explicit Bazel output base replaces only mutable per-workspace state,
+/// never the content-addressed cache shared by linked worktrees.
+static OUTPUT_BASE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Install the startup `--output_base`. Resolve relative paths against the
+/// client cwd, including existing symlink ancestors, without creating anything
+/// (`info` is read-only). The CLI calls this once after rc startup evaluation.
+pub fn install_output_base(cwd: &Path, path: &str) -> Result<(), String> {
+    let path = resolve_output_base(cwd, path)?;
+    OUTPUT_BASE
+        .set(path)
+        .map_err(|_| "output base was already installed".to_owned())
+}
+
+fn resolve_output_base(cwd: &Path, path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() {
+        return Err("--output_base requires a nonempty path".to_owned());
+    }
+    let absolute = cwd.join(path);
+    let mut resolved = PathBuf::new();
+    for part in absolute.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            other => {
+                resolved.push(other);
+                match fs::canonicalize(&resolved) {
+                    Ok(canonical) => {
+                        if !canonical.is_dir() {
+                            return Err(format!(
+                                "output base {} is not a directory",
+                                resolved.display()
+                            ));
+                        }
+                        resolved = canonical;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(format!("output base {}: {error}", resolved.display()));
+                    }
+                }
+            }
+        }
+    }
+    Ok(resolved)
+}
+
+/// Effective output base for a named workspace: the explicit startup value,
+/// otherwise its default per-worktree directory. Unlike `state_directory_for`,
+/// this honors the current invocation's override (not for foreign seed paths).
+pub fn output_base_for(cache: &Path, workspace: &Path) -> PathBuf {
+    OUTPUT_BASE
+        .get()
+        .cloned()
+        .unwrap_or_else(|| state_directory_for(cache, workspace))
+}
 
 /// Make `workspace` the workspace of this process: [`state_directory`]
 /// answers its state directory from now on. Called once by the CLI (one
@@ -368,6 +426,9 @@ pub fn install(workspace: &Path) {
 /// `cache` ([`install`]); without an installed workspace (library use and
 /// unit tests) `cache` itself, the flat layout.
 pub fn state_directory(cache: &Path) -> PathBuf {
+    if let Some(path) = OUTPUT_BASE.get() {
+        return path.clone();
+    }
     match CURRENT.get() {
         Some(name) => cache.join(WORKTREES).join(name),
         None => cache.to_path_buf(),

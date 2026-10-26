@@ -1,0 +1,5 @@
+module(name = "td_fixture", repo_name = "root_alias")
+bazel_dep(name = "dep", version = "1.0", repo_name = "renamed")
+local_path_override(module_name = "dep", path = "dep")
+ext = use_extension("//:repos.bzl", "ext")
+use_repo(ext, "generated")
