@@ -273,6 +273,98 @@ pub fn generate_fixup(
     }))
 }
 
+/// The buildozer commands of LockfileModuleExtensionMetadata.generateFixup
+/// (lines 79-237) for the root MODULE.bazel (`include` is not supported
+/// natively): `use_repo_add`/`use_repo_remove PROXY REPO...`, `None` when the
+/// imports are as reported. `proxy_name` names a proxy by its location.
+pub fn fixup_commands(
+    metadata: &ExtensionMetadata,
+    root: &RootExtensionUsage,
+    all_repos: &[String],
+    proxy_name: &dyn Fn(&str) -> String,
+) -> Result<Option<Vec<String>>, String> {
+    let dev_deps = metadata.root_module_direct_dev_deps(all_repos)?;
+    let deps = metadata.root_module_direct_deps(all_repos)?;
+    let (deps, dev_deps) = match (deps, dev_deps) {
+        (None, None) => return Ok(None),
+        (Some(deps), Some(dev_deps)) => (deps, dev_deps),
+        _ => return Err("internal error: inconsistent extension_metadata".to_owned()),
+    };
+    if !root.has_non_dev_use_extension() && !deps.is_empty() {
+        return Err("root_module_direct_deps must be empty if the root module contains no usages with dev_dependency = False".to_owned());
+    }
+    if !root.has_dev_use_extension() && !dev_deps.is_empty() {
+        return Err("root_module_direct_dev_deps must be empty if the root module contains no usages with dev_dependency = True".to_owned());
+    }
+    let imports = |dev: bool| -> BTreeSet<&str> {
+        root.proxies
+            .iter()
+            .filter(|proxy| proxy.dev_dependency == dev)
+            .flat_map(|proxy| proxy.imports.iter().map(String::as_str))
+            .collect()
+    };
+    let actual = imports(false);
+    let actual_dev = imports(true);
+    let expected: BTreeSet<&str> = deps.iter().map(String::as_str).collect();
+    let expected_dev: BTreeSet<&str> = dev_deps.iter().map(String::as_str).collect();
+    let to_add: Vec<&str> = expected.difference(&actual).copied().collect();
+    let to_remove: BTreeSet<&str> = actual.difference(&expected).copied().collect();
+    let dev_to_add: Vec<&str> = expected_dev.difference(&actual_dev).copied().collect();
+    let dev_to_remove: BTreeSet<&str> = actual_dev.difference(&expected_dev).copied().collect();
+    if to_add.is_empty()
+        && to_remove.is_empty()
+        && dev_to_add.is_empty()
+        && dev_to_remove.is_empty()
+    {
+        return Ok(None);
+    }
+    let command = |verb: &str, proxy: &RootProxy, repos: &[&str]| {
+        let name = proxy_name(&proxy.location);
+        let mut parts = vec![
+            verb.to_owned(),
+            if name.is_empty() {
+                "_unnamed_usage".to_owned()
+            } else {
+                name
+            },
+        ];
+        parts.extend(repos.iter().map(|repo| (*repo).to_owned()));
+        parts.join(" ")
+    };
+    let mut commands = Vec::new();
+    if !to_add.is_empty()
+        && let Some(proxy) = root.proxies.iter().find(|proxy| !proxy.dev_dependency)
+    {
+        commands.push(command("use_repo_add", proxy, &to_add));
+    }
+    if !dev_to_add.is_empty()
+        && let Some(proxy) = root.proxies.iter().find(|proxy| proxy.dev_dependency)
+    {
+        commands.push(command("use_repo_add", proxy, &dev_to_add));
+    }
+    for proxy in &root.proxies {
+        let remove = if proxy.dev_dependency {
+            &dev_to_remove
+        } else {
+            &to_remove
+        };
+        let mine: BTreeSet<&str> = proxy
+            .imports
+            .iter()
+            .map(String::as_str)
+            .filter(|repo| remove.contains(repo))
+            .collect();
+        if !mine.is_empty() {
+            commands.push(command(
+                "use_repo_remove",
+                proxy,
+                &mine.into_iter().collect::<Vec<_>>(),
+            ));
+        }
+    }
+    Ok(Some(commands))
+}
+
 /// ModuleFileGlobals.normalizeLabelString (Bazel 9.3:486-519) for the ROOT
 /// module: the main repository (empty name, `//` or relative labels) becomes the
 /// module's own repo name; every other repository keeps its apparent spelling,

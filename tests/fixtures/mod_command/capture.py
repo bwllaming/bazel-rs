@@ -148,6 +148,26 @@ def main():
             "elapsed_seconds": round(time.time() - started, 3),
         })
         print(name, result.returncode, flush=True)
+    # `mod tidy` rewrites MODULE.bazel (buildozer of @bazel_tools): twice on
+    # a private copy of tidy_ws/, the file recorded after each run.
+    tidy_ws = SCRATCH + "/tidy_ws"
+    shutil.copytree(os.path.join(HERE, "tidy_ws"), tidy_ws)
+    tidy = []
+    for run in range(2):
+        result = subprocess.run(prefix + ["tidy", "--lockfile_mode=off", "--color=no", "--curses=no",
+                                          "--noshow_progress"], cwd=tidy_ws, env=env,
+                                capture_output=True)
+        stderr = result.stderr.decode("utf-8", "replace")
+        with open(tidy_ws + "/MODULE.bazel") as module:
+            tidy.append({
+                "exit_code": result.returncode,
+                "stdout": result.stdout.decode("utf-8", "replace"),
+                "events": [line.replace(tidy_ws, "${WORKSPACE}") for line in stderr.splitlines()
+                           if re.match(r"^(ERROR|WARNING|INFO): ", line)
+                           and not line.startswith("INFO: Repo ")],
+                "module": module.read(),
+            })
+        print("tidy", run, result.returncode, flush=True)
     with open(GENUINE, "rb") as binary:
         digest = hashlib.sha256(binary.read()).hexdigest()
     receipt = {
@@ -156,6 +176,7 @@ def main():
         "command_prefix": ["mod"] + [arg.replace(FIXTURE, "${FIXTURE}") for arg in common],
         "note": "events: ERROR/WARNING/`INFO: Repo` stderr lines; ${FIXTURE} is the copied fixture",
         "cases": cases,
+        "tidy": tidy,
     }
     with open(os.path.join(HERE, "reference_receipt.json"), "w") as out:
         json.dump(receipt, out, indent=1, sort_keys=True)

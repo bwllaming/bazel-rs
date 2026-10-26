@@ -35,6 +35,22 @@ Subcommands: `graph`, `deps`, `all_paths`, `path`, `explain`, `show_repo`,
 missing subcommand and a module resolution failure exit 37; an option
 conversion error is `While parsing option ...`, exit 2).
 
+## `tidy`
+
+`mod tidy` evaluates (or reuses) every extension the root module uses
+without the `use_repo` import check (SingleExtensionValue's eval-only key),
+derives each extension metadata's fixup (LockfileModuleExtensionMetadata
+.generateFixup: `use_repo_add`/`use_repo_remove PROXY REPO...`, the proxy
+named by its top-level assignment) and pipes
+`//MODULE.bazel:all|COMMAND|...|format` into `@buildozer_binary//:buildozer.exe`
+of `@bazel_tools` (`buildozer -f -` in the workspace), like ModCommand.runTidy:
+MODULE.bazel is rewritten and formatted, `INFO: Updated use_repo calls for
+EXT` follows each applied fixup, buildozer's exit code 3 (nothing changed) is
+success, a failed extension is reported and counted (`Failed to process N
+extension(s) due to errors.`, exit 2). `include()` is not supported natively,
+so only MODULE.bazel is processed. Never run it on a checkout you must not
+modify: it writes the root MODULE.bazel.
+
 ## Differences from genuine 9.3
 
 - Extension evaluation is demand-driven. Genuine evaluates every module
@@ -63,7 +79,9 @@ conversion error is `While parsing option ...`, exit 2).
 `tests/fixtures/mod_command/reference_receipt.json` (`capture.py` there; 74
 cases on a scratch graph with an MVS upgrade, single-version and local-path
 overrides, a cycle, an extension with a used and an unused repository and a
-`use_repo_rule`): stdout byte for byte, exit codes and ERROR events. The
+`use_repo_rule`): stdout byte for byte, exit codes and ERROR events, and
+(`mod_tidy_matches_genuine_bazel`, ignored by default: it downloads buildozer)
+two `mod tidy` runs on `tidy_ws/` with the rewritten MODULE.bazel. The
 genuine capture resolved the built-in closure from the BCR, the test from the
 offline `tests/fixtures/builtin_modules` registry. `tests/builtin_modules.rs`
 compares `mod graph --output=json --include_builtin` with the genuine graphs

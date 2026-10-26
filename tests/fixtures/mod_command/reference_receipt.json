@@ -6,7 +6,7 @@
    "args": [
     "graph"
    ],
-   "elapsed_seconds": 12.532,
+   "elapsed_seconds": 12.159,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -19,7 +19,7 @@
     "graph",
     "--charset=ascii"
    ],
-   "elapsed_seconds": 8.597,
+   "elapsed_seconds": 8.474,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -32,7 +32,7 @@
     "graph",
     "--output=json"
    ],
-   "elapsed_seconds": 9.082,
+   "elapsed_seconds": 8.464,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -45,7 +45,7 @@
     "graph",
     "--output=graph"
    ],
-   "elapsed_seconds": 8.669,
+   "elapsed_seconds": 8.264,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -58,7 +58,7 @@
     "graph",
     "--include_builtin"
    ],
-   "elapsed_seconds": 8.7,
+   "elapsed_seconds": 8.476,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -72,7 +72,7 @@
     "--include_builtin",
     "--output=json"
    ],
-   "elapsed_seconds": 8.426,
+   "elapsed_seconds": 8.494,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -85,7 +85,7 @@
     "graph",
     "--include_unused"
    ],
-   "elapsed_seconds": 8.58,
+   "elapsed_seconds": 7.953,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -98,7 +98,7 @@
     "graph",
     "--verbose"
    ],
-   "elapsed_seconds": 8.548,
+   "elapsed_seconds": 8.2,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -112,7 +112,7 @@
     "--include_unused",
     "--verbose"
    ],
-   "elapsed_seconds": 9.059,
+   "elapsed_seconds": 8.328,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -127,7 +127,7 @@
     "--verbose",
     "--output=json"
    ],
-   "elapsed_seconds": 8.366,
+   "elapsed_seconds": 11.318,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -142,7 +142,7 @@
     "--verbose",
     "--output=graph"
    ],
-   "elapsed_seconds": 8.39,
+   "elapsed_seconds": 8.219,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -155,7 +155,7 @@
     "graph",
     "--depth=2"
    ],
-   "elapsed_seconds": 8.858,
+   "elapsed_seconds": 8.222,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -168,7 +168,7 @@
     "graph",
     "--nocycles"
    ],
-   "elapsed_seconds": 8.734,
+   "elapsed_seconds": 8.359,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -181,7 +181,7 @@
     "graph",
     "--from=mc_cyc_x"
    ],
-   "elapsed_seconds": 8.685,
+   "elapsed_seconds": 8.341,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -194,7 +194,7 @@
     "graph",
     "--from=mc_cyc_y,mc_local"
    ],
-   "elapsed_seconds": 8.549,
+   "elapsed_seconds": 8.447,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -207,7 +207,7 @@
     "graph",
     "--ignore_dev_dependency"
    ],
-   "elapsed_seconds": 1.918,
+   "elapsed_seconds": 1.77,
    "events": [
     "ERROR: in module dependency chain <root> -> mc_local@1.0: module mc_local@1.0 not found in registries:"
    ],
@@ -220,7 +220,7 @@
     "graph",
     "--extension_info=usages"
    ],
-   "elapsed_seconds": 8.521,
+   "elapsed_seconds": 8.365,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -233,7 +233,7 @@
     "graph",
     "--extension_info=repos"
    ],
-   "elapsed_seconds": 8.941,
+   "elapsed_seconds": 8.632,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -246,7 +246,7 @@
     "graph",
     "--extension_info=all"
    ],
-   "elapsed_seconds": 8.787,
+   "elapsed_seconds": 9.242,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -260,7 +260,7 @@
     "--extension_info=all",
     "--output=json"
    ],
-   "elapsed_seconds": 8.673,
+   "elapsed_seconds": 8.499,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -274,7 +274,7 @@
     "--extension_info=all",
     "--output=graph"
    ],
-   "elapsed_seconds": 8.157,
+   "elapsed_seconds": 8.406,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -287,7 +287,7 @@
     "graph",
     "--extension_filter=@mc_a//:ext.bzl%ext"
    ],
-   "elapsed_seconds": 8.775,
+   "elapsed_seconds": 9.306,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -301,7 +301,7 @@
     "--extension_filter=@mc_a//:ext.bzl%ext",
     "--extension_info=all"
    ],
-   "elapsed_seconds": 8.474,
+   "elapsed_seconds": 8.61,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -315,7 +315,7 @@
     "--extension_filter=",
     "--extension_info=repos"
    ],
-   "elapsed_seconds": 8.654,
+   "elapsed_seconds": 8.073,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -328,7 +328,7 @@
     "deps",
     "mc_b"
    ],
-   "elapsed_seconds": 8.579,
+   "elapsed_seconds": 8.06,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -341,7 +341,7 @@
     "deps",
     "<root>"
    ],
-   "elapsed_seconds": 8.437,
+   "elapsed_seconds": 8.941,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -355,7 +355,7 @@
     "mc_a",
     "--depth=1"
    ],
-   "elapsed_seconds": 8.518,
+   "elapsed_seconds": 9.285,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -368,7 +368,7 @@
     "deps",
     "@bee"
    ],
-   "elapsed_seconds": 8.654,
+   "elapsed_seconds": 8.085,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -381,7 +381,7 @@
     "deps",
     "@@mc_local+"
    ],
-   "elapsed_seconds": 8.484,
+   "elapsed_seconds": 8.335,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -394,7 +394,7 @@
     "all_paths",
     "mc_leaf"
    ],
-   "elapsed_seconds": 8.651,
+   "elapsed_seconds": 8.168,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -408,7 +408,7 @@
     "mc_cyc_x",
     "--from=mc_a"
    ],
-   "elapsed_seconds": 8.486,
+   "elapsed_seconds": 8.305,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -421,7 +421,7 @@
     "path",
     "mc_leaf"
    ],
-   "elapsed_seconds": 8.375,
+   "elapsed_seconds": 8.385,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -435,7 +435,7 @@
     "mc_leaf",
     "--output=json"
    ],
-   "elapsed_seconds": 8.671,
+   "elapsed_seconds": 8.337,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -449,7 +449,7 @@
     "mc_a",
     "--from=mc_b"
    ],
-   "elapsed_seconds": 8.677,
+   "elapsed_seconds": 8.236,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -461,7 +461,7 @@
    "args": [
     "path"
    ],
-   "elapsed_seconds": 8.481,
+   "elapsed_seconds": 8.475,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -474,7 +474,7 @@
     "explain",
     "mc_leaf"
    ],
-   "elapsed_seconds": 10.869,
+   "elapsed_seconds": 11.573,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -488,7 +488,7 @@
     "mc_b",
     "--include_unused"
    ],
-   "elapsed_seconds": 9.907,
+   "elapsed_seconds": 9.292,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -503,7 +503,7 @@
     "--include_unused",
     "--verbose"
    ],
-   "elapsed_seconds": 8.947,
+   "elapsed_seconds": 8.239,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -516,7 +516,7 @@
     "explain",
     "mc_leaf@1.0"
    ],
-   "elapsed_seconds": 9.003,
+   "elapsed_seconds": 8.213,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In module argument mc_leaf@1.0: Module version mc_leaf@1.0 is unused as a result of module resolution. Use the --include_unused flag to include it. Type 'bazel help mod' for syntax and help."
@@ -531,7 +531,7 @@
     "mc_leaf@1.0",
     "--include_unused"
    ],
-   "elapsed_seconds": 9.073,
+   "elapsed_seconds": 8.813,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -544,7 +544,7 @@
     "show_repo",
     "@mc_a"
    ],
-   "elapsed_seconds": 8.586,
+   "elapsed_seconds": 9.348,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -557,7 +557,7 @@
     "show_repo",
     "mc_b"
    ],
-   "elapsed_seconds": 8.594,
+   "elapsed_seconds": 9.058,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -570,7 +570,7 @@
     "show_repo",
     "@@mc_local+"
    ],
-   "elapsed_seconds": 8.506,
+   "elapsed_seconds": 10.508,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -583,7 +583,7 @@
     "show_repo",
     "@my_y"
    ],
-   "elapsed_seconds": 8.717,
+   "elapsed_seconds": 13.306,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -596,7 +596,7 @@
     "show_repo",
     "@direct"
    ],
-   "elapsed_seconds": 8.683,
+   "elapsed_seconds": 10.524,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -609,7 +609,7 @@
     "show_repo",
     "@bazel_tools"
    ],
-   "elapsed_seconds": 8.917,
+   "elapsed_seconds": 9.623,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -623,7 +623,7 @@
     "--base_module=mc_a",
     "@x_repo"
    ],
-   "elapsed_seconds": 8.369,
+   "elapsed_seconds": 8.326,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -636,7 +636,7 @@
     "show_repo",
     "@nope"
    ],
-   "elapsed_seconds": 8.414,
+   "elapsed_seconds": 9.389,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In repo argument @nope: No repo visible as nope from @main repository (Note that unused modules cannot be used here). Type 'bazel help mod' for syntax and help."
@@ -650,7 +650,7 @@
     "show_repo",
     "@@nope+"
    ],
-   "elapsed_seconds": 8.56,
+   "elapsed_seconds": 8.656,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In repo argument @@nope+: no such repo. Type 'bazel help mod' for syntax and help."
@@ -665,7 +665,7 @@
     "--output=streamed_jsonproto",
     "@mc_a"
    ],
-   "elapsed_seconds": 8.788,
+   "elapsed_seconds": 8.739,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -678,7 +678,7 @@
     "show_extension",
     "@mc_a//:ext.bzl%ext"
    ],
-   "elapsed_seconds": 8.543,
+   "elapsed_seconds": 8.937,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -692,7 +692,7 @@
     "@mc_a//:ext.bzl%ext",
     "--extension_usages=<root>"
    ],
-   "elapsed_seconds": 8.36,
+   "elapsed_seconds": 8.8,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -705,7 +705,7 @@
     "show_extension",
     "<root>//:MODULE.bazel%//:defs.bzl r"
    ],
-   "elapsed_seconds": 8.626,
+   "elapsed_seconds": 9.021,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -718,7 +718,7 @@
     "show_extension",
     "@mc_a//:ext.bzl%nope"
    ],
-   "elapsed_seconds": 8.441,
+   "elapsed_seconds": 9.94,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: No extension @@mc_a+//:ext.bzl%nope exists in the dependency graph. Type 'bazel help mod' for syntax and help."
@@ -732,7 +732,7 @@
     "dump_repo_mapping",
     ""
    ],
-   "elapsed_seconds": 7.893,
+   "elapsed_seconds": 7.702,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -746,7 +746,7 @@
     "mc_a+",
     "mc_local+"
    ],
-   "elapsed_seconds": 8.204,
+   "elapsed_seconds": 7.868,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -758,7 +758,7 @@
    "args": [
     "dump_repo_mapping"
    ],
-   "elapsed_seconds": 1.282,
+   "elapsed_seconds": 1.641,
    "events": [
     "ERROR: No repository name(s) specified. Type 'bazel help mod' for syntax and help."
    ],
@@ -771,7 +771,7 @@
     "dump_repo_mapping",
     "nope+"
    ],
-   "elapsed_seconds": 8.056,
+   "elapsed_seconds": 11.003,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: Repositories not found: nope+. Type 'bazel help mod' for syntax and help."
@@ -782,7 +782,7 @@
   },
   {
    "args": [],
-   "elapsed_seconds": 1.058,
+   "elapsed_seconds": 1.223,
    "events": [
     "ERROR: No subcommand specified, choose one of : (deps, graph, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy)."
    ],
@@ -794,7 +794,7 @@
    "args": [
     "frobnicate"
    ],
-   "elapsed_seconds": 1.099,
+   "elapsed_seconds": 1.093,
    "events": [
     "ERROR: Invalid subcommand, choose one from : (deps, graph, all_paths, path, explain, show_repo, show_extension, dump_repo_mapping, tidy)."
    ],
@@ -807,7 +807,7 @@
     "graph",
     "x"
    ],
-   "elapsed_seconds": 8.671,
+   "elapsed_seconds": 8.49,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: the 'graph' command doesn't take extra arguments. Type 'bazel help mod' for syntax and help."
@@ -821,7 +821,7 @@
     "graph",
     "--output=streamed_proto"
    ],
-   "elapsed_seconds": 1.185,
+   "elapsed_seconds": 1.09,
    "events": [
     "ERROR: Invalid --output 'streamed_proto' for the 'graph' subcommand. Only 'text', 'json', and 'graph' are supported. Type 'bazel help mod' for syntax and help."
    ],
@@ -835,7 +835,7 @@
     "--output=json",
     "@mc_a//:ext.bzl%ext"
    ],
-   "elapsed_seconds": 1.154,
+   "elapsed_seconds": 1.119,
    "events": [
     "ERROR: Invalid --output 'json' for the 'show_extension' subcommand. Only 'text' is supported. Type 'bazel help mod' for syntax and help."
    ],
@@ -848,7 +848,7 @@
     "deps",
     "nope"
    ],
-   "elapsed_seconds": 9.805,
+   "elapsed_seconds": 9.39,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In module argument nope: Module nope does not exist in the dependency graph. Type 'bazel help mod' for syntax and help."
@@ -862,7 +862,7 @@
     "deps",
     "mc_b@9.9"
    ],
-   "elapsed_seconds": 9.844,
+   "elapsed_seconds": 10.895,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In module argument mc_b@9.9: Module version mc_b@9.9 does not exist, available versions: [mc_b@2.0]. Type 'bazel help mod' for syntax and help."
@@ -876,7 +876,7 @@
     "deps",
     "@nope"
    ],
-   "elapsed_seconds": 9.007,
+   "elapsed_seconds": 9.545,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: In module argument @nope: No module with the apparent repo name @nope exists in the dependency graph. Type 'bazel help mod' for syntax and help."
@@ -890,7 +890,7 @@
     "graph",
     "--all_repos"
    ],
-   "elapsed_seconds": 1.307,
+   "elapsed_seconds": 2.158,
    "events": [
     "ERROR: the 'graph' command doesn't take the --all_repos option. Type 'bazel help mod' for syntax and help."
    ],
@@ -904,7 +904,7 @@
     "--all_repos",
     "@mc_a"
    ],
-   "elapsed_seconds": 1.281,
+   "elapsed_seconds": 1.612,
    "events": [
     "ERROR: the 'show_repo' command requires exactly one of --all_repos, --all_visible_repos, or a list of repo arguments. Type 'bazel help mod' for syntax and help."
    ],
@@ -917,7 +917,7 @@
     "tidy",
     "x"
    ],
-   "elapsed_seconds": 10.179,
+   "elapsed_seconds": 9.21,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off",
     "ERROR: the 'tidy' command doesn't take extra arguments. Type 'bazel help mod' for syntax and help."
@@ -932,7 +932,7 @@
     "--base_module=mc_leaf",
     "--include_unused"
    ],
-   "elapsed_seconds": 8.402,
+   "elapsed_seconds": 8.822,
    "events": [
     "WARNING: For repository 'bee', the root module requires module version mc_b@1.0, but got mc_b@2.0 in the resolved dependency graph. Please update the version in your MODULE.bazel or set --check_direct_dependencies=off"
    ],
@@ -945,7 +945,7 @@
     "graph",
     "--charset=latin1"
    ],
-   "elapsed_seconds": 1.074,
+   "elapsed_seconds": 1.358,
    "events": [
     "ERROR: While parsing option --charset=latin1: Not a valid output charset: 'latin1' (should be utf8 or ascii)"
    ],
@@ -963,5 +963,21 @@
   "--curses=no",
   "--noshow_progress"
  ],
- "note": "events: ERROR/WARNING/`INFO: Repo` stderr lines; ${FIXTURE} is the copied fixture"
+ "note": "events: ERROR/WARNING/`INFO: Repo` stderr lines; ${FIXTURE} is the copied fixture",
+ "tidy": [
+  {
+   "events": [
+    "INFO: Updated use_repo calls for @tidy_root//:ext.bzl%ext"
+   ],
+   "exit_code": 0,
+   "module": "module(\n    name = \"tidy_root\",\n    version = \"1.0\",\n)\n\next = use_extension(\"//:ext.bzl\", \"ext\")\nuse_repo(ext, \"a\", \"b\")\n\next_dev = use_extension(\"//:ext.bzl\", \"ext\", dev_dependency = True)\nuse_repo(ext_dev, \"d\")\n",
+   "stdout": ""
+  },
+  {
+   "events": [],
+   "exit_code": 0,
+   "module": "module(\n    name = \"tidy_root\",\n    version = \"1.0\",\n)\n\next = use_extension(\"//:ext.bzl\", \"ext\")\nuse_repo(ext, \"a\", \"b\")\n\next_dev = use_extension(\"//:ext.bzl\", \"ext\", dev_dependency = True)\nuse_repo(ext_dev, \"d\")\n",
+   "stdout": ""
+  }
+ ]
 }

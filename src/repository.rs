@@ -143,6 +143,10 @@ impl Drop for UnitRoots {
     }
 }
 
+/// [`RepositorySet::root_extension_fixups`]: (extension, buildozer commands)
+/// per fixup, and the failures.
+pub type RootFixups = (Vec<(String, Vec<String>)>, Vec<String>);
+
 /// RepoDefinitionValue (bazel/repository/RepoDefinitionValue.java): a
 /// definition, or a repository overridden by a directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -250,6 +254,9 @@ struct RepositoryState {
     /// Repository rules executing ahead of their sequential demand
     /// (parallel fetching, crate::repository_speculation).
     speculation: crate::repository_speculation::Speculations,
+    /// `mod tidy`: extensions are evaluated for their eval-only value
+    /// (no `use_repo` fixup warning).
+    eval_only: std::sync::atomic::AtomicBool,
 }
 
 type IgnoredResult = Result<Arc<crate::ignored::IgnoredSubdirectories>, String>;
@@ -539,6 +546,13 @@ struct PreparedOrdinary {
     /// digest's computation observed for the analysis snapshot (W6R: the
     /// declared environment; replayed at every hit).
     spec_keys: std::sync::Mutex<BTreeMap<String, SpecKeyEntry>>,
+    /// The extension's metadata (`extension_metadata`), for `mod tidy`.
+    metadata: Option<crate::extension_metadata::ExtensionMetadata>,
+    /// SingleExtensionFunction's import check (a root or other module
+    /// imports a repository the extension did not generate): the group's
+    /// evaluation stands (SingleExtensionEvalFunction, which `mod tidy`
+    /// reads), every other use fails with this error.
+    import_error: Option<String>,
     /// SHA-256 of `provenance`, computed ONCE per prepared group:
     /// `specification_digest_bytes` framed these bytes into every
     /// sibling's spec key, re-hashing the whole (closure-bearing) group
@@ -855,6 +869,7 @@ impl RepositorySet {
                 replay: crate::snapshot::replay::global(),
                 verified_trees: Arc::default(),
                 speculation: Default::default(),
+                eval_only: Default::default(),
             }),
         }
     }
@@ -2078,6 +2093,50 @@ impl RepositorySet {
                 ],
             ),
         }
+    }
+
+    /// `mod tidy` (BazelModTidyFunction): the `use_repo` fixups of the
+    /// root module's ordinary extensions — the extension's identity as the
+    /// root spells it (`extensionBzlFile%name`) and buildozer commands of the
+    /// root MODULE.bazel — and the failures of the extensions that failed
+    /// (each evaluated without the import check, like its eval-only key).
+    /// `proxy_name` names a `use_extension` proxy by its location.
+    pub fn root_extension_fixups(
+        &self,
+        proxy_name: &dyn Fn(&str) -> String,
+    ) -> Result<RootFixups, String> {
+        self.state.eval_only.store(true, Ordering::Relaxed);
+        let runtime = self.direct_runtime()?;
+        let mut fixups = Vec::new();
+        let mut errors = Vec::new();
+        for (id, group) in &runtime.catalog.ordinary_groups {
+            let Some(root) = &group.root_usage else {
+                continue;
+            };
+            match self.evaluate_ordinary_group(id) {
+                Err(error) => errors.push(error),
+                Ok(prepared) => {
+                    let Some(metadata) = &prepared.metadata else {
+                        continue;
+                    };
+                    let all: Vec<String> = prepared.repositories.keys().cloned().collect();
+                    match crate::extension_metadata::fixup_commands(
+                        metadata, root, &all, proxy_name,
+                    ) {
+                        Ok(Some(commands)) => {
+                            let file = root
+                                .proxies
+                                .first()
+                                .map_or(String::new(), |proxy| proxy.extension_bzl_file.clone());
+                            fixups.push((format!("{file}%{}", root.extension_name), commands));
+                        }
+                        Ok(None) => {}
+                        Err(error) => errors.push(error),
+                    }
+                }
+            }
+        }
+        Ok((fixups, errors))
     }
 
     /// The keyword argument order of the `use_repo_rule` declaration `name`
@@ -3494,6 +3553,16 @@ impl RepositorySet {
     }
 
     fn prepare_ordinary_group(&self, id: &str) -> Result<&PreparedOrdinary, String> {
+        let prepared = self.evaluate_ordinary_group(id)?;
+        match &prepared.import_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(prepared),
+        }
+    }
+
+    /// [`Self::prepare_ordinary_group`] without the import check
+    /// (SingleExtensionValue.evalKey).
+    fn evaluate_ordinary_group(&self, id: &str) -> Result<&PreparedOrdinary, String> {
         let runtime = self.direct_runtime()?;
         let group = runtime
             .catalog
@@ -3689,7 +3758,12 @@ impl RepositorySet {
             // fail the evaluation; the fixup warning precedes the import check.
             if let (Some(metadata), Some(root_usage)) = (&metadata, &group.root_usage) {
                 match crate::extension_metadata::generate_fixup(metadata, root_usage, &generated_order) {
-                    Ok(Some(fixup)) => crate::ui::note(&fixup.warning()),
+                    // SingleExtensionFunction reports the fixup; `mod tidy`
+                    // reads the eval-only value, which does not.
+                    Ok(Some(fixup)) if !self.state.eval_only.load(Ordering::Relaxed) => {
+                        crate::ui::note(&fixup.warning())
+                    }
+                    Ok(Some(_)) => {}
                     Ok(None) => {}
                     Err(message) => return Err(format!(
                         "{message}\nerror evaluating module extension {} in {}",
@@ -3701,6 +3775,7 @@ impl RepositorySet {
             // was never requested. Nothing from this group is published yet.
             let mut imports = Vec::new();
             let mut source_guards = Vec::new();
+            let mut import_error = None;
             for participant in &group.participants {
                 preparation_budget.string(&participant.owner)?;
                 source_guards.push(serde_json::json!({
@@ -3711,10 +3786,11 @@ impl RepositorySet {
                     preparation_budget.string(&import.local_name)?;
                     preparation_budget.string(&import.exported_name)?;
                     if !repositories.contains_key(&import.exported_name) {
-                        return Err(format!(
+                        import_error.get_or_insert_with(|| format!(
                             "module extension {}%{} did not declare imported repository {:?} (alias @{} in MODULE owner {:?})",
                             group.label, group.symbol, import.exported_name, import.local_name, participant.owner,
                         ));
+                        continue;
                     }
                     imports.push(serde_json::json!({
                         "owner": participant.owner,
@@ -3787,6 +3863,8 @@ impl RepositorySet {
                 provenance,
                 recipe,
                 spec_keys: std::sync::Mutex::new(BTreeMap::new()),
+                metadata,
+                import_error,
                 provenance_digest,
             })
         })

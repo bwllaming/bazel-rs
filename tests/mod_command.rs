@@ -159,3 +159,62 @@ fn mod_option_errors_fail_before_running() {
     );
     assert!(output.stdout.is_empty());
 }
+
+/// `mod tidy` twice on tidy_ws/ (receipt `tidy`): the rewritten MODULE.bazel,
+/// the INFO events and exit codes. Needs the network: buildozer's module
+/// source and its prebuilt binary (`@buildozer_binary` of `@bazel_tools`)
+/// are downloaded like genuine does.
+#[test]
+#[ignore = "downloads buildozer from the public BCR and GitHub"]
+fn mod_tidy_matches_genuine_bazel() {
+    let receipt: Value = serde_json::from_str(
+        &fs::read_to_string(fixture().join("reference_receipt.json")).unwrap(),
+    )
+    .unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("mod-tidy-")
+        .tempdir_in("/tmp/opencode")
+        .unwrap();
+    let workspace = fs::canonicalize(directory.path()).unwrap().join("ws");
+    copy_tree(&fixture().join("tidy_ws"), &workspace);
+    for (index, expected) in receipt["tidy"].as_array().unwrap().iter().enumerate() {
+        let output = Command::new("timeout")
+            .arg("1200s")
+            .arg(env!("CARGO_BIN_EXE_bazel-rs"))
+            .arg("--ignore_all_rc_files")
+            .arg(format!(
+                "--cache-dir={}",
+                workspace.parent().unwrap().join("cache").display()
+            ))
+            .args(["mod", "tidy", "--lockfile_mode=off"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let events: Vec<&str> = stderr
+            .lines()
+            .filter(|line| {
+                ["ERROR: ", "WARNING: ", "INFO: "]
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix))
+            })
+            .collect();
+        let expected_events: Vec<&str> = expected["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            output.status.code(),
+            expected["exit_code"].as_i64().map(|code| code as i32),
+            "run {index}: {stderr}"
+        );
+        assert_eq!(events, expected_events, "run {index}: {stderr}");
+        assert_eq!(
+            fs::read_to_string(workspace.join("MODULE.bazel")).unwrap(),
+            expected["module"].as_str().unwrap(),
+            "run {index}"
+        );
+    }
+}

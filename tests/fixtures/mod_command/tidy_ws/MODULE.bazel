@@ -1,0 +1,6 @@
+module(name = "tidy_root", version = "1.0")
+
+ext   =   use_extension("//:ext.bzl", "ext")
+use_repo(ext, "a", "c")
+ext_dev = use_extension("//:ext.bzl", "ext", dev_dependency = True)
+use_repo(ext_dev, "b")
